@@ -6,6 +6,8 @@
 
 本ファイルは **Phase 0の実行手順・調査事項の正本**。上位planには概要と合格条件を残す。現状のレポジトリにはまだAndroidアプリ本体がない。以下の <code>android/</code> やAPKのパスは、後に実装するまで存在しない。
 
+**Rust中心構成の調査結果を[第9節](#9-rust中心構成のビルド調査2026-11-01追記)に追記した。** Kotlin＋Rustを主要言語とし、C++は必要性が実証されたshimに限定する。描画は[Phase 1](phase-1-rust-rendering.md)、SSHは[Phase 2](phase-2-rust-ssh.md)、compositor移植は[Phase 3](phase-3-rust-compositor-waypipe.md)へ続く。
+
 ## 1. ゴールとUSB接続構成
 
 **Phase 0の目標:** Ubuntu PCでMeta Spatial SDKを利用した最小APKをビルドし、USB経由でQuest 3へデプロイし、XR起動とlogcat取得までを再現可能にする。Termux/Waylandとの製品内通信はPhase 2〜5の対象。ただし**開発用USB-ADB/SSH経路**はPhase 0で先行構築できる。
@@ -43,7 +45,7 @@ flowchart LR
 | Meta Spatial SDK | **0.14.0** |
 | Android API | 上流StarterSampleはcompile/min/target **34** |
 | Android NDK | build.gradle.ktsとの整合で決定。上流MediaPlayerSampleの例は27.0.12077973 |
-| Rust | stable ＋ aarch64-linux-android target（実装着手時に検証） |
+| Rust | stable ＋ aarch64-linux-android target。採用crateのMSRVを確認し固定する（第9節） |
 
 **Ubuntuの重要な注意点:** 上流サンプルREADMEはビルド環境をMac/Windows中心に案内する。一方Metaは[Linux版Spatial Editor CLI v16.1](https://developers.meta.com/vr/downloads/package/meta-spatial-editor-cli-for-linux/)と[LinuxヘッドレスCLI手順](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-editor-ai-scene-manipulation/)を提供している。Linux版にはGUI Editorがない。**Linux CLIを使ったStarterSampleのscene export/assembleがそのまま通るかは未確認**であり、最初の検証ゲートとする。
 
@@ -98,14 +100,14 @@ test -x "$MSE_CLI" && "$MSE_CLI" --help
 
 [Spatial SDK Gradle Plugin](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-editor/)の <code>spatial.scenes.cliPath</code> に実際のCLIパスを指定する。上流StarterSampleがこれだけで通ることを保証しない。シーンのexport taskとassembleDebugを分離し、エラーログで「CLI不在」「CLI実行失敗」「export内容不整合」を判別する。
 
-### 3.3 Rust toolchain（Phase 3用の先行準備）
+### 3.3 Rust toolchain（Phase 1以降の先行準備）
 
 ~~~bash
 # rustup導入方法は https://rustup.rs を参照
 rustup target add aarch64-linux-android
 rustc --version
 cargo --version
-# Android nativeビルド時には cargo-ndk を評価（まだ実装しない）
+# cargo-ndkでのcdylibビルドとJNI疎通は第9節へ
 ~~~
 
 参考: [cargo-ndk](https://github.com/bbqsrc/cargo-ndk)、[Smithay/smallvil](https://github.com/Smithay/smithay/tree/master/smallvil)。
@@ -166,7 +168,7 @@ adb logcat -d -v time | grep -Ei 'Spatial|AndroidRuntime|FATAL EXCEPTION' | tail
 - [ ] Linux CLIが障害なら、scene exportが不要な構成を検証する。Scene Editorの依存を盲目的に削除しない。
 - [ ] Gradle wrapper/JDK/SDK/Kotlin/AGP/Meta SDKを固定しCIでassembleDebugを実行する。
 - [ ] Quest実機へinstallして起動、logcat、クラッシュとXR描画を検証する。
-- [ ] 必要になるまでNDK/Rustのcompositorやrendererを統合しない（Phase 1/3の責務）。
+- [ ] 必要になるまでcompositorやrendererを統合しない（Phase 1/3の責務）。Rustのcdylibロードだけは第9節で先行検証してよい。
 
 実装後の**想定パス（現在存在しない）**:
 
@@ -276,10 +278,10 @@ Termuxには[GitHub CLI <code>gh</code>の公式パッケージ](https://github.
 
 ~~~sh
 pkg install git gh openssh
-gh auth login -h github.com -p https -w
+ gh auth login -h github.com -p https -w
 # Questでブラウザー遷移できない場合は表示されたdevice codeをPC側ブラウザーで承認
-gh auth status
-gh repo clone tin-machine/eidolon-wayland
+ gh auth status
+ gh repo clone tin-machine/eidolon-wayland
 cd eidolon-wayland
 git status
 ~~~
@@ -338,3 +340,71 @@ Failing commands / log excerpts (secrets removed):
 - [Termux official packages](https://github.com/termux/termux-packages)
 
 検証結果は本書に記録し、上位の[実装計画](implementation-plan.md#phase-0--レポジトリと開発環境)のPhase 0完了状況にも反映する。
+
+## 9. Rust中心構成のビルド調査（2026-11-01追記）
+
+### 9.1 採用する境界
+
+**Kotlin APK + Rust cdylib**を第一案にする。KotlinはSpatial SDK／Android adapter、RustはJNI、描画、SSH、compositor、WindowManagerを担当する。RustからJNIやNDKを呼べるため、C++のwrapperを最初から挟む必要はない。[jni公式](https://docs.rs/jni/0.22.4/jni/)と[ndkのNativeWindow API](https://docs.rs/ndk/0.9.0/ndk/native_window/struct.NativeWindow.html)を参照。
+
+Rustを採用してもAndroid NDKのlinker／sysrootは必要。CMakeはRustのcdylibを作るだけなら必須ではないが、Waypipeやnative依存のビルドでは別のbuild systemを利用し得る。
+
+~~~mermaid
+flowchart LR
+  K["Kotlin / Gradle"] --> A["APK packaging"]
+  R["Rust / Cargo + cargo-ndk"] --> S["libeidolon_native.so / arm64-v8a"]
+  S --> A
+  A --> Q["Quest APK"]
+  Q -->|"System.loadLibrary / JNI"| N["Rust core"]
+~~~
+
+### 9.2 確認した部品とバージョン
+
+| 部品 | 調査時の版／場所 | Phase 0で確認すること |
+| --- | --- | --- |
+| jni | 0.22.4 | Kotlin native methodをRustで実装できる。0.21系とAPIを混ぜない |
+| ndk | 0.9.0 | Surface→NativeWindow、ffi型の整合、所有権 |
+| khronos-egl | 6.0.0 | Androidの`libEGL.so`へ接続 |
+| glow | 上流crateを選定・固定 | GLES binding。context生成はEGL側 |
+| Smithay | 0.7系を評価 | native依存と最小features。Android動作は別gate |
+| russh | 0.65.0 | MSRV 1.89、暗号backendのAndroidクロスビルド |
+
+これは動作確認済みの組み合わせではない。`rust-toolchain.toml`とCargo.lockへ**実際に成功した組み合わせ**を固定する。[russh Cargo.toml](https://github.com/Eugeny/russh/blob/main/russh/Cargo.toml)、[jni migration guide](https://docs.rs/crate/jni/0.22.4/source/docs/0.22-MIGRATION.md)を参照。
+
+### 9.3 Rustビルドの具体例
+
+将来`native/`にcrateを作成し、`[lib] name = "eidolon_native"`、`crate-type = ["cdylib"]`とJNI関数を追加した後の例。**この変更では実装コードを追加していない。**
+
+~~~bash
+# Ubuntu側。NDK_PATHはインストール・検証したNDKの絶対パス
+export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/27.0.12077973"  # 例
+rustup target add aarch64-linux-android
+cargo install cargo-ndk --locked
+
+# native/Cargo.tomlとCargo.lockが作成済みの場合
+cd eidolon-wayland/native
+cargo tree --target aarch64-linux-android -e features
+CARGO_NDK_PLATFORM=34 cargo ndk -t arm64-v8a \
+  -o ../android/app/src/main/jniLibs build --locked
+
+# 初期診断用。名前はcrateの[lib] nameに合わせる
+file ../android/app/src/main/jniLibs/arm64-v8a/libeidolon_native.so
+cd ../android
+./gradlew :app:assembleDebug
+unzip -l app/build/outputs/apk/debug/app-debug.apk | grep libeidolon_native.so
+~~~
+
+`cargo-ndk`はjniLibs形式への出力とNDK環境設定を提供する。[公式README](https://github.com/bbqsrc/cargo-ndk)を参照。実運用ではcargo-ndk自身の版も固定する。GradleからCargo taskを呼ぶ場合、入力・出力・debug/releaseを宣言し、古い`.so`を誤って再利用しない。SDK APIレベルはアプリのminSdkと整合させる。
+
+### 9.4 切り分け用のビルド順序
+
+1. JNIだけのcdylibをKotlinから呼ぶ。
+2. `ndk`＋EGL/GLESを追加し、[Phase 1](phase-1-rust-rendering.md)のSurface描画を試す。
+3. `russh`だけを別spikeでAndroid向けにビルドし、[Phase 2](phase-2-rust-ssh.md)を試す。
+4. Smithayのprotocol最小featuresとlibxkbcommon等を追加し、[Phase 3](phase-3-rust-compositor-waypipe.md)を試す。
+
+- [ ] `System.loadLibrary("eidolon_native")`と単純なJNI呼出しがQuestで成功する。
+- [ ] Rust MSRV、NDK版、native依存、JNI版の混在を記録する。
+- [ ] `cargo tree`／ELFのNEEDEDからUbuntu用`.so`の誤リンクがないことを確認する。
+- [ ] 既存C依存の利用と、自作C++ shimの追加を区別する。shimは具体的な不足を確認した部分に限定する。
+- [ ] APKのビルド成功とXRの動作成功を別に記録する。

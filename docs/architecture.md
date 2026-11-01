@@ -17,124 +17,141 @@ Quest 3単体で、Termux上で実行するWayland GUIアプリを、Meta Spatia
 - 初期は単一の2Dパネル、後に複数ウィンドウ、背景演出、パネル移動・拡縮へ進む。
 - リモートLinux接続は将来の拡張。まずは**Quest内のTermuxへのlocalhost SSH**に集中する。
 
+## 採用言語と責務（2026-11-01のRust実現性調査を反映）
+
+**Kotlin＋Rustを新規実装の中心とする。** 自作C++を最初から必須にせず、既存CライブラリやWaypipeは再利用し、Rust bindingで不足する具体的な箇所に限って薄いshimを許容する。RustでNDK/EGL/GLESを再実装するのではなく、RustからAndroidのAPI・GPUドライバーを呼ぶ構成である。
+
+| レイヤー | 第一候補 | 境界・詳細資料 |
+| --- | --- | --- |
+| Android / Meta Spatial SDK adapter | Kotlin | Activity、SDK Entity、Surface、権限・IME UI。モデルの正本は持たない |
+| JNI / NDK連携 | Rust `jni`、`ndk` | Kotlin→Rust cdylib。[Phase 0](phase-0-development-environment.md)・[Phase 1](phase-1-rust-rendering.md) |
+| Wayland compositor | Rust / Smithay | protocol、surface tree、seat、buffer lifetime。[Phase 3](phase-3-rust-compositor-waypipe.md) |
+| XRウィンドウ管理モデル | Rust | WindowId、focus、pose、size、保存・復旧。KotlinはSDK操作を実行。[Phase 5](phase-5-rust-window-manager.md) |
+| 2Dウィンドウ描画 | Rust / EGL + GLES、Smithay GlesRenderer候補 | SDKが渡したSurfaceへ出力。XR空間そのものの最終rendererはSDK/runtime。[Phase 1](phase-1-rust-rendering.md)・[Phase 4](phase-4-rust-window-rendering.md) |
+| SSH transport / supervisor | Rust / russh + Tokio | host key検証、公開鍵認証、exec、StreamLocal forwarding。[Phase 2](phase-2-rust-ssh.md)・[Phase 6](phase-6-rust-lifecycle-testing.md) |
+| Waypipe | 上流実装を再利用 | Termuxは調査時点でC版をbuild。Eidolonで再実装しない |
+| ビルド・補助 | Gradle Kotlin DSL / Cargo / Shell | Android NDKとnative依存は引き続き必要 |
+
+**確認できた根拠:** [jni](https://docs.rs/jni/0.22.4/jni/)、[ndk NativeWindow](https://docs.rs/ndk/0.9.0/ndk/native_window/struct.NativeWindow.html)、[khronos-egl](https://docs.rs/khronos-egl/6.0.0/khronos_egl/)、[russh StreamLocal API](https://docs.rs/russh/0.65.0/russh/client/struct.Handle.html#method.streamlocal_forward)が存在する。また、[Local Desktop](https://github.com/localdesktop/localdesktop.github.io)にはAndroid上のRust＋Smithayの先行実装がある。
+
+**未確認:** 上記をMeta Spatial SDKのSurface、QuestのGPU、TermuxのWaypipeと組み合わせたEidolonの動作。調査は公式資料とソースの確認までで、Androidビルド／Quest実機テストは実施していない。既存部品の存在・先行例・Eidolonでの検証を混同しない。
+
 ## 全体像
 
 ~~~mermaid
 flowchart TD
   subgraph Quest["Meta Quest 3 / Horizon OS"]
-    subgraph APK["Eidolon Android APK / Spatial SDK"]
-      UI["XRパネルと入力・フォーカス管理"]
-      SURFACE["Android Surface / EGL・OpenGL ES"]
-      COMP["組み込みWayland compositor / Smithay候補"]
-      WPLOCAL["Waypipe display-side proxy（Android向け実装要検証）"]
-      SSH["SSH client（ホスト鍵検証・公開鍵認証）"]
-      UI <--> COMP
-      COMP --> SURFACE
-      SURFACE --> UI
-      COMP <--> WPLOCAL
-      WPLOCAL <--> SSH
+    subgraph APK["Eidolon APK / Android UID A"]
+      UI["Kotlin: Spatial SDK adapter / Entity / Surface"]
+      MODEL["Rust: WindowManager / focus / pose"]
+      COMP["Rust: Smithay Wayland compositor"]
+      RENDER["Rust: EGL / GLES renderer"]
+      WPLOCAL["既存Waypipe client / 表示側"]
+      SSH["Rust: russh / SSH + StreamLocal bridge"]
+      UI <-->|"JNI commands / lifecycle"| MODEL
+      MODEL <--> COMP
+      COMP --> RENDER
+      UI -->|"Surface handle"| RENDER
+      RENDER -->|"Surfaceへpresent"| UI
+      COMP <-->|"Wayland socket + fd"| WPLOCAL
+      WPLOCAL <-->|"転送socket"| SSH
     end
-    subgraph TERMUX["Termux / 別Android UID"]
-      SSHD["sshd : 127.0.0.1:8022"]
-      WPREMOTE["waypipe remote-side proxy"]
+    subgraph TERMUX["Termux / Android UID B"]
+      SSHD["sshd 127.0.0.1:8022"]
+      WPREMOTE["既存Waypipe server / アプリ側"]
       APPS["foot / GTK・Qt Wayland apps"]
-      SSHD <--> WPREMOTE
+      SSHD <-->|"StreamLocal socket"| WPREMOTE
       WPREMOTE <-->|"Wayland Unix socket"| APPS
     end
-    SSH <-->|"SSH over 127.0.0.1"| SSHD
+    SSH <-->|"SSH over TCP loopback"| SSHD
   end
 ~~~
 
-図は**提案**であり、Android側WaypipeとSmithayの統合がQuestで検証済みという意味ではない。Waypipeにおける「local」は**画面を表示する側**（APK）であり、「remote」は**アプリを動かす側**（Termux）。物理的には同じQuest内に存在する。転送の役割とWayland socketとの関係は[Waypipeのマニュアル](https://man.archlinux.org/man/waypipe.1.en)を参照。
+図は**提案**であり検証済みではない。Waypipeの「client/local」は**画面を表示する側**（APK）、「server/remote」は**アプリを動かす側**（Termux）。Waylandでの役割はEidolonがserver、footがclient。物理的には同じQuest内である。[Waypipe付属マニュアル](https://man.archlinux.org/man/waypipe.1.en)を参照。
 
 ## 通信の責務境界
 
 | 区間 | 想定方式 | 送るもの | 留意点 |
 | --- | --- | --- | --- |
-| APK内 compositor ⇄ Waypipe local | Wayland Unix socket、同一アプリUID | Wayland requests/events、<code>wl_buffer</code>等 | Androidアプリのprivate領域にランタイムソケットを作る |
-| APK内 Waypipe local ⇄ Termux側 Waypipe remote | SSH経由の双方向バイトストリーム (<code>127.0.0.1</code>) | Waypipe固有の転送データ（プロトコル、SHM内容など） | SSHだけではWayland fdを転送できない |
-| Termux側 Waypipe remote ⇄ Waylandアプリ | Termux UID内のUnix socket | <code>wl_surface</code>/<code>xdg_toplevel</code>、<code>wl_shm</code> buffer fd等 | Waypipe remoteがWayland serverの代理として振る舞う |
-| compositor ⇄ XR UI（APK内） | Rust↔JNI/FFI または同一プロセス内メッセージキュー | Window ID、frame、入力、geometry | **別UIDのIPCは不要**。処理間・スレッド間の同期は必要 |
-| compositorの画像 → Spatialパネル | Android Surface、ANativeWindow、EGL/GLES | 描画済みウィンドウフレーム | 文字の鮮明さ、resize、Surface再生成に注意 |
-| Bluetoothキーボード・Questコントローラー → compositor | Android key/pointer、XR ray hit → Wayland seat | keycode、修飾キー、pointer、focus | IME・記号配列・key repeatは段階的に検証 |
+| APK内 compositor ⇄ Waypipe client | 同一UIDのWayland Unix socket | requests/events、buffer fd等 | APKのprivate runtime directory |
+| APK内 Waypipe ⇄ Termux Waypipe | russhによるSSH StreamLocal forwarding | Waypipe固有の転送データ、SHM更新等 | SSH単体でWayland fdを転送しない |
+| Termux Waypipe ⇄ アプリ | Termux UID内のWayland Unix socket | surface/commit、SHM fd、入力 | Waypipeがcompositorの代理になる |
+| Rust core ⇄ Kotlin adapter | JNIの小さいcommand/event | WindowId、pose、入力、Surface lifecycle | 同一APK。毎frameの画素配列は渡さない |
+| Rust renderer → Spatialパネル | Android Surface / ANativeWindow / EGL | ウィンドウの描画フレーム | Surface寿命、buffer解像度、present |
+| 入力 → Rust compositor | Android KeyEvent / XR ray-hit → JNI → seat | key、modifier、pointer、focus | IME・US/JIS変換を別途検証 |
 
-**重要:** TermuxのWaylandアプリとcompositorを別UIDで直接接続するのではなく、WaypipeとSSHを終端する。これによりTermuxのprivate Unix socketへの直接アクセスを避けられる。一方で、Android側に**Waypipe相当の実行機能が必要**となり、ここが最初の成立性検証ポイント。
+**重要:** Termuxのprivate socketへAPKから直接アクセスするのでなく、SSH＋WaypipeでUID境界を越える。Android側にもWaypipe実行機能が必要で、Termuxにだけ導入しても成立しない。
 
-SSHはプロセス起動・認証・ストリームの経路であり、端末描画サーバーではない。GUIの表示には[Waypipe](https://man.archlinux.org/man/waypipe.1.en)経由でWaylandプロトコルと共有メモリーバッファを中継する必要がある。SSHのセッションを単純に端末として描画する方式とは異なる。
+SSHはプロセス起動・認証・streamの経路であって、端末描画サーバーではない。WaypipeがWayland protocolとSHMを転送可能な形にする。russhのStreamLocal APIは利用可能だが、incoming channelとローカルUnixStreamをつなぐadapter、EOF／cancel／backpressureは自作する。[Phase 2の詳細](phase-2-rust-ssh.md)を参照。
 
 ## Wayland compositorの具体的責務
 
-初期の候補はRust + [Smithay](https://docs.rs/smithay/latest/smithay/wayland/)（Wayland serverのプロトコル実装支援）。ウィンドウ管理や描画モデルの参考には、Smithayで組み込みcompositorを実装している[WayVRのソース](https://github.com/wayvr-org/wayvr/tree/main/wayvr/src/backend/wayvr)を利用する。ただしAndroid/aarch64へのビルド可否と依存関係を**先に検証**する。実装不可能ならlibwayland-server＋C/C++を比較し、WaylandフロントエンドとAndroid描画層を分離する。
+第一候補はRust + [Smithay](https://docs.rs/smithay/latest/smithay/wayland/)。ウィンドウ管理の参考に[WayVRの実装](https://github.com/wayvr-org/wayvr/tree/main/wayvr/src/backend/wayvr)、Android移植の参考に[Local Desktopのpatch記録](https://localdesktop.github.io/docs/developer/patches/)を利用する。Android/aarch64のbuild可否、features、libxkbcommon等は[Phase 3](phase-3-rust-compositor-waypipe.md)で先に検証する。
 
-- Wayland serverの起動・client接続とevent loop。
-- <code>wl_compositor</code>、<code>wl_shm</code>、<code>xdg_wm_base</code>、<code>xdg_surface</code>、<code>xdg_toplevel</code>、<code>wl_seat</code>等の必要なprotocol。
-- xdg configure/ack、attach/commit、damage、<code>wl_buffer.release</code>、frame callbackを規約どおり扱う。
-- surface tree、subsurface、popup、座標変換とウィンドウライフサイクルを管理。
-- keyboard focus、pointer enter/leave、keymap、キー修飾子、繰返し、clipboard等を段階的に扱う。
-- <code>toplevel ID → XR panel entity → Android Surface</code> の対応関係を保持。
-- ウィンドウの論理サイズ（Wayland）と物理サイズ（メートル）、パネル用ピクセル寸法を分離する。
-- 最初のclientはfootを想定するが、アプリが要求するprotocol拡張を実際のログで評価する。
+- Wayland server、client接続、event loop、surface treeの管理。
+- wl_compositor、wl_shm、xdg_wm_base、xdg_surface、xdg_toplevel、wl_seat等。
+- configure/ack、attach/commit、damage、wl_buffer.release、frame callback。
+- subsurface、popup、座標変換、keyboard/pointer focus、keymap、repeat、clipboard。
+- `WindowId → logical window → Kotlin SDK Entity → SurfaceGeneration`の対応。
+- Wayland logical size、buffer scale、XRのメートル寸法、pixel解像度を分離。
 
-**既存のLinux DRM/KMS/GBM表示バックエンドをQuestへ持ち込むことを前提としない。** Androidのアプリには物理ディスプレイを直接制御する役割はない。必要なのはWayland surfaceの画像を取り出し、Spatial SDKパネルが受け取るAndroid Surfaceに描画する**Android向け出力・renderer連携**である。Spatial SDKへの組込み方は[公式サンプル](https://github.com/meta-quest/Meta-Spatial-SDK-Samples)と[Surfaceを利用するメディアパネルの説明](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-media-playback/)を起点として確認する。
+**Linux DRM/KMS/GBMの物理モニター出力をQuestへ持ち込まない。** compositorに必要なのはアプリの画像管理とAndroid Surfaceへの出力である。SDK側の利用方法は[公式サンプル](https://github.com/meta-quest/Meta-Spatial-SDK-Samples)を参照。NativeActivity/winitを追加起動するのではなく、Spatial SDKが所有するActivity/Surfaceへ接続する。
 
-## 描画バックエンド（具体像）
+## 描画バックエンド
 
-### Stage 1: CPUベースの最小構成
+### Stage 1: CPU/SHM経路
 
-1. Termuxのアプリが <code>wl_shm</code> bufferに描画してcommit。
-2. Waypipeがバッファの内容とWayland通信をSSHストリーム越しに転送。
-3. compositorはWaylandのsurface状態と<code>wl_shm</code> bufferを受け取る。
-4. Android側rendererはCPU bufferをGLESテクスチャにアップロード（copyあり）。
-5. EGL window surfaceへ描画し、<code>eglSwapBuffers</code>。
-6. Spatial SDKの<code>VideoSurfacePanelRegistration</code>が供給する<code>Surface</code>に表示される。
+1. Termuxのアプリがwl_shm bufferをcommitする。
+2. Waypipeがprotocolとbuffer内容をSSH経由で転送・再構成する。
+3. RustのSmithay compositorがsurfaceとbufferを管理する。
+4. Rust rendererがSHMをGLESへuploadし、SDK Surfaceに対応するEGLSurfaceへ合成する。
+5. eglSwapBuffersで提出し、Spatial SDK／XR runtimeが視界に配置する。
 
-候補: Kotlin (Spatial SDK / View/入力) + Rust (Smithay/scene state) + JNI/C++ (EGL/NDK)。ただしRust <code>NativeActivity</code> 等の特定構成を決め打ちしない。最初は**静止パターンの描画をAndroid Surfaceに出す**実験を独立させる。
+[Phase 1](phase-1-rust-rendering.md)は`jni + ndk + khronos-egl + glow`で小さく検証し、[Phase 4](phase-4-rust-window-rendering.md)はSmithay `GlesRenderer`のSHM importと合成を再利用する候補を評価する。**JNI/C++を必須の中間層にはしない。** Rust bindingに実際の不足があればその範囲だけshimを許容する。
 
-[Spatial SDKの<code>VideoSurfacePanelRegistration</code> API](https://developers.meta.com/vr/reference/spatial-sdk/v0.8.1/com_meta_spatial_toolkit_videosurfacepanelregistration/)は動画以外のカスタムSurface描画にも利用できる。ただしリンク先は**SDK v0.8.1のAPIリファレンス**なので、実装時には採用するSDKバージョンのシグネチャ・対応機能を再確認する。Surface提供・破棄時のlifecycle、実際のbacking pixel size、色空間、各種パネル数の上限や更新タイミングをQuestで計測する。SDKの<code>PixelDisplayOptions</code>指定と実際のバッファサイズを同一視しない。
+[VideoSurfacePanelRegistrationの旧版API説明](https://developers.meta.com/vr/reference/spatial-sdk/v0.8.1/com_meta_spatial_toolkit_videosurfacepanelregistration/)と[現行media guide](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-media-playback/)を参照。採用SDKのシグネチャ、Surface lifecycle、buffer解像度を実測し、`PixelDisplayOptions`を指定するだけで実際のproducer buffer寸法が決まるとは仮定しない。
 
-### Stage 2: GPU効率化（MVP後）
+### Stage 2: GPU効率化
 
-- <code>linux-dmabuf</code>、EGL import、<code>AHardwareBuffer</code>、同期フェンス対応は**将来の検証課題**。
-- DMA-BUFとAHardwareBufferが無条件に相互互換という前提を置かない。modifier、format、ownership、fence、GPU driver、XR layerを評価。
-- 当面はWaypipe <code>--no-gpu</code> 相当のCPU/SHM経路でPoCを行う。現時点で確認した[TermuxのWaypipeビルドレシピ](https://github.com/termux/termux-packages/blob/master/packages/waypipe/build.sh)ではdmabuf/videoサポートが無効化されている。実装時にはその時点のレシピを再確認する。
-- 「同一端末だからゼロコピー」は目標ではあるが、成立は未確認。
+linux-dmabuf、EGL import、AHardwareBuffer、fenceはMVP後の検証課題。DMA-BUFとAHardwareBufferの無条件互換や、SSH＋Waypipe経路でのzero-copyを前提にしない。まずWaypipeのno-gpu/SHM経路で成立させ、[Phase 6](phase-6-rust-lifecycle-testing.md)で計測してから最適化する。
+
+[確認したTermuxのWaypipeレシピ](https://github.com/termux/termux-packages/blob/master/packages/waypipe/build.sh)はC版を選びdmabuf/videoを無効化している。一方で上流には[作者によるRust移行](https://mstoeckl.com/notes/code/waypipe_to_rust.html)がある。**Waypipeは上流を再利用し、言語統一のためにEidolonで書き直さない。**
 
 ## Spatialウィンドウ管理と入力
 
-1. <code>xdg_toplevel</code> の生成・破棄に応じて、Spatial SDK内でパネルentityを作成・破棄。
-2. アプリ固有IDとパネルを対応させる。Wayland clientからのtitle/app_id変更を反映。
-3. パネルの移動は空間位置の変更として扱う。リサイズは「物理メートル変更」か「再レイアウトする論理ピクセル変更」かを明示。
-4. XRレイキャストから2D panel UV/ピクセル座標へ変換し、Wayland seatへpointerイベントを返す。
-5. パネルを選択したらWayland keyboard focusを切替。Android KeyEventから適切なxkb keycode/modifiersへ変換。
-6. popups・subsurfacesは親との相対配置/入力整合性を維持し、まずは親パネル内合成で扱う。
-7. 初期はパススルー背景＋**1枚の平面パネル**。将来、複数、円筒状/大画面、配置永続化を実装する。XRパネルの実装パターンは[Meta Spatial SDK公式サンプル](https://github.com/meta-quest/Meta-Spatial-SDK-Samples)を参照する。
+**Rustを状態の正本とする。** WindowId、focus、pose、size、配置保存、セッション世代をRustで持ち、KotlinはSDKのEntity作成／変形／破棄と入力取得を担当する。[詳細な分担とイベント案](phase-5-rust-window-manager.md)を参照。
+
+1. xdg_toplevelの生成・破棄に応じRustからKotlinへpanel commandを送る。
+2. title/app_id、親子関係をRustで管理する。
+3. メートル寸法の変更とWayland resize交渉を別操作にする。
+4. XR ray-hit／UVをRustへ渡し、surfaceのlogical座標へ変換する。
+5. Android KeyEventをWaylandのkeycode／modifierへ変換しseatへ配送する。
+6. popup/subsurfaceはまず親パネル内合成で扱い、親外領域のclip/拡張と入力原点を決める。
+7. 初期はパススルー＋平面パネル、後に複数・湾曲・配置永続化へ広げる。
 
 ## SSH・権限・ライフサイクル
 
-- Termuxは通常SSHポート8022を使用。**127.0.0.1のみにbind**できることを確かめて設定。LANへ公開しない。
-- 公開鍵認証のみ。Androidアプリ側のprivate key保護、Termuxの<code>authorized_keys</code>、ホスト鍵ピン留め/known_hosts検証を設計。<code>StrictHostKeyChecking=no</code>は使わない。
-- Termux起動やsshd準備が必要な場合、最初は手動でよい。後にIntent/Termux:Tasker等による起動自動化を検討するが、SSH/Wayland通信と混同しない。
-- SSH接続のアプリ側実装はlibssh等の移植、あるいはAndroidアプリで実行可能なネイティブクライアントを比較する。最新Androidの実行ファイル制限やAPKパッケージングを確認する。
-- **WaypipeはAndroidアプリ側に同梱または同等のproxy機能が必須**。Termuxに入れるだけでは成立しない。[Waypipeの起動モデル](https://man.archlinux.org/man/waypipe.1.en)と[Termuxパッケージのビルド条件](https://github.com/termux/termux-packages/blob/master/packages/waypipe/build.sh)を確認しつつ、Bionic対応・依存ライブラリ・spawn・fd転送・socket配置を実機ゲートにする。
-- XR Activity再生成、Surfaceの消失、SSH切断、Termuxバックグラウンド制限、Questスリープからの復帰をstate machineとして扱う。
-- 認証情報、SSH内容、キーストローク、ウィンドウ画像をログへ恒常的に出力しない。
+- Termuxのsshdは127.0.0.1:8022に限定し、LANに公開しない。
+- 公開鍵認証、host key pinning/known_hosts検証を行う。検証の迂回はしない。
+- SSHはRustのrusshを第一候補にし、SSHJ/libsshは問題が確認された場合の代案とする。StreamLocal APIがあるだけでは中継完了ではない。[Phase 2](phase-2-rust-ssh.md)を参照。
+- Android Keystoreと非exportable鍵をrusshへ接続する部分は別spike。Kotlin adapterが残ることを許容する。
+- WaypipeはAPK UID内で起動できる同梱helperを第一候補とする。Termuxの実行ファイルをコピーするだけで動くとは仮定しない。
+- Kotlin UI／Rust compositor-render owner／Tokio SSH runtimeを分離する。GlesRendererのthread制約を守る。
+- Activity/Surface、SSH transport、Wayland sessionの寿命を分ける。再接続しても旧アプリ状態が必ず戻るとは保証しない。[Phase 6](phase-6-rust-lifecycle-testing.md)を参照。
+- Termuxの起動とsshd準備は初期は手動でよい。Intent等による自動化は通信路と混同しない。
+- 認証情報、キーストローク、画面内容を恒常的にログへ出さない。
 
-## 代替手段（主案を変更せずに保留）
+## 代替手段（主案は維持）
 
-- **Option A: Termux側compositor + Binder/FDブリッジ（[Anland: Termux方式](https://github.com/lfdevs/anland-termux/blob/main/docs/developer-guide.md)）**：SSH+WaypipeでAndroid側の移植が行き詰まった場合に評価。Anlandはブリッジ部分の**参考実装**であり、そのままXRウィンドウ管理を提供するわけではない。
-- **Option B: VNC/noVNCで一枚のLinuxデスクトップを表示**：XRパネル/Surface/入力の単独検証に使う。類似の表示経路は[quest-termux-lab](https://github.com/MesmerPrism/quest-termux-lab)を参照する。ただし最終目標の独立ウィンドウとは別。
-- **Option C: Linux PC + [WayVR](https://github.com/wayvr-org/wayvr)/WiVRn**：UI・配置の参考として使用可能。Quest単体MVPの必須条件にはしない。
-- 将来的なremote host接続は、同じWayland受け入れ面へ第二のSSH接続先を追加する形で検討可能。
+- **Termux側compositor＋Binder/FDブリッジ:** [Anlandの参考実装](https://github.com/lfdevs/anland-termux/blob/main/docs/developer-guide.md)。APK側移植に構造的な問題が残る場合に比較する。XR window managerをそのまま提供するものではない。
+- **VNCで一枚のdesktop:** [quest-termux-lab](https://github.com/MesmerPrism/quest-termux-lab)。パネル表示の比較には使えるが独立したWayland windowの最終目標とは別。
+- **Linux PC＋WayVR/WiVRn:** [WayVR](https://github.com/wayvr-org/wayvr)。UIの参考。Quest単体MVPの必須条件にはしない。
+- **libwayland-server＋薄いC ABI:** Rust/Smithayに解消できない問題がある場合の比較候補。全体をC++へ置き換える判断とは分離する。
 
-## 参考資料
+## 参考資料とフェーズ別調査
 
-- [Meta Spatial SDK — custom Surface rendering](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-media-playback/)
-- [Meta Spatial SDK — VideoSurfacePanelRegistration API](https://developers.meta.com/vr/reference/spatial-sdk/v0.8.1/com_meta_spatial_toolkit_videosurfacepanelregistration/)
-- [Meta Spatial SDK official samples](https://github.com/meta-quest/Meta-Spatial-SDK-Samples)
-- [Smithay Wayland helpers](https://docs.rs/smithay/latest/smithay/wayland/)
-- [Waypipe manual](https://man.archlinux.org/man/waypipe.1.en)
-- [Termux Waypipe build recipe](https://github.com/termux/termux-packages/blob/master/packages/waypipe/build.sh)
-- [Termux package build system](https://github.com/termux/termux-packages)
-- [WayVR — embedded Wayland compositor reference](https://github.com/wayvr-org/wayvr/tree/main/wayvr/src/backend/wayvr)
-- [Anland: Termux — Android↔Wayland bridge reference](https://github.com/lfdevs/anland-termux/blob/main/docs/developer-guide.md)
-- [quest-termux-lab — VNC/Spatial SDK baseline](https://github.com/MesmerPrism/quest-termux-lab)
+- [Meta Spatial SDK media panels](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-media-playback/) / [公式サンプル](https://github.com/meta-quest/Meta-Spatial-SDK-Samples)
+- [jni](https://docs.rs/jni/0.22.4/jni/) / [NDK NativeWindow](https://docs.rs/ndk/0.9.0/ndk/native_window/struct.NativeWindow.html) / [Android EGL](https://source.android.com/docs/core/graphics/arch-egl-opengl)
+- [Smithay](https://github.com/Smithay/smithay) / [Local Desktop](https://github.com/localdesktop/localdesktop.github.io) / [WayVR](https://github.com/wayvr-org/wayvr)
+- [russh](https://github.com/Eugeny/russh) / [Waypipe manual](https://man.archlinux.org/man/waypipe.1.en) / [Termux build recipe](https://github.com/termux/termux-packages/blob/master/packages/waypipe/build.sh)
+- 詳細は[実装計画のフェーズ別リンク](implementation-plan.md#rust中心構成の調査と詳細ファイル2026-11-01)から参照する。
