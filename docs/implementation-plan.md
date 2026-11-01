@@ -2,6 +2,7 @@
 
 Status: **Planning / 実装未着手**  
 Architecture: [architecture.md](architecture.md)  
+Phase 0 runbook: [phase-0-development-environment.md](phase-0-development-environment.md)  
 Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプリ内Wayland compositor**
 
 ## 成功の定義
@@ -36,34 +37,30 @@ Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプ�
 
 ## Phase 0 — レポジトリと開発環境
 
+**詳細runbook（このフェーズの正本）:** **[phase-0-development-environment.md](phase-0-development-environment.md)**  
+上記へ環境構築コマンド・上流サンプルからのAPKビルド・USBデバッグ手順・TermuxへのADB/SSH経路・Codex CLIの互換性/認証/GitHub連携・具体的なチェックリストを移した。**Phase 0の作業はリンク先を起点に進める。**
+
 ### Phase 0の接続図 — 開発PCからQuestへのAPK投入（本番通信ではない）
 
 ~~~mermaid
 flowchart LR
-  DEV["開発PC: Gradle / Android NDK / cargo-ndk"] -->|"build APK"| APK["Eidolon APK"]
-  APK -->|"adb install: USB または開発用Wi-Fi"| QUEST["Quest 3: Spatial SDK Activity"]
-  QUEST -->|"adb logcat / crash / 実機診断"| DEV
+  DEV["開発PC: Gradle / Android SDK / JDK"] -->|"build"| APK["Spatial SDK APK"]
+  APK -->|"adb install / USB-C"| QUEST["Quest 3: XR Activity"]
+  QUEST -->|"adb logcat"| DEV
+  DEV -.->|"任意: adb forward TCP 18022 → Quest 8022 / SSH"| T["Quest 3: Termux sshd"]
 ~~~
 
-**接続境界:** 開発PCとQuestのADBのみ。Termux、SSH、Waypipe、Wayland compositorとの接続はまだ作らない。**Phase 0終了後のアプリ実行に開発PCは不要**とする。
+**接続境界:** この図のADB/USB/Termux SSHは開発・調査時限定。Spatial SDKアプリ自体からTermuxへ接続する製品用SSH・Waypipeは後続フェーズで扱う。Ubuntu上でMeta Spatial Editor CLIが必要になる可能性とLinux版SDKビルドの制約も詳細runbookに記載した。
 
-**参考実装・資料（該当箇所）:**
-- [Meta Spatial SDK — StarterSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/tree/main/StarterSample)：SDK、Gradle、Activity起動の基礎構成を流用。
-- [Android NDK Samples](https://github.com/android/ndk-samples)：Android向けネイティブビルド・JNIのサンプル群。
-- [cargo-ndk](https://github.com/bbqsrc/cargo-ndk)：Rust/Androidのクロスビルド手順を検討するための既存ツール。
+**Phase 0の完了条件（概要）**
+- [ ] Ubuntu上のJDK 17 / Android SDK / Gradle wrapper / Meta Spatial SDKツールチェーンを確認する。
+- [ ] Quest 3のDeveloper Mode・USB debugを有効化し、ADBで接続できる。
+- [ ] 上流のMeta StarterSample（または検証済みの代替最小サンプル）をUbuntuでビルド・Quest実機起動し、ログを採取する。
+- [ ] Eidolon専用の最小APKを実装し、ビルド・インストール・起動・診断を再現可能にする。
+- [ ] 必要なら開発PC側の公式CodexからADB forward＋SSHでTermuxを調査できるようにする（**Quest内Codexの動作は任意**）。
+- [ ] CIの基本ビルド・バージョン管理・ライセンス・secret除外を整備する。
 
-
-作業:
-- [ ] Android Studio/Gradle/AGP/Kotlin/JDK/Spatial SDKのバージョンをサンプルから選び、固定・文書化。
-- [ ] Android APK（Kotlin）+ native renderer（C/C++）+ compositor候補（Rust/Smithay）をモジュール分離。
-- [ ] Android NDK aarch64、Rust android target、CMake/cargo-ndk等のtoolchain確認。
-- [ ] <code>adb install</code>、起動、<code>logcat</code>、native crash stack、画面録画を再現可能にする。
-- [ ] CIで少なくともGradle compile、Kotlin lint、Rust test（利用時）、Markdownリンク/フォーマット検証。
-- [ ] SDKサンプルコードのライセンスと組込み可能範囲を確認。
-
-成果物: 起動する空APK、手順書、build matrix、初期CI。
-
-検証: adbでQuestを認識、APK起動/終了が安定。実機でのXR renderingをログ・録画で再現。
+**参考実装:** [Meta StarterSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/tree/main/StarterSample)、[Android NDK Samples](https://github.com/android/ndk-samples)、[Meta Linux Spatial Editor CLI](https://developers.meta.com/vr/downloads/package/meta-spatial-editor-cli-for-linux/)。詳細の用途別資料とコマンドは[Phase 0 runbook](phase-0-development-environment.md)を参照する。
 
 ## Phase 1 — Spatial Surfaceの描画スパイク
 
