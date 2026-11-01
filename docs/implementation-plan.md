@@ -28,7 +28,30 @@ Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプ�
 
 > 最も危険なのは「SSHを使えばWaylandが自動的に届く」という思い込み。Waypipeの**両端**が動き、local display側に有効なWayland compositorが存在してはじめて表示できる。
 
+## フェーズ別通信図の読み方
+
+以下の図は**各フェーズ完了時に目指す接続**を示す設計図であり、現時点の実装済み構成を示すものではない。図中の「Quest」はすべて**同一Quest 3内**で、Phase 0に限りAPKビルド/ADB用の開発PCを使う。矢印は制御またはデータの流れを示し、プロセス境界、Unix domain socket、SSH転送、Android Surfaceを区別して記載する。
+
+**Waypipeの名前の注意:** 表示側（Eidolon APK）で動くのは [`waypipe client`](https://man.archlinux.org/man/waypipe.1.en)、アプリ実行側（Termux）で動くのは `waypipe server`。これは**Waypipe自身の用語**であり、Waylandプロトコルでの役割は逆（EidolonがWayland compositor/server、footがWayland client）となる。標準の `waypipe ssh` はSSHのリモートUnixソケット転送（`ssh -R`）を利用できるため、**SSHの単純なexec/stdin-stdoutだけでは置換できない**。AndroidのSSHライブラリ選定時にはStreamLocal forwardingに対応するか、代替トランスポートを設計する必要がある。[Waypipe manpageの実行例](https://man.archlinux.org/man/waypipe.1.en#EXAMPLE)を参照。
+
 ## Phase 0 — レポジトリと開発環境
+
+### Phase 0の接続図 — 開発PCからQuestへのAPK投入（本番通信ではない）
+
+~~~mermaid
+flowchart LR
+  DEV["開発PC: Gradle / Android NDK / cargo-ndk"] -->|"build APK"| APK["Eidolon APK"]
+  APK -->|"adb install: USB または開発用Wi-Fi"| QUEST["Quest 3: Spatial SDK Activity"]
+  QUEST -->|"adb logcat / crash / 実機診断"| DEV
+~~~
+
+**接続境界:** 開発PCとQuestのADBのみ。Termux、SSH、Waypipe、Wayland compositorとの接続はまだ作らない。**Phase 0終了後のアプリ実行に開発PCは不要**とする。
+
+**参考実装・資料（該当箇所）:**
+- [Meta Spatial SDK — StarterSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/tree/main/StarterSample)：SDK、Gradle、Activity起動の基礎構成を流用。
+- [Android NDK Samples](https://github.com/android/ndk-samples)：Android向けネイティブビルド・JNIのサンプル群。
+- [cargo-ndk](https://github.com/bbqsrc/cargo-ndk)：Rust/Androidのクロスビルド手順を検討するための既存ツール。
+
 
 作業:
 - [ ] Android Studio/Gradle/AGP/Kotlin/JDK/Spatial SDKのバージョンをサンプルから選び、固定・文書化。
@@ -44,6 +67,26 @@ Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプ�
 
 ## Phase 1 — Spatial Surfaceの描画スパイク
 
+### Phase 1の描画経路 — Termuxはまだ接続しない
+
+~~~mermaid
+flowchart LR
+  subgraph APP["Quest 3: Eidolon APK" ]
+    SDK["Spatial SDK panel registration"] -->|"surfaceConsumer"| SURF["Android Surface / ANativeWindow"]
+    PAT["テストパターン描画器"] -->|"GLES描画"| EGL["EGL window surface"]
+    EGL -->|"eglSwapBuffers"| SURF
+  end
+  SURF -->|"Spatial SDKの表示経路"| XR["Quest XR空間の1枚のパネル"]
+~~~
+
+**接続境界:** Kotlin/Spatial SDKが渡す `Surface` とNDKの `ANativeWindow`、EGL/GLESとの同一APK内連携のみ。ネットワーク、SSH、Waypipe、Waylandクライアントは不使用。Surfaceの作成・破棄タイミングは別途検証。
+
+**参考実装・資料（該当箇所）:**
+- [Meta MediaPlayerSample — MediaPlayerSampleActivity.kt](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/main/MediaPlayerSample/app/src/main/java/com/meta/spatial/samples/mediaplayersample/MediaPlayerSampleActivity.kt)：`VideoSurfacePanelRegistration` と `surfaceConsumer` の使い方。映像アプリの例なのでGLES描画は別途実装。
+- [Android NDK — gles3jni](https://github.com/android/ndk-samples/tree/main/gles3jni)：Java/KotlinアプリとネイティブOpenGL ESレンダラーの接続。
+- [quest-termux-lab — SpatialDesktopActivity.kt](https://github.com/MesmerPrism/quest-termux-lab/blob/main/examples/spatial-desktop-panel/app/src/main/java/io/github/mesmerprism/questtermuxlab/spatialdesktop/SpatialDesktopActivity.kt)：Quest向けSpatialパネルの配置・入力・ライフサイクルに関する近い先行例（同実装の描画はVNC方式）。
+
+
 作業:
 - [ ] immersive Spatial SDKアプリに1枚のパネルを作成する。
 - [ ] <code>VideoSurfacePanelRegistration</code>の<code>surfaceConsumer</code>を実装し、Surface取得・更新・破棄を追跡。
@@ -57,6 +100,30 @@ Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプ�
 合格: 画面のちらつきやクラッシュがなく、再生成後も再描画可能。
 
 ## Phase 2 — SSHとTermuxの安全な接続
+
+### Phase 2の通信経路 — localhost SSHだけを先に成立させる
+
+~~~mermaid
+flowchart LR
+  subgraph QUEST["同一Quest 3" ]
+    subgraph APK["Eidolon APK / Android UID A" ]
+      CLIENT["SSH client + host-key verification"]
+    end
+    subgraph TERMUX["Termux / Android UID B" ]
+      SSHD["sshd listen: 127.0.0.1:8022"] -->|"exec: id / echo"| CMD["Termux shell"]
+    end
+    CLIENT <-->|"TCP loopback / SSH / public-key auth"| SSHD
+    CMD -->|"stdout / stderr / exit status"| SSHD
+  end
+~~~
+
+**接続境界:** Androidアプリの別UID間を、Unix socket直接接続ではなく**ループバックTCPとSSH**で通過する。Phase 2のSSHはコマンド実行の疎通だけを確認し、Wayland描画はまだ行わない。Android APK側にはネットワーク権限とSSHのhost-key検証が必要。
+
+**参考実装・資料（該当箇所）:**
+- [Termux OpenSSHパッケージのビルド定義](https://github.com/termux/termux-packages/blob/master/packages/openssh/build.sh)：Termux環境のOpenSSH設定パスや依存関係を確認。
+- [SSHJ Javaライブラリ](https://github.com/hierynomus/sshj) / [SSHJ examples](https://github.com/hierynomus/sshj/tree/master/examples)：Android側での認証・SSH execの実装候補。**Waypipeに必要なUnixソケット転送は別途対応可否を検証**し、採用を確定しない。
+- [Android Security Samples](https://github.com/android/security-samples)：AndroidセキュリティAPIの実装パターンの参考。SSH鍵をKeystoreに統合できるかは利用ライブラリと合わせて別途評価。
+
 
 Termuxの初期セットアップ例（ポートは実環境の設定を確認）:
 
@@ -75,7 +142,7 @@ id -un
 
 作業:
 - [ ] Termuxのsshdを<code>127.0.0.1:8022</code>に限定し、APKから接続可能か試す。
-- [ ] Android側にSSH接続ライブラリ等を実装。<code>libssh</code>等は候補であり採用確定ではない。
+- [ ] Android側にSSH接続ライブラリ等を実装。<code>libssh</code>やSSHJ等は候補であり採用確定ではない。**Phase 3で必要となるStreamLocal forwarding（SSHによるUnix socket転送）の対応有無**も選定条件として記録する。
 - [ ] ホスト鍵フィンガープリント検証（初回登録方式と鍵ローテーションも設計）。
 - [ ] 鍵をAndroid Keystore等で保護できるか、使用SSH実装との互換性も含めて検証。
 - [ ] APK→SSH→<code>id</code>/<code>echo</code>のstdout/stderr/exit status取得と切断検出。
@@ -85,12 +152,39 @@ id -un
 
 ## Phase 3 — Wayland serverとWaypipeのPoC（最重要）
 
+### Phase 3の通信経路 — Wayland protocolがAPKとTermuxを往復
+
+~~~mermaid
+flowchart LR
+  subgraph QUEST["同一Quest 3" ]
+    subgraph APK["Eidolon APK / UID A" ]
+      COMP["Wayland compositor / Smithay候補"] <-->|"Wayland Unix socket + fd"| WC["Waypipe client: 表示側"]
+      SSHC["SSH client: Unix socket forwarding"]
+      WC <-->|"Waypipe転送用socket"| SSHC
+    end
+    subgraph TERMUX["Termux / UID B" ]
+      SSHD["sshd 127.0.0.1:8022"] <-->|"転送socket"| WS["Waypipe server: アプリ側"]
+      WS <-->|"Wayland socket + wl_shm fd"| FOOT["foot / test Wayland client"]
+    end
+    SSHC <-->|"SSH over TCP loopback / streamlocal forwarding"| SSHD
+  end
+~~~
+
+**接続境界:** Wayland上は**Eidolonがserver/compositor、footがclient**。Waypipe上はAPKに`client`、Termuxに`server`。両プロキシがfd/SHM更新を必要に応じて再構成する。**SSH execが通るだけでは未達**で、`waypipe ssh`が相当するforwardingもAndroid側で実現しなければならない。この段階はXRへの実画面描画を必須にせず、Wayland protocol/SHM取得を検証する。
+
+**参考実装・資料（該当箇所）:**
+- [Smithay — smallvil](https://github.com/Smithay/smithay/tree/master/smallvil) / [GETTING_STARTED.md](https://github.com/Smithay/smithay/blob/master/GETTING_STARTED.md)：小さなWayland compositorの骨格、protocol、seat、event loopの参考。
+- [WayVR — Wayland server接続・入力処理 (client.rs)](https://github.com/wayvr-org/wayvr/blob/main/wayvr/src/backend/wayvr/client.rs)：既存compositorがclient socketをacceptし、Wayland eventを処理する実装。
+- [Waypipe manual（`ssh`、`client`、`server`、`--no-gpu`）](https://man.archlinux.org/man/waypipe.1.en)：接続方向とSSHのUnixソケット転送例。
+- [Termux — waypipe build.sh](https://github.com/termux/termux-packages/blob/master/packages/waypipe/build.sh)：Termux側Waypipeのビルド機能。Android APK側へ**そのまま転用可能とは限らない**。
+
+
 作業:
 - [ ] Androidプロセス内部にWayland serverを起動（Smithayを第一候補）。
 - [ ] Wayland Unix socket、event loop、<code>wl_compositor</code>、<code>wl_shm</code>、<code>xdg_shell</code>、<code>wl_seat</code>の基礎を実装する。
 - [ ] テスト用Wayland clientが<code>xdg_toplevel</code>を生成・commitできるようにする。
 - [ ] Android側のWaypipeをNDK/Bionic向けにビルド/同梱できるか検証する。既存waypipeのspawn、Unix socket、外部依存、fd、APK実行制約を調査する。
-- [ ] SSH双方向ストリームをwaypipe local ↔ remoteへ接続する。既存の<code>waypipe ssh</code> CLIの起動方法を参考にしつつ、APKへの単純なコピーで動くと仮定しない。
+- [ ] Waypipe client（APK）とWaypipe server（Termux）を、SSHの**リモートUnixソケット転送（StreamLocal forwarding / 例: <code>ssh -R</code>）**または等価な双方向トランスポートで接続する。既存の<code>waypipe ssh</code> CLI/マニュアルの起動方式を参考にし、**Android側SSHライブラリがUnixソケット転送に対応するか先に検証**する。APKへの単純なコピーで動くと仮定しない。
 - [ ] TermuxのWaypipeと組み合わせ、<code>--no-gpu</code>相当のSHM経路で起動する。
 - [ ] <code>WAYLAND_DEBUG=client</code>とcompositorログでプロトコルを追う。
 - [ ] xdg configure/ack、frame callback、buffer release、resizeが止まらないか確認する。
@@ -103,6 +197,33 @@ id -un
 **Gate:** Android側Waypipeが構築できない場合は、何が障害か（libwayland、liblz4、Zstd、socket、spawn、API制限等）を記録する。主設計の目的を維持しつつ、custom protocol proxy、別UID FD bridge、Termux側compositorへの構成変更を技術的に比較してから判断する。
 
 ## Phase 4 — Wayland windowをXRパネルに描画（MVP）
+
+### Phase 4の描画経路 — `wl_shm`からXRパネルへ（MVP）
+
+~~~mermaid
+flowchart LR
+  subgraph QUEST["同一Quest 3" ]
+    subgraph T["Termux / UID B" ]
+      FOOT["foot: wl_shm buffer commit"] --> WS["Waypipe server"]
+    end
+    subgraph APP["Eidolon APK / UID A" ]
+      WC["Waypipe client"] --> COMP["Wayland compositor: wl_buffer取得"]
+      COMP -->|"CPU buffer / stride / damage"| GL["EGL + GLES texture upload"]
+      GL -->|"eglSwapBuffers"| SURF["Android Surface"]
+      SURF --> SDK["Spatial SDK: Window IDごとのXRパネル"]
+    end
+    WS -->|"SSHの転送経路: SHM更新とWaylandイベント"| WC
+  end
+~~~
+
+**接続境界:** Phase 3の双方向Wayland転送を保持し、**Termux→APK→XRパネルという描画経路**を初めて完成させる。図の実線は描画の主方向で、configure/frame callback/buffer release等のWayland制御メッセージは逆方向にも流れる。SHM→GLESにはまずCPUコピーを許容し、ゼロコピーとGPU importは後回し。
+
+**参考実装・資料（該当箇所）:**
+- [Meta MediaPlayerSample — surfaceConsumer](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/main/MediaPlayerSample/app/src/main/java/com/meta/spatial/samples/mediaplayersample/MediaPlayerSampleActivity.kt)：Spatial SDKが管理するパネル用Surfaceの取得。
+- [Android NDK — gles3jni](https://github.com/android/ndk-samples/tree/main/gles3jni)：EGL/GLESによるAndroid側の描画実装の土台。
+- [Smithay — smallvil](https://github.com/Smithay/smithay/tree/master/smallvil)：Waylandのsurface/commit/toplevel管理の参考。**XR Surface出力は既存コードではなく新規実装する**。
+- [quest-termux-lab — FramebufferView.kt](https://github.com/MesmerPrism/quest-termux-lab/blob/main/examples/spatial-desktop-panel/app/src/main/java/io/github/mesmerprism/questtermuxlab/spatialdesktop/FramebufferView.kt)：受信した画像の更新管理・表示の別アプローチ（VNC+Android View）として比較。
+
 
 作業:
 - [ ] compositorで受信した<code>wl_shm</code>画像をEGL/GLES rendererへ引き渡す。
@@ -117,6 +238,36 @@ id -un
 
 ## Phase 5 — XR入力と複数ウィンドウ
 
+### Phase 5の双方向通信 — 複数surfaceとXR入力・フォーカス
+
+~~~mermaid
+flowchart LR
+  subgraph Q["同一Quest 3" ]
+    BT["Bluetoothキーボード / Quest controller"] -->|"Android KeyEvent / XR ray"| IN["Spatial入力・focus/router"]
+    subgraph APK["Eidolon APK" ]
+      IN -->|"pointer/key/resize"| COMP["Wayland compositor: seat / xdg_toplevel"]
+      COMP -->|"各window buffer / lifecycle"| MAP["Window ID → XR panel mapping"]
+      MAP --> A["XRパネル A"]
+      MAP --> B["XRパネル B"]
+      COMP <-->|"Wayland Unix socket"| WC["Waypipe client"]
+    end
+    subgraph TERMUX["Termux" ]
+      WS["Waypipe server"] <-->|"Wayland protocol"| F["foot"]
+      WS <-->|"Wayland protocol"| GUI["別のWayland GUIアプリ"]
+    end
+    WC <-->|"localhost SSH: 双方向Waypipe転送"| WS
+  end
+~~~
+
+**接続境界:** XR→Wayland方向に**座標・クリック・キー・フォーカス**を送信し、Wayland→XR方向に**2つ以上の独立したsurfaceとライフサイクル**を受ける。どのXRパネルに焦点があるかはEidolon compositorが一元管理する。Waypipeは同一SSH接続上の双方向Waylandメッセージ転送として扱う。パネルの物理拡大とWayland `xdg_toplevel` のピクセルリサイズは別操作。
+
+**参考実装・資料（該当箇所）:**
+- [WayVR — hit_test.rs](https://github.com/wayvr-org/wayvr/blob/main/wayvr/src/backend/wayvr/hit_test.rs) / [WayVR — client.rs](https://github.com/wayvr-org/wayvr/blob/main/wayvr/src/backend/wayvr/client.rs)：XR側ポインタの対象ウィンドウ選択とWayland seatへの入力配送。
+- [quest-termux-lab — InputCodec.kt](https://github.com/MesmerPrism/quest-termux-lab/blob/main/examples/spatial-desktop-panel/app/src/main/java/io/github/mesmerprism/questtermuxlab/spatialdesktop/InputCodec.kt)：Android KeyEvent→keysymとポインター入力の変換例（**VNC用でありWaylandへはそのまま使わない**）。
+- [Meta Spatial SDK — UISetSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/tree/main/UISetSample)：空間UIや入力のサンプル。panel/rayの使い方はSDK版に合わせて確認。
+- [Smithay — smallvil input.rs](https://github.com/Smithay/smithay/blob/master/smallvil/src/input.rs)：Wayland seatとkeyboard/pointer入力モデル。
+
+
 作業:
 - [ ] Spatial panel hit-test → Wayland pointer座標変換、button、scroll、enter/leave。
 - [ ] Android KeyEvent → Wayland keymap/modifiers、keyboard focus、キー繰返し。
@@ -129,6 +280,31 @@ id -un
 合格: 2つの独立したアプリウィンドウを空間に並べ、入力フォーカスを切り替えられる。
 
 ## Phase 6 — 運用性、性能、耐障害性
+
+### Phase 6の運用・回復経路 — 切断時にも再接続できる設計
+
+~~~mermaid
+flowchart LR
+  subgraph Q["同一Quest 3" ]
+    MON["Eidolon: connection supervisor"] -->|"状態監視・再接続"| SSH["SSH + Waypipe client"]
+    SSH <-->|"TCP loopback / SSH-forwarded socket"| REM["Termux: sshd + Waypipe server"]
+    REM <-->|"Wayland protocol"| APP["foot / GUI apps"]
+    COMP["Wayland compositor + XR renderer"] <-->|"surface / frame / input"| SSH
+    MON -->|"再生成・復旧"| COMP
+    COMP -->|"frame time / drops / allocations"| OBS["APK内metrics / logcat / debug overlay"]
+    SSH -->|"disconnect / retry / bytes"| OBS
+    REM -.->|"Termux再起動やkill時は切断検知"| MON
+  end
+~~~
+
+**接続境界:** SSHとWaypipeの切断、Termuxバックグラウンド停止、APKのActivity/Surface再生成を独立した障害ドメインとして扱う。再接続時はclient/surfaceの寿命と古いXRパネルの破棄を整合させる。外部LinuxへのSSH接続は**将来の別フェーズ**であり、ここでは加えない。性能改善は数値測定後に限定する。
+
+**参考実装・資料（該当箇所）:**
+- [Anland: Termux — developer-guide.md](https://github.com/lfdevs/anland-termux/blob/main/docs/developer-guide.md)：AndroidとTermuxを橋渡しするdaemon、socket/FD、diagnostics、セッション起動の先行例（Eidolonとは通信方式が異なる）。
+- [quest-termux-lab — SpatialDesktopActivity.kt](https://github.com/MesmerPrism/quest-termux-lab/blob/main/examples/spatial-desktop-panel/app/src/main/java/io/github/mesmerprism/questtermuxlab/spatialdesktop/SpatialDesktopActivity.kt)：Activity lifecycle、接続状態、フレーム計測のログ実装例。
+- [Termux:Boot](https://github.com/termux/termux-boot)：Termux側プロセスの起動自動化の候補。Questのバックグラウンド制限を回避できると断定しない。
+- [Android performance-samples](https://github.com/android/performance-samples)：Androidアプリの性能計測・可観測性の実装例。必要な測定方式は採用SDK/Quest実機で評価する。
+
 
 作業:
 - [ ] lifecycle state machine（Disconnected/Connecting/Ready/Reconnecting/Stopping）を実装。
