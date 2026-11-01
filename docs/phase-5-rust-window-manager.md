@@ -18,10 +18,13 @@
 | keyboard/pointer focusと入力capture方針 | Android入力／XR ray-hitの取得 |
 | 論理サイズ、buffer scale、resize交渉 | SDKでのパネル作成・表示・変形 |
 | pose、メートル寸法、配置保存 | SDK座標系への変換、表示の適用結果 |
+| 論理windowの保持、表示対象・layer割当の方針 | SDK panelの実体、描画方式・割当の適用結果 |
 | SurfaceGeneration、session generation | Java Surfaceの受取／破棄通知 |
-| close/reconnect/restore policy | Android lifecycle・権限・IME UI |
+| close/reconnect/restore policy、入力を受け付ける状態 | Android lifecycle・XR session focus・権限・IME UI |
 
 Kotlinはプラットフォームハンドルと操作adapter、Rustは永続／論理モデルを持つ。SDKがdrag中のposeを更新する場合はイベントでRustへ戻し、二つの正本を作らない。
+
+[Phase 4のlayer制約](phase-4-rust-window-rendering.md#xr-layer数の予算)に備え、**存在する論理window、現在の表示対象、SDK layerの割当を分離する**案を評価する。非表示windowのWayland状態と配置は保持しつつ、panelを解放・再生成する余地を残す。layerを使える具体的な枚数や優先順位は実機測定後に選び、SDK操作の失敗や未適用もRustへ返す。MVPの二枚表示に先立って複雑な割当機構を完成させる必要はない。
 
 ## 双方向接続図
 
@@ -40,7 +43,7 @@ flowchart LR
 
 ## 必要最小限のprotocol案
 
-Kotlin→Rust: `SurfaceReady(WindowId, generation, Surface)`、`SurfaceLost(...)`、`PointerHit(WindowId, uv, buttons)`、`KeyEvent(...)`、`PoseChanged(...)`、`LifecycleChanged(...)`。
+Kotlin→Rust: `SurfaceReady(WindowId, generation, Surface)`、`SurfaceLost(...)`、`PointerHit(WindowId, uv, buttons)`、`KeyEvent(...)`、`PoseChanged(...)`、`LifecycleChanged(...)`、`SessionFocusChanged(...)`。
 
 Rust→Kotlin: `CreatePanel`、`SetPose`、`SetPhysicalSize`、`SetTitle`、`DestroyPanel`、`RequestHostKeyConfirmation`。
 
@@ -51,6 +54,7 @@ Rust→Kotlin: `CreatePanel`、`SetPose`、`SetPhysicalSize`、`SetTitle`、`Des
 - Android keyCode／scanCode／Unicode文字はWaylandのkeyboard keycodeと同一ではない。modifier、repeat、US/JIS配列を明示して変換する。VNC用keysym変換をそのまま移植しない。[Smithay input sample](https://github.com/Smithay/smithay/blob/master/smallvil/src/input.rs)を基に検証する。
 - ray-hitのUVをlogical surface座標へ変換し、buffer scale、transform、popup原点、letterboxを反映する。座標計算はRustで単体テストする。
 - keyboard focus、pointer focus、drag/popup grabは別の状態として管理する。選択windowの変更で押しっぱなしの修飾キーを残さない。
+- アプリ全体のXR session focus喪失も入力停止の契機にする。`onPause()`だけに依存せず、`onSessionStateChanged()`をRustへ渡す。Wayland側へ送った押下状態を追跡し、focus喪失時のkey/button release、repeat停止、復帰時の再同期を検証する。通知の根拠と寿命との区別は[Phase 6](phase-6-rust-lifecycle-testing.md#xr-session-focusと早期観測)を参照。
 - メートル単位の拡大は必ずしもWayland resizeではない。logical size変更が必要な操作だけ`xdg_toplevel.configure`等の交渉を行い、ackと次commitを待つ。
 - 日本語IMEはキー送信だけでは完成しない。AndroidのcompositionとWayland text-input/input-method、またはLinux内IMEの利用を別に評価する。MVPの初期合格は物理キーボードの英数字＋修飾キーから始める。
 
@@ -60,6 +64,7 @@ Rust→Kotlin: `CreatePanel`、`SetPose`、`SetPhysicalSize`、`SetTitle`、`Des
 
 - [ ] Rustが二枚以上のwindow状態を所有し、Kotlinはcommandに従ってパネルを表示する。
 - [ ] foot内のfish/tmux/NeovimをEsc/Ctrl/Alt/Tab/Fキーで操作できる。
+- [ ] key／button押下中にUniversal Menuを開閉し、押しっぱなしや古い入力の再送が起きないことを確認する。
 - [ ] popup、parent-child、clipboardの扱いを段階的に追加する。
 - [ ] パネル移動・物理拡大・pixel resizeを区別して操作できる。
 - [ ] GUI操作ログからモデルを再現できる。ただし文字入力内容や画面画像の恒常記録はしない。

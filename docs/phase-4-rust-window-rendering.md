@@ -50,6 +50,14 @@ Kotlinはpanel entityとSurfaceの生成・更新通知を担当する。画素�
 
 `WindowId`と`SurfaceGeneration`をキーにrender targetを管理する。Wayland logical size、buffer scale／transform、Android buffer size、XRのメートル寸法を別の型／フィールドで保持する。[Phase 5の状態モデル](phase-5-rust-window-manager.md)を唯一の判断元にする。
 
+## XR layer数の予算
+
+[Meta公式の描画方式の説明](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-2dpanel-layers/)では、`VideoSurfacePanelRegistration`はcompositor layer専用である。[Compositor layersの公式資料](https://developers.meta.com/vr/documentation/spatial-sdk/os-compositor-layers/)は、Questで1frameあたり最大16 layers、超過分は非表示と説明している。これは2024-11-06更新の資料に2026-11-01時点で掲載されている制約で、app framebufferや通知等もlayerを使う。**Eidolonで使えるwindow数が16枚という意味ではなく、採用SDK／Horizon OSで利用できる数は実機未検証**である。
+
+初期の1〜2枚を実証した後、論理window数、表示対象、実際のlayer数を分けて計測する。非表示windowの保持や表示対象の選択は[Phase 5のWindowManager](phase-5-rust-window-manager.md)で扱い、Wayland windowが存在する限り必ずlayerを保持し続ける設計には固定しない。具体的な割当方針は測定後に選ぶ。
+
+代替候補の`ReadableVideoSurfacePanelRegistration`はmesh描画も扱えるが、[公式Known issues](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-known-issues/)には`ReadableMediaPanelRenderOptions`で`PanelRenderMode.Mesh()`を指定してもlayerが生成される問題が掲載されている。同資料は`toPanelConfigOptions()`で変換した後に`layerConfig = null`を設定するworkaroundも示している。回避策を含めて採用版で検証し、mesh指定だけでlayer消費を回避できるとは扱わない。文字の見やすさとの比較も必要で、MVPから描画方式を変更する指示ではない。
+
 ## 正しさを先に試す
 
 - [ ] ARGB8888/XRGB8888、stride、上下向き、alpha、色の取り扱いを既知のtest imageで確認する。

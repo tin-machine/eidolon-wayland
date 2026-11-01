@@ -32,7 +32,7 @@ flowchart LR
 
 ## 2. ビルドツールの基準
 
-上流[Meta-Spatial-SDK-Samples README](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/main/README.md)と[StarterSampleのversions](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/main/StarterSample/gradle/libs.versions.toml)、[Gradle wrapper](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/main/StarterSample/gradle/wrapper/gradle-wrapper.properties)で2026-11-01に確認した値を基準にする。
+2026-11-01に上流[Meta-Spatial-SDK-Samplesのコミット `f233e2327b95f9871b75bdba867d6fdd726f07cc`](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/commit/f233e2327b95f9871b75bdba867d6fdd726f07cc)を確認した。[README](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/README.md)、[StarterSampleのversions](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/StarterSample/gradle/libs.versions.toml)、[Gradle wrapper](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/StarterSample/gradle/wrapper/gradle-wrapper.properties)の値を再現開始時の基準にする。**以下は上流ソースの構成であり、Ubuntu 26.04で動作確認済みの組み合わせではない。** 実装時には上流SHAと実際に成功したツール構成を記録・固定する。
 
 | 対象 | 参考バージョン/選定方針 |
 | --- | --- |
@@ -44,6 +44,7 @@ flowchart LR
 | Kotlin | **2.1.0** |
 | Meta Spatial SDK | **0.14.0** |
 | Android API | 上流StarterSampleはcompile/min/target **34** |
+| SDK Build Tools | **35.0.0**。AGP 8.11の最低・既定版。Android APIの値とは別 |
 | Android NDK | build.gradle.ktsとの整合で決定。上流MediaPlayerSampleの例は27.0.12077973 |
 | Rust | stable ＋ aarch64-linux-android target。採用crateのMSRVを確認し固定する（第9節） |
 
@@ -76,9 +77,11 @@ export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin
 command -v adb
 command -v sdkmanager
 sdkmanager --list_installed
-sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+sdkmanager "platform-tools" "platforms;android-34" "build-tools;35.0.0"
 sdkmanager --licenses
 ~~~
+
+**Build Toolsの訂正:** [Google公式AGP 8.11互換表](https://developer.android.com/build/releases/agp-8-11-0-release-notes)はSDK Build Toolsの最低・既定版を35.0.0としている。旧手順の34.0.0から修正した。`compileSdk=34`とは矛盾しない。上流StarterSampleは`buildToolsVersion`未指定のため不足版が自動取得される可能性もあるが、再現手順・CIでは必要な版を明示する。
 
 <code>sdkmanager</code>がなければAndroid Studio SDK ManagerからCommand-line Toolsを追加。[Google公式sdkmanager](https://developer.android.com/tools/sdkmanager)。apt版adbがSDK版adbより優先されないようにし、<code>which -a adb</code>で混在を検査する。
 
@@ -98,7 +101,9 @@ export MSE_CLI="$HOME/opt/meta-spatial-editor/MetaSpatialEditorCLI"
 test -x "$MSE_CLI" && "$MSE_CLI" --help
 ~~~
 
-[Spatial SDK Gradle Plugin](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-editor/)の <code>spatial.scenes.cliPath</code> に実際のCLIパスを指定する。上流StarterSampleがこれだけで通ることを保証しない。シーンのexport taskとassembleDebugを分離し、エラーログで「CLI不在」「CLI実行失敗」「export内容不整合」を判別する。
+[Spatial SDK Gradle Plugin](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-editor/)の <code>spatial.scenes.cliPath</code> に実際のCLIパスを指定する。`MSE_CLI`をexportするだけではGradleへ渡らないため、Gradle propertyや環境変数を読む設定を用意し、個人の絶対パスをコミットしない。上流StarterSampleがこれだけで通ることを保証しない。
+
+検証は「CLI単体の実行」「Gradleのscene export」「`:app:assembleDebug`」の順に分け、各結果を記録する。export task名は採用したpluginの `./gradlew :app:tasks --all` で確認する。エラーログからCLI不在、CLI実行失敗、export内容不整合、Androidビルド失敗を判別する。
 
 ### 3.3 Rust toolchain（Phase 1以降の先行準備）
 
@@ -133,6 +138,8 @@ adb shell getprop ro.build.version.sdk
 adb shell getprop ro.build.version.release
 ~~~
 
+上記のABI/API確認を初回のビルド・NDK設定より先に行い、Horizon OSのbuild情報も記録する。Rustのnative minimum APIはAPKの`minSdk`と揃える。[Android公式NDK資料](https://developer.android.com/ndk/guides/sdk-versions)のとおり、native APIの利用可否を決めるのは`compileSdk`ではなくminimum APIである。
+
 期待値: <code>adb devices -l</code>に<code>device</code>。<code>unauthorized</code>はHMD内のUSB承認を確認。<code>offline</code>や不安定な接続はケーブル、ADBの二重インストール、udev権限を確認。Linux用udevルールは[Android公式 device setup](https://developer.android.com/studio/run/device#setting-up)に従う。複数端末なら <code>adb -s SERIAL ...</code> で指定。
 
 ## 5. 実際にAPKをビルド・デプロイする
@@ -143,7 +150,11 @@ adb shell getprop ro.build.version.release
 mkdir -p ~/src
 git clone https://github.com/meta-quest/Meta-Spatial-SDK-Samples.git \
   ~/src/Meta-Spatial-SDK-Samples
-cd ~/src/Meta-Spatial-SDK-Samples/StarterSample
+cd ~/src/Meta-Spatial-SDK-Samples
+# 調査時の上流構成を再現する。別の版を採用する場合はSHAと差分を記録する
+git checkout --detach f233e2327b95f9871b75bdba867d6fdd726f07cc
+cd StarterSample
+# 第3.2節でCLI設定とscene exportを検証してからassembleを実行する
 chmod +x ./gradlew
 ./gradlew --version
 ./gradlew :app:assembleDebug --stacktrace
@@ -165,10 +176,22 @@ adb logcat -d -v time | grep -Ei 'Spatial|AndroidRuntime|FATAL EXCEPTION' | tail
 ### 5.2 Eidolon専用の空APK（未実装）
 
 - [ ] 公式サンプルのライセンス/構成を確認し、Eidolon固有applicationId・AppSystemActivity・registerFeatures・registerPanelsを用意する。
-- [ ] Linux CLIが障害なら、scene exportが不要な構成を検証する。Scene Editorの依存を盲目的に削除しない。
+- [ ] Linux CLIが障害なら、scene exportが不要な構成を検証する。Scene Editorの依存を盲目的に削除しない。上流[StarterSampleActivity](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/StarterSample/app/src/main/java/com/meta/spatial/samples/startersample/StarterSampleActivity.kt)は`apk:///scenes/Composition.glxf`を読み、`Environment`ノードへアクセスするため、exportを外す際はActivity側の読込・Entity生成も整合させる。
 - [ ] Gradle wrapper/JDK/SDK/Kotlin/AGP/Meta SDKを固定しCIでassembleDebugを実行する。
 - [ ] Quest実機へinstallして起動、logcat、クラッシュとXR描画を検証する。
-- [ ] 必要になるまでcompositorやrendererを統合しない（Phase 1/3の責務）。Rustのcdylibロードだけは第9節で先行検証してよい。
+- [ ] compositorやrendererの統合はPhase 1/3で行い、初回実装では第9節のRust cdylibロードとJNI疎通を先行検証する。
+
+初回実装では、上記の最小APKに第9節のJNI疎通を加え、次の成果物までを一つの小さな到達点にすることを推奨する。描画・SSH・compositorの統合は後続の独立した検証で進める。
+
+| 成果物 | 確認する結果 |
+| --- | --- |
+| PC環境の診断手順またはスクリプト | JDK/SDK/NDK/Rust/ADBの実体・版、接続端末のABI/APIが記録される |
+| Eidolonの最小Spatial APK | 独自applicationIdでinstall・XR起動し、静的パネルが見える |
+| Rust cdylibとJNI呼出し | Rustから返した文字列・版情報がパネルに表示される |
+| GradleからCargoへのビルド連携 | 一つのビルド手順で正しいABIの`.so`を生成・同梱し、debug/releaseや更新を取り違えない |
+| 基本CIと検証記録 | APK assemble・native成果物の同梱を確認し、実機での成否は別に記録する |
+
+**実装上の提案:** APK側とRust側のbuild revisionを両方パネルへ表示すると、古い`.so`を同梱した場合に気づきやすい。成功した構成は`Cargo.lock`、`rust-toolchain.toml`、Gradle wrapper、version catalog等へ固定する。ファイル構成や連携方式は実装時に決めてよい。以上は未実装の成果物案である。
 
 実装後の**想定パス（現在存在しない）**:
 
@@ -178,6 +201,14 @@ cd eidolon-wayland/android
 ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ~~~
+
+### 5.3 自動化できる作業と実機で確認する作業
+
+PC側Codexには環境調査、ビルド、APK/JNI実装、認証済みADBでのinstall・起動・logcat採取、CI整備を任せる。Developer Mode設定、初回USBデバッグ承認、必要なTermux初期設定、HMD内での空間表示確認は利用者が行う。APKの生成や通常のAndroid emulatorでの起動を、QuestのXR表示確認に置き換えない。上流[Manifest](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/StarterSample/app/src/main/AndroidManifest.xml)もQuest固有のnative libraryとVR起動設定を要求する。
+
+最小APKの実機確認時から、Horizonメニュー表示、装着解除・復帰によるXR session/focusの変化を観測する。TermuxへのSSH経路も準備できていれば、Eidolonを前面にした後も接続・Termuxプロセスが維持されるかを記録する。詳細は[Phase 1](phase-1-rust-rendering.md)と[Phase 6](phase-6-rust-lifecycle-testing.md)へ引き継ぎ、SurfaceやWaylandの耐障害性をこの段階で検証済みにしない。
+
+[Phase 3のP3-B](phase-3-rust-compositor-waypipe.md)で扱うAPK UIDからのWaypipe helperの配置・起動も、最小APKができた時点で独立した先行検証にできる。ADB shellやTermux UIDでの実行成功と、製品APK自身からの実行成功を区別する。
 
 ## 6. Quest内Termuxを調査する方法
 
@@ -200,7 +231,7 @@ flowchart LR
 
 ~~~sh
 pkg update
-pkg install openssh git gh nodejs-lts
+pkg install openssh
 whoami
 id
 mkdir -p ~/.ssh
@@ -210,6 +241,8 @@ chmod 700 ~/.ssh
 sshd -p 8022 -o ListenAddress=127.0.0.1
 ss -lnt | grep 8022
 ~~~
+
+SSH調査経路だけならTermux側のGitHub CLIやNode.jsは不要。`git`、`gh`、Node.js/npmは第6.2〜6.3節の作業が必要になったときに追加する。
 
 **PC側**:
 
@@ -309,17 +342,21 @@ Tokenやauth.json、秘密鍵はシェル履歴・Git・logcatへ書き込まな
 - [ ] Ubuntu上で上流StarterSampleをビルド・XR起動するか、Linux CLIの具体的な障害を記録して代替の最小Spatial APKを実証。
 - [ ] Eidolon独自の最小APKを追加。<code>assembleDebug</code> → <code>adb install</code> → XR起動 → <code>logcat</code>が再現できる。
 - [ ] 基本CI（Gradle compile/静的検査、秘密情報除外、ライセンス確認）を用意。
+- [ ] 第5.2節の初回実装として、Rust由来の版情報表示とGradleからのnative成果物生成・同梱を確認し、ビルド成功と実機成功を分けて記録。
 - [ ] 必要に応じUSBのADB forward＋Termux SSH経路を実験。Quest側Codexは任意。
 - [ ] **Android Waypipe/Smithayは未完成**であることを後続フェーズへ引き継ぐ。
 
 ~~~text
 Date / Ubuntu / JDK / Android Studio:
-ANDROID_HOME / SDK / NDK / Gradle / AGP / Meta SDK:
+ANDROID_HOME / SDK platform / Build Tools / NDK / Gradle / AGP / Kotlin / Meta SDK:
 Spatial Editor CLI Linux version/path:
 Quest device / Horizon OS / API / ABI:
 adb devices -l / USB cable / authorization:
+Upstream sample SHA / CLI execution / scene export:
 StarterSample Gradle / install / XR result:
 Eidolon APK build/install/launch/logcat:
+APK revision / Rust revision / JNI result:
+XR focus/session changes / Termux background SSH (if available):
 Termux distribution / node/gh/sshd:
 USB adb forward / SSH:
 Quest-native Codex (optional):

@@ -109,13 +109,23 @@ SSHはプロセス起動・認証・streamの経路であって、端末描画�
 
 [Phase 1](phase-1-rust-rendering.md)は`jni + ndk + khronos-egl + glow`で小さく検証し、[Phase 4](phase-4-rust-window-rendering.md)はSmithay `GlesRenderer`のSHM importと合成を再利用する候補を評価する。**JNI/C++を必須の中間層にはしない。** Rust bindingに実際の不足があればその範囲だけshimを許容する。
 
-[VideoSurfacePanelRegistrationの旧版API説明](https://developers.meta.com/vr/reference/spatial-sdk/v0.8.1/com_meta_spatial_toolkit_videosurfacepanelregistration/)と[現行media guide](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-media-playback/)を参照。採用SDKのシグネチャ、Surface lifecycle、buffer解像度を実測し、`PixelDisplayOptions`を指定するだけで実際のproducer buffer寸法が決まるとは仮定しない。
+[VideoSurfacePanelRegistration v0.14.0 API](https://developers.meta.com/vr/reference/spatial-sdk/v0.14.0/com_meta_spatial_toolkit_videosurfacepanelregistration/)は、`MediaPanelSettings`のDisplayOptionsを無視し、pixel resolutionはSurfaceのproducer側が決めると説明している。採用SDKのシグネチャ、Surface lifecycle、buffer解像度を実測し、`PixelDisplayOptions`だけで実際のproducer buffer寸法が決まるとは仮定しない。
+
+**追加確認（2026-11-01）:** Meta公式サンプルの[ExoVideoEntity.kt](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/PremiumMediaSample/app/src/main/java/com/meta/spatial/samples/premiummediasample/entities/ExoVideoEntity.kt)は、SDKの`surfaceConsumer`が渡すSurfaceを[SurfaceUtil.paintBlack](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/PremiumMediaSample/app/src/main/java/com/meta/spatial/samples/premiummediasample/SurfaceUtil.kt)へ渡し、EGL window surfaceの生成、GLESによるclear、`eglSwapBuffers`を行っている。SDK SurfaceへEGLを接続する直接の実装根拠である。ただしKotlin側の一回のclear処理であり、Rustでの連続描画・resize・再生成やEidolonのQuest実機成功を示すものではない。[Phase 1](phase-1-rust-rendering.md)で残る境界を検証する。
 
 ### Stage 2: GPU効率化
 
 linux-dmabuf、EGL import、AHardwareBuffer、fenceはMVP後の検証課題。DMA-BUFとAHardwareBufferの無条件互換や、SSH＋Waypipe経路でのzero-copyを前提にしない。まずWaypipeのno-gpu/SHM経路で成立させ、[Phase 6](phase-6-rust-lifecycle-testing.md)で計測してから最適化する。
 
 [確認したTermuxのWaypipeレシピ](https://github.com/termux/termux-packages/blob/master/packages/waypipe/build.sh)はC版を選びdmabuf/videoを無効化している。一方で上流には[作者によるRust移行](https://mstoeckl.com/notes/code/waypipe_to_rust.html)がある。**Waypipeは上流を再利用し、言語統一のためにEidolonで書き直さない。**
+
+### 空間ウィンドウとcompositor layerの制約
+
+[Metaのlayer/mesh解説](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-2dpanel-layers/)では、`VideoSurfacePanelRegistration`はlayer専用である。[現在掲載されているcompositor資料](https://developers.meta.com/vr/documentation/spatial-sdk/os-compositor-layers/)（更新日2024-11-06）は1frameあたり最大16 layers、超過分は描画されず、アプリframebufferや通知等もlayerを使うと説明している。**Eidolonで16枚のアプリ窓を利用できるという意味ではない。** 採用するHorizon OS/SDKで可用枚数と使用layer数を実測する。
+
+設計上は、Rustが保持する論理ウィンドウ、表示対象、SDK Entity/Surface/layerの割当を区別する余地を残す。論理windowと常設layerの永続的な1対1対応を前提にせず、非表示windowの保持や描画資源の再割当を後から評価できるようにする。初期の1〜2枚のMVPは維持し、割当方針と同時表示枚数は[Phase 4](phase-4-rust-window-rendering.md)・[Phase 5](phase-5-rust-window-manager.md)で検証する。
+
+Readable版のmesh描画は比較候補だが、[Known issues](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-known-issues/)にはmesh指定でもlayerが生成される問題と、変換後の`panelConfig.layerConfig = null`という回避方法が掲載されている。採用版での動作・画質・資源解放は未検証であり、meshへの切替だけで制約を回避できるとは保証しない。
 
 ## Spatialウィンドウ管理と入力
 
@@ -136,8 +146,11 @@ linux-dmabuf、EGL import、AHardwareBuffer、fenceはMVP後の検証課題。DM
 - SSHはRustのrusshを第一候補にし、SSHJ/libsshは問題が確認された場合の代案とする。StreamLocal APIがあるだけでは中継完了ではない。[Phase 2](phase-2-rust-ssh.md)を参照。
 - Android Keystoreと非exportable鍵をrusshへ接続する部分は別spike。Kotlin adapterが残ることを許容する。
 - WaypipeはAPK UID内で起動できる同梱helperを第一候補とする。Termuxの実行ファイルをコピーするだけで動くとは仮定しない。
+- [Android API 29以降をtargetとするアプリの実行制約](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)を踏まえ、同梱helperの起動・転送socket待受・終了回収を**APK自身のUID**でPhase 0〜1から先行検証する。`adb shell`での起動成功とは区別する。詳細は[Phase 3のP3-B](phase-3-rust-compositor-waypipe.md)。
 - Kotlin UI／Rust compositor-render owner／Tokio SSH runtimeを分離する。GlesRendererのthread制約を守る。
 - Activity/Surface、SSH transport、Wayland sessionの寿命を分ける。再接続しても旧アプリ状態が必ず戻るとは保証しない。[Phase 6](phase-6-rust-lifecycle-testing.md)を参照。
+- XR sessionの入力focusも独立して観測する。公式[MediaPlayerSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/MediaPlayerSample/app/src/main/java/com/meta/spatial/samples/mediaplayersample/MediaPlayerSampleActivity.kt)ではUniversal Menu表示時の`FOCUSED → VISIBLE`を`onSessionStateChanged`で扱う。Activityの`onPause`だけに依存せず、Rustへfocus喪失を通知して入力状態を解消する。メニュー表示だけでSSH/Waylandを再起動する設計にはしない。
+- Termux公式[README](https://github.com/termux/termux-app#readme)はAndroid 12以降のプロセス終了制約に注意を促している。Quest上の適用条件は未検証。最小XR APKの起動後にTermuxのsshdと検証用プロセスの存続を短く観測し、foot導入後とPhase 6の長時間試験で再確認する。
 - Termuxの起動とsshd準備は初期は手動でよい。Intent等による自動化は通信路と混同しない。
 - 認証情報、キーストローク、画面内容を恒常的にログへ出さない。
 
@@ -154,4 +167,5 @@ linux-dmabuf、EGL import、AHardwareBuffer、fenceはMVP後の検証課題。DM
 - [jni](https://docs.rs/jni/0.22.4/jni/) / [NDK NativeWindow](https://docs.rs/ndk/0.9.0/ndk/native_window/struct.NativeWindow.html) / [Android EGL](https://source.android.com/docs/core/graphics/arch-egl-opengl)
 - [Smithay](https://github.com/Smithay/smithay) / [Local Desktop](https://github.com/localdesktop/localdesktop.github.io) / [WayVR](https://github.com/wayvr-org/wayvr)
 - [russh](https://github.com/Eugeny/russh) / [Waypipe manual](https://man.archlinux.org/man/waypipe.1.en) / [Termux build recipe](https://github.com/termux/termux-packages/blob/master/packages/waypipe/build.sh)
+- Android helper同梱の追加参考: [WawonaのWaypipe ELF配置](https://github.com/Wawona/Wawona/blob/master/dependencies/wawona/android-shell-tools.nix) / [Gradle packaging設定](https://github.com/Wawona/Wawona/blob/master/android/app/build.gradle.kts)。ソース確認のみで、Eidolon/Questへの適合性は未検証。[Phase 3](phase-3-rust-compositor-waypipe.md)に利用範囲を記録する。
 - 詳細は[実装計画のフェーズ別リンク](implementation-plan.md#rust中心構成の調査と詳細ファイル2026-11-01)から参照する。

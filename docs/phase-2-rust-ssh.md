@@ -34,13 +34,13 @@ flowchart LR
 
 ## Waypipeへ接続するRust側の仕事
 
-Waypipeの[付属マニュアル](https://man.archlinux.org/man/waypipe.1.en)は、表示側client socketとアプリ側server socketをSSH `-R`で接続する構成を示す。Eidolonでは、そのSSHプロセスの役割をrusshで担う。
+Waypipeの[付属マニュアル](https://man.archlinux.org/man/waypipe.1.en)は、表示側client socketとアプリ側server socketをSSH `-R`で接続する構成を示す。Eidolonでは、そのSSHプロセスの役割をrusshで担う。2026-11-01の再確認でも、[`russh`のclient実装](https://github.com/Eugeny/russh/blob/main/russh/src/client/mod.rs)の`streamlocal_forward`と`server_channel_open_forwarded_streamlocal`がこの方向に対応する。`channel_open_direct_streamlocal`は対向側の既存Unix socketへ接続する別の操作である。
 
 1. APK側でWaypipe clientを起動し、**Wayland用ではなくWaypipe転送用**のUnix socketをlistenさせる。
 2. russhでTermuxのsshdへ接続し、host key検証と認証を完了する。
 3. Termux UID内に短いセッション専用0700 directoryを用意し、その中のremote socketへの`streamlocal_forward(path)`を要求する。任意の絶対パスを利用者入力から無検証で受け付けない。
 4. serverからforwardされた接続を`server_channel_open_forwarded_streamlocal`で受け、期待するpathとセッションを検証する。
-5. APK側のWaypipe転送socketへ接続し、受け入れ応答とchannelの寿命を処理する。採用するrussh版の`ChannelOpenHandle` APIに従う。
+5. APK側のWaypipe転送socketへ接続し、受け入れ応答とchannelの寿命を処理する。採用するrussh版の`ChannelOpenHandle` APIに従う。確認したAPIでは`accept`／`reject`を明示し、handleをそのまま破棄すると拒否される。
 6. [`Channel::into_stream`](https://docs.rs/russh/0.65.0/russh/struct.Channel.html#method.into_stream)とUnixStreamを、[`tokio::io::copy_bidirectional`](https://docs.rs/tokio/latest/tokio/io/fn.copy_bidirectional.html)等で中継する。長時間copyはcallback内で待ち続けず別taskへ移す。
 7. 別のSSH exec channelでTermux側の`waypipe server -- foot`を起動し、stderr／exit status／切断を監視する。引数は安全に組み立て、PTYは要求しない。
 
@@ -68,10 +68,13 @@ flowchart LR
 - [ ] Termux側は127.0.0.1:8022のみlisten、公開鍵認証。`sshd -T`と実際のlistenを確認する。
 - [ ] 未登録host keyは明示的に確認し、登録済み鍵の不一致は拒否する。サンプルの`Ok(true)`を製品へコピーしない。
 - [ ] SSH認証後にexecのstdout/stderr/exit statusを分離して取得する。
-- [ ] 任意の短いテストUnix socketでechoが両方向に通る。複数channelとEOFも試す。
+- [ ] 任意の短いテストUnix socketで既知のバイト列が両方向に一致する。同じSSH接続上で複数channelを開き、一方のEOF／終了が他方や接続全体を停止させないことを確認する。
+- [ ] 大きなバイト列と遅い受信側でbackpressureを試し、中継のメモリー使用量が無制限に増えないこと、half-close後の残りのデータと切断を処理できることを確認する。
 - [ ] OpenSSHの`AllowStreamLocalForwarding`等、server側で必要なforwarding許可を実効設定で確認する。
 - [ ] 未知pathへのforward、古いセッションからの接続、不正鍵、timeoutを拒否する。
 - [ ] 切断時にforwardのcancelとowned socketのcleanupを行う。他プロセスのsocketを削除しない。
 - [ ] Androidビルド／Quest上で以上が成立したら、[Phase 3](phase-3-rust-compositor-waypipe.md)でWaypipeへ差し替える。
 
 成功条件は「Rustで安全なSSHとUnixソケット中継が成立」。SSHコマンドが一度成功しただけではWaypipe用のtransport完成とはしない。
+
+[Phase 3のP3-B](phase-3-rust-compositor-waypipe.md)にあるAPK側helperの配置・起動試験はSSHの完成に依存しない。[Phase 0](phase-0-development-environment.md)〜[Phase 1](phase-1-rust-rendering.md)と並行して前倒しし、transport側はecho試験を独立して進める。

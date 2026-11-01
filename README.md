@@ -10,6 +10,10 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 **実装方針:** KotlinはMeta Spatial SDK / Android adapter、RustはJNI・描画・SSH・Wayland compositor・ウィンドウ管理モデルを担当します。Waypipeは既存実装を再利用し、自作C++は必要性が確認された小さなshimに限定します。これは調査に基づく方針で、実装済みという意味ではありません。
 
+**次の到達点:** UbuntuでEidolon固有の最小APKをビルドし、QuestのXRパネルにRustから返したbuild情報を表示するところまでをPhase 0の最初の実装単位にします。その後、Surface描画・SSH・Smithay/Waypipeを独立して検証します。APK自身のUIDでのWaypipe helper起動はPhase 0〜1から先行して試せます。
+
+2026-11-01の[追加レビュー](docs/implementation-plan.md#追加レビュー2026-11-01)では、Meta公式サンプルのEGL描画例、Build Toolsの要件、compositor layer数、XR session focus、Android helperの実行制約を反映しました。**Eidolonのビルド・実機動作は引き続き未検証**です。
+
 ## Docs
 
 - [アーキテクチャ設計](docs/architecture.md) — Kotlin/Rustの責務、SSH/Waypipe、描画、入力、セキュリティ

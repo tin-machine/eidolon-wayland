@@ -34,7 +34,13 @@ flowchart LR
   S --> X["Horizon OS / XRパネル"]
 ```
 
-Surfaceの生成経路とフレームの生成経路は別。Kotlinに毎フレームのBitmapや画素配列を戻さない。まず一枚の単色／checkerboardを描き、SSHとWaylandは接続しない。`VideoSurfacePanelRegistration`用Surfaceへ直接描画する構成はSDKのAPIとAndroidのEGL仕様に基づく提案であり、この組み合わせのQuest実績を確認したものではない。
+Surfaceの生成経路とフレームの生成経路は別。Kotlinに毎フレームのBitmapや画素配列を戻さない。まず一枚の単色／checkerboardを描き、SSHとWaylandは接続しない。SDK SurfaceへのEGL描画には下記の公式サンプルによる根拠があるが、Rustでの連続描画とEidolonのQuest実機動作は未検証である。
+
+## SDK Surfaceで確認できたこと（2026-11-01追調査）
+
+Meta公式サンプルの[ExoVideoEntity.kt](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/PremiumMediaSample/app/src/main/java/com/meta/spatial/samples/premiummediasample/entities/ExoVideoEntity.kt)は、`VideoSurfacePanelRegistration.surfaceConsumer`で受け取ったSurfaceに`SurfaceUtil.paintBlack(surface)`を実行する。[SurfaceUtil.kt](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/PremiumMediaSample/app/src/main/java/com/meta/spatial/samples/premiummediasample/SurfaceUtil.kt)には`eglCreateWindowSurface` → `eglMakeCurrent` → `glClear` → `eglSwapBuffers`の実装がある。**公式ソースで確認したのはKotlinによる一回の描画経路**であり、Rust adapter、連続描画、再生成時の寿命管理まで検証済みという意味ではない。
+
+[VideoSurfacePanelRegistration v0.14.0のAPI](https://developers.meta.com/vr/reference/spatial-sdk/v0.14.0/com_meta_spatial_toolkit_videosurfacepanelregistration/)でも、`MediaPanelSettings`のDisplayOptionsは無視され、pixel解像度はSurfaceのproducer側から決まると説明されている。初期spikeでは[ANativeWindowのbuffer geometry設定・サイズ取得](https://developer.android.com/ndk/reference/group/a-native-window)と`eglQuerySurface`の結果を確認し、`PixelDisplayOptions`の指定値だけを成功の根拠にしない。このAPI版の確認はEidolonのSDK採用版の確定ではない。
 
 ## なぜNativeActivityやwinitを追加しないのか
 
@@ -48,6 +54,7 @@ Kotlin→Rustは`attachSurface(windowId, generation, surface)`、`resizeSurface(
 
 - RustはJNI呼出し中にnative windowの所有権／参照を確保する。Javaのlocal referenceや`JNIEnv`を別スレッドにそのまま保存しない。必要なglobal referenceとJavaVM/thread attachmentは[`jni`とAndroid JNI tips](https://developer.android.com/ndk/guides/jni-tips)に従う。
 - `ANativeWindow`の参照を保持しても、SDK側のSurface consumerが永続するわけではない。Surface消失と`EGL_BAD_SURFACE`／context lossは通常の状態遷移として扱う。
+- `surfaceConsumer`での取得に加え、SDK／Entityの破棄・再生成をどの通知経路で検出するかを採用版で確認する。生成callbackがあることから、対応する破棄callbackの存在まで仮定しない。
 - 最初は**単一の専用render thread**にEGL/GLES所有権を集約する。Kotlin UI threadやTokio workerで任意にGLを実行しない。
 - `generation`を付け、古いSurfaceに対する遅延frameやdetachが新しいSurfaceを壊さないようにする。
 - Rustのpanicや未処理Java例外をJNI境界に漏らさない。`unsafe`をadapter内部へ隔離し、単に`Send`を付けてスレッド制約を隠さない。
@@ -64,8 +71,9 @@ Kotlin→Rustは`attachSurface(windowId, generation, surface)`、`resizeSurface(
 - [ ] Rust `cdylib`をKotlinからロードし、JNIの単純な往復とlogcat出力を確認する。
 - [ ] SDKから実際に渡されたSurfaceで、RustだけでEGL/GLESによる単色・checkerboardを表示する。
 - [ ] `glGetString`等でvendor／renderer／GLES版、EGL拡張、選択configを記録する。秘密情報は記録しない。
-- [ ] backing pixel sizeとメートル単位の大きさを別に測定する。SDKの`PixelDisplayOptions`だけでproducer buffer解像度が決まると仮定しない。
+- [ ] producer側で指定したbacking pixel sizeとEGLSurfaceの実測値を記録する。メートル寸法だけの変更とbuffer解像度変更を別々に試す。
 - [ ] パネル移動・拡縮、pause/resume、Surface再生成を繰り返し、native window参照数・EGL resource leakを調べる。
+- [ ] Universal Menu、背景化、sleep/resumeを別々に試し、XR session focus・Activity lifecycle・SurfaceGenerationを記録する。[Phase 6の観測方針](phase-6-rust-lifecycle-testing.md#xr-session-focusと早期観測)を描画spikeから適用する。
 - [ ] 新規C++なしで成立するかを確認する。不足がC++専用API等に限定される場合のみ、小さいshimを追加して理由を残す。
 
 合格は「実機でRust rendererがSDK Surfaceへ出力できること」。crateのビルド成功だけでは合格にしない。次に[Phase 4](phase-4-rust-window-rendering.md)でテスト画像をWaylandの画像へ置き換える。

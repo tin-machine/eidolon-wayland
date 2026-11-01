@@ -33,6 +33,20 @@ Phase 1〜6の詳細ファイルは今回新規作成した。概要・全体の
 
 確認できた部品は[jni](https://docs.rs/jni/0.22.4/jni/)、[NDK NativeWindow](https://docs.rs/ndk/0.9.0/ndk/native_window/struct.NativeWindow.html)、[russhのStreamLocal API](https://docs.rs/russh/latest/russh/client/struct.Handle.html#method.streamlocal_forward)。Androidの先行例は[Local Desktop](https://github.com/localdesktop/localdesktop.github.io)。これらの存在から実装方針は具体化できるが、組み合わせの実機成功までは保証しない。
 
+## 追加レビュー（2026-11-01）
+
+Eidolonの`main`を`64fcf5653a1aa614ba4ba6f47432c5d9f87a8951`で再確認した時点では、READMEと設計文書のみで、APK/Rustの実装や実機検証記録はなかった。今回の更新も**公式資料・実装ソースの調査結果と検証計画の追記**であり、完了チェックを進めるものではない。Kotlin adapter＋Rust core、APK内compositor、SSH＋Waypipeという主案を維持する。
+
+| 追加確認・提案 | 根拠と反映先 |
+| --- | --- |
+| SDK SurfaceへEGLを接続する公式実装がある | [Meta SurfaceUtil](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/PremiumMediaSample/app/src/main/java/com/meta/spatial/samples/premiummediasample/SurfaceUtil.kt)。Kotlinによる一回のclear処理で、Rust連続描画は未検証。[Phase 1](phase-1-rust-rendering.md) |
+| AGP 8.11系のSDK Build Tools最低/既定値は35.0.0 | [Google互換表](https://developer.android.com/build/releases/agp-8-11-0-release-notes)。[Phase 0](phase-0-development-environment.md)の34.0.0導入例を訂正。compileSdkとは別の値 |
+| VideoSurfacePanelRegistrationはlayer専用で、枚数の予算が必要 | [Meta layer/mesh解説](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-2dpanel-layers/)。[compositor資料](https://developers.meta.com/vr/documentation/spatial-sdk/os-compositor-layers/)の16 layers記述は資料更新日2024-11-06。実際の可用枚数は未検証。[Phase 4](phase-4-rust-window-rendering.md)・[Phase 5](phase-5-rust-window-manager.md) |
+| Activity lifecycleとXR session focusを区別する | [公式MediaPlayerSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/MediaPlayerSample/app/src/main/java/com/meta/spatial/samples/mediaplayersample/MediaPlayerSampleActivity.kt)の`onSessionStateChanged`。[Phase 1](phase-1-rust-rendering.md)・[Phase 5](phase-5-rust-window-manager.md)・[Phase 6](phase-6-rust-lifecycle-testing.md) |
+| APK自身のUIDでのhelper起動を早めに試す | [Android実行制約](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)。[Phase 3](phase-3-rust-compositor-waypipe.md)のP3-BをPhase 0〜1から先行可能にする。Wawonaの同梱ソースも参考として追記 |
+
+**次の実装単位:** Ubuntuで最小Eidolon APKをビルドし、QuestのXRパネルにRustから返したbuild情報を表示する。Gradle→Cargo→APK同梱、基本CI、実機観測記録までをPhase 0で揃える。crate分割や診断画面の具体的な構成は実装者が調整できる。
+
 ## 最初に潰すべき不確実性（スパイク）
 
 | 優先度 | 検証 | 合格条件 | 不成立時 |
@@ -41,13 +55,16 @@ Phase 1〜6の詳細ファイルは今回新規作成した。概要・全体の
 | P0 | Kotlin→Rust cdylibのJNI疎通 | 新規C++なしでnative methodを呼べる | jni版、ABI、APK同梱・R8設定を切り分け |
 | P0 | VideoSurfacePanelRegistration + Rust EGL/GLES | テストパターンをXRパネルへ連続描画できる | EGL adapter／Surface APIを比較 |
 | P0 | Android/aarch64にSmithayを組込む | wl_shmを扱う最小compositorが起動 | Local Desktopのpatchとnative依存を比較。必要ならC ABIの代案 |
-| **P0** | **Android側Waypipeのビルドとcompositor接続** | **APK UIDで既存Waypipeが起動し転送できる** | packaging、prefix、依存、spawnを切り分ける |
+| **P0** | **Android側Waypipeの同梱・起動（P3-BをPhase 0〜1から先行）** | **APK自身のUIDで起動・転送socket待受・終了回収ができる** | packaging、prefix、依存、spawnを切り分ける。compositorとの結合はPhase 3 |
 | P0 | Rust russh→Termux localhost SSH | host key検証＋公開鍵認証でexecできる | 暗号backend／NDK依存、必要なら他SSH実装を比較 |
 | P0 | russhのStreamLocal forwarding | Unix socket echoが双方向に通る | callback、server設定、channel bridgeを切り分け |
 | P0 | Waypipe両端 + Wayland client | surfaceとbufferを受け取り、入力も返せる | protocol/版/機能差を解析 |
-| P1 | Questのバックグラウンド制限 | XR表示中にTermuxのsshdとfootが維持される | 再接続とTermux保護手順を設計 |
+| P0（初期観測）/ P1（長時間） | Questのバックグラウンド制限 | 最小XR APKを前面にしてsshdと検証用プロセスの存続を確認し、foot導入後・Phase 6で再確認 | Quest固有の適用条件と停止原因を調べ、再接続・Termux保護手順を設計 |
+| P1 | 複数パネルのlayer使用数と可用枚数 | 採用SDK/OSで使用layer数を観測し、表示対象数と資源割当を区別できる | 非表示windowの扱い・描画方式を比較。1〜2枚のMVPは維持 |
 
 > SSHでexecできること、Waypipeのtransportを中継できること、Wayland clientが描画できることは別の検証項目。単独spikeを合格させてから結合する。
+
+Phase番号は全作業を直列に実行する制約ではない。Phase 0のAPK/JNI基盤から、**Phase 1のSurface描画、Phase 2のSSH/echo、Phase 3のSmithay最小構成とhelper起動**を独立して進められる。Phase 3でtransportとprotocolを結合し、Phase 4で描画へ接続する。Surfaceと入力focusの寿命管理は各実装時点から扱い、長時間・性能試験をPhase 6に残す。
 
 ## フェーズ別通信図の読み方
 
@@ -78,7 +95,9 @@ flowchart LR
 - [ ] 公式StarterSampleまたは検証済みの代替最小サンプルをビルド・実機起動し、ログを採取する。
 - [ ] Eidolon固有の最小APKを作り、ビルド・インストール・起動・診断を再現可能にする。
 - [ ] Rust cdylibを同梱し、Kotlinから単純なJNI呼出しを試す。renderer/compositorはまだ必須にしない。
+- [ ] Gradle→Cargo→APK同梱を一つのビルド操作へまとめる。APK側とRust側のbuild revisionをパネル等で確認できるようにし、古い`.so`の混入を見分ける。
 - [ ] 必要ならPC側の公式CodexからADB forward＋SSHでTermuxを調査する。Quest内Codexの動作は任意。
+- [ ] 最小XR APKでActivity lifecycleとXR session focusを観測し、Termuxを準備した環境ではsshd/検証用プロセスの背景存続を短く試す。詳細・長時間試験はPhase 6へ引き継ぐ。
 - [ ] CI、バージョン固定、ライセンス、secret除外を整備する。
 
 参考：[Meta StarterSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/tree/main/StarterSample)、[Android NDK Samples](https://github.com/android/ndk-samples)、[cargo-ndk](https://github.com/bbqsrc/cargo-ndk)。
@@ -111,6 +130,7 @@ flowchart LR
 - [ ] pixel size、物理サイズ、DPI、視距離、render modeと可読性を記録する。
 - [ ] 専用render threadにcontextの所有権を置き、JNI参照とSurface世代を正しく管理する。
 - [ ] 拡縮、位置移動、Surface再生成、pause/resumeへの耐性を確認する。
+- [ ] producer側のbuffer寸法を指定・実測し、XR上の物理寸法変更とは別に試す。Universal Menuの`FOCUSED ↔ VISIBLE`とActivity/Surfaceのイベント差を記録する。
 - [ ] CPU/メモリ/フレーム時間の測定点を設ける。
 
 合格: Rust描画のパネルが実機で表示され、再生成後も更新できる。crateビルド成功だけでは合格にしない。
@@ -194,7 +214,9 @@ flowchart LR
 - [ ] libxkbcommonとkeymapデータ、calloop、socket、mmap/fd等の依存を検証する。
 - [ ] Wayland socket、event loop、wl_compositor、wl_shm、xdg_shell、wl_seatを実装する。
 - [ ] test clientがxdg_toplevelを生成・commitできるようにする。
+- [ ] 必要なら既知パターンの小さなSHM clientでfd/mmapの内容を照合し、Waypipeを挟んで再確認してからfootへ進む。試験clientの選定は実装者に任せる。
 - [ ] APK側WaypipeのNDK/Bionicビルド・同梱・起動を検証する。Termuxの実行ファイルの単純コピーを前提にしない。
+- [ ] P3-Bの起動試験はPhase 0〜1から先行できる。同じtarget SDK/ABI/packaging設定でAPK UIDから転送socket待受と終了回収まで確認し、`adb shell`や`--version`だけの成功とは分ける。
 - [ ] Phase 2のRust StreamLocal bridgeをWaypipe転送socketへ接続する。
 - [ ] 両端で互換な版・機能を固定し、no-gpu/SHM経路で起動する。
 - [ ] WAYLAND_DEBUGとcompositorの診断でconfigure/ack、frame callback、buffer.release、resizeを追う。
@@ -240,6 +262,7 @@ flowchart LR
 - [ ] logical size、buffer scale、producer pixel size、XRのメートル寸法を分離する。
 - [ ] 初期は静止画像、次にfootのshell、cursor、scrollで確認する。
 - [ ] close、Surface再生成、切断で古いbufferを表示せず、リソースを回収する。
+- [ ] layer使用数を観測し、SDK/OSの可用枚数を記録する。非表示windowと描画資源を分離する方針はPhase 5で検討する。
 
 合格: Quest上のfootがRustで合成され、一枚のXRパネルに表示・更新される。zero-copyは必須にしない。
 
@@ -281,6 +304,8 @@ flowchart LR
 - [ ] popup、subsurface、parent-child、clipboard、IME/日本語を段階的に追加する。
 - [ ] 物理拡縮、pixel resize交渉、配置保存、passthrough切替を実装する。
 - [ ] 世代付きWindowId/SurfaceGenerationで古いcallbackとdestroy済みwindowへの入力を拒否する。
+- [ ] XR session focus喪失をRustへ通知し、入力captureと押下状態を解消・再同期する。Universal Menu表示をWayland/SSH切断と混同しない。
+- [ ] 論理ウィンドウ数、表示対象数、実際のSDK layer割当数を区別する。非表示時の保持・再割当やmesh利用は検証後に決める。
 
 合格: 二つ以上の独立パネルを操作でき、Waylandの入力focusとRustの状態が一致する。
 
@@ -309,9 +334,11 @@ flowchart LR
 作業:
 - [ ] Disconnected/Connecting/Ready/Reconnecting/Stopping等の状態遷移を実装する。
 - [ ] Termux停止、バックグラウンド制限、Quest sleep、Activity/Surface再生成を分離して試す。
+- [ ] Phase 0〜1で得た背景存続・XR session focusの観測結果を引き継ぎ、Universal Menu、完全な背景化、sleep/resumeを別々に再現する。
 - [ ] host key不一致、認証失敗、forward失敗、Waypipe失敗を区別して診断する。
 - [ ] bounded queueとbackpressureを設計し、frame coalesce時もprotocol処理を失わない。
 - [ ] フレーム時間、present待ち、SHM upload量、Waypipe byte数、CPU/メモリ/FD数を測定する。
+- [ ] 使用layer数と表示対象window数を記録し、多数表示時の資源割当を評価する。
 - [ ] 30分/2時間の長時間実験、再接続100回等を実施する。
 - [ ] native resourceの所有者と解放順序を確認し、JNI境界越しのpanicを防ぐ。
 - [ ] 必要が確認された場合だけGPU importとコピー削減を評価する。
@@ -388,10 +415,12 @@ eidolon-wayland/
 
 この文書は仕様のベースラインであり、実装者の裁量を不必要に制限しない。合理的な構成変更は根拠と検証結果を残して行う。一度にすべてのnative依存を統合せず、次の単位で不確実性を解消する。
 
-1. 最小Kotlin APKとRust JNIの疎通。
+1. 最小Kotlin APKとRust JNIの疎通。XRパネルにRust由来のbuild情報を表示し、ビルド・同梱・起動を再現可能にする。
 2. RustだけでSDK Surfaceに描画するPhase 1。
 3. Rust SSHの認証・Unix socket echoを独立して試すPhase 2。
 4. Smithayのprotocolと既存Waypipeの起動を別々に試して結合するPhase 3。
 5. Phase 4で画像、Phase 5で複数windowと入力、Phase 6で寿命と性能を統合する。
+
+2〜4は共通基盤ができた範囲で並行してよい。特にAPK helper起動は早期に独立して試し、XR focusとSurface寿命の観測を各段階へ入れる。新しい抽象化やcrate分割を初日から必須にせず、検証で必要になった境界から具体化する。
 
 **READMEで実機動作を主張するのは、Quest上でTermuxのfootを表示・入力できることを実際に再現してから。** crateの存在、Androidの先行例、Eidolon自身の実機検証を報告上も分ける。

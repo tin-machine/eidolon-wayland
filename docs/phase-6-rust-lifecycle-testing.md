@@ -10,7 +10,7 @@ Rustへ寄せる目的は言語数削減だけでなく、状態と破棄順序�
 
 | 実行領域 | 所有するもの | 境界 |
 | --- | --- | --- |
-| Kotlin SDK/UI thread | Activity、SDK Entity、Surface通知、権限UI | 小さなJNI command/event |
+| Kotlin SDK/UI thread | Activity、SDK Entity、Surface通知、XR session focus、権限UI | 小さなJNI command/event |
 | Rust compositor/render owner thread | Smithay state、WindowManager、EGL context、renderer、window buffer | bounded command queue |
 | Rust Tokio runtime | russh、socket bridge、timeout、retry、I/O counters | 状態イベント・停止要求 |
 
@@ -18,7 +18,7 @@ Smithay [`GlesRenderer`](https://docs.rs/smithay/0.7.0/smithay/backend/renderer/
 
 ```mermaid
 flowchart LR
-  K["Kotlin lifecycle adapter"] -->|"pause / resume / SurfaceLost"| S["Rust session supervisor"]
+  K["Kotlin lifecycle adapter"] -->|"lifecycle / session focus / SurfaceLost"| S["Rust session supervisor"]
   S <-->|"control / status"| R["Rust compositor + render owner"]
   S <-->|"connect / cancel / retry"| N["Tokio + russh bridge"]
   N <-->|"SSH loopback"| T["Termux sshd / Waypipe / apps"]
@@ -35,6 +35,16 @@ Surfaceの再生成だけならSSHやWaylandを再起動する必要はない設
 `SessionGeneration`、`WindowId`、`SurfaceGeneration`を分離し、旧channelのframeやcallbackが新セッションのwindowに適用されないようにする。停止処理は冪等にする。
 
 参考: [Local DesktopのSurface suspend/resume実装](https://github.com/localdesktop/localdesktop.github.io/blob/fdd0275d6ec7840277def8ccd3ba3ed463900ca1/src/android/backend/wayland/winit_backend.rs)、[Waypipe付属マニュアル](https://man.archlinux.org/man/waypipe.1.en)、[Anlandのライフサイクル／接続方式](https://github.com/lfdevs/anland-termux/blob/main/docs/developer-guide.md)。方式は異なるので、そのままコピーせず障害境界の参考にする。
+
+## XR session focusと早期観測
+
+Meta公式[MediaPlayerSampleActivity.kt](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/MediaPlayerSample/app/src/main/java/com/meta/spatial/samples/mediaplayersample/MediaPlayerSampleActivity.kt)は、Universal Menu表示時の`FOCUSED → VISIBLE`と復帰時の`VISIBLE → FOCUSED`を`onSessionStateChanged()`で扱う。ソースは、`onPause()`がActivity全体の背景化時に呼ばれることと、このsession focus通知を区別している。**可視だが入力focusがない状態は、Surface破棄やSSH切断とは別**として扱う。
+
+Phase 0の最小APKからActivityとXR sessionの通知を観測し、Phase 1のpattern描画でSurfaceの生成・破棄・再attachとの順序を記録する。Universal Menu、背景化、sleep/resume、panel破棄を分けて試し、callbackのthread、時刻、実装段階で利用可能な`SessionGeneration`／`SurfaceGeneration`を残す。破棄通知をSDKのどこで取得するかも採用版で確認し、Phase 6まで実機観測を後回しにしない。
+
+Termux側の存続も最小XR APKから観測できる。[Termux公式README](https://github.com/termux/termux-app#readme)にはAndroid 12以降のプロセス数・CPU使用に関する終了制約の注意があるが、Questでの適用条件は未検証である。TermuxのSSH経路ができたらXRアプリを前面にし、sshdと検証用プロセスが維持されるかを短く試す。foot導入後と本フェーズの長時間試験で再確認し、OS全体の制限設定を無条件に変更する手順にはしない。
+
+入力実装では、XR focus喪失時にRustへ通知してcaptureとrepeatを停止し、送信済みkey/buttonの押下を解消する方針を検証する。復帰時は実際の入力状態と同期し、古いイベントを再生しない。XR focus喪失だけでSSH／Waylandセッションを再起動する設計にはしない。これは上記通知を利用するEidolonの方針案で、実機検証結果ではない。
 
 ## キュー・backpressure・復旧
 
@@ -55,12 +65,15 @@ Surfaceの再生成だけならSSHやWaylandを再起動する必要はない設
 
 描画時間、present待ち、SHM upload量、Waypipe転送量、SSH CPU、queue depth、FD数、native memory、Surface再生成回数を比較する。フレーム更新数とHMD refresh rateを同一視しない。
 
+複数windowでは、論理window数、表示対象数、実際のcompositor layer数も分けて記録する。[Phase 4のlayer予算](phase-4-rust-window-rendering.md#xr-layer数の予算)を実測し、非表示化・panel解放でlayer消費がどう変わるか、表示復帰時にWayland状態が保持されるかを確認する。
+
 DMA-BUF／AHardwareBuffer／zero-copyは機能ゲートを別に置く。SSH経路で転送が生じること、buffer形式・modifier・fenceの整合が必要なことを前提にし、Rustにしただけで低遅延やゼロコピーを保証しない。
 
 ## 試験と合格条件
 
 - [ ] WindowManagerの純粋なRust状態遷移テストをhost CIで実行。
 - [ ] JNI/Surfaceの生成・破棄・再attachを繰り返し、FD／memoryが増え続けないことを確認。
+- [ ] Universal MenuでのXR focus喪失、Activity背景化、panel破棄を区別し、入力停止・押下解除とSurface再attachを検証する。
 - [ ] wrong host key、sshd停止、Waypipe終了、Termux kill、Quest sleep/resumeを別々に試す。
 - [ ] 再接続100回、30分／2時間運転など既存planの試験を実施し、限界を記録。
 - [ ] キー配列・modifier・focus・popup・clipboardを回帰試験する。
