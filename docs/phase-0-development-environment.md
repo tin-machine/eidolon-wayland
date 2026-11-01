@@ -176,6 +176,7 @@ adb logcat -d -v time | grep -Ei 'Spatial|AndroidRuntime|FATAL EXCEPTION' | tail
 ### 5.2 Eidolon専用の空APK（未実装）
 
 - [ ] 公式サンプルのライセンス/構成を確認し、Eidolon固有applicationId・AppSystemActivity・registerFeatures・registerPanelsを用意する。
+- [ ] [Passthrough背景の準備](phase-1-passthrough-background.md#manifestとfeature登録)として、merged manifestの`com.oculus.feature.PASSTHROUGH`宣言と背景entityを確認する。背景表示のためにCamera2の権限や部屋スキャンを必須化せず、実際の背景＋Rustパネル表示はPhase 1で試す。
 - [ ] Linux CLIが障害なら、scene exportが不要な構成を検証する。Scene Editorの依存を盲目的に削除しない。上流[StarterSampleActivity](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/StarterSample/app/src/main/java/com/meta/spatial/samples/startersample/StarterSampleActivity.kt)は`apk:///scenes/Composition.glxf`を読み、`Environment`ノードへアクセスするため、exportを外す際はActivity側の読込・Entity生成も整合させる。
 - [ ] Gradle wrapper/JDK/SDK/Kotlin/AGP/Meta SDKを固定しCIでassembleDebugを実行する。
 - [ ] Quest実機へinstallして起動、logcat、クラッシュとXR描画を検証する。

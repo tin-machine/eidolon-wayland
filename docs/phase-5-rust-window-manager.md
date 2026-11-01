@@ -18,6 +18,7 @@
 | keyboard/pointer focusと入力capture方針 | Android入力／XR ray-hitの取得 |
 | 論理サイズ、buffer scale、resize交渉 | SDKでのパネル作成・表示・変形 |
 | pose、メートル寸法、配置保存 | SDK座標系への変換、表示の適用結果 |
+| 希望する背景モード、設定の保存 | passthrough・skybox等の表示操作と適用記録 |
 | 論理windowの保持、表示対象・layer割当の方針 | SDK panelの実体、描画方式・割当の適用結果 |
 | SurfaceGeneration、session generation | Java Surfaceの受取／破棄通知 |
 | close/reconnect/restore policy、入力を受け付ける状態 | Android lifecycle・XR session focus・権限・IME UI |
@@ -25,6 +26,14 @@
 Kotlinはプラットフォームハンドルと操作adapter、Rustは永続／論理モデルを持つ。SDKがdrag中のposeを更新する場合はイベントでRustへ戻し、二つの正本を作らない。
 
 [Phase 4のlayer制約](phase-4-rust-window-rendering.md#xr-layer数の予算)に備え、**存在する論理window、現在の表示対象、SDK layerの割当を分離する**案を評価する。非表示windowのWayland状態と配置は保持しつつ、panelを解放・再生成する余地を残す。layerを使える具体的な枚数や優先順位は実機測定後に選び、SDK操作の失敗や未適用もRustへ返す。MVPの二枚表示に先立って複雑な割当機構を完成させる必要はない。
+
+## 背景モードの切替と保存
+
+[Passthrough背景の詳細](phase-1-passthrough-background.md)に従い、希望する背景モードはRustを正本とし、Kotlinが`scene.enablePassthrough(...)`とskybox／背景用environmentの表示へ適用する。MR／仮想背景の切替と設定保存を追加する際も、windowのpose・選択focusとSSH／Wayland sessionを保持する方針にする。背景切替をwindowや接続の作り直しに結び付けない。
+
+希望設定と、Kotlin adapterがどのsceneへ何を適用したかの記録を分け、未適用・失敗もRustへ返す。APIを呼べたことと実際に背景が見えることは別に確認する。`BackgroundMode`等の型名や通知イベントはEidolonの設計案で、SDKの既存APIではない。まず小さい設定と通知から始め、専用の複雑な状態機構を必須にしない。
+
+**`scene.isSystemPassthroughEnabled()`を現在の背景状態getterにしない。** [公式Scene API v0.14.0](https://developers.meta.com/vr/reference/spatial-sdk/v0.14.0/com_meta_spatial_runtime_scene/)では起動時に決まってapp生存中は変化しない値である。切替後の状態管理や保存には希望設定と適用記録を使い、scene再生成・復帰時の扱いは[Phase 6](phase-6-rust-lifecycle-testing.md#背景モードの復元)で検証する。
 
 ## 双方向接続図
 
@@ -67,6 +76,7 @@ Rust→Kotlin: `CreatePanel`、`SetPose`、`SetPhysicalSize`、`SetTitle`、`Des
 - [ ] key／button押下中にUniversal Menuを開閉し、押しっぱなしや古い入力の再送が起きないことを確認する。
 - [ ] popup、parent-child、clipboardの扱いを段階的に追加する。
 - [ ] パネル移動・物理拡大・pixel resizeを区別して操作できる。
+- [ ] MR／仮想背景の切替と設定保存を確認し、windowの配置・選択focusと接続を維持する。XR focus喪失時の入力停止は別途検証する。
 - [ ] GUI操作ログからモデルを再現できる。ただし文字入力内容や画面画像の恒常記録はしない。
 
-成功条件は「独立した二枚のXRパネルとWaylandの入力focusが一致し、状態の正本がRustにあること」。XR runtimeや最終的な3D scene rendererをRustで置き換える作業はスコープに含めない。
+成功条件は「独立した二枚のXRパネルとWaylandの入力focusが一致し、状態の正本がRustにあること」。背景切替でもwindowと接続を維持し、保存した背景設定を再適用できることを確認する。XR runtimeや最終的な3D scene rendererをRustで置き換える作業はスコープに含めない。

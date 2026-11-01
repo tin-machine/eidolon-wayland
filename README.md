@@ -8,6 +8,8 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 最初の目標は、Termux上のfootをQuest空間に1枚のパネルとして表示し、Bluetoothキーボードとコントローラーで操作することです。Linux PC、WiVRn、root化を必須としない設計ですが、Android側のWaypipe/Wayland server移植とQuest実機動作は現時点で**未検証**です。
 
+**現実の部屋を背景にするMR表示**には、Meta Spatial SDKの通常のpassthroughを利用する方針です。OSがカメラ映像とXRパネルを合成し、Eidolonがカメラ画素を取得する必要はありません。[Phase 1の補足調査](docs/phase-1-passthrough-background.md)に公式資料・実装例と検証計画をまとめました。Eidolonでの背景表示も未実装・実機未検証です。
+
 **実装方針:** KotlinはMeta Spatial SDK / Android adapter、RustはJNI・描画・SSH・Wayland compositor・ウィンドウ管理モデルを担当します。Waypipeは既存実装を再利用し、自作C++は必要性が確認された小さなshimに限定します。これは調査に基づく方針で、実装済みという意味ではありません。
 
 **次の到達点:** UbuntuでEidolon固有の最小APKをビルドし、QuestのXRパネルにRustから返したbuild情報を表示するところまでをPhase 0の最初の実装単位にします。その後、Surface描画・SSH・Smithay/Waypipeを独立して検証します。APK自身のUIDでのWaypipe helper起動はPhase 0〜1から先行して試せます。
@@ -20,6 +22,7 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 - [実装計画](docs/implementation-plan.md) — 段階的な実装、通信図、技術検証ゲート、受け入れ条件、ADR
 - [Phase 0 — 開発環境](docs/phase-0-development-environment.md) — Ubuntuビルド、Rust cdylib、Quest USB、Termux/Codexの調査
 - [Phase 1 — Rust描画](docs/phase-1-rust-rendering.md) — JNI、NDK、SDK Surface、EGL/GLES
+- [Phase 1補足 — Passthrough背景](docs/phase-1-passthrough-background.md) — 現実の映像を背景にする方式、SDK設定、MR／VR切替と検証
 - [Phase 2 — Rust SSH](docs/phase-2-rust-ssh.md) — russh、認証、StreamLocal forwarding
 - [Phase 3 — Compositor / Waypipe](docs/phase-3-rust-compositor-waypipe.md) — SmithayのAndroid移植、既存Waypipe再利用
 - [Phase 4 — ウィンドウ描画](docs/phase-4-rust-window-rendering.md) — GlesRenderer、SHM import、Android EGL adapter

@@ -46,6 +46,12 @@ Termux側の存続も最小XR APKから観測できる。[Termux公式README](ht
 
 入力実装では、XR focus喪失時にRustへ通知してcaptureとrepeatを停止し、送信済みkey/buttonの押下を解消する方針を検証する。復帰時は実際の入力状態と同期し、古いイベントを再生しない。XR focus喪失だけでSSH／Waylandセッションを再起動する設計にはしない。これは上記通知を利用するEidolonの方針案で、実機検証結果ではない。
 
+## 背景モードの復元
+
+[Phase 5の背景設定](phase-5-rust-window-manager.md#背景モードの切替と保存)と[Passthrough背景の詳細](phase-1-passthrough-background.md)を引き継ぐ。scene再生成時にはRustの希望モードを新しいsceneへ適用し直し、passthroughとskybox／背景用environmentの表示を整合させる。Activity背景化、sleep/resume、Universal Menuからの復帰は分けて試し、背景設定・adapter適用記録・実際の表示結果を確認する。常にsceneが再生成されるとは仮定しない。
+
+背景モード、XR session focus、`SurfaceGeneration`は独立して扱う。背景切替だけでSSH／Waylandを再起動せず、focus喪失時の押下解除やSurfaceの再attachはそれぞれの通知に従う。背景が復元できたことを、入力・Surface・接続すべての復旧成功とは扱わない。色調整LUTを将来採用する場合は、復帰・切替後の適用と解除も確認する。LUTは任意候補であり、初期の背景表示には要求しない。
+
 ## キュー・backpressure・復旧
 
 - メモリ上限を持つqueueを使い、フレームが増えた場合は古い表示要求のcoalesceを行う。ただしprotocol処理やbuffer解放をdropしない。
@@ -67,6 +73,8 @@ Termux側の存続も最小XR APKから観測できる。[Termux公式README](ht
 
 複数windowでは、論理window数、表示対象数、実際のcompositor layer数も分けて記録する。[Phase 4のlayer予算](phase-4-rust-window-rendering.md#xr-layer数の予算)を実測し、非表示化・panel解放でlayer消費がどう変わるか、表示復帰時にWayland状態が保持されるかを確認する。
 
+同じwindow数・解像度・描画負荷でpassthrough ON／OFFを比較し、背景entityの構成、使用layer数、frame時間、CPU／GPU負荷を記録する。通常passthroughの合成経路は[詳細文書](phase-1-passthrough-background.md#描画経路と責務)を参照し、背景が消費するlayer数やLinuxパネルの可用枚数を未測定の固定値として扱わない。
+
 DMA-BUF／AHardwareBuffer／zero-copyは機能ゲートを別に置く。SSH経路で転送が生じること、buffer形式・modifier・fenceの整合が必要なことを前提にし、Rustにしただけで低遅延やゼロコピーを保証しない。
 
 ## 試験と合格条件
@@ -74,6 +82,7 @@ DMA-BUF／AHardwareBuffer／zero-copyは機能ゲートを別に置く。SSH経�
 - [ ] WindowManagerの純粋なRust状態遷移テストをhost CIで実行。
 - [ ] JNI/Surfaceの生成・破棄・再attachを繰り返し、FD／memoryが増え続けないことを確認。
 - [ ] Universal MenuでのXR focus喪失、Activity背景化、panel破棄を区別し、入力停止・押下解除とSurface再attachを検証する。
+- [ ] scene再生成・背景化・sleep/resume・Universal Menu復帰で背景設定とskybox表示を確認し、背景切替のみでSSH／Waylandが再起動しないことを検証する。
 - [ ] wrong host key、sshd停止、Waypipe終了、Termux kill、Quest sleep/resumeを別々に試す。
 - [ ] 再接続100回、30分／2時間運転など既存planの試験を実施し、限界を記録。
 - [ ] キー配列・modifier・focus・popup・clipboardを回帰試験する。

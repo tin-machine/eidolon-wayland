@@ -14,7 +14,7 @@ Quest 3単体で、Termux上で実行するWayland GUIアプリを、Meta Spatia
 - Quest内での通信は原則 <code>127.0.0.1:8022</code> のSSHと、アプリプロセス内の通信、ローカルWaylandソケットに閉じる。
 - Termux側ではfoot等の**既存Waylandアプリ**を利用する。Spatialアプリは端末エミュレーション、ANSI解析、Neovim描画を再実装しない。Termux向けの依存パッケージや移植状況は[termux-packages](https://github.com/termux/termux-packages)で確認する。
 - 最終表示はHorizon OSのXR runtimeに任せる。Horizon OSのホーム置換や他アプリのウィンドウ奪取は非目標。
-- 初期は単一の2Dパネル、後に複数ウィンドウ、背景演出、パネル移動・拡縮へ進む。
+- 初期はpassthroughの現実背景と単一の2Dパネル、後に複数ウィンドウ、背景切替、パネル移動・拡縮へ進む。
 - リモートLinux接続は将来の拡張。まずは**Quest内のTermuxへのlocalhost SSH**に集中する。
 
 ## 採用言語と責務（2026-11-01のRust実現性調査を反映）
@@ -23,7 +23,7 @@ Quest 3単体で、Termux上で実行するWayland GUIアプリを、Meta Spatia
 
 | レイヤー | 第一候補 | 境界・詳細資料 |
 | --- | --- | --- |
-| Android / Meta Spatial SDK adapter | Kotlin | Activity、SDK Entity、Surface、権限・IME UI。モデルの正本は持たない |
+| Android / Meta Spatial SDK adapter | Kotlin | Activity、SDK Entity、Surface、passthroughの適用、権限・IME UI。モデルの正本は持たない |
 | JNI / NDK連携 | Rust `jni`、`ndk` | Kotlin→Rust cdylib。[Phase 0](phase-0-development-environment.md)・[Phase 1](phase-1-rust-rendering.md) |
 | Wayland compositor | Rust / Smithay | protocol、surface tree、seat、buffer lifetime。[Phase 3](phase-3-rust-compositor-waypipe.md) |
 | XRウィンドウ管理モデル | Rust | WindowId、focus、pose、size、保存・復旧。KotlinはSDK操作を実行。[Phase 5](phase-5-rust-window-manager.md) |
@@ -126,6 +126,16 @@ linux-dmabuf、EGL import、AHardwareBuffer、fenceはMVP後の検証課題。DM
 設計上は、Rustが保持する論理ウィンドウ、表示対象、SDK Entity/Surface/layerの割当を区別する余地を残す。論理windowと常設layerの永続的な1対1対応を前提にせず、非表示windowの保持や描画資源の再割当を後から評価できるようにする。初期の1〜2枚のMVPは維持し、割当方針と同時表示枚数は[Phase 4](phase-4-rust-window-rendering.md)・[Phase 5](phase-5-rust-window-manager.md)で検証する。
 
 Readable版のmesh描画は比較候補だが、[Known issues](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-known-issues/)にはmesh指定でもlayerが生成される問題と、変換後の`panelConfig.layerConfig = null`という回避方法が掲載されている。採用版での動作・画質・資源解放は未検証であり、meshへの切替だけで制約を回避できるとは保証しない。
+
+## 現実の映像を背景にするPassthrough
+
+**通常のpassthroughをKotlinから有効にし、Horizon OS／XR runtimeへ背景合成を任せる。** [Meta公式概要](https://developers.meta.com/vr/essentials/horizon-os-passthrough/)によると、この方式ではappへraw camera dataが渡らず、特別なcamera permissionも必要ない。カメラ画素をSSH、Waypipe、Smithay、JNIの描画経路へ流す構成にはしない。
+
+[Spatial SDKの公式手順](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-passthrough/)は`scene.enablePassthrough(true)`とskyboxの非表示を示す。Manifestのpassthrough feature宣言と、背景を覆うenvironment meshも確認する。Rustは従来どおりLinuxパネルを描き、初期は不透明なパネルの周囲に現実が見える構成にする。パネル内のalpha透過、Camera2による画像取得、Scene API／MRUKによる部屋認識、Environment Depthによる遮蔽は、それぞれ別の追加機能である。
+
+Phase 1で現実背景＋Rustテスト画像を検証し、Phase 4でfootへ接続する。Phase 5で切替・保存を実装する際には背景の希望設定をRustで保持し、KotlinがSDK操作を適用する。Phase 6でscene再生成からの復帰とlayer使用数を確認する。API呼出し記録と実際の表示結果を区別し、背景切替だけでSSH／Waylandセッションを再起動しない設計を目指す。
+
+詳細なAPI、権限の区別、公式ソース、合格条件は[Phase 1補足 — Passthrough背景](phase-1-passthrough-background.md)を正本とする。**公式資料とサンプルで方式を確認した段階で、Eidolonでの合成・可読性・寿命管理は実機未検証**である。
 
 ## Spatialウィンドウ管理と入力
 

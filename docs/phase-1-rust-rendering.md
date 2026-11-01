@@ -3,7 +3,8 @@
 **状態:** 調査済み／未実装・Quest実機未検証（2026-11-01）  
 **上位計画:** [Phase 1](implementation-plan.md#phase-1--spatial-surfaceの描画スパイク)  
 **前提:** [Phase 0](phase-0-development-environment.md) / [全体設計](architecture.md)  
-**後続:** [Phase 4: Wayland画像の合成](phase-4-rust-window-rendering.md)
+**後続:** [Phase 4: Wayland画像の合成](phase-4-rust-window-rendering.md)  
+**補足:** [現実の映像を背景にするPassthrough](phase-1-passthrough-background.md)
 
 ## 結論と責務
 
@@ -35,6 +36,8 @@ flowchart LR
 ```
 
 Surfaceの生成経路とフレームの生成経路は別。Kotlinに毎フレームのBitmapや画素配列を戻さない。まず一枚の単色／checkerboardを描き、SSHとWaylandは接続しない。SDK SurfaceへのEGL描画には下記の公式サンプルによる根拠があるが、Rustでの連続描画とEidolonのQuest実機動作は未検証である。
+
+このspikeで、**通常passthroughの現実背景＋不透明なRustパネル一枚**も検証する。KotlinがSDKの背景設定を適用し、カメラ画素をRust／Waypipeへ渡さずにOS/runtimeが最終合成する。Manifest、skyboxの非表示、パネルの透明化との違い、試験手順は[Passthrough補足](phase-1-passthrough-background.md)にまとめる。
 
 ## SDK Surfaceで確認できたこと（2026-11-01追調査）
 
@@ -70,10 +73,11 @@ Kotlin→Rustは`attachSurface(windowId, generation, surface)`、`resizeSurface(
 
 - [ ] Rust `cdylib`をKotlinからロードし、JNIの単純な往復とlogcat出力を確認する。
 - [ ] SDKから実際に渡されたSurfaceで、RustだけでEGL/GLESによる単色・checkerboardを表示する。
+- [ ] [Passthrough背景試験](phase-1-passthrough-background.md#フェーズ別の実装と検証)で、Quest実機に現実の映像と不透明なRustパネルを同時表示する。背景用skybox／meshが現実を覆っていないことを確認する。
 - [ ] `glGetString`等でvendor／renderer／GLES版、EGL拡張、選択configを記録する。秘密情報は記録しない。
 - [ ] producer側で指定したbacking pixel sizeとEGLSurfaceの実測値を記録する。メートル寸法だけの変更とbuffer解像度変更を別々に試す。
 - [ ] パネル移動・拡縮、pause/resume、Surface再生成を繰り返し、native window参照数・EGL resource leakを調べる。
 - [ ] Universal Menu、背景化、sleep/resumeを別々に試し、XR session focus・Activity lifecycle・SurfaceGenerationを記録する。[Phase 6の観測方針](phase-6-rust-lifecycle-testing.md#xr-session-focusと早期観測)を描画spikeから適用する。
 - [ ] 新規C++なしで成立するかを確認する。不足がC++専用API等に限定される場合のみ、小さいshimを追加して理由を残す。
 
-合格は「実機でRust rendererがSDK Surfaceへ出力できること」。crateのビルド成功だけでは合格にしない。次に[Phase 4](phase-4-rust-window-rendering.md)でテスト画像をWaylandの画像へ置き換える。
+合格は「実機でRust rendererがSDK Surfaceへ出力でき、現実背景と不透明なパネルを同時に確認できること」。crateのビルド成功だけでは合格にしない。描画単独と背景合成の結果は分けて記録し、次に[Phase 4](phase-4-rust-window-rendering.md)でテスト画像をWaylandの画像へ置き換える。

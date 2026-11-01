@@ -7,7 +7,7 @@ Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプ�
 
 ## 成功の定義
 
-最小MVP: Quest 3にインストールしたEidolon APKを起動し、**同じQuest上のTermuxで動くfoot**を、VR空間内の独立した長方形パネルとして表示する。Bluetoothキーボードでshell/Neovimに入力でき、コントローラーでクリック、画面の再描画、リサイズ、接続の再確立が行える。
+最小MVP: Quest 3にインストールしたEidolon APKを起動し、**同じQuest上のTermuxで動くfoot**を、XR空間内の独立した長方形パネルとして表示する。通常passthroughで周囲の現実を背景にし、Bluetoothキーボードでshell/Neovimに入力でき、コントローラーでクリック、画面の再描画、リサイズ、接続の再確立が行える。
 
 - **ネットワークに依存しない**: アプリ実行と表示にはPC・Wi-Fi・クラウドは不要。localhost SSHのみ。開発・依存取得・Codexの利用に必要な回線とは区別する。
 - **非特権**: Questのroot化、OSの置換、カーネルモジュールの導入なし。
@@ -23,6 +23,7 @@ Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプ�
 | --- | --- | --- |
 | 0 | [開発環境](phase-0-development-environment.md) | cargo-ndkによるcdylibビルド、APK同梱、JNI疎通を追記 |
 | 1 | [Rust JNI・Surface描画](phase-1-rust-rendering.md) | jni / ndk / khronos-egl / glowで独立した描画spike |
+| 1補足 | [Passthrough背景](phase-1-passthrough-background.md) | OSによる現実映像の合成、SDK／skybox設定、カメラ画素取得との区別 |
 | 2 | [Rust SSH](phase-2-rust-ssh.md) | russhを第一候補。StreamLocal APIとchannel bridgeの実装方法 |
 | 3 | [Rust compositorとWaypipe](phase-3-rust-compositor-waypipe.md) | Android上のSmithay先行例、native依存、Waypipeの再利用 |
 | 4 | [Rustウィンドウ描画](phase-4-rust-window-rendering.md) | GlesRenderer、Android EGL adapter、bufferとthreadの所有権 |
@@ -44,6 +45,9 @@ Eidolonの`main`を`64fcf5653a1aa614ba4ba6f47432c5d9f87a8951`で再確認した�
 | VideoSurfacePanelRegistrationはlayer専用で、枚数の予算が必要 | [Meta layer/mesh解説](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-2dpanel-layers/)。[compositor資料](https://developers.meta.com/vr/documentation/spatial-sdk/os-compositor-layers/)の16 layers記述は資料更新日2024-11-06。実際の可用枚数は未検証。[Phase 4](phase-4-rust-window-rendering.md)・[Phase 5](phase-5-rust-window-manager.md) |
 | Activity lifecycleとXR session focusを区別する | [公式MediaPlayerSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/MediaPlayerSample/app/src/main/java/com/meta/spatial/samples/mediaplayersample/MediaPlayerSampleActivity.kt)の`onSessionStateChanged`。[Phase 1](phase-1-rust-rendering.md)・[Phase 5](phase-5-rust-window-manager.md)・[Phase 6](phase-6-rust-lifecycle-testing.md) |
 | APK自身のUIDでのhelper起動を早めに試す | [Android実行制約](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)。[Phase 3](phase-3-rust-compositor-waypipe.md)のP3-BをPhase 0〜1から先行可能にする。Wawonaの同梱ソースも参考として追記 |
+| 現実の映像を背景にする通常passthroughはSpatial SDKから制御できる | [公式Passthrough手順](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-passthrough/)と[OSによる合成の説明](https://developers.meta.com/vr/essentials/horizon-os-passthrough/)。raw camera取得は不要。[Phase 1補足](phase-1-passthrough-background.md)に整理し、Phase 4〜6へ接続 |
+
+Passthroughの追加調査時には`main`の`0a6239e2974ebd2365d1506de17226d87098fd73`を再確認した。前回レビューは文書へ反映済みで、APK／Rust実装は引き続き未着手だった。今回も通常背景の方式と試験計画を追加し、実装完了や実機動作を主張しない。
 
 **次の実装単位:** Ubuntuで最小Eidolon APKをビルドし、QuestのXRパネルにRustから返したbuild情報を表示する。Gradle→Cargo→APK同梱、基本CI、実機観測記録までをPhase 0で揃える。crate分割や診断画面の具体的な構成は実装者が調整できる。
 
@@ -54,6 +58,7 @@ Eidolonの`main`を`64fcf5653a1aa614ba4ba6f47432c5d9f87a8951`で再確認した�
 | P0 | 空のSpatial SDK APKをQuest実機でビルド・起動 | immersiveシーンを表示できる | SDK/Androidビルド環境を最小化 |
 | P0 | Kotlin→Rust cdylibのJNI疎通 | 新規C++なしでnative methodを呼べる | jni版、ABI、APK同梱・R8設定を切り分け |
 | P0 | VideoSurfacePanelRegistration + Rust EGL/GLES | テストパターンをXRパネルへ連続描画できる | EGL adapter／Surface APIを比較 |
+| P0（Phase 1内） | 通常passthrough背景＋不透明なRustパネル | Quest実機で現実背景とテスト画像を同時表示できる | Manifest、skybox／environment、SDK設定と描画順を切り分け。他の個別spikeは継続 |
 | P0 | Android/aarch64にSmithayを組込む | wl_shmを扱う最小compositorが起動 | Local Desktopのpatchとnative依存を比較。必要ならC ABIの代案 |
 | **P0** | **Android側Waypipeの同梱・起動（P3-BをPhase 0〜1から先行）** | **APK自身のUIDで起動・転送socket待受・終了回収ができる** | packaging、prefix、依存、spawnを切り分ける。compositorとの結合はPhase 3 |
 | P0 | Rust russh→Termux localhost SSH | host key検証＋公開鍵認証でexecできる | 暗号backend／NDK依存、必要なら他SSH実装を比較 |
@@ -65,6 +70,8 @@ Eidolonの`main`を`64fcf5653a1aa614ba4ba6f47432c5d9f87a8951`で再確認した�
 > SSHでexecできること、Waypipeのtransportを中継できること、Wayland clientが描画できることは別の検証項目。単独spikeを合格させてから結合する。
 
 Phase番号は全作業を直列に実行する制約ではない。Phase 0のAPK/JNI基盤から、**Phase 1のSurface描画、Phase 2のSSH/echo、Phase 3のSmithay最小構成とhelper起動**を独立して進められる。Phase 3でtransportとprotocolを結合し、Phase 4で描画へ接続する。Surfaceと入力focusの寿命管理は各実装時点から扱い、長時間・性能試験をPhase 6に残す。
+
+現実背景の試験もPhase 1で先行し、Wayland／SSHの完成を待たずに実施する。Surface単独描画と背景合成の成否を分けて記録し、どちらかの問題で他の個別検証を止めない。カメラ画素取得や部屋認識は背景表示の前提にしない。
 
 ## フェーズ別通信図の読み方
 
@@ -106,6 +113,8 @@ flowchart LR
 
 **詳細・調査結果:** [phase-1-rust-rendering.md](phase-1-rust-rendering.md)。Rust用JNI/NDK/EGL/GLESの部品を確認した。KotlinからSDKのSurfaceをRustへ渡し、`khronos-egl + glow`で描画する方針。新規C++は必須にしない。
 
+**背景表示の補足:** [phase-1-passthrough-background.md](phase-1-passthrough-background.md)。通常passthroughをKotlinから有効化し、背景用skybox／environmentを非表示にする。OS/runtimeが背景とパネルを合成し、RustにはLinuxパネルの描画経路を残す。
+
 ### Phase 1の描画経路 — Termuxはまだ接続しない
 
 ~~~mermaid
@@ -124,16 +133,18 @@ flowchart LR
 参考：[Meta MediaPlayerSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/main/MediaPlayerSample/app/src/main/java/com/meta/spatial/samples/mediaplayersample/MediaPlayerSampleActivity.kt)、[jni](https://docs.rs/jni/latest/jni/)、[NDK NativeWindow](https://docs.rs/ndk/latest/ndk/native_window/struct.NativeWindow.html)、[khronos-egl](https://docs.rs/khronos-egl/latest/khronos_egl/)、[glow](https://github.com/grovesNL/glow)。[Android gles3jni](https://github.com/android/ndk-samples/tree/main/gles3jni)はAPI接続の参考であり、C++採用を必須にするものではない。
 
 作業:
+
 - [ ] immersive sceneに一枚のパネルを作成する。
 - [ ] surfaceConsumerのSurfaceをJNI経由でRustへ渡し、生成・破棄を追跡する。
 - [ ] NativeWindow/EGL/GLESでcheckerboard、単色、フレームカウンタを描画する。
+- [ ] 通常passthroughの現実背景と不透明なRustパネルを同時表示する。Manifest、skybox／environmentの可視性、SDK／OS版と表示結果を記録する。
 - [ ] pixel size、物理サイズ、DPI、視距離、render modeと可読性を記録する。
 - [ ] 専用render threadにcontextの所有権を置き、JNI参照とSurface世代を正しく管理する。
 - [ ] 拡縮、位置移動、Surface再生成、pause/resumeへの耐性を確認する。
 - [ ] producer側のbuffer寸法を指定・実測し、XR上の物理寸法変更とは別に試す。Universal Menuの`FOCUSED ↔ VISIBLE`とActivity/Surfaceのイベント差を記録する。
 - [ ] CPU/メモリ/フレーム時間の測定点を設ける。
 
-合格: Rust描画のパネルが実機で表示され、再生成後も更新できる。crateビルド成功だけでは合格にしない。
+合格: Rust描画のパネルが実機で表示され、再生成後も更新できる。背景試験では現実映像と不透明なパネルの同時表示を確認する。描画単独と背景合成を分けて記録し、crateビルド成功だけでは合格にしない。
 
 ## Phase 2 — SSHとTermuxの安全な接続
 
@@ -174,6 +185,7 @@ sshd -p 8022 -o ListenAddress=127.0.0.1 -o PasswordAuthentication=no -o KbdInter
 既にsshdが動いている場合は二重起動せず有効な設定を確認する。初期からloopbackに限定し、鍵認証を使う。鍵生成・登録はまず手動でよい。
 
 作業:
+
 - [ ] russhのAndroid/aarch64ビルド、暗号backend、MSRVとnative依存を確認する。
 - [ ] host key検証と公開鍵認証でTermuxへ接続する。未知の鍵と不一致の鍵を区別する。
 - [ ] execのstdout/stderr/exit statusと切断を取得する。
@@ -210,6 +222,7 @@ flowchart LR
 参考：[Smithay smallvil](https://github.com/Smithay/smithay/tree/master/smallvil)、[GETTING_STARTED](https://github.com/Smithay/smithay/blob/master/GETTING_STARTED.md)、[WayVR client.rs](https://github.com/wayvr-org/wayvr/blob/main/wayvr/src/backend/wayvr/client.rs)、[Local Desktopのpatch](https://localdesktop.github.io/docs/developer/patches/)、[Waypipe manual](https://man.archlinux.org/man/waypipe.1.en)、[Termuxのレシピ](https://github.com/termux/termux-packages/blob/master/packages/waypipe/build.sh)。
 
 作業:
+
 - [ ] Smithayをdefault-features=falseからAndroid向けにビルドする。不要なdesktop backendを持ち込まない。
 - [ ] libxkbcommonとkeymapデータ、calloop、socket、mmap/fd等の依存を検証する。
 - [ ] Wayland socket、event loop、wl_compositor、wl_shm、xdg_shell、wl_seatを実装する。
@@ -255,16 +268,18 @@ flowchart LR
 参考：[GlesRenderer](https://docs.rs/smithay/0.7.0/smithay/backend/renderer/gles/struct.GlesRenderer.html)、[Local Desktop Android backend](https://github.com/localdesktop/localdesktop.github.io/blob/fdd0275d6ec7840277def8ccd3ba3ed463900ca1/src/android/backend/wayland/winit_backend.rs)、[Meta surfaceConsumerの例](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/main/MediaPlayerSample/app/src/main/java/com/meta/spatial/samples/mediaplayersample/MediaPlayerSampleActivity.kt)。[VNCのFramebufferView](https://github.com/MesmerPrism/quest-termux-lab/blob/main/examples/spatial-desktop-panel/app/src/main/java/io/github/mesmerprism/questtermuxlab/spatialdesktop/FramebufferView.kt)は方式比較用。
 
 作業:
+
 - [ ] Phase 1のテスト画像を、Phase 3のwl_shm画像へ置き換える。
 - [ ] ARGB8888/XRGB8888、stride、damage、alpha、buffer lifetimeと同期を扱う。
 - [ ] Rustの専用owner threadでEGL/GlesRendererを扱う。GlesRendererの!Send/!Syncを尊重する。
 - [ ] toplevelにXRパネルを対応させ、popup/subsurfaceの合成範囲を決める。
 - [ ] logical size、buffer scale、producer pixel size、XRのメートル寸法を分離する。
 - [ ] 初期は静止画像、次にfootのshell、cursor、scrollで確認する。
+- [ ] Phase 1のpassthrough背景上で不透明なfootを表示し、可読性と重なりを確認する。パネル内部の半透明化や実物による遮蔽は別の検証課題とする。
 - [ ] close、Surface再生成、切断で古いbufferを表示せず、リソースを回収する。
 - [ ] layer使用数を観測し、SDK/OSの可用枚数を記録する。非表示windowと描画資源を分離する方針はPhase 5で検討する。
 
-合格: Quest上のfootがRustで合成され、一枚のXRパネルに表示・更新される。zero-copyは必須にしない。
+合格: Quest上のfootがRustで合成され、現実背景上の一枚のXRパネルに表示・更新される。Wayland描画と背景合成の成否を分けて記録する。zero-copyは必須にしない。
 
 ## Phase 5 — XR入力と複数ウィンドウ
 
@@ -295,6 +310,7 @@ flowchart LR
 参考：[WayVR hit_test.rs](https://github.com/wayvr-org/wayvr/blob/main/wayvr/src/backend/wayvr/hit_test.rs)、[window.rs](https://github.com/wayvr-org/wayvr/blob/main/wayvr/src/backend/wayvr/window.rs)、[client.rs](https://github.com/wayvr-org/wayvr/blob/main/wayvr/src/backend/wayvr/client.rs)、[Smithay input.rs](https://github.com/Smithay/smithay/blob/master/smallvil/src/input.rs)、[Meta UISetSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/tree/main/UISetSample)。[quest-termux-lab InputCodec](https://github.com/MesmerPrism/quest-termux-lab/blob/main/examples/spatial-desktop-panel/app/src/main/java/io/github/mesmerprism/questtermuxlab/spatialdesktop/InputCodec.kt)はVNC用でありWaylandへ直接流用しない。
 
 作業:
+
 - [ ] RustのWindowManagerをAndroid/GL/JNIから分離し、fake adapterで単体テストする。
 - [ ] XR hit-testからlogical surface座標への変換とbutton、scroll、enter/leaveを扱う。
 - [ ] Android KeyEventとWayland keycode/keymap/modifierの差を扱う。
@@ -302,12 +318,13 @@ flowchart LR
 - [ ] foot内のfish/tmux/nvim、copy-modeとmodifierを確認する。
 - [ ] 二枚以上の独立したtoplevelを作成・閉鎖し、focusを切り替える。
 - [ ] popup、subsurface、parent-child、clipboard、IME/日本語を段階的に追加する。
-- [ ] 物理拡縮、pixel resize交渉、配置保存、passthrough切替を実装する。
+- [ ] 物理拡縮、pixel resize交渉、配置保存を実装する。
+- [ ] 現実背景／仮想背景を切り替え、希望設定をRustで保存しKotlinがSDKへ適用する。windowの配置・focusとSSH／Waylandセッションを維持し、起動時のpassthrough値を現在状態のgetterとして使わない。[詳細](phase-5-rust-window-manager.md)
 - [ ] 世代付きWindowId/SurfaceGenerationで古いcallbackとdestroy済みwindowへの入力を拒否する。
 - [ ] XR session focus喪失をRustへ通知し、入力captureと押下状態を解消・再同期する。Universal Menu表示をWayland/SSH切断と混同しない。
 - [ ] 論理ウィンドウ数、表示対象数、実際のSDK layer割当数を区別する。非表示時の保持・再割当やmesh利用は検証後に決める。
 
-合格: 二つ以上の独立パネルを操作でき、Waylandの入力focusとRustの状態が一致する。
+合格: 二つ以上の独立パネルを操作でき、Waylandの入力focusとRustの状態が一致する。背景切替でもwindowと接続状態を維持し、保存した背景設定を再適用できる。
 
 ## Phase 6 — 運用性、性能、耐障害性
 
@@ -332,13 +349,15 @@ flowchart LR
 参考：[Anland developer guide](https://github.com/lfdevs/anland-termux/blob/main/docs/developer-guide.md)、[Local Desktop Surface lifecycle](https://github.com/localdesktop/localdesktop.github.io/blob/fdd0275d6ec7840277def8ccd3ba3ed463900ca1/src/android/backend/wayland/winit_backend.rs)、[quest-termux-lab Activity](https://github.com/MesmerPrism/quest-termux-lab/blob/main/examples/spatial-desktop-panel/app/src/main/java/io/github/mesmerprism/questtermuxlab/spatialdesktop/SpatialDesktopActivity.kt)、[Termux:Boot](https://github.com/termux/termux-boot)、[Android performance-samples](https://github.com/android/performance-samples)。方式の異なる例は比較材料とし、そのまま統合できるとは仮定しない。
 
 作業:
+
 - [ ] Disconnected/Connecting/Ready/Reconnecting/Stopping等の状態遷移を実装する。
 - [ ] Termux停止、バックグラウンド制限、Quest sleep、Activity/Surface再生成を分離して試す。
 - [ ] Phase 0〜1で得た背景存続・XR session focusの観測結果を引き継ぎ、Universal Menu、完全な背景化、sleep/resumeを別々に再現する。
+- [ ] scene再生成後に背景モードとskybox／environmentの表示を再適用し、パネルと現実背景が同時に復旧することを確認する。背景切替のためにSSH／Waylandを再起動しない。
 - [ ] host key不一致、認証失敗、forward失敗、Waypipe失敗を区別して診断する。
 - [ ] bounded queueとbackpressureを設計し、frame coalesce時もprotocol処理を失わない。
 - [ ] フレーム時間、present待ち、SHM upload量、Waypipe byte数、CPU/メモリ/FD数を測定する。
-- [ ] 使用layer数と表示対象window数を記録し、多数表示時の資源割当を評価する。
+- [ ] passthrough ON／OFFそれぞれの使用layer数・表示対象window数・性能を記録し、多数表示時の資源割当を評価する。背景のlayer消費数を固定値と仮定しない。
 - [ ] 30分/2時間の長時間実験、再接続100回等を実施する。
 - [ ] native resourceの所有者と解放順序を確認し、JNI境界越しのpanicを防ぐ。
 - [ ] 必要が確認された場合だけGPU importとコピー削減を評価する。
@@ -373,6 +392,7 @@ eidolon-wayland/
 | --- | --- | --- |
 | Build | Gradle、cargo-ndk、ABI、MSRV、native依存 | 再現可能なAPK生成、誤リンクなし |
 | JNI / Surface | native method、EGL draw、pause/resume | C++必須でなく疎通、描画継続、leakなし |
+| MR背景 | 通常passthrough、skybox、切替・scene再生成 | 現実背景と不透明パネルの同時表示、設定の再適用、接続維持 |
 | Protocol | configure/ack、buffer lifetime、disconnect | deadlock・protocol errorなし |
 | SSH transport | host key、exec、StreamLocal echo、Waypipe | fd転送とbyte streamの境界が正しい |
 | Security | loopback bind、認証、path、secret管理 | LAN露出なし、不正鍵・不明path拒否 |
@@ -416,7 +436,7 @@ eidolon-wayland/
 この文書は仕様のベースラインであり、実装者の裁量を不必要に制限しない。合理的な構成変更は根拠と検証結果を残して行う。一度にすべてのnative依存を統合せず、次の単位で不確実性を解消する。
 
 1. 最小Kotlin APKとRust JNIの疎通。XRパネルにRust由来のbuild情報を表示し、ビルド・同梱・起動を再現可能にする。
-2. RustだけでSDK Surfaceに描画するPhase 1。
+2. RustからSDK Surfaceに描画し、Kotlinで通常passthrough背景を適用するPhase 1。描画単独と背景合成を独立に確認する。
 3. Rust SSHの認証・Unix socket echoを独立して試すPhase 2。
 4. Smithayのprotocolと既存Waypipeの起動を別々に試して結合するPhase 3。
 5. Phase 4で画像、Phase 5で複数windowと入力、Phase 6で寿命と性能を統合する。
