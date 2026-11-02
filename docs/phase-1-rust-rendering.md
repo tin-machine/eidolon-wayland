@@ -71,6 +71,8 @@ Kotlin→Rustは`attachSurface(windowId, generation, surface)`、`resizeSurface(
 
 ## 検証手順・合格条件
 
+[開発自動化・デバッグ](development-automation-and-debugging.md#キャプチャと起動確認)の方法で、patternのframe番号、`SurfaceGeneration`、EGL初期化／present結果、XR session状態と画像を同じrunへ保存する案とする。`metacam`／`screencap`とHMD内表示の取得範囲を先に照合し、Android側の黒い画像だけでXR表示失敗と断定しない。`eglSwapBuffers`の成功と最終合成も別に確認する。これらの自動化は未実装である。
+
 - [ ] Rust `cdylib`をKotlinからロードし、JNIの単純な往復とlogcat出力を確認する。
 - [ ] SDKから実際に渡されたSurfaceで、RustだけでEGL/GLESによる単色・checkerboardを表示する。
 - [ ] [Passthrough背景試験](phase-1-passthrough-background.md#フェーズ別の実装と検証)で、Quest実機に現実の映像と不透明なRustパネルを同時表示する。背景用skybox／meshが現実を覆っていないことを確認する。

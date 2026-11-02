@@ -20,6 +20,7 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 - [アーキテクチャ設計](docs/architecture.md) — Kotlin/Rustの責務、SSH/Waypipe、描画、入力、セキュリティ
 - [実装計画](docs/implementation-plan.md) — 段階的な実装、通信図、技術検証ゲート、受け入れ条件、ADR
+- [開発自動化・デバッグ](docs/development-automation-and-debugging.md) — Codex／ADB／Meta VR CLI、XR画像取得、入力自動化、実機CI、未検証条件とsmoke test案
 - [Phase 0 — 開発環境](docs/phase-0-development-environment.md) — Ubuntuビルド、Rust cdylib、Quest USB、Termux/Codexの調査
 - [Phase 1 — Rust描画](docs/phase-1-rust-rendering.md) — JNI、NDK、SDK Surface、EGL/GLES
 - [Phase 1補足 — Passthrough背景](docs/phase-1-passthrough-background.md) — 現実の映像を背景にする方式、SDK設定、MR／VR切替と検証
@@ -30,3 +31,5 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 - [Phase 6 — 寿命と検証](docs/phase-6-rust-lifecycle-testing.md) — スレッド・所有権、再接続、性能・耐障害性
 
 開発を開始する際は、まず[実装計画のP0スパイク](docs/implementation-plan.md#最初に潰すべき不確実性スパイク)から進めてください。
+
+デバッグ方法・実機テスト・自動化を検討する際は、[開発自動化・デバッグの専用文書](docs/development-automation-and-debugging.md)を参照してください。2026-11-03の調査として、build→install→launch→状態・ログ・画像の取得、Android入力とXR入力の違い、無線ADB、Simulatorの適用範囲を整理しました。公式機能の存在とEidolonへの提案・実機未検証事項を分けており、自動化コードや実機成功記録を追加したものではありません。

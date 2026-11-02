@@ -65,6 +65,8 @@ flowchart LR
 
 ## セキュリティと試験
 
+自動化では[共通の診断方針](development-automation-and-debugging.md#debug-buildの観測と操作)に従い、接続・host key検証・認証・exec・forward・echoの成否とtimeoutを別に記録する。PCのADB forward経由でTermuxへSSHできることは、APK内のrussh／StreamLocal試験の代わりにはならない。既知のバイト列、EOF／half-close、cancel、socket回収はXR表示を待たずに自動検証できる形にし、鍵や普段の入力内容を診断結果へ含めない。具体的なrunnerは未実装である。
+
 - [ ] Termux側は127.0.0.1:8022のみlisten、公開鍵認証。`sshd -T`と実際のlistenを確認する。
 - [ ] 未登録host keyは明示的に確認し、登録済み鍵の不一致は拒否する。サンプルの`Ok(true)`を製品へコピーしない。
 - [ ] SSH認証後にexecのstdout/stderr/exit statusを分離して取得する。

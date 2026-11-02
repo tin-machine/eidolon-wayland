@@ -3,6 +3,7 @@
 Status: **Planning / 実装未着手**  
 Architecture: [architecture.md](architecture.md)  
 Phase 0 runbook: [phase-0-development-environment.md](phase-0-development-environment.md)  
+Automation / debugging: [development-automation-and-debugging.md](development-automation-and-debugging.md)  
 Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプリ内Wayland compositor**
 
 ## 成功の定義
@@ -29,6 +30,7 @@ Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプ�
 | 4 | [Rustウィンドウ描画](phase-4-rust-window-rendering.md) | GlesRenderer、Android EGL adapter、bufferとthreadの所有権 |
 | 5 | [Rustウィンドウ管理](phase-5-rust-window-manager.md) | Rustが状態の正本、KotlinがSDK操作を適用 |
 | 6 | [Rustライフサイクルと検証](phase-6-rust-lifecycle-testing.md) | owner thread、切断・Surface再生成、性能／耐障害試験 |
+| 共通 | [開発自動化・デバッグ](development-automation-and-debugging.md) | Codex／ADB／Meta VR CLI、capture、XR入力、実機CIの範囲と条件 |
 
 Phase 1〜6の詳細ファイルは今回新規作成した。概要・全体の進行順は本書、API調査・接続の詳細・個別検証は各ファイルを正本とする。**資料とソースの調査までであり、EidolonのAndroidビルドやQuest実機テストはまだ行っていない。**
 
@@ -50,6 +52,14 @@ Eidolonの`main`を`64fcf5653a1aa614ba4ba6f47432c5d9f87a8951`で再確認した�
 Passthroughの追加調査時には`main`の`0a6239e2974ebd2365d1506de17226d87098fd73`を再確認した。前回レビューは文書へ反映済みで、APK／Rust実装は引き続き未着手だった。今回も通常背景の方式と試験計画を追加し、実装完了や実機動作を主張しない。
 
 **次の実装単位:** Ubuntuで最小Eidolon APKをビルドし、QuestのXRパネルにRustから返したbuild情報を表示する。Gradle→Cargo→APK同梱、基本CI、実機観測記録までをPhase 0で揃える。crate分割や診断画面の具体的な構成は実装者が調整できる。
+
+## 開発自動化・デバッグの補足（2026-11-03）
+
+`main`の`6cef07274d07f110d2aa5f11495cbe72313ca43f`を再確認し、前回のPassthrough追記が反映済みで、APK／Rust実装は未着手であることを確認した。[専用文書](development-automation-and-debugging.md)へ直前の自動化調査を集約した。今回も文書更新のみで、実機成功やチェック項目の完了を主張しない。
+
+Phase 0からbuild→install→launch→状態・ログ・画像取得の小さなsmokeを作り、Phase 1でXR captureとHMD内表示を照合する方針とする。Phase 2〜3はSSH echo・APK UID helper・Wayland protocolを個別に機械判定し、Phase 4〜5で描画・model・入力へ広げる。Phase 6では実機runner、設定復旧、長時間・性能計測へ接続する。[フェーズ別の対応表](development-automation-and-debugging.md#フェーズへの組込み)を参照。
+
+ADBの2D操作、UI Automator、debug用の内部command、OpenXR入力、物理入力は検証範囲が異なる。Meta VR CLIはLinuxとCodex連携を提供するが、XR Operator／TapedeckのUbuntu＋Spatial SDK＋非root Questでの統合は未検証で、独立spikeとする。SimulatorやXR入力自動化の完成を、最小APK・JNI・SSH検証の開始条件にしない。
 
 ## 最初に潰すべき不確実性（スパイク）
 
@@ -103,6 +113,7 @@ flowchart LR
 - [ ] Eidolon固有の最小APKを作り、ビルド・インストール・起動・診断を再現可能にする。
 - [ ] Rust cdylibを同梱し、Kotlinから単純なJNI呼出しを試す。renderer/compositorはまだ必須にしない。
 - [ ] Gradle→Cargo→APK同梱を一つのビルド操作へまとめる。APK側とRust側のbuild revisionをパネル等で確認できるようにし、古い`.so`の混入を見分ける。
+- [ ] [最小smokeの案](development-automation-and-debugging.md#実機smokeの実装案)に沿って対象serial、起動・JNI readiness、ログ、capture可否、終了codeを記録する。Activity起動成功とXR表示成功は分ける。
 - [ ] 必要ならPC側の公式CodexからADB forward＋SSHでTermuxを調査する。Quest内Codexの動作は任意。
 - [ ] 最小XR APKでActivity lifecycleとXR session focusを観測し、Termuxを準備した環境ではsshd/検証用プロセスの背景存続を短く試す。詳細・長時間試験はPhase 6へ引き継ぐ。
 - [ ] CI、バージョン固定、ライセンス、secret除外を整備する。
@@ -358,6 +369,7 @@ flowchart LR
 - [ ] bounded queueとbackpressureを設計し、frame coalesce時もprotocol処理を失わない。
 - [ ] フレーム時間、present待ち、SHM upload量、Waypipe byte数、CPU/メモリ/FD数を測定する。
 - [ ] passthrough ON／OFFそれぞれの使用layer数・表示対象window数・性能を記録し、多数表示時の資源割当を評価する。背景のlayer消費数を固定値と仮定しない。
+- [ ] [共通の自動化方針](development-automation-and-debugging.md)に従い、実機runnerの排他・timeout・cleanup、capture負荷、未装着試験と通常のsleep／復帰を区別して記録する。
 - [ ] 30分/2時間の長時間実験、再接続100回等を実施する。
 - [ ] native resourceの所有者と解放順序を確認し、JNI境界越しのpanicを防ぐ。
 - [ ] 必要が確認された場合だけGPU importとコピー削減を評価する。
@@ -371,6 +383,7 @@ eidolon-wayland/
 ├── docs/
 │   ├── architecture.md
 │   ├── implementation-plan.md
+│   ├── development-automation-and-debugging.md
 │   ├── phase-0-development-environment.md
 │   └── phase-1-*.md ... phase-6-*.md
 ├── android/                 # Kotlin / Spatial SDK adapter
@@ -400,6 +413,9 @@ eidolon-wayland/
 | Model | Rustの状態遷移、世代、fake adapter | host上で再現可能な回帰試験 |
 | Reliability | sleep、Termux kill、Surface再生成 | リソース回収、復旧の範囲が明示される |
 | Performance | render時間、転送量、CPU、熱、native memory | 計測とbaseline、最適化の根拠 |
+| Automation / observation | build・launch・readiness、logcat、XR capture、結果JSON | 実機結果、未実施、infra阻害を区別し、設定・転送を回収 |
+
+共通のコマンド・観測設計は[開発自動化・デバッグ](development-automation-and-debugging.md)を参照する。host CI、Quest上の自動試験、HMDを装着した品質確認を分け、PIDの存在やスクリーンショット一枚だけで全体を合格にしない。
 
 ## 設計判断の記録（初期ADR）
 
@@ -434,6 +450,8 @@ eidolon-wayland/
 ## 実装担当（Codex等）への引き継ぎ
 
 この文書は仕様のベースラインであり、実装者の裁量を不必要に制限しない。合理的な構成変更は根拠と検証結果を残して行う。一度にすべてのnative依存を統合せず、次の単位で不確実性を解消する。
+
+**デバッグ・自動化・実機テストの方式を検討する都度、[共通文書](development-automation-and-debugging.md)を確認する。** 利用するCLI／SDK／OSが変わった場合は対応条件を再確認し、採用した手順と実測結果を本書・該当フェーズへ反映する。未検証toolを必須の実装方式として固定しない。
 
 1. 最小Kotlin APKとRust JNIの疎通。XRパネルにRust由来のbuild情報を表示し、ビルド・同梱・起動を再現可能にする。
 2. RustからSDK Surfaceに描画し、Kotlinで通常passthrough背景を適用するPhase 1。描画単独と背景合成を独立に確認する。

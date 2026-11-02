@@ -67,6 +67,12 @@ Rust→Kotlin: `CreatePanel`、`SetPose`、`SetPhysicalSize`、`SetTitle`、`Des
 - メートル単位の拡大は必ずしもWayland resizeではない。logical size変更が必要な操作だけ`xdg_toplevel.configure`等の交渉を行い、ackと次commitを待つ。
 - 日本語IMEはキー送信だけでは完成しない。AndroidのcompositionとWayland text-input/input-method、またはLinux内IMEの利用を別に評価する。MVPの初期合格は物理キーボードの英数字＋修飾キーから始める。
 
+## 入力とモデルの自動化を分ける
+
+[開発自動化・デバッグ](development-automation-and-debugging.md)の方針に従い、Androidの`input tap`／KeyEvent、debug用の内部command、OpenXR入力、実コントローラー／キーボードを別の試験とする。UI Automatorや`metavr ui`が、Surface内のfootやSpatial SDKの任意entityを意味的なUI要素として取得できるとは仮定しない。
+
+debug操作は通常のRust command経路へ流し、SDKの適用結果を照合する。ただし内部commandによるfocus／pose変更の成功だけでは、SDKのray-hitや物理入力を検証したことにならない。[XR Operator／Tapedeck](development-automation-and-debugging.md#xr入力の自動化)は独立spikeで、Ubuntu＋Spatial SDK＋非root Questへの適合を調べる。未成立でもhostの状態遷移テストと実機の物理操作試験を進める。旧AutoDriverはOpenXR非対応のため候補にしない。
+
 ## Rustで先にテストできる設計
 
 `WindowManager`からAndroid/JNI/GLを切り離したcrateを用意し、仮のpanel adapterでイベント列を再生する。これによりQuestを装着せずに、focus移動、二枚の配置、resize世代、destroy後の入力、save/restoreをテストできる。

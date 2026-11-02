@@ -70,6 +70,8 @@ passthroughのON／OFFと表示パネル数を組み合わせて測定し、背�
 
 ## 正しさを先に試す
 
+[共通の画像・状態の照合](development-automation-and-debugging.md#キャプチャと起動確認)を引き継ぎ、foot／resize／複数panelのframe、WindowId、Surface世代、背景モードとXR画像を対応付ける。direct-to-surface panelがcaptureへ含まれるかは採用OS／SDKで確認する。captureでの欠落とHMD内の欠落を混同せず、文字の可読性と最終表示はHMDでも確認する。録画・castingありの性能値は撮影なしのbaselineと分ける。
+
 - [ ] ARGB8888/XRGB8888、stride、上下向き、alpha、色の取り扱いを既知のtest imageで確認する。
 - [ ] bufferが再利用される前に必要な読取／uploadを終える。`wl_buffer.release`とframe callbackを「受信したから即送信」で一律処理しない。
 - [ ] 同期commitしたsurface treeとdamageを扱い、途中状態や解放済みbufferを描画しない。

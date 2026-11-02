@@ -75,7 +75,17 @@ Termux側の存続も最小XR APKから観測できる。[Termux公式README](ht
 
 同じwindow数・解像度・描画負荷でpassthrough ON／OFFを比較し、背景entityの構成、使用layer数、frame時間、CPU／GPU負荷を記録する。通常passthroughの合成経路は[詳細文書](phase-1-passthrough-background.md#描画経路と責務)を参照し、背景が消費するlayer数やLinuxパネルの可用枚数を未測定の固定値として扱わない。
 
+[capture・castingの条件](development-automation-and-debugging.md#キャプチャと起動確認)も測定記録に含め、撮影なしのbaselineと比較する。MQDH Cast等によるFOV・負荷・proximity設定の変化を通常動作と混同しない。未装着の継続運転、通常設定での取り外し／sleep／復帰、性能計測を分けて実施する。
+
 DMA-BUF／AHardwareBuffer／zero-copyは機能ゲートを別に置く。SSH経路で転送が生じること、buffer形式・modifier・fenceの整合が必要なことを前提にし、Rustにしただけで低遅延やゼロコピーを保証しない。
+
+## 自動化runnerと証跡
+
+デバッグ方法・試験手順を変更する際は、[開発自動化・デバッグ](development-automation-and-debugging.md)を確認する。Phase 0のsmokeを拡張し、状態snapshot、frame／Surface／session世代、XR画像、ログ、結果JSON、未実施理由をrun単位で残す。Activity起動・PID・capture成功だけで、接続・protocol・入力・XR表示の全項目をpassにしない。診断schemaとrunnerの具体的な実装は必要に応じて選ぶ。
+
+host CI、Quest接続runner、HMDを装着した品質確認の役割を分ける。実機runnerでは端末を排他し、readinessにtimeoutを設け、失敗時も証跡を採取する。[無人運用の条件](development-automation-and-debugging.md#無人運用とライフサイクル試験)を満たす場合だけテスト用設定を使い、変更前を記録して復元する。設定はrebootだけで元に戻ると仮定しない。port forward、起動したhelper、変更設定のcleanup失敗も報告する。
+
+XR Operator／Tapedeckによる入力・記録再生は未検証の追加候補で、回帰試験の必須基盤にはしない。内部commandの再生では確認できないray-hit、物理controller、Bluetooth key、hand tracking等の範囲を別に残す。HMD内の可読性、奥行き感、快適性もスクリーンショットだけで合格にしない。
 
 ## 試験と合格条件
 
@@ -87,6 +97,7 @@ DMA-BUF／AHardwareBuffer／zero-copyは機能ゲートを別に置く。SSH経�
 - [ ] 再接続100回、30分／2時間運転など既存planの試験を実施し、限界を記録。
 - [ ] キー配列・modifier・focus・popup・clipboardを回帰試験する。
 - [ ] 依存crate、Waypipe版、native patch、ライセンス、Cargo.lock、SDK版を記録。
-- [ ] ログに鍵、token、入力文字、window pixelsを残さない。
+- [ ] 実機runnerの排他・timeout・失敗時証跡・設定復旧を確認し、実施／未実施／未対応を分けて報告する。
+- [ ] 通常ログに鍵、token、入力文字、window pixelsを残さない。明示的に採取した画像・protocol dumpは試験artifactとして管理し、恒常記録やGitへの混入を避ける。
 
-実機がないCIではビルド／hostロジックまでを検証し、QuestのXR表示を合格扱いにしない。参照したRust crateの存在、Androidの先行例、Eidolon実機試験の三段階を報告書でも区別する。
+実機がないCIではビルド／hostロジックまでを検証し、QuestのXR表示を合格扱いにしない。実機ADBへ接続できる場合も、Activity起動だけではXR表示成功としない。参照したRust crateの存在、Androidの先行例、Eidolon実機試験の三段階を報告書でも区別する。

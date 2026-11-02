@@ -92,6 +92,10 @@ P3-A／P3-BはSSHやXR描画の完成に依存しない。P3-Cで[Phase 2](phase
 
 この段階ではXRへの描画は必須にしない。受信したsurfaceのメタデータと検証用bufferで接続の成立を確認する。静止画を一度受け取っただけで合格にせず、P3-Dで複数回のcommitとframe callback／buffer.releaseの進行も確認する。Wayland protocol logは診断時限定にし、通常運用で入力や画面内容を漏らさない。
 
+## 自動試験の観測点
+
+[共通文書](development-automation-and-debugging.md#debug-buildの観測と操作)のrunnerへ、P3-Bの実行UID・helper版・終了状態と、P3-A／C／Dの既知SHMパターン、toplevel数、configure／ack／commit／releaseの進行を段階的に追加する案とする。APK UIDの試験をADB shell UIDの実行で代替せず、protocolが進んだことと最終XR表示を分けて報告する。XRキャプチャやXR Operatorの導入が未達でも、これらの分離spikeは進められる。
+
 ## 不成立時の判断
 
 Android向けpatchで解消できるなら小さなpatchを記録し、全機能をC++へ戻さない。native libraryをC ABI経由でRustから呼ぶ構成も許容する。構造上の障害が残る場合のみ、既存planのlibwayland-serverやTermux側compositor案を比較する。**Rustへの統一より、root不要・Quest単体・各WaylandウィンドウのXR表示という目的を優先**する。

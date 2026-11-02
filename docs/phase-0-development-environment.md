@@ -4,6 +4,8 @@
 **上位計画:** [implementation-plan.md — Phase 0](implementation-plan.md#phase-0--レポジトリと開発環境)  
 **全体設計:** [architecture.md](architecture.md)
 
+**共通の操作・調査:** [開発自動化・デバッグ](development-automation-and-debugging.md)（2026-11-03追記）。Codex／ADB／Meta VR CLI、スクリーンショット、入力、自動判定、無線接続、実機CIの詳細を参照する。
+
 本ファイルは **Phase 0の実行手順・調査事項の正本**。上位planには概要と合格条件を残す。現状のレポジトリにはまだAndroidアプリ本体がない。以下の <code>android/</code> やAPKのパスは、後に実装するまで存在しない。
 
 **Rust中心構成の調査結果を[第9節](#9-rust中心構成のビルド調査2026-11-01追記)に追記した。** Kotlin＋Rustを主要言語とし、C++は必要性が実証されたshimに限定する。描画は[Phase 1](phase-1-rust-rendering.md)、SSHは[Phase 2](phase-2-rust-ssh.md)、compositor移植は[Phase 3](phase-3-rust-compositor-waypipe.md)へ続く。
@@ -173,6 +175,8 @@ adb logcat -d -v time | grep -Ei 'Spatial|AndroidRuntime|FATAL EXCEPTION' | tail
 
 [Meta公式StarterSample](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-sample-starter/)参照。Linux上で失敗した場合は <code>Meta Spatial CLI not found</code>、exportタスク、JDK/Gradle/AGPの不整合、ADB認証を分離して記録。**実機ビルド未検証のため、成功したとは記載しない。**
 
+上のログ例は短い表示確認用である。自動試験では、先にmain／system／crash bufferを保存してから絞り込み、native crashを含む情報を残す。明示的なActivity起動、`am start -S -W`、PID／dumpsys、期限付きreadinessの詳細は[共通文書のADB操作](development-automation-and-debugging.md#adbの基本操作)へ集約する。
+
 ### 5.2 Eidolon専用の空APK（未実装）
 
 - [ ] 公式サンプルのライセンス/構成を確認し、Eidolon固有applicationId・AppSystemActivity・registerFeatures・registerPanelsを用意する。
@@ -205,7 +209,11 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ### 5.3 自動化できる作業と実機で確認する作業
 
-PC側Codexには環境調査、ビルド、APK/JNI実装、認証済みADBでのinstall・起動・logcat採取、CI整備を任せる。Developer Mode設定、初回USBデバッグ承認、必要なTermux初期設定、HMD内での空間表示確認は利用者が行う。APKの生成や通常のAndroid emulatorでの起動を、QuestのXR表示確認に置き換えない。上流[Manifest](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/StarterSample/app/src/main/AndroidManifest.xml)もQuest固有のnative libraryとVR起動設定を要求する。
+PC側Codexには環境調査、ビルド、APK/JNI実装、認証済みADBでのinstall・起動・ログ／状態／画像取得、CI整備を任せる。[開発自動化・デバッグ](development-automation-and-debugging.md)に、公式のADB／Meta VR CLI／Codex MCP、2D UI操作、XR capture、無線ADB、実機runnerの条件を整理した。Developer Mode設定、初回USBデバッグ承認、必要なTermux初期設定、HMD装着時の空間表示・操作感の確認は利用者が行う。
+
+最初は[小さなsmoke](development-automation-and-debugging.md#実機smokeの実装案)でbuild→install→launch→JNI readiness→ログ・画像取得をつなぐ。`am start -W`の成功とPID存在はXR表示成功ではない。Meta CLIの`metacam`をXR画像の第一候補として実機照合し、普通の`screencap`が黒い／一部しか写らない場合はcapture経路も調べる。画像が取得できない段階も、build／JNIと表示の結果を分けて記録する。
+
+APKの生成や通常のAndroid emulatorでの起動を、QuestのXR表示確認に置き換えない。上流[Manifest](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/StarterSample/app/src/main/AndroidManifest.xml)もQuest固有のnative libraryとVR起動設定を要求する。[Simulatorの適用範囲](development-automation-and-debugging.md#simulatorの使い分け)と、XR Operator／Tapedeckの未検証条件を確認し、それらの完成をPhase 0の開始条件にしない。
 
 最小APKの実機確認時から、Horizonメニュー表示、装着解除・復帰によるXR session/focusの変化を観測する。TermuxへのSSH経路も準備できていれば、Eidolonを前面にした後も接続・Termuxプロセスが維持されるかを記録する。詳細は[Phase 1](phase-1-rust-rendering.md)と[Phase 6](phase-6-rust-lifecycle-testing.md)へ引き継ぎ、SurfaceやWaylandの耐障害性をこの段階で検証済みにしない。
 
@@ -344,6 +352,7 @@ Tokenやauth.json、秘密鍵はシェル履歴・Git・logcatへ書き込まな
 - [ ] Eidolon独自の最小APKを追加。<code>assembleDebug</code> → <code>adb install</code> → XR起動 → <code>logcat</code>が再現できる。
 - [ ] 基本CI（Gradle compile/静的検査、秘密情報除外、ライセンス確認）を用意。
 - [ ] 第5.2節の初回実装として、Rust由来の版情報表示とGradleからのnative成果物生成・同梱を確認し、ビルド成功と実機成功を分けて記録。
+- [ ] [最小smoke](development-automation-and-debugging.md#実機smokeの実装案)でserial・build情報・起動結果・JNI readiness・ログ・capture可否をrun単位で保存。自動判定とHMD確認の範囲を分け、timeout／失敗時にも証跡を残す。
 - [ ] 必要に応じUSBのADB forward＋Termux SSH経路を実験。Quest側Codexは任意。
 - [ ] **Android Waypipe/Smithayは未完成**であることを後続フェーズへ引き継ぐ。
 
@@ -357,6 +366,8 @@ Upstream sample SHA / CLI execution / scene export:
 StarterSample Gradle / install / XR result:
 Eidolon APK build/install/launch/logcat:
 APK revision / Rust revision / JNI result:
+Smoke run ID / device serial / readiness / timeout / result:
+Capture tool/version/method / HMD comparison / untested items:
 XR focus/session changes / Termux background SSH (if available):
 Termux distribution / node/gh/sshd:
 USB adb forward / SSH:

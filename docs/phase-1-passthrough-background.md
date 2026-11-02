@@ -110,6 +110,12 @@ Phase 1の具体的な確認項目:
 
 **Phase 1の背景試験は、Quest実機で「現実背景＋不透明なRustパネル」を同時に確認して合格とする。** ビルド成功、APIの存在、公式サンプルのソース確認だけでは合格にしない。背景合成が未達でも、Surface単独描画・SSH・Waylandの個別検証は継続できる。Phase 6ではsceneが作り直された際に希望設定を適用し直す経路を検証し、背景切替だけでSSH／Waylandを再起動しない構成を目指す。
 
+## 背景を含むデバッグ画像の取得
+
+[開発自動化・デバッグのcapture調査](development-automation-and-debugging.md#キャプチャと起動確認)に従い、通常passthrough＋不透明なpanelが開発用画像へどう写るかを、HMD内表示と照合する。Metaの`metacam`を第一候補にし、`screencap`のAndroid表示との違いを確認する。採用OS／SDKのdirect-to-surface layerを含む具体的な取得範囲は未検証である。
+
+通常背景の表示、外部開発ツールによる合成画像の取得、Camera2によるapp内raw camera取得は別の経路。キャプチャのためにEidolonへCamera2を追加しない。背景は時間で変わるため画像全体のpixel完全一致に依存せず、希望モード・SDK適用・Surface世代・panel領域を照合する。現実の部屋が写る画像は明示的な試験artifactとして扱い、通常ログへ恒常的に残さない。
+
 ## 確認した公式ソース
 
 以下はすべて`meta-quest/Meta-Spatial-SDK-Samples`の確認済みcommit **`f233e2327b95f9871b75bdba867d6fdd726f07cc`**。サンプルのSDK版は0.14.0で、Eidolonの採用版を確定したものではない。
