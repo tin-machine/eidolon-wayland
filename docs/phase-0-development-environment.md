@@ -1,6 +1,6 @@
 # Phase 0 — Ubuntu開発PC・Quest 3・Termuxの開発環境
 
-**Status:** Planning（2026-11-01、Quest実機では未検証）  
+**Status:** Planning（2026-11-03計画更新、Quest実機では未検証）  
 **上位計画:** [implementation-plan.md — Phase 0](implementation-plan.md#phase-0--レポジトリと開発環境)  
 **全体設計:** [architecture.md](architecture.md)
 
@@ -10,12 +10,16 @@
 
 **Rust中心構成の調査結果を[第9節](#9-rust中心構成のビルド調査2026-11-01追記)に追記した。** Kotlin＋Rustを主要言語とし、C++は必要性が実証されたshimに限定する。描画は[Phase 1](phase-1-rust-rendering.md)、SSHは[Phase 2](phase-2-rust-ssh.md)、compositor移植は[Phase 3](phase-3-rust-compositor-waypipe.md)へ続く。
 
-## 1. ゴールとUSB接続構成
+<a id="1-ゴールとusb接続構成"></a>
 
-**Phase 0の目標:** Ubuntu PCでMeta Spatial SDKを利用した最小APKをビルドし、USB経由でQuest 3へデプロイし、XR起動とlogcat取得までを再現可能にする。Termux/Waylandとの製品内通信はPhase 2〜5の対象。ただし**開発用USB-ADB/SSH経路**はPhase 0で先行構築できる。
+## 1. ゴールと開発接続構成
+
+**Phase 0の目標:** Ubuntu PCでMeta Spatial SDKを利用した最小APKをビルドし、まずUSBで初期承認・APK導入・XR起動・基準診断を再現する。続いてQuestのUSB-Cを給電器へ挿し替え、Wi-Fi経由のAPK更新・install、起動、ログ、capture、TermuxへのADB forward＋SSHを検証し、通常の開発経路として採用できるか判定する。Termux/Waylandとの製品内通信はPhase 2〜5の対象で、ここで構築するSSHは開発用である。
+
+[Meta公式のQuest向けADB手順](https://developers.meta.com/vr/documentation/native/android/ts-adb/)は、USB接続中にTCP/IPモードへ切り替えて接続した後、USBを抜いてADBを利用できるとしている。**これは資料で確認した対応であり、Eidolon／手元のQuestでの実測結果ではない。** 詳細な接続・復旧手順の正本は[開発自動化・デバッグの無線ADB](development-automation-and-debugging.md#無線adb)、Phase 0での採用試験は[第5.4節](#54-usb基準からwi-fi運用への採用試験)とする。
 
 ~~~mermaid
-flowchart LR
+flowchart TB
  subgraph PC["Ubuntu開発PC"]
   BUILD["git + Gradle + JDK + Android SDK/NDK"] --> APK["debug APK"]
   CODEX["Codex CLI (PC)"] --> SSH["SSH client :18022"]
@@ -26,8 +30,8 @@ flowchart LR
   AD["adbd"] --> APP["Spatial SDK APK"]
   AD --> T["Termux sshd :8022"]
  end
- ADB <-->|"USB-C / ADB"| AD
- FWD <-->|"USB-C / ADB"| AD
+ ADB <-->|"初期USB / 通常Wi-Fi ADB"| AD
+ FWD <-->|"初期USB / 通常Wi-Fi ADB"| AD
 ~~~
 
 **区別:** 上のSSHは**開発PC→Termuxへの調査用**。Eidolon APK→Termuxへのlocalhost SSH＋Waypipeという製品構成は[architecture.md](architecture.md)に記載。USB/ADBは製品実行時に不要とする。
@@ -125,7 +129,7 @@ cargo --version
 
 1. Meta developer accountと開発チーム登録・本人確認等の必要な準備を済ませる。
 2. スマートフォンのMeta Horizonアプリから対象Questの**Developer Mode**を有効化する。
-3. **データ通信対応**USB-CケーブルでQuestとUbuntuを接続する（充電専用ケーブル不可）。
+3. **初期承認とUSB基準試験にはデータ通信対応**USB-CケーブルでQuestとUbuntuを接続する。Wi-Fi経路を確立した後はPCから外し、給電器へ接続して試験する。
 4. Questを装着して**Allow USB debugging**を承認（信頼するPCのみ）。
 5. Ubuntuから以下を実行する。
 
@@ -183,7 +187,7 @@ adb logcat -d -v time | grep -Ei 'Spatial|AndroidRuntime|FATAL EXCEPTION' | tail
 - [ ] [Passthrough背景の準備](phase-1-passthrough-background.md#manifestとfeature登録)として、merged manifestの`com.oculus.feature.PASSTHROUGH`宣言と背景entityを確認する。背景表示のためにCamera2の権限や部屋スキャンを必須化せず、実際の背景＋Rustパネル表示はPhase 1で試す。
 - [ ] Linux CLIが障害なら、scene exportが不要な構成を検証する。Scene Editorの依存を盲目的に削除しない。上流[StarterSampleActivity](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/StarterSample/app/src/main/java/com/meta/spatial/samples/startersample/StarterSampleActivity.kt)は`apk:///scenes/Composition.glxf`を読み、`Environment`ノードへアクセスするため、exportを外す際はActivity側の読込・Entity生成も整合させる。
 - [ ] Gradle wrapper/JDK/SDK/Kotlin/AGP/Meta SDKを固定しCIでassembleDebugを実行する。
-- [ ] Quest実機へinstallして起動、logcat、クラッシュとXR描画を検証する。
+- [ ] Quest実機へUSBで初回installし、起動、logcat、クラッシュとXR描画の基準結果を記録する。Wi-Fiでの更新・再実行は第5.4節で別に判定する。
 - [ ] compositorやrendererの統合はPhase 1/3で行い、初回実装では第9節のRust cdylibロードとJNI疎通を先行検証する。
 
 初回実装では、上記の最小APKに第9節のJNI疎通を加え、次の成果物までを一つの小さな到達点にすることを推奨する。描画・SSH・compositorの統合は後続の独立した検証で進める。
@@ -209,7 +213,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ### 5.3 自動化できる作業と実機で確認する作業
 
-PC側Codexには環境調査、ビルド、APK/JNI実装、認証済みADBでのinstall・起動・ログ／状態／画像取得、CI整備を任せる。[開発自動化・デバッグ](development-automation-and-debugging.md)に、公式のADB／Meta VR CLI／Codex MCP、2D UI操作、XR capture、無線ADB、実機runnerの条件を整理した。Developer Mode設定、初回USBデバッグ承認、必要なTermux初期設定、HMD装着時の空間表示・操作感の確認は利用者が行う。
+PC側Codexには環境調査、ビルド、APK/JNI実装、認証済みADB（USB／Wi-Fi）でのinstall・起動・ログ／状態／画像取得、CI整備を任せる。[開発自動化・デバッグ](development-automation-and-debugging.md)に、公式のADB／Meta VR CLI／Codex MCP、2D UI操作、XR capture、無線ADB、実機runnerの条件を整理した。Developer Mode設定、初回USBデバッグ承認、USBケーブルの接続・給電器への挿し替え、必要なTermux初期設定、HMD装着時の空間表示・操作感の確認は利用者が行う。
 
 最初は[小さなsmoke](development-automation-and-debugging.md#実機smokeの実装案)でbuild→install→launch→JNI readiness→ログ・画像取得をつなぐ。`am start -W`の成功とPID存在はXR表示成功ではない。Meta CLIの`metacam`をXR画像の第一候補として実機照合し、普通の`screencap`が黒い／一部しか写らない場合はcapture経路も調べる。画像が取得できない段階も、build／JNIと表示の結果を分けて記録する。
 
@@ -219,19 +223,36 @@ APKの生成や通常のAndroid emulatorでの起動を、QuestのXR表示確認
 
 [Phase 3のP3-B](phase-3-rust-compositor-waypipe.md)で扱うAPK UIDからのWaypipe helperの配置・起動も、最小APKができた時点で独立した先行検証にできる。ADB shellやTermux UIDでの実行成功と、製品APK自身からの実行成功を区別する。
 
+### 5.4 USB基準からWi-Fi運用への採用試験
+
+先にUSBで第5.2〜5.3節の最小APK・JNI・診断の基準を残し、[無線ADBの手順](development-automation-and-debugging.md#無線adb)に従ってネットワーク接続を確立する。PCとのUSBを外して給電器へ挿し替えた後、同じAPK revision・診断条件で再実行する。更新試験では更新前後のrevisionも記録する。
+
+| 試験 | 確認・記録すること |
+| --- | --- |
+| USB基準 | 初期承認、最小APKのinstall・起動、JNI readiness、ログ・captureとHMD表示の照合 |
+| 給電中のWi-Fi操作 | APK更新・install、起動、ログ・captureを確認する。Termux準備済みの場合はnetwork側serialを指定したADB forward＋SSHも試し、未準備ならその項目を未実施として残す |
+| 30〜60分の連続運用 | 使用した給電器・ケーブル、実施時間、開始・終了時の残量、温度の推移、切断・再接続、取得できた診断と欠落を記録する。温度は取得元・単位を残し、未取得の値を推測で埋めない |
+| 回復 | sleep→wake、Questのreboot、hostの再接続を別々に試し、ADB復帰・forward再設定・Termux SSHを確認する。HMD操作やUSBでの再設定が必要だった場合も記録する |
+
+host再接続ではADB server／hostの再起動を含む条件と、使用した認証鍵・端末IPが維持されたかを記録する。ネットワーク接続の復帰とアプリ／Termuxの復帰は別に判定する。[Meta公式debug資料](https://github.com/meta-quest/agentic-tools/blob/3a8553d10a5a1bd1bf9beaaa950243fbbed3b9ea/skills/hz-vr-debug/SKILL.md#gotchas)はsleep後のWi-Fi ADB切断を、[公式device管理資料](https://github.com/meta-quest/agentic-tools/blob/3a8553d10a5a1bd1bf9beaaa950243fbbed3b9ea/skills/metavr-cli/references/metavr-device-management.md#metavr-device-reboot)はreboot後に再接続が必要な場合を案内している。TCP/IP待受や認証の永続性、ADBからのwakeが常に可能とは扱わず、採用Horizon OSで実測する。
+
+**USB基準の合格とWi-Fi運用の採用判定は独立させる。** Wi-Fi試験の未実施・失敗をUSB成功で埋めず、採用・条件付き採用・保留と復旧条件を記録する。無線に課題が残ってもUSBを初期設定・診断・復旧に使い、Rust JNI、描画、SSH、compositor等の独立した検証を継続できる。ここでの30〜60分試験を[Phase 6の耐久・lifecycle検証](phase-6-rust-lifecycle-testing.md)の完了とは扱わない。
+
 ## 6. Quest内Termuxを調査する方法
 
-### 6.1 **推奨：PC側の公式Codex → USB ADB forward → Termux SSH**
+<a id="61-推奨pc側の公式codex--usb-adb-forward--termux-ssh"></a>
 
-ADBの[port forwarding](https://developer.android.com/tools/adb#forwardports)を使い、Ubuntuのlocalhost:18022をQuestのTCP:8022へUSB経由でつなぐ。**PC側のCodex CLIがsshを実行する**のでQuestにCodex CLIをインストールする必要はない。
+### 6.1 **推奨：PC側の公式Codex → ADB forward（USB／Wi-Fi）→ Termux SSH**
+
+ADBの[port forwarding](https://developer.android.com/tools/adb#forwardports)を使い、Ubuntuのlocalhost:18022をQuestのTCP:8022へつなぐ。最初はUSB経由で確認し、[Wi-Fiへの切替](development-automation-and-debugging.md#無線adb)後はnetwork側serialでforwardを作り直して再検証する。**PC側のCodex CLIがsshを実行する**のでQuestにCodex CLIをインストールする必要はない。
 
 ~~~mermaid
-flowchart LR
+flowchart TB
  subgraph HOST["Ubuntu PC"]
   C["Codex CLI"] --> SSH["ssh -p 18022"]
   SSH --> FWD["adb forward tcp:18022 tcp:8022"]
  end
- FWD <-->|"USB ADB"| AD["Quest adbd"]
+ FWD <-->|"USB / Wi-Fi ADB"| AD["Quest adbd"]
  AD --> SS["Termux sshd: 127.0.0.1:8022"]
  SS --> SH["Termux shell: ls / pkg / git / ps"]
 ~~~
@@ -259,12 +280,14 @@ SSH調査経路だけならTermux側のGitHub CLIやNode.jsは不要。`git`、`
 ssh-keygen -t ed25519 -f "$HOME/.ssh/quest_termux_ed25519" -C eidolon-quest
 # 上の公開鍵をTermuxに登録する（安全な初回セットアップ）
 adb devices -l
+# USB基準ではUSB serial、Wi-Fi試験では adb devices -l の IP:port に置換する
+quest_serial='YOUR_ADB_SERIAL'
 adb forward --list
-adb forward tcp:18022 tcp:8022
+adb -s "$quest_serial" forward tcp:18022 tcp:8022
 # TERMUX_USERNAME はTermuxの whoami 結果で置換する
 ssh -p 18022 -o IdentitiesOnly=yes -i "$HOME/.ssh/quest_termux_ed25519" \
   TERMUX_USERNAME@127.0.0.1 'uname -a; id; pwd'
-adb forward --remove tcp:18022
+adb -s "$quest_serial" forward --remove tcp:18022
 ~~~
 
 <code>$PREFIX/etc/ssh/sshd_config</code>で公開鍵のみ（<code>PasswordAuthentication no</code>）、loopback待受と設定を確認。<code>sshd -T</code>と<code>ss -lnt</code>で実際の状態を確認し、秘密鍵はGitへコミットしない。初回SSH host keyはTermuxの <code>ssh-keygen -lf $PREFIX/etc/ssh/ssh_host_ed25519_key.pub</code> などの指紋と照合して受け入れる。<code>StrictHostKeyChecking=no</code>での迂回はしない。
@@ -273,7 +296,7 @@ adb forward --remove tcp:18022
 
 **ADB shellの限界:** <code>adb shell getprop</code>・<code>adb logcat</code>・<code>adb shell pm list packages</code>は使用可能。しかしAndroid別UIDのTermuxのprivate homeへ通常の<code>adb shell</code>からアクセスはできず、release版Termuxに<code>run-as com.termux</code>が通るとも限らない。Termux内部調査はSSHで行う。
 
-**USBはQuestのインターネット回線ではない。** USB/ADB SSHが成立しても、QuestからGitHub/OpenAI APIへ通信するには別途ネットワーク到達性が必要。
+**ADB forwardはQuestのインターネット回線を提供しない。** USB／Wi-FiのADB経由でSSHが成立しても、QuestからGitHub/OpenAI APIへ通信する到達性は別に確認する。
 
 ### 6.2 Termux内部でCodex CLIを起動する（オプション）
 
@@ -338,22 +361,27 @@ Tokenやauth.json、秘密鍵はシェル履歴・Git・logcatへ書き込まな
 | Termux調査 | SSHコマンド・ファイル転送 | Termux内で直接 |
 | GitHub認証 | PC側に集約可 | Quest側にも必要 |
 | APKビルド | PCでネイティブ実行 | QuestでのAPKビルドは別問題 |
-| USBを抜いた後 | SSH経路は消失 | Quest単体の調査が可能になる余地 |
+| USBを抜いた後 | Wi-Fi ADBを接続してforwardを再設定すれば継続可能。採用OSで実測する | Quest単体の調査が可能になる余地 |
 | リスク | ADB権限・SSH鍵管理 | 非公式バイナリへの資格情報委託、Android寿命制限 |
 
 **Phase 0の合格にQuest側Codexの動作を必須にしない。** 動作試験・fork選定は任意の独立スパイクとして記録。
 
 ## 7. Phase 0完了条件と観測記録
 
+USBでの開発基準とWi-Fi通常運用の採用判定を別欄で管理する。無線の未了項目は未了のまま残し、USB基準を満たした部分から後続フェーズへ進める。以下はすべて未実施で、資料上の対応確認を実機成功として数えない。
+
 - [ ] UbuntuでJDK17、SDK/NDK、Gradle wrapper、Meta SDKのバージョンを確認。
 - [ ] Quest 3でDeveloper Mode/USB承認、<code>adb devices -l</code>が<code>device</code>。
 - [ ] Quest ABI/API/Horizon OS buildを<code>adb shell getprop</code>で取得。
 - [ ] Ubuntu上で上流StarterSampleをビルド・XR起動するか、Linux CLIの具体的な障害を記録して代替の最小Spatial APKを実証。
-- [ ] Eidolon独自の最小APKを追加。<code>assembleDebug</code> → <code>adb install</code> → XR起動 → <code>logcat</code>が再現できる。
+- [ ] Eidolon独自の最小APKを追加。Ubuntuで<code>assembleDebug</code>し、USBで<code>adb install</code> → XR起動 → <code>logcat</code>の基準結果を再現できる。
 - [ ] 基本CI（Gradle compile/静的検査、秘密情報除外、ライセンス確認）を用意。
 - [ ] 第5.2節の初回実装として、Rust由来の版情報表示とGradleからのnative成果物生成・同梱を確認し、ビルド成功と実機成功を分けて記録。
 - [ ] [最小smoke](development-automation-and-debugging.md#実機smokeの実装案)でserial・build情報・起動結果・JNI readiness・ログ・capture可否をrun単位で保存。自動判定とHMD確認の範囲を分け、timeout／失敗時にも証跡を残す。
-- [ ] 必要に応じUSBのADB forward＋Termux SSH経路を実験。Quest側Codexは任意。
+- [ ] Termuxを準備した環境では、USBでADB forward＋SSHの開発経路を確認。未準備の場合は未実施として残し、APK更新の検証は先行できる。Quest側Codexは任意。
+- [ ] USB-Cを給電器へ挿し替えた状態でWi-Fi経由のAPK更新・install、起動、ログ、captureを確認。Termux準備済みの場合はADB forward＋SSHも確認。
+- [ ] 30〜60分のWi-Fi連続運用で給電条件、残量・温度、接続と診断の欠落を記録。
+- [ ] sleep／wake、Quest reboot、host再接続の結果とUSBを含む復旧条件を個別に記録し、Wi-Fi運用の採用・条件付き採用・保留を判定。
 - [ ] **Android Waypipe/Smithayは未完成**であることを後続フェーズへ引き継ぐ。
 
 ~~~text
@@ -362,15 +390,19 @@ ANDROID_HOME / SDK platform / Build Tools / NDK / Gradle / AGP / Kotlin / Meta S
 Spatial Editor CLI Linux version/path:
 Quest device / Horizon OS / API / ABI:
 adb devices -l / USB cable / authorization:
+Wi-Fi IP:port / host / authorization identity (no private key contents):
+USB baseline result / Wi-Fi adoption result / pending conditions:
 Upstream sample SHA / CLI execution / scene export:
 StarterSample Gradle / install / XR result:
-Eidolon APK build/install/launch/logcat:
+Eidolon APK build/install/launch/logcat (USB and Wi-Fi separately):
 APK revision / Rust revision / JNI result:
 Smoke run ID / device serial / readiness / timeout / result:
 Capture tool/version/method / HMD comparison / untested items:
 XR focus/session changes / Termux background SSH (if available):
 Termux distribution / node/gh/sshd:
-USB adb forward / SSH:
+USB and Wi-Fi adb forward / SSH:
+Wi-Fi run duration / charger and cable / battery start-end / temperature source and trend:
+Sleep-wake / Quest reboot / host reconnect / forward recreation / USB recovery needed:
 Quest-native Codex (optional):
 Failing commands / log excerpts (secrets removed):
 ~~~

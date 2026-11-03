@@ -10,7 +10,7 @@ Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプ�
 
 最小MVP: Quest 3にインストールしたEidolon APKを起動し、**同じQuest上のTermuxで動くfoot**を、XR空間内の独立した長方形パネルとして表示する。通常passthroughで周囲の現実を背景にし、Bluetoothキーボードでshell/Neovimに入力でき、コントローラーでクリック、画面の再描画、リサイズ、接続の再確立が行える。
 
-- **ネットワークに依存しない**: アプリ実行と表示にはPC・Wi-Fi・クラウドは不要。localhost SSHのみ。開発・依存取得・Codexの利用に必要な回線とは区別する。
+- **ネットワークに依存しない**: アプリ実行と表示にはPC・Wi-Fi・クラウドは不要。localhost SSHのみ。開発時のWi-Fi経由のAPK更新・実機試験、依存取得、Codexの利用に必要な回線とは区別する。
 - **非特権**: Questのroot化、OSの置換、カーネルモジュールの導入なし。
 - **既存のターミナルを再利用**: footをWayland clientとして動かし、ターミナル描画は再実装しない。
 - **分離したXRパネル**: 最初は1画面、その後2枚以上の独立したxdg_toplevelへ。
@@ -61,11 +61,26 @@ Phase 0からbuild→install→launch→状態・ログ・画像取得の小さ�
 
 ADBの2D操作、UI Automator、debug用の内部command、OpenXR入力、物理入力は検証範囲が異なる。Meta VR CLIはLinuxとCodex連携を提供するが、XR Operator／TapedeckのUbuntu＋Spatial SDK＋非root Questでの統合は未検証で、独立spikeとする。SimulatorやXR入力自動化の完成を、最小APK・JNI・SSH検証の開始条件にしない。
 
+### USB初期接続から給電＋ネットワーク更新への移行（2026-11-03）
+
+`main`の`9f840ee21718393049f332d9de967fcecf395162`を確認した時点でも、APK／Rust実装と実機試験は未着手である。Quest 3のUSB-Cを充電器からの給電に使うため、**最初にUSBで開発経路を確立し、その後の通常更新・試験をWi-Fiへ移せるかを検証する**計画へ変更する。ここでの更新は開発用APKの導入・更新を指す。
+
+[MetaのQuest向けADB手順](https://developers.meta.com/vr/documentation/native/android/ts-adb/)には、USB接続中の`adb tcpip`設定後に`adb connect`で接続し、USBを外して操作する方式がある。[Meta CLI referenceの`device wifi`](https://github.com/meta-quest/agentic-tools/blob/3a8553d10a5a1bd1bf9beaaa950243fbbed3b9ea/docs/metavr-cli.md#wifi)にも有効化・状態取得・解除が載っている。これらは方式の裏付けであり、採用OSでの実測成功を意味しない。
+
+| 段階 | 検証すること | 判定と次の作業 |
+| --- | --- | --- |
+| USBで開発開始 | Developer Mode・認証、最小APK導入、起動、build revision／JNI readiness、ログとcapture経路 | 成立後は描画・SSH・compositor等の独立spikeを開始できる |
+| 給電＋Wi-Fiで通常更新 | USBをPCから外して充電器へ接続し、ネットワーク側のdevice IDを指定。同じ署名の新しいAPKへの更新、起動、ログ・画像、必要なTermux SSHを再現 | 成功した範囲を通常の開発・実機CI経路に採用。不成立時は証拠と課題を残し、USB経路で他の開発を継続 |
+| 接続復旧・連続運転 | 30〜60分程度の給電中の残量・温度・接続維持、host側再接続、sleep／wake、本体再起動を別々に確認 | 通常更新の成功と完全無人復旧を別判定し、長時間・OS更新後の再検証をPhase 6へ引き継ぐ |
+
+[Meta公式のデバッグ資料](https://github.com/meta-quest/agentic-tools/blob/3a8553d10a5a1bd1bf9beaaa950243fbbed3b9ea/skills/hz-vr-debug/SKILL.md#gotchas)はsleep後のWi-Fi ADB切断に注意を促している。再起動後のTCP待受の維持や、ADBに到達できない状態からのwakeは未確認として扱い、必要時にUSBで再設定できる手順を残す。手順・受入表・根拠は[開発自動化・デバッグの無線ADB節](development-automation-and-debugging.md#無線adb)を正本とする。runnerの実行場所や接続管理方法は、LAN到達性と認証・排他を満たす範囲で実装者が選べる。
+
 ## 最初に潰すべき不確実性（スパイク）
 
 | 優先度 | 検証 | 合格条件 | 不成立時 |
 | --- | --- | --- | --- |
 | P0 | 空のSpatial SDK APKをQuest実機でビルド・起動 | immersiveシーンを表示できる | SDK/Androidビルド環境を最小化 |
+| P0（USB確認後） | 給電＋Wi-Fiで開発用APKの更新・試験 | PCとのUSB接続を外した状態で新buildへの更新、起動、ログ・captureを再現。連続運転・復旧条件も記録 | USBで他の実装を継続し、無線経路の未成立箇所を独立して調査 |
 | P0 | Kotlin→Rust cdylibのJNI疎通 | 新規C++なしでnative methodを呼べる | jni版、ABI、APK同梱・R8設定を切り分け |
 | P0 | VideoSurfacePanelRegistration + Rust EGL/GLES | テストパターンをXRパネルへ連続描画できる | EGL adapter／Surface APIを比較 |
 | P0（Phase 1内） | 通常passthrough背景＋不透明なRustパネル | Quest実機で現実背景とテスト画像を同時表示できる | Manifest、skybox／environment、SDK設定と描画順を切り分け。他の個別spikeは継続 |
@@ -93,30 +108,35 @@ Rust版SSHでは、`russh::streamlocal_forward`を要求し、受信channelをAP
 
 ## Phase 0 — レポジトリと開発環境
 
-**詳細runbook:** [phase-0-development-environment.md](phase-0-development-environment.md)。Ubuntu環境構築、APKビルド、USBデバッグ、TermuxへのADB/SSH、Codex/認証/GitHub連携に加え、今回Rust cdylibのビルドとJNI疎通を追記した。
+**詳細runbook:** [phase-0-development-environment.md](phase-0-development-environment.md)。Ubuntu環境構築、Rust cdylib／JNI、USBでの初期承認・APK導入から給電＋Wi-Fiでの更新・診断への移行、TermuxへのADB/SSH、Codex/認証/GitHub連携を扱う。
 
 ### Phase 0の接続図 — 開発PCからQuestへのAPK投入
 
 ~~~mermaid
-flowchart LR
+flowchart TB
   DEV["開発PC: Gradle / JDK / Android SDK + Cargo"] -->|"build"| APK["Kotlin APK + Rust cdylib"]
-  APK -->|"adb install / USB-C"| QUEST["Quest 3: XR Activity"]
-  QUEST -->|"adb logcat"| DEV
+  APK -->|"adb install: 初期USB → 検証後Wi-Fi"| QUEST["Quest 3: XR Activity"]
+  QUEST -->|"ADB: ログ・状態・画像"| DEV
   DEV -.->|"任意: adb forward 18022 → 8022 / SSH"| T["Quest 3: Termux sshd"]
+  POWER["充電器"] -->|"Wi-Fi試験時のUSB-C給電"| QUEST
 ~~~
 
-**接続境界:** このADB/USB/SSHは開発・調査時限定。APK自体からTermuxへ接続する製品用SSH/Waypipeは後続フェーズ。UbuntuのSpatial Editor CLIとscene exportの制約もrunbookに記載。
+**接続境界:** このUSB／Wi-Fi ADB／開発用SSHは開発・調査時限定。図は初期USB接続からWi-Fi試験へ段階的に切り替える計画である。APK自体からTermuxへ接続する製品用localhost SSH/Waypipeは後続フェーズ。UbuntuのSpatial Editor CLIとscene exportの制約もrunbookに記載。
 
 - [ ] JDK / SDK / Gradle wrapper / Meta SDKを確認する。
-- [ ] Developer ModeとUSB debugを有効化し、ADBで接続する。
+- [ ] 最初はUSBケーブルで接続し、Developer Mode・USB debugとHMD内のADB認証を確認する。
 - [ ] 公式StarterSampleまたは検証済みの代替最小サンプルをビルド・実機起動し、ログを採取する。
 - [ ] Eidolon固有の最小APKを作り、ビルド・インストール・起動・診断を再現可能にする。
 - [ ] Rust cdylibを同梱し、Kotlinから単純なJNI呼出しを試す。renderer/compositorはまだ必須にしない。
 - [ ] Gradle→Cargo→APK同梱を一つのビルド操作へまとめる。APK側とRust側のbuild revisionをパネル等で確認できるようにし、古い`.so`の混入を見分ける。
 - [ ] [最小smokeの案](development-automation-and-debugging.md#実機smokeの実装案)に沿って対象serial、起動・JNI readiness、ログ、capture可否、終了codeを記録する。Activity起動成功とXR表示成功は分ける。
+- [ ] USBでの導入・診断が成立した後、[無線ADBの検証手順](development-automation-and-debugging.md#無線adb)に従ってUSBを給電へ回し、同じ署名の新しいAPKへの更新、起動、build revision、必要なデータ保持、ログ・画像取得をネットワーク経由で確認する。
+- [ ] 給電中の30〜60分程度の接続・残量・温度を観測し、host再接続、sleep／wake、本体再起動の結果とUSB再設定の要否を別々に記録する。未成立項目は課題としてPhase 6へ引き継ぐ。
 - [ ] 必要ならPC側の公式CodexからADB forward＋SSHでTermuxを調査する。Quest内Codexの動作は任意。
 - [ ] 最小XR APKでActivity lifecycleとXR session focusを観測し、Termuxを準備した環境ではsshd/検証用プロセスの背景存続を短く試す。詳細・長時間試験はPhase 6へ引き継ぐ。
 - [ ] CI、バージョン固定、ライセンス、secret除外を整備する。
+
+**進行の判定:** USB基盤の成立と無線運用の採用可否を別に記録する。無線側が失敗・未実施の場合は完了扱いにせず、影響範囲と再試験条件を残す。USBで成立したAPK/JNI基盤から、他の独立spikeを進めてよい。
 
 参考：[Meta StarterSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/tree/main/StarterSample)、[Android NDK Samples](https://github.com/android/ndk-samples)、[cargo-ndk](https://github.com/bbqsrc/cargo-ndk)。
 
@@ -370,6 +390,7 @@ flowchart LR
 - [ ] フレーム時間、present待ち、SHM upload量、Waypipe byte数、CPU/メモリ/FD数を測定する。
 - [ ] passthrough ON／OFFそれぞれの使用layer数・表示対象window数・性能を記録し、多数表示時の資源割当を評価する。背景のlayer消費数を固定値と仮定しない。
 - [ ] [共通の自動化方針](development-automation-and-debugging.md)に従い、実機runnerの排他・timeout・cleanup、capture負荷、未装着試験と通常のsleep／復帰を区別して記録する。
+- [ ] Phase 0で試した給電＋Wi-Fi運用を長時間負荷で再検証する。充電状態・残量・温度、sleep／wake、本体再起動・OS更新後の再接続とUSB再設定の要否を記録し、開発ADBの切断と製品内localhost SSH／Waylandの状態を分ける。
 - [ ] 30分/2時間の長時間実験、再接続100回等を実施する。
 - [ ] native resourceの所有者と解放順序を確認し、JNI境界越しのpanicを防ぐ。
 - [ ] 必要が確認された場合だけGPU importとコピー削減を評価する。
@@ -404,11 +425,12 @@ eidolon-wayland/
 | 観点 | Test | 成功の目安 |
 | --- | --- | --- |
 | Build | Gradle、cargo-ndk、ABI、MSRV、native依存 | 再現可能なAPK生成、誤リンクなし |
+| 開発接続・更新 | USB初期接続、給電＋Wi-FiでのAPK更新、再接続、残量・温度 | 実際に導入したbuildを識別でき、通常更新と無人復旧の成立範囲を別々に記録 |
 | JNI / Surface | native method、EGL draw、pause/resume | C++必須でなく疎通、描画継続、leakなし |
 | MR背景 | 通常passthrough、skybox、切替・scene再生成 | 現実背景と不透明パネルの同時表示、設定の再適用、接続維持 |
 | Protocol | configure/ack、buffer lifetime、disconnect | deadlock・protocol errorなし |
 | SSH transport | host key、exec、StreamLocal echo、Waypipe | fd転送とbyte streamの境界が正しい |
-| Security | loopback bind、認証、path、secret管理 | LAN露出なし、不正鍵・不明path拒否 |
+| Security | 製品用SSHのloopback bind、開発ADBの到達範囲、認証、path、secret管理 | 製品用SSH/socketのLAN露出なし、開発ADBは管理した接続元から利用、不正鍵・不明path拒否 |
 | Input | Ctrl/Alt/Esc/US/JIS、pointer/scroll、focus | CLI・GUI操作可能 |
 | Model | Rustの状態遷移、世代、fake adapter | host上で再現可能な回帰試験 |
 | Reliability | sleep、Termux kill、Surface再生成 | リソース回収、復旧の範囲が明示される |
@@ -452,6 +474,8 @@ eidolon-wayland/
 この文書は仕様のベースラインであり、実装者の裁量を不必要に制限しない。合理的な構成変更は根拠と検証結果を残して行う。一度にすべてのnative依存を統合せず、次の単位で不確実性を解消する。
 
 **デバッグ・自動化・実機テストの方式を検討する都度、[共通文書](development-automation-and-debugging.md)を確認する。** 利用するCLI／SDK／OSが変わった場合は対応条件を再確認し、採用した手順と実測結果を本書・該当フェーズへ反映する。未検証toolを必須の実装方式として固定しない。
+
+開発接続はUSBで立ち上げた後、給電＋Wi-FiでのAPK更新・試験へ移行できるかを検証する。USBの成功、無線の通常更新、sleep／rebootからの復旧を一つの合否にまとめず、記録した結果に応じて運用を選ぶ。
 
 1. 最小Kotlin APKとRust JNIの疎通。XRパネルにRust由来のbuild情報を表示し、ビルド・同梱・起動を再現可能にする。
 2. RustからSDK Surfaceに描画し、Kotlinで通常passthrough背景を適用するPhase 1。描画単独と背景合成を独立に確認する。

@@ -9,7 +9,7 @@
 
 **ビルド → APK導入 → 起動 → 状態・ログ・画像の取得 → 判定 → 修正・再試行**を、開発PC側から自動化するための参照文書とする。デバッグ方法や実機テストを設計・変更する際は、まず本書の対応範囲と未検証条件を確認する。個々のフェーズの機能要件・完了条件は各フェーズ文書を正本とし、共通の操作方法・証跡・ツール制約を本書へ集約する。
 
-この調査ではGitHubの`main`を`6cef07274d07f110d2aa5f11495cbe72313ca43f`で再確認した。リポジトリは設計文書のみであり、APK、Rust実装、自動テストスクリプト、実機成功記録はまだない。以下のコマンドは公式資料に基づく**導入後の手順例**で、実行済みの記録ではない。
+自動化ツールの初回調査ではGitHubの`main`を`6cef07274d07f110d2aa5f11495cbe72313ca43f`で確認した。今回の接続計画の追記では`9f840ee21718393049f332d9de967fcecf395162`を確認し、USBでの初期検証から、給電＋Wi-Fiでの更新検証へ進む方針を具体化した。リポジトリは設計文書のみであり、APK、Rust実装、自動テストスクリプト、実機成功記録はまだない。以下のコマンドは公式資料に基づく**導入後の手順例**で、実行済みの記録ではない。
 
 記述の確度を次のように区別する。
 
@@ -53,7 +53,7 @@
 
 ## 推奨する開発ループ
 
-基本経路はUbuntu上の**Gradle＋Cargo＋ADB**とし、Quest固有の観測に**Meta VR CLI**を追加する。まず一回のsmoke testを再現可能にし、その入口をCodexが呼べるようにする。全ツールの導入やXR入力自動化を、Phase 0のビルド開始条件にしない。
+基本経路はUbuntu上の**Gradle＋Cargo＋ADB**とし、Quest固有の観測に**Meta VR CLI**を追加する。まずUSB接続で一回のsmoke testを再現可能にし、その入口をCodexが呼べるようにする。その後、QuestのUSB-Cを充電器につないだまま、Wi-Fi経由でAPK更新・起動・観測を反復できるか検証する。[USBから給電＋Wi-Fiへ移る受入条件](#usbから給電wi-fiへ移る受入条件)に沿って通常更新の採用を判断し、sleep／rebootからの無人復旧は別に判定する。無線の未了項目は課題として残し、USBで他の独立した実装・検証を継続できる。全ツールの導入やXR入力自動化を、Phase 0のビルド開始条件にしない。
 
 ```mermaid
 flowchart TD
@@ -73,7 +73,7 @@ flowchart TD
 
 ### 前提と対象の固定
 
-[Phase 0](phase-0-development-environment.md#4-quest-3のdeveloper-modeとusbデバッグ)に従い、Developer Mode、データ通信可能なUSB-C、初回のHMD内USB debugging承認を済ませる。`adb devices -l`の状態が`device`であることを確認し、複数端末がある場合はserialを明示する。ADBの基本操作は[Android公式ADBガイド][adb]と[AOSPのman page][adb-man]を根拠とする。
+[Phase 0](phase-0-development-environment.md#4-quest-3のdeveloper-modeとusbデバッグ)に従い、Developer Mode、データ通信可能なUSB-C、初回のHMD内USB debugging承認を済ませる。`adb devices -l`の状態が`device`であることを確認し、対象を明示する。以降の`quest_serial`は現在使うADB transportの識別子で、初期はUSB serial、Wi-Fi切替後はその接続の識別子へ変更する。物理端末の排他用IDとは分ける。対象選択の根拠は[Android公式ADBガイド](https://developer.android.com/tools/adb#directingcommands)と[AOSP man pageの`-s`指定](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/user/adb.1.md)である。
 
 以降のBash例では、リポジトリのrootを作業ディレクトリとし、次の変数を設定済みとする。**applicationId、Activity、APKパスは仮置きで、現状のリポジトリには存在しない。** 実装時のmerged manifest／成果物に合わせて置き換える。artifactの保存先は実行ごとに分ける。
 
@@ -106,7 +106,7 @@ adb -s "$quest_serial" shell pidof "$eidolon_app"
 adb -s "$quest_serial" shell dumpsys activity activities
 ```
 
-`install -r`は既存データを維持した更新。`am start -S`は対象を先にforce-stopし、`-W`はActivity起動完了を待つ。cold start試験と、停止せず復帰する試験を分ける。**`am start -W`の成功、PIDの存在、例外ログがないことだけでは、Rustロード・Surface描画・XR合成の成功を証明しない。** 起動後の観測はアプリを停止する前に行う。
+[`install -r`](https://developer.android.com/tools/adb#pm)は既存データを維持した更新。本計画では、同じapplicationId・同じ署名鍵のdebug APKを更新の基準にする。[Androidの署名資料](https://developer.android.com/studio/publish/app-signing#considerations)が説明する更新時の署名照合を踏まえ、CIごとに別のdebug keystoreを生成して更新不能になる構成を避ける。署名不一致をuninstall／データ削除で黙って回避しない。`am start -S`は対象を先にforce-stopし、`-W`はActivity起動完了を待つ。cold start試験と、停止せず復帰する試験を分ける。**`am start -W`の成功、PIDの存在、例外ログがないことだけでは、Rustロード・Surface描画・XR合成の成功を証明しない。** 起動後の観測はアプリを停止する前に行う。
 
 ### ログ・状態・性能情報
 
@@ -354,32 +354,92 @@ run ID／revision／世代／時刻を付け、snapshotの古さや途中状態�
 
 ## USB以外の接続と実機CI
 
+**初期はUSBで基準を作り、最終的に給電しながらネットワーク経由で更新・検証できる開発環境を目指す。** QuestのUSB-Cを充電器へ接続する運用では、開発PCとのデータ接続をWi-Fiへ移す。[MetaのQuest向けADB手順](https://developers.meta.com/vr/documentation/native/android/ts-adb/)は、USB接続からTCP/IPを有効化し、接続確認後にUSBを外してADBを利用する方法を説明している（今回本文を確認した[公式ドイツ語版](https://developers.meta.com/vr/documentation/native/android/ts-adb/?locale=de_DE)も参照）。これは資料上の対応確認であり、EidolonのAPK更新・描画・給電中の安定動作が実機で合格したという意味ではない。
+
 ### 無線ADB
 
-[Android公式][adb]には、wireless debuggingのpairingと、USB接続後にTCP/IPへ切り替える方式がある。ただしAndroid 11以降の一般的なpairing UIが、Questの設定画面に同じ形で露出しているとは未確認である。Meta VR CLIの`device wifi`等も候補とし、採用Horizon OSで使える方式を確認する。
+[Android公式ADBガイド](https://developer.android.com/tools/adb#wireless)と[AOSPのADB Wi-Fi設計資料](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/dev/adb_wifi.md)にある、次の二方式を区別する。
 
-次は条件が整った場合の代替例で、すべてを続けて実行する手順ではない。
+| 方式 | 初回設定と接続 | 本プロジェクトでの扱い |
+| --- | --- | --- |
+| USBからのlegacy TCP | USB debuggingでホスト鍵を承認し、`adb tcpip PORT` → `adb connect IP:PORT` | MetaのQuest手順に沿った最初の検証候補。ADB transport自体はTLSではなく、通信は暗号化されない |
+| Wireless debuggingのTLS pairing | 端末が示すpairing用IP／port／codeで`adb pair`し、接続用portへ接続する | Questで必要なpairing UI・サービスが利用できるか未確認。Android一般の対応だけで採用を決めない |
+
+初回のDeveloper Mode・HMD内承認は[Phase 0](phase-0-development-environment.md#4-quest-3のdeveloper-modeとusbデバッグ)で済ませる。接続するADB serverのホスト鍵に対する承認であり、別のhost／新しい鍵では再承認が必要になり得る。[Android公式の端末接続説明](https://developer.android.com/tools/adb#Enabling)に従い、初回設定や復旧用にデータ通信可能なUSB接続を残す。legacy TCPを使う検証では、信頼できる開発LANから対象へ到達させ、ADBの端末portをインターネットへ公開しない。
+
+USB smokeが通った後の、legacy TCPへの切替例。`quest_serial`等は[前提と対象の固定](#前提と対象の固定)で設定済みとする。IPは実際のLANアドレスに置き換える。
 
 ```bash
-# pairing UIが利用できる場合。二つのportは端末が示す実際の値
-adb pair DEVICE_IP:PAIR_PORT
-adb connect DEVICE_IP:DEBUG_PORT
+quest_usb_serial="$quest_serial"
+adb -s "$quest_usb_serial" shell ip route
+quest_ip='QUEST_LAN_IP'
 
-# 従来方式をOSが許可する場合。最初はUSBから設定する
-adb -s USB_SERIAL tcpip 5555
-adb connect DEVICE_IP:5555
+adb -s "$quest_usb_serial" tcpip 5555
+adb connect "${quest_ip}:5555"
+adb devices -l
+
+# devicesで確認したネットワーク側transportを以降の対象にする
+quest_serial="${quest_ip}:5555"
+adb -s "$quest_serial" get-state
 ```
 
-切替後は`adb devices -l`でnetwork側のserialを確認し、その値を使う。無線経路の認証・LAN到達性・切断時の復帰を確認し、試験後に不要なTCP/IP待受を残さない。`adb disconnect`はhostの接続解除であり、端末側待受の解除とは別である。通常のUSB運用へ戻す方法も利用版で記録する。
+ネットワーク側が`device`になったことを確認してからPCとのUSBを外し、充電器へ接続する。同じQuestがUSBとWi-Fiの二つのtransportで表示される場合があるので、以後も対象を明示する。この挙動と`-s`による選択は[MetaのADB手順](https://developers.meta.com/vr/documentation/native/android/ts-adb/)に記載されている。切替前のUSB serialをそのままネットワーク接続の指定に使わない。
+
+給電＋Wi-Fiで、USB時と同じ更新・起動・ログ取得を実施する。以下は接続先を切り替えた操作例であり、採用Meta CLIの`capture screenshot --help`を確認して使う。実際のsmokeでは[実行順と判定](#実行順と判定)に従い、起動前のログ採取と撮影前のreadinessの期限付き待機を組み込む。これらは未実行の手順である。
+
+```bash
+adb -s "$quest_serial" install -r "$eidolon_apk"
+adb -s "$quest_serial" shell am start -S -W -n "$eidolon_component"
+adb -s "$quest_serial" logcat -d -b main -b system -b crash -v threadtime \
+  > "$eidolon_artifacts/wifi-logcat.txt"
+metavr -d "$quest_serial" capture screenshot \
+  --method metacam --output "$eidolon_artifacts/wifi-xr-screen.png"
+```
+
+`metacam`と`screencap`の取得範囲は[Meta公式capture資料](https://github.com/meta-quest/agentic-tools/blob/3a8553d10a5a1bd1bf9beaaa950243fbbed3b9ea/skills/hz-vr-debug/references/screenshots-video.md)に従い、[キャプチャと起動確認](#キャプチャと起動確認)の条件を維持する。Wi-Fi transportを選んだことで、Eidolonのlayerやpassthroughが撮影できると保証されるわけではない。Termux向けSSHは[ADB forward／reverseとTermux](#adb-forwardreverseとtermux)の転送も同じ接続上で確認する。**Termuxやsshdが未準備なら転送試験を`not_run`として残し、最小APKのWi-Fi更新・起動・観測は先行する。**
+
+[MQDHの公式画像取得資料](https://developers.meta.com/vr/documentation/native/android/ts-mqdh-media/)にも、ADB over Wi-Fiを有効にしたwireless castingと、cast中のスクリーンショット・録画が説明されている。これは[Windows／macOS向けMQDH](https://developers.meta.com/vr/documentation/unreal/ts-mqdh-getting-started/)の機能の裏付けとして扱い、UbuntuのCLIで取得できる画像・layer範囲は上記の実機試験で確認する。
+
+Meta CLIを使う場合、固定commitの[公式`device wifi` reference](https://github.com/meta-quest/agentic-tools/blob/3a8553d10a5a1bd1bf9beaaa950243fbbed3b9ea/docs/metavr-cli.md#wifi)は、`enable`を「tcpip＋端末のWi-Fi IPへの自動接続」、`disable`を「disconnect＋USBへの切戻し」、`status`を状態確認として説明している。`metavr -d "$quest_usb_serial" device wifi enable`等をADB手順の代替候補にするが、**配布版の`metavr device wifi --help`と各subcommandのhelpを確認・記録してから使う。Eidolonの実機では未検証であり、CLIのWi-Fi機能をTLS pairingと同一視しない。** `disable`は常時Wi-Fi運用の各job末尾に無条件で入れず、USBへ戻すと決めた時の操作とする。
+
+TLS pairingの評価は別の試験にする。必要なUIが使える場合に限り、端末が示した実際のportを使う。pairing用portと接続用portは別であり、接続用portも固定5555とは限らないことが[AOSP設計資料](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/dev/adb_wifi.md)に示されている。
+
+```bash
+adb pair DEVICE_IP:PAIR_PORT
+adb connect DEVICE_IP:DEBUG_PORT
+```
+
+再起動後の自動復旧は、接続方式の資料確認と分ける。AOSPの[`restart_service.cpp`](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/daemon/restart_service.cpp)では、`adb tcpip`が設定するのは`service.adb.tcp.port`であり、永続propertyではない。[Android 14のadbd起動処理](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/android14-release/daemon/main.cpp)には`persist.adb.tcp.port`を参照する経路もあるが、Horizon OSが同じ設定・動作をするとは未確認である。**一度`adb tcpip`を実行すればreboot後も必ず維持される、とは扱わない。** listenが解除された場合は`adb connect`の再試行だけでは復旧せず、USB等で再有効化する必要があり得る。
+
+切断時は、対象IP／portと承認状態を確認し、試行回数・総待機期限を決めて再接続する。接続復旧後はアプリreadinessを取り直し、必要なforwardを再作成する。期限超過・未承認・待受なしはインフラ条件として記録し、無限待機やappの失敗判定に置き換えない。実機の再起動・復旧手順は、[Metaのdevice management資料](https://github.com/meta-quest/agentic-tools/blob/3a8553d10a5a1bd1bf9beaaa950243fbbed3b9ea/skills/metavr-cli/references/metavr-device-management.md)と採用OSで照合する。
+
+終了時の操作も区別する。[AOSP man page](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/user/adb.1.md)にある`adb disconnect IP:PORT`はホスト側のTCP接続解除であり、端末の待受停止ではない。legacy TCPからUSBへ戻す操作は`adb -s "$quest_serial" usb`で、上記`restart_service.cpp`がTCP portを`0`へ戻す。通常jobでは自分の転送・試験設定を回収し、端末側のWi-Fi待受を維持するか解除するかは運用方針として決める。
+
+#### USBから給電＋Wi-Fiへ移る受入条件
+
+以下は**Eidolon向けの試験計画で、全項目が実機未実施**。USBでの基準確認を飛ばさず、同じAPK／同じ実装済みsmokeをWi-Fiで比較する。30〜60分は初期の接続・給電確認の目安であり、[Phase 6の長時間・寿命試験](phase-6-rust-lifecycle-testing.md)の代替にはしない。
+
+| 段階 | 試験と記録 | 次へ進む条件・残す制約 |
+| --- | --- | --- |
+| USB baseline | 初回承認、最小APKのbuild／install／launch、実装済みreadiness、ログ、capture経路を確認 | USBでの結果を保存する。未実装・画像取得不能等を無線接続の問題と混ぜない |
+| 給電＋Wi-Fiへの切替 | PCとのUSBを外し充電器へ接続。Wi-Fi側の対象指定でshell／install／launch／log／captureを実行 | USB接続へ誤って依存せず同じsmokeが通る。capture不足は表示確認の不足として残す |
+| APK更新とデータ保持 | 同じapplicationId・署名鍵でrevisionの異なるAPKを`install -r`し、更新後のbuild情報とテスト用保存データを読む | 新revisionが動き、保持対象データが残る。署名不一致や更新失敗をuninstallで隠さない |
+| Termuxと接続復旧 | Wi-Fi上でforward＋SSHを確認し、意図したADB接続断・再接続後にforwardを作り直す | 期限内に対象選択・SSHの認証／host key照合まで復旧する。Termux未準備なら`not_run`とし、APK更新試験は進める |
+| 30〜60分の反復 | 給電しながら更新・起動・観測を繰り返し、切断、電池残量、充電状態、温度、利用したawake設定を記録 | 反復結果と電源・温度の推移を説明できる。給電表示だけで負荷中の電池維持を推定しない |
+| 通常設定でのsleep／復帰 | Castやproximity／auto-sleep変更を元に戻し、実際の非装着・sleepから接続とapp状態を再確認 | 自動復帰・物理操作が必要・未確認を分ける。通常の反復試験とは別の結果にする |
+| Questのreboot後 | 起動後のIP、ADB待受・承認、必要なTermuxサービス、forwardを確認する | USB再有効化の要否と復旧手順が確定する。手動復旧が必要なら無人reboot対応を合格にしない |
+
+採用結果は通常更新・観測、Termux調査、連続運転、sleep復帰、reboot復旧ごとに記録する。例えば起動済み端末の更新が成功しreboot後にUSB再設定が必要なら、その条件を明記して通常開発に利用できる。未実施・失敗を合格に変えず、課題は[Phase 0](phase-0-development-environment.md)と[Phase 6](phase-6-rust-lifecycle-testing.md)へ引き継ぐ。
 
 ### ADB forward／reverseとTermux
 
 ```bash
-# PCの127.0.0.1:18022 → Quest内Termuxの8022
-adb -s "$quest_serial" forward tcp:18022 tcp:8022
+# ADB serverのあるhostのloopback:18022 → Questのloopback:8022
+# quest_serialは現在選択しているUSBまたはWi-Fi transport
+adb -s "$quest_serial" forward --no-rebind tcp:18022 tcp:8022
 adb forward --list
 
-# QuestからPC上の開発serverへ接続する場合の別例
+# 別用途: QuestからADB serverのあるhost上の開発serverへ接続
 adb -s "$quest_serial" reverse tcp:18080 tcp:18080
 
 # 該当試験の終了時に、自分が作成した転送を解除する
@@ -387,11 +447,28 @@ adb -s "$quest_serial" forward --remove tcp:18022
 adb -s "$quest_serial" reverse --remove tcp:18080
 ```
 
-`forward`はhost→device、`reverse`はdevice→hostの接続用。Termux側のloopback限定sshdと公開鍵・host key照合は[Phase 0](phase-0-development-environment.md#6-quest内termuxを調査する方法)に従う。これによりCodexからTermuxのプロセス・Waypipe版・ログ等を調べられるが、製品APKのrussh／StreamLocal中継の成功証明とは別である。USB／ADB接続があるだけでQuestのインターネット到達性が得られるわけでもない。
+`forward`はhost→device、`reverse`はdevice→hostの接続用で、[AOSP man page](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/user/adb.1.md)に両方向の操作がある。[`adb_listeners.cpp`](https://android.googlesource.com/platform/packages/modules/adb/+/f4965b77c694689c08855076eaf983c8e88646f9/adb_listeners.cpp)ではlistenerが選択transportにひも付き、[`socket_spec.cpp`](https://android.googlesource.com/platform/packages/modules/adb/+/f4965b77c694689c08855076eaf983c8e88646f9/socket_spec.cpp)ではremoteの`tcp:8022`がdevice loopbackへ接続される。このため、**USBをWi-Fi transportへ変えても同じforwardを利用する設計が成立し、Termux sshdをLANへ公開する必要はない。** EidolonのQuestでの確認は上の受入試験で行う。
+
+通常設定のlocal `tcp:18022`は**ADB serverが動くhostのloopback**にlistenする。ADB clientを起動した場所と同じとは限らない。Pod内のADB serverならそのPodのnetwork namespace、常設UbuntuのADB serverならUbuntu側にできる。`adb -H`で別hostのserverを使っても、Podの`127.0.0.1:18022`へ転送が自動で生えるわけではない。server側でSSHを実行するか、別途SSH tunnel等でそのlocal endpointへ接続する。[AOSP man pageのserver指定](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/user/adb.1.md)と[listen実装](https://android.googlesource.com/platform/packages/modules/adb/+/f4965b77c694689c08855076eaf983c8e88646f9/socket_spec.cpp)を参照し、全interfaceへlistenする`-a`を安易に有効化しない。
+
+上記[`adb_listeners.cpp`](https://android.googlesource.com/platform/packages/modules/adb/+/f4965b77c694689c08855076eaf983c8e88646f9/adb_listeners.cpp)は、transport切断時に対応listenerを除去する。Wi-Fi再接続後は必要なforwardを作り直し、既存listenerが残っていると仮定しない。固定18022を使う例では`--no-rebind`で意図しない上書きを検出し、runの所有情報と`forward --list`を照合する。動的port等への変更はrunner設計時に選んでよい。
+
+Termux側のloopback限定sshdと公開鍵・host key照合は[Phase 0](phase-0-development-environment.md#6-quest内termuxを調査する方法)に従う。ADBホスト鍵の承認と、TermuxのSSH認証・SSH host keyの検証は別である。これによりCodexからTermuxのプロセス・Waypipe版・ログ等を調べられるが、製品APKのrussh／StreamLocal中継の成功証明とは別である。USB／ADB接続があるだけでQuestのインターネット到達性が得られるわけでもない。
 
 ### Questに接続したhostをtest runnerにする
 
-USBを接続したUbuntuでCodexを動かす構成に加え、開発端末からSSHでそのUbuntuへ命令する方式、またはQuestを接続したself-hosted runnerを使う方式が考えられる。通常のクラウドCIに手元USB端末が自動で見えるわけではない。hostを遠隔操作する場合も、ADB／MCPをインターネットへ直接公開せず、認証されたhostのコマンド実行経路へ集約する案とする。
+USBを接続したUbuntuで最初のsmokeを確立し、Wi-Fi検証後は次のどちらかへ接続方法を広げる。通常のクラウドCIに手元のQuestやLANが自動で見えるとは扱わない。以下は実装案であり、k3sのrunnerや遠隔操作経路はまだ構築していない。
+
+| Wi-Fi実機操作の構成 | ADB／forwardの所在 | 判断と確認事項 |
+| --- | --- | --- |
+| 常設UbuntuでADBと検証harnessを実行し、k3s runnerからSSHで呼ぶ | 接続・ADB鍵・local forwardをUbuntuに集約 | 初期の推奨。USBの基準環境と復旧手段を維持しやすい。APKと証跡の転送・対象排他を設計する |
+| QuestのLANへ到達できるtrusted Podから直接接続する | ADB serverとlocal forwardをPod内に置く | TCP到達性があれば候補になる。Pod再作成時のADB鍵・アドレス管理・再承認・接続復旧を確認する |
+
+Wi-Fi接続そのものにk3sへのUSB passthroughは不要である。これは[AOSPのTCP/IP接続モデル](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/dev/adb_wifi.md)に基づく構成上の判断で、CNI・routing・firewall・AP isolationの実環境確認は残る。hostは有線LANでもQuestへ到達できる配置を検討できる。明示的なIP／portを用いる接続と、mDNSによる自動発見の条件を分ける。
+
+ADB serverと端末のadbdも区別する。[AOSP man page](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/user/adb.1.md)の`-H`／`-P`はhost側server（標準port 5037）の指定であり、`adb connect`のQuest側portとは別である。初期案ではserverのlocalhost listenを維持し、SSH経由でhost上のharnessを実行する。ADB／MCPをインターネットへ直接公開しない。
+
+ホスト認証には`adbkey`等の鍵が関与し、[AOSP man page](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/user/adb.1.md)は`ADB_VENDOR_KEYS`による鍵指定も提供している。ephemeral Podで毎回別鍵を生成するのではなく、承認済みの鍵を常設hostで管理するか、trustedな実機実行jobだけへ供給する案とする。untrustedなPR buildへQuestの到達権限やADB／SSHの鍵を渡さない。APK更新用の署名鍵、ADBホスト鍵、Termux SSHの鍵は用途を分けて扱う。
 
 | 実行環境 | 担当する検証 |
 | --- | --- |
@@ -399,7 +476,9 @@ USBを接続したUbuntuでCodexを動かす構成に加え、開発端末から
 | Quest接続runner | 導入・起動、Android instrumentation、app診断、XR capture、実機の性能・寿命 |
 | HMDを装着した人 | 表示・奥行き・読みやすさ、物理入力、MR背景、操作感の最終確認 |
 
-一台のQuestを複数jobで同時操作しない。device serialで排他し、port forward、テスト用設定、起動したhelperをrun単位で管理・回収する。接続なし・未承認・他job使用中はインフラ条件として報告し、app失敗やpassへ変換しない。
+一台のQuestを複数jobで同時操作しない。**物理端末に対応する固定の管理IDで排他し、現在のUSB／Wi-Fi transportをそのIDへ対応付ける。** transportのserialやIPだけで別端末と判定すると、同じQuestを二重操作する恐れがある。port forward、テスト用設定、起動したhelperをrun単位で管理・回収する。接続なし・未承認・他job使用中はインフラ条件として報告し、app失敗やpassへ変換しない。
+
+充電器につないでいることは、sleep中のWi-Fi到達性や完全無人wakeを保証しない。[Metaのdebug skillの注意事項](https://github.com/meta-quest/agentic-tools/blob/3a8553d10a5a1bd1bf9beaaa950243fbbed3b9ea/skills/hz-vr-debug/SKILL.md#gotchas)もsleepによる接続の不安定さに触れている。通常の更新・観測を繰り返す条件と、通常設定でのsleep／復帰試験を分け、[無人運用とライフサイクル試験](#無人運用とライフサイクル試験)の設定記録・復元を守る。接続のない端末をCLIのwakeだけで必ず復帰させられるとは扱わない。
 
 ## 無人運用とライフサイクル試験
 
@@ -442,7 +521,7 @@ Spatial Simulatorの調査時配布は[Windows x86][spatial-sim-win]と[Apple Si
 
 ### 実行順と判定
 
-1. 対象serial、tool版、Quest OS／ABI、接続・承認、他jobの利用を確認する。
+1. 物理端末の管理IDと現在のtransport、tool版、Quest OS／ABI、接続・承認、他jobの利用を確認する。最初はUSBで通し、Wi-Fiでは接続復旧とforward再作成も期限付きで扱う。
 2. GradleからCargoを含むbuildを実行し、APK／native revisionと成果物hashを記録する。
 3. APKを更新し、起動前から必要なログを採取する。cold startか復帰かを明示する。
 4. appを起動し、そのフェーズで実装済みのreadinessを**期限付き**で待つ。PID存在だけや固定sleepだけに依存しない。
@@ -458,7 +537,7 @@ readinessは段階化する。Phase 0のJNI初期化、Phase 1のSurface／EGL�
 
 | 証跡 | 内容 |
 | --- | --- |
-| 実行情報 | run ID、時刻、source SHA、command、tool版、対象serial・OS／SDK構成 |
+| 実行情報 | run ID、時刻、source SHA、command、tool版、物理端末の管理ID・対象transport・OS／SDK構成、USB／Wi-Fi・給電・awake設定 |
 | Build | build log、APK hash、APK／Rust revision、ABI・native同梱結果 |
 | 起動 | Activity起動結果、PID、readinessの進行／timeout、crash情報 |
 | 状態 | 実装済み範囲のmodel／adapter／Surface／transport状態 |
@@ -472,14 +551,14 @@ snapshotやschemaの具体名は未確定。一般ログのsecret除外を維持
 
 | フェーズ | 追加する自動化・観測 | 合格と混同しないこと |
 | --- | --- | --- |
-| [Phase 0](phase-0-development-environment.md) | 最小smoke、明示的Activity起動、build／JNI情報、logcat、capture方式の比較準備 | APK生成／起動だけではXR表示成功にならない |
+| [Phase 0](phase-0-development-environment.md) | USBでの最小smoke、明示的Activity起動、build／JNI情報、logcat、capture方式の比較準備。その後に給電＋Wi-Fiで更新・観測を比較 | APK生成／起動だけではXR表示成功にならない。無線の資料確認と実機合格も分ける |
 | [Phase 1](phase-1-rust-rendering.md) | pattern／frame番号、Surface世代、EGL結果、`metacam`とHMD内表示の照合 | presentの成功と最終合成を分ける |
 | [Passthrough補足](phase-1-passthrough-background.md) | 現実背景＋不透明panelのcapture確認 | 通常背景、開発capture、raw camera APIを区別 |
 | [Phase 2](phase-2-rust-ssh.md) | host key／認証／exec／echoを別結果にし、EOF・timeoutを機械判定 | PCからのSSH成功はAPK russhの成功ではない |
 | [Phase 3](phase-3-rust-compositor-waypipe.md) | APK UID helper、SHM既知パターン、protocol進行の観測 | shell UIDの起動や一枚の静止画だけでpassにしない |
 | [Phase 4](phase-4-rust-window-rendering.md) | footの描画、resize、複数layerを状態と画像で照合 | capture範囲と、HMD内の可読性・最終表示を分ける |
 | [Phase 5](phase-5-rust-window-manager.md) | Rust model回帰、debug command、物理入力。XR Operatorは独立spike | 内部command成功だけでray-hit／物理入力が検証済みとはしない |
-| [Phase 6](phase-6-rust-lifecycle-testing.md) | 再接続・長時間・sleep／復帰、設定復旧、実機CI、性能比較 | capture負荷・未装着設定による試験条件の変化を記録 |
+| [Phase 6](phase-6-rust-lifecycle-testing.md) | 再接続・長時間・sleep／復帰、設定復旧、実機CI、性能比較。Wi-Fiとforwardの復旧、reboot後のUSB再設定要否も記録 | capture負荷・未装着設定による試験条件の変化を記録。ネットワーク不通をapp失敗にしない |
 
 性能計測はcapture／castingの有無を条件として記録し、撮影なしのbaselineも取得する。passthrough ON／OFF、panel数・解像度、実際のlayer数、温度・電源状態も比較条件に含める。[Phase 6の測定順序](phase-6-rust-lifecycle-testing.md#性能の測定順序)を維持し、自動化toolを入れたことだけで計測の妥当性が保証されるとは扱わない。
 
@@ -488,7 +567,9 @@ snapshotやschemaの具体名は未確定。一般ログのsecret除外を維持
 - [ ] 基本ADB操作と最小APK／JNI smokeをUbuntu＋Questで確認し、実際の版とcommandを記録する。
 - [ ] `metacam`／`screencap`とHMD内表示を照合し、panel／背景／system UIの取得範囲を記録する。
 - [ ] 2D入力、debug command、XR入力、物理入力を別々のテストとして記録する。
-- [ ] 無線ADB／実機runnerを採用する場合は、対象選択・排他・cleanup・接続断を確認する。
+- [ ] USBで基準を作った後、給電＋Wi-FiでAPK更新・データ保持・起動・ログ・captureを確認し、Termux準備後にforward＋SSHも確認する。
+- [ ] Wi-Fiの30〜60分反復、接続断からのforward再作成、通常設定のsleep／復帰、reboot後の再設定要否を記録する。
+- [ ] 実機runnerの物理端末IDとtransportの対応、排他、ADB鍵、期限付き復旧、cleanupを確認する。
 - [ ] 未装着試験の設定を記録・復元し、通常設定でのsleep／復帰も別に確認する。
 - [ ] XR Operator／Tapedeckを試す場合は、host OS、loader、APK、非root条件の可否を更新する。
 - [ ] 実機の成功・失敗を本書と該当フェーズへ反映し、上位plan／READMEの完了状況を整合させる。

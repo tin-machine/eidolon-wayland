@@ -1,6 +1,6 @@
 # Phase 6 — Rust coreのライフサイクル・性能・検証
 
-**状態:** 設計／調査反映、実機未検証（2026-11-01）  
+**状態:** 設計／調査反映、実機未検証（2026-11-03）  
 **上位計画:** [Phase 6](implementation-plan.md#phase-6--運用性性能耐障害性) / [全体設計](architecture.md)  
 **前提:** [Rust renderer](phase-4-rust-window-rendering.md) / [Rust WindowManager](phase-5-rust-window-manager.md)
 
@@ -31,6 +31,8 @@ flowchart LR
 **Android Activity/Surface、SSH transport、Wayland client sessionは別々の寿命**を持つ。
 
 Surfaceの再生成だけならSSHやWaylandを再起動する必要はない設計を目指す。反対にSSHが再接続できても、元のWaylandアプリが保持されるとは限らない。Waypipeのreconnectionを追加実装・検証しないMVPでは、**切断後は新しいセッションとして起動し直す**ことを明示する。「再接続＝作業内容を必ず復元」と約束しない。
+
+開発PCとQuestを結ぶUSB／無線ADBは、この三つとは別の接続状態である。現在のAPKとTermux間のlocalhost SSH＋Waypipe構成では、**無線ADBの切断だけを理由に製品内のSSH／Waylandセッションを再起動しない**。sleepやOSによるプロセス終了が両方へ影響する場合も、ADB到達性と製品内の状態を別々に記録する。観測が途切れた時間帯を、セッションの存続確認として扱わない。
 
 `SessionGeneration`、`WindowId`、`SurfaceGeneration`を分離し、旧channelのframeやcallbackが新セッションのwindowに適用されないようにする。停止処理は冪等にする。
 
@@ -79,9 +81,29 @@ Termux側の存続も最小XR APKから観測できる。[Termux公式README](ht
 
 DMA-BUF／AHardwareBuffer／zero-copyは機能ゲートを別に置く。SSH経路で転送が生じること、buffer形式・modifier・fenceの整合が必要なことを前提にし、Rustにしただけで低遅延やゼロコピーを保証しない。
 
+## 給電＋Wi-Fiでの試験運用
+
+Phase 0でUSB接続による初期確認を終えた後は、USB-Cを給電に使い、APK更新・起動・ログ・画像取得をWi-Fi経由で行う運用を検証する。[Meta公式ADB資料](https://developers.meta.com/vr/documentation/native/android/ts-adb/)は、USBでTCP/IP接続を設定してからUSBデータ接続を外す手順を説明している。[Meta VR CLIの公式reference](https://github.com/meta-quest/agentic-tools/blob/3a8553d10a5a1bd1bf9beaaa950243fbbed3b9ea/docs/metavr-cli.md)にもWi-Fi接続と対象端末選択の機能がある。これらは公式ツールの機能確認であり、**EidolonのQuest 3で更新・描画・復旧が成功した記録ではない**。接続・対象選択・復旧の詳細は[無線ADB](development-automation-and-debugging.md#無線adb)を正本とする。
+
+[Meta公式debug skill](https://github.com/meta-quest/agentic-tools/blob/3a8553d10a5a1bd1bf9beaaa950243fbbed3b9ea/skills/hz-vr-debug/SKILL.md)は、sleep後のWi-Fi ADB切断と、起床後の再接続を注意点として挙げる。CLIにwake機能があっても、ADBへ到達できない端末を起こせるとは扱わない。起床・再認証・USBによる再設定が人の操作を要した場合も記録し、完全無人復旧の成功に含めない。
+
+| 試験 | 条件と確認する範囲 |
+| --- | --- |
+| 通常更新と長時間運転 | USBで確認したsmokeをWi-Fiでも実行する。給電した30分／2時間運転で、アプリの進行、ADB到達性、残量推移、温度・thermal状態を追う |
+| Wi-Fi／ADB切断と再接続 | 製品内のSSH・Wayland・Surfaceの状態を独立して確認する。再接続後のsnapshot／ログと突き合わせ、回収できない証跡は欠落として残す |
+| 自然なsleepと復帰 | 通常のproximity／sleep設定に戻し、casting等の介入も外す。未装着で描画を継続させる試験と分け、起床、ADB再接続、XR focus、Surface、Termuxの順序を観測する |
+| Quest再起動 | ネットワーク到達性、IP・認証・ADB待受、APKとTermuxの起動条件を再確認する。電源断からの起動や再起動後の復旧を自動化できるとは未確認であり、以前のWaylandセッション保持も前提にしない |
+| Horizon OS更新後 | 変更前後のOS buildを残し、同じsmoke、無線接続、capture範囲、sleep／復帰、Termuxの存続条件を再確認する |
+
+未装着の継続運転にテスト用proximity／autosleep設定を使う場合は、開始時の値と変更内容を記録し、終了・中断時に元の値へ戻す。[Scriptable Testing Servicesの公式資料](https://developers.meta.com/vr/documentation/native/android/ts-scriptable-testing/)では、変更した設定がrebootだけで元に戻るとはされていない。既定値への復元と試験前の値への復元を同一視せず、復旧失敗も報告する。
+
+給電中でも残量の維持や連続運転を保証しない。[Metaのthermal管理資料](https://developers.meta.com/vr/essentials/thermal/)は、温度に応じた性能制限や冷却状態への移行を説明している。負荷、給電条件、残量・温度の推移を実測し、capture／castingを伴う運転と撮影なしの性能baselineを分けて評価する。
+
 ## 自動化runnerと証跡
 
-デバッグ方法・試験手順を変更する際は、[開発自動化・デバッグ](development-automation-and-debugging.md)を確認する。Phase 0のsmokeを拡張し、状態snapshot、frame／Surface／session世代、XR画像、ログ、結果JSON、未実施理由をrun単位で残す。Activity起動・PID・capture成功だけで、接続・protocol・入力・XR表示の全項目をpassにしない。診断schemaとrunnerの具体的な実装は必要に応じて選ぶ。
+デバッグ方法・試験手順を変更する際は、[開発自動化・デバッグ](development-automation-and-debugging.md)を確認する。Phase 0のsmokeを拡張し、状態snapshot、frame／Surface／session世代、XR画像、ログ、結果JSON、未実施理由をrun単位で残す。Quest OS build、SDK／tool版、APK revision、USB／Wi-Fiのtransport、給電条件、残量・温度、装着・sleep・XR session状態、テスト用設定、capture条件も対応付ける。Activity起動・PID・capture成功だけで、接続・protocol・入力・XR表示の全項目をpassにしない。診断schemaとrunnerの具体的な実装は必要に応じて選ぶ。
+
+無線切断やcapture経路の失敗を、アプリの描画失敗と直結させない。ADB到達性、captureコマンドの結果、frame／Surface／XR sessionの記録、HMD内表示を分けて確認し、画像を回収できなければ描画確認の未実施・欠測を残す。反対に、再接続や画像回収だけで製品内セッションの継続を合格にしない。
 
 host CI、Quest接続runner、HMDを装着した品質確認の役割を分ける。実機runnerでは端末を排他し、readinessにtimeoutを設け、失敗時も証跡を採取する。[無人運用の条件](development-automation-and-debugging.md#無人運用とライフサイクル試験)を満たす場合だけテスト用設定を使い、変更前を記録して復元する。設定はrebootだけで元に戻ると仮定しない。port forward、起動したhelper、変更設定のcleanup失敗も報告する。
 
@@ -94,7 +116,10 @@ XR Operator／Tapedeckによる入力・記録再生は未検証の追加候補�
 - [ ] Universal MenuでのXR focus喪失、Activity背景化、panel破棄を区別し、入力停止・押下解除とSurface再attachを検証する。
 - [ ] scene再生成・背景化・sleep/resume・Universal Menu復帰で背景設定とskybox表示を確認し、背景切替のみでSSH／Waylandが再起動しないことを検証する。
 - [ ] wrong host key、sshd停止、Waypipe終了、Termux kill、Quest sleep/resumeを別々に試す。
-- [ ] 再接続100回、30分／2時間運転など既存planの試験を実施し、限界を記録。
+- [ ] USBでの初期確認後、給電＋Wi-FiでAPK更新・起動・ログ・画像取得を確認し、ADB切断と製品内SSH／Waylandの状態を切り分ける。
+- [ ] 再接続100回、30分／2時間運転など既存planの試験を実施し、transport、給電条件、残量・温度の推移と限界を記録。
+- [ ] テスト用設定での未装着継続運転と、通常設定での自然なsleep／復帰を分け、設定の復旧と人の操作が必要な条件を記録する。
+- [ ] Quest再起動・Horizon OS更新後の無線接続、APK／Termux起動、capture範囲、lifecycleを再確認し、自動復旧できた範囲と未検証範囲を残す。
 - [ ] キー配列・modifier・focus・popup・clipboardを回帰試験する。
 - [ ] 依存crate、Waypipe版、native patch、ライセンス、Cargo.lock、SDK版を記録。
 - [ ] 実機runnerの排他・timeout・失敗時証跡・設定復旧を確認し、実施／未実施／未対応を分けて報告する。

@@ -168,6 +168,10 @@ Phase 1で現実背景＋Rustテスト画像を検証し、Phase 4でfootへ接�
 
 開発PCのCodex／Gradle／Cargo／ADBとMeta VR CLIによる操作・観測は、開発用の経路とする。通常利用時のQuest単体動作、APK内compositor、APK→Termuxのlocalhost SSH＋Waypipeという製品経路は維持する。[開発自動化・デバッグ](development-automation-and-debugging.md)に、公式機能・コマンド・未検証条件を集約する。
 
+**開発用接続の移行計画（2026-11-03）:** 初期承認・最小APK導入・基準となる診断はUSBで確立する。その後、QuestのUSB-Cを給電に使い、Wi-Fi経由でAPKを更新・起動・観測できるかを[Phase 0](phase-0-development-environment.md)で検証する。[MetaのADBガイド](https://developers.meta.com/vr/documentation/native/android/ts-adb/)がUSB設定後の無線接続を案内していることは確認済みだが、Eidolonの実機での連続運転・sleep／reboot後の復旧は未検証である。無線での通常更新と完全無人復旧を別に判定し、必要時にはUSBで再設定する。
+
+開発用ADBの切断は観測経路の喪失として扱い、APK内のrussh接続やWayland sessionが切れたと即断しない。[AOSPのADB Wi-Fi設計](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/dev/adb_wifi.md)が区別する従来のTCP/IP接続とTLS pairingを混同せず、実際に使う方式・接続元・認証鍵を記録する。runnerはQuestのIPへ到達できるホスト／Podから選べるが、同一実機の排他、再接続、転送の回収は[共通文書](development-automation-and-debugging.md#usb以外の接続と実機ci)に従う。
+
 debug用診断を追加する場合も、window／focus／背景設定はRustを正本とし、Kotlin adapterのSDK適用結果と区別して観測する。テスト操作は通常のcommand／event経路へ接続し、modelを直接書き換える別系統を作らない。具体的な診断入口やschemaは実装時に選べる。内部command試験と、実コントローラーからの入力経路の試験は別に記録する。
 
 Activity起動・PID・EGL present・XR画像・HMD内表示はそれぞれ別の証拠である。開発用XRキャプチャのためにCamera2を製品へ追加することや、XR Operator／Simulatorのために別のOpenXR sessionを作ることは前提にしない。上記は観測設計の方針であり、Eidolonの実機検証は未実施である。
