@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" />
+    <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="false" />
+    <uses-feature android:glEsVersion="0x00030001" android:required="true" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:allowBackup="false" android:label="Eidolon Native Probe"
+        android:theme="@style/ProbeTheme" android:supportsRtl="true">
+        <meta-data android:name="com.oculus.supportedDevices" android:value="quest3" />
+        <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
+        <uses-native-library android:name="libossdk.oculus.so" android:required="true" />
+        <activity android:name=".ProbeActivity" android:exported="true" android:launchMode="singleTask"
+            android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="com.oculus.intent.category.VR" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

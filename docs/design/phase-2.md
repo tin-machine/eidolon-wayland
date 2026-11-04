@@ -2,6 +2,8 @@
 
 前提はB03。[PC開発用SSH](../phase-0-reproduction.md)とは別の接続・鍵・試験を作る。製品endpointは`127.0.0.1:8022`に固定し、MVPに任意remote host設定を追加しない。
 
+[独立probe](../native-preflight-20261104.md)で、APK内一時鍵・host key不一致拒否・exec・StreamLocalの4接続×8 MiB echoを実機確認した。成立性の証拠とコードを再利用できるが、永続credential管理、同時接続上限、切断復旧、remote launcherの製品実装は以下のタスクに残る。
+
 <a id="t01"></a>
 ## T01 — アプリ専用鍵と開発時pairing
 

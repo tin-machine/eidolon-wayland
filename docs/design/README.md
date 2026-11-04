@@ -3,7 +3,7 @@
 設計日: 2026-11-04。基準revision: `76baac2ca860aeb89bd51d61a23084e2fe88b285`。
 引継ぎ先はユーザー指定の **Codex Sol**。設計はモデルの世代に依存しない。
 
-これは実装前の契約であり、Phase 1〜6の実機成功記録ではない。実装済みなのはComposeパネル、Verify、通常passthrough、Wi-Fi ADB、PC→Termux SSHまで。[実測記録](../phase-0-troubleshooting-20261104.md)と分ける。
+これは製品実装前の契約であり、Phase 1〜6全体の実機成功記録ではない。Phase 0の[実測記録](../phase-0-troubleshooting-20261104.md)に加え、独立debug APKによる[Native事前検証](../native-preflight-20261104.md)がある。そこに記載された部分的な成立確認を再利用し、31タスクの残る受入条件を省略しない。
 
 ## 読む順序
 

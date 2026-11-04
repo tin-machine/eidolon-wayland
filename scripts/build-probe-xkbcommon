@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""libxkbcommon 1.8.1をAndroid arm64/API34向けstatic libraryへ構築する。"""
+import hashlib
+import os
+from pathlib import Path
+import subprocess
+import tarfile
+import urllib.request
+
+root = Path(__file__).resolve().parents[1]
+build = root / "probes/native-deps/build"
+build.mkdir(parents=True, exist_ok=True)
+archive = build / "libxkbcommon-1.8.1.tar.gz"
+url = "https://codeload.github.com/xkbcommon/libxkbcommon/tar.gz/refs/tags/xkbcommon-1.8.1"
+expected = "c65c668810db305c4454ba26a10b6d84a96b5469719fe3c729e1c6542b8d0d87"
+if not archive.exists():
+    with urllib.request.urlopen(url, timeout=60) as source:
+        archive.write_bytes(source.read())
+if hashlib.sha256(archive.read_bytes()).hexdigest() != expected:
+    raise SystemExit("libxkbcommon source hash mismatch")
+source = build / "libxkbcommon-xkbcommon-1.8.1"
+if not source.exists():
+    with tarfile.open(archive) as tar:
+        tar.extractall(build, filter="data")
+ndk = Path(os.environ.get("ANDROID_HOME", "/opt/android-sdk")) / "ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin"
+cross = build / "android-arm64.ini"
+cross.write_text("[binaries]\nc = '" + str(ndk / "aarch64-linux-android34-clang") + "'\nar = '" + str(ndk / "llvm-ar") + "'\nstrip = '" + str(ndk / "llvm-strip") + "'\n[host_machine]\nsystem = 'android'\ncpu_family = 'aarch64'\ncpu = 'armv8'\nendian = 'little'\n[properties]\nneeds_exe_wrapper = true\n")
+meson = ["uv", "tool", "run", "--from", "meson==1.7.2", "meson"]
+output = build / "xkbcommon-arm64"
+install = build / "install"
+if not (output / "build.ninja").exists():
+    subprocess.run(meson + ["setup", str(output), str(source), "--cross-file", str(cross), "--prefix", str(install), "--libdir", "lib", "--default-library", "static", "-Dbuildtype=release", "-Db_staticpic=true", "-Denable-tools=false", "-Denable-x11=false", "-Denable-docs=false", "-Denable-wayland=false", "-Denable-xkbregistry=false", "-Denable-bash-completion=false"], check=True)
+subprocess.run(meson + ["compile", "-C", str(output)], check=True)
+subprocess.run(meson + ["install", "-C", str(output)], check=True)
+print(install / "lib/libxkbcommon.a")

@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""独立probeのRust library/helperをAPI34・arm64で生成する。"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+
+root = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--output", type=Path, required=True)
+parser.add_argument("--version", type=int, default=1)
+parser.add_argument("--assets", type=Path)
+args = parser.parse_args()
+if args.version < 1:
+    parser.error("version must be positive")
+native = root / "probes/native"
+digest = hashlib.sha256()
+for path in sorted(native.rglob("*")):
+    if path.is_file() and "target" not in path.relative_to(native).parts:
+        digest.update(str(path.relative_to(native)).encode() + b"\0" + path.read_bytes() + b"\0")
+env = os.environ.copy()
+env["ANDROID_NDK_HOME"] = str(Path(env.get("ANDROID_HOME", "/opt/android-sdk")) / "ndk/27.3.13750724")
+env["EIDOLON_PROBE_COMMIT"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+env["EIDOLON_PROBE_DIGEST"] = digest.hexdigest()
+env["EIDOLON_PROBE_VERSION"] = str(args.version)
+env["CARGO_TARGET_DIR"] = str(native / "target")
+subprocess.run(["python3", str(root / "scripts/build-probe-xkbcommon")], check=True)
+env["CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS"] = "-Lnative=" + str(root / "probes/native-deps/build/install/lib")
+rust = subprocess.check_output(["rustc", "--version"], text=True).strip()
+if not rust.startswith("rustc 1.95.0 "):
+    raise SystemExit("probe基準はRust 1.95.0です: " + rust)
+subprocess.run(["cargo", "ndk", "-t", "arm64-v8a", "--platform", "34", "-o", str(args.output.resolve()), "build", "--locked", "--workspace", "--features", "ssh,compositor"], cwd=native, env=env, check=True)
+abi = args.output.resolve() / "arm64-v8a"
+abi.mkdir(parents=True, exist_ok=True)
+shutil.copy2(native / "target/aarch64-linux-android/debug/eidolon-helper-probe", abi / "libeidolon_helper_probe.so")
+metadata = {"schema": 1, "commit": env["EIDOLON_PROBE_COMMIT"], "digest": digest.hexdigest(), "version": args.version, "rust": rust,
+            "files": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(abi.glob("*.so"))}}
+(args.output.parent / "native-probe.json").write_text(json.dumps(metadata, indent=2) + "\n")
+assets = args.assets or args.output.parent / "probeAssets"
+assets.mkdir(parents=True, exist_ok=True)
+(assets / "native-probe.json").write_text(json.dumps(metadata, indent=2) + "\n")
+print(json.dumps(metadata))

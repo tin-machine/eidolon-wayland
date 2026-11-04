@@ -73,7 +73,7 @@ host: stale handle、二重stop、destroy-before-stop、queue満杯、未知JSON
 4. runtimeは`filesDir/rt/<nonce>/`、0700、socket pathはUTF-8で103 byte以下。既存directoryを上書きせずexclusive作成する。
 5. stdout/stderrを同時にdrainし、socket echo→終了→wait/reap→自分のdirectoryだけcleanup→再起動を10回確認する。
 
-[Androidの実行制約](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)と、[Wawonaの配置例](../phase-3-rust-compositor-waypipe.md#apk側helperの実行確認をphase-01へ前倒しする)を区別する。この方式のQuest実機成功は未確認。`run-as`やADB shellからの起動だけでは合格にしない。失敗時はloader、exec制約、ABI、依存不足を分け、Waypipe統合を待つ。
+[Androidの実行制約](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)と、[Wawonaの配置例](../phase-3-rust-compositor-waypipe.md#apk側helperの実行確認をphase-01へ前倒しする)を区別する。[独立probe](../native-preflight-20261104.md)ではAPK内のCommandから同じUIDで起動し、echo/終了を10回確認した。製品runtimeへの統合とWaypipe binary自体は後続で検証する。`run-as`やADB shellからの起動だけでは合格にしない。失敗時はloader、exec制約、ABI、依存不足を分け、Waypipe統合を待つ。
 
 <a id="r01"></a>
 ## R01 — SDK Surfaceと入力callbackの契約を実機で確定
@@ -104,6 +104,8 @@ public signatureの確認までで、callback thread・順序・UV方向・destr
 操作: 作成→表示→アプリ自身によるpanel破棄→再作成10回、Universal Menu開閉、Activity背景化/復帰、sleep/wake。SDKのSurface再取得通知と`isValid`の変化、描画結果を比較する。
 
 アプリ自身の破棄ではnative detach要求→`surface_detached` ack→input listener解除→Entity.destroy。SDK側から先に失われるケースはR03でEGL errorとして収束させる。SDK所有のJava Surfaceへreleaseしない。scene全体の終了でOSが先にSurfaceを破棄する可能性を許容する。
+
+独立probeでは、この順序でアプリ自身による再生成10回を確認した。再生成要求の連打も遷移中は抑止する。EGLDisplayはSDKと共有され得るため、自分のEGLSurface/contextを破棄しても、表示所有権の根拠なしに `eglTerminate` しない。実際の非装着sleep、SDK主導のsurface喪失、ray入力の通知は別途確認する。
 
 合格証拠は`docs/decisions/sdk-surface-lifecycle.md`へcallback順序とthread制約として残す。ここが未解決ならR02は限定描画実験までで、再生成対応済みとしない。
 

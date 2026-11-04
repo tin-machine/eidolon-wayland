@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "libxkbcommon": {
+    "version": "1.8.1",
+    "source": "https://codeload.github.com/xkbcommon/libxkbcommon/tar.gz/refs/tags/xkbcommon-1.8.1",
+    "sha256": "c65c668810db305c4454ba26a10b6d84a96b5469719fe3c729e1c6542b8d0d87",
+    "license_file": "licenses/xkbcommon-1.8.1-LICENSE",
+    "patches": [],
+    "ndk": "27.3.13750724",
+    "api": 34,
+    "abi": "arm64-v8a",
+    "meson": "1.7.2",
+    "options": {
+      "default_library": "static",
+      "b_staticpic": true,
+      "enable-tools": false,
+      "enable-x11": false,
+      "enable-docs": false,
+      "enable-wayland": false,
+      "enable-xkbregistry": false,
+      "enable-bash-completion": false
+    }
+  }
+}

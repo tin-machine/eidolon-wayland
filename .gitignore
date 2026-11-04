@@ -7,3 +7,5 @@ android/local.properties
 *.jks
 .idea/
 __pycache__/
+probes/native/target/
+probes/native-deps/build/

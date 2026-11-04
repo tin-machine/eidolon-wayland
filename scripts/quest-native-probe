@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""独立probe APKを指定Questで実行し、同じnonceの結果を回収する。HMD視認は別。"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import re
+import shlex
+from pathlib import Path
+import subprocess
+import time
+import uuid
+import zipfile
+
+PACKAGE = "io.github.tinmachine.eidolon.probe"
+ROOT = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--serial", required=True)
+parser.add_argument("--apk", type=Path, default=ROOT / "android/probe/build/outputs/apk/debug/probe-debug.apk")
+parser.add_argument("--cycles", type=int, default=10)
+parser.add_argument("--timeout", type=int, default=180)
+parser.add_argument("--transport", action="store_true", help="APK専用一時鍵でTermux SSH/StreamLocalも確認する")
+args = parser.parse_args()
+if not 0 <= args.cycles <= 20 or not 1 <= args.timeout <= 1800:
+    parser.error("cycles 0..20 / timeout 1..1800 を指定してください")
+os.umask(0o077)
+config = Path.home() / ".config/homecluster-agents/codex-work-root"
+work = Path(config.read_text().strip()) if config.exists() else Path.home() / ".local/state/homecluster-agents/codex-work"
+if not work.is_absolute():
+    parser.error("作業rootが絶対pathではありません")
+run = work / "eidolon-native-preflight-20261104" / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8])
+run.mkdir(parents=True, mode=0o700)
+nonce = uuid.uuid4().hex
+result = {"nonce": nonce, "hmd_visual": "not_run", "automatic": "not_run", "cycles": args.cycles,
+          "apk_sha256": hashlib.sha256(args.apk.read_bytes()).hexdigest()}
+
+def adb(*command, timeout=30, check=True):
+    with (run / "commands.jsonl").open("a") as out:
+        out.write(json.dumps(["adb", "-s", "[TARGET]", *command]) + "\n")
+    return subprocess.run(["adb", "-s", args.serial, *command], capture_output=True, text=True, timeout=timeout, check=check)
+
+stream = None
+authorized_before = None
+authorized_expected = None
+owned_line = None
+remote_created = False
+remote = "/data/data/com.termux/files/home/.eidolon-probe-" + nonce
+authorized_path = "/data/data/com.termux/files/home/.ssh/authorized_keys"
+
+def write_private(package, path, data, mode="600"):
+    temporary = path + ".eidolon-" + nonce + ".tmp"
+    command = "umask 077; cat > " + shlex.quote(temporary) + " && chmod " + mode + " " + shlex.quote(temporary) + " && mv " + shlex.quote(temporary) + " " + shlex.quote(path)
+    # shell v2でstdin EOFを送る。exec-out + catはEOF待ちで返らない端末がある。
+    subprocess.run(["adb", "-s", args.serial, "shell", "-T", shlex.join(["run-as", package, "sh", "-c", command])], input=data, capture_output=True, timeout=30, check=True)
+
+try:
+    if adb("get-state").stdout.strip() != "device" or adb("shell", "getprop", "ro.product.model").stdout.strip() != "Quest 3":
+        raise RuntimeError("承認済みQuest 3ではありません")
+    aapt = Path(os.environ.get("ANDROID_HOME", "/opt/android-sdk")) / "build-tools/35.0.0/aapt"
+    badging = subprocess.check_output([aapt, "dump", "badging", args.apk], text=True)
+    manifest = re.search(r"package: name='([^']+)' versionCode='([^']+)'", badging)
+    if not manifest or manifest.group(1) != PACKAGE:
+        raise RuntimeError("独立probe用APKではありません")
+    expected_version = int(manifest.group(2))
+    result["expected_version"] = expected_version
+    with zipfile.ZipFile(args.apk) as apk:
+        native_metadata = json.loads(apk.read("assets/native-probe.json"))
+    if native_metadata["version"] != expected_version:
+        raise RuntimeError("APK metadata versionが一致しません")
+    (run / "install.txt").write_text(adb("install", "-r", str(args.apk.resolve()), timeout=120).stdout)
+    adb("shell", "am", "force-stop", PACKAGE)
+    started = adb("shell", "date", "+%m-%d_%H:%M:%S.000").stdout.strip().replace("_", " ")
+    with (run / "logcat.txt").open("w") as output:
+        stream = subprocess.Popen(["adb", "-s", args.serial, "logcat", "-v", "threadtime", "-T", started, "EidolonProbe:I", "EidolonProbeNative:I", "AndroidRuntime:E", "DEBUG:F", "*:S"], stdout=output, stderr=subprocess.STDOUT)
+        # Quest側が起動を保留するとam start -W自体が返らない。readinessを期限付きで別途確認する。
+        (run / "launch.txt").write_text(adb("shell", "am", "start", "-n", PACKAGE + "/.ProbeActivity", "--es", "run_nonce", nonce, "--ei", "cycles", str(args.cycles), "--ez", "transport", str(args.transport).lower()).stdout)
+        deadline = time.monotonic() + args.timeout
+        while time.monotonic() < deadline:
+            if args.transport and not remote_created:
+                request = adb("exec-out", "run-as", PACKAGE, "cat", "no_backup/ssh-request.json", check=False)
+                try:
+                    key_request = json.loads(request.stdout) if request.returncode == 0 else {}
+                except json.JSONDecodeError:
+                    key_request = {}
+                if key_request.get("nonce") == nonce:
+                    public = key_request["public_key"]
+                    if not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/=]+", public):
+                        raise RuntimeError("probe公開鍵形式が不正です")
+                    host_key = adb("exec-out", "run-as", "com.termux", "cat", "/data/data/com.termux/files/usr/etc/ssh/ssh_host_ed25519_key.pub").stdout.strip()
+                    username = adb("shell", "run-as", "com.termux", "id", "-un").stdout.strip()
+                    authorized_before = adb("exec-out", "run-as", "com.termux", "cat", authorized_path).stdout.encode()
+                    owned_line = ('no-agent-forwarding,no-X11-forwarding,no-pty ' + public + ' eidolon-probe-' + nonce + '\n').encode()
+                    authorized_expected = authorized_before + (b'\n' if authorized_before and not authorized_before.endswith(b'\n') else b'') + owned_line
+                    adb("shell", "run-as", "com.termux", "mkdir", "-m", "700", remote)
+                    remote_created = True
+                    # 同じAPKからpeer PIEを取り出す。古いbuild directoryを参照しない。
+                    with zipfile.ZipFile(args.apk) as apk:
+                        peer = apk.read("lib/arm64-v8a/libeidolon_helper_probe.so")
+                    write_private("com.termux", remote + "/peer", peer, "700")
+                    write_private("com.termux", authorized_path, authorized_expected)
+                    profile = json.dumps({"host_key": host_key, "username": username}).encode()
+                    write_private(PACKAGE, "no_backup/ssh-profile-" + nonce + ".json", profile)
+                    (run / "transport-setup.json").write_text(json.dumps({"nonce":nonce,"peer_sha256":hashlib.sha256(peer).hexdigest(),"public_key_only":True}) + "\n")
+            response = adb("exec-out", "run-as", PACKAGE, "cat", "no_backup/probe-latest.json", check=False)
+            if response.returncode == 0:
+                state = json.loads(response.stdout)
+                if state.get("nonce") == nonce:
+                    (run / "latest.json").write_text(json.dumps(state, indent=2))
+                    if state.get("version") != expected_version or state.get("native", {}).get("version") != str(expected_version):
+                        raise RuntimeError("APK/native versionが一致しません")
+                    if state.get("native", {}).get("digest") != native_metadata["digest"] or state.get("native", {}).get("commit") != native_metadata["commit"]:
+                        raise RuntimeError("APK/native source情報が一致しません")
+                    helper, renderer = state.get("helper", {}), state.get("render", {})
+                    compositor = state.get("compositor", {})
+                    transport = state.get("transport", {})
+                    if args.transport and transport.get("pass") is False:
+                        raise RuntimeError("transport failure: " + json.dumps(transport))
+                    if helper.get("pass") is False or compositor.get("pass") is False or renderer.get("error"):
+                        raise RuntimeError("probe failure: " + json.dumps({"helper": helper, "render": renderer}))
+                    if helper.get("pass") and compositor.get("pass") and renderer.get("readback") and renderer.get("frames", 0) >= 30 and state.get("completed_cycles", 0) >= args.cycles and (not args.transport or transport.get("pass")):
+                        result["automatic"] = "pass"
+                        result["state"] = state
+                        break
+            time.sleep(1)
+        if result["automatic"] != "pass":
+            raise TimeoutError("helper/render/cycle条件が未達。XR可視性とlogcatを確認してください")
+        (run / "events.jsonl").write_text(adb("exec-out", "run-as", PACKAGE, "cat", "no_backup/probe-events.jsonl").stdout)
+        events = [json.loads(line) for line in (run / "events.jsonl").read_text().splitlines() if json.loads(line).get("nonce") == nonce]
+        if any(e["event"] == "render_stalled" or (e["event"] == "surface_detached" and e["details"].get("error")) for e in events):
+            raise RuntimeError("描画停止中のエラーがあります")
+except Exception as error:
+    result["automatic"] = "fail"
+    result["error"] = str(error)
+    raise
+finally:
+    try:
+        if authorized_expected is not None:
+            current = adb("exec-out", "run-as", "com.termux", "cat", authorized_path).stdout.encode()
+            restored = authorized_before if current == authorized_expected else b''.join(line for line in current.splitlines(keepends=True) if line != owned_line)
+            write_private("com.termux", authorized_path, restored)
+            result["temporary_key_removed"] = owned_line not in adb("exec-out", "run-as", "com.termux", "cat", authorized_path).stdout.encode().splitlines(keepends=True)
+    except Exception as cleanup_error:
+        result["key_cleanup_error"] = str(cleanup_error)
+        result["automatic"] = "fail"
+    try:
+        if remote_created:
+            # exclusive作成済みdirectory内の既知fixtureだけを回収する。
+            adb("shell", "run-as", "com.termux", "rm", "-f", remote + "/peer", remote + "/peer.eidolon-" + nonce + ".tmp", remote + "/s")
+            adb("shell", "run-as", "com.termux", "rmdir", remote)
+            result["remote_fixture_removed"] = True
+    except Exception as cleanup_error:
+        result["cleanup_error"] = str(cleanup_error)
+        result["automatic"] = "fail"
+    if stream is not None:
+        stream.terminate()
+        try: stream.wait(timeout=5)
+        except subprocess.TimeoutExpired: stream.kill(); stream.wait()
+    (run / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    print(json.dumps({"automatic": result["automatic"], "hmd_visual": result["hmd_visual"], "artifacts": str(run)}, ensure_ascii=False))
+    if result["automatic"] != "pass":
+        raise SystemExit(1)

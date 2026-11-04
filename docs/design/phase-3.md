@@ -9,6 +9,8 @@ P3の大きな移植をW01〜W05へ分割する。最初にprotocolだけを成�
 
 Smithay `=0.7.0`、`default-features=false`、最初は`wayland_frontend`/`desktop`だけ。DRM/GBM/udev/libinput/libseat/Xwayland/winitを有効にしない。crate sourceで`xkbcommon 0.8.0`依存がoptionalでないことを確認したため、native libxkbcommonを工程に含める。
 
+[独立probe](../native-preflight-20261104.md)ではlibxkbcommon 1.8.1をstatic linkし、QuestのAPK内でDisplay・wl_shm global・自己完結keymapの初期化が通った。[固定sourceとbuild条件](../../probes/native-deps/deps.lock.json)を初期候補として再利用する。SHM buffer処理、SIGBUS/ART共存、SmithayのEGL adapterは未確認であり、この初期化結果だけでW01〜W03を完了にしない。
+
 1. NDK 27.3/API 34/arm64用sysrootを唯一のtarget環境としてlibxkbcommonをcross buildする。hostのpkg-config pathをtargetへ流さない。
 2. upstream source版、URL、SHA-256、license、patch、Meson options、NDK情報を`deps.lock.json`へ記録する。libxkbcommon等の未選定版を勝手にlatestへ追従させず、このgateの結果として固定する。
 3. libxkbcommonはX11/Wayland tool/UIなど不要な付随機能を無効にし、必要なlibraryだけを生成する。設定optionは固定sourceのMeson定義で確認する。

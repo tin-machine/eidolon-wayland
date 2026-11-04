@@ -16,6 +16,8 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 **残フェーズの実装設計:** [Sol向け引継ぎ](docs/design/README.md)に31タスク、43検証、ファイル・API・状態遷移・失敗時の判断を整理しました。実装はB01から開始します。
 
+**本格実装前の小さな検証:** 独立debug APKでAPK UIDのhelper実行、Rust→SDK Surfaceの4色表示と再生成を実機確認しました。[検証・スリープ設定・ADB撮影と入力の記録](docs/native-preflight-20261104.md)に、手順、失敗、確認範囲を残しています。
+
 **次の到達点:** 既存パネルにRustから返したbuild情報を表示し、Gradle→Cargo→APK同梱を検証します。その後、Surface描画・APK内SSH・Smithay/Waypipeを独立して進めます。
 
 **開発時の接続（2026-11-04実測）:** USBで初回デバッグ承認と端末照合を済ませ、USB-Cを給電器へ回した状態でWi-Fi経由のAPK導入・更新・起動・ログ・Android画像取得とTermux SSHに成功しました。ADBの切断・再接続後もSSHを復旧できました。USB経由のAPK導入、長時間の残量維持、sleep／Quest再起動後の自動復旧は未検証です。
