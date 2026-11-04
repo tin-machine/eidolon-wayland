@@ -115,4 +115,74 @@ def credentials_result(snapshot, nonce, expected):
         raise ValueError("診断へ秘密鍵が混入しています")
     state = snapshot.get("runtime", {}).get("runtime", {})
     return (state.get("state") == "Ready" and state.get("activity_visible") is True
-            and state.get("xr_state") in {"VISIBLE", "FOCUSED"} and state.get("render", {}).get("workers") == 1)
+            and state.get("xr_state") in {"VISIBLE", "FOCUSED"} and state.get("render", {}).get("workers") == 1
+            and int(snapshot.get("runtime", {}).get("handle", "0")) > int(result.get("stopped_handle", "0")) > 0)
+
+
+def ssh_result(snapshot, nonce, expected, termux_uid):
+    if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
+        return False
+    result = snapshot.get("check", {})
+    if result.get("case") != "ssh" or result.get("nonce") != nonce:
+        return False
+    if result.get("result") == "fail":
+        raise ValueError("SSH case失敗: " + result.get("stage", "unknown"))
+    if result.get("result") != "pass":
+        return False
+    modes = {row.get("mode"): row for row in result.get("cases", [])}
+    if (set(modes) != {"normal", "mismatch", "auth_failed", "cancel_credential"} or len(result.get("cases", [])) != 4
+            or not result.get("profile_unchanged") or result.get("cleanup_failed")):
+        raise ValueError("SSH scenario/profile回収が不正です")
+    previous = 0
+    for case in result["cases"]:
+        handle = case.get("handle", "")
+        if not isinstance(handle, str) or not re.fullmatch(r"[1-9][0-9]*", handle) or not previous < int(handle) <= 2**63 - 1:
+            raise ValueError("SSH runtime世代が不正です")
+        previous = int(handle)
+    if str(previous) != result.get("last_handle"):
+        raise ValueError("SSH最後のruntimeが不正です")
+    for name, case in modes.items():
+        after = case.get("after_stop", {})
+        if (case.get("result") != "pass" or after.get("workers") != 0 or after.get("tokio_threads") != 0
+                or after.get("owned_connections") != 0):
+            raise ValueError("SSH worker/connection回収が不正です")
+        requests = 0 if name == "mismatch" else 1
+        provided = 0 if name in {"mismatch", "cancel_credential"} else 1
+        if case.get("credential_requests") != requests or case.get("credentials_provided") != provided:
+            raise ValueError("host pin前/取消後にcredentialが提供されています")
+    normal = modes["normal"]
+    probe = normal.get("transport", {}).get("probe", {})
+    if (probe.get("uid") != termux_uid or not probe.get("token_matched") or not probe.get("eof")
+            or probe.get("exit_status") != 0 or probe.get("exit_signal") or not normal.get("stale_disconnect_safe")):
+        raise ValueError("APK→TermuxのUID/token/EOF/exit/世代検査が不正です")
+    for name, error in [("mismatch", "HOST_KEY_MISMATCH"), ("auth_failed", "AUTH_FAILED")]:
+        if modes[name].get("transport", {}).get("error") != error:
+            raise ValueError("pinと認証失敗を区別できていません")
+    state = snapshot.get("runtime", {}).get("runtime", {})
+    return (state.get("state") == "Ready" and state.get("activity_visible") is True
+            and state.get("xr_state") in {"VISIBLE", "FOCUSED"} and state.get("transport", {}).get("state") == "Idle"
+            and int(snapshot.get("runtime", {}).get("handle", "0")) > int(result.get("last_handle", "0")) > 0)
+
+
+def product_ssh_result(snapshot, nonce, expected, termux_uid):
+    if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
+        return False
+    result = snapshot.get("check", {})
+    if result.get("case") != "ssh-product" or result.get("nonce") != nonce:
+        return False
+    if result.get("result") == "fail":
+        raise ValueError("製品SSH case失敗: " + result.get("stage", "unknown"))
+    if result.get("result") != "pass":
+        return False
+    probe = result.get("transport", {}).get("probe", {})
+    if (not result.get("product_host_path") or not result.get("render_frames_advanced")
+            or not result.get("stop", {}).get("old_runtime_destroyed") or probe.get("uid") != termux_uid
+            or not probe.get("token_matched") or not probe.get("eof") or probe.get("exit_status") != 0 or probe.get("exit_signal")):
+        raise ValueError("製品Host/描画/SSH/停止の検査が不正です")
+    current = snapshot.get("runtime", {})
+    state = current.get("runtime", {})
+    return (int(result.get("new_handle", "0")) > int(result.get("old_handle", "0")) > 0
+            and current.get("handle") == result.get("new_handle") and state.get("state") == "Ready"
+            and state.get("activity_visible") is True and state.get("xr_state") in {"VISIBLE", "FOCUSED"}
+            and state.get("transport", {}).get("state") == "Idle"
+            and state.get("transport", {}).get("owned_connections") == 0 and len(state.get("render", {}).get("targets", [])) == 1)

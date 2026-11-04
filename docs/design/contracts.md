@@ -50,7 +50,7 @@ render targetは`(session, window, scene, generation)`、frame内の画像は`(s
 | Rust GL owner | NativeWindow参照、EGL、GlesRenderer、texture | Smithay protocol object/JNI local refの保管 |
 | Tokio runtime | russh、bridge、remote lease、child I/O | GL、modelの直接書換え |
 
-MVPではTokio worker 2、protocol 1、GL 1。UIからのcallはenqueueと短い検証まで。GL ownerは作成threadで最後まで保持し、`unsafe impl Send/Sync`で制約を消さない。
+MVPではTokio worker 2、protocol 1、GL 1。T02のI/O supervisor thread一件が接続ごとのTokio runtimeを所有し、blocking poolは最大一件。終了時のruntime dropをsupervisor上で行い、旧task/FD/worker回収後だけ次の接続を許す。`transport.workers`はsupervisor、`tokio_threads`はworker/blocking threadの実数を別に記録する。UIからのcallはenqueueと短い検証まで。GL ownerは作成threadで最後まで保持し、`unsafe impl Send/Sync`で制約を消さない。
 
 SHMはprotocol ownerが保護されたcallback内で所有済みbyte列へcopyし、Rustの`Arc`等でimmutable snapshotをGLへ渡す。共有pointer、`WlBuffer`、EGL objectはqueueに入れない。詳細は[SHM契約](phase-3.md#shm)。
 
@@ -91,7 +91,7 @@ command envelope:
 
 B03では`scene_ready`・`set_xr_state`・`reset_input`と、Activity可視性を独立に伝える`set_activity_state(visible: bool)`を実装する。H01でdebug用`helper_probe(nonce)`を追加し、releaseではNOT_READYとする。R01–R03では`nativeAttachSurface`と`surface_lost(target)`を追加し、targetは全tupleを含むstrict objectとする。detach受付と実際の`surface_detached {target}`を区別する。未実装tagは拒否する。`onPause`でSDKのXR状態を上書きしない。runtime再作成後はhostが最新のscene/XR/Activity状態を再送する。
 
-runtime configはschema 1と、省略可能な`paths: {native_library_dir, files_dir}`。pathはApplicationのContext由来だけを渡し、command/ADB intentから指定しない。native側でも絶対path・NUL・長さを検査する。H01の子processとpipe readerは専用I/O workerが所有し、coreの停止完了はworker回収後とする。
+runtime configはschema 1と、省略可能な`paths: {native_library_dir, files_dir}`。T02で`installation`と`profiles`（最大一件）を追加した。profileのfieldはschema/profile_id/installation/username/host_keyだけで、NativeCreate前にinstallation束縛とEd25519 pinを検証する。接続先は127.0.0.1:8022固定、通常commandは登録済み`profile_id`だけを指定する。pathはApplicationのContext由来だけを渡し、command/ADB intentから指定しない。native側でも絶対path・NUL・長さを検査する。H01の子processとpipe readerは専用I/O workerが所有し、coreの停止完了はworker回収後とする。
 
 通常command 256件・UI event 128件と別に、停止flag・入力解除flag、failure/stopped各1件の予約枠を持つ。入力解除の安全効果は通常queueがBUSYでも伝えるが、BUSYを返したcommandの完了eventは発行しない。eventは既発行の通常event→failure→stoppedの順でpollし、Stopped通知後に古いruntime_ready等を返さない。
 
@@ -145,6 +145,6 @@ Surface target: `Absent → Attaching → Active → Detaching → Absent`、los
 
 XR `FOCUSED`は入力可能、`VISIBLE`は表示可能だが入力不可。それ以外は描画抑制・入力解除。scene/Surfaceの有無、Activity再生成、transportの状態と独立させる。
 
-安定error code: `CONFIG_INVALID`、`CREDENTIAL_INVALID`、`KEY_LOST`、`CREDENTIAL_IO`、`JNI_FAILURE`、`SURFACE_LOST`、`EGL_INIT_FAILED`、`RENDER_STALLED`、`HOST_KEY_UNKNOWN`、`HOST_KEY_MISMATCH`、`AUTH_FAILED`、`FORWARD_DENIED`、`REMOTE_EXIT`、`HELPER_EXEC_FAILED`、`PROTOCOL_ERROR`、`RESOURCE_LIMIT`、`CLEANUP_FAILED`。補足messageは秘密情報・入力文字・pixelを含めない。再試行可能かと責任領域も返す。
+安定error code: `CONFIG_INVALID`、`CREDENTIAL_INVALID`、`KEY_LOST`、`CREDENTIAL_IO`、`JNI_FAILURE`、`SURFACE_LOST`、`EGL_INIT_FAILED`、`RENDER_STALLED`、`HOST_KEY_UNKNOWN`、`HOST_KEY_MISMATCH`、`AUTH_FAILED`、`CONNECT_TIMEOUT`、`AUTH_TIMEOUT`、`EXEC_TIMEOUT`、`SSH_CONNECT_FAILED`、`SSH_IO_FAILED`、`FORWARD_DENIED`、`REMOTE_EXIT`、`HELPER_EXEC_FAILED`、`PROTOCOL_ERROR`、`RESOURCE_LIMIT`、`CLEANUP_FAILED`。補足messageは秘密情報・入力文字・pixelを含めない。再試行可能かと責任領域も返す。
 
 停止の順番とdeadlineは[Phase 6](phase-6.md#l01)が正本。同期GL callをtimeoutで安全に強制終了できるとは仮定しない。GL thread停止が詰まった場合はruntime再利用を拒否し、旧NativeWindowを別threadから解放しない。

@@ -142,6 +142,12 @@
       "available_after": "T02",
       "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
     },
+    "quest-ssh-product": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case ssh-product --timeout 180",
+      "available_after": "T02",
+      "success": "製品Hostによる鍵提供、描画とSSHの同時動作、live停止・新runtimeへの描画復帰を自動照合する"
+    },
     "quest-forward": {
       "kind": "quest",
       "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case forward --timeout 300",
@@ -607,7 +613,7 @@
     {
       "id": "T02",
       "title": "russh認証・exec",
-      "status": "planned",
+      "status": "done",
       "depends_on": [
         "T01"
       ],
@@ -627,7 +633,8 @@
         "host-transport",
         "android",
         "package",
-        "quest-ssh"
+        "quest-ssh",
+        "quest-ssh-product"
       ],
       "done_when": [
         "APK→Termux公開鍵認証と固定probe成功",

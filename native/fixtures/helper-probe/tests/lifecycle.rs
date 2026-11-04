@@ -145,6 +145,7 @@ fn runtime_owner_keeps_snapshot_responsive_and_stops_helper_before_destroy() {
             native_library_dir: fixture.0.join("lib").to_str().unwrap().into(),
             files_dir: fixture.files().to_str().unwrap().into(),
         }),
+        ..Default::default()
     };
     let runtime = Runtime::start(config).unwrap();
     wait(&runtime, || runtime.snapshot().state == RuntimeState::Ready);

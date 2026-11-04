@@ -1,6 +1,8 @@
 //! SSH identity/pin。秘密型をSerialize/Debugへ公開しない。
 pub mod credentials;
+pub mod exec;
 pub mod host_key;
+pub mod session;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

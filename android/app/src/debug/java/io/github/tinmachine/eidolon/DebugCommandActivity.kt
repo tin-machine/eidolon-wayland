@@ -20,7 +20,7 @@ class DebugCommandActivity : Activity() {
         super.onCreate(savedInstanceState)
         val name = intent.getStringExtra("case")
         val nonce = intent.getStringExtra("nonce")
-        if (name !in setOf("runtime", "helper", "surface", "pattern", "surface-cycle", "credentials") || nonce == null || !nonce.matches(Regex("[0-9a-f]{32}")) ||
+        if (name !in setOf("runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product") || nonce == null || !nonce.matches(Regex("[0-9a-f]{32}")) ||
             intent.extras?.keySet()?.any { it != "case" && it != "nonce" } == true || !running.compareAndSet(false, true)) {
             Log.w(TAG, "check_rejected")
             finish()
@@ -28,7 +28,7 @@ class DebugCommandActivity : Activity() {
         }
         val application = applicationContext
         NativeSessionHost.initialize(application)
-        if (name in setOf("surface", "pattern", "surface-cycle")) {
+        if (name in setOf("surface", "pattern", "surface-cycle", "ssh-product")) {
             application.startActivity(Intent(application, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 .putExtra("case", name).putExtra("nonce", nonce))
@@ -39,6 +39,7 @@ class DebugCommandActivity : Activity() {
         NativeSessionHost.withStoppedRuntime({ store ->
             if (name == "runtime") RuntimeCase.run(nonce, store)
             else if (name == "helper") HelperCase.run(nonce, NativeSessionHost.runtimeConfigJson(), store)
+            else if (name == "ssh") SshCase.run(nonce, application, NativeSessionHost.runtimeConfigJson(), store)
             else CredentialCase.run(nonce, application, store)
         }, {
             running.set(false)

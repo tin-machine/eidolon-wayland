@@ -21,6 +21,7 @@ pub struct Snapshot {
     pub helper: Option<crate::helper::Report>,
     pub helper_workers: usize,
     pub render: eidolon_render::Snapshot,
+    pub transport: eidolon_transport::session::Snapshot,
 }
 impl Default for Snapshot {
     fn default() -> Self {
@@ -40,6 +41,7 @@ impl Default for Snapshot {
             helper: None,
             helper_workers: 0,
             render: Default::default(),
+            transport: Default::default(),
         }
     }
 }
@@ -47,6 +49,16 @@ impl Default for Snapshot {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    CredentialRequired {
+        session: eidolon_model::ids::SessionId,
+        request_id: CommandSeq,
+        profile_id: String,
+    },
+    SessionState {
+        session: Option<eidolon_model::ids::SessionId>,
+        state: eidolon_transport::session::State,
+        error: Option<&'static str>,
+    },
     SurfaceDetached {
         target: eidolon_model::surface::TargetKey,
     },

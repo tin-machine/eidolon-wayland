@@ -53,6 +53,7 @@ object CredentialCase {
             check(NativeBridge.nativeRequestStop(handle) == NativeBridge.ACCEPTED)
             waitFor { NativeBridge.nativeDestroy(handle) == NativeBridge.ACCEPTED }
             fixture.withPrivateKey { check(NativeBridge.nativeProvideCredential(handle, 1, 1, it) == NativeBridge.STALE) }
+            result.put("stopped_handle", handle.toString())
             handle = 0
             result.put("unsolicited_credential_rejected", true)
             stage = "tamper"

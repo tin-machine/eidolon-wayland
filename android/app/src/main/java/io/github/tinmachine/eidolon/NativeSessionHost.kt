@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
+import org.json.JSONArray
 
 /** Application scopeの所有者。Activity、SDK Entity、Surfaceを保管しない。 */
 object NativeSessionHost {
@@ -25,10 +26,15 @@ object NativeSessionHost {
     private var store: DiagnosticsStore? = null
     private var paths: JSONObject? = null
     private var credentials: CredentialStore? = null
+    private var identity: CredentialStore.Identity? = null
+    private var profiles = JSONArray()
+    private val connection = AtomicLong(0)
     private var lastWrite = 0L
     private var state = "Starting"
+    private var sshState = "未接続"
     val summary = mutableStateOf("Starting")
     val credentialSummary = mutableStateOf("鍵を確認中")
+    val connectionSummary = mutableStateOf("未接続")
 
     init { worker.scheduleAtFixedRate({ safely { tick() } }, 0, 16, TimeUnit.MILLISECONDS) }
 
@@ -39,7 +45,9 @@ object NativeSessionHost {
             if (paths == null) paths = JSONObject().put("native_library_dir", application.applicationInfo.nativeLibraryDir).put("files_dir", application.filesDir.absolutePath)
             if (handle == 0L && NativeBridge.status.ready) {
                 if (credentials == null) credentials = CredentialStore(application)
-                checkNotNull(credentials).ensureIdentity()
+                identity = checkNotNull(credentials).ensureIdentity()
+                profiles = JSONArray()
+                checkNotNull(credentials).profile(checkNotNull(identity))?.let { profiles.put(it) }
                 ui.post { credentialSummary.value = "APK専用鍵を暗号化して保存済み" }
                 startRuntime()
             }
@@ -52,6 +60,8 @@ object NativeSessionHost {
     }
     fun setXrState(value: String) { xrState.set(value); send("set_xr_state", "state", value) }
     fun setActivityVisible(value: Boolean) { activityVisible.set(value); send("set_activity_state", "visible", value) }
+    fun connect() { send("connect", "profile_id", "termux-local") }
+    fun disconnect() { val session = connection.get(); if (session > 0) send("disconnect", "session", session.toString()) }
     fun requestSnapshot() { worker.execute { safely { publish() } } }
     fun currentHandle(): Long = handle
     fun publishCheck(value: JSONObject) { val copy = value.toString(); worker.execute { safely { store?.publishCheck(JSONObject(copy)) } } }
@@ -84,7 +94,8 @@ object NativeSessionHost {
         send("set_activity_state", "visible", activityVisible.get())
         tick()
     }
-    fun runtimeConfigJson(): String = JSONObject().put("schema", 1).put("paths", checkNotNull(paths)).toString()
+    fun runtimeConfigJson(): String = JSONObject().put("schema", 1).put("paths", checkNotNull(paths))
+        .put("installation", checkNotNull(identity).installation).put("profiles", profiles).toString()
     private fun stopRuntime() {
         if (handle == 0L) return
         val old = handle
@@ -120,7 +131,19 @@ object NativeSessionHost {
         if (handle == 0L) return
         val events = JSONObject(NativeBridge.nativePoll(handle, 64))
         check(events.getInt("code") == NativeBridge.ACCEPTED)
+        val values = events.getJSONArray("events")
+        for (index in 0 until values.length()) {
+            val event = values.getJSONObject(index)
+            if (event.optString("type") == "credential_required" && event.optString("profile_id") == "termux-local") {
+                val code = checkNotNull(credentials).provide(handle, event.getString("session").toLong(), event.getString("request_id").toLong())
+                if (code != NativeBridge.ACCEPTED) Log.w(TAG, "credential_rejected code=$code")
+            }
+        }
         val snapshot = snapshot()
+        val transport = snapshot.getJSONObject("runtime").getJSONObject("transport")
+        connection.set(transport.optString("session").toLongOrNull() ?: 0)
+        val ssh = transport.getString("state") + if (transport.isNull("error")) "" else " · ${transport.getString("error")}"
+        if (ssh != sshState) { sshState = ssh; ui.post { connectionSummary.value = ssh } }
         val next = snapshot.getJSONObject("runtime").getString("state")
         val now = SystemClock.elapsedRealtime()
         if (next != state) {

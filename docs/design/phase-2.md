@@ -33,6 +33,10 @@ probeは`id -u`と固定tokenのecho。stdout/stderrを別ringへdrainし、exit
 
 QuestではAPKの診断から実行し、Termux UIDで応答したことを確認する。PC→ADB forwardの成功を代替証拠にしない。
 
+製品実装は`connect(profile_id)`→I/O ownerのpin検証→coreの`credential_required`→Kotlin workerのKeystore復号→専用JNI slot→認証→固定exec。通常UIの接続ボタンも同じHost経路を使う。core/UIはSSH awaitへ入らない。接続ごとのTokio runtimeはI/O supervisorが所有し、切断時は全task/FDを回収してから再接続を許可する。Stop/DisconnectはCancellationTokenで割り込み、古いsessionのDisconnectで現在のcredential slotを消さない。
+
+`ssh` caseは正常・pin不一致・別認証鍵・鍵提供前取消をstandard JNIで検査し、新runtime復帰もhandleで照合する。`ssh-product` caseは製品Host経由で認証し、GL更新中の接続維持・live停止・新runtimeの描画再開を確認する。両方を受入に用いる。stdout/stderrは64KiBの末尾ringへ保持し、超過後もEOFまで排出する。診断はUID/token一致/byte数/exit/EOFだけで、stream本文や鍵を含めない。
+
 <a id="t03"></a>
 ## T03 — StreamLocalをWaypipeなしで検証
 

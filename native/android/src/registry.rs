@@ -32,7 +32,13 @@ impl Registry {
         }
         let id = entries.next.ok_or(Status::Failed)?;
         entries.next = id.checked_add(1);
-        let runtime = Arc::new(Runtime::start(config).map_err(|_| Status::Failed)?);
+        let runtime = Arc::new(Runtime::start(config).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::InvalidInput {
+                Status::InvalidArgument
+            } else {
+                Status::Failed
+            }
+        })?);
         entries.runtimes.insert(id, runtime);
         Ok(id)
     }
@@ -129,6 +135,13 @@ pub fn global() -> &'static Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invalid_public_pin_is_rejected_before_any_owner_is_started() {
+        let registry = Registry::default();
+        let config=json!({"schema":1,"installation":"a".repeat(32),"profiles":[{"schema":1,"profile_id":"termux-local","installation":"a".repeat(32),"username":"fixture","host_key":"invalid"}]}).to_string();
+        assert_eq!(registry.create(&config), Err(Status::InvalidArgument));
+        assert_eq!(registry.counts(), json!({"runtimes":0,"workers":0}));
+    }
     use std::{
         thread,
         time::{Duration, Instant},

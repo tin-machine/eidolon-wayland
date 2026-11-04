@@ -14,7 +14,8 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | H01 | done | 製品runtimeの専用I/O workerからAPK内PIEを実行。host・Questで10echo/明示終了/回収、起動中stop、releaseへのfixture不在を確認 |
 | R01〜R03 | in_progress | 製品SDK Surface/Rust EGL/世代・停止を実装。host・Questの自動部分成功。HMD、実Menu/sleep、UV、外部frameの検査を保留 |
 | T01 | done | APK専用Ed25519・Keystore AES-GCM・pin・公開情報pairing。Build21の実機保護検査、pairing冪等性、debug/release検査成功 |
-| T02〜I07 | planned | 接続・Wayland・入力を依存順に実装 |
+| T02 | done | APK→Termux認証/exec、pin/別鍵/取消、stderr/timeout/exit、製品Host+GL同時動作とlive停止・復帰を検証 |
+| T03〜I07 | planned | StreamLocal・Wayland・入力を依存順に実装 |
 
 ## B01/B02: ビルドと実機の再現
 
@@ -224,3 +225,29 @@ scripts/quest-pair --serial "$EIDOLON_QUEST_SERIAL"
 ```
 
 公開pinを含むprofileや公開鍵自体もstdoutへ表示せず、結果は識別・保存・保持のbooleanと安定error codeだけを記録する。releaseにはCredentialCase・debug pin JNI・fixture alias/directory名がないことをAPKから検査した。
+
+## T02: 製品SSH・認証・固定exec（2026-11-05）
+
+公開profileをinstallationへ束縛してNativeCreate前に検証する。接続先はloopback8022固定。coreがSessionIdを発行し、I/O ownerのserver key完全一致後だけcredential_requiredを発行する。Kotlin workerがKeystoreを復号し、既存の単発slotを経て認証する。パスワード/keyboard-interactiveへfallbackしない。通常の接続ボタンも同じHost経路を使う。
+
+I/O supervisorが接続ごとのTokio runtime（worker2、blocking最大1）を所有する。cancelでawaitを中断し、supervisorでruntimeをdropして、未完SSH task/FD/workerを回収後だけconnection0/再接続可を報告する。core/GL/UIからjoinしない。coreのStoppedはhelper・GL・SSH所有者の終了後。
+
+connect5秒・auth10秒（鍵提供待ち込み）・exec10秒。stdout/stderrは別64KiB ring、上限後もEOFまで消費し、本文は診断に出さない。UID/token/bytes/exit status/exit signal/EOFを別に保存する。
+
+試行と補強:
+
+- host fixtureで2.5MiB stderrを最後まで排出し、cap後も終了を受信。誤pin時のcredential要求ゼロ、別認証鍵でAUTH_FAILED・password試行ゼロを検査。connect/auth/exec timeout、exit17、TERM signal、SSH bannerを返さないpeerのStopを区別して回収した。
+- Core統合の初回compileでIDのchecked_nextがOptionなのにResult扱いしていた箇所を修正。古いsessionのDisconnectが新しいauth slotを消さないdeterministic testも追加した。
+- Build22で初めて製品APK→Termuxの4scenarioがpass。試験後の古いsnapshotを誤認しないよう、SSH/credential caseは停止済みhandleより新しい製品runtimeを必須にした。
+- Build24のssh-productは製品Hostの鍵提供経路で成功。SSH接続を保ってGL frameが更新され、両ownerが動くruntimeの停止・回収は8ms。その後、新runtimeでIdle/一枚の描画/readbackへ戻った。手動HMD視認の証拠にはしていない。
+
+最終Build24: host Rust34件、実APK Python22件、fmt/clippy/design、debug/release assemble/lint/APK検査が成功。Quest ssh-product `20261105T034725-58b0326e`、ssh `034729-50a9a04e`、credentials `034735-cc977a91`、surface-cycle20 `034740-bc98a5a9`、runtime10 `034748-acb59fbf`、helper `034754-155501ad`がすべてpass（省略prefixは20261105T）。pin不一致は要求/鍵提供0/0、認証失敗1/1、取消1/0、正常1/1。全scenarioで停止後worker/Tokio/connectionが0、公開profileは不変。UIDはADBで取得したcom.termux UIDと一致した。
+
+基準`0c6812c282ff23139269e2b6a0491ffe7c30e2c3`のdirty build、source digest `5ad4aa6fb6867e172548af8c481d2beee94d4ee036fc2f117995e8532697efe1`、APK SHA256 `255698ef0de4212d1201e2c54cec512af1ed0a41853fc5c83a0a8e82dd7ac15f`。artifactはbuilds/20261105T034412-1910887、上記checks、host-t02-final24.log、python-t02-24.log、release24.log、release-package24.json。
+
+```bash
+scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case ssh --timeout 180
+scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case ssh-product --timeout 180
+```
+
+T01 commit0c6812cのCI run41882737833もhost/Android/report全成功を確認した。T03のStreamLocal echoとT04のremote leaseは未実装で、SSH成功だけでforward/Waypipe成功には数えない。

@@ -54,6 +54,7 @@ pub struct Runtime {
     reset: Arc<AtomicBool>,
     worker: JoinHandle<()>,
     render: Arc<eidolon_render::Controller>,
+    transport: Arc<eidolon_transport::session::Controller>,
 }
 impl Runtime {
     pub fn start(config: RuntimeConfig) -> std::io::Result<Self> {
@@ -64,6 +65,20 @@ impl Runtime {
         config: RuntimeConfig,
         ready_hook: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<Self> {
+        let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "CONFIG_INVALID");
+        config.validate().map_err(|_| invalid())?;
+        let mut profiles = std::collections::BTreeMap::new();
+        for wire in &config.profiles {
+            let json = serde_json::to_string(wire).map_err(|_| invalid())?;
+            let profile = eidolon_transport::host_key::Profile::parse(
+                &json,
+                config.installation.as_deref().ok_or_else(invalid)?,
+            )
+            .map_err(|_| invalid())?;
+            profiles.insert(profile.profile_id.clone(), profile);
+        }
+        let transport = Arc::new(eidolon_transport::session::Controller::start()?);
+        let io = transport.clone();
         let render = Arc::new(eidolon_render::Controller::start()?);
         let gl = render.clone();
         let shared = Arc::new(Mutex::new(Shared {
@@ -97,10 +112,46 @@ impl Runtime {
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     ready_hook();
                     let mut detach_count = 0;
+                    let mut next_session = Some(eidolon_model::ids::SessionId::new(1).unwrap());
+                    let mut last_credential = None;
+                    let mut last_transport = (None, eidolon_transport::session::State::Idle, None);
                     loop {
                         let render = gl.snapshot();
+                        let ssh = io.snapshot();
                         {
                             let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                            if ssh.error == Some("JNI_FAILURE") {
+                                shared.fail("JNI_FAILURE");
+                            }
+                            let current = (ssh.session, ssh.state, ssh.error);
+                            if current != last_transport {
+                                shared.emit(Event::SessionState {
+                                    session: ssh.session,
+                                    state: ssh.state,
+                                    error: ssh.error,
+                                });
+                                last_transport = current;
+                            }
+                            if !stopping.load(Ordering::Acquire)
+                                && shared.snapshot.state == RuntimeState::Ready
+                                && let (Some(session), Some(request)) =
+                                    (ssh.session, ssh.credential_request)
+                            {
+                                if last_credential != Some((session, request)) {
+                                    shared.credentials.begin(session, request);
+                                    shared.emit(Event::CredentialRequired {
+                                        session,
+                                        request_id: request,
+                                        profile_id: "termux-local".into(),
+                                    });
+                                    last_credential = Some((session, request));
+                                }
+                                if let Ok(key) = shared.credentials.take(session, request) {
+                                    io.provide(session, request, key);
+                                }
+                            } else if last_credential.take().is_some() {
+                                shared.credentials.clear();
+                            }
                             if matches!(render.error, Some("RENDER_STALLED" | "JNI_FAILURE")) {
                                 shared.fail(render.error.unwrap());
                             }
@@ -140,7 +191,8 @@ impl Runtime {
                         }
                         if stopping.load(Ordering::Acquire) {
                             gl.request_stop();
-                            if helper.is_none() && gl.is_finished() {
+                            io.request_stop();
+                            if helper.is_none() && gl.is_finished() && io.is_finished() {
                                 break;
                             }
                             state
@@ -157,6 +209,7 @@ impl Runtime {
                             state.snapshot.input_resets += 1;
                         }
                         if state.snapshot.state == RuntimeState::Failed {
+                            io.request_stop();
                             drop(state);
                             thread::park_timeout(Duration::from_millis(5));
                             continue;
@@ -164,6 +217,34 @@ impl Runtime {
                         if let Some(command) = state.commands.pop_front() {
                             let mut asynchronous = false;
                             let code = match &command {
+                                Command::Connect {
+                                    profile_id,
+                                    request_id,
+                                    ..
+                                } => {
+                                    if let Some(profile) = profiles.get(profile_id) {
+                                        if let Some(session) = next_session {
+                                            let code =
+                                                io.connect(profile.clone(), session, *request_id);
+                                            if code == Status::Accepted {
+                                                next_session = session.checked_next();
+                                            }
+                                            code
+                                        } else {
+                                            Status::Failed
+                                        }
+                                    } else {
+                                        io.unknown_profile()
+                                    }
+                                }
+                                Command::Disconnect { session, .. } => {
+                                    let code = io.disconnect(*session);
+                                    if code == Status::Accepted {
+                                        state.credentials.clear();
+                                        last_credential = None;
+                                    }
+                                    code
+                                }
                                 Command::SurfaceLost { target, .. } => gl.detach(*target),
                                 Command::HelperProbe {
                                     nonce, request_id, ..
@@ -243,6 +324,7 @@ impl Runtime {
                     }
                 }));
                 if result.is_err() {
+                    io.request_stop();
                     state
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
@@ -265,6 +347,10 @@ impl Runtime {
                     state.snapshot.helper_workers = 0;
                 }
                 gl.request_stop();
+                io.request_stop();
+                while !io.is_finished() {
+                    thread::park_timeout(Duration::from_millis(5));
+                }
                 while !gl.is_finished() {
                     // snapshot/Stopはこの待機に参加しない。未回収ownerのruntimeは再利用しない。
                     if gl.snapshot().error == Some("RENDER_STALLED") {
@@ -292,6 +378,7 @@ impl Runtime {
             reset,
             worker,
             render,
+            transport,
         })
     }
 
@@ -346,6 +433,7 @@ impl Runtime {
     pub fn request_stop(&self) -> Status {
         self.stop.store(true, Ordering::Release);
         self.render.request_stop();
+        self.transport.request_stop();
         self.lock().credentials.clear();
         self.worker.thread().unpark();
         Status::Accepted
@@ -353,6 +441,7 @@ impl Runtime {
     pub fn snapshot(&self) -> Snapshot {
         let state = self.lock();
         Snapshot {
+            transport: self.transport.snapshot(),
             render: self.render.snapshot(),
             commands_pending: state.commands.len(),
             events_pending: state.events.len() + state.terminal.len(),
@@ -443,6 +532,7 @@ impl Drop for Runtime {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         self.render.request_stop();
+        self.transport.request_stop();
         self.worker.thread().unpark();
         // Joinしない。通常のdestroyはis_finished確認後にだけ呼ばれる。
     }
@@ -468,6 +558,47 @@ mod tests {
         }
     }
     #[test]
+    fn missing_profile_never_requests_secret_and_stale_disconnect_preserves_new_request() {
+        use eidolon_model::ids::SessionId;
+        let runtime = Runtime::start(RuntimeConfig::default()).unwrap();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
+        assert_eq!(
+            runtime.command(Command::Connect {
+                schema: 1,
+                request_id: CommandSeq::new(1).unwrap(),
+                profile_id: "termux-local".into()
+            }),
+            Status::Accepted
+        );
+        wait(&runtime, |r| r.snapshot().commands_processed == 1);
+        assert_eq!(runtime.snapshot().transport.error, Some("HOST_KEY_UNKNOWN"));
+        assert_eq!(runtime.snapshot().transport.credential_requests, 0);
+        let session = SessionId::new(2).unwrap();
+        let request = CommandSeq::new(10).unwrap();
+        {
+            let mut state = runtime.lock();
+            state.credentials.begin(session, request);
+            state
+                .credentials
+                .provide(
+                    session,
+                    request,
+                    eidolon_transport::credentials::generate().unwrap(),
+                )
+                .unwrap();
+        }
+        runtime.command(Command::Disconnect {
+            schema: 1,
+            request_id: CommandSeq::new(2).unwrap(),
+            session: SessionId::new(1).unwrap(),
+        });
+        wait(&runtime, |r| r.snapshot().commands_processed == 2);
+        let retained = runtime.lock().credentials.take(session, request).is_ok();
+        runtime.request_stop();
+        wait(&runtime, Runtime::can_destroy);
+        assert!(retained);
+    }
+    #[test]
     fn invisible_signal_bypasses_full_queue_and_old_visible_commands_cannot_resume_gl() {
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
@@ -476,6 +607,7 @@ mod tests {
             RuntimeConfig {
                 schema: 1,
                 paths: None,
+                ..Default::default()
             },
             move || {
                 a.wait();
@@ -521,6 +653,7 @@ mod tests {
             RuntimeConfig {
                 schema: 1,
                 paths: None,
+                ..Default::default()
             },
             move || {
                 a.wait();
@@ -555,6 +688,7 @@ mod tests {
         let runtime = Runtime::start(RuntimeConfig {
             schema: 1,
             paths: None,
+            ..Default::default()
         })
         .unwrap();
         wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
@@ -573,6 +707,7 @@ mod tests {
         let runtime = Runtime::start(RuntimeConfig {
             schema: 1,
             paths: None,
+            ..Default::default()
         })
         .unwrap();
         wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
@@ -591,6 +726,7 @@ mod tests {
         let runtime = Runtime::start(RuntimeConfig {
             schema: 1,
             paths: None,
+            ..Default::default()
         })
         .unwrap();
         runtime.request_stop();
@@ -607,6 +743,7 @@ mod tests {
         let runtime = Runtime::start(RuntimeConfig {
             schema: 1,
             paths: None,
+            ..Default::default()
         })
         .unwrap();
         wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
