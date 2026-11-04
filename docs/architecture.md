@@ -1,7 +1,7 @@
 # Eidolon Wayland — アーキテクチャ設計
 
 Status: **Proposed / 未実装**  
-Last reviewed: 2026-11-03  
+Last reviewed: 2026-11-04<br>
 Target: **Meta Quest 3 / Meta Horizon OS (Android)**
 
 > Linuxに肉体を残し、その姿だけを異界へ投影する。
@@ -35,6 +35,8 @@ Quest 3単体で、Termux上で実行するWayland GUIアプリを、Meta Spatia
 **確認できた根拠:** [jni](https://docs.rs/jni/0.22.4/jni/)、[ndk NativeWindow](https://docs.rs/ndk/0.9.0/ndk/native_window/struct.NativeWindow.html)、[khronos-egl](https://docs.rs/khronos-egl/6.0.0/khronos_egl/)、[russh StreamLocal API](https://docs.rs/russh/0.65.0/russh/client/struct.Handle.html#method.streamlocal_forward)が存在する。また、[Local Desktop](https://github.com/localdesktop/localdesktop.github.io)にはAndroid上のRust＋Smithayの先行実装がある。
 
 **未確認:** 上記をMeta Spatial SDKのSurface、QuestのGPU、TermuxのWaypipeと組み合わせたEidolonの動作。調査は公式資料とソースの確認までで、Androidビルド／Quest実機テストは実施していない。既存部品の存在・先行例・Eidolonでの検証を混同しない。
+
+**2026-11-04の更新:** 開発hostを実測し、Spatial SDK 0.15.0と新しいビルドツールを第一候補にした。[Phase 0の版選定](phase-0-development-environment.md#2-ビルドツールの基準)にJDK／compileSdkとQuestの実行APIの区別を集約する。本書の0.14.0 APIリンクは調査時の根拠であり、新候補版での検証済みという意味ではない。
 
 ## 全体像
 
@@ -89,11 +91,13 @@ SSHはプロセス起動・認証・streamの経路であって、端末描画�
 第一候補はRust + [Smithay](https://docs.rs/smithay/latest/smithay/wayland/)。ウィンドウ管理の参考に[WayVRの実装](https://github.com/wayvr-org/wayvr/tree/main/wayvr/src/backend/wayvr)、Android移植の参考に[Local Desktopのpatch記録](https://localdesktop.github.io/docs/developer/patches/)を利用する。Android/aarch64のbuild可否、features、libxkbcommon等は[Phase 3](phase-3-rust-compositor-waypipe.md)で先に検証する。
 
 - Wayland server、client接続、event loop、surface treeの管理。
-- wl_compositor、wl_shm、xdg_wm_base、xdg_surface、xdg_toplevel、wl_seat等。
+- wl_compositor、wl_shm、xdg_wm_base、xdg_surface、xdg_toplevel、wl_seat、仮想wl_output等。
 - configure/ack、attach/commit、damage、wl_buffer.release、frame callback。
 - subsurface、popup、座標変換、keyboard/pointer focus、keymap、repeat、clipboard。
 - `WindowId → logical window → Kotlin SDK Entity → SurfaceGeneration`の対応。
 - Wayland logical size、buffer scale、XRのメートル寸法、pixel解像度を分離。
+
+初回configureとSDK Surface生成を互いの待機条件にせず、map／unmap／remapを区別する。共有bufferの境界検査・生pointerの寿命・資源上限は[Phase 3の契約](phase-3-rust-compositor-waypipe.md#最小protocolと共有メモリーの契約2026-11-04レビュー)に従う。
 
 **Linux DRM/KMS/GBMの物理モニター出力をQuestへ持ち込まない。** compositorに必要なのはアプリの画像管理とAndroid Surfaceへの出力である。SDK側の利用方法は[公式サンプル](https://github.com/meta-quest/Meta-Spatial-SDK-Samples)を参照。NativeActivity/winitを追加起動するのではなく、Spatial SDKが所有するActivity/Surfaceへ接続する。
 
@@ -158,6 +162,7 @@ Phase 1で現実背景＋Rustテスト画像を検証し、Phase 4でfootへ接�
 - WaypipeはAPK UID内で起動できる同梱helperを第一候補とする。Termuxの実行ファイルをコピーするだけで動くとは仮定しない。
 - [Android API 29以降をtargetとするアプリの実行制約](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)を踏まえ、同梱helperの起動・転送socket待受・終了回収を**APK自身のUID**でPhase 0〜1から先行検証する。`adb shell`での起動成功とは区別する。詳細は[Phase 3のP3-B](phase-3-rust-compositor-waypipe.md)。
 - Kotlin UI／Rust compositor-render owner／Tokio SSH runtimeを分離する。GlesRendererのthread制約を守る。
+- compositorとrendererの単一owner案は、present待ちでも通信・入力・停止が応答することを条件とする。[Phase 4](phase-4-rust-window-rendering.md#スレッド所有権の重要な制約)で検証し、必要なら所有済みデータと完了通知でGL ownerを分離する。
 - Activity/Surface、SSH transport、Wayland sessionの寿命を分ける。再接続しても旧アプリ状態が必ず戻るとは保証しない。[Phase 6](phase-6-rust-lifecycle-testing.md)を参照。
 - XR sessionの入力focusも独立して観測する。公式[MediaPlayerSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/MediaPlayerSample/app/src/main/java/com/meta/spatial/samples/mediaplayersample/MediaPlayerSampleActivity.kt)ではUniversal Menu表示時の`FOCUSED → VISIBLE`を`onSessionStateChanged`で扱う。Activityの`onPause`だけに依存せず、Rustへfocus喪失を通知して入力状態を解消する。メニュー表示だけでSSH/Waylandを再起動する設計にはしない。
 - Termux公式[README](https://github.com/termux/termux-app#readme)はAndroid 12以降のプロセス終了制約に注意を促している。Quest上の適用条件は未検証。最小XR APKの起動後にTermuxのsshdと検証用プロセスの存続を短く観測し、foot導入後とPhase 6の長時間試験で再確認する。

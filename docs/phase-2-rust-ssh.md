@@ -42,7 +42,8 @@ Waypipeの[付属マニュアル](https://man.archlinux.org/man/waypipe.1.en)は
 4. serverからforwardされた接続を`server_channel_open_forwarded_streamlocal`で受け、期待するpathとセッションを検証する。
 5. APK側のWaypipe転送socketへ接続し、受け入れ応答とchannelの寿命を処理する。採用するrussh版の`ChannelOpenHandle` APIに従う。確認したAPIでは`accept`／`reject`を明示し、handleをそのまま破棄すると拒否される。
 6. [`Channel::into_stream`](https://docs.rs/russh/0.65.0/russh/struct.Channel.html#method.into_stream)とUnixStreamを、[`tokio::io::copy_bidirectional`](https://docs.rs/tokio/latest/tokio/io/fn.copy_bidirectional.html)等で中継する。長時間copyはcallback内で待ち続けず別taskへ移す。
-7. 別のSSH exec channelでTermux側の`waypipe server -- foot`を起動し、stderr／exit status／切断を監視する。引数は安全に組み立て、PTYは要求しない。
+7. forwardの成功応答を確認してから、別のSSH exec channelでTermux側のWaypipe serverとfootを起動する。**転送socketは手順3のremote pathを明示**し、APK側clientのsocket pathとは区別する。`waypipe server -- foot`だけの省略例をそのまま実行せず、採用版のsocket指定option・private runtime directory・`PATH`を確定する。SSH execはshellで解釈される文字列なので、固定launcherと検証済み引数を使い、文字列連結で任意pathを埋め込まない。PTYは要求しない。
+8. execのstdoutとstderrを両方、起動直後から並行してdrainし、サイズ上限付きで診断する。stderrや終了statusを待つ間にtransport処理を止めない。大量出力時もforwardが進行し、exec終了・SSH断で自分が起動したWaypipe／子プロセスを回収できることを試す。
 
 この中継をするのは**Waypipeが符号化した通常のバイトストリーム**。Wayland socket自体の`SCM_RIGHTS`を`copy_bidirectional`で運ぶわけではない。fdとSHM再構成は両端のWaypipeが担う。
 
@@ -71,7 +72,7 @@ flowchart LR
 
 Wi-Fi ADBの接続状態と、製品APK→Termuxのlocalhost SSH／StreamLocalの状態は別々に観測する。開発経路の切断だけを根拠に製品接続を再起動したり、TermuxのsshdをLAN公開へ変更したりしない。
 
-- [ ] Termux側は127.0.0.1:8022のみlisten、公開鍵認証。`sshd -T`と実際のlistenを確認する。
+- [ ] Termux側は127.0.0.1:8022のみlisten、公開鍵認証。起動と同じ引数の`sshd -T`と実際のlistenを照合する（[Phase 0の注意](phase-0-development-environment.md#6-quest内termuxを調査する方法)）。
 - [ ] 未登録host keyは明示的に確認し、登録済み鍵の不一致は拒否する。サンプルの`Ok(true)`を製品へコピーしない。
 - [ ] SSH認証後にexecのstdout/stderr/exit statusを分離して取得する。
 - [ ] 任意の短いテストUnix socketで既知のバイト列が両方向に一致する。同じSSH接続上で複数channelを開き、一方のEOF／終了が他方や接続全体を停止させないことを確認する。

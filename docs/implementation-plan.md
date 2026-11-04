@@ -16,6 +16,24 @@ Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプ�
 - **分離したXRパネル**: 最初は1画面、その後2枚以上の独立したxdg_toplevelへ。
 - **PoC段階はCPUコピーを許容**: 低遅延/ゼロコピーはMVP合格要件にしない。
 
+**到達点を分ける:** Phase 4は一枚のfootを表示するPoC。最小MVPはこれにPhase 5の単一パネル入力・resizeと、Phase 6の基本的な切断／新セッション再接続を加えたものとする。二枚以上・配置保存・長時間耐久は後続でよい。再接続後の作業内容の保持は別要件で、プロセスを再起動した結果と区別する。
+
+## ローカル環境と設計のレビュー（2026-11-04）
+
+`11751406f70c0de3d59253f2e73108c90b978ab1`の全12文書、開発hostのread-only調査、関連する既存運用資料、一次資料を照合した。今回も計画の修正であり、APK実装やQuestの検証を完了したものではない。
+
+| 指摘 | 修正・検証方針 |
+| --- | --- |
+| 既存環境と導入例が違う | SDKは`/opt/android-sdk`、JDK 25、API 35、NDK 27.3が既存。新しい版を優先し、JDK 25／compileSdk 36／Spatial SDK 0.15.0を第一候補にする。[Phase 0](phase-0-development-environment.md#2-ビルドツールの基準)にKotlin互換表、実測、不足分、採用順を集約 |
+| ビルド用APIとQuest実行APIの混同 | compileSdk 36とminSdk／targetSdk 34を分け、実機API・merged manifest・NDK minimumを照合。端末未接続のため実行可否は未確認 |
+| 無線経路と端末同定が不足 | dual NIC／VPNを踏まえてroute・送信元・TCP・ADB認証を分離。USBとWi-Fiで物理端末を照合し、IPだけで同一視しない |
+| 初期SSH手順の不整合 | 鍵認証のみで起動し、同じ引数で`sshd -T`。ADB serverの一律停止とログ消去を外し、forwardの上書きを防止 |
+| transportと共有領域の契約が不足 | remote socketを明示し、execの両出力をdrain。仮想output、map／unmap、SHMの境界・資源上限をPhase 2〜3へ追加 |
+| 描画待ちがprotocol全体を停止し得る | 単一owner案を条件付きにし、present待ち中のdispatch・入力・停止を早期検証。必要ならGL ownerを分離 |
+| 表示だけでMVPと読める | 表示PoCと操作可能なMVPを分離し、入力は一枚から先行検証 |
+
+細部は各フェーズの本文を正本とする。新SDK候補への更新後も、既存の0.14.0 API調査は過去の根拠として扱い、0.15.0でのSurface通知・背景・scale／poseを再確認する。JDK／SDKを導入したり実機設定を変更したりしたレビューではない。
+
 ## Rust中心構成の調査と詳細ファイル（2026-11-01）
 
 **新規実装はKotlin＋Rustを中心にする。** KotlinはMeta Spatial SDKとAndroidのadapter、RustはJNI、描画、SSH、Wayland compositor、XRウィンドウ管理モデルを担当する。Waypipeは上流を再利用し、自作C++は具体的な不足が確認された部分の薄いshimに限定する。[全体の責務分担](architecture.md)を参照。
@@ -272,7 +290,9 @@ flowchart LR
 
 **Gate:** 問題があればlibwayland/libxkbcommon、LZ4/Zstd、socket、spawn、Android API制約を記録する。上流実装のpatch/packaging修正を先に検討し、構造的な問題が残る場合だけ既存planの別UID FD bridgeやTermux側compositor案と比較する。
 
-## Phase 4 — Wayland windowをXRパネルに描画（MVP）
+<a id="phase-4--wayland-windowをxrパネルに描画mvp"></a>
+
+## Phase 4 — Wayland windowをXRパネルに描画（表示PoC）
 
 **詳細・調査結果:** [phase-4-rust-window-rendering.md](phase-4-rust-window-rendering.md)。Rust rendererを採用し、Smithay GlesRendererのSHM importと合成を第一候補にする。Android EGL adapterとSDK Surface管理は新規実装する。
 
@@ -312,6 +332,8 @@ flowchart LR
 
 合格: Quest上のfootがRustで合成され、現実背景上の一枚のXRパネルに表示・更新される。Wayland描画と背景合成の成否を分けて記録する。zero-copyは必須にしない。
 
+上位の最小MVPには、続く単一パネルの入力・resizeと基本再接続の確認も必要である。
+
 ## Phase 5 — XR入力と複数ウィンドウ
 
 **詳細・調査結果:** [phase-5-rust-window-manager.md](phase-5-rust-window-manager.md)。WindowId、focus、pose、size、配置保存はRustを正本にする。KotlinはSDK Entity操作と入力取得を担い、別のwindow managerを作らない。
@@ -343,6 +365,7 @@ flowchart LR
 作業:
 
 - [ ] RustのWindowManagerをAndroid/GL/JNIから分離し、fake adapterで単体テストする。
+- [ ] まず一枚のfootで物理入力・click・scroll・resizeを検証し、表示PoCから操作できるMVPへつなぐ。
 - [ ] XR hit-testからlogical surface座標への変換とbutton、scroll、enter/leaveを扱う。
 - [ ] Android KeyEventとWayland keycode/keymap/modifierの差を扱う。
 - [ ] Esc/Ctrl/Alt/Tab/Fキー、US/JIS記号を実機で確認する。

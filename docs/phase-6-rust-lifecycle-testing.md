@@ -16,6 +16,8 @@ Rustへ寄せる目的は言語数削減だけでなく、状態と破棄順序�
 
 Smithay [`GlesRenderer`](https://docs.rs/smithay/0.7.0/smithay/backend/renderer/gles/struct.GlesRenderer.html)の`!Send`／`!Sync`と、[Android EGLのthread規約](https://source.android.com/docs/core/graphics/arch-egl-opengl)を前提にする。SSHのasync taskにGL所有者を移さず、UI threadから重いrendererを同期的に呼び出さない。
 
+この三領域は初期案である。[Phase 4のpresent待ち試験](phase-4-rust-window-rendering.md#スレッド所有権の重要な制約)で通信や停止要求が詰まる場合は、compositorとrender ownerを分離する。最初から「単一threadだから安全」と確定せず、Phase 1〜4で待ち時間と応答性を検証する。
+
 ```mermaid
 flowchart LR
   K["Kotlin lifecycle adapter"] -->|"lifecycle / session focus / SurfaceLost"| S["Rust session supervisor"]
@@ -57,6 +59,7 @@ Termux側の存続も最小XR APKから観測できる。[Termux公式README](ht
 ## キュー・backpressure・復旧
 
 - メモリ上限を持つqueueを使い、フレームが増えた場合は古い表示要求のcoalesceを行う。ただしprotocol処理やbuffer解放をdropしない。
+- 入力のkey/button release、SurfaceLost、停止・破棄はcoalesce対象から外す。motionや最新frame用のqueueが満杯でも制御通知を配送できる経路を設け、過負荷時に押下が残らず終了できることを試す。
 - SSHの接続／認証／forwarding／execを別のエラーとして報告する。unknown host keyを自動retryで承認しない。
 - EOF／half-close／cancel時にbridge taskを終了し、child helperの寿命とsocket cleanupを回収する。[Tokio copy_bidirectional](https://docs.rs/tokio/latest/tokio/io/fn.copy_bidirectional.html)の挙動もテストする。
 - JNIのGlobalRef、NativeWindow、EGLSurface、texture、Wayland buffer、SSH channelの所有者と解放契機を一覧化する。

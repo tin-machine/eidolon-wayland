@@ -1,7 +1,7 @@
 # Eidolon Wayland — 開発自動化・デバッグの調査と実装方針
 
 **状態:** 一次資料・実装ソースの調査／Eidolonへの組込みとQuest実機検証は未実施  
-**調査整理日:** 2026-11-03  
+**調査整理日:** 2026-11-04（host環境・接続手順を追加レビュー）<br>
 **対象:** Ubuntu 26.04上のCodex CLI・Gradle・Cargoから、開発用Quest 3を操作する環境  
 **関連:** [Phase 0の環境構築](phase-0-development-environment.md) / [実装計画](implementation-plan.md) / [Phase 6の検証](phase-6-rust-lifecycle-testing.md)
 
@@ -75,14 +75,15 @@ flowchart TD
 
 [Phase 0](phase-0-development-environment.md#4-quest-3のdeveloper-modeとusbデバッグ)に従い、Developer Mode、データ通信可能なUSB-C、初回のHMD内USB debugging承認を済ませる。`adb devices -l`の状態が`device`であることを確認し、対象を明示する。以降の`quest_serial`は現在使うADB transportの識別子で、初期はUSB serial、Wi-Fi切替後はその接続の識別子へ変更する。物理端末の排他用IDとは分ける。対象選択の根拠は[Android公式ADBガイド](https://developer.android.com/tools/adb#directingcommands)と[AOSP man pageの`-s`指定](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/user/adb.1.md)である。
 
-以降のBash例では、リポジトリのrootを作業ディレクトリとし、次の変数を設定済みとする。**applicationId、Activity、APKパスは仮置きで、現状のリポジトリには存在しない。** 実装時のmerged manifest／成果物に合わせて置き換える。artifactの保存先は実行ごとに分ける。
+以降のBash例では、リポジトリのrootを作業ディレクトリとし、次の変数を設定済みとする。**applicationId、Activity、APKパスは仮置きで、現状のリポジトリには存在しない。** 実装時のmerged manifest／成果物に合わせて置き換える。artifactの保存先は実行ごとに分け、source repositoryの外に置く。ローカルでは`~/.config/homecluster-agents/codex-work-root`を毎回読み直した保存先（未設定時は`~/.local/state/homecluster-agents/codex-work`）の`eidolon-wayland/`を`EIDOLON_ARTIFACT_ROOT`へ設定する。CIでは同等の非公開artifact保存先を明示し、ログ・室内画像を自動commitしない。
 
 ```bash
 quest_serial='YOUR_QUEST_SERIAL'
 eidolon_app='com.example.eidolon'
 eidolon_component='com.example.eidolon/.MainActivity'
 eidolon_apk='android/app/build/outputs/apk/debug/app-debug.apk'
-eidolon_artifacts="artifacts/$(date -u +%Y%m%dT%H%M%SZ)"
+umask 077
+eidolon_artifacts="${EIDOLON_ARTIFACT_ROOT:?repository外の作業保存先を指定}/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 mkdir -p "$eidolon_artifacts"
 
 adb devices -l
@@ -358,6 +359,8 @@ run ID／revision／世代／時刻を付け、snapshotの古さや途中状態�
 
 ### 無線ADB
 
+2026-11-04の開発host調査では、同一LANへの有線interfaceが2本あり、VPN／仮想bridgeも存在した。QuestはADBに未接続のため、QuestのIP・SSID／VLAN・AP isolation・TCP到達性は未確認である。PCをWi-Fiへつなぎ直す前提にはせず、実際に選択されるrouteを確認する。[Phase 0の実測表](phase-0-development-environment.md#30-既存環境の確認結果2026-11-04)を参照。
+
 [Android公式ADBガイド](https://developer.android.com/tools/adb#wireless)と[AOSPのADB Wi-Fi設計資料](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/dev/adb_wifi.md)にある、次の二方式を区別する。
 
 | 方式 | 初回設定と接続 | 本プロジェクトでの扱い |
@@ -371,8 +374,12 @@ USB smokeが通った後の、legacy TCPへの切替例。`quest_serial`等は[�
 
 ```bash
 quest_usb_serial="$quest_serial"
+adb -s "$quest_usb_serial" shell ip -4 addr show wlan0
 adb -s "$quest_usb_serial" shell ip route
+# routeのgatewayではなく、Quest自身のWi-Fi IPv4を選ぶ
+# wlan0が存在しなければ shell ip -brief address から実際のinterfaceを調べる
 quest_ip='QUEST_LAN_IP'
+ip route get "$quest_ip"
 
 adb -s "$quest_usb_serial" tcpip 5555
 adb connect "${quest_ip}:5555"
@@ -384,6 +391,19 @@ adb -s "$quest_serial" get-state
 ```
 
 ネットワーク側が`device`になったことを確認してからPCとのUSBを外し、充電器へ接続する。同じQuestがUSBとWi-Fiの二つのtransportで表示される場合があるので、以後も対象を明示する。この挙動と`-s`による選択は[MetaのADB手順](https://developers.meta.com/vr/documentation/native/android/ts-adb/)に記載されている。切替前のUSB serialをそのままネットワーク接続の指定に使わない。
+
+USB時に控えた物理端末ID（取得可能なら`getprop ro.serialno`）、model、OS buildとWi-Fi側を照合する。DHCPでIPが再利用されても、`IP:port`だけで同じQuestと判定しない。IDを取得できない場合は管理上の対応を確認してからinstall等へ進む。serialやIPは非公開のrun記録へ保存する。
+
+接続できない場合は次を順に切り分ける。`ip route get`は経路選択の確認であり、到達成功の証拠ではない。
+
+| 確認 | 次の判断 |
+| --- | --- |
+| QuestのWi-Fi IP／prefixとhostの`ip route get "$quest_ip"`の`dev`／`src` | dual NIC、VPNへの迂回、別subnetを判別。default routeの先頭だけで判断しない |
+| TCP待受を有効にした後の`nc -vz -w 3 "$quest_ip" 5555`（nc導入済みの場合） | timeout／拒否なら待受、AP isolation、VLAN間route・ACLを調べる。pingの成否だけでADBを判定しない |
+| `adb connect`と`adb devices -l` | TCP疎通後のunauthorizedはHMD承認／host鍵の問題として扱う |
+| `adb -s "$quest_serial" shell ...`、forward、SSHを順に確認 | ADB成立後にTermuxの待受・鍵認証を切り分ける |
+
+TLS pairingでは実際の接続portを使い、mDNS発見の成否とIP指定TCP接続を分ける。k3s runnerへ移す場合は、そのPodのnetwork namespaceから同じ確認を行う。hostの成功だけでPodの到達性を承認しない。初期検証のためにルーターACLやVPN経路を推測で変更しない。
 
 給電＋Wi-Fiで、USB時と同じ更新・起動・ログ取得を実施する。以下は接続先を切り替えた操作例であり、採用Meta CLIの`capture screenshot --help`を確認して使う。実際のsmokeでは[実行順と判定](#実行順と判定)に従い、起動前のログ採取と撮影前のreadinessの期限付き待機を組み込む。これらは未実行の手順である。
 

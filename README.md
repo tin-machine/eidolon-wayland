@@ -18,6 +18,8 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 2026-11-01の[追加レビュー](docs/implementation-plan.md#追加レビュー2026-11-01)では、Meta公式サンプルのEGL描画例、Build Toolsの要件、compositor layer数、XR session focus、Android helperの実行制約を反映しました。**Eidolonのビルド・実機動作は引き続き未検証**です。
 
+**2026-11-04のローカル環境レビュー:** 既存SDK／NDK、JDK 25、有線LANの複数経路を確認し、[実測結果](docs/phase-0-development-environment.md#30-既存環境の確認結果2026-11-04)と不足分を整理しました。新しい版を優先し、**JDK 25・compileSdk 36・Spatial SDK 0.15.0**を検証候補にします。Questの実行要件となるminSdk／targetSdkはまず34とし、[版の選定と採用ゲート](docs/phase-0-development-environment.md#2-ビルドツールの基準)で区別します。Questは未接続でOS版・無線到達性は未確認です。SSH手順、SHMの安全な読取り、描画待ちの影響、表示PoCと操作MVPの判定も修正しました。
+
 ## Docs
 
 - [アーキテクチャ設計](docs/architecture.md) — Kotlin/Rustの責務、SSH/Waypipe、描画、入力、セキュリティ

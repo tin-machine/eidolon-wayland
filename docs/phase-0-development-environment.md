@@ -1,6 +1,6 @@
 # Phase 0 — Ubuntu開発PC・Quest 3・Termuxの開発環境
 
-**Status:** Planning（2026-11-03計画更新、Quest実機では未検証）  
+**Status:** Planning（2026-11-04開発PCを実測・計画更新、Quest実機では未検証）<br>
 **上位計画:** [implementation-plan.md — Phase 0](implementation-plan.md#phase-0--レポジトリと開発環境)  
 **全体設計:** [architecture.md](architecture.md)
 
@@ -38,21 +38,39 @@ flowchart TB
 
 ## 2. ビルドツールの基準
 
-2026-11-01に上流[Meta-Spatial-SDK-Samplesのコミット `f233e2327b95f9871b75bdba867d6fdd726f07cc`](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/commit/f233e2327b95f9871b75bdba867d6fdd726f07cc)を確認した。[README](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/README.md)、[StarterSampleのversions](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/StarterSample/gradle/libs.versions.toml)、[Gradle wrapper](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/f233e2327b95f9871b75bdba867d6fdd726f07cc/StarterSample/gradle/wrapper/gradle-wrapper.properties)の値を再現開始時の基準にする。**以下は上流ソースの構成であり、Ubuntu 26.04で動作確認済みの組み合わせではない。** 実装時には上流SHAと実際に成功したツール構成を記録・固定する。
+2026-11-04に上流を再確認し、[コミット `822f4d1ec967d4975ae8db386502b60cda5218c0`](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/commit/822f4d1ec967d4975ae8db386502b60cda5218c0)でSpatial SDK **0.15.0**への更新を確認した。[Metaのrelease一覧](https://developers.meta.com/vr/release-notes/)にも2026-10-29の0.15.0が掲載されている。旧調査の`f233e232...`／0.14.0はAPI調査の根拠として残し、新規実装は0.15.0を第一候補にする。**新しい開発ツールを使える範囲で使い、Questの実行要件とは分けて選ぶ。以下は採用候補で、assemble・実機動作は未検証。**
 
-| 対象 | 参考バージョン/選定方針 |
-| --- | --- |
-| 開発PC | Ubuntu 26.04 x86_64 |
-| Android Studio | 上流はNarwhal 2025.1.1以降（Linux版はGoogle公式） |
-| JDK | **17** |
-| Gradle | **9.4.1**、必ずGradle wrapperを使う |
-| Android Gradle Plugin | **8.11.1** |
-| Kotlin | **2.1.0** |
-| Meta Spatial SDK | **0.14.0** |
-| Android API | 上流StarterSampleはcompile/min/target **34** |
-| SDK Build Tools | **35.0.0**。AGP 8.11の最低・既定版。Android APIの値とは別 |
-| Android NDK | build.gradle.ktsとの整合で決定。上流MediaPlayerSampleの例は27.0.12077973 |
-| Rust | stable ＋ aarch64-linux-android target。採用crateのMSRVを確認し固定する（第9節） |
+| 対象 | Eidolonの第一候補 | 根拠・比較対象 |
+| --- | --- | --- |
+| 開発PC | Ubuntu 26.04 x86_64 | 既存hostを実測済み |
+| Gradle実行用JDK | **25**（既存25.0.4.1） | GradleはJava 25実行を9.1以降でサポート。SDK plugin込みの検証は別 |
+| Gradle | **9.4.1**、wrapper固定 | 上流0.15.0のwrapperと一致 |
+| Android Gradle Plugin | **8.11.1** | 上流と一致。公式の最大対応compile APIは36 |
+| Kotlin／Compose compiler plugin | **2.4.21を検証**、両pluginを同版にする | Kotlin公式表でGradle 9.4.1／AGP 8.11.1が対応範囲。上流2.1.0は比較用 |
+| Java／Kotlin出力 | **17** | `sourceCompatibility`／`targetCompatibility`／`jvmTarget`を揃える。host JDK 25と区別 |
+| Meta Spatial SDK／Gradle plugin | **0.15.0** | 全Meta Spatial依存を同じ版に固定。旧0.14.0のSurface等のAPIは再照合 |
+| Android compileSdk | **36**を検証、既存**35**を比較対象 | platform 36の追加が必要。QuestがAPI 34でもcompileSdkを34へ合わせる必要はない |
+| Android minSdk／targetSdk | 初期は **34／34** | 上流0.15.0と一致。実機API・依存AARのminimum・merged manifestで確認 |
+| SDK Build Tools | **35.0.0** | AGP 8.11の最低・既定版。compileSdkの数字とは独立 |
+| Android NDK | **27.3.13750724**を検証 | 既存版。Gradleの`ndkVersion`と`ANDROID_NDK_HOME`を一致させる |
+| Rust | 既存stable **1.95.0**を起点、aarch64-linux-android | crateのMSRVを確認し、toolchain／Cargo.lock／cargo-ndkを固定 |
+
+対応根拠は[GradleのJava互換表](https://docs.gradle.org/current/userguide/compatibility.html)、[AGP 8.11の互換表](https://developer.android.com/build/releases/agp-8-11-0-release-notes)、[KotlinのGradle／AGP対応表](https://kotlinlang.org/docs/gradle-configure-project.html)。上流の[README](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/822f4d1ec967d4975ae8db386502b60cda5218c0/README.md)はJDK 17／Kotlin 2.1.0を指定しているが、Kotlin公式表の2.1.0対応上限はGradle 8.10／AGP 8.7.2である。上流構成の存在だけで公式対応表内の組合せとはしない。上のKotlin更新はこの差を解消する**検証案**であり、Meta pluginとの互換性を保証しない。AGP 9系への移行はbuilt-in Kotlin等の変更が伴うため、この初期検証にはまとめて持ち込まない。
+
+### 2.1 Quest側のバージョンと採用ゲート
+
+[現行StarterSample](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/822f4d1ec967d4975ae8db386502b60cda5218c0/StarterSample/app/build.gradle.kts)はHorizon OSをAndroid 14／API 34として、compile/min/targetを34、Java／Kotlin出力を17にしている。[Metaの2026年要件](https://developers.meta.com/vr/blog/meta-quest-apps-android-14-march-1/)は、2026-03-01以降にDeveloper Dashboardで作成した新規appのtarget API 34を要求している。これはStore側の条件であり、手元のQuestのOS測定やsideload可否の証拠ではない。
+
+[AndroidのSDK版の区別](https://developer.android.com/ndk/guides/sdk-versions)に従い、`compileSdk`はビルド時に参照できるAPI、`minSdk`は実行下限、`targetSdk`は主に互換動作の選択として扱う。**compileSdk 36でビルドし、API 34以上のQuestで動かす**のが第一案。API 35／36専用の呼出しはlintとruntime guardで防ぎ、native側の`CARGO_NDK_PLATFORM`はcompileSdkでなくminSdkの34に揃える。JDK 25はPC上のビルド用であり、QuestにJava 25の実行環境を要求しない。[AndroidのJDK解説](https://developer.android.com/build/jdks)に沿って出力target 17を明示する。
+
+採用判定は次の順に行う。
+
+1. **実機の識別:** USB接続後に`ro.build.version.sdk`／`release`／`fingerprint`とABIを取得する。現在は端末未接続で未確認。APIが34未満ならこの構成は導入不可とし、OS更新可否を確認する。`minSdk`を下げるだけで依存libraryやnative APIの不整合を回避しない。
+2. **host build:** 上記SHAの専用checkoutでJDK 25、Kotlin／Compose 2.4.21、compileSdk 36を試す。`./gradlew --version`の実行JVM、scene export、assemble、lint、JNI同梱、dependency／manifest mergeを個別に記録する。上流の`lint.abortOnError=false`をそのまま合格判定に流用しない。
+3. **差分の切り分け:** compileSdk 35、Kotlin 2.1.0、JDK 21（既存Studio JBR）／17との比較は原因に合わせて一項目ずつ行う。上流そのままの再現はJDK 17／compileSdk 34の対照実験とし、最初から旧環境へ戻す前提にしない。互換表外の組合せはその事実も記録する。
+4. **Questで採用:** install・XR起動・JNI・Surface／passthrough・APK UID helper・localhost SSHを各フェーズで確認する。0.15.0のpose／scaleやlifecycleも再確認し、成功した組合せを固定する。targetSdk 35／36は、実際のHorizon OSと配布先が受け付けること、権限・背景化・入力・helperの回帰を別試験で確認後に更新する。
+
+Meta Spatial SDKの0.15.0、Android API 34/36、Horizon OSの表示バージョン、[Meta VR OS SDKの整数版](https://developers.meta.com/vr/documentation/native/android/metavr-os-sdk-versioning/)は別の番号体系である。後者の`uses-metavr-sdk`は現時点では任意で、例示された整数をAndroidの`minSdk`へ転記しない。初期APKへ不要な新SDK依存を追加せず、採用するSpatial SDKのOS要件を確認する。
 
 **Ubuntuの重要な注意点:** 上流サンプルREADMEはビルド環境をMac/Windows中心に案内する。一方Metaは[Linux版Spatial Editor CLI v16.1](https://developers.meta.com/vr/downloads/package/meta-spatial-editor-cli-for-linux/)と[LinuxヘッドレスCLI手順](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-editor-ai-scene-manipulation/)を提供している。Linux版にはGUI Editorがない。**Linux CLIを使ったStarterSampleのscene export/assembleがそのまま通るかは未確認**であり、最初の検証ゲートとする。
 
@@ -62,11 +80,48 @@ flowchart TB
 
 ## 3. Ubuntu PCのセットアップ
 
+### 3.0 既存環境の確認結果（2026-11-04）
+
+計画レビュー時に開発PCで次を確認した。**既存のAndroid開発環境を再利用し、不足分だけを追加する。** この表は観測時点の状態であり、今後の固定設定ではない。SDK導入・Java切替・ネットワーク設定変更はこのレビューでは実施していない。
+
+| 項目 | 実測結果 | Phase 0で必要な対応 |
+| --- | --- | --- |
+| OS／実行場所 | Ubuntu 26.04 LTS、x86_64、host上 | コンテナー内のUSB／loopbackと混同しない |
+| Java | `java`／`javac`は25.0.4.1、`JAVA_HOME`未設定。Studio付属JBRは21.0.10 | JDK 25を第一候補にし、実行JVMと出力target 17を明示する。JDK 17は対照実験が必要な場合のみ |
+| SDK／ADB | `ANDROID_HOME`と`ANDROID_SDK_ROOT`は`/opt/android-sdk`、ADB 37.0.0 | `$HOME/Android/Sdk`へ上書きせず、既存SDKを使う |
+| SDK packages | platformはandroid-35、Build Tools 35.0.0、NDK 27.3.13750724 | compileSdk 36を試す際にplatform 36を追加。35は対照に使い、NDKは既存版の採用可否を検証する |
+| Rust | rustc／cargo 1.95.0、Android targetは`x86_64-linux-android`のみ | Quest用`aarch64-linux-android`と固定版cargo-ndkを追加する |
+| Quest接続 | `adb devices -l`に端末なし、USB一覧にもQuestなし、forwardなし | USB初期承認・Quest OS／ABI／IP確認は未実施。無線ADBも未検証 |
+| ネットワーク | 同じLANへの有線interfaceとdefault routeが各2本、VPN／仮想bridgeも存在 | QuestのIP確認後に`ip route get`で実際の出力interfaceと送信元を確認する |
+
+既存SDKはローカルの`homecluster-desktop/docs/operation/ubuntu-android-dev-setup.md`の管理対象と一致した。以前のx86_64 emulator成功はQuest arm64／Spatial SDKの成功証拠にはしない。接続先IP・端末識別子・認証情報は共通のコマンド例へ固定しない。
+
+再確認用（read-only。ADB serverが未起動なら`devices`が起動する）:
+
+~~~bash
+command -v java javac adb sdkmanager rustc cargo
+java -version
+javac -version
+printf 'ANDROID_HOME=%s\nJAVA_HOME=%s\n' "${ANDROID_HOME:-unset}" "${JAVA_HOME:-unset}"
+sdkmanager --list_installed
+rustup target list --installed
+cargo ndk --version
+adb version
+adb devices -l
+adb forward --list
+ip -brief address
+ip route show
+~~~
+
+**wrapperが起動することと、AGP・Kotlin・Meta pluginを含むassemble成功を分ける。** 新しい版の採用と比較順序は第2節に従う。
+
 ### 3.1 OS・Java・Android SDK
+
+以下は不足分を導入する手順例。第3.0節の既存環境ではAndroid Studio／SDKの新規導入やapt版ADBの追加は不要である。共有の`/opt`配下の更新は既存の管理方法・書込み権限を確認して行い、全体のJava既定値を変更する必要はない。
 
 ~~~bash
 sudo apt update
-sudo apt install -y git curl unzip zip usbutils openjdk-17-jdk \
+sudo apt install -y git curl unzip zip usbutils openjdk-25-jdk \
   android-sdk-platform-tools openssh-client
 java -version
 javac -version
@@ -75,19 +130,23 @@ adb version
 
 1. [Android Studio Linux](https://developer.android.com/studio)を公式から導入する。
 2. Android Studio初回設定でSDK、Android SDK Command-line Tools (latest)、Platform Toolsを導入する。
-3. SDKの正しいインストール先を調べ、以下の例のパスを実環境に置き換える。fishを使う場合はset -gxで設定する。
+3. SDKの正しいインストール先を調べ、以下の例のパスを実環境に置き換える。既存の`ANDROID_HOME`がある場合はその値を確認して使う。fishを使う場合はset -gxで設定する。
 
 ~~~bash
-export ANDROID_HOME="$HOME/Android/Sdk"
+export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
+# このPCのJDK 25。実在するpathを確認してこのshell内で選択する
+export JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64
+test -x "$JAVA_HOME/bin/java" || exit 1
+export PATH="$JAVA_HOME/bin:$PATH"
 export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
 command -v adb
 command -v sdkmanager
 sdkmanager --list_installed
-sdkmanager "platform-tools" "platforms;android-34" "build-tools;35.0.0"
+sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0"
 sdkmanager --licenses
 ~~~
 
-**Build Toolsの訂正:** [Google公式AGP 8.11互換表](https://developer.android.com/build/releases/agp-8-11-0-release-notes)はSDK Build Toolsの最低・既定版を35.0.0としている。旧手順の34.0.0から修正した。`compileSdk=34`とは矛盾しない。上流StarterSampleは`buildToolsVersion`未指定のため不足版が自動取得される可能性もあるが、再現手順・CIでは必要な版を明示する。
+**Build Tools:** AGP 8.11の最低・既定版は35.0.0であり、compileSdkと同じ数字へ揃える必要はない。上流そのままのcompileSdk 34を比較する場合は`platforms;android-34`を別途追加する。上流StarterSampleは`buildToolsVersion`未指定のため不足版が自動取得される可能性もあるが、再現手順・CIでは必要な版を明示する。
 
 <code>sdkmanager</code>がなければAndroid Studio SDK ManagerからCommand-line Toolsを追加。[Google公式sdkmanager](https://developer.android.com/tools/sdkmanager)。apt版adbがSDK版adbより優先されないようにし、<code>which -a adb</code>で混在を検査する。
 
@@ -135,14 +194,16 @@ cargo --version
 
 ~~~bash
 lsusb
-adb kill-server
-adb start-server
 adb devices -l
-adb shell getprop ro.product.model
-adb shell getprop ro.product.cpu.abi
-adb shell getprop ro.build.version.sdk
-adb shell getprop ro.build.version.release
+quest_serial='YOUR_QUEST_USB_SERIAL'
+adb -s "$quest_serial" get-state
+adb -s "$quest_serial" shell getprop ro.product.model
+adb -s "$quest_serial" shell getprop ro.product.cpu.abi
+adb -s "$quest_serial" shell getprop ro.build.version.sdk
+adb -s "$quest_serial" shell getprop ro.build.version.release
 ~~~
+
+共有ADB serverを通常手順で`kill-server`しない。他端末・他jobの接続やforwardも失われるため、server障害の調査で必要と判明した場合だけ利用状況を確認して再起動する。以後の端末操作も常に`-s "$quest_serial"`を付ける。
 
 上記のABI/API確認を初回のビルド・NDK設定より先に行い、Horizon OSのbuild情報も記録する。Rustのnative minimum APIはAPKの`minSdk`と揃える。[Android公式NDK資料](https://developer.android.com/ndk/guides/sdk-versions)のとおり、native APIの利用可否を決めるのは`compileSdk`ではなくminimum APIである。
 
@@ -158,23 +219,23 @@ git clone https://github.com/meta-quest/Meta-Spatial-SDK-Samples.git \
   ~/src/Meta-Spatial-SDK-Samples
 cd ~/src/Meta-Spatial-SDK-Samples
 # 調査時の上流構成を再現する。別の版を採用する場合はSHAと差分を記録する
-git checkout --detach f233e2327b95f9871b75bdba867d6fdd726f07cc
+git checkout --detach 822f4d1ec967d4975ae8db386502b60cda5218c0
 cd StarterSample
-# 第3.2節でCLI設定とscene exportを検証してからassembleを実行する
+# 第2節の候補版変更を記録し、第3.2節のCLI設定とscene exportを検証する
 chmod +x ./gradlew
 ./gradlew --version
 ./gradlew :app:assembleDebug --stacktrace
 ls -lh app/build/outputs/apk/debug/app-debug.apk
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell pm list packages | grep com.meta.spatial.samples.startersample
+adb -s "$quest_serial" install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s "$quest_serial" shell pm list packages | grep com.meta.spatial.samples.startersample
 ~~~
 
 Quest側の **Library → Unknown Sources** からアプリを起動し、表示を目視する。Android StudioのRunからも起動可能。ログ確認:
 
 ~~~bash
-adb logcat -c
 # Questでアプリを起動後
-adb logcat -d -v time | grep -Ei 'Spatial|AndroidRuntime|FATAL EXCEPTION' | tail -100
+adb -s "$quest_serial" logcat -d -b main -b system -b crash -v time \
+  | grep -Ei 'Spatial|AndroidRuntime|FATAL EXCEPTION|DEBUG|libc' | tail -100
 ~~~
 
 [Meta公式StarterSample](https://developers.meta.com/vr/documentation/spatial-sdk/spatial-sdk-sample-starter/)参照。Linux上で失敗した場合は <code>Meta Spatial CLI not found</code>、exportタスク、JDK/Gradle/AGPの不整合、ADB認証を分離して記録。**実機ビルド未検証のため、成功したとは記載しない。**
@@ -208,7 +269,7 @@ adb logcat -d -v time | grep -Ei 'Spatial|AndroidRuntime|FATAL EXCEPTION' | tail
 git clone git@github.com:tin-machine/eidolon-wayland.git
 cd eidolon-wayland/android
 ./gradlew :app:assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s "$quest_serial" install -r app/build/outputs/apk/debug/app-debug.apk
 ~~~
 
 ### 5.3 自動化できる作業と実機で確認する作業
@@ -267,8 +328,15 @@ id
 mkdir -p ~/.ssh
 chmod 700 ~/.ssh
 # 開発PCの公開鍵を ~/.ssh/authorized_keys に登録してchmod 600
-# SSH待受をloopbackに限定
-sshd -p 8022 -o ListenAddress=127.0.0.1
+# 同じ引数で設定検査と起動を行う。既存sshdがあれば先にその設定を調べる
+eidolon_sshd() {
+  sshd -p 8022 -o ListenAddress=127.0.0.1 \
+    -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no "$@"
+}
+eidolon_sshd -t || exit 1
+eidolon_sshd -T | grep -E '^(port|listenaddress|pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|allowstreamlocalforwarding) '
+# 検査成功・公開鍵登録・既存listener不在を確認してから起動
+eidolon_sshd
 ss -lnt | grep 8022
 ~~~
 
@@ -277,20 +345,27 @@ SSH調査経路だけならTermux側のGitHub CLIやNode.jsは不要。`git`、`
 **PC側**:
 
 ~~~bash
+# 既存鍵がある場合は上書きせず再利用可否を確認する。新規の場合だけ実行
 ssh-keygen -t ed25519 -f "$HOME/.ssh/quest_termux_ed25519" -C eidolon-quest
 # 上の公開鍵をTermuxに登録する（安全な初回セットアップ）
 adb devices -l
 # USB基準ではUSB serial、Wi-Fi試験では adb devices -l の IP:port に置換する
 quest_serial='YOUR_ADB_SERIAL'
 adb forward --list
-adb -s "$quest_serial" forward tcp:18022 tcp:8022
+adb -s "$quest_serial" forward --no-rebind tcp:18022 tcp:8022 || exit 1
 # TERMUX_USERNAME はTermuxの whoami 結果で置換する
 ssh -p 18022 -o IdentitiesOnly=yes -i "$HOME/.ssh/quest_termux_ed25519" \
+  -o HostKeyAlias=eidolon-quest-termux -o StrictHostKeyChecking=ask \
   TERMUX_USERNAME@127.0.0.1 'uname -a; id; pwd'
+# 自分のforward作成が成功した場合だけ回収する
 adb -s "$quest_serial" forward --remove tcp:18022
 ~~~
 
 <code>$PREFIX/etc/ssh/sshd_config</code>で公開鍵のみ（<code>PasswordAuthentication no</code>）、loopback待受と設定を確認。<code>sshd -T</code>と<code>ss -lnt</code>で実際の状態を確認し、秘密鍵はGitへコミットしない。初回SSH host keyはTermuxの <code>ssh-keygen -lf $PREFIX/etc/ssh/ssh_host_ed25519_key.pub</code> などの指紋と照合して受け入れる。<code>StrictHostKeyChecking=no</code>での迂回はしない。
+
+[`sshd -T`](https://man.openbsd.org/sshd)は指定した設定からの計算結果で、稼働中daemonへの照会ではない。上の関数と同じ`-p`／`-o`／必要なら`-f`・`-C`を付けて検査し、起動引数とlistenerも照合する。`ss`がOS制限で読めない場合は「loopback限定を確認済み」とせず、取得可能な証拠と不足を記録する。loopbackでも別アプリは接続を試みられるため、鍵認証は必要である。
+
+[`HostKeyAlias`](https://man.openbsd.org/ssh_config#HostKeyAlias)を物理Questごとに固定し、USB／Wi-Fiや転送portが変わっても同じSSH host keyを照合する。例のaliasを複数台で共有しない。初回の指紋確認後、自動試験は`StrictHostKeyChecking=yes`と`BatchMode=yes`を使い、不一致をknown_hosts削除で回避しない。forward作成に失敗した後はSSHや解除へ進まない。
 
 **Codexへ渡す指示:** PC上のリポジトリで公式Codexを使い、「<code>adb devices</code>と<code>adb forward --list</code>を確認してから、<code>ssh -p 18022 …</code>でQuest Termux内のOS・pkg・Node・OpenSSH・Waypipeを**まず読み取り専用で調査**。削除、設定変更、認証情報閲覧は許可を求める」と依頼する。Codexのsandbox/コマンド承認でsshが制限される場合は適切な権限を調整。
 
@@ -368,9 +443,9 @@ Tokenやauth.json、秘密鍵はシェル履歴・Git・logcatへ書き込まな
 
 ## 7. Phase 0完了条件と観測記録
 
-USBでの開発基準とWi-Fi通常運用の採用判定を別欄で管理する。無線の未了項目は未了のまま残し、USB基準を満たした部分から後続フェーズへ進める。以下はすべて未実施で、資料上の対応確認を実機成功として数えない。
+USBでの開発基準とWi-Fi通常運用の採用判定を別欄で管理する。第3.0節のPC調査は実施済みだが、以下のビルド・実機合格条件は未達である。無線の未了項目は未了のまま残し、USB基準を満たした部分から後続フェーズへ進める。資料上の対応確認を実機成功として数えない。
 
-- [ ] UbuntuでJDK17、SDK/NDK、Gradle wrapper、Meta SDKのバージョンを確認。
+- [ ] Ubuntuで採用JDK（第一候補25）と出力target 17、SDK/NDK、Gradle wrapper、Kotlin／Compose、Meta SDKの組合せを検証・固定。
 - [ ] Quest 3でDeveloper Mode/USB承認、<code>adb devices -l</code>が<code>device</code>。
 - [ ] Quest ABI/API/Horizon OS buildを<code>adb shell getprop</code>で取得。
 - [ ] Ubuntu上で上流StarterSampleをビルド・XR起動するか、Linux CLIの具体的な障害を記録して代替の最小Spatial APKを実証。
@@ -457,8 +532,8 @@ flowchart LR
 将来`native/`にcrateを作成し、`[lib] name = "eidolon_native"`、`crate-type = ["cdylib"]`とJNI関数を追加した後の例。**この変更では実装コードを追加していない。**
 
 ~~~bash
-# Ubuntu側。NDK_PATHはインストール・検証したNDKの絶対パス
-export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/27.0.12077973"  # 例
+# Ubuntu側。既存NDKの採用可否を確認し、GradleのndkVersionと一致させる
+export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/27.3.13750724"  # 既存版を選ぶ場合の例
 rustup target add aarch64-linux-android
 cargo install cargo-ndk --locked
 

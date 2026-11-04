@@ -60,6 +60,8 @@ Rust→Kotlin: `CreatePanel`、`SetPose`、`SetPhysicalSize`、`SetTitle`、`Des
 
 ## 入力とresizeの注意
 
+まず**一枚のfoot**でキー・クリック・scroll・resizeを通し、その後に二枚のfocus移動へ進む。Phase 4の表示PoCから単一windowの操作までを小さく結合し、複数windowや配置保存の完成を待たずに主要な入力経路の可否を判断する。
+
 - Android keyCode／scanCode／Unicode文字はWaylandのkeyboard keycodeと同一ではない。modifier、repeat、US/JIS配列を明示して変換する。VNC用keysym変換をそのまま移植しない。[Smithay input sample](https://github.com/Smithay/smithay/blob/master/smallvil/src/input.rs)を基に検証する。
 - ray-hitのUVをlogical surface座標へ変換し、buffer scale、transform、popup原点、letterboxを反映する。座標計算はRustで単体テストする。
 - keyboard focus、pointer focus、drag/popup grabは別の状態として管理する。選択windowの変更で押しっぱなしの修飾キーを残さない。

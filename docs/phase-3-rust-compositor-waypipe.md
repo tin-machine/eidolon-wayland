@@ -50,6 +50,14 @@ smithay = { version = "0.7", default-features = false, features = [
 - UID Aの短いprivate runtime directoryへWayland socketを作る。`XDG_RUNTIME_DIR`は0700、Unix socket path長の制限を守る。
 - Smithayのsampleである[smallvil](https://github.com/Smithay/smithay/tree/master/smallvil)はprotocol/seat/stateの参考にする。desktop向けwinit backendごと無条件にAPKへ組み込まない。
 
+### 最小protocolと共有メモリーの契約（2026-11-04レビュー）
+
+初期のglobal一覧に`wl_output`も含め、まず一つの仮想output・scale 1を使う。outputのgeometry／mode／scale／done、surfaceのenter／leave、seat capabilityとkeymapの通知を、広告したprotocol versionに合わせて実装する。XRパネル一枚ごとに物理monitorが必要なわけではない。footが追加で要求する拡張は採用版のregistryと起動ログで確認し、未実装機能を広告しない。[Wayland公式protocol](https://wayland.freedesktop.org/docs/html/apa.html)とSmithayのoutput／seat処理を参照する。
+
+`xdg_toplevel`オブジェクト生成と表示開始は別状態にする。初回のbufferなしcommit → configure → ack → buffer付きcommitでmapし、null bufferでunmap、再configure後のremap、destroyを個別に検証する。非同期のSDK panel生成を待つために初回configureを止めず、最初のlogical sizeを先に決めて交渉する。**clientの初回buffer待ちとSDK Surface生成待ちが循環しないこと**をP3-Dで確認する。根拠は[xdg-shell公式XML](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/xdg-shell/xdg-shell.xml)のxdg_surface／xdg_toplevel（今回hostの配布済みXMLでも照合）。surface treeとconfigureの実装は採用Smithayのxdg-shell処理を優先する。
+
+SHMは別プロセスが変更できる共有領域であり、通常のRust所有メモリーとして扱わない。[Smithay 0.7の`with_buffer_contents`のSafety条件](https://docs.rs/smithay/0.7.0/smithay/wayland/shm/fn.with_buffer_contents.html)に従い、callback外へ生pointerを保持せず、共有領域から無条件にRust sliceを作らない。rendererのimport APIを優先し、独自読取りはpool長・offset・stride・寸法・format・算術overflowを検査する。FDの短縮などによる無効なmappingも試し、APK全体のcrashにしない。pool／buffer／client数と総byte数に上限を設け、大きなresizeや異常clientで無制限に確保しない。
+
 ## Waypipeについての訂正と採用方針
 
 **Waypipe全体を「Cだけのプロジェクト」と断定しない。** 作者は[Rust版への移行](https://mstoeckl.com/notes/code/waypipe_to_rust.html)を説明している。一方、今回確認した[Termuxのレシピ](https://github.com/termux/termux-packages/blob/master/packages/waypipe/build.sh)は0.11.3で`build_c=true`／`build_rs=false`、生成した`waypipe-c`を`waypipe`にrenameし、dmabuf/videoを無効にしている。
@@ -87,6 +95,8 @@ Termuxの実行ファイルをAPKのdata directoryへコピーしてそのまま
 | P3-B: APK側Waypipe（Phase 0〜1へ前倒し） | 実際のAPK UIDで固定版Waypipeを起動し、転送socketのlisten・終了・cleanup・再起動を確認 | パッケージング、loader、prefix、native依存 |
 | P3-C: Rust SSH＋Waypipe | Phase 2のecho中継をWaypipeに交換し、既知のSHMパターン、続いてfootのtoplevelとbufferを受信 | forwarding方向、環境変数、version互換 |
 | P3-D: protocol lifecycle | configure/ack、commit、frame callback、buffer.release、切断が正常 | protocol管理の不足 |
+
+P3-Dにはmap／unmap／remap、output通知、異常SHM・過大resizeも含める。`wl_buffer.release`はcompositorがbufferの参照を終えたこと、frame callbackは次の描画タイミングの通知であり、XR表示完了とは別である。表示先がないprotocol単体試験では、読取り／copy完了後にreleaseし、試験用の期限付きschedulerでcallbackを進める。非表示windowはcallbackを抑制する方針と復帰条件を決め、無制限のbusy loopを作らない。
 
 P3-A／P3-BはSSHやXR描画の完成に依存しない。P3-Cで[Phase 2](phase-2-rust-ssh.md)のtransportを統合する。具体的には、最初に同じAPK UID内の単純なSHM clientから`SCM_RIGHTS`でfdを送り、compositorが`mmap`した内容を既知の画像パターンと比較する。次にWaypipeを挟んで同じ内容を確認し、最後にfootへ進む。既存の小さなSHM clientや検証用clientの選定は実装時に判断する。この順序ならフォント、端末起動、入力などの問題を転送経路から切り離せる。
 

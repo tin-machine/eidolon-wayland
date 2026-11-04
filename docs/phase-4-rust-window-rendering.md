@@ -44,6 +44,8 @@ Kotlinはpanel entityとSurfaceの生成・更新通知を担当する。画素�
 
 一つのEGL contextから複数EGLSurfaceへ順番に描画する方式をMVPの候補にする。Surfaceのproducerは一つだけとし、SDK/別rendererとの二重接続を避ける。[Android公式EGL仕様](https://source.android.com/docs/core/graphics/arch-egl-opengl)を参照。
 
+ただし単一owner案は、**present待ちでWayland dispatch・入力・停止処理まで止まらないことを条件**にする。[Androidの描画loop資料](https://developer.android.com/games/develop/gameloops)はBufferQueueが満杯の場合に`eglSwapBuffers()`が待つことを説明している。Phase 1から非表示／Surface喪失時の待ちを測り、Phase 4では片方のパネルの停止中ももう片方のprotocol処理が進むことを試す。Rust側のtimeoutは同期GL呼出しを安全に中断できる仕組みではない。詰まる場合は、compositorとGL ownerを分け、上限付きの所有済み画像／描画情報と完了通知で連携する。`GlesRenderer`自体をthread間で移動させない。
+
 ## Window単位の描画モデル
 
 通常の`xdg_toplevel`に一つのXRパネルを割り当てる。ただし`wl_surface`一個が常に一つのアプリ窓とは限らない。subsurface／popup／decorationを含むsurface treeを対象にする。MVPではpopupを親と同一パネルに合成し、親領域外へ出る場合のclipかcanvas拡張を明示する。後者では入力の原点変換も更新する。
@@ -77,11 +79,14 @@ passthroughのON／OFFと表示パネル数を組み合わせて測定し、背�
 - [ ] 同期commitしたsurface treeとdamageを扱い、途中状態や解放済みbufferを描画しない。
 - [ ] 初期は全体再描画でもよい。damage最適化は正しさとpresentを確認してから入れる。
 - [ ] フレーム過多時はboundedな状態を保つ。古い描画を省略してもWayland protocol上のrelease/commit処理は省略しない。
+- [ ] [Phase 3のSHM契約](phase-3-rust-compositor-waypipe.md#最小protocolと共有メモリーの契約2026-11-04レビュー)を満たし、共有pointerをqueueへ積まない。copy／uploadの完了とbuffer releaseを対応付ける。
 - [ ] UI停止、window close、Surface再生成、SSH切断でstale IDのframeを描かず、リソースを回収する。
 - [ ] 一枚のfootで文字・カーソル・スクロールを確認し、次に二枚以上へ増やす。
 - [ ] 通常passthroughの現実背景と不透明なfootを同時に表示し、背景による文字の可読性とlayer使用量を記録する。
 
 **合格条件:** TermuxのfootがRustの受信・合成経路からXRパネルに描画され、現実背景と同時表示できること。Wayland描画と背景合成の結果は分けて記録する。ここではGPU描画したWayland clientやDMA-BUF zero-copyは必須にしない。
+
+これは**表示PoC**の合格である。単一パネルでのキーボード・クリック・resizeは[Phase 5](phase-5-rust-window-manager.md)の最初に実装し、再接続も含めて確認するまで、上位計画の「操作できる最小MVP」を合格にしない。shellの出力をSSHから発生させて表示を確認しただけでは物理入力の成功にならない。
 
 ## GPU共有は後続調査
 
