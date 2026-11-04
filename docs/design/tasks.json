@@ -428,7 +428,7 @@
     {
       "id": "H01",
       "title": "APK UIDのhelper exec",
-      "status": "planned",
+      "status": "done",
       "depends_on": [
         "B03"
       ],
@@ -437,7 +437,16 @@
         "native/fixtures/helper-probe/",
         "native/core/src/helper.rs",
         "scripts/build-native",
-        "android/app/build.gradle.kts"
+        "android/app/build.gradle.kts",
+        "native/core/src/runtime.rs",
+        "native/core/src/diagnostics.rs",
+        "native/model/src/commands.rs",
+        "android/app/src/debug/",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt",
+        "scripts/check-host",
+        "scripts/check-native-package",
+        "scripts/quest-check",
+        "scripts/quest_checks.py"
       ],
       "steps": [
         "小さいPIE probeをnativeLibraryDirへ配置する",

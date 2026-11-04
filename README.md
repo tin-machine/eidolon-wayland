@@ -12,9 +12,9 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 **実装方針:** KotlinはMeta Spatial SDK / Android adapter、RustはJNI・描画・SSH・Wayland compositor・ウィンドウ管理モデルを担当します。Waypipeは既存実装を再利用し、自作C++は必要性が確認された小さなshimに限定します。これは調査に基づく方針で、実装済みという意味ではありません。
 
-**現在できること:** `scripts/build-android 8`でRust native/runtimeを含むAPKをビルド・lint・静的検査し、`scripts/quest-smoke`で指定Questへ更新・起動・native版一致・ログ取得、`scripts/quest-check --case runtime`で10回の生成・停止・回収とpanic変換を試験できます。`scripts/quest-termux`はTermuxへの開発用SSH接続です。JDK 25・compileSdk 36・Spatial SDK 0.15.0を採用しています。Build 1→2の表示・ボタン操作はHMDで確認済み、Rustを組み込んだBuild 8まで自動実機試験に成功しHMD確認は最終段階へ残しています。[再現手順](docs/phase-0-reproduction.md)と[製品実装の進捗・失敗記録](docs/progress.md)を参照してください。
+**現在できること:** `scripts/build-android 10`でRust runtime/helperを含むAPKをビルド・lint・静的検査し、`scripts/quest-smoke`で指定Questへ更新・起動・native版一致・ログ取得、`scripts/quest-check --case runtime`でruntimeの生成・停止・回収、`--case helper`でAPK UIDのhelper起動・echo・終了・回収を試験できます。`scripts/check-host --suite all`はhost検証、`scripts/quest-termux`はTermuxへの開発用SSH接続です。JDK 25・compileSdk 36・Spatial SDK 0.15.0を採用しています。Build 1→2の表示・ボタン操作はHMDで確認済み、Rustを組み込んだBuild 10まで自動実機試験に成功しHMD確認は最終段階へ残しています。[再現手順](docs/phase-0-reproduction.md)と[製品実装の進捗・失敗記録](docs/progress.md)を参照してください。
 
-**残フェーズの実装設計:** [Sol向け引継ぎ](docs/design/README.md)に31タスク、43検証、ファイル・API・状態遷移・失敗時の判断を整理しました。B01/B03の基盤は受入済み、B02は自動部分が成功してHMD確認待ちです。Wayland表示・製品SSH接続・入力は後続タスクで実装します。[進捗と試行記録](docs/progress.md)を参照してください。
+**残フェーズの実装設計:** [Sol向け引継ぎ](docs/design/README.md)に31タスク、43検証、ファイル・API・状態遷移・失敗時の判断を整理しました。B01/B03/H01は受入済み、B02はHMD確認、C01はGitHub上のCI結果確認が残ります。Wayland表示・製品SSH接続・入力は後続タスクで実装します。[進捗と試行記録](docs/progress.md)を参照してください。
 
 **本格実装前の小さな検証:** 独立debug APKでAPK UIDのhelper実行、Rust→SDK Surfaceの4色表示と再生成を実機確認しました。[検証・スリープ設定・ADB撮影と入力の記録](docs/native-preflight-20261104.md)に、手順、失敗、確認範囲を残しています。
 

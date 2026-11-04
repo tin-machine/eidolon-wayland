@@ -11,7 +11,8 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | B02 | in_progress | assemble/lint・APK/ELF検査成功。Quest Build 3→4のnative/Kotlin版一致、scene/panel、XR FOCUSEDを自動確認。Rust版変更→復元→APK版変更の4 buildがすべて成功。HMD視認はnot_run |
 | B03 | done | runtime/JNI/診断と固定caseを実装。ホスト11件・Python10件・debug/release検査、Quest Build 8の10cyclesと停止後late panic・製品復帰に成功 |
 | C01 | in_progress | host dispatcher/Gradle checksum/GitHub Actionsを実装、ローカルhostとAndroid Build 9成功。対象commitのCI結果を待つ |
-| H01〜I07 | planned | 依存順に実装。独立probeの成功を製品統合の成功へ置き換えない |
+| H01 | done | 製品runtimeの専用I/O workerからAPK内PIEを実行。host・Questで10echo/明示終了/回収、起動中stop、releaseへのfixture不在を確認 |
+| R01〜I07 | planned | 依存順に実装。独立probeの成功を製品統合の成功へ置き換えない |
 
 ## B01/B02: ビルドと実機の再現
 
@@ -131,3 +132,30 @@ Actionsはcheckout v7 / setup-java v6 / cache v5 / upload-artifact v7の公式ta
 GitHub連携のworkflow一覧取得はPR専用のため、pushでの検証結果は[commit status API](https://docs.github.com/en/rest/commits/statuses)にも`eidolon/host`と`eidolon/android`として記録する。report jobだけに`statuses:write`を付け、他jobは`contents:read`、fork PRではreportしない。両jobの結果とrun URLを対象SHAへ結び、ローカル成功をGitHub CI成功へ置き換えない。
 
 ローカルではhost Rust 11件、Python 11件成功・実APK用3件skipを明示し、Android Build 9のassemble/lint/APK検査が成功した。wrapper・suite gateを加えたPython testは全14件。Build 9のAPK SHA256は`b879fc0ab6f03e662bb91eeb12e51f512e7d771d81afec138cf92c23f90ba49c`。端末へは未導入で、Questは受入済みBuild 8のまま。
+
+C01初回pushは`9a4c58a27bc727635f7095017488cf64a2a9282d`。このSHAのGitHub commit statusはまだ取得できていないため、CI checkは`not_run`、taskは`in_progress`を維持する。ローカル成功で代用せず、独立したH01以降を進める。
+
+## H01: 製品runtimeによるAPK UID helper（2026-11-05）
+
+独立probeで確認した方式を製品coreへ組み込んだ。`RuntimeConfig.paths`にはKotlinのApplicationから得たnativeLibraryDir/filesDirだけを渡す。`helper_probe` commandは16桁小文字hex nonceを受け、固定の`libeidolon_probe_bin.so`と固定argvだけを実行する。shellや任意実行pathは受け取らない。debug APKだけにAPI34/arm64のPIEを同梱し、`useLegacyPackaging=true`でOSに抽出させる。書込み可能filesDirへ実行ファイルをcopyしない。
+
+Core ownerはhelper I/O workerを一つだけ所有する。Childのstdout/stderrは同時に読み、各64 KiB上限後もEOFまで読み捨てる。Unix socketの既知frameをechoし、0長frameによる明示終了→exit確認→wait/reapの順で10回繰り返す。通常coreのsnapshot/command処理はhelper I/Oから分離する。停止flagはhelperへ共有し、子の終了・pipe reader回収・directory削除・worker終了を確認してからruntimeをStoppedにする。
+
+runtime directoryは`filesDir/rt/<nonce>/`を0700でexclusive作成し、socket pathはUTF-8 byte長103以下。削除時は作成時のdevice/inodeを照合する。既存nonceとの衝突では上書き・削除しない。通常完走、途中cancel、別ownerのsentinel保持、runtime停止時のhelper回収をhostの実fixtureで確認した。
+
+```bash
+scripts/build-android 10
+scripts/quest-smoke --serial "$EIDOLON_QUEST_SERIAL" --apk "$EIDOLON_APK"
+scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case helper --timeout 120
+scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case runtime --timeout 120
+```
+
+受入結果:
+
+- Rust testはmodel 3・core 6・Android 3・helper fixture統合3の計15件。clippy/fmt成功。fixture crateもlifecycle suiteへ登録した。
+- Build 10のassemble/lint/APK静的検査が成功。helperのAArch64 PIE、`/system/bin/linker64`、実API34/NDK note、公開NDK依存、APK内hashを検査した。
+- Quest helper run `20261105T011101-8cdeb79c`がpass。APK UIDと子UID、SELinux contextが一致し、10echo・exit code 0・所有child 0・directory削除を確認した。別nonceで起動中に停止し、23 msで子・worker・directoryを回収した。これは単発のH01計測であり、L01の停止時間保証ではない。
+- 同じAPKのruntime回帰case `20261105T011104-ac161880`もpass。両caseとも新製品runtime/Activity/XR FOCUSEDへ復帰した。
+- release Build 10のassemble/lint・静的検査が成功し、helper fixture、debug Activity/class/JNIは含まれない。Waypipe本体の起動はW04で別に判定する。
+
+Build 10は基準`9a4c58a27bc727635f7095017488cf64a2a9282d`からのdirty build、source digest `2423bc4d3752dae65881e3162258ae8f59703c507a25feea8cc9b198257cdc2e`、APK SHA256 `1d41ced681d830c3f17a924eed8fbc469004c4ca429fae246ca734eaa733a0b9`。artifactは`builds/20261105T010720-1744298/`、上記`checks/`、`host-h01-first.log`、`python-h01-first.log`、`release-build10.log`、`release-package10.json`へ保存した。

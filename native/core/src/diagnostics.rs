@@ -18,6 +18,8 @@ pub struct Snapshot {
     pub events_pending: usize,
     pub input_resets: u64,
     pub error: Option<&'static str>,
+    pub helper: Option<crate::helper::Report>,
+    pub helper_workers: usize,
 }
 impl Default for Snapshot {
     fn default() -> Self {
@@ -34,6 +36,8 @@ impl Default for Snapshot {
             events_pending: 0,
             input_resets: 0,
             error: None,
+            helper: None,
+            helper_workers: 0,
         }
     }
 }

@@ -31,3 +31,28 @@ def runtime_result(snapshot, nonce, expected):
             and current.get("runtime", {}).get("activity_visible") is True
             and current.get("runtime", {}).get("xr_state") in {"VISIBLE", "FOCUSED"}
             and current.get("registry") == {"runtimes": 1, "workers": 1})
+
+
+def helper_result(snapshot, nonce, expected):
+    if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
+        return False
+    result = snapshot.get("check", {})
+    if result.get("case") != "helper" or result.get("nonce") != nonce:
+        return False
+    if result.get("result") == "fail":
+        raise ValueError("helper caseが失敗しました")
+    if result.get("result") != "pass":
+        return False
+    helper = result.get("helper", {})
+    if (helper.get("error") is not None or helper.get("cancelled") or helper.get("cycles") != 10
+            or helper.get("owned_children") != 0 or not helper.get("directory_removed")
+            or helper.get("exit_code") != 0 or not result.get("stop_cleanup") or result.get("cleanup_failed")):
+        raise ValueError("helper echo/exit/cleanup結果が不正です")
+    if not isinstance(helper.get("uid"), int) or not helper.get("context"):
+        raise ValueError("helperのUID/contextがありません")
+    current = snapshot.get("runtime", {})
+    state = current.get("runtime", {})
+    return (current.get("code") == 0 and int(current.get("handle", "0")) > int(result.get("stopped_handle", "0")) > 0
+            and current.get("registry") == {"runtimes": 1, "workers": 1}
+            and state.get("state") == "Ready" and state.get("activity_visible") is True
+            and state.get("xr_state") in {"VISIBLE", "FOCUSED"} and state.get("helper_workers") == 0)

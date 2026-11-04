@@ -9,6 +9,14 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
     pub schema: u32,
+    #[serde(default)]
+    pub paths: Option<RuntimePaths>,
+}
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimePaths {
+    pub native_library_dir: String,
+    pub files_dir: String,
 }
 impl RuntimeConfig {
     pub fn parse(json: &str) -> Result<Self, Status> {
@@ -19,6 +27,16 @@ impl RuntimeConfig {
         if config.schema != 1 {
             return Err(Status::InvalidArgument);
         }
+        if let Some(paths) = &config.paths {
+            for value in [&paths.native_library_dir, &paths.files_dir] {
+                if !std::path::Path::new(value).is_absolute()
+                    || value.len() > 2048
+                    || value.contains('\0')
+                {
+                    return Err(Status::InvalidArgument);
+                }
+            }
+        }
         Ok(config)
     }
 }
@@ -27,6 +45,11 @@ impl RuntimeConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    HelperProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        nonce: String,
+    },
     SceneReady {
         schema: u32,
         request_id: CommandSeq,
@@ -55,6 +78,7 @@ impl Command {
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
             Self::SceneReady { schema, .. }
+            | Self::HelperProbe { schema, .. }
             | Self::SetXrState { schema, .. }
             | Self::SetActivityState { schema, .. }
             | Self::ResetInput { schema, .. } => schema,
@@ -62,11 +86,20 @@ impl Command {
         if schema != 1 {
             return Err(Status::InvalidArgument);
         }
+        if let Self::HelperProbe { nonce, .. } = &command
+            && (nonce.len() != 16
+                || !nonce
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        {
+            return Err(Status::InvalidArgument);
+        }
         Ok(command)
     }
     pub fn request_id(&self) -> CommandSeq {
         match *self {
             Self::SceneReady { request_id, .. }
+            | Self::HelperProbe { request_id, .. }
             | Self::SetXrState { request_id, .. }
             | Self::SetActivityState { request_id, .. }
             | Self::ResetInput { request_id, .. } => request_id,

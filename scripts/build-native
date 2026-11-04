@@ -31,6 +31,8 @@ command = ["cargo", "ndk", "-t", ABI, "--platform", str(API),
            "build", "--locked", "-p", "eidolon-android"]
 if args.profile == "release":
     command.append("--release")
+else:
+    command.extend(["-p", "eidolon-helper-fixture"])
 subprocess.run(command, cwd=ROOT, env=env, check=True)
 source_library = Path(env["CARGO_TARGET_DIR"]) / TARGET / args.profile / "libeidolon_native.so"
 if canonical(info).encode() not in source_library.read_bytes():
@@ -40,8 +42,15 @@ library.parent.mkdir(parents=True, exist_ok=True)
 # cargo-ndk 4.1.2の-oはmtime比較でcopyを省略する。古いcacheへの切替でも
 # 正しい内容を必ず採用するため、検査済み成果物を自分で無条件copyする。
 shutil.copyfile(source_library, library)
+files = {library.name: hashlib.sha256(library.read_bytes()).hexdigest()}
+if args.profile == "debug":
+    helper = Path(env["CARGO_TARGET_DIR"]) / TARGET / "debug/eidolon-probe-bin"
+    target = args.output / ABI / "libeidolon_probe_bin.so"
+    shutil.copyfile(helper, target)
+    target.chmod(0o755)
+    files[target.name] = hashlib.sha256(target.read_bytes()).hexdigest()
 metadata = {"build_info": info, "abi": ABI, "api": API, "ndk": NDK,
-            "files": {library.name: hashlib.sha256(library.read_bytes()).hexdigest()}}
+            "files": files}
 args.assets.mkdir(parents=True, exist_ok=True)
 (args.assets / "native-build.json").write_text(json.dumps(metadata, indent=2) + "\n")
 print(canonical(metadata))

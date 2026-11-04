@@ -15,7 +15,7 @@ import zipfile
 
 from native_build import ROOT, identity
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
-from quest_checks import runtime_result
+from quest_checks import runtime_result, helper_result
 
 CASES = ("runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "forward", "remote-cleanup",
          "native-deps", "shm", "wayland-state", "waypipe", "forwarded-shm", "render", "foot", "ray", "keyboard",
@@ -26,7 +26,7 @@ parser.add_argument("--case", required=True, choices=CASES)
 parser.add_argument("--timeout", type=int, default=120)
 parser.add_argument("--artifact-root", type=Path)
 args = parser.parse_args()
-if args.case != "runtime":
+if args.case not in {"runtime", "helper"}:
     parser.error("このcaseは未実装です")
 if not 1 <= args.timeout <= 7200:
     parser.error("timeoutは1〜7200秒です")
@@ -76,7 +76,8 @@ try:
             time.sleep(0.25)
             continue
         (run / "latest.json").write_text(json.dumps(snapshot, indent=2) + "\n")
-        if runtime_result(snapshot, nonce, expected):
+        judge = runtime_result if args.case == "runtime" else helper_result
+        if judge(snapshot, nonce, expected):
             activities = device.adb("shell", "dumpsys", "activity", "activities")
             resumed = [line for line in activities.splitlines() if "topResumedActivity=" in line or "mResumedActivity:" in line]
             if any(PACKAGE + "/.MainActivity" in line for line in resumed):
@@ -85,7 +86,9 @@ try:
         time.sleep(0.25)
     else:
         raise TimeoutError("nonce/版一致したcase成功と製品runtime/UIへの復帰を確認できませんでした")
-    result.update(status="pass", cycles=10, panic_converted=True, normal_ui_returned=True)
+    result.update(status="pass", cycles=10, normal_ui_returned=True)
+    if args.case == "runtime":
+        result["panic_converted"] = True
     exit_code = 0
 except Exception as error:
     result["error_class"] = type(error).__name__

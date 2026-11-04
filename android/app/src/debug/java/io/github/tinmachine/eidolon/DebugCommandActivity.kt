@@ -17,7 +17,7 @@ class DebugCommandActivity : Activity() {
         super.onCreate(savedInstanceState)
         val name = intent.getStringExtra("case")
         val nonce = intent.getStringExtra("nonce")
-        if (name != "runtime" || nonce == null || !nonce.matches(Regex("[0-9a-f]{32}")) ||
+        if (name !in setOf("runtime", "helper") || nonce == null || !nonce.matches(Regex("[0-9a-f]{32}")) ||
             intent.extras?.keySet()?.any { it != "case" && it != "nonce" } == true || !running.compareAndSet(false, true)) {
             Log.w(TAG, "check_rejected")
             finish()
@@ -25,7 +25,10 @@ class DebugCommandActivity : Activity() {
         }
         val application = applicationContext
         NativeSessionHost.initialize(application)
-        NativeSessionHost.withStoppedRuntime({ store -> RuntimeCase.run(nonce, store) }, {
+        NativeSessionHost.withStoppedRuntime({ store ->
+            if (name == "runtime") RuntimeCase.run(nonce, store)
+            else HelperCase.run(nonce, NativeSessionHost.runtimeConfigJson(), store)
+        }, {
             running.set(false)
             application.startActivity(Intent(application, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))

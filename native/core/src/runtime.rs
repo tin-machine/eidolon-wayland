@@ -56,7 +56,7 @@ impl Runtime {
     }
 
     fn start_with_hook(
-        _config: RuntimeConfig,
+        config: RuntimeConfig,
         ready_hook: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<Self> {
         let shared = Arc::new(Mutex::new(Shared {
@@ -67,10 +67,15 @@ impl Runtime {
         }));
         let stop = Arc::new(AtomicBool::new(false));
         let reset = Arc::new(AtomicBool::new(false));
-        let (state, stopping, resetting) = (shared.clone(), stop.clone(), reset.clone());
+        let (state, progress_state, stopping, resetting) =
+            (shared.clone(), shared.clone(), stop.clone(), reset.clone());
         let worker = thread::Builder::new()
             .name("eidolon-core".into())
             .spawn(move || {
+                let mut helper: Option<(
+                    eidolon_model::ids::CommandSeq,
+                    JoinHandle<crate::helper::Report>,
+                )> = None;
                 {
                     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                     if state.snapshot.state == RuntimeState::Starting
@@ -82,7 +87,40 @@ impl Runtime {
                 }
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     ready_hook();
-                    while !stopping.load(Ordering::Acquire) {
+                    loop {
+                        if helper.as_ref().is_some_and(|(_, job)| job.is_finished()) {
+                            let (request_id, job) = helper.take().unwrap();
+                            let report = job.join().unwrap_or_else(|_| crate::helper::Report {
+                                error: Some("JNI_FAILURE"),
+                                ..Default::default()
+                            });
+                            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                            let code = if report.cancelled {
+                                Status::Stale
+                            } else if report.error.is_some() {
+                                Status::Failed
+                            } else {
+                                Status::Accepted
+                            };
+                            if report.error == Some("JNI_FAILURE") {
+                                state.fail("JNI_FAILURE");
+                            }
+                            state.snapshot.helper = Some(report);
+                            state.snapshot.helper_workers = 0;
+                            state.emit(Event::CommandComplete { request_id, code });
+                        }
+                        if stopping.load(Ordering::Acquire) {
+                            if helper.is_none() {
+                                break;
+                            }
+                            state
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .snapshot
+                                .state = RuntimeState::Stopping;
+                            thread::park_timeout(Duration::from_millis(5));
+                            continue;
+                        }
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                         if resetting.swap(false, Ordering::AcqRel) {
                             state.snapshot.input_resets += 1;
@@ -93,7 +131,54 @@ impl Runtime {
                             continue;
                         }
                         if let Some(command) = state.commands.pop_front() {
+                            let mut asynchronous = false;
                             let code = match &command {
+                                Command::HelperProbe {
+                                    nonce, request_id, ..
+                                } => {
+                                    if helper.is_some() {
+                                        Status::Busy
+                                    } else if let Some(paths) =
+                                        config.paths.clone().filter(|_| cfg!(debug_assertions))
+                                    {
+                                        let (progress, stop, nonce) = (
+                                            progress_state.clone(),
+                                            stopping.clone(),
+                                            nonce.clone(),
+                                        );
+                                        match thread::Builder::new()
+                                            .name("eidolon-helper".into())
+                                            .spawn(move || {
+                                                let executable =
+                                                    std::path::Path::new(&paths.native_library_dir)
+                                                        .join("libeidolon_probe_bin.so");
+                                                crate::helper::probe(
+                                                    &executable,
+                                                    std::path::Path::new(&paths.files_dir),
+                                                    &nonce,
+                                                    stop,
+                                                    |report| {
+                                                        progress
+                                                            .lock()
+                                                            .unwrap_or_else(|e| e.into_inner())
+                                                            .snapshot
+                                                            .helper = Some(report.clone());
+                                                    },
+                                                )
+                                            }) {
+                                            Ok(job) => {
+                                                state.snapshot.helper_workers = 1;
+                                                state.snapshot.helper = Some(Default::default());
+                                                helper = Some((*request_id, job));
+                                                asynchronous = true;
+                                                Status::Accepted
+                                            }
+                                            Err(_) => Status::Failed,
+                                        }
+                                    } else {
+                                        Status::NotReady
+                                    }
+                                }
                                 Command::SceneReady { scene, .. } => {
                                     if state.snapshot.scene.is_some_and(|old| *scene <= old) {
                                         Status::Stale
@@ -113,10 +198,12 @@ impl Runtime {
                                 Command::ResetInput { .. } => Status::Accepted,
                             };
                             state.snapshot.commands_processed += 1;
-                            state.emit(Event::CommandComplete {
-                                request_id: command.request_id(),
-                                code,
-                            });
+                            if !asynchronous {
+                                state.emit(Event::CommandComplete {
+                                    request_id: command.request_id(),
+                                    code,
+                                });
+                            }
                         } else {
                             drop(state);
                             thread::park_timeout(Duration::from_millis(5));
@@ -132,6 +219,18 @@ impl Runtime {
                     while !stopping.load(Ordering::Acquire) {
                         thread::park_timeout(Duration::from_millis(5));
                     }
+                }
+                if let Some((_, job)) = helper.take() {
+                    while !job.is_finished() {
+                        thread::park_timeout(Duration::from_millis(5));
+                    }
+                    let report = job.join().unwrap_or_else(|_| crate::helper::Report {
+                        error: Some("JNI_FAILURE"),
+                        ..Default::default()
+                    });
+                    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.snapshot.helper = Some(report);
+                    state.snapshot.helper_workers = 0;
                 }
                 let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                 state.snapshot.state = RuntimeState::Stopping;
@@ -265,10 +364,16 @@ mod tests {
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
         let (a, b) = (entered.clone(), release.clone());
-        let runtime = Runtime::start_with_hook(RuntimeConfig { schema: 1 }, move || {
-            a.wait();
-            b.wait();
-        })
+        let runtime = Runtime::start_with_hook(
+            RuntimeConfig {
+                schema: 1,
+                paths: None,
+            },
+            move || {
+                a.wait();
+                b.wait();
+            },
+        )
         .unwrap();
         entered.wait();
         for id in 1..=limits::CORE_COMMANDS {
@@ -294,7 +399,11 @@ mod tests {
     }
     #[test]
     fn command_completion_and_old_scene_are_distinct_from_enqueue() {
-        let runtime = Runtime::start(RuntimeConfig { schema: 1 }).unwrap();
+        let runtime = Runtime::start(RuntimeConfig {
+            schema: 1,
+            paths: None,
+        })
+        .unwrap();
         wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
         assert_eq!(runtime.command(scene(2)), Status::Accepted);
         assert_eq!(runtime.command(scene(1)), Status::Accepted);
@@ -308,7 +417,11 @@ mod tests {
     }
     #[test]
     fn panic_fails_runtime_and_still_allows_cleanup() {
-        let runtime = Runtime::start(RuntimeConfig { schema: 1 }).unwrap();
+        let runtime = Runtime::start(RuntimeConfig {
+            schema: 1,
+            paths: None,
+        })
+        .unwrap();
         wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
         assert_eq!(
             runtime.guarded(|| panic!("synthetic fixture")),
@@ -322,7 +435,11 @@ mod tests {
     }
     #[test]
     fn late_panic_cannot_reopen_a_stopped_owner_or_prevent_destroy() {
-        let runtime = Runtime::start(RuntimeConfig { schema: 1 }).unwrap();
+        let runtime = Runtime::start(RuntimeConfig {
+            schema: 1,
+            paths: None,
+        })
+        .unwrap();
         runtime.request_stop();
         wait(&runtime, Runtime::can_destroy);
         assert_eq!(
@@ -334,7 +451,11 @@ mod tests {
     }
     #[test]
     fn ui_queue_overflow_has_reserved_failure_and_stopped_events() {
-        let runtime = Runtime::start(RuntimeConfig { schema: 1 }).unwrap();
+        let runtime = Runtime::start(RuntimeConfig {
+            schema: 1,
+            paths: None,
+        })
+        .unwrap();
         wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
         for id in 1..=400 {
             let status = runtime.command(scene(id));

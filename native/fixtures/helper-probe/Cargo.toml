@@ -1,0 +1,17 @@
+[package]
+name = "eidolon-helper-fixture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "eidolon-probe-bin"
+path = "src/main.rs"
+
+[dependencies]
+libc.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+eidolon-core.workspace = true
+eidolon-model.workspace = true

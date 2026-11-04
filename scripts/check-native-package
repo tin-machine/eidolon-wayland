@@ -64,6 +64,31 @@ def inspect(apk):
             raise ValueError(f"許可されていないELF依存: {sorted(set(required) - public)}")
         if "Java_io_github_tinmachine_eidolon_NativeBridge_nativeBuildInfo" not in output:
             raise ValueError("JNI版情報symbolがありません")
+        helper_path = f"lib/{ABI}/libeidolon_probe_bin.so"
+        helper_files = [name for name in names if name.endswith("/libeidolon_probe_bin.so")]
+        if info["profile"] == "release" and helper_files:
+            raise ValueError("releaseにhelper fixtureが混入しています")
+        if info["profile"] == "debug":
+            if helper_files != [helper_path]:
+                raise ValueError("helper fixtureのABI/数が不正です")
+            helper = archive.read(helper_path)
+            if hashlib.sha256(helper).hexdigest() != metadata["files"].get("libeidolon_probe_bin.so"):
+                raise ValueError("helper fixtureのhashが不一致です")
+            with tempfile.TemporaryDirectory(prefix="eidolon-helper-elf-") as folder:
+                elf = Path(folder) / "helper"
+                elf.write_bytes(helper)
+                header = subprocess.check_output([str(readelf), "-h", "-d", "-l", "--wide", str(elf)], text=True)
+                actual_note = subprocess.check_output([str(readelf), "--hex-dump=.note.android.ident", str(elf)], text=True)
+            if not re.search(r"Machine:\s+AArch64", header) or not re.search(r"Type:\s+DYN", header) or "/system/bin/linker64" not in header:
+                raise ValueError("helper fixtureがAndroid AArch64 PIEではありません")
+            if set(re.findall(r"\(NEEDED\).*\[([^]]+)\]", header)) - public:
+                raise ValueError("helper fixtureに公開NDK外の依存があります")
+            # 同じNDK/APIでbuildしたlibraryとnote内容が一致する。
+            def note_bytes(dump):
+                return b"".join(bytes.fromhex(word) for line in dump.splitlines() if re.match(r"\s*0x[0-9a-f]+\s", line)
+                                for word in line.split()[1:5] if re.fullmatch(r"[0-9a-fA-F]{8}", word))
+            if note_bytes(actual_note) != bytes(note):
+                raise ValueError("helper fixtureの実API/NDK noteが不一致です")
         debug_symbol = "Java_io_github_tinmachine_eidolon_DebugNativeBridge_nativePanic" in output
         dex = b"".join(archive.read(name) for name in names if re.fullmatch(r"classes\d*\.dex", name))
         debug_classes = [b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;"]

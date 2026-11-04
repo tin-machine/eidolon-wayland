@@ -23,6 +23,7 @@ object NativeSessionHost {
     private val xrState = AtomicReference("IDLE")
     private val activityVisible = AtomicBoolean(false)
     private var store: DiagnosticsStore? = null
+    private var paths: JSONObject? = null
     private var lastWrite = 0L
     private var state = "Starting"
     val summary = mutableStateOf("Starting")
@@ -33,6 +34,7 @@ object NativeSessionHost {
         val application = context.applicationContext
         worker.execute { safely {
             if (store == null) store = DiagnosticsStore(application)
+            if (paths == null) paths = JSONObject().put("native_library_dir", application.applicationInfo.nativeLibraryDir).put("files_dir", application.filesDir.absolutePath)
             if (handle == 0L && NativeBridge.status.ready) startRuntime()
         } }
     }
@@ -57,7 +59,7 @@ object NativeSessionHost {
         }
     }
     private fun startRuntime() {
-        handle = NativeBridge.nativeCreate("{\"schema\":1}")
+        handle = NativeBridge.nativeCreate(runtimeConfigJson())
         val deadline = SystemClock.elapsedRealtime() + 5000
         while (snapshot().getJSONObject("runtime").getString("state") == "Starting") {
             check(SystemClock.elapsedRealtime() < deadline) { "RUNTIME_START_TIMEOUT" }
@@ -68,6 +70,7 @@ object NativeSessionHost {
         send("set_activity_state", "visible", activityVisible.get())
         tick()
     }
+    fun runtimeConfigJson(): String = JSONObject().put("schema", 1).put("paths", checkNotNull(paths)).toString()
     private fun stopRuntime() {
         if (handle == 0L) return
         val old = handle

@@ -79,6 +79,8 @@ host: stale handle、二重stop、destroy-before-stop、queue満杯、未知JSON
 
 [Androidの実行制約](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)と、[Wawonaの配置例](../phase-3-rust-compositor-waypipe.md#apk側helperの実行確認をphase-01へ前倒しする)を区別する。[独立probe](../native-preflight-20261104.md)ではAPK内のCommandから同じUIDで起動し、echo/終了を10回確認した。製品runtimeへの統合とWaypipe binary自体は後続で検証する。`run-as`やADB shellからの起動だけでは合格にしない。失敗時はloader、exec制約、ABI、依存不足を分け、Waypipe統合を待つ。
 
+H01の[製品統合結果](../progress.md)では、Application由来の`RuntimeConfig.paths`を使い、`helper_probe` commandを専用I/O workerで処理する。coreは停止flagとworker完了を監督し、資源回収前にStoppedを返さない。commandにはnonceだけを渡す。host/Questで実行・途中停止・回収に成功したが、Waypipe本体は引き続きW04で扱う。
+
 <a id="r01"></a>
 ## R01 — SDK Surfaceと入力callbackの契約を実機で確定
 
