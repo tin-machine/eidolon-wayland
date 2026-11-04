@@ -169,3 +169,5 @@ H01の診断改善として、exec時のerrnoを保持し、ENOENT（ファイ�
 ユーザーの確認でrepositoryのGitHub Actionsが無効だったと判明した。repository設定で`Allow tin-machine, and select non-tin-machine, actions and reusable workflows`と`Allow actions created by GitHub`へ変更済み。workflowが参照するActionはすべて`actions/*`の公式Actionで、SHA固定。復旧の記録をpushし、新しいpush eventのhost/Android結果を観測する。まだ成功したと判断せず、両方の同一SHA成功を確認するまでC01は`in_progress`を維持する。
 
 復旧後の`06cd62c`のrun `41870384317`はpush eventを受信したが、開始直後failureでjobは0件だった。追加調査で、jobレベルの`env`に置いた`${{ runner.temp }}`が[許可context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability)の範囲外と分かった。これをstepの`env`へ移した。YAMLとして読めるだけでは検出できないため、host jobへ`actionlint v1.7.12`による構文・context検査も追加した。ローカルでは公式releaseのSHA256を照合した同版でpass。新しいGitHub connectorの汎用`github_fetch`は`actions/runs?head_sha=...`を取得でき、PR専用wrapperの制限を回避してpush runを直接観測できた。
+
+次の`6331c88`/run `41871665707`ではhostが成功し、AndroidはSDK導入の`FileNotFoundError: sdkmanager`で失敗した。runnerのPATHを仮定していたため、`ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager`を明示するよう修正。report jobは成功し、同一SHAのhost success / Android failureを記録できた。実行されなかったAPK buildを成功に数えない。
