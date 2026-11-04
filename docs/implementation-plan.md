@@ -25,7 +25,7 @@ Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプ�
 | 指摘 | 修正・検証方針 |
 | --- | --- |
 | 既存環境と導入例が違う | SDKは`/opt/android-sdk`、JDK 25、API 35、NDK 27.3が既存。新しい版を優先し、JDK 25／compileSdk 36／Spatial SDK 0.15.0を第一候補にする。[Phase 0](phase-0-development-environment.md#2-ビルドツールの基準)にKotlin互換表、実測、不足分、採用順を集約 |
-| ビルド用APIとQuest実行APIの混同 | compileSdk 36とminSdk／targetSdk 34を分け、実機API・merged manifest・NDK minimumを照合。端末未接続のため実行可否は未確認 |
+| ビルド用APIとQuest実行APIの混同 | compileSdk 36とminSdk／targetSdk 34を分け、実機API・merged manifest・NDK minimumを照合。Quest 3のAPI 34／arm64-v8aとUSB承認は同日実測済み。APK実行は未確認 |
 | 無線経路と端末同定が不足 | dual NIC／VPNを踏まえてroute・送信元・TCP・ADB認証を分離。USBとWi-Fiで物理端末を照合し、IPだけで同一視しない |
 | 初期SSH手順の不整合 | 鍵認証のみで起動し、同じ引数で`sshd -T`。ADB serverの一律停止とログ消去を外し、forwardの上書きを防止 |
 | transportと共有領域の契約が不足 | remote socketを明示し、execの両出力をdrain。仮想output、map／unmap、SHMの境界・資源上限をPhase 2〜3へ追加 |

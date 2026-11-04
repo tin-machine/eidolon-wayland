@@ -1,6 +1,6 @@
 # Phase 0 — Ubuntu開発PC・Quest 3・Termuxの開発環境
 
-**Status:** Planning（2026-11-04開発PCを実測・計画更新、Quest実機では未検証）<br>
+**Status:** Planning（2026-11-04開発PC・Quest USB/OSを実測、APKビルド・XR動作は未検証）<br>
 **上位計画:** [implementation-plan.md — Phase 0](implementation-plan.md#phase-0--レポジトリと開発環境)  
 **全体設計:** [architecture.md](architecture.md)
 
@@ -65,7 +65,7 @@ flowchart TB
 
 採用判定は次の順に行う。
 
-1. **実機の識別:** USB接続後に`ro.build.version.sdk`／`release`／`fingerprint`とABIを取得する。現在は端末未接続で未確認。APIが34未満ならこの構成は導入不可とし、OS更新可否を確認する。`minSdk`を下げるだけで依存libraryやnative APIの不整合を回避しない。
+1. **実機の識別:** USB接続後に`ro.build.version.sdk`／`release`／`fingerprint`とABIを取得する。2026-11-04に手元のQuest 3でAndroid 14／API 34／arm64-v8aを確認した（第4.1節）。API下限は満たすが、APK・SDKの動作確認は別途必要。別端末やOS更新後も再確認し、APIが34未満ならこの構成は導入不可とする。`minSdk`を下げるだけで依存libraryやnative APIの不整合を回避しない。
 2. **host build:** 上記SHAの専用checkoutでJDK 25、Kotlin／Compose 2.4.21、compileSdk 36を試す。`./gradlew --version`の実行JVM、scene export、assemble、lint、JNI同梱、dependency／manifest mergeを個別に記録する。上流の`lint.abortOnError=false`をそのまま合格判定に流用しない。
 3. **差分の切り分け:** compileSdk 35、Kotlin 2.1.0、JDK 21（既存Studio JBR）／17との比較は原因に合わせて一項目ずつ行う。上流そのままの再現はJDK 17／compileSdk 34の対照実験とし、最初から旧環境へ戻す前提にしない。互換表外の組合せはその事実も記録する。
 4. **Questで採用:** install・XR起動・JNI・Surface／passthrough・APK UID helper・localhost SSHを各フェーズで確認する。0.15.0のpose／scaleやlifecycleも再確認し、成功した組合せを固定する。targetSdk 35／36は、実際のHorizon OSと配布先が受け付けること、権限・背景化・入力・helperの回帰を別試験で確認後に更新する。
@@ -91,7 +91,7 @@ Meta Spatial SDKの0.15.0、Android API 34/36、Horizon OSの表示バージョ�
 | SDK／ADB | `ANDROID_HOME`と`ANDROID_SDK_ROOT`は`/opt/android-sdk`、ADB 37.0.0 | `$HOME/Android/Sdk`へ上書きせず、既存SDKを使う |
 | SDK packages | platformはandroid-35、Build Tools 35.0.0、NDK 27.3.13750724 | compileSdk 36を試す際にplatform 36を追加。35は対照に使い、NDKは既存版の採用可否を検証する |
 | Rust | rustc／cargo 1.95.0、Android targetは`x86_64-linux-android`のみ | Quest用`aarch64-linux-android`と固定版cargo-ndkを追加する |
-| Quest接続 | `adb devices -l`に端末なし、USB一覧にもQuestなし、forwardなし | USB初期承認・Quest OS／ABI／IP確認は未実施。無線ADBも未検証 |
+| Quest接続 | 初回レビュー時は未接続。同日19:10 JSTにUSB承認済みの`device`、Android 14／API 34／arm64-v8aを確認（第4.1節） | OS／ABI確認は完了。APK導入・XR起動、IP／無線ADBは未検証 |
 | ネットワーク | 同じLANへの有線interfaceとdefault routeが各2本、VPN／仮想bridgeも存在 | QuestのIP確認後に`ip route get`で実際の出力interfaceと送信元を確認する |
 
 既存SDKはローカルの`homecluster-desktop/docs/operation/ubuntu-android-dev-setup.md`の管理対象と一致した。以前のx86_64 emulator成功はQuest arm64／Spatial SDKの成功証拠にはしない。接続先IP・端末識別子・認証情報は共通のコマンド例へ固定しない。
@@ -208,6 +208,23 @@ adb -s "$quest_serial" shell getprop ro.build.version.release
 上記のABI/API確認を初回のビルド・NDK設定より先に行い、Horizon OSのbuild情報も記録する。Rustのnative minimum APIはAPKの`minSdk`と揃える。[Android公式NDK資料](https://developer.android.com/ndk/guides/sdk-versions)のとおり、native APIの利用可否を決めるのは`compileSdk`ではなくminimum APIである。
 
 期待値: <code>adb devices -l</code>に<code>device</code>。<code>unauthorized</code>はHMD内のUSB承認を確認。<code>offline</code>や不安定な接続はケーブル、ADBの二重インストール、udev権限を確認。Linux用udevルールは[Android公式 device setup](https://developer.android.com/studio/run/device#setting-up)に従う。複数端末なら <code>adb -s SERIAL ...</code> で指定。
+
+### 4.1 USB承認・端末ログの実測（2026-11-04）
+
+PCへ直接接続し、ケーブル交換後の19:03 JSTにQuest 3をUSB機器として認識した。当初の`2833:5010`はXRSP／Crosswind／HighwindだけでADB interfaceがなく、`adb devices -l`も空だった。開発者設定・HMD内承認後の19:10 JSTには`2833:5013`、ADB interface（class/subclass/protocol = `ff/42/01`）と`device`を確認した。このVID/PIDは今回の観測値であり、将来のOSやUSB modeへ固定しない。
+
+| 項目 | 実測結果と判断 |
+| --- | --- |
+| Android／ABI | Android **14**、API **34**、primary ABI **arm64-v8a**。第2節のminSdk 34と一致 |
+| OS build | build ID `UP1A.231005.007.A1`、incremental `52641960031600520`、security patch `2026-09-06`。Horizon OSの画面表示バージョンは未確認で、この番号から推定しない |
+| USB／ADB | USB 2.0 High-Speed（480 Mbps）、`adb_enabled=1`、対象端末を`-s`で指定したshell/getprop/logcatが成功。PCのudev変更・ADB server再起動は不要だった |
+| 給電 | USB powered、残量96%、温度36.0°C、`Weak Charger: true`、報告された最大電流900 mA／電圧5 V。実消費電力や長時間の充電維持を保証する値ではない。給電器＋Wi-Fi運用は引き続き別試験 |
+| Termux | 現在userの`pm list packages --user current com.termux`は空。Termux／SSH／Waypipeの試験は未着手 |
+| ログ | 直近10分を要求し、保持されていた19:07:44〜19:11:49 JSTのmain/system/crashの警告・エラー2,831行を確認。`FATAL EXCEPTION`／`Fatal signal`／`ANR in`の一致なし、crash bufferは空。ログ保持範囲外の不具合やアプリ動作を保証しない |
+
+システム側には性能制御、SELinuxのproperty読取り拒否、Presence、カメラ／音声などの警告・エラーがある。Eidolon APKはまだ存在せず、その障害と扱わない。XR起動・背景化・復帰の試験では対象PIDと操作時刻を合わせて再取得する。端末serial・接続先・生ログを計画書へ転記しない。
+
+**切り分けへの反映:** `lsusb`／sysfsにもQuestがない段階、USBには出るがADB interfaceがない段階、ADBの`unauthorized`、`device`を分ける。`sys.usb.config=none`／`sys.usb.state`空でも今回はADB shellが成功しており、このpropertyだけで未接続と判定しない。権限はADB interfaceが現れた時点のdevice nodeと実接続で確認し、以前のUSB modeの権限を根拠にudevを変更しない。
 
 ## 5. 実際にAPKをビルド・デプロイする
 
@@ -443,11 +460,11 @@ Tokenやauth.json、秘密鍵はシェル履歴・Git・logcatへ書き込まな
 
 ## 7. Phase 0完了条件と観測記録
 
-USBでの開発基準とWi-Fi通常運用の採用判定を別欄で管理する。第3.0節のPC調査は実施済みだが、以下のビルド・実機合格条件は未達である。無線の未了項目は未了のまま残し、USB基準を満たした部分から後続フェーズへ進める。資料上の対応確認を実機成功として数えない。
+USBでの開発基準とWi-Fi通常運用の採用判定を別欄で管理する。第3.0節のPC調査と第4.1節のUSB承認・OS／ABI取得は実施済み。APKビルド・XR動作と無線運用は未達である。無線の未了項目は未了のまま残し、USB基準を満たした部分から後続フェーズへ進める。資料上の対応確認を実機成功として数えない。
 
 - [ ] Ubuntuで採用JDK（第一候補25）と出力target 17、SDK/NDK、Gradle wrapper、Kotlin／Compose、Meta SDKの組合せを検証・固定。
-- [ ] Quest 3でDeveloper Mode/USB承認、<code>adb devices -l</code>が<code>device</code>。
-- [ ] Quest ABI/API/Horizon OS buildを<code>adb shell getprop</code>で取得。
+- [x] Quest 3でDeveloper Mode/USB承認、<code>adb devices -l</code>が<code>device</code>（2026-11-04）。
+- [x] Quest ABI/API/OS buildを<code>adb shell getprop</code>で取得（2026-11-04。Horizon OSの画面表示バージョンは未確認）。
 - [ ] Ubuntu上で上流StarterSampleをビルド・XR起動するか、Linux CLIの具体的な障害を記録して代替の最小Spatial APKを実証。
 - [ ] Eidolon独自の最小APKを追加。Ubuntuで<code>assembleDebug</code>し、USBで<code>adb install</code> → XR起動 → <code>logcat</code>の基準結果を再現できる。
 - [ ] 基本CI（Gradle compile/静的検査、秘密情報除外、ライセンス確認）を用意。
