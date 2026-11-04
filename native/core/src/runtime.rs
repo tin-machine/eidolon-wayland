@@ -77,7 +77,12 @@ impl Runtime {
             .map_err(|_| invalid())?;
             profiles.insert(profile.profile_id.clone(), profile);
         }
-        let transport = Arc::new(eidolon_transport::session::Controller::start()?);
+        let transport = Arc::new(eidolon_transport::session::Controller::start_with_root(
+            config
+                .paths
+                .as_ref()
+                .map(|paths| std::path::PathBuf::from(&paths.files_dir)),
+        )?);
         let io = transport.clone();
         let render = Arc::new(eidolon_render::Controller::start()?);
         let gl = render.clone();
@@ -112,7 +117,6 @@ impl Runtime {
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     ready_hook();
                     let mut detach_count = 0;
-                    let mut next_session = Some(eidolon_model::ids::SessionId::new(1).unwrap());
                     let mut last_credential = None;
                     let mut last_transport = (None, eidolon_transport::session::State::Idle, None);
                     loop {
@@ -217,6 +221,25 @@ impl Runtime {
                         if let Some(command) = state.commands.pop_front() {
                             let mut asynchronous = false;
                             let code = match &command {
+                                Command::RemoteCleanupProbe {
+                                    session,
+                                    nonce,
+                                    scenario,
+                                    ..
+                                } => {
+                                    if let Some(paths) =
+                                        config.paths.as_ref().filter(|_| cfg!(debug_assertions))
+                                    {
+                                        io.cleanup_probe(
+                                            *session,
+                                            std::path::Path::new(&paths.files_dir),
+                                            nonce,
+                                            *scenario,
+                                        )
+                                    } else {
+                                        Status::NotReady
+                                    }
+                                }
                                 Command::ForwardProbe { session, nonce, .. } => {
                                     if let Some(paths) =
                                         config.paths.as_ref().filter(|_| cfg!(debug_assertions))
@@ -236,16 +259,7 @@ impl Runtime {
                                     ..
                                 } => {
                                     if let Some(profile) = profiles.get(profile_id) {
-                                        if let Some(session) = next_session {
-                                            let code =
-                                                io.connect(profile.clone(), session, *request_id);
-                                            if code == Status::Accepted {
-                                                next_session = session.checked_next();
-                                            }
-                                            code
-                                        } else {
-                                            Status::Failed
-                                        }
+                                        io.connect(profile.clone(), *request_id)
                                     } else {
                                         io.unknown_profile()
                                     }
@@ -445,9 +459,15 @@ impl Runtime {
     }
     pub fn request_stop(&self) -> Status {
         self.stop.store(true, Ordering::Release);
+        {
+            let mut state = self.lock();
+            if state.snapshot.state != RuntimeState::Stopped {
+                state.snapshot.state = RuntimeState::Stopping;
+            }
+            state.credentials.clear();
+        }
         self.render.request_stop();
         self.transport.request_stop();
-        self.lock().credentials.clear();
         self.worker.thread().unpark();
         Status::Accepted
     }
@@ -562,6 +582,22 @@ mod tests {
             assert!(Instant::now() < deadline, "{:?}", runtime.snapshot());
             thread::sleep(Duration::from_millis(1));
         }
+    }
+    #[test]
+    fn stop_snapshot_changes_before_a_busy_protocol_owner_can_run_again() {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let runtime = Runtime::start_with_hook(RuntimeConfig::default(), move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(runtime.snapshot().state, RuntimeState::Ready);
+        assert_eq!(runtime.request_stop(), Status::Accepted);
+        assert_eq!(runtime.snapshot().state, RuntimeState::Stopping);
+        release_tx.send(()).unwrap();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Stopped);
     }
     fn scene(id: i64) -> Command {
         Command::SceneReady {

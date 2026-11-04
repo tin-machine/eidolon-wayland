@@ -1,0 +1,668 @@
+//! 固定launcherの短いJSON lineとheartbeatだけを扱う。任意shell/pathを受けない。
+use crate::forward_probe::valid_nonce;
+use russh::{Channel, ChannelMsg, client};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio::time::{Duration, Instant, sleep_until, timeout};
+use tokio_util::sync::CancellationToken;
+
+const HOME: &str = "/data/data/com.termux/files/home";
+const PYTHON: &str = "/data/data/com.termux/files/usr/bin/python3";
+const SCRIPT_PATH: &str = "/data/data/com.termux/files/home/.local/lib/eidolon/eidolon-session.py";
+const SCRIPT: &[u8] = include_bytes!("../../../scripts/termux/eidolon-session.py");
+const LINE_BYTES: usize = 16384;
+
+pub fn command(mode: &str, nonce: &str) -> Result<String, &'static str> {
+    if !matches!(mode, "prepare" | "echo" | "pattern" | "foot" | "cleanup") || !valid_nonce(nonce) {
+        return Err("INVALID_ARGUMENT");
+    }
+    Ok(format!("'{PYTHON}' '{SCRIPT_PATH}' '{mode}' '{nonce}'"))
+}
+pub fn remote_path(nonce: &str) -> Result<String, &'static str> {
+    if !valid_nonce(nonce) {
+        return Err("INVALID_ARGUMENT");
+    }
+    Ok(format!("{HOME}/.eidolon/s-{nonce}/p"))
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Identity {
+    pub pid: u32,
+    pub start: String,
+    pub group: u32,
+    pub state: String,
+}
+impl Identity {
+    pub(crate) fn valid(&self) -> bool {
+        self.pid > 0
+            && self.group == self.pid
+            && !self.start.is_empty()
+            && self.start.len() <= 32
+            && self.start.bytes().all(|b| b.is_ascii_digit())
+            && self.state.len() == 1
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Metrics {
+    pub bytes: u64,
+    pub truncated: bool,
+    pub retained: usize,
+}
+impl Metrics {
+    fn valid(&self) -> bool {
+        self.retained == self.bytes.min(65536) as usize && self.truncated == (self.bytes > 65536)
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Copy {
+    pub size: u64,
+    pub bytes: u64,
+    pub sha256: String,
+    pub tail_matched: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Echo {
+    pub schema: u32,
+    pub result: String,
+    pub uid: u32,
+    pub channels: usize,
+    pub bytes: u64,
+    pub copies: Vec<Copy>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Finished {
+    pub schema: u32,
+    pub nonce: String,
+    pub uid: u32,
+    pub reason: String,
+    pub child: Option<Identity>,
+    pub exit_status: Option<u32>,
+    pub exit_signal: Option<u32>,
+    pub term_sent: bool,
+    pub kill_sent: bool,
+    pub cleaned: bool,
+    pub group_alive: bool,
+    pub pipes_closed: bool,
+    pub stdout: Metrics,
+    pub stderr: Metrics,
+    #[serde(default)]
+    pub echo: Option<Echo>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+impl Finished {
+    fn valid(&self) -> bool {
+        matches!(
+            self.reason.as_str(),
+            "Completed"
+                | "Stop"
+                | "EOF"
+                | "LeaseExpired"
+                | "ControlInvalid"
+                | "CleanupTimeout"
+                | "IOFailed"
+                | "Signal"
+        ) && self.error.as_ref().is_none_or(|e| {
+            matches!(
+                e.as_str(),
+                "CONTROL_INVALID" | "DEPENDENCY_NOT_READY" | "CHILD_SPAWN_FAILED"
+            )
+        }) && self.child.as_ref().is_none_or(Identity::valid)
+            && self.stdout.valid()
+            && self.stderr.valid()
+            && self.echo.as_ref().is_none_or(|e| {
+                e.schema == 1
+                    && e.result == "pass"
+                    && e.channels == 6
+                    && e.copies.len() == 6
+                    && e.copies.iter().all(|c| {
+                        c.sha256.len() == 64
+                            && c.sha256
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
+            })
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Prepared {
+    schema: u32,
+    nonce: String,
+    uid: u32,
+    socket: String,
+    launcher_sha256: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Started {
+    schema: u32,
+    nonce: String,
+    uid: u32,
+    child: Identity,
+}
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Frame {
+    Prepared(Prepared),
+    ChildStarted(Started),
+    Finished(Finished),
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Report {
+    pub phase: &'static str,
+    pub child: Option<Identity>,
+    pub finished: Option<Finished>,
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+    pub eof: bool,
+    pub exit_status: Option<u32>,
+    pub exit_signal: bool,
+    pub cleanup_pending: bool,
+    pub error: Option<&'static str>,
+}
+pub struct Launcher {
+    channel: Option<Channel<client::Msg>>,
+    nonce: String,
+    uid: u32,
+    expected_socket: String,
+    beat_every: Duration,
+    heartbeats: bool,
+    cancel: CancellationToken,
+    heartbeat: Instant,
+    stopping: Option<Instant>,
+    deadline: Instant,
+    pending: Vec<u8>,
+    pub report: Report,
+}
+impl Launcher {
+    pub(crate) async fn open_recorded<H: client::Handler>(
+        client: &client::Handle<H>,
+        nonce: &str,
+        uid: u32,
+        cancel: CancellationToken,
+        before_exec: impl FnOnce() -> Result<(), &'static str>,
+    ) -> Result<Self, &'static str> {
+        let text = command("prepare", nonce)?;
+        let channel = tokio::select! {biased;
+            _=cancel.cancelled()=>return Err("CANCELLED"),
+            channel=timeout(Duration::from_secs(5),client.channel_open_session())=>channel,
+        }
+        .map_err(|_| "EXEC_TIMEOUT")?
+        .map_err(|_| "SSH_IO_FAILED")?;
+        if cancel.is_cancelled() {
+            let _ = timeout(Duration::from_secs(1), channel.close()).await;
+            return Err("CANCELLED");
+        }
+        if let Err(error) = before_exec() {
+            let _ = timeout(Duration::from_secs(1), channel.close()).await;
+            return Err(error);
+        }
+        // 永続化後はprepareを送ってからcancelを処理する。所有者にEOF/Stop回収を任せる。
+        let exec = timeout(Duration::from_secs(2), channel.exec(true, text)).await;
+        if !matches!(exec, Ok(Ok(()))) {
+            let _ = timeout(Duration::from_secs(1), channel.close()).await;
+            return Err("SSH_IO_FAILED");
+        }
+        Self::from_channel(channel, nonce, uid, cancel)
+    }
+    fn from_channel(
+        channel: Channel<client::Msg>,
+        nonce: &str,
+        uid: u32,
+        cancel: CancellationToken,
+    ) -> Result<Self, &'static str> {
+        Ok(Self {
+            expected_socket: remote_path(nonce)?,
+            beat_every: Duration::from_secs(10),
+            heartbeats: true,
+            channel: Some(channel),
+            nonce: nonce.into(),
+            uid,
+            cancel,
+            heartbeat: Instant::now() + Duration::from_secs(10),
+            stopping: None,
+            deadline: Instant::now() + Duration::from_secs(5),
+            pending: Vec::new(),
+            report: Report {
+                phase: "preparing",
+                cleanup_pending: true,
+                ..Default::default()
+            },
+        })
+    }
+    pub async fn start_echo(&mut self) -> Result<(), &'static str> {
+        if self.report.phase != "prepared" || self.stopping.is_some() {
+            return Err("NOT_READY");
+        }
+        self.control("start", Some("echo")).await?;
+        self.report.phase = "starting";
+        self.deadline = Instant::now() + Duration::from_secs(70);
+        Ok(())
+    }
+    pub(crate) fn suppress_heartbeat(&mut self) {
+        self.heartbeats = false;
+    }
+    pub(crate) async fn control_eof(&mut self) -> Result<(), &'static str> {
+        self.stopping = Some(Instant::now());
+        self.deadline = Instant::now() + Duration::from_secs(8);
+        timeout(
+            Duration::from_secs(2),
+            self.channel.as_ref().ok_or("STALE")?.eof(),
+        )
+        .await
+        .map_err(|_| "SSH_IO_TIMEOUT")?
+        .map_err(|_| "SSH_IO_FAILED")
+    }
+    async fn control(&self, kind: &str, mode: Option<&str>) -> Result<(), &'static str> {
+        let mut value = serde_json::json!({"type":kind,"nonce":self.nonce});
+        if let Some(mode) = mode {
+            value["mode"] = mode.into();
+        }
+        let bytes = format!("{value}\n").into_bytes();
+        timeout(
+            Duration::from_secs(2),
+            self.channel.as_ref().ok_or("STALE")?.data_bytes(bytes),
+        )
+        .await
+        .map_err(|_| "SSH_IO_TIMEOUT")?
+        .map_err(|_| "SSH_IO_FAILED")
+    }
+    pub async fn request_stop(&mut self) -> Result<(), &'static str> {
+        if self.stopping.is_none() && self.report.phase != "finished" {
+            self.stopping = Some(Instant::now());
+            self.deadline = Instant::now() + Duration::from_secs(8);
+            if self.report.finished.is_none() {
+                self.control("stop", None).await?;
+            }
+        }
+        Ok(())
+    }
+    /// SSH channelを読み続けるcallerだけがheartbeatを送る。UI/coreではawaitしない。
+    pub async fn next(&mut self) -> Result<Report, &'static str> {
+        loop {
+            if self.cancel.is_cancelled() {
+                self.request_stop().await?;
+            }
+            let message = tokio::select! {
+                biased;
+                _=self.cancel.cancelled(),if self.stopping.is_none()=>{self.request_stop().await?;continue;},
+                _=sleep_until(self.deadline)=>{self.report.error=Some("LAUNCHER_TIMEOUT");return Err("LAUNCHER_TIMEOUT");},
+                _=sleep_until(self.heartbeat),if self.stopping.is_none() && self.heartbeats=>{
+                    self.control("heartbeat",None).await?; self.heartbeat=Instant::now()+self.beat_every;continue;
+                },
+                message=self.channel.as_mut().ok_or("STALE")?.wait()=>message,
+            };
+            match message {
+                Some(ChannelMsg::Data { data }) => {
+                    self.report.stdout_bytes =
+                        self.report.stdout_bytes.saturating_add(data.len() as u64);
+                    for byte in data {
+                        if byte == b'\n' {
+                            let line = std::mem::take(&mut self.pending);
+                            self.frame(&line)?;
+                        } else {
+                            if self.pending.len() >= LINE_BYTES {
+                                return Err("PROTOCOL_ERROR");
+                            }
+                            self.pending.push(byte);
+                        }
+                    }
+                    return Ok(self.report.clone());
+                }
+                Some(ChannelMsg::ExtendedData { data, ext: 1 }) => {
+                    self.report.stderr_bytes =
+                        self.report.stderr_bytes.saturating_add(data.len() as u64);
+                }
+                Some(ChannelMsg::Eof) => self.report.eof = true,
+                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                    self.report.exit_status = Some(exit_status)
+                }
+                Some(ChannelMsg::ExitSignal { .. }) => self.report.exit_signal = true,
+                None | Some(ChannelMsg::Close) => {
+                    if !self.pending.is_empty()
+                        || !self.report.eof
+                        || self.report.exit_status != Some(0)
+                        || self.report.exit_signal
+                        || self.report.finished.is_none()
+                    {
+                        return Err("REMOTE_EXIT");
+                    }
+                    self.report.phase = "finished";
+                    self.report.cleanup_pending = !self
+                        .report
+                        .finished
+                        .as_ref()
+                        .is_some_and(|r| r.cleaned && !r.group_alive && r.pipes_closed);
+                    self.close().await;
+                    return Ok(self.report.clone());
+                }
+                Some(ChannelMsg::Failure | ChannelMsg::ExtendedData { .. }) => {
+                    return Err("PROTOCOL_ERROR");
+                }
+                _ => (),
+            }
+        }
+    }
+    fn frame(&mut self, line: &[u8]) -> Result<(), &'static str> {
+        let frame: Frame = serde_json::from_slice(line).map_err(|_| "PROTOCOL_ERROR")?;
+        match frame {
+            Frame::Prepared(value) => {
+                if self.report.phase != "preparing"
+                    || value.schema != 1
+                    || value.nonce != self.nonce
+                    || value.uid != self.uid
+                    || value.socket != self.expected_socket
+                    || value.launcher_sha256 != script_hash()
+                {
+                    return Err("PROTOCOL_ERROR");
+                }
+                self.report.phase = "prepared";
+                if self.stopping.is_none() {
+                    self.deadline = Instant::now() + Duration::from_secs(60);
+                }
+            }
+            Frame::ChildStarted(value) => {
+                if self.report.phase != "starting"
+                    || value.schema != 1
+                    || value.nonce != self.nonce
+                    || value.uid != self.uid
+                    || !value.child.valid()
+                {
+                    return Err("PROTOCOL_ERROR");
+                }
+                self.report.child = Some(value.child);
+                self.report.phase = "running";
+            }
+            Frame::Finished(value) => {
+                if value.schema != 1
+                    || !value.valid()
+                    || value.nonce != self.nonce
+                    || value.uid != self.uid
+                    || value.child != self.report.child
+                    || self.report.finished.is_some()
+                    || value.stdout.retained > 65536
+                    || value.stderr.retained > 65536
+                    || value.reason.len() > 64
+                    || value.error.as_ref().is_some_and(|e| e.len() > 64)
+                    || value.echo.as_ref().is_some_and(|e| {
+                        e.copies.len() > 6 || e.copies.iter().any(|c| c.sha256.len() != 64)
+                    })
+                {
+                    return Err("PROTOCOL_ERROR");
+                }
+                self.report.finished = Some(value);
+                self.report.phase = "finishing";
+                self.deadline = Instant::now() + Duration::from_secs(3);
+            }
+        }
+        Ok(())
+    }
+    pub async fn finish(&mut self) -> Result<Report, &'static str> {
+        while self.report.phase != "finished" {
+            self.next().await?;
+        }
+        Ok(self.report.clone())
+    }
+    async fn close(&mut self) {
+        if let Some(channel) = self.channel.take() {
+            let _ = timeout(Duration::from_secs(1), channel.close()).await;
+        }
+    }
+}
+impl Drop for Launcher {
+    fn drop(&mut self) {
+        if let Some(channel) = self.channel.take() {
+            tokio::spawn(async move {
+                let _ = timeout(Duration::from_secs(1), channel.close()).await;
+            });
+        }
+    }
+}
+fn script_hash() -> String {
+    Sha256::digest(SCRIPT)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Audit {
+    pub verified: bool,
+    pub active: bool,
+    pub orphaned: bool,
+    pub child_alive: bool,
+    pub receipt: Option<Finished>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditWire {
+    schema: u32,
+    cleaned: bool,
+    #[serde(default)]
+    already_absent: bool,
+    #[serde(default)]
+    active: bool,
+    #[serde(default)]
+    orphaned: bool,
+    #[serde(default)]
+    child_alive: bool,
+    #[serde(default)]
+    pending: bool,
+    #[serde(default)]
+    receipt: Option<Frame>,
+}
+/// 新しい検証済みSSH接続から旧nonceを照合する。保存PIDへsignalする操作はない。
+pub async fn audit<H: client::Handler>(
+    client: &client::Handle<H>,
+    nonce: &str,
+    uid: u32,
+    child: Option<&Identity>,
+) -> Result<Audit, &'static str> {
+    let command = command("cleanup", nonce)?;
+    let value = timeout(Duration::from_secs(3), async {
+        let channel = client
+            .channel_open_session()
+            .await
+            .map_err(|_| "SSH_IO_FAILED")?;
+        crate::exec::json(channel, command).await
+    })
+    .await
+    .map_err(|_| "EXEC_TIMEOUT")??;
+    let wire: AuditWire = serde_json::from_value(value).map_err(|_| "PROTOCOL_ERROR")?;
+    if wire.schema != 1 {
+        return Err("PROTOCOL_ERROR");
+    }
+    let receipt = match wire.receipt {
+        Some(Frame::Finished(value)) => Some(value),
+        None => None,
+        _ => return Err("PROTOCOL_ERROR"),
+    };
+    if let Some(receipt) = &receipt
+        && (!receipt.valid()
+            || receipt.schema != 1
+            || receipt.nonce != nonce
+            || receipt.uid != uid
+            || child.is_some_and(|child| receipt.child.as_ref() != Some(child)))
+    {
+        return Err("PROTOCOL_ERROR");
+    }
+    let verified = wire.cleaned
+        && wire.already_absent
+        && !wire.active
+        && !wire.orphaned
+        && !wire.child_alive
+        && !wire.pending
+        && receipt
+            .as_ref()
+            .is_some_and(|r| r.cleaned && !r.group_alive && r.pipes_closed);
+    Ok(Audit {
+        verified,
+        active: wire.active,
+        orphaned: wire.orphaned,
+        child_alive: wire.child_alive,
+        receipt,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn commands_are_fixed_and_process_identity_is_bounded() {
+        assert!(command("shell", &"a".repeat(16)).is_err());
+        assert!(command("prepare", "../bad").is_err());
+        assert!(
+            command("cleanup", &"a".repeat(16))
+                .unwrap()
+                .ends_with("'cleanup' 'aaaaaaaaaaaaaaaa'")
+        );
+        let mut identity = Identity {
+            pid: 42,
+            group: 42,
+            start: "123".into(),
+            state: "S".into(),
+        };
+        assert!(identity.valid());
+        identity.group = 43;
+        assert!(!identity.valid());
+    }
+
+    fn quote(text: &str) -> String {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+    async fn fixture(
+        child: &str,
+        lease_seconds: f64,
+    ) -> (crate::forward::openssh::OpenSsh, Launcher) {
+        use std::os::unix::fs::MetadataExt;
+        let ssh = crate::forward::openssh::OpenSsh::new().await;
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/termux/eidolon-session.py")
+            .canonicalize()
+            .unwrap();
+        let nonce = "bbbbbbbbbbbbbbbb";
+        let code = format!(
+            "import runpy,json,sys,pathlib;m=runpy.run_path({});m['supervise'](pathlib.Path({}),{},0,lambda v:print(json.dumps(v,separators=(',',':')),flush=True),lease_seconds={},grace_seconds=.15,factory=lambda mode,token:[sys.executable,'-c',{}])",
+            serde_json::to_string(script.to_str().unwrap()).unwrap(),
+            serde_json::to_string(ssh.dir.to_str().unwrap()).unwrap(),
+            serde_json::to_string(nonce).unwrap(),
+            lease_seconds,
+            serde_json::to_string(child).unwrap()
+        );
+        let channel = ssh.client.channel_open_session().await.unwrap();
+        channel
+            .exec(true, format!("/usr/bin/python3 -c {}", quote(&code)))
+            .await
+            .unwrap();
+        let uid = std::fs::metadata(&ssh.dir).unwrap().uid();
+        let mut owner =
+            Launcher::from_channel(channel, nonce, uid, CancellationToken::new()).unwrap();
+        owner.expected_socket = ssh
+            .dir
+            .join(format!(".eidolon/s-{nonce}/p"))
+            .to_str()
+            .unwrap()
+            .into();
+        (ssh, owner)
+    }
+    async fn prepared(owner: &mut Launcher) {
+        while owner.report.phase != "prepared" {
+            owner.next().await.unwrap();
+        }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_ssh_control_stop_waits_for_reap_eof_exit_and_cleanup_ack() {
+        let (ssh, mut owner) = fixture("import time;time.sleep(30)", 5.0).await;
+        prepared(&mut owner).await;
+        owner.start_echo().await.unwrap();
+        while owner.report.phase != "running" {
+            owner.next().await.unwrap();
+        }
+        owner.cancel.cancel();
+        let report = owner.finish().await.unwrap();
+        assert!(!report.cleanup_pending);
+        assert_eq!(report.finished.as_ref().unwrap().reason, "Stop");
+        assert_eq!(report.finished.as_ref().unwrap().exit_signal, Some(15));
+        assert!(report.finished.as_ref().unwrap().term_sent && report.eof);
+        assert_eq!(report.exit_status, Some(0));
+        assert!(!ssh.dir.join(".eidolon/s-bbbbbbbbbbbbbbbb").exists());
+        drop(owner);
+        ssh.close().await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_ssh_heartbeat_keeps_lease_and_drains_flood_without_publishing_text() {
+        let (ssh,mut owner)=fixture("import time,os;time.sleep(.5);os.write(1,b'fixture-private-text');[os.write(1,b'x'*65536) for _ in range(40)];[os.write(2,b'y'*65536) for _ in range(40)]",0.2).await;
+        owner.beat_every = Duration::from_millis(40);
+        owner.heartbeat = Instant::now() + owner.beat_every;
+        prepared(&mut owner).await;
+        owner.start_echo().await.unwrap();
+        let report = owner.finish().await.unwrap();
+        assert!(!report.cleanup_pending);
+        let remote = report.finished.as_ref().unwrap();
+        assert_eq!(remote.reason, "Completed");
+        assert_eq!(remote.exit_status, Some(0));
+        assert!(remote.stdout.truncated && remote.stderr.truncated);
+        assert_eq!(remote.stderr.bytes, 40 * 65536);
+        assert_eq!(remote.stdout.retained, 65536);
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("fixture-private-text")
+        );
+        drop(owner);
+        ssh.close().await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_ssh_missing_heartbeat_expires_lease_and_owned_child() {
+        let (ssh, mut owner) = fixture("import time;time.sleep(30)", 0.2).await;
+        prepared(&mut owner).await;
+        owner.start_echo().await.unwrap();
+        let report = owner.finish().await.unwrap();
+        assert!(!report.cleanup_pending);
+        assert_eq!(report.finished.as_ref().unwrap().reason, "LeaseExpired");
+        assert_eq!(report.finished.as_ref().unwrap().exit_signal, Some(15));
+        drop(owner);
+        ssh.close().await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_ssh_disconnect_has_no_local_ack_but_remote_owner_persists_reaped_receipt() {
+        let (mut ssh, mut owner) = fixture("import time;time.sleep(30)", 60.0).await;
+        prepared(&mut owner).await;
+        owner.start_echo().await.unwrap();
+        while owner.report.phase != "running" {
+            owner.next().await.unwrap();
+        }
+        let child = owner.report.child.clone().unwrap();
+        ssh.client
+            .disconnect(russh::Disconnect::ByApplication, "fixed loss fixture", "en")
+            .await
+            .unwrap();
+        assert!(owner.finish().await.is_err());
+        assert!(owner.report.cleanup_pending);
+        let _ = timeout(Duration::from_secs(2), &mut ssh.client).await;
+        let path = ssh.dir.join(".eidolon/r-bbbbbbbbbbbbbbbb.json");
+        timeout(Duration::from_secs(5), async {
+            while !path.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(receipt["cleaned"], true);
+        assert_eq!(receipt["pipes_closed"], true);
+        assert_eq!(receipt["group_alive"], false);
+        assert_eq!(receipt["child"]["pid"], child.pid);
+        assert_eq!(receipt["child"]["start"], child.start);
+        assert!(!std::path::Path::new(&format!("/proc/{}", child.pid)).exists());
+        drop(owner);
+        drop(ssh);
+    }
+}

@@ -685,7 +685,7 @@
     {
       "id": "T04",
       "title": "remote launcher・lease・回収",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "T03"
       ],

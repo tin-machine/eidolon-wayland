@@ -55,7 +55,9 @@ try:
     # 起動直後のログをring bufferの上書きで失わないよう、起動前から連続採取する。
     stream_file = (run / "app.log").open("w")
     stream = device.start_log(uid, stream_file)
-    (run / "launch.log").write_text(adb("shell", "am", "start", "-W", "-n", PACKAGE + "/.MainActivity"))
+    # Questは追跡・境界画面でVR起動を保留する。am -Wの待ちではなく、
+    # 下の期限内に同一buildのnative/scene/XR readinessを照合する。
+    (run / "launch.log").write_text(adb("shell", "am", "start", "-n", PACKAGE + "/.MainActivity"))
     deadline = time.monotonic() + args.timeout
     logs = ""
     while time.monotonic() < deadline:

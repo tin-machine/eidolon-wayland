@@ -3,16 +3,91 @@ import sys
 from pathlib import Path
 import unittest
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from quest_checks import runtime_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result
+from quest_checks import runtime_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result
 
 
 class ResultTests(unittest.TestCase):
+    def test_remote_cleanup_requires_real_lease_new_epochs_and_verified_receipts(self):
+        info, nonce = {"profile": "debug"}, "a" * 32
+        rows = []
+        modes = ["cancel_before_exec", "prepare_eof", "stop", "control_eof", "ssh_drop", "ssh_drop_recreate", "lease_expire"]
+        def stopped(handle):
+            return {"handle": str(handle), "accept_ms": 0, "stop_ms": 10,
+                    "after": {"workers": 0, "tokio_threads": 0, "owned_connections": 0, "forward": {"active": 0}, "pending_cleanup": []}}
+        for i, mode in enumerate(modes, 1):
+            scenario = "ssh_drop" if mode == "ssh_drop_recreate" else mode
+            handle, session, token = i * 10, i * 10, f"{i:016x}"
+            child = None if mode in {"cancel_before_exec", "prepare_eof"} else {"pid": 42, "group": 42, "start": "123", "state": "S"}
+            remote = {"phase": "finished", "cleanup_pending": False, "eof": True, "exit_status": 0, "exit_signal": False, "child": child,
+                      "finished": {"nonce": token, "uid": 4242, "reason": {"stop": "Stop", "lease_expire": "LeaseExpired"}.get(mode, "EOF"),
+                                   "child": child, "cleaned": True, "group_alive": False, "pipes_closed": True}}
+            report = {"nonce": token, "uid": 4242, "scenario": scenario, "state": "pass", "error": None, "local_cleaned": True,
+                      "forwarding": {"active": 0}, "remote_cleaned": True, "remote": remote, "elapsed_ms": 60100, "pending_cleanup": []}
+            row = {"mode": mode, "scenario": scenario, "nonce": token, "first_handle": str(handle), "first_session": str(session),
+                   "report": report, "stop": stopped(handle), "result": "pass", "observed_live": True}
+            if mode == "cancel_before_exec":
+                report.update(remote=None, remote_not_started=True, remote_cleaned=False)
+            elif mode.startswith("ssh_drop"):
+                report.update(error="SSH_DROPPED", remote_cleaned=False)
+                remote["cleanup_pending"] = True
+                row.update(next_session=str(session + 1), next_handle=str(handle), after_loss={"pending_cleanup": [{}]},
+                           recovered={"state": "Ready", "pending_cleanup": [], "cleanup_audits": [
+                               {"nonce": token, "origin_session": str(session), "current_session": str(session + 1), "verified": True, "child": child,
+                                "active": False, "orphaned": False, "child_alive": False, "error": None}]})
+                if mode == "ssh_drop_recreate":
+                    row.update(next_handle=str(handle + 1), stop=stopped(handle + 1), old_stop=stopped(handle))
+                    row["old_stop"]["after"]["pending_cleanup"] = [{}]
+            rows.append(row)
+        snapshot = {"schema": 1, "build_info": info, "check": {"case": "remote-cleanup", "nonce": nonce, "result": "pass", "rows": rows, "last_handle": "70"},
+                    "runtime": {"handle": "71", "runtime": {"state": "Ready", "activity_visible": True, "xr_state": "FOCUSED", "transport": {"state": "Idle", "pending_cleanup": []}}}}
+        self.assertTrue(remote_cleanup_result(snapshot, nonce, info, 4242))
+        # 同じ7故障のnative証拠でも、描画を伴わないinstrumentationをUI復帰として扱わない。
+        native = copy.deepcopy(snapshot)
+        native["process_id"] = 1234
+        destroyed = {"schema": 1, "code": 1, "registry": {"runtimes": 0, "workers": 0}}
+        native["runtime"] = destroyed
+        native["check"]["instrumentation"] = {
+            "mode": "instrumentation", "case": "remote-cleanup", "nonce": nonce, "uid": 10159, "pid": 1234, "result": "pass",
+            "recovery_handle": "71", "accept_ms": 0, "stop_ms": 10,
+            "ready": {"code": 0, "handle": "71", "registry": {"runtimes": 1, "workers": 1}, "runtime": {
+                "state": "Ready", "error": None, "activity_visible": False, "xr_state": "IDLE",
+                "transport": {"state": "Idle", "journal_ready": True, "pending_cleanup": []}}},
+            "stopped": {"code": 0, "handle": "71", "runtime": {"state": "Stopped", "helper_workers": 0, "render": {"workers": 0},
+                "transport": {"workers": 0, "tokio_threads": 0, "owned_connections": 0, "forward": {"active": 0}}}},
+            "after_destroy": destroyed,
+        }
+        self.assertTrue(remote_cleanup_result(native, nonce, info, 4242, instrumentation=True, apk_uid=10159))
+        self.assertFalse(remote_cleanup_result(native, nonce, info, 4242))
+        with self.assertRaises(ValueError):
+            remote_cleanup_result(native, nonce, info, 4242, instrumentation=True, apk_uid=10160)
+        bad = copy.deepcopy(native); bad["check"]["rows"][-1]["report"]["elapsed_ms"] = 1000
+        with self.assertRaises(ValueError):
+            remote_cleanup_result(bad, nonce, info, 4242, instrumentation=True, apk_uid=10159)
+        bad = copy.deepcopy(native); bad["check"]["instrumentation"]["after_destroy"]["registry"]["runtimes"] = 1
+        with self.assertRaises(ValueError):
+            remote_cleanup_result(bad, nonce, info, 4242, instrumentation=True, apk_uid=10159)
+        self.assertFalse(remote_cleanup_result(snapshot, "old", info, 4242))
+        with self.assertRaises(ValueError): remote_cleanup_result(snapshot, nonce, info, 4243)
+        for change in ["short_lease", "false_verified", "lost_pending", "old_epoch", "changed_pid", "leaked_worker"]:
+            bad = copy.deepcopy(snapshot)
+            if change == "short_lease": bad["check"]["rows"][6]["report"]["elapsed_ms"] = 100
+            elif change == "false_verified": bad["check"]["rows"][4]["recovered"]["cleanup_audits"][0]["verified"] = False
+            elif change == "lost_pending": bad["check"]["rows"][5]["old_stop"]["after"]["pending_cleanup"] = []
+            elif change == "old_epoch": bad["check"]["rows"][4]["next_session"] = "1"
+            elif change == "changed_pid": bad["check"]["rows"][4]["recovered"]["cleanup_audits"][0]["child"] = {"pid": 43}
+            else: bad["check"]["rows"][2]["stop"]["after"]["workers"] = 1
+            with self.assertRaises(ValueError): remote_cleanup_result(bad, nonce, info, 4242)
+
     def test_forward_needs_bytes_hash_half_close_bounded_channels_cleanup_and_new_runtime(self):
         info, nonce = {"profile": "debug"}, "a" * 32
         total = 1 + 65536 + 4 * 8 * 1024 * 1024
         report = {"state": "pass", "nonce": nonce[:16], "uid": 4242, "channels": 6, "bytes": total, "error": None,
                   "hashes_matched": True, "half_close": True, "forward_cancelled": True, "local_cleaned": True, "remote_cleaned": True,
                   "forwarding": {"accepted": 6, "active": 0, "peak": 4, "failed": 0, "remote_to_local": total, "local_to_remote": total + 54, "copy_buffer_limit": 512 * 1024}}
+        child = {"pid": 123, "group": 123, "start": "456", "state": "R"}
+        report["remote"] = {"phase": "finished", "cleanup_pending": False, "eof": True, "exit_status": 0, "exit_signal": False, "error": None, "child": child,
+                            "finished": {"schema": 1, "nonce": nonce[:16], "uid": 4242, "reason": "Completed", "exit_status": 0, "exit_signal": None,
+                                         "cleaned": True, "pipes_closed": True, "group_alive": False, "child": copy.deepcopy(child)}}
         snapshot = {"schema": 1, "build_info": info, "check": {"case": "forward", "nonce": nonce, "result": "pass", "last_handle": "1", "credential_requests": 1,
                     "transport": {"forward_probe": report}, "after_stop": {"workers": 0, "tokio_threads": 0, "owned_connections": 0, "forward": {"active": 0}}},
                     "runtime": {"handle": "2", "runtime": {"state": "Ready", "activity_visible": True, "xr_state": "FOCUSED", "transport": {"state": "Idle"}}}}
@@ -26,6 +101,14 @@ class ResultTests(unittest.TestCase):
             bad = copy.deepcopy(snapshot)
             target = bad["check"]["transport"]["forward_probe"]
             (target if key == "bytes" else target["forwarding"])[key] = value
+            with self.assertRaises(ValueError): forward_result(bad, nonce, info, 4242)
+        for change in ["pending", "child_reuse", "missing_eof", "pipes", "uid"]:
+            bad = copy.deepcopy(snapshot); remote = bad["check"]["transport"]["forward_probe"]["remote"]
+            if change == "pending": remote["cleanup_pending"] = True
+            elif change == "child_reuse": remote["finished"]["child"]["start"] = "0"
+            elif change == "missing_eof": remote["eof"] = False
+            elif change == "pipes": remote["finished"]["pipes_closed"] = False
+            else: remote["finished"]["uid"] = 4243
             with self.assertRaises(ValueError): forward_result(bad, nonce, info, 4242)
         snapshot["runtime"]["handle"] = "1"
         self.assertFalse(forward_result(snapshot, nonce, info, 4242))

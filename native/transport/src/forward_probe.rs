@@ -1,11 +1,11 @@
 //! T03の固定echo。private session directory以外のsocketや任意execは受け付けない。
 use crate::{
-    exec,
     forward::{self, Router},
+    journal, launcher,
 };
-use eidolon_model::ids::SessionId;
+use eidolon_model::{commands::CleanupScenario, ids::SessionId};
 use russh::client;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     os::unix::fs::{DirBuilderExt, MetadataExt},
@@ -20,15 +20,14 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-const HOME: &str = "/data/data/com.termux/files/home";
-const LAUNCHER: &str = "/data/data/com.termux/files/home/.local/lib/eidolon/eidolon-session.py";
-const PYTHON: &str = "/data/data/com.termux/files/usr/bin/python3";
-const SCRIPT: &[u8] = include_bytes!("../../../scripts/termux/eidolon-session.py");
 const SIZES: [u64; 6] = [1, 65536, 8388608, 8388608, 8388608, 8388608];
 const TRAILER: &[u8] = b"AFTER_EOF";
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
     pub state: &'static str,
+    pub scenario: Option<CleanupScenario>,
+    pub remote_not_started: bool,
+    pub elapsed_ms: u64,
     pub nonce: String,
     pub uid: Option<u32>,
     pub channels: usize,
@@ -40,31 +39,8 @@ pub struct Report {
     pub remote_cleaned: bool,
     pub error: Option<&'static str>,
     pub forwarding: forward::Report,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Prepared {
-    schema: u32,
-    socket: String,
-    launcher_sha256: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Copy {
-    size: u64,
-    bytes: u64,
-    sha256: String,
-    tail_matched: bool,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Echo {
-    schema: u32,
-    result: String,
-    uid: u32,
-    channels: usize,
-    bytes: u64,
-    copies: Vec<Copy>,
+    pub remote: Option<launcher::Report>,
+    pub pending_cleanup: Vec<journal::Pending>,
 }
 pub fn valid_nonce(nonce: &str) -> bool {
     nonce.len() == 16
@@ -72,37 +48,14 @@ pub fn valid_nonce(nonce: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
-fn command(mode: &str, nonce: &str) -> Result<String, &'static str> {
-    if !matches!(mode, "prepare" | "echo" | "cleanup") || !valid_nonce(nonce) {
-        return Err("INVALID_ARGUMENT");
-    }
-    // すべて固定path・固定mode・16桁hex。ユーザー由来のshell文字列を連結しない。
-    Ok(format!("'{PYTHON}' '{LAUNCHER}' '{mode}' '{nonce}'"))
-}
-async fn remote<H: client::Handler>(
-    client: &client::Handle<H>,
-    mode: &str,
-    nonce: &str,
-    deadline: u64,
-) -> Result<serde_json::Value, &'static str> {
-    timeout(Duration::from_secs(deadline), async {
-        exec::json(
-            client
-                .channel_open_session()
-                .await
-                .map_err(|_| "SSH_IO_FAILED")?,
-            command(mode, nonce)?,
-        )
-        .await
-    })
-    .await
-    .map_err(|_| "EXEC_TIMEOUT")?
-}
 pub(crate) struct Request<'a> {
     pub session: SessionId,
     pub files: &'a Path,
     pub nonce: &'a str,
     pub uid: u32,
+    pub journal: &'a mut journal::Journal,
+    pub binding: &'a str,
+    pub scenario: Option<CleanupScenario>,
 }
 
 pub(crate) async fn run<H: client::Handler>(
@@ -117,30 +70,59 @@ pub(crate) async fn run<H: client::Handler>(
         files,
         nonce,
         uid,
+        journal,
+        binding,
+        scenario,
     } = request;
+    let started = std::time::Instant::now();
     let mut report = Report {
         state: "running",
+        scenario,
+        uid: Some(uid),
         nonce: nonce.into(),
+        pending_cleanup: journal.pending(),
         ..Default::default()
     };
     publish(&report);
     let mut local = None;
     let mut lease = None;
-    let mut prepared = false;
+    let mut remote_owner = None;
     let mut registered = false;
     let echo_cancel = CancellationToken::new();
     let mut echoes = JoinSet::new();
-    let remote_path = format!("{HOME}/.eidolon/s-{nonce}/p");
+    let remote_path = launcher::remote_path(nonce).unwrap_or_default();
     let result = async {
         if !valid_nonce(nonce) { return Err("INVALID_ARGUMENT"); }
         let mut owned = Directory::create(files, nonce)?;
         let listener = owned.listen()?;
         local = Some(owned);
-        let value = remote(client,"prepare",nonce,5).await?;
-        let value: Prepared = serde_json::from_value(value).map_err(|_| "PROTOCOL_ERROR")?;
-        if value.schema != 1 || value.socket != remote_path || value.launcher_sha256 != hex(Sha256::digest(SCRIPT)) { return Err("PROTOCOL_ERROR"); }
-        // exclusive prepareの成功ackがないnonceは回収対象にしない。
-        prepared = true;
+        if scenario==Some(CleanupScenario::CancelBeforeExec) {
+            let cancelled=CancellationToken::new();cancelled.cancel();
+            match launcher::Launcher::open_recorded(client,nonce,uid,cancelled,||Err("UNEXPECTED_EXEC")).await {
+                Err("CANCELLED")=>{report.remote_not_started=true;return Err("CANCELLED_BEFORE_EXEC");},
+                _=>return Err("UNEXPECTED_EXEC"),
+            }
+        }
+        remote_owner=Some(launcher::Launcher::open_recorded(client,nonce,uid,cancel.clone(),|| {
+            journal.remember(journal::Entry{nonce:nonce.into(),session,uid,binding:binding.into(),child:None})?;
+            report.pending_cleanup=journal.pending(); publish(&report); Ok(())
+        }).await?);
+        let owner=remote_owner.as_mut().unwrap();
+        if scenario==Some(CleanupScenario::LeaseExpire) {owner.suppress_heartbeat();}
+
+        loop {
+            report.remote=Some(owner.next().await?);
+            if let Some(child)=&owner.report.child {journal.child(nonce,child)?;}
+            report.pending_cleanup=journal.pending();publish(&report);
+            if owner.report.phase=="prepared" {break;}
+            if owner.report.phase=="finished" {return Err("REMOTE_EXIT");}
+        }
+        if scenario==Some(CleanupScenario::PrepareEof) {
+            owner.control_eof().await?;
+            while owner.report.phase!="finished" {report.remote=Some(owner.next().await?);publish(&report);}
+            if owner.report.cleanup_pending || owner.report.finished.as_ref().is_none_or(|r|r.reason!="EOF" || r.child.is_some()) {return Err("CLEANUP_FAILED");}
+            return Ok(());
+        }
         lease = Some(router.arm(session, remote_path.clone(), local.as_ref().unwrap().path.join("p"))?);
         // listenerはforward登録前にlisten済み。echo側も最大8task、各64KiBだけを保持する。
         let stop=echo_cancel.clone();
@@ -153,13 +135,16 @@ pub(crate) async fn run<H: client::Handler>(
                     result=tasks.join_next(),if !tasks.is_empty()=> { if !matches!(result,Some(Ok(Ok(())))) { return Err("LOCAL_ECHO_FAILED"); } },
                     accepted=listener.accept(),if tasks.len()<forward::MAX_CHANNELS=> {
                         let (mut socket,_)=accepted.map_err(|_| "LOCAL_ECHO_FAILED")?;
-                        tasks.spawn(async move {
+                        if scenario.is_some() {
+                            let stop=stop.clone();
+                            tasks.spawn(async move {let _socket=socket;stop.cancelled().await;Ok::<_,&'static str>(())});
+                        } else {tasks.spawn(async move {
                             let mut data=[0u8;65536];
                             loop { let n=socket.read(&mut data).await.map_err(|_| "LOCAL_ECHO_FAILED")?; if n==0 { break; } socket.write_all(&data[..n]).await.map_err(|_| "LOCAL_ECHO_FAILED")?; }
                             socket.write_all(TRAILER).await.map_err(|_| "LOCAL_ECHO_FAILED")?;
                             socket.shutdown().await.map_err(|_| "LOCAL_ECHO_FAILED")?;
                             Ok::<_,&'static str>(())
-                        });
+                        });}
                     }
                 }
             }
@@ -168,8 +153,36 @@ pub(crate) async fn run<H: client::Handler>(
         });
         timeout(Duration::from_secs(5),client.streamlocal_forward(remote_path.clone())).await.map_err(|_| "FORWARD_TIMEOUT")?.map_err(|_| "FORWARD_REJECTED")?;
         registered = true;
-        let value = tokio::select! { biased; _=cancel.cancelled()=>return Err("CANCELLED"), value=remote(client,"echo",nonce,60)=>value? };
-        let echo: Echo=serde_json::from_value(value).map_err(|_| "PROTOCOL_ERROR")?;
+        owner.start_echo().await?;
+        let mut fault_applied=false;
+        while owner.report.phase!="finished" {
+            report.remote=Some(owner.next().await?);
+            if let Some(child)=&owner.report.child {journal.child(nonce,child)?;}
+            report.pending_cleanup=journal.pending();publish(&report);
+            if owner.report.phase=="running" && !fault_applied && matches!(scenario,Some(CleanupScenario::ControlEof|CleanupScenario::SshDrop)) {
+                let limit=tokio::time::Instant::now()+Duration::from_secs(2);
+                while router.report().peak==0 {
+                    if tokio::time::Instant::now()>=limit {return Err("FORWARD_TIMEOUT");}
+                    tokio::select! {biased;_=cancel.cancelled()=>return Err("CANCELLED"),_=tokio::time::sleep(Duration::from_millis(2))=>()}
+                }
+                fault_applied=true;
+                if scenario==Some(CleanupScenario::SshDrop) {
+                    let _=timeout(Duration::from_secs(2),client.disconnect(russh::Disconnect::ByApplication,"fixed SSH loss fixture","en")).await;
+                    return Err("SSH_DROPPED");
+                }
+                owner.control_eof().await?;
+            }
+        }
+        if cancel.is_cancelled() { return Err("CANCELLED"); }
+        if let Some(scenario)=scenario {
+            let finished=owner.report.finished.as_ref().ok_or("PROTOCOL_ERROR")?;
+            let reason=match scenario {CleanupScenario::ControlEof=>"EOF",CleanupScenario::LeaseExpire=>"LeaseExpired",_=>return Err("UNEXPECTED_COMPLETION")};
+            if finished.reason!=reason || owner.report.cleanup_pending || finished.child.is_none() {return Err("CLEANUP_FAILED");}
+            return Ok(());
+        }
+        let finished=owner.report.finished.as_ref().ok_or("PROTOCOL_ERROR")?;
+        if owner.report.cleanup_pending || finished.reason!="Completed" || finished.exit_status!=Some(0) || finished.exit_signal.is_some() {return Err("REMOTE_EXIT");}
+        let echo=finished.echo.as_ref().ok_or("PROTOCOL_ERROR")?;
         if echo.schema!=1 || echo.result!="pass" || echo.uid!=uid || echo.channels!=6 || echo.bytes!=SIZES.iter().sum::<u64>() || echo.copies.len()!=6 { return Err("ECHO_MISMATCH"); }
         for (copy,size) in echo.copies.iter().zip(SIZES) {
             if copy.size!=size || copy.bytes!=size || !copy.tail_matched || copy.sha256!=hash(size) { return Err("ECHO_MISMATCH"); }
@@ -194,25 +207,46 @@ pub(crate) async fn run<H: client::Handler>(
     }
     echo_cancel.cancel();
     while echoes.join_next().await.is_some() {}
-    if prepared {
-        report.remote_cleaned = remote(client, "cleanup", nonce, 3)
-            .await
-            .is_ok_and(|v| v["schema"] == 1 && v["cleaned"] == true);
+    if let Some(owner) = remote_owner.as_mut() {
+        if owner.report.phase != "finished" {
+            let _ = owner.request_stop().await;
+            while owner.report.phase != "finished" {
+                match owner.next().await {
+                    Ok(value) => {
+                        report.remote = Some(value);
+                        publish(&report);
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+        report.remote_cleaned = owner.report.phase == "finished" && !owner.report.cleanup_pending;
+        report.remote = Some(owner.report.clone());
     }
     if let Some(directory) = local {
         report.local_cleaned = directory.clean();
     }
     report.forwarding = router.report();
     report.error = result.err();
+    if report.error == Some("CANCELLED_BEFORE_EXEC") && report.remote_not_started {
+        report.error = None;
+    }
+    if report.remote_cleaned
+        && let Err(error) = journal.forget(nonce)
+    {
+        report.error = Some(error);
+    }
+    report.pending_cleanup = journal.pending();
     if report.error.is_none()
-        && (!report.forward_cancelled
+        && ((registered && !report.forward_cancelled)
             || !report.local_cleaned
-            || !report.remote_cleaned
+            || (!report.remote_cleaned && !report.remote_not_started)
             || report.forwarding.active != 0
-            || report.forwarding.failed != 0)
+            || (scenario.is_none() && report.forwarding.failed != 0))
     {
         report.error = Some("CLEANUP_FAILED");
     }
+    report.elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     report.state = if report.error.is_none() {
         "pass"
     } else {
@@ -302,8 +336,8 @@ mod tests {
     use super::*;
     #[test]
     fn fixed_command_nonce_and_exclusive_local_directory() {
-        assert!(command("shell", &"a".repeat(16)).is_err());
-        assert!(command("echo", "../bad").is_err());
+        assert!(launcher::command("shell", &"a".repeat(16)).is_err());
+        assert!(launcher::command("echo", "../bad").is_err());
         let nonce = format!("{:016x}", rand::random::<u64>());
         let root = std::env::temp_dir();
         let directory = Directory::create(&root, &nonce).unwrap();

@@ -191,6 +191,6 @@ impl Drop for Active {
 }
 
 #[cfg(test)]
-mod openssh;
+pub(crate) mod openssh;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -32,7 +32,7 @@ android/app/src/main/java/io/github/tinmachine/eidolon/
 | 値 | 所有・発行 | 規則 |
 | --- | --- | --- |
 | RuntimeHandle | JNI registry | 正のsigned 64 bit。pointerを公開しない。process内で再利用しない |
-| SessionId | Rust supervisor | 正のsigned 64 bit単調増加。新しい製品接続ごとに発行 |
+| SessionId | Rust I/O supervisor | 正のsigned 64 bit単調増加。新しい製品接続の開始前にjournalへ採番を保存し、runtime再生成・process再起動でも過去IDを再利用しない |
 | WindowId / SurfaceId | protocol owner | session内単調増加。Wayland object IDやSDK Entity IDと同一視しない |
 | SceneEpoch | Kotlin NativeSessionHost | SDK scene再生成ごとに増加 |
 | SurfaceGeneration | Kotlin panel binding | window/scene内で新しいSurfaceごとに増加 |

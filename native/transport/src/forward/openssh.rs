@@ -10,7 +10,7 @@ use std::{
     process::{Child, Command, Stdio},
 };
 
-pub(super) struct OpenSsh {
+pub(crate) struct OpenSsh {
     pub client: client::Handle<Peer>,
     pub router: Arc<Router>,
     pub dir: PathBuf,

@@ -2,8 +2,10 @@
 use crate::{
     exec, forward, forward_probe,
     host_key::{Profile, parse_key},
+    journal, launcher,
 };
 use eidolon_model::{
+    commands::CleanupScenario,
     ids::{CommandSeq, SessionId},
     state::Status,
 };
@@ -44,6 +46,8 @@ pub enum State {
     AwaitingCredential,
     Authenticating,
     Ready,
+    Recovering,
+    CleanupPending,
     Disconnected,
     Disconnecting,
     Failed,
@@ -63,6 +67,22 @@ pub struct Snapshot {
     pub probe: exec::Report,
     pub forward: forward::Report,
     pub forward_probe: Option<forward_probe::Report>,
+    pub journal_ready: bool,
+    pub pending_cleanup: Vec<journal::Pending>,
+    pub cleanup_audits: Vec<CleanupAudit>,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct CleanupAudit {
+    pub nonce: String,
+    pub origin_session: SessionId,
+    pub current_session: SessionId,
+    pub verified: bool,
+    pub child: Option<launcher::Identity>,
+    pub active: bool,
+    pub orphaned: bool,
+    pub child_alive: bool,
+    pub reason: Option<String>,
+    pub error: Option<&'static str>,
 }
 #[derive(Clone, Copy)]
 struct Deadlines {
@@ -79,6 +99,12 @@ impl Default for Deadlines {
         }
     }
 }
+struct PendingConnect {
+    profile: Profile,
+    pin: PublicKey,
+    request: CommandSeq,
+    cancel: CancellationToken,
+}
 struct Connect {
     session: SessionId,
     router: Arc<forward::Router>,
@@ -89,12 +115,12 @@ struct Connect {
 }
 struct Shared {
     report: Snapshot,
-    connect: Option<Connect>,
+    connect: Option<PendingConnect>,
     credential: Option<PrivateKey>,
     busy: bool,
     cancel: Option<CancellationToken>,
     router: Option<Arc<forward::Router>>,
-    forward: Option<(PathBuf, String)>,
+    forward: Option<(PathBuf, String, Option<CleanupScenario>)>,
     forward_busy: bool,
 }
 struct Signals {
@@ -115,13 +141,29 @@ pub struct Controller {
 }
 impl Controller {
     pub fn start() -> std::io::Result<Self> {
-        Self::start_on((Ipv4Addr::LOCALHOST, 8022).into(), Deadlines::default())
+        Self::start_with_root(None)
     }
+    pub fn start_with_root(root: Option<PathBuf>) -> std::io::Result<Self> {
+        Self::start_at(
+            (Ipv4Addr::LOCALHOST, 8022).into(),
+            Deadlines::default(),
+            root,
+        )
+    }
+    #[cfg(test)]
     fn start_on(endpoint: SocketAddr, deadlines: Deadlines) -> std::io::Result<Self> {
+        Self::start_at(endpoint, deadlines, None)
+    }
+    fn start_at(
+        endpoint: SocketAddr,
+        deadlines: Deadlines,
+        root: Option<PathBuf>,
+    ) -> std::io::Result<Self> {
         let signals = Arc::new(Signals {
             shared: Mutex::new(Shared {
                 report: Snapshot {
                     workers: 1,
+                    journal_ready: root.is_none(),
                     ..Default::default()
                 },
                 connect: None,
@@ -142,7 +184,7 @@ impl Controller {
             .name("eidolon-ssh-owner".into())
             .spawn(move || {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    owner(&owned, endpoint, deadlines)
+                    owner(&owned, endpoint, deadlines, root.as_deref())
                 }));
                 owned.update(|s| {
                     s.connect = None;
@@ -151,17 +193,22 @@ impl Controller {
                     s.report.workers = 0;
                     s.report.owned_connections = 0;
                     s.report.credential_request = None;
-                    if outcome.is_err() {
-                        s.report.error = Some("JNI_FAILURE");
-                        s.report.state = State::Failed;
-                    } else {
-                        s.report.state = State::Stopped;
+                    match outcome {
+                        Err(_) => {
+                            s.report.error = Some("JNI_FAILURE");
+                            s.report.state = State::Failed;
+                        }
+                        Ok(Err(error)) => {
+                            s.report.error = Some(error);
+                            s.report.state = State::Failed;
+                        }
+                        Ok(Ok(())) => s.report.state = State::Stopped,
                     }
                 });
             })?;
         Ok(Self { signals, worker })
     }
-    pub fn connect(&self, profile: Profile, session: SessionId, request: CommandSeq) -> Status {
+    pub fn connect(&self, profile: Profile, request: CommandSeq) -> Status {
         let pin = match parse_key(&profile.host_key) {
             Ok(pin) => pin,
             Err(_) => return Status::InvalidArgument,
@@ -177,25 +224,21 @@ impl Controller {
         if s.busy {
             return Status::Busy;
         }
-        if s.report.session.is_some_and(|previous| session <= previous) {
-            return Status::Stale;
-        }
         s.busy = true;
         s.report = Snapshot {
             state: State::Connecting,
-            session: Some(session),
+            session: None,
             profile_id: Some(profile.profile_id.clone()),
             workers: 1,
             credential_requests: s.report.credential_requests,
+            journal_ready: s.report.journal_ready,
+            pending_cleanup: s.report.pending_cleanup.clone(),
             ..Default::default()
         };
         let cancel = CancellationToken::new();
         s.cancel = Some(cancel.clone());
-        let router = Arc::new(forward::Router::new(session));
-        s.router = Some(router.clone());
-        s.connect = Some(Connect {
-            session,
-            router,
+        s.router = None;
+        s.connect = Some(PendingConnect {
             profile,
             pin,
             request,
@@ -270,6 +313,27 @@ impl Controller {
         report
     }
     pub fn forward_probe(&self, session: SessionId, files: &Path, nonce: &str) -> Status {
+        self.queue_probe(session, files, nonce, None)
+    }
+    pub fn cleanup_probe(
+        &self,
+        session: SessionId,
+        files: &Path,
+        nonce: &str,
+        scenario: CleanupScenario,
+    ) -> Status {
+        if !cfg!(debug_assertions) {
+            return Status::NotReady;
+        }
+        self.queue_probe(session, files, nonce, Some(scenario))
+    }
+    fn queue_probe(
+        &self,
+        session: SessionId,
+        files: &Path,
+        nonce: &str,
+        scenario: Option<CleanupScenario>,
+    ) -> Status {
         if !files.is_absolute() || !forward_probe::valid_nonce(nonce) {
             return Status::InvalidArgument;
         }
@@ -296,7 +360,7 @@ impl Controller {
             nonce: nonce.into(),
             ..Default::default()
         });
-        s.forward = Some((files.into(), nonce.into()));
+        s.forward = Some((files.into(), nonce.into(), scenario));
         self.signals.notify.notify_one();
         Status::Accepted
     }
@@ -321,9 +385,19 @@ impl Drop for Controller {
     }
 }
 
-fn owner(signals: &Arc<Signals>, endpoint: SocketAddr, deadlines: Deadlines) {
+fn owner(
+    signals: &Arc<Signals>,
+    endpoint: SocketAddr,
+    deadlines: Deadlines,
+    root: Option<&Path>,
+) -> Result<(), &'static str> {
+    let mut journal = journal::Journal::load(root)?;
+    signals.update(|s| {
+        s.report.journal_ready = true;
+        s.report.pending_cleanup = journal.pending();
+    });
     loop {
-        let connect = {
+        let pending = {
             let mut s = signals.shared.lock().unwrap_or_else(|e| e.into_inner());
             while s.connect.is_none() && !signals.stop.load(Ordering::Acquire) {
                 s = signals
@@ -337,6 +411,30 @@ fn owner(signals: &Arc<Signals>, endpoint: SocketAddr, deadlines: Deadlines) {
             }
             s.connect.take().unwrap()
         };
+        let session = match journal.allocate_session() {
+            Ok(session) => session,
+            Err(error) => {
+                signals.update(|s| {
+                    s.cancel = None;
+                    s.busy = false;
+                    s.report.state = State::Failed;
+                    s.report.error = Some(error);
+                });
+                continue;
+            }
+        };
+        let connect = Connect {
+            session,
+            router: Arc::new(forward::Router::new(session)),
+            profile: pending.profile,
+            pin: pending.pin,
+            request: pending.request,
+            cancel: pending.cancel,
+        };
+        signals.update(|s| {
+            s.report.session = Some(session);
+            s.router = Some(connect.router.clone());
+        });
         let (start, end) = (signals.clone(), signals.clone());
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -352,7 +450,13 @@ fn owner(signals: &Arc<Signals>, endpoint: SocketAddr, deadlines: Deadlines) {
             .build();
         let result = match runtime {
             Ok(runtime) => {
-                let result = runtime.block_on(connection(signals, endpoint, &connect, deadlines));
+                let result = runtime.block_on(connection(
+                    signals,
+                    endpoint,
+                    &connect,
+                    deadlines,
+                    &mut journal,
+                ));
                 // UI/coreではなくownerでdrop。未完SSH task/FD/秘密keyとTokio workerを回収。
                 drop(runtime);
                 result
@@ -378,6 +482,7 @@ fn owner(signals: &Arc<Signals>, endpoint: SocketAddr, deadlines: Deadlines) {
             }
         });
     }
+    Ok(())
 }
 struct Peer {
     pin: PublicKey,
@@ -474,6 +579,7 @@ async fn connection(
     endpoint: SocketAddr,
     connect: &Connect,
     deadlines: Deadlines,
+    journal: &mut journal::Journal,
 ) -> Result<(), &'static str> {
     signals.update(|s| s.report.owned_connections = 1);
     let mismatch = Arc::new(AtomicBool::new(false));
@@ -552,11 +658,20 @@ async fn connection(
         .map_err(|_| "EXEC_TIMEOUT")??;
         signals.update(|s| {
             s.report.probe = report;
-            s.report.state = State::Ready;
         });
         Ok::<_, &'static str>(client)
     };
     let mut client = tokio::select! { biased; _=connect.cancel.cancelled()=>return Err("CANCELLED"), result=setup=>result? };
+    let binding = journal::binding(&connect.profile);
+    let uid = signals
+        .shared
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .report
+        .probe
+        .uid
+        .ok_or("PROTOCOL_ERROR")?;
+    reconcile(signals, &client, connect, journal, &binding, uid).await?;
     loop {
         if connect.cancel.is_cancelled() {
             return Err("CANCELLED");
@@ -568,15 +683,7 @@ async fn connection(
             .unwrap_or_else(|e| e.into_inner())
             .forward
             .take();
-        if let Some((files, nonce)) = forward {
-            let uid = signals
-                .shared
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .report
-                .probe
-                .uid
-                .ok_or("PROTOCOL_ERROR")?;
+        if let Some((files, nonce, scenario)) = forward {
             let report = forward_probe::run(
                 &client,
                 &connect.router,
@@ -585,9 +692,17 @@ async fn connection(
                     files: &files,
                     nonce: &nonce,
                     uid,
+                    journal,
+                    binding: &binding,
+                    scenario,
                 },
                 &connect.cancel,
-                |r| signals.update(|s| s.report.forward_probe = Some(r.clone())),
+                |r| {
+                    signals.update(|s| {
+                        s.report.forward_probe = Some(r.clone());
+                        s.report.pending_cleanup = r.pending_cleanup.clone();
+                    })
+                },
             )
             .await;
             signals.update(|s| s.forward_busy = false);
@@ -602,9 +717,76 @@ async fn connection(
                 _=connect.cancel.cancelled()=>return Err("CANCELLED"),
                 _=&mut client=>return Err(if mismatch.load(Ordering::Acquire) { "HOST_KEY_MISMATCH" } else { "REMOTE_EXIT" }),
                 _=notified=>(),
+                _=tokio::time::sleep(Duration::from_secs(1)),if !journal.is_empty()=>{reconcile(signals,&client,connect,journal,&binding,uid).await?;},
             }
         }
     }
+}
+
+async fn reconcile<H: client::Handler>(
+    signals: &Signals,
+    client: &client::Handle<H>,
+    connect: &Connect,
+    journal: &mut journal::Journal,
+    binding: &str,
+    uid: u32,
+) -> Result<(), &'static str> {
+    let mut audits = Vec::new();
+    if !journal.is_empty() {
+        signals.update(|s| {
+            if s.report.state != State::CleanupPending {
+                s.report.state = State::Recovering;
+            }
+        });
+    }
+    for entry in journal.entries() {
+        let mut view = CleanupAudit {
+            nonce: entry.nonce.clone(),
+            origin_session: entry.session,
+            current_session: connect.session,
+            verified: false,
+            child: entry.child.clone(),
+            active: false,
+            orphaned: false,
+            child_alive: false,
+            reason: None,
+            error: None,
+        };
+        if entry.binding != binding || entry.uid != uid {
+            view.error = Some("CLEANUP_PROFILE_MISMATCH");
+        } else {
+            let audit = tokio::select! {biased;
+                _=connect.cancel.cancelled()=>return Err("CANCELLED"),
+                audit=launcher::audit(client,&entry.nonce,uid,entry.child.as_ref())=>audit,
+            };
+            match audit {
+                Ok(value) => {
+                    view.verified = value.verified;
+                    view.active = value.active;
+                    view.orphaned = value.orphaned;
+                    view.child_alive = value.child_alive;
+                    view.reason = value.receipt.map(|r| r.reason);
+                    if value.verified {
+                        journal.forget(&entry.nonce)?;
+                    }
+                }
+                Err(error) => view.error = Some(error),
+            }
+        }
+        audits.push(view);
+    }
+    signals.update(|s| {
+        s.report.pending_cleanup = journal.pending();
+        s.report.cleanup_audits = audits;
+        if journal.is_empty() {
+            s.report.state = State::Ready;
+            s.report.error = None;
+        } else {
+            s.report.state = State::CleanupPending;
+            s.report.error = Some("CLEANUP_PENDING");
+        }
+    });
+    Ok(())
 }
 
 #[cfg(test)]

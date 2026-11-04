@@ -50,7 +50,7 @@ impl server::Handler for Server {
         Ok(path == "/fixture/p")
     }
 }
-pub(super) struct Peer {
+pub(crate) struct Peer {
     pub router: Arc<Router>,
     pub host: russh::keys::PublicKey,
 }

@@ -92,7 +92,7 @@ def inspect(apk):
                 raise ValueError("helper fixtureの実API/NDK noteが不一致です")
         debug_symbol = "Java_io_github_tinmachine_eidolon_DebugNativeBridge_" in output
         dex = b"".join(archive.read(name) for name in names if re.fullmatch(r"classes\d*\.dex", name))
-        debug_classes = [b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;", b"Lio/github/tinmachine/eidolon/CredentialCase;", b"Lio/github/tinmachine/eidolon/SshCase;", b"Lio/github/tinmachine/eidolon/ProductSshCase;", b"Lio/github/tinmachine/eidolon/ForwardCase;"]
+        debug_classes = [b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;", b"Lio/github/tinmachine/eidolon/CredentialCase;", b"Lio/github/tinmachine/eidolon/SshCase;", b"Lio/github/tinmachine/eidolon/ProductSshCase;", b"Lio/github/tinmachine/eidolon/ForwardCase;", b"Lio/github/tinmachine/eidolon/RemoteCleanupCase;", b"Lio/github/tinmachine/eidolon/NativeCheckInstrumentation;"]
         debug_dex = any(name in dex for name in debug_classes)
         if info["profile"] == "release" and (debug_symbol or debug_dex):
             raise ValueError("releaseにdebug JNI/classが混入しています")
@@ -108,6 +108,8 @@ def inspect(apk):
     manifest = subprocess.check_output([str(sdk / "build-tools/35.0.0/aapt"), "dump", "xmltree", str(apk), "AndroidManifest.xml"], text=True)
     if ("DebugCommandActivity" in manifest) != (info["profile"] == "debug"):
         raise ValueError("profileとdebug manifest入口が不一致です")
+    if ("NativeCheckInstrumentation" in manifest) != (info["profile"] == "debug"):
+        raise ValueError("profileとinstrumentation manifest入口が不一致です")
     return {**metadata, "needed": required, "debug_entry": info["profile"] == "debug", "status": "pass"}
 
 

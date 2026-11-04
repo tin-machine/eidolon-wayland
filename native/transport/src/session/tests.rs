@@ -19,6 +19,8 @@ struct Fixture {
     passwords: Arc<AtomicUsize>,
     execs: Arc<AtomicUsize>,
     handle: Arc<Mutex<Option<server::Handle>>>,
+    audit: Arc<Mutex<Option<serde_json::Value>>>,
+    audits: Arc<AtomicUsize>,
 }
 impl server::Server for Fixture {
     type Handler = Self;
@@ -75,6 +77,24 @@ impl server::Handler for Fixture {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if data != exec::COMMAND.as_bytes() {
+            let value = self.audit.lock().unwrap().clone();
+            if data
+                == launcher::command("cleanup", "ffffffffffffffff")
+                    .unwrap()
+                    .as_bytes()
+                && let Some(value) = value
+            {
+                self.audits.fetch_add(1, Ordering::AcqRel);
+                session.channel_success(id)?;
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let _ = handle.data(id, format!("{value}\n").into_bytes()).await;
+                    let _ = handle.eof(id).await;
+                    let _ = handle.exit_status_request(id, 0).await;
+                    let _ = handle.close(id).await;
+                });
+                return Ok(());
+            }
             session.channel_failure(id)?;
             return Ok(());
         }
@@ -139,6 +159,8 @@ async fn fixture(
         passwords: Arc::new(AtomicUsize::new(0)),
         execs: Arc::new(AtomicUsize::new(0)),
         handle: Arc::new(Mutex::new(None)),
+        audit: Arc::new(Mutex::new(None)),
+        audits: Arc::new(AtomicUsize::new(0)),
     };
     let state = fixture.clone();
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -175,9 +197,6 @@ async fn stop(controller: &Controller) {
     assert_eq!(report.tokio_threads, 0);
     assert_eq!(report.owned_connections, 0);
 }
-fn session(n: i64) -> SessionId {
-    SessionId::new(n).unwrap()
-}
 fn request(n: i64) -> CommandSeq {
     CommandSeq::new(n).unwrap()
 }
@@ -186,13 +205,10 @@ fn request(n: i64) -> CommandSeq {
 async fn valid_pin_auth_uid_and_stderr_flood_drain_to_eof_then_owned_stop() {
     let (address, profile, key, state, server) = fixture(Mode::Flood).await;
     let controller = Controller::start_on(address, Deadlines::default()).unwrap();
-    assert_eq!(
-        controller.connect(profile, session(1), request(1)),
-        Status::Accepted
-    );
+    assert_eq!(controller.connect(profile, request(1)), Status::Accepted);
     wait(&controller, |s| s.state == State::AwaitingCredential).await;
     assert_eq!(
-        controller.provide(session(1), request(1), key),
+        controller.provide(controller.snapshot().session.unwrap(), request(1), key),
         Status::Accepted
     );
     wait(&controller, |s| s.state == State::Ready).await;
@@ -235,9 +251,28 @@ async fn valid_pin_auth_uid_and_stderr_flood_drain_to_eof_then_owned_stop() {
         .unwrap()
         .is_err()
     );
-    assert_eq!(controller.disconnect(session(2)), Status::Stale);
     assert_eq!(
-        controller.forward_probe(session(2), Path::new("/tmp"), "aaaaaaaaaaaaaaaa"),
+        controller.disconnect(
+            controller
+                .snapshot()
+                .session
+                .unwrap()
+                .checked_next()
+                .unwrap()
+        ),
+        Status::Stale
+    );
+    assert_eq!(
+        controller.forward_probe(
+            controller
+                .snapshot()
+                .session
+                .unwrap()
+                .checked_next()
+                .unwrap(),
+            Path::new("/tmp"),
+            "aaaaaaaaaaaaaaaa"
+        ),
         Status::Stale
     );
     assert!(controller.snapshot().forward_probe.is_none());
@@ -251,16 +286,19 @@ async fn wrong_pin_never_requests_credential_and_wrong_identity_never_falls_back
     let wrong = PrivateKey::random(&mut rand::rng(), russh::keys::Algorithm::Ed25519).unwrap();
     profile.host_key = wrong.public_key().to_openssh().unwrap();
     let controller = Controller::start_on(address, Deadlines::default()).unwrap();
-    controller.connect(profile, session(1), request(1));
+    controller.connect(profile, request(1));
     wait(&controller, |s| s.state == State::Failed).await;
     assert_eq!(controller.snapshot().error, Some("HOST_KEY_MISMATCH"));
     assert_eq!(controller.snapshot().credential_requests, 0);
-    assert_eq!(
-        controller.connect(original, session(2), request(2)),
-        Status::Accepted
-    );
+    let previous = controller.snapshot().session.unwrap();
+    assert_eq!(controller.connect(original, request(2)), Status::Accepted);
     wait(&controller, |s| s.state == State::AwaitingCredential).await;
-    controller.provide(session(2), request(2), wrong);
+    assert!(controller.snapshot().session.unwrap() > previous);
+    assert_eq!(
+        controller.provide(previous, request(2), wrong.clone()),
+        Status::Stale
+    );
+    controller.provide(controller.snapshot().session.unwrap(), request(2), wrong);
     wait(&controller, |s| s.state == State::Failed).await;
     assert_eq!(controller.snapshot().error, Some("AUTH_FAILED"));
     assert_eq!(state.passwords.load(Ordering::Acquire), 0);
@@ -277,12 +315,12 @@ async fn connect_auth_and_exec_deadlines_and_nonzero_exit_are_distinct() {
     };
     let (address, profile, key, _state, server) = fixture(Mode::Hang).await;
     let controller = Controller::start_on(address, deadlines).unwrap();
-    controller.connect(profile.clone(), session(1), request(1));
+    controller.connect(profile.clone(), request(1));
     wait(&controller, |s| s.state == State::Failed).await;
     assert_eq!(controller.snapshot().error, Some("AUTH_TIMEOUT"));
-    controller.connect(profile, session(2), request(2));
+    controller.connect(profile, request(2));
     wait(&controller, |s| s.state == State::AwaitingCredential).await;
-    controller.provide(session(2), request(2), key);
+    controller.provide(controller.snapshot().session.unwrap(), request(2), key);
     wait(&controller, |s| s.state == State::Failed).await;
     assert_eq!(controller.snapshot().error, Some("EXEC_TIMEOUT"));
     assert!(!controller.snapshot().probe.eof);
@@ -290,9 +328,9 @@ async fn connect_auth_and_exec_deadlines_and_nonzero_exit_are_distinct() {
     server.abort();
     let (address, profile, key, _state, server) = fixture(Mode::Exit).await;
     let controller = Controller::start_on(address, Deadlines::default()).unwrap();
-    controller.connect(profile.clone(), session(1), request(1));
+    controller.connect(profile.clone(), request(1));
     wait(&controller, |s| s.state == State::AwaitingCredential).await;
-    controller.provide(session(1), request(1), key);
+    controller.provide(controller.snapshot().session.unwrap(), request(1), key);
     wait(&controller, |s| s.state == State::Failed).await;
     assert_eq!(controller.snapshot().error, Some("REMOTE_EXIT"));
     assert_eq!(controller.snapshot().probe.exit_status, Some(17));
@@ -300,7 +338,7 @@ async fn connect_auth_and_exec_deadlines_and_nonzero_exit_are_distinct() {
     server.abort();
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let controller = Controller::start_on(listener.local_addr().unwrap(), deadlines).unwrap();
-    controller.connect(profile, session(1), request(1));
+    controller.connect(profile, request(1));
     wait(&controller, |s| s.state == State::Failed).await;
     assert_eq!(controller.snapshot().error, Some("CONNECT_TIMEOUT"));
     stop(&controller).await;
@@ -311,7 +349,7 @@ async fn stop_interrupts_a_peer_that_never_sends_ssh_banner() {
     let (_address, profile, _key, _state, server) = fixture(Mode::Hang).await;
     let controller =
         Controller::start_on(listener.local_addr().unwrap(), Deadlines::default()).unwrap();
-    controller.connect(profile, session(1), request(1));
+    controller.connect(profile, request(1));
     wait(&controller, |s| s.tokio_threads >= 2).await;
     stop(&controller).await;
     server.abort();
@@ -320,13 +358,140 @@ async fn stop_interrupts_a_peer_that_never_sends_ssh_banner() {
 async fn exit_signal_is_not_an_exit_status_or_success() {
     let (address, profile, key, _state, server) = fixture(Mode::Signal).await;
     let controller = Controller::start_on(address, Deadlines::default()).unwrap();
-    controller.connect(profile, session(1), request(1));
+    controller.connect(profile, request(1));
     wait(&controller, |s| s.state == State::AwaitingCredential).await;
-    controller.provide(session(1), request(1), key);
+    controller.provide(controller.snapshot().session.unwrap(), request(1), key);
     wait(&controller, |s| s.state == State::Failed).await;
     assert_eq!(controller.snapshot().error, Some("REMOTE_EXIT"));
     assert!(controller.snapshot().probe.exit_signal);
     assert_eq!(controller.snapshot().probe.exit_status, None);
+    stop(&controller).await;
+    server.abort();
+}
+
+struct JournalRoot(PathBuf);
+impl JournalRoot {
+    fn new() -> Self {
+        use std::os::unix::fs::DirBuilderExt;
+        let path =
+            std::env::temp_dir().join(format!("eidolon-controller-{:016x}", rand::random::<u64>()));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .unwrap();
+        Self(path)
+    }
+}
+impl Drop for JournalRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_receipt_blocks_remote_start_then_survives_controller_recreation_and_verifies_new_epoch()
+ {
+    let (address, profile, key, state, server) = fixture(Mode::Flood).await;
+    let root = JournalRoot::new();
+    let child = launcher::Identity {
+        pid: 42,
+        group: 42,
+        start: "123".into(),
+        state: "S".into(),
+    };
+    let mut saved = journal::Journal::load(Some(&root.0)).unwrap();
+    let origin = SessionId::new(77).unwrap();
+    saved
+        .remember(journal::Entry {
+            nonce: "ffffffffffffffff".into(),
+            session: origin,
+            uid: 4242,
+            binding: journal::binding(&profile),
+            child: Some(child.clone()),
+        })
+        .unwrap();
+    *state.audit.lock().unwrap() =
+        Some(serde_json::json!({"schema":1,"cleaned":false,"active":true,"orphaned":false}));
+    let controller =
+        Controller::start_at(address, Deadlines::default(), Some(root.0.clone())).unwrap();
+    assert_eq!(
+        controller.connect(profile.clone(), request(1)),
+        Status::Accepted
+    );
+    wait(&controller, |r| r.state == State::AwaitingCredential).await;
+    let first = controller.snapshot().session.unwrap();
+    assert!(first > origin);
+    controller.provide(first, request(1), key.clone());
+    wait(&controller, |r| r.state == State::CleanupPending).await;
+    let report = controller.snapshot();
+    assert_eq!(report.pending_cleanup.len(), 1);
+    assert!(!report.cleanup_audits[0].verified);
+    assert_eq!(
+        controller.forward_probe(first, &root.0, "aaaaaaaaaaaaaaaa"),
+        Status::NotReady
+    );
+    stop(&controller).await;
+    drop(controller);
+    assert_eq!(
+        journal::Journal::load(Some(&root.0))
+            .unwrap()
+            .pending()
+            .len(),
+        1
+    );
+    *state.audit.lock().unwrap() = Some(
+        serde_json::json!({"schema":1,"cleaned":true,"already_absent":true,"child_alive":false,
+        "receipt":{"type":"finished","schema":1,"nonce":"ffffffffffffffff","uid":4242,"reason":"EOF","child":child,
+        "exit_status":null,"exit_signal":15,"term_sent":true,"kill_sent":false,"cleaned":true,"group_alive":false,"pipes_closed":true,
+        "stdout":{"bytes":0,"truncated":false,"retained":0},"stderr":{"bytes":0,"truncated":false,"retained":0}}}),
+    );
+    let controller =
+        Controller::start_at(address, Deadlines::default(), Some(root.0.clone())).unwrap();
+    controller.connect(profile, request(2));
+    wait(&controller, |r| r.state == State::AwaitingCredential).await;
+    let next = controller.snapshot().session.unwrap();
+    assert!(next > first);
+    controller.provide(next, request(2), key);
+    wait(&controller, |r| r.state == State::Ready).await;
+    let report = controller.snapshot();
+    assert!(report.pending_cleanup.is_empty());
+    assert_eq!(report.cleanup_audits.len(), 1);
+    assert!(report.cleanup_audits[0].verified);
+    assert_eq!(report.cleanup_audits[0].origin_session, origin);
+    assert_eq!(report.cleanup_audits[0].current_session, next);
+    assert!(
+        journal::Journal::load(Some(&root.0))
+            .unwrap()
+            .pending()
+            .is_empty()
+    );
+    assert!(state.audits.load(Ordering::Acquire) >= 2);
+    stop(&controller).await;
+    server.abort();
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn corrupt_pending_journal_fails_before_network_and_preserves_its_contents() {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let (address, profile, _key, state, server) = fixture(Mode::Flood).await;
+    let root = JournalRoot::new();
+    journal::Journal::load(Some(&root.0)).unwrap();
+    let path = root.0.join("transport-state/transport-pending.json");
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap();
+    file.write_all(b"corrupt fixture").unwrap();
+    drop(file);
+    let controller =
+        Controller::start_at(address, Deadlines::default(), Some(root.0.clone())).unwrap();
+    let _ = controller.connect(profile, request(1));
+    wait(&controller, |r| r.state == State::Failed).await;
+    assert_eq!(controller.snapshot().error, Some("CLEANUP_JOURNAL_INVALID"));
+    assert_eq!(controller.snapshot().credential_requests, 0);
+    assert_eq!(state.execs.load(Ordering::Acquire), 0);
+    assert_eq!(std::fs::read(&path).unwrap(), b"corrupt fixture");
     stop(&controller).await;
     server.abort();
 }

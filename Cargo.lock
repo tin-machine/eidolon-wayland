@@ -551,6 +551,7 @@ name = "eidolon-transport"
 version = "0.1.0"
 dependencies = [
  "eidolon-model",
+ "libc",
  "rand",
  "russh",
  "serde",

@@ -16,7 +16,8 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | T01 | done | APK専用Ed25519・Keystore AES-GCM・pin・公開情報pairing。Build21の実機保護検査、pairing冪等性、debug/release検査成功 |
 | T02 | done | APK→Termux認証/exec、pin/別鍵/取消、stderr/timeout/exit、製品Host+GL同時動作とlive停止・復帰を検証 |
 | T03 | done | 1byte/64KiB/8MiB×4、hash/EOF/上限/取消、host反復・Quest3回、配布物hashと所有socket回収 |
-| T04〜I07 | planned | remote lease・Wayland・入力を依存順に実装 |
+| T04 | in_progress | lease/heartbeat/所有process回収のhost基盤とQuest正常echoを確認。切断後auditのcontroller統合・故障系実機caseは残件 |
+| W01〜I07 | planned | Wayland・入力を依存順に実装 |
 
 ## B01/B02: ビルドと実機の再現
 
@@ -286,3 +287,70 @@ scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case forward --timeout 18
 ```
 
 接続先は製品内loopback8022固定。上記serialはADBの対象指定だけで、製品のSSH宛先には渡さない。SSH認証鍵・保存済みprofileと既存Termux processを維持して検査した。Phase5全体とT04のlease受入はまだ完了していない。
+
+
+## T04: lease owner・永続回収記録（UI受入待ち、2026-11-05）
+
+prepareを長寿命ownerに変更した。prepared JSON lineの後、stdinからnonce付きの固定heartbeat/start/stopだけを受け、子を新process groupで起動する。10秒heartbeat/60秒失効、EOF/StopでTERM→3秒後KILL→wait。PIDを保存recordから拾ってsignalせず、保有Popen handleと、そのleaderをWNOWAITでreap前に保持したgroupだけを対象にする。stdout/stderr各64KiB tailを保持し、超過後もEOFまで排出する。診断は件数・exit・固定echoのJSONだけで、任意の子出力本文を公開しない。
+
+prepared/child_startedの出力時にSSH stdoutが先に閉じても、ownerはIOFailedとして回収を最後まで進める。回収済みreceiptはnonce/UID/process starttimeを含み、最新64件に制限する。receiptのあるnonceを再利用しない。後日のcleanup CLIは確認とreceipt照合を行い、未知のdirectoryの所有権を取得したり保存PIDへsignalしたりしない。削除はexclusive prepareを実行したownerが、子とpipeを回収した後に行う。
+
+Rust側はscript SHA256/UID/nonce/pathとline上限を検査し、channelのEOF/exitとremoteの回収ackを別に扱う。ackがない場合はcleanup_pendingのままにする。hostの実OpenSSH試験でStop、heartbeat維持、失効、stdout/stderr洪水を確認した。短縮heartbeat fixtureで次回送信が固定10秒へ戻っていた箇所をtestが検出し、指定intervalを維持するよう修正した。Python fixtureではTERM無視の子へのKILL、応答消失、PID再利用の照合、孤児の非kill、無関係processの生存も検査した。
+
+Build28は新owner経由で従来の6channel echoに成功。Quest上でもBionic/PythonのWNOWAIT・process group・pipe回収が成立し、launcherのfinished/EOF/exit0と所有子のidentityを照合できた。受入scriptもsummary booleanだけでなく、childのstarttime一致・UID・EOF・pipe終了・cleanup_pending=falseを必須に補強した。自動echo/SSH/credential/surface-cycle20/runtime10/helper10の回帰、host Rust42件・launcher Python11件、実APK Python23件、debug/release assemble/lint/静的検査が成功した。
+
+Build28はa3b58b8e2ac28eb5228b3dc217ab82b809ecf0e4のdirty build、source digest `c7e0e222e7083de2bc4273f4fafa528ff38692730481e85b42085a8755dbd6ff`、APK SHA256 `ef09a983d83d4df2559ddc873cbdaf7a8d9dd949fd52775b5b9fc7262b061d3a`。artifactはbuilds/20261105T045211-1956275、forward28.log/forward28-ack.log、launcher-t04-host5.log、python-lease28.log、release28.log、release-package28.jsonなど。
+
+
+後日のauditが過去directoryを削除できないようcleanupを保守的に変更し、未確認資源のjournalを追加した。専用0700 directoryの0600 JSONへ、最大8件のnonce/session/UID/接続identityのhash/子のprocess identityをatomic保存する。exec前にpendingを保存し、回収ackまたは新接続のreadonly receipt照合後だけ消す。runtime再生成でも残件を読み込み、回収未確認なら新しいremote起動を許可しない。SessionIdの採番も永続化し、新runtimeで過去のIDを再利用しない。
+
+追加実装と試行錯誤（まだ受入途中）:
+
+- Build29ではAndroidのfilesDirが0771であるためjournal初期化が失敗。hostで同じmodeを再現し、親の権限を変更せず、その下の専用0700 directoryを使うよう修正した。
+- Build30の正常forwardは成功したが、故障caseのexec前取消後、Stop要求直後のsnapshotが一瞬Readyのままで失敗。要求受付時に同期でStoppingを反映し、protocol ownerを意図的に停滞させても即座にsnapshotが変わるhost回帰検査を追加した。
+- Build31はdebug/release assemble・lint・同梱検査、実APK付きPython24件、host suiteとlauncher Python11件に成功。Quest上のアプリ起動検査はPIDが作られる前に保留され、撮影すると「ルームで位置を見つける」画面が表示されていた。アプリの回収失敗と混同せず、追跡回復後の実機再検証を残す。
+- 起動runnerは`am start -W`の30秒待ちに依存せず、起動要求後に同一buildのnative/scene/XR readinessを期限内で照合するよう修正した。境界画面の自動承認や無効化はしていない。
+- exec要求失敗時のchannel closeにも1秒の上限を追加。Build32はhost Rust51件・launcher Python11件、実APK Python24件、debug/release build・lint・同梱検査に成功し、APKを再導入した。Questの7故障caseはまだ未開始で、host成功を実機の代わりに数えていない。
+
+起動保留中もnativeを検証できるよう、debug APKだけに`NativeCheckInstrumentation`を追加した。
+[Android標準のInstrumentation](https://developer.android.com/reference/android/app/Instrumentation)のthreadから、
+Activity/Sceneを開かずに製品と同じUID・Keystore・profile・standard JNIで既存caseを実行する。
+最後に別runtimeを生成し、Ready→停止→destroyとregistry0を確認する。
+任意path/commandを受ける入口は追加せず、case名とnonceだけを受け取る。
+
+```bash
+scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case forward --instrumentation --timeout 180
+scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case remote-cleanup --instrumentation --timeout 300
+```
+
+Build34でforward `20261105T064553-22d6e27d`、remote-cleanup `064616-ad785cb5`が成功した。
+7種類（exec前取消、prepare後EOF、稼働中Stop、制御EOF、SSH断後再接続、SSH断後runtime再生成、
+実60秒lease失効）すべてに成功。leaseの実測は60,346msで、各停止は32/16/107/11/9/11/8msだった。
+SSH断時の回収未確認をpendingとして残し、新epochから同じnonce/UID/子identityのreceiptを照合し、
+runtime再生成を跨いでjournalを解消できた。全case後の新runtimeも停止・destroyして所有registryは0。
+
+この経路の結果は`scope=native-instrumentation`、`normal_ui_returned=false`として保存する。
+従来の画面復帰gateも維持し、instrumentationのpassを渡してもUI合格にはならないことをtestした。
+T04は通常のQuest caseでの製品UI復帰が未確認のためin_progressを維持する。
+描画やHMD・実入力の受入は後続も含めて残す。
+
+追加reviewでは、receiptがdangling symlinkの時に`exists()`だけでnonceの再利用を見逃す穴を確認した。
+先行testで再現後、symlinkの存在も検査して、既存記録を保持したままprepare前に拒否するよう修正した。
+この修正を含むBuild36でもnativeのforwardと7故障を再実行して成功した。
+最終remote-cleanup runは`20261105T065454-054aebd6`、実leaseは60,363ms。
+各停止は31/14/102/13/12/10/10ms、受付はすべて0〜1ms。
+最後の別runtimeの停止・destroyも14msで終了し、registryのruntime/workerは0だった。
+いずれもUI復帰は未検証として保存している。
+
+最終検証はhost Rust51件・launcher Python12件・実APK付きPython24件、
+debug/release assemble/lint/ELF/版/同梱検査が成功。
+Build36はa3b58b8e2ac28eb5228b3dc217ab82b809ecf0e4からのdirty build、
+source digest `69604489c38526735bf64673afe272e5852dff1f099a5dfe1ceb5cbcfadcb0e8`、
+APK SHA256 `fdf3d23dbd9b64a4ce80a9cf3dfb78b47f06e58279cce83ae1f7638072cb0b62`。
+artifactは`builds/20261105T065121-2058405/`、`t04-host-final36.log`、`apk-tests36.log`、
+`forward-headless36.log`、`remote-cleanup-headless36.log`、`release36.log`、`release-package36.json`。
+失敗した起動試行・nonce再利用の先行red test・以前の検査logも保持している。
+
+pattern/footの実binary接続はW04で行い、現時点はDEPENDENCY_NOT_READYで成功扱いしない。
+T03確定commit a3b58b8のCI run41897106364はhost/Android/report全成功。
+Phase5 goalは継続中で、手動HMD・物理入力は最終段階へ残す。

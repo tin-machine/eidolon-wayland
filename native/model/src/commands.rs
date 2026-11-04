@@ -100,9 +100,27 @@ fn valid_installation(id: &str) -> bool {
 }
 
 /// 未実装tagを成功扱いしない。接続・入力等は担当taskでこのenumへ追加する。
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupScenario {
+    CancelBeforeExec,
+    PrepareEof,
+    Stop,
+    ControlEof,
+    SshDrop,
+    LeaseExpire,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    RemoteCleanupProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        nonce: String,
+        scenario: CleanupScenario,
+    },
     ForwardProbe {
         schema: u32,
         request_id: CommandSeq,
@@ -157,6 +175,7 @@ impl Command {
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
             Self::SceneReady { schema, .. }
+            | Self::RemoteCleanupProbe { schema, .. }
             | Self::ForwardProbe { schema, .. }
             | Self::Connect { schema, .. }
             | Self::Disconnect { schema, .. }
@@ -174,7 +193,9 @@ impl Command {
         {
             return Err(Status::InvalidArgument);
         }
-        if let Self::HelperProbe { nonce, .. } | Self::ForwardProbe { nonce, .. } = &command
+        if let Self::HelperProbe { nonce, .. }
+        | Self::ForwardProbe { nonce, .. }
+        | Self::RemoteCleanupProbe { nonce, .. } = &command
             && (nonce.len() != 16
                 || !nonce
                     .bytes()
@@ -187,6 +208,7 @@ impl Command {
     pub fn request_id(&self) -> CommandSeq {
         match *self {
             Self::SceneReady { request_id, .. }
+            | Self::RemoteCleanupProbe { request_id, .. }
             | Self::ForwardProbe { request_id, .. }
             | Self::Connect { request_id, .. }
             | Self::Disconnect { request_id, .. }

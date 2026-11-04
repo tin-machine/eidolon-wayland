@@ -4,6 +4,8 @@ pub mod exec;
 pub mod forward;
 pub mod forward_probe;
 pub mod host_key;
+pub mod journal;
+pub mod launcher;
 pub mod session;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

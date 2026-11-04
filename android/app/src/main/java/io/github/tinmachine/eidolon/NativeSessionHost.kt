@@ -142,7 +142,13 @@ object NativeSessionHost {
         val snapshot = snapshot()
         val transport = snapshot.getJSONObject("runtime").getJSONObject("transport")
         connection.set(transport.optString("session").toLongOrNull() ?: 0)
-        val ssh = transport.getString("state") + if (transport.isNull("error")) "" else " · ${transport.getString("error")}"
+        val phase = when (val value = transport.getString("state")) {
+            "Recovering" -> "前回の終了を確認中"
+            "CleanupPending" -> "前回の終了を確認できません"
+            else -> value
+        }
+        val pending = transport.optJSONArray("pending_cleanup")?.length() ?: 0
+        val ssh = phase + (if (pending > 0) " · 未確認の回収 ${pending}件" else "") + if (transport.isNull("error")) "" else " · ${transport.getString("error")}"
         if (ssh != sshState) { sshState = ssh; ui.post { connectionSummary.value = ssh } }
         val next = snapshot.getJSONObject("runtime").getString("state")
         val now = SystemClock.elapsedRealtime()

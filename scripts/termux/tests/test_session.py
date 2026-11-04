@@ -12,6 +12,18 @@ spec.loader.exec_module(launcher)
 
 
 class SessionTests(unittest.TestCase):
+    def test_dangling_receipt_blocks_nonce_reuse_without_creating_directory(self):
+        with tempfile.TemporaryDirectory(prefix="eidolon-launcher-") as value:
+            home, nonce = Path(value), "c" * 16
+            root = home / ".eidolon"
+            root.mkdir(mode=0o700)
+            receipt = root / ("r-" + nonce + ".json")
+            receipt.symlink_to("missing-receipt")
+            with self.assertRaises(FileExistsError):
+                launcher.prepare(home, nonce)
+            self.assertTrue(receipt.is_symlink())
+            self.assertFalse((root / ("s-" + nonce)).exists())
+
     def test_exclusive_prepare_permissions_socket_and_idempotent_cleanup(self):
         with tempfile.TemporaryDirectory(prefix="eidolon-launcher-") as value:
             home = Path(value)
@@ -24,8 +36,8 @@ class SessionTests(unittest.TestCase):
             self.assertEqual((directory / "owner.json").stat().st_mode & 0o777, 0o600)
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                 sock.bind(result["socket"])
-                self.assertTrue(launcher.cleanup(home, nonce)["cleaned"])
-            self.assertTrue(launcher.cleanup(home, nonce)["already_absent"])
+                self.assertTrue(launcher.cleanup(home, nonce, creator=True)["cleaned"])
+            self.assertTrue(launcher.cleanup(home, nonce, creator=True)["already_absent"])
 
     def test_rejects_paths_symlinks_marker_changes_and_unowned_contents(self):
         with tempfile.TemporaryDirectory(prefix="eidolon-launcher-") as value:
@@ -42,16 +54,16 @@ class SessionTests(unittest.TestCase):
             directory = Path(result["socket"]).parent
             (directory / "p").symlink_to(home / "target")
             with self.assertRaises(ValueError):
-                launcher.cleanup(home, "a" * 16)
+                launcher.cleanup(home, "a" * 16, creator=True)
             (directory / "p").unlink()
             (directory / "unrelated").write_text("preserve")
             with self.assertRaises(ValueError):
-                launcher.cleanup(home, "a" * 16)
+                launcher.cleanup(home, "a" * 16, creator=True)
             self.assertTrue((directory / "owner.json").exists())
             (directory / "unrelated").unlink()
             (directory / "owner.json").write_text('{"nonce":"other"}')
             with self.assertRaises(ValueError):
-                launcher.cleanup(home, "a" * 16)
+                launcher.cleanup(home, "a" * 16, creator=True)
 
     def test_cli_rejects_arbitrary_modes_and_extra_arguments(self):
         for args in [["shell", "a" * 16], ["echo", "a" * 16, "id"], []]:
@@ -90,7 +102,7 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(result["bytes"], sum(launcher.SIZES))
                 self.assertEqual([row["size"] for row in result["copies"]], list(launcher.SIZES))
                 self.assertTrue(all(row["tail_matched"] and len(row["sha256"]) == 64 for row in result["copies"]))
-            self.assertTrue(launcher.cleanup(home, nonce)["cleaned"])
+            self.assertTrue(launcher.cleanup(home, nonce, creator=True)["cleaned"])
 
 
 if __name__ == "__main__":

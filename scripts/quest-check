@@ -15,7 +15,7 @@ import zipfile
 
 from native_build import ROOT, identity
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
-from quest_checks import runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result
+from quest_checks import runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result
 
 CASES = ("runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup",
          "native-deps", "shm", "wayland-state", "waypipe", "forwarded-shm", "render", "foot", "ray", "keyboard",
@@ -25,8 +25,11 @@ parser.add_argument("--serial", required=True)
 parser.add_argument("--case", required=True, choices=CASES)
 parser.add_argument("--timeout", type=int, default=120)
 parser.add_argument("--artifact-root", type=Path)
+parser.add_argument("--instrumentation", action="store_true", help="Activityを起動しないnative検査。UI復帰は別に検査する")
 args = parser.parse_args()
-if args.case not in {"runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward"}:
+if args.instrumentation and args.case not in {"forward", "remote-cleanup"}:
+    parser.error("instrumentationはforward/remote-cleanupだけです")
+if args.case not in {"runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup"}:
     parser.error("このcaseは未実装です")
 if not 1 <= args.timeout <= 7200:
     parser.error("timeoutは1〜7200秒です")
@@ -41,6 +44,8 @@ device = QuestDevice(args.serial, run)
 result = {"schema": 1, "case": args.case, "nonce": nonce, "status": "failed"}
 stream = None
 logfile = None
+instrument = None
+instrument_log = None
 exit_code = 1
 try:
     result.update(device.validate())
@@ -58,13 +63,21 @@ try:
         raise RuntimeError("導入済みAPKが現在のsourceと一致しません。build/install後に再実行してください")
     result.update(build_info=expected, apk_sha256=hashlib.sha256(apk.read_bytes()).hexdigest())
     uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", PACKAGE))
-    termux_uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux") if args.case in {"ssh", "ssh-product", "forward"} else None
+    termux_uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux") if args.case in {"ssh", "ssh-product", "forward", "remote-cleanup"} else None
     logfile = (run / "app.log").open("w")
     stream = device.start_log(uid, logfile)
-    (run / "launch.log").write_text(device.adb("shell", "am", "start", "-n", PACKAGE + "/.DebugCommandActivity", "--es", "case", args.case, "--es", "nonce", nonce))
+    if args.instrumentation:
+        instrument_log = (run / "instrumentation.log").open("w")
+        instrument = subprocess.Popen(["adb", "-s", args.serial, "shell", "am", "instrument", "-w", "-r", "-e", "case", args.case, "-e", "nonce", nonce, PACKAGE + "/.NativeCheckInstrumentation"], stdout=instrument_log, stderr=subprocess.STDOUT)
+    else:
+        (run / "launch.log").write_text(device.adb("shell", "am", "start", "-n", PACKAGE + "/.DebugCommandActivity", "--es", "case", args.case, "--es", "nonce", nonce))
     deadline = time.monotonic() + args.timeout
     snapshot = None
     while time.monotonic() < deadline:
+        if instrument is not None and instrument.poll() is not None:
+            output = (run / "instrumentation.log").read_text()
+            if instrument.returncode != 0 or not re.search(r"^INSTRUMENTATION_CODE: -1\s*$", output, re.M):
+                raise RuntimeError("instrumentationが成功codeを返しませんでした")
         logs = (run / "app.log").read_text()
         if "FATAL EXCEPTION" in logs or "Fatal signal" in logs:
             raise RuntimeError("対象プロセスで致命的エラーが発生しました")
@@ -84,11 +97,22 @@ try:
         elif args.case == "ssh-product":
             accepted = product_ssh_result(snapshot, nonce, expected, termux_uid)
         elif args.case == "forward":
-            accepted = forward_result(snapshot, nonce, expected, termux_uid)
+            accepted = forward_result(snapshot, nonce, expected, termux_uid, instrumentation=args.instrumentation, apk_uid=uid)
+        elif args.case == "remote-cleanup":
+            accepted = remote_cleanup_result(snapshot, nonce, expected, termux_uid, instrumentation=args.instrumentation, apk_uid=uid)
         else:
             judge = {"runtime": runtime_result, "helper": helper_result, "credentials": credentials_result}[args.case]
             accepted = judge(snapshot, nonce, expected)
         if accepted:
+            if instrument is not None:
+                if instrument.poll() is None:
+                    time.sleep(0.25)
+                    continue
+                values = dict(re.findall(r"^INSTRUMENTATION_RESULT: ([a-z_]+)=(.*)$", (run / "instrumentation.log").read_text(), re.M))
+                proof = snapshot["check"]["instrumentation"]
+                if any(values.get(key) != value for key, value in {"case": args.case, "nonce": nonce, "result": "pass", "uid": str(uid), "pid": str(proof["pid"])}.items()):
+                    raise RuntimeError("instrumentationとsnapshotのnonce/UID/PIDが不一致です")
+                break
             activities = device.adb("shell", "dumpsys", "activity", "activities")
             resumed = [line for line in activities.splitlines() if "topResumedActivity=" in line or "mResumedActivity:" in line]
             if any(PACKAGE + "/.MainActivity" in line for line in resumed):
@@ -97,8 +121,8 @@ try:
         time.sleep(0.25)
     else:
         raise TimeoutError("nonce/版一致したcase成功と製品runtime/UIへの復帰を確認できませんでした")
-    result.update(status="pass", normal_ui_returned=True)
-    if args.case not in {"credentials", "ssh", "ssh-product", "forward"}:
+    result.update(status="pass", normal_ui_returned=not args.instrumentation, scope="native-instrumentation" if args.instrumentation else "runtime-and-ui")
+    if args.case not in {"credentials", "ssh", "ssh-product", "forward", "remote-cleanup"}:
         result["cycles"] = len(snapshot["check"]["cycles"]) if args.case != "helper" else 10
     if args.case == "runtime":
         result["panic_converted"] = True
@@ -107,6 +131,17 @@ except Exception as error:
     result["error_class"] = type(error).__name__
     (run / "error.txt").write_text(traceback.format_exc())
 finally:
+    if instrument is not None and instrument.poll() is None:
+        instrument.terminate()
+        try:
+            instrument.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            instrument.kill()
+            instrument.wait()
+        # observerだけ終了して、所有するinstrumentationを端末上に置き去りにしない。
+        device.adb("shell", "am", "force-stop", PACKAGE)
+    if instrument_log is not None:
+        instrument_log.close()
     if stream is not None:
         stream.terminate()
         try:
@@ -117,5 +152,5 @@ finally:
     if logfile is not None:
         logfile.close()
     (run / "result.json").write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps({key: result[key] for key in ("case", "nonce", "status", "cycles", "error_class") if key in result}))
+    print(json.dumps({key: result[key] for key in ("case", "nonce", "status", "scope", "normal_ui_returned", "cycles", "error_class") if key in result}))
 raise SystemExit(exit_code)
