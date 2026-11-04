@@ -105,6 +105,10 @@ impl Runtime {
                     eidolon_model::ids::CommandSeq,
                     JoinHandle<crate::helper::Report>,
                 )> = None;
+                let mut dependencies: Option<(
+                    eidolon_model::ids::CommandSeq,
+                    JoinHandle<crate::compositor::primitives::Report>,
+                )> = None;
                 {
                     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                     if state.snapshot.state == RuntimeState::Starting
@@ -193,10 +197,41 @@ impl Runtime {
                             state.snapshot.helper_workers = 0;
                             state.emit(Event::CommandComplete { request_id, code });
                         }
+                        if dependencies
+                            .as_ref()
+                            .is_some_and(|(_, job)| job.is_finished())
+                        {
+                            let (request_id, job) = dependencies.take().unwrap();
+                            let report = job.join().unwrap_or_else(|_| {
+                                crate::compositor::primitives::Report {
+                                    state: "fail",
+                                    error: Some("JNI_FAILURE"),
+                                    ..Default::default()
+                                }
+                            });
+                            let code = if report.error == Some("CANCELLED") {
+                                Status::Stale
+                            } else if report.error.is_some() {
+                                Status::Failed
+                            } else {
+                                Status::Accepted
+                            };
+                            let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                            if report.error == Some("JNI_FAILURE") {
+                                shared.fail("JNI_FAILURE");
+                            }
+                            shared.snapshot.native_deps = Some(report);
+                            shared.snapshot.dependency_workers = 0;
+                            shared.emit(Event::CommandComplete { request_id, code });
+                        }
                         if stopping.load(Ordering::Acquire) {
                             gl.request_stop();
                             io.request_stop();
-                            if helper.is_none() && gl.is_finished() && io.is_finished() {
+                            if helper.is_none()
+                                && dependencies.is_none()
+                                && gl.is_finished()
+                                && io.is_finished()
+                            {
                                 break;
                             }
                             state
@@ -236,6 +271,38 @@ impl Runtime {
                                             nonce,
                                             *scenario,
                                         )
+                                    } else {
+                                        Status::NotReady
+                                    }
+                                }
+                                Command::NativeDepsProbe {
+                                    nonce, request_id, ..
+                                } => {
+                                    if dependencies.is_some() {
+                                        Status::Busy
+                                    } else if let Some(paths) =
+                                        config.paths.clone().filter(|_| cfg!(debug_assertions))
+                                    {
+                                        let (stop, nonce) = (stopping.clone(), nonce.clone());
+                                        match thread::Builder::new()
+                                            .name("eidolon-deps".into())
+                                            .spawn(move || {
+                                                crate::compositor::primitives::run(
+                                                    std::path::Path::new(&paths.files_dir),
+                                                    &nonce,
+                                                    &stop,
+                                                )
+                                            }) {
+                                            Ok(job) => {
+                                                state.snapshot.dependency_workers = 1;
+                                                state.snapshot.native_deps =
+                                                    Some(Default::default());
+                                                dependencies = Some((*request_id, job));
+                                                asynchronous = true;
+                                                Status::Accepted
+                                            }
+                                            Err(_) => Status::Failed,
+                                        }
                                     } else {
                                         Status::NotReady
                                     }
@@ -372,6 +439,21 @@ impl Runtime {
                     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                     state.snapshot.helper = Some(report);
                     state.snapshot.helper_workers = 0;
+                }
+                if let Some((_, job)) = dependencies.take() {
+                    while !job.is_finished() {
+                        thread::park_timeout(Duration::from_millis(5));
+                    }
+                    let report =
+                        job.join()
+                            .unwrap_or_else(|_| crate::compositor::primitives::Report {
+                                state: "fail",
+                                error: Some("JNI_FAILURE"),
+                                ..Default::default()
+                            });
+                    let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                    shared.snapshot.native_deps = Some(report);
+                    shared.snapshot.dependency_workers = 0;
                 }
                 gl.request_stop();
                 io.request_stop();
@@ -605,6 +687,60 @@ mod tests {
             request_id: CommandSeq::new(id).unwrap(),
             scene: SceneEpoch::new(id).unwrap(),
         }
+    }
+    #[test]
+    fn native_dependency_command_uses_owned_worker_and_stops_after_reclaim() {
+        use std::os::unix::fs::DirBuilderExt;
+        let parent = std::env::temp_dir().join(format!("eidolon-core-deps-{}", std::process::id()));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&parent)
+            .unwrap();
+        let runtime = Runtime::start(RuntimeConfig {
+            paths: Some(eidolon_model::commands::RuntimePaths {
+                files_dir: parent.to_str().unwrap().into(),
+                native_library_dir: "/unused-native-dependency-fixture".into(),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
+        assert_eq!(
+            runtime.command(Command::NativeDepsProbe {
+                schema: 1,
+                request_id: CommandSeq::new(1).unwrap(),
+                nonce: "cccccccccccccccc".into(),
+            }),
+            Status::Accepted
+        );
+        wait(&runtime, |r| {
+            r.snapshot()
+                .native_deps
+                .as_ref()
+                .is_some_and(|r| r.state == "pass")
+        });
+        assert_eq!(runtime.snapshot().dependency_workers, 0);
+        assert!(runtime.snapshot().native_deps.unwrap().owned_fds_closed);
+        let started = Instant::now();
+        assert_eq!(runtime.request_stop(), Status::Accepted);
+        assert!(started.elapsed() < Duration::from_millis(100));
+        wait(&runtime, Runtime::can_destroy);
+        assert_eq!(runtime.snapshot().state, RuntimeState::Stopped);
+        assert_eq!(runtime.snapshot().dependency_workers, 0);
+        // transport journalの保存先は停止後も残す。probe固有socket/directoryだけが消える。
+        let entries = std::fs::read_dir(&parent)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, [std::ffi::OsString::from("transport-state")]);
+        assert_eq!(
+            std::fs::read_dir(parent.join("transport-state"))
+                .unwrap()
+                .count(),
+            0
+        );
+        std::fs::remove_dir(parent.join("transport-state")).unwrap();
+        std::fs::remove_dir(parent).unwrap();
     }
     #[test]
     fn missing_profile_never_requests_secret_and_stale_disconnect_preserves_new_request() {

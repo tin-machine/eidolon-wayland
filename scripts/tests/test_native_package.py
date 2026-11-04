@@ -30,6 +30,8 @@ class PackageTests(unittest.TestCase):
                         data += b"corrupt fixture"
                     if item.filename == "assets/native-build.json" and variant == "api":
                         data = data.replace(b'"api": 34', b'"api": 35')
+                    if item.filename == "assets/keymaps/jis.xkb" and variant == "keymap":
+                        data += b"invalid fixture"
                     # writestrはZipInfoを更新するので、元archiveのlookupを壊さない。
                     out.writestr(copy.copy(item), data)
                 if variant == "duplicate":
@@ -47,3 +49,6 @@ class PackageTests(unittest.TestCase):
 
     def test_incorrect_api_is_rejected(self):
         self.reject("api", "API")
+
+    def test_corrupt_keymap_is_rejected(self):
+        self.reject("keymap", "keymap hash")

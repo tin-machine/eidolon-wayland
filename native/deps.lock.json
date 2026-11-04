@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "libxkbcommon": {
+    "version": "1.8.1",
+    "source": "https://codeload.github.com/xkbcommon/libxkbcommon/tar.gz/refs/tags/xkbcommon-1.8.1",
+    "sha256": "c65c668810db305c4454ba26a10b6d84a96b5469719fe3c729e1c6542b8d0d87",
+    "license_file": "licenses/xkbcommon-1.8.1-LICENSE",
+    "patches": [],
+    "ndk": "27.3.13750724",
+    "api": 34,
+    "abi": "arm64-v8a",
+    "meson": "1.7.2",
+    "options": {
+      "default_library": "static",
+      "b_staticpic": true,
+      "enable-tools": false,
+      "enable-x11": false,
+      "enable-docs": false,
+      "enable-wayland": false,
+      "enable-xkbregistry": false,
+      "enable-bash-completion": false,
+      "xkb-config-root": "/eidolon/no-system-xkb",
+      "xkb-config-extra-path": "/eidolon/no-system-xkb",
+      "x-locale-root": "/eidolon/no-system-locale"
+    },
+    "file_prefix_map": {
+      "source": "/eidolon/libxkbcommon",
+      "build": "/eidolon/build"
+    }
+  },
+  "smithay": {
+    "version": "0.7.0",
+    "default_features": false,
+    "features": [
+      "wayland_frontend",
+      "desktop"
+    ],
+    "source": "crates.io (Cargo.lock)",
+    "license": "MIT"
+  },
+  "xkeyboard-config": {
+    "version": "2.48",
+    "source": "https://www.x.org/releases/individual/data/xkeyboard-config/xkeyboard-config-2.48.tar.xz",
+    "sha256": "b77041324f0109f77161ee43743fe04baa485866af8460d31e476ad3f7648fd5",
+    "license_file": "licenses/xkeyboard-config-2.48-COPYING",
+    "keymaps": {
+      "us": {
+        "rules": "evdev",
+        "model": "pc105",
+        "layout": "us",
+        "sha256": "2993effb1c4286d9fa1b1ae3c5831adf3e7f3a239156a9ded2b8caa3fe4e1838",
+        "bytes": 71196
+      },
+      "jis": {
+        "rules": "evdev",
+        "model": "jp106",
+        "layout": "jp",
+        "sha256": "b1abb52fac1a7a2e9dd7b71eaef7b18c15ab389ccae0755f25511ae140cc8501",
+        "bytes": 71708
+      }
+    },
+    "options": {
+      "nls": false,
+      "compat-rules": true,
+      "non-latin-layouts-list": false
+    },
+    "keymap_format": "XKB_KEYMAP_FORMAT_TEXT_V1"
+  }
+}

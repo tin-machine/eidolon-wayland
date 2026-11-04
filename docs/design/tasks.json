@@ -718,7 +718,7 @@
     {
       "id": "W01",
       "title": "Smithay・native依存のAndroid build",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "B03"
       ],

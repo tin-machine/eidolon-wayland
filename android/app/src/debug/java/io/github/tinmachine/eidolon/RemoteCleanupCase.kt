@@ -39,20 +39,28 @@ object RemoteCleanupCase {
         }
         fun command(type: String): JSONObject = JSONObject().put("schema", 1).put("type", type).put("request_id", (++sequence).toString())
         fun connect(): String {
-            check(NativeBridge.nativeCommand(active, command("connect").put("profile_id", "termux-local").toString()) == NativeBridge.ACCEPTED)
+            val request = command("connect").put("profile_id", "termux-local")
+            val requestId = request.getString("request_id")
+            check(NativeBridge.nativeCommand(active, request.toString()) == NativeBridge.ACCEPTED)
             var requests = 0
+            var dispatched = false
             waitFor(90000) {
                 val events = JSONObject(NativeBridge.nativePoll(active, 64)).getJSONArray("events")
                 for (i in 0 until events.length()) {
                     val event = events.getJSONObject(i)
+                    if (event.optString("type") == "command_complete" && event.optString("request_id") == requestId) {
+                        check(event.getString("code") == "ACCEPTED")
+                        dispatched = true
+                    }
                     if (event.optString("type") == "credential_required") {
                         requests++
                         check(credentials.provide(active, event.getString("session").toLong(), event.getString("request_id").toLong()) == NativeBridge.ACCEPTED)
                     }
                 }
                 val transport = snapshot(active).getJSONObject("transport")
-                check(transport.getString("state") != "Failed")
-                transport.getString("state") == "Ready"
+                // JNIのACCEPTEDはenqueueだけ。再接続ではdispatch前の旧Failedを読める。
+                if (dispatched) check(transport.getString("state") != "Failed")
+                dispatched && transport.getString("state") == "Ready"
             }
             check(requests == 1)
             val transport = snapshot(active).getJSONObject("transport")

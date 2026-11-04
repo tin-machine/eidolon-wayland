@@ -20,6 +20,8 @@ pub struct Snapshot {
     pub error: Option<&'static str>,
     pub helper: Option<crate::helper::Report>,
     pub helper_workers: usize,
+    pub native_deps: Option<crate::compositor::primitives::Report>,
+    pub dependency_workers: usize,
     pub render: eidolon_render::Snapshot,
     pub transport: eidolon_transport::session::Snapshot,
 }
@@ -40,6 +42,8 @@ impl Default for Snapshot {
             error: None,
             helper: None,
             helper_workers: 0,
+            native_deps: None,
+            dependency_workers: 0,
             render: Default::default(),
             transport: Default::default(),
         }

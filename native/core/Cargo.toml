@@ -11,3 +11,12 @@ eidolon-transport.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 libc.workspace = true
+smithay = { version = "=0.7.0", default-features = false, features = ["wayland_frontend", "desktop"] }
+xkbcommon = { version = "=0.8.0", default-features = false }
+nix = { version = "=0.31.3", features = ["fs", "socket", "uio"] }
+memmap2 = "=0.9.12"
+sha2 = "0.11"
+
+[build-dependencies]
+serde_json.workspace = true
+sha2 = "0.11"

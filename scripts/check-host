@@ -12,7 +12,7 @@ from host_checks import check_members, rust_test_count
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {"model": ["eidolon-model"], "render": ["eidolon-render"], "lifecycle": ["eidolon-core", "eidolon-android", "eidolon-helper-fixture"],
-          "transport": ["eidolon-transport"], "compositor": [], "input": []}
+          "transport": ["eidolon-transport"], "compositor": ["eidolon-core"], "input": []}
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--suite", required=True, choices=[*SUITES, "all"])
 args = parser.parse_args()
@@ -43,11 +43,15 @@ try:
         run([os.environ.get("EIDOLON_TEST_SSHD", "/usr/sbin/sshd"), "-V"])
         run(["python3", "scripts/check-design"])
         run(["python3", "scripts/check-build-tools"])
+        run(["python3", "scripts/build-native-deps", "--target", "host"])
+        run(["python3", "scripts/check-native-deps"])
         run(["cargo", "fmt", "--all", "--check"])
         run(["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"])
         metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--no-deps", "--format-version=1"], cwd=ROOT, text=True))
         members = [p["name"] for p in metadata["packages"] if p["id"] in metadata["workspace_members"]]
         check_members(members, [p for group in SUITES.values() for p in group])
+    if args.suite in {"lifecycle", "compositor"}:
+        run(["python3", "scripts/build-native-deps", "--target", "host"])
     for name, packages in SUITES.items():
         if args.suite not in {"all", name}:
             continue
@@ -56,7 +60,16 @@ try:
             continue
         count = 0
         for package in packages:
-            count += rust_test_count(run(["cargo", "test", "--locked", "-p", package]))
+            # core内のcompositor testは独立suiteでも使う。allではlifecycle側で一度だけ実行する。
+            if args.suite == "all" and name == "compositor":
+                print(json.dumps({"suite": name, "result": "included", "in": "lifecycle"}))
+                break
+            command = ["cargo", "test", "--locked", "-p", package]
+            if name == "compositor":
+                command.append("compositor::")
+            count += rust_test_count(run(command))
+        if args.suite == "all" and name == "compositor":
+            continue
         print(json.dumps({"suite": name, "result": "pass", "tests": count}))
     if args.suite == "all":
         python_tests(ROOT / "scripts/tests")

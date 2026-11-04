@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Android向けCargoの実resolveとfeature treeを検査する。ELF検査はAPK gateで別に行う。"""
+import json
+from pathlib import Path
+import subprocess
+
+root = Path(__file__).resolve().parents[1]
+lock = json.loads((root / "native/deps.lock.json").read_text())
+metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--format-version=1", "--filter-platform", "aarch64-linux-android"], cwd=root))
+packages = {p["id"]: p for p in metadata["packages"]}
+active = {node["id"]: node for node in metadata["resolve"]["nodes"]}
+smithay = [packages[key] for key in active if packages[key]["name"] == "smithay"]
+if len(smithay) != 1 or smithay[0]["version"] != lock["smithay"]["version"]:
+    raise SystemExit("Smithayの固定版がresolveされていません")
+features = set(active[smithay[0]["id"]]["features"])
+allowed = {"desktop", "wayland_frontend", "wayland-server", "wayland-protocols", "wayland-protocols-wlr", "wayland-protocols-misc", "tempfile"}
+if features != allowed:
+    raise SystemExit("Smithayの最小feature契約が不一致: " + ", ".join(sorted(features)))
+# wayland-sysはbackendの型定義依存として無featureでも現れる。system linkの有効化を拒否する。
+for key, node in active.items():
+    name = packages[key]["name"]
+    if name == "wayland-sys" and node["features"]:
+        raise SystemExit("libwaylandのsystem featureが有効です")
+    if name == "wayland-backend" and set(node["features"]) & {"server_system", "client_system", "dlopen"}:
+        raise SystemExit("Waylandのsystem backendが有効です")
+forbidden = {"drm", "drm-sys", "drm-ffi", "udev", "libudev-sys", "gbm", "gbm-sys", "input", "input-sys", "libseat", "libseat-sys", "x11rb", "winit"}
+found = {packages[key]["name"] for key in active} & forbidden
+if found:
+    raise SystemExit("Android向けに不要なnative/backend依存: " + ", ".join(sorted(found)))
+tree = subprocess.check_output(["cargo", "tree", "--locked", "--target", "aarch64-linux-android", "-e", "features", "-p", "eidolon-core"], cwd=root, text=True)
+output = root / "native/generated"
+output.mkdir(parents=True, exist_ok=True)
+(output / "dependency-features.txt").write_text(tree)
+print(json.dumps({"status": "pass", "smithay": smithay[0]["version"], "features": sorted(features), "forbidden": sorted(found), "tree": str(output / "dependency-features.txt")}))

@@ -23,6 +23,8 @@ ndk = Path(env.get("ANDROID_HOME", "/opt/android-sdk")) / "ndk" / NDK
 if not (ndk / "source.properties").is_file():
     raise SystemExit(f"固定NDKがありません: {ndk}")
 env["ANDROID_NDK_HOME"] = str(ndk)
+subprocess.run(["python3", str(ROOT / "scripts/build-native-deps"), "--target", "android"], cwd=ROOT, check=True)
+subprocess.run(["python3", str(ROOT / "scripts/check-native-deps")], cwd=ROOT, check=True)
 env["EIDOLON_BUILD_INFO_JSON"] = canonical(info)
 # workspace版を往復すると、Cargoが別fingerprintに対応する同名cdylibをfreshと
 # 判定する場合がある。同名出力を異なるpackage版で共有しない。
@@ -51,6 +53,21 @@ if args.profile == "debug":
     files[target.name] = hashlib.sha256(target.read_bytes()).hexdigest()
 metadata = {"build_info": info, "abi": ABI, "api": API, "ndk": NDK,
             "files": files}
+dependency_lock = ROOT / "native/deps.lock.json"
+locked = json.loads(dependency_lock.read_text())
+static = json.loads((ROOT / "native/generated/xkbcommon-android.json").read_text())
+metadata["dependencies"] = {"lock_sha256": hashlib.sha256(dependency_lock.read_bytes()).hexdigest(),
+                            "xkbcommon_static_sha256": static["sha256"], "smithay": locked["smithay"],
+                            "keymaps": locked["xkeyboard-config"]["keymaps"]}
+licenses = {}
+for component in ("libxkbcommon", "xkeyboard-config"):
+    name = locked[component]["license_file"]
+    source = ROOT / "native" / name
+    target = args.assets / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+    licenses[name] = hashlib.sha256(source.read_bytes()).hexdigest()
+metadata["dependencies"]["licenses"] = licenses
 args.assets.mkdir(parents=True, exist_ok=True)
 (args.assets / "native-build.json").write_text(json.dumps(metadata, indent=2) + "\n")
 print(canonical(metadata))

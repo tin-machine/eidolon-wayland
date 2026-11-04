@@ -121,6 +121,11 @@ pub enum Command {
         nonce: String,
         scenario: CleanupScenario,
     },
+    NativeDepsProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        nonce: String,
+    },
     ForwardProbe {
         schema: u32,
         request_id: CommandSeq,
@@ -176,6 +181,7 @@ impl Command {
         let schema = match command {
             Self::SceneReady { schema, .. }
             | Self::RemoteCleanupProbe { schema, .. }
+            | Self::NativeDepsProbe { schema, .. }
             | Self::ForwardProbe { schema, .. }
             | Self::Connect { schema, .. }
             | Self::Disconnect { schema, .. }
@@ -195,7 +201,8 @@ impl Command {
         }
         if let Self::HelperProbe { nonce, .. }
         | Self::ForwardProbe { nonce, .. }
-        | Self::RemoteCleanupProbe { nonce, .. } = &command
+        | Self::RemoteCleanupProbe { nonce, .. }
+        | Self::NativeDepsProbe { nonce, .. } = &command
             && (nonce.len() != 16
                 || !nonce
                     .bytes()
@@ -209,6 +216,7 @@ impl Command {
         match *self {
             Self::SceneReady { request_id, .. }
             | Self::RemoteCleanupProbe { request_id, .. }
+            | Self::NativeDepsProbe { request_id, .. }
             | Self::ForwardProbe { request_id, .. }
             | Self::Connect { request_id, .. }
             | Self::Disconnect { request_id, .. }

@@ -11,7 +11,7 @@ import struct
 import tempfile
 import zipfile
 
-from native_build import ABI, API, NDK, TARGET, canonical
+from native_build import ABI, API, NDK, ROOT, TARGET, canonical
 
 
 def inspect(apk):
@@ -33,6 +33,28 @@ def inspect(apk):
             raise ValueError("APK内soと生成metadataのhashが不一致です")
         if canonical(info).encode() not in data:
             raise ValueError("APK内soに期待した版情報がありません")
+        dependency_file = ROOT / "native/deps.lock.json"
+        locked = json.loads(dependency_file.read_text())
+        dependencies = metadata.get("dependencies", {})
+        licenses = {locked[key]["license_file"]: hashlib.sha256((ROOT / "native" / locked[key]["license_file"]).read_bytes()).hexdigest()
+                    for key in ("libxkbcommon", "xkeyboard-config")}
+        if (dependencies.get("lock_sha256") != hashlib.sha256(dependency_file.read_bytes()).hexdigest()
+                or dependencies.get("smithay") != locked["smithay"]
+                or dependencies.get("keymaps") != locked["xkeyboard-config"]["keymaps"]
+                or dependencies.get("licenses") != licenses
+                or not re.fullmatch(r"[0-9a-f]{64}", dependencies.get("xkbcommon_static_sha256", ""))):
+            raise ValueError("native dependencyの固定source情報が不一致です")
+        for name, entry in dependencies["keymaps"].items():
+            path = "assets/keymaps/" + name + ".xkb"
+            if names.count(path) != 1:
+                raise ValueError("keymap assetが欠落・重複しています")
+            keymap = archive.read(path)
+            if len(keymap) != entry["bytes"] or hashlib.sha256(keymap).hexdigest() != entry["sha256"]:
+                raise ValueError("keymap hashが不一致です")
+        for name, expected_hash in licenses.items():
+            path = "assets/" + name
+            if names.count(path) != 1 or hashlib.sha256(archive.read(path)).hexdigest() != expected_hash:
+                raise ValueError("native license assetが欠落・不一致です")
         with tempfile.TemporaryDirectory(prefix="eidolon-elf-") as folder:
             elf = Path(folder) / "lib.so"
             elf.write_bytes(data)
@@ -92,7 +114,7 @@ def inspect(apk):
                 raise ValueError("helper fixtureの実API/NDK noteが不一致です")
         debug_symbol = "Java_io_github_tinmachine_eidolon_DebugNativeBridge_" in output
         dex = b"".join(archive.read(name) for name in names if re.fullmatch(r"classes\d*\.dex", name))
-        debug_classes = [b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;", b"Lio/github/tinmachine/eidolon/CredentialCase;", b"Lio/github/tinmachine/eidolon/SshCase;", b"Lio/github/tinmachine/eidolon/ProductSshCase;", b"Lio/github/tinmachine/eidolon/ForwardCase;", b"Lio/github/tinmachine/eidolon/RemoteCleanupCase;", b"Lio/github/tinmachine/eidolon/NativeCheckInstrumentation;"]
+        debug_classes = [b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;", b"Lio/github/tinmachine/eidolon/CredentialCase;", b"Lio/github/tinmachine/eidolon/SshCase;", b"Lio/github/tinmachine/eidolon/ProductSshCase;", b"Lio/github/tinmachine/eidolon/ForwardCase;", b"Lio/github/tinmachine/eidolon/RemoteCleanupCase;", b"Lio/github/tinmachine/eidolon/NativeCheckInstrumentation;", b"Lio/github/tinmachine/eidolon/NativeDepsCase;"]
         debug_dex = any(name in dex for name in debug_classes)
         if info["profile"] == "release" and (debug_symbol or debug_dex):
             raise ValueError("releaseにdebug JNI/classが混入しています")

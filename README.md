@@ -12,7 +12,7 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 **実装方針:** KotlinはMeta Spatial SDK / Android adapter、RustはJNI・描画・SSH・Wayland compositor・ウィンドウ管理モデルを担当します。Waypipeは既存実装を再利用し、自作C++は必要性が確認された小さなshimに限定します。これは調査に基づく方針で、実装済みという意味ではありません。
 
-**現在できること:** `scripts/build-android 11`でRust runtime/helperを含むAPKをビルド・lint・静的検査し、`scripts/quest-smoke`で指定Questへ更新・起動・native版一致・ログ取得、`scripts/quest-check --case runtime`でruntimeの生成・停止・回収、`--case helper`でAPK UIDのhelper起動・echo・終了・回収を試験できます。`scripts/check-host --suite all`はhost検証、`scripts/quest-termux`はTermuxへの開発用SSH接続です。JDK 25・compileSdk 36・Spatial SDK 0.15.0を採用しています。Build 1→2の表示・ボタン操作はHMDで確認済み、Rustを組み込んだBuild 11まで自動実機試験に成功しHMD確認は最終段階へ残しています。[再現手順](docs/phase-0-reproduction.md)と[製品実装の進捗・失敗記録](docs/progress.md)を参照してください。
+**現在できること:** `scripts/build-android 39`でRust runtime/helperを含むAPKをビルド・lint・静的検査できます。QuestではEGLパネル、専用鍵によるSSH、StreamLocal echo・障害回収、Smithay/native依存の基本検査を進めています。`scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case native-deps --instrumentation`等はActivityを開かずAPK UIDで検査し、UI復帰と区別して結果を保存します。JDK 25・compileSdk 36・target API 34・Spatial SDK 0.15.0を採用しています。HMD・実入力は最終段階の確認に残しています。[再現手順](docs/phase-0-reproduction.md)、[製品実装の進捗・失敗記録](docs/progress.md)、[native依存の固定build](docs/native-dependencies-build.md)を参照してください。
 
 **残フェーズの実装設計:** [Sol向け引継ぎ](docs/design/README.md)に31タスク、43検証、ファイル・API・状態遷移・失敗時の判断を整理しました。B01/B03/H01は受入済み、B02はHMD確認、C01はGitHub上のCI結果確認が残ります。Wayland表示・製品SSH接続・入力は後続タスクで実装します。[進捗と試行記録](docs/progress.md)を参照してください。
 

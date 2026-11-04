@@ -1,6 +1,64 @@
 """端末snapshotの合否判定。nonce・版・終了条件をすべて満たすまで成功にしない。"""
 import re
 import json
+import hashlib
+
+
+def native_deps_result(snapshot, nonce, expected, uid, dependencies, *, instrumentation=False):
+    if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
+        return False
+    result = snapshot.get("check", {})
+    if result.get("case") != "native-deps" or result.get("nonce") != nonce:
+        return False
+    if result.get("result") == "fail":
+        raise ValueError("端末native dependency caseが失敗しました")
+    if result.get("result") != "pass":
+        return False
+    cycles = result.get("cycles", [])
+    if len(cycles) != 10 or result.get("cleanup_failed"):
+        raise ValueError("native dependencyの回数・回収が不正です")
+    keymaps = dependencies["xkeyboard-config"]["keymaps"]
+    for index, row in enumerate(cycles):
+        report = row.get("report", {})
+        token = hashlib.sha256(f"{nonce}:{index}".encode()).hexdigest()[:16]
+        if (row.get("cycle") != index + 1 or report.get("state") != "pass" or report.get("error") is not None
+                or report.get("nonce") != token or report.get("uid") != uid
+                or any(report.get(field) is not True for field in ("display_created", "shm_global", "sync_done", "sync_delete_id", "fd_cloexec", "same_memfd", "owned_fds_closed", "socket_cleaned"))
+                or report.get("received_fds") != 1 or report.get("mapped_bytes") != 4096
+                or report.get("mapped_regions_after") != 0 or report.get("audited_fds") != 8
+                or type(report.get("elapsed_ms")) is not int or not 0 <= report["elapsed_ms"] < 10000
+                or type(row.get("fds")) is not int or row["fds"] <= 0
+                or type(row.get("native_heap_bytes")) is not int or row["native_heap_bytes"] <= 0):
+            raise ValueError("native dependencyのIPC・mapping・所有資源回収が不正です")
+        layouts = report.get("keymaps", [])
+        if len(layouts) != 2 or [entry.get("layout") for entry in layouts] != ["us", "jis"]:
+            raise ValueError("US/JIS keymapの結果が不正です")
+        for entry in layouts:
+            wanted = keymaps[entry["layout"]]
+            if (entry.get("sha256") != wanted["sha256"] or entry.get("bytes") != wanted["bytes"]
+                    or entry.get("include_paths") != 0 or entry.get("base") != "a" or entry.get("shifted") != "A"
+                    or entry.get("shifted_two") != ('"' if entry["layout"] == "jis" else "@")):
+                raise ValueError("keymapのsource hash・自己完結性・意味が不正です")
+    after = result.get("after_stop", {})
+    if (after.get("state") != "Stopped" or after.get("dependency_workers") != 0 or after.get("helper_workers") != 0
+            or after.get("render", {}).get("workers") != 0 or after.get("transport", {}).get("workers") != 0
+            or after.get("transport", {}).get("owned_connections") != 0
+            or type(result.get("accept_ms")) is not int or not 0 <= result["accept_ms"] < 100
+            or type(result.get("stop_ms")) is not int or not 0 <= result["stop_ms"] < 10000):
+        raise ValueError("native dependencyの停止・受付時間が不正です")
+    last = result.get("last_handle", "")
+    if not isinstance(last, str) or not re.fullmatch(r"[1-9][0-9]*", last):
+        raise ValueError("native dependencyのhandleが不正です")
+    if instrumentation:
+        return instrumentation_result(snapshot, result, uid)
+    current = snapshot.get("runtime", {})
+    handle = current.get("handle", "")
+    runtime = current.get("runtime", {})
+    return (current.get("code") == 0 and isinstance(handle, str) and handle.isdecimal()
+            and int(last) < int(handle) <= 2**63 - 1 and current.get("registry") == {"runtimes": 1, "workers": 1}
+            and runtime.get("state") == "Ready" and runtime.get("activity_visible") is True
+            and runtime.get("xr_state") in {"VISIBLE", "FOCUSED"} and runtime.get("dependency_workers") == 0
+            and runtime.get("transport", {}).get("state") == "Idle")
 
 
 def runtime_result(snapshot, nonce, expected):

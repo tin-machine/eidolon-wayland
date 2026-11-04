@@ -16,7 +16,8 @@ TARGET = "aarch64-linux-android"
 
 def source_files(root=ROOT):
     fixed = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts/build-native",
-             "scripts/native-build-inputs", "scripts/native_build.py", "scripts/check-native-package", "scripts/termux/eidolon-session.py"]
+             "scripts/native-build-inputs", "scripts/native_build.py", "scripts/check-native-package", "scripts/termux/eidolon-session.py",
+             "scripts/build-native-deps", "scripts/check-native-deps", "scripts/native-keymap-generator.c"]
     paths = {root / p for p in fixed if (root / p).is_file()}
     for folder in ["native", "android/app/src", "android/gradle"]:
         paths.update(p for p in (root / folder).rglob("*") if p.is_file()

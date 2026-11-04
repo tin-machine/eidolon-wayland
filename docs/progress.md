@@ -354,3 +354,27 @@ artifactは`builds/20261105T065121-2058405/`、`t04-host-final36.log`、`apk-tes
 pattern/footの実binary接続はW04で行い、現時点はDEPENDENCY_NOT_READYで成功扱いしない。
 T03確定commit a3b58b8のCI run41897106364はhost/Android/report全成功。
 Phase5 goalは継続中で、手動HMD・物理入力は最終段階へ残す。
+
+## W01: 固定native依存とAPK UID基本検査（UI復帰待ち）
+
+Smithay0.7.0の最小frontendと、固定sourceから構築したlibxkbcommon1.8.1を製品へ接続した。
+data2.48からUS/JIS keymapを自己完結textへ展開し、hash/byte数/licenseをAPKへ同梱する。
+hostとNDK/API34のbuildを分離し、system Wayland/DRM/GBM/udev backendを有効にしない。
+source cacheの改変・追加file、古い依存build marker、壊れたAPK keymapも拒否する。
+詳細・再現command・初期の失敗は[native依存の固定build](native-dependencies-build.md)を参照する。
+
+QuestのAPK UIDから、短いUnix socket上のWayland sync応答、SCM_RIGHTSでのFD送受信、
+memfd/mmapの4096byte共有、US/JISのinclude無しparseと意味検査を10回実行した。
+Build39の`20261105T071657-e46f6b0b`は全回pass、各28〜44ms、FD数70で一定、
+各回8FD回収・残存mapping0。最後のruntime停止は13msだった。
+同sourceのforward `071648-73752891`と7故障 `071702-564a0fa4`もpass。
+前buildの失敗で残ったjournal1件も、認証接続のreadonly receipt照合で検証・解消した。
+
+統合時にはKotlin条件式とfixtureのjournal保持契約を修正した。
+再接続検査ではJNIのenqueue受付をdispatch完了と取り違えて旧Failedを読むraceも検出し、
+対象request_idのcommand_completeを待つよう修正した。終了失敗時の最終snapshotもrunnerで保存する。
+host Rust54件・launcher Python12件、実APK Python27件、debug/release build/lint/packageが成功した。
+
+W01は通常caseの製品UI復帰が未確認のためin_progressを維持する。
+SHM buffer、SIGBUS/ART共存、一般Wayland client、Waypipe/footは後続の検証・実装へ残す。
+Phase5全体の完了ではなく、次のW02へ進むnative基盤の証拠として記録する。

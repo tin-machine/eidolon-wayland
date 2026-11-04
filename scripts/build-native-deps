@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""固定sourceからhost/Androidのstatic依存と自己完結US/JIS keymapを構築する。"""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import shlex
+import subprocess
+import sys
+import tarfile
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def run(argv, env):
+    subprocess.run(list(map(str, argv)), env=env, check=True)
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def source(name, spec, cache, licenses):
+    archive = cache / (name + ".tar")
+    if not archive.exists():
+        temporary = archive.with_suffix(".download")
+        with urllib.request.urlopen(spec["source"], timeout=60) as response, temporary.open("wb") as out:
+            shutil.copyfileobj(response, out)
+        temporary.replace(archive)
+    if digest(archive) != spec["sha256"]:
+        raise RuntimeError(name + " source hash mismatch")
+    extracted = cache / (name + "-" + spec["sha256"])
+    if not extracted.exists():
+        extracted.mkdir()
+        with tarfile.open(archive) as tar:
+            tar.extractall(extracted, filter="data")
+    # 展開後cacheへの編集も未記録のpatchにしない。検査に失敗した内容は保持する。
+    expected_files = set()
+    with tarfile.open(archive) as tar:
+        for member in tar:
+            target = extracted / member.name
+            if member.issym():
+                expected_files.add(member.name)
+                valid = target.is_symlink() and os.readlink(target) == member.linkname
+            elif member.isfile() or member.islnk():
+                expected_files.add(member.name)
+                valid = target.is_file() and not target.is_symlink() and target.read_bytes() == tar.extractfile(member).read()
+            elif member.isdir():
+                valid = target.is_dir() and not target.is_symlink()
+            else:
+                valid = False
+            if not valid:
+                raise RuntimeError(name + " extracted source mismatch: " + member.name)
+    actual_files = {p.relative_to(extracted).as_posix() for p in extracted.rglob("*") if p.is_file() or p.is_symlink()}
+    if actual_files != expected_files:
+        raise RuntimeError(name + " extracted source has unexpected files")
+    roots = list(extracted.iterdir())
+    if len(roots) != 1 or not roots[0].is_dir():
+        raise RuntimeError(name + " source layout mismatch")
+    original_license = roots[0] / ("LICENSE" if name == "libxkbcommon" else "COPYING")
+    license_path = ROOT / "native" / spec["license_file"]
+    if licenses:
+        license_path.parent.mkdir(parents=True, exist_ok=True)
+        license_path.write_bytes(original_license.read_bytes())
+    if not license_path.is_file() or license_path.read_bytes() != original_license.read_bytes():
+        raise RuntimeError(name + " license mismatch")
+    return roots[0]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--abi", choices=["arm64-v8a"], default="arm64-v8a")
+    parser.add_argument("--api", type=int, choices=[34], default=34)
+    parser.add_argument("--target", choices=["all", "host", "android"], default="all")
+    parser.add_argument("--write-keymaps", action="store_true", help="初期選定時だけtracked keymap/licenseを生成する")
+    args = parser.parse_args()
+    os.umask(0o077)
+    lock = json.loads((ROOT / "native/deps.lock.json").read_text())
+    cache = ROOT / "native/.cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    # 同じcheckoutのGradle/host buildがsource展開やMeson setupを競合しない。
+    build_lock = (cache / "build.lock").open("a")
+    fcntl.flock(build_lock, fcntl.LOCK_EX)
+    for name, entry in lock["xkeyboard-config"]["keymaps"].items():
+        asset = ROOT / "android/app/src/main/assets/keymaps" / (name + ".xkb")
+        if not args.write_keymaps and (not entry.get("sha256") or not asset.is_file() or digest(asset) != entry["sha256"]):
+            raise RuntimeError(name + " tracked keymap hash mismatch")
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    for key in list(env):
+        if key in {"CC", "CXX", "AR", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "PKG_CONFIG"} or key.startswith("PKG_CONFIG_"):
+            del env[key]
+    meson_version = lock["libxkbcommon"]["meson"]
+    meson_path = cache / ("meson-" + meson_version)
+    if not (meson_path / "mesonbuild").is_dir():
+        run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "--target", meson_path, "meson==" + meson_version], env)
+    env["PYTHONPATH"] = str(meson_path)
+    meson = [sys.executable, "-m", "mesonbuild.mesonmain"]
+    actual = subprocess.check_output(meson + ["--version"], env=env, text=True).strip()
+    if actual != meson_version:
+        raise RuntimeError("Meson version mismatch")
+    xkb = source("libxkbcommon", lock["libxkbcommon"], cache, args.write_keymaps)
+    config = source("xkeyboard-config", lock["xkeyboard-config"], cache, args.write_keymaps)
+    options = ["-Dbuildtype=release", *["-D" + k + "=" + str(v).lower() for k, v in lock["libxkbcommon"]["options"].items()]]
+    # source/option/toolchainの変更で過去のMeson設定を再利用しない。
+    inputs = {name: digest(ROOT / name) for name in ("native/deps.lock.json", "scripts/build-native-deps", "scripts/native-keymap-generator.c")}
+    stamp = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:16]
+    build = ROOT / "native/build" / stamp
+    result = {"schema": 1, "lock_sha256": digest(ROOT / "native/deps.lock.json"), "inputs": inputs, "libraries": {}}
+    targets = ["host", "android"] if args.target == "all" else [args.target]
+    for target in targets:
+        output = build / target
+        install = output / "install"
+        target_env = env.copy()
+        remap = lock["libxkbcommon"]["file_prefix_map"]
+        target_env["CFLAGS"] = shlex.join([
+            "-ffile-prefix-map=" + str(xkb) + "=" + remap["source"],
+            "-ffile-prefix-map=" + os.path.relpath(xkb, output) + "=" + remap["source"],
+            "-ffile-prefix-map=" + str(output) + "=" + remap["build"],
+        ])
+        extra = []
+        if target == "android":
+            ndk = Path(env.get("ANDROID_HOME", "/opt/android-sdk")) / "ndk" / lock["libxkbcommon"]["ndk"]
+            binary = ndk / "toolchains/llvm/prebuilt/linux-x86_64/bin"
+            compiler = binary / "aarch64-linux-android34-clang"
+            if not compiler.is_file():
+                raise RuntimeError("固定Android compilerがありません")
+            target_env.update(PKG_CONFIG_PATH="", PKG_CONFIG_LIBDIR="", PKG_CONFIG_SYSROOT_DIR=str(binary.parent / "sysroot"))
+            output.mkdir(parents=True, exist_ok=True)
+            cross = output / "cross.ini"
+            cross.write_text("[binaries]\nc = '" + str(compiler) + "'\nar = '" + str(binary / "llvm-ar") + "'\nstrip = '" + str(binary / "llvm-strip") + "'\npkg-config = '/usr/bin/false'\n[host_machine]\nsystem = 'android'\ncpu_family = 'aarch64'\ncpu = 'armv8'\nendian = 'little'\n[properties]\nneeds_exe_wrapper = true\n")
+            extra = ["--cross-file", cross]
+        if not (output / "build.ninja").exists():
+            run(meson + ["setup", output, xkb, "--prefix", install, "--libdir", "lib", *extra, *options], target_env)
+        run(meson + ["compile", "-C", output, "xkbcommon"], target_env)
+        # install全体はtarget test/toolまで要求するので、libraryとpublic headerだけを配置する。
+        lib = install / "lib/libxkbcommon.a"
+        lib.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(output / "libxkbcommon.a", lib)
+        shutil.copytree(xkb / "include/xkbcommon", install / "include/xkbcommon", dirs_exist_ok=True)
+        result["libraries"][target] = {"path": str(lib), "sha256": digest(lib)}
+        if target == "host":
+            data_build = build / "xkeyboard-config"
+            data_install = data_build / "install"
+            if not (data_build / "build.ninja").exists():
+                data_options = ["-D" + k + "=" + str(v).lower() for k, v in lock["xkeyboard-config"]["options"].items()]
+                run(meson + ["setup", data_build, config, "--prefix", data_install, *data_options], env)
+            run(meson + ["compile", "-C", data_build], env)
+            run(meson + ["install", "-C", data_build, "--no-rebuild"], env)
+            generate_keymaps(data_install / "share/xkeyboard-config-2", install, output, lock["xkeyboard-config"], args.write_keymaps, env, result)
+        else:
+            header = subprocess.check_output([binary / "llvm-readelf", "-h", lib], text=True)
+            if "AArch64" not in header or any(line.startswith("  Machine:") and "AArch64" not in line for line in header.splitlines()):
+                raise RuntimeError("target archiveへhost ELFが混入しています")
+        generated = ROOT / "native/generated"
+        generated.mkdir(parents=True, exist_ok=True)
+        marker = {"schema": 1, "target": target, "inputs": inputs, "library": str(lib), "sha256": digest(lib)}
+        temporary = generated / ("xkbcommon-" + target + ".json.tmp." + str(os.getpid()))
+        temporary.write_text(json.dumps(marker, indent=2) + "\n")
+        temporary.replace(generated / ("xkbcommon-" + target + ".json"))
+    (build / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(result))
+
+
+def generate_keymaps(config, install, output, spec, write, env, result):
+    generator = output / "keymap-generator"
+    run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(install / "include"), ROOT / "scripts/native-keymap-generator.c", install / "lib/libxkbcommon.a", "-lm", "-o", generator], env)
+    generated = ROOT / "native/generated/keymaps"
+    generated.mkdir(parents=True, exist_ok=True)
+    result["keymaps"] = {}
+    for name, names in spec["keymaps"].items():
+        text = subprocess.check_output([generator, config, names["rules"], names["model"], names["layout"]], env=env)
+        path = generated / (name + ".xkb")
+        path.write_bytes(text)
+        if names.get("sha256") and digest(path) != names["sha256"]:
+            raise RuntimeError(name + " locked keymap hash mismatch")
+        expected = ROOT / "android/app/src/main/assets/keymaps" / path.name
+        if write:
+            expected.parent.mkdir(parents=True, exist_ok=True)
+            expected.write_bytes(text)
+        if not expected.is_file() or expected.read_bytes() != text:
+            raise RuntimeError(name + " tracked keymap mismatch")
+        result["keymaps"][name] = {"sha256": digest(path), "bytes": len(text)}
+
+
+if __name__ == "__main__":
+    main()
