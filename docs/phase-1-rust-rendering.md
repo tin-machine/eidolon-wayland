@@ -1,5 +1,7 @@
 # Phase 1 — RustによるJNI・Android Surface・EGL/GLES描画
 
+**実装時の正本（2026-11-04詳細化）:** [Sol向けタスク一覧](design/README.md)と[本フェーズの契約](design/phase-0-1.md)。以下の調査経緯を保ちつつ、thread・API・検証順は詳細設計を優先する。
+
 **状態:** 調査済み／未実装・Quest実機未検証（2026-11-01）  
 **上位計画:** [Phase 1](implementation-plan.md#phase-1--spatial-surfaceの描画スパイク)  
 **前提:** [Phase 0](phase-0-development-environment.md) / [全体設計](architecture.md)  

@@ -1,6 +1,8 @@
 # Phase 2 — Rust SSHとTermux・StreamLocal forwarding
 
-**状態:** API／実装調査済み、Android・Quest上の接続は未検証（API調査2026-11-01／開発経路計画更新2026-11-03）  
+**実装時の正本（2026-11-04詳細化）:** [Sol向けタスク一覧](design/README.md)と[本フェーズの契約](design/phase-2.md)。以下の調査経緯を保ちつつ、thread・API・検証順は詳細設計を優先する。
+
+**状態:** PC→Termuxの開発SSHは2026-11-04実機成功。APK内russh・StreamLocalは未実装・未検証
 **上位計画:** [Phase 2](implementation-plan.md#phase-2--sshとtermuxの安全な接続) / [全体設計](architecture.md)  
 **関連:** [Phase 0のUSB初期接続・無線調査経路](phase-0-development-environment.md) / [Phase 3のWaypipe統合](phase-3-rust-compositor-waypipe.md)
 
@@ -68,7 +70,7 @@ flowchart LR
 
 自動化では[共通の診断方針](development-automation-and-debugging.md#debug-buildの観測と操作)に従い、接続・host key検証・認証・exec・forward・echoの成否とtimeoutを別に記録する。PCのADB forward経由でTermuxへSSHできることは、APK内のrussh／StreamLocal試験の代わりにはならない。既知のバイト列、EOF／half-close、cancel、socket回収はXR表示を待たずに自動検証できる形にし、鍵や普段の入力内容を診断結果へ含めない。具体的なrunnerは未実装である。
 
-開発用SSHの調査は、[Phase 0](phase-0-development-environment.md)でUSBから始め、給電＋Wi-Fi ADB上の`forward tcp:18022 tcp:8022`へ移せるかを検証する。[ADBのforward仕様](https://developer.android.com/tools/adb#forwardports)と[transportに結び付くlistenerの実装](https://android.googlesource.com/platform/packages/modules/adb/+/f4965b77c694689c08855076eaf983c8e88646f9/adb_listeners.cpp)を根拠にした計画で、Quest／Termuxでの実測は未実施である。接続先はnetwork側のdevice IDを明示し、再接続後に転送を再作成する。`127.0.0.1:18022`はADB serverを動かすホスト／Pod側にあるため、SSHも同じ場所から実行する構成を第一候補とする。手順は[共通のforward節](development-automation-and-debugging.md#adb-forwardreverseとtermux)へ集約する。
+開発用SSHの調査は、[Phase 0](phase-0-development-environment.md)でUSBから始め、給電＋Wi-Fi ADB上の`forward tcp:18022 tcp:8022`へ移せるかを検証する。[ADBのforward仕様](https://developer.android.com/tools/adb#forwardports)と[transportに結び付くlistenerの実装](https://android.googlesource.com/platform/packages/modules/adb/+/f4965b77c694689c08855076eaf983c8e88646f9/adb_listeners.cpp)を根拠にした計画だった。2026-11-04に[PC→Termuxの実機試験](phase-0-troubleshooting-20261104.md)は成功し、ADB再接続後のforward再作成も確認した。APK内russhの成功ではない。接続先はnetwork側のdevice IDを明示し、再接続後に転送を再作成する。`127.0.0.1:18022`はADB serverを動かすホスト／Pod側にあるため、SSHも同じ場所から実行する構成を第一候補とする。手順は[共通のforward節](development-automation-and-debugging.md#adb-forwardreverseとtermux)へ集約する。
 
 Wi-Fi ADBの接続状態と、製品APK→Termuxのlocalhost SSH／StreamLocalの状態は別々に観測する。開発経路の切断だけを根拠に製品接続を再起動したり、TermuxのsshdをLAN公開へ変更したりしない。
 

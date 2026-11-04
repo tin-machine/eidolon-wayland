@@ -1,5 +1,7 @@
 # Phase 3 — Rust compositorのAndroid移植とWaypipe再利用
 
+**実装時の正本（2026-11-04詳細化）:** [Sol向けタスク一覧](design/README.md)と[本フェーズの契約](design/phase-3.md)。以下の調査経緯を保ちつつ、thread・API・検証順は詳細設計を優先する。
+
 **状態:** 先行実装／依存調査済み、Eidolonは未実装（2026-11-01）  
 **上位計画:** [Phase 3](implementation-plan.md#phase-3--wayland-serverとwaypipeのpoc最重要) / [全体設計](architecture.md)  
 **統合時の関連:** [Rust SSH](phase-2-rust-ssh.md) / [Rust描画](phase-1-rust-rendering.md)  

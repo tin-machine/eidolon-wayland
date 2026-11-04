@@ -1,30 +1,35 @@
 # Phase 6 — Rust coreのライフサイクル・性能・検証
 
+**実装時の正本（2026-11-04詳細化）:** [Sol向けタスク一覧](design/README.md)と[本フェーズの契約](design/phase-6.md)。以下の調査経緯を保ちつつ、thread・API・検証順は詳細設計を優先する。
+
 **状態:** 設計／調査反映、実機未検証（2026-11-03）  
 **上位計画:** [Phase 6](implementation-plan.md#phase-6--運用性性能耐障害性) / [全体設計](architecture.md)  
 **前提:** [Rust renderer](phase-4-rust-window-rendering.md) / [Rust WindowManager](phase-5-rust-window-manager.md)
 
 ## 所有者とスレッドを固定する
 
-Rustへ寄せる目的は言語数削減だけでなく、状態と破棄順序を一元化すること。採用案は次の三領域である。
+Rustへ寄せる目的は言語数削減だけでなく、状態と破棄順序を一元化すること。採用案は次の四領域である（2026-11-04詳細設計で更新）。
 
 | 実行領域 | 所有するもの | 境界 |
 | --- | --- | --- |
 | Kotlin SDK/UI thread | Activity、SDK Entity、Surface通知、XR session focus、権限UI | 小さなJNI command/event |
-| Rust compositor/render owner thread | Smithay state、WindowManager、EGL context、renderer、window buffer | bounded command queue |
+| Rust protocol/model owner thread | Smithay state、WindowManager、SHM copy、snapshot | bounded command queue |
+| Rust GL owner thread | EGL context、renderer、NativeWindow、texture | 上限付き所有済みsnapshotと完了通知 |
 | Rust Tokio runtime | russh、socket bridge、timeout、retry、I/O counters | 状態イベント・停止要求 |
 
 Smithay [`GlesRenderer`](https://docs.rs/smithay/0.7.0/smithay/backend/renderer/gles/struct.GlesRenderer.html)の`!Send`／`!Sync`と、[Android EGLのthread規約](https://source.android.com/docs/core/graphics/arch-egl-opengl)を前提にする。SSHのasync taskにGL所有者を移さず、UI threadから重いrendererを同期的に呼び出さない。
 
-この三領域は初期案である。[Phase 4のpresent待ち試験](phase-4-rust-window-rendering.md#スレッド所有権の重要な制約)で通信や停止要求が詰まる場合は、compositorとrender ownerを分離する。最初から「単一threadだから安全」と確定せず、Phase 1〜4で待ち時間と応答性を検証する。
+単一compositor/render ownerを先に試す旧案を置き換えた。protocolとGLを分離して制御の応答を保ち、[R03/I05](design/phase-4-5.md#i05)でGL自体の待ちと複数panelの影響を検証する。thread分離だけで描画や停止の成功を保証しない。
 
 ```mermaid
 flowchart LR
   K["Kotlin lifecycle adapter"] -->|"lifecycle / session focus / SurfaceLost"| S["Rust session supervisor"]
-  S <-->|"control / status"| R["Rust compositor + render owner"]
+  S <-->|"control / status"| R["Rust protocol/model owner"]
   S <-->|"connect / cancel / retry"| N["Tokio + russh bridge"]
   N <-->|"SSH loopback"| T["Termux sshd / Waypipe / apps"]
+  R -->|"owned snapshot"| G["Rust GL owner"]
   R --> M["redacted metrics / logcat"]
+  G --> M
   N --> M
 ```
 

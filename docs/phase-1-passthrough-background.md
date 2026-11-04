@@ -1,5 +1,7 @@
 # Phase 1補足 — 現実の映像を背景にするPassthrough
 
+**実装時の正本（2026-11-04詳細化）:** [Sol向けタスク一覧](design/README.md)と[本フェーズの契約](design/phase-4-5.md)。以下の調査経緯を保ちつつ、thread・API・検証順は詳細設計を優先する。
+
 **状態:** 最小Composeパネル＋通常passthroughをQuest 3で視認確認済み（2026-11-04）。Rustパネルとの統合は未実施<br>
 **上位計画:** [Phase 1](implementation-plan.md#phase-1--spatial-surfaceの描画スパイク) / [全体設計](architecture.md)  
 **前提:** [Phase 0](phase-0-development-environment.md) / [Rust描画spike](phase-1-rust-rendering.md)  

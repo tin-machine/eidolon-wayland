@@ -14,6 +14,8 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 **現在できること:** `scripts/build-android 2`でAPKをビルド・lintし、`scripts/quest-smoke`で指定Questへ更新・起動・ログ取得、`scripts/quest-termux`でTermuxへSSH接続できます。JDK 25・compileSdk 36・Spatial SDK 0.15.0を採用し、Quest API 34でBuild 1→2の表示・ボタン操作を確認しました。[再現手順](docs/phase-0-reproduction.md)と[失敗も含む実機記録](docs/phase-0-troubleshooting-20261104.md)を参照してください。
 
+**残フェーズの実装設計:** [Sol向け引継ぎ](docs/design/README.md)に31タスク、43検証、ファイル・API・状態遷移・失敗時の判断を整理しました。実装はB01から開始します。
+
 **次の到達点:** 既存パネルにRustから返したbuild情報を表示し、Gradle→Cargo→APK同梱を検証します。その後、Surface描画・APK内SSH・Smithay/Waypipeを独立して進めます。
 
 **開発時の接続（2026-11-04実測）:** USBで初回デバッグ承認と端末照合を済ませ、USB-Cを給電器へ回した状態でWi-Fi経由のAPK導入・更新・起動・ログ・Android画像取得とTermux SSHに成功しました。ADBの切断・再接続後もSSHを復旧できました。USB経由のAPK導入、長時間の残量維持、sleep／Quest再起動後の自動復旧は未検証です。
@@ -23,6 +25,8 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 **ローカル環境レビュー:** 既存SDK／NDK、JDK 25、有線LANの複数経路を[実測](docs/phase-0-development-environment.md#30-既存環境の確認結果2026-11-04)し、Quest API 34と新しいビルド用APIを区別しました。SSH手順、SHMの安全な読取り、描画待ちの影響、表示PoCと操作MVPの判定も修正しています。
 
 ## Docs
+
+- [残フェーズの詳細設計・Solへの引継ぎ](docs/design/README.md) — 31タスクの依存順、共通契約、検証条件、一次資料
 
 - [Phase 0の再現手順](docs/phase-0-reproduction.md) — 現在のbuild、Wi-Fi ADB、XR smoke、Termux SSH、復旧
 - [実機・トラブルシューティング記録](docs/phase-0-troubleshooting-20261104.md) — 失敗した試行、原因、修正、検証結果と生ログ索引
@@ -38,6 +42,6 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 - [Phase 5 — ウィンドウ管理](docs/phase-5-rust-window-manager.md) — Rustの状態モデル、Kotlin adapter、focus・配置・入力
 - [Phase 6 — 寿命と検証](docs/phase-6-rust-lifecycle-testing.md) — スレッド・所有権、再接続、性能・耐障害性
 
-開発を開始する際は、まず[実装計画のP0スパイク](docs/implementation-plan.md#最初に潰すべき不確実性スパイク)から進めてください。
+開発再開時は[詳細設計](docs/design/README.md)と[tasks.json](docs/design/tasks.json)を読み、B01から依存順に進めてください。従来のP0スパイクは今回の具体的なtaskへ分解しました。
 
 デバッグ方法・実機テスト・自動化の拡張は[専用文書](docs/development-automation-and-debugging.md)を参照してください。2026-11-03の調査案と、今回実装した最小smokeの範囲を区別しています。

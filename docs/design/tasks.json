@@ -1,0 +1,1350 @@
+{
+  "schema": 1,
+  "baseline_commit": "76baac2ca860aeb89bd51d61a23084e2fe88b285",
+  "target_implementer": "Codex Sol (世代固定なし)",
+  "status_note": "全taskは未実装。commandはavailable_afterで指定するtaskが入口を作成・拡張した後に使用する。placeholdersは実測した値を指定する。",
+  "checks": {
+    "design": {
+      "kind": "design",
+      "command": "python3 scripts/check-design",
+      "available_after": null,
+      "success": "参照・必須欄・依存DAG・check作成順が整合する"
+    },
+    "fmt": {
+      "kind": "host",
+      "command": "cargo fmt --all --check",
+      "available_after": "B01",
+      "success": "全workspaceのRust format差分なし"
+    },
+    "host-model": {
+      "kind": "host",
+      "command": "cargo test --locked -p eidolon-model",
+      "available_after": "B01",
+      "success": "spec記載の正常・境界・失敗caseが実行されpassする。0 testsは合格にしない"
+    },
+    "host-core": {
+      "kind": "host",
+      "command": "cargo test --locked -p eidolon-core",
+      "available_after": "B03",
+      "success": "spec記載の正常・境界・失敗caseが実行されpassする。0 testsは合格にしない"
+    },
+    "host-transport": {
+      "kind": "host",
+      "command": "cargo test --locked -p eidolon-transport",
+      "available_after": "T01",
+      "success": "spec記載の正常・境界・失敗caseが実行されpassする。0 testsは合格にしない"
+    },
+    "host-render": {
+      "kind": "host",
+      "command": "cargo test --locked -p eidolon-render",
+      "available_after": "R02",
+      "success": "spec記載の正常・境界・失敗caseが実行されpassする。0 testsは合格にしない"
+    },
+    "android": {
+      "kind": "android",
+      "command": "scripts/build-android \"$EIDOLON_VERSION_CODE\"",
+      "available_after": "B02",
+      "success": "nativeを含むassembleDebug/lintDebug成功、版が一致する"
+    },
+    "package": {
+      "kind": "android",
+      "command": "scripts/check-native-package --apk \"$EIDOLON_APK\"",
+      "available_after": "B02",
+      "success": "arm64/API/DT_NEEDED/so hash/版情報/重複なしを検査する"
+    },
+    "quest-native": {
+      "kind": "quest",
+      "command": "scripts/quest-smoke --serial \"$EIDOLON_QUEST_SERIAL\" --apk \"$EIDOLON_APK\" --require-focus",
+      "available_after": "B02",
+      "success": "native_readyとKotlin/Rust両版一致をB02で追加検査し、HMDでも表示を確認する"
+    },
+    "pair": {
+      "kind": "quest",
+      "command": "scripts/quest-pair --serial \"$EIDOLON_QUEST_SERIAL\"",
+      "available_after": "T01",
+      "success": "同一Questを識別し、公開情報のみでpairing。既存鍵を保持しpin不一致を拒否する"
+    },
+    "launcher": {
+      "kind": "host",
+      "command": "python3 -m unittest discover -s scripts/termux/tests -v",
+      "available_after": "T03",
+      "success": "専用fixtureのexec/quote/EOF/lease/cleanup/無関係process存続を検査する"
+    },
+    "native-deps": {
+      "kind": "android",
+      "command": "scripts/build-native-deps --abi arm64-v8a --api 34",
+      "available_after": "W01",
+      "success": "checksum照合済みsourceからBionic向け依存のみ生成する"
+    },
+    "host-ci": {
+      "kind": "host",
+      "command": "scripts/check-host --suite all",
+      "available_after": "C01",
+      "success": "存在する全suiteが実行されfmt/clippy/test成功。未実装suiteは明示する"
+    },
+    "ci": {
+      "kind": "ci",
+      "command": "manual: 対象commitのGitHub Actions check.ymlを確認",
+      "available_after": "C01",
+      "success": "host/Android job成功と実行commitが一致する"
+    },
+    "release": {
+      "kind": "android",
+      "command": "scripts/build-release \"$EIDOLON_VERSION_CODE\"",
+      "available_after": "C02",
+      "success": "release assemble/lint、debug入口不在、licenseと依存一覧一致、秘密の混入なし"
+    },
+    "release-smoke": {
+      "kind": "manual",
+      "command": "manual: docs/usage.mdの通常UIによるrelease受入れを実施",
+      "available_after": "C02",
+      "success": "ADB用診断入口を使わず新規pairing、表示、入力、切断、再起動をQuest/HMDで確認する"
+    },
+    "quest-runtime": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case runtime --timeout 120",
+      "available_after": "B03",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-helper": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case helper --timeout 120",
+      "available_after": "H01",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-surface": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case surface --timeout 600",
+      "available_after": "R01",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-pattern": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case pattern --timeout 180",
+      "available_after": "R02",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-surface-cycle": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case surface-cycle --timeout 1200",
+      "available_after": "R03",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-credentials": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case credentials --timeout 180",
+      "available_after": "T01",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-ssh": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case ssh --timeout 180",
+      "available_after": "T02",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-forward": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case forward --timeout 300",
+      "available_after": "T03",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-remote-cleanup": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case remote-cleanup --timeout 300",
+      "available_after": "T04",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-native-deps": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case native-deps --timeout 120",
+      "available_after": "W01",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-shm": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case shm --timeout 180",
+      "available_after": "W02",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-wayland-state": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case wayland-state --timeout 300",
+      "available_after": "W03",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-waypipe": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case waypipe --timeout 120",
+      "available_after": "W04",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-forwarded-shm": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case forwarded-shm --timeout 300",
+      "available_after": "W05",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-render": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case render --timeout 300",
+      "available_after": "D01",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-foot": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case foot --timeout 600",
+      "available_after": "D02",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-ray": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case ray --timeout 600",
+      "available_after": "I01",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-keyboard": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case keyboard --timeout 900",
+      "available_after": "I02",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-pointer": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case pointer --timeout 600",
+      "available_after": "I03",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-resize": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case resize --timeout 600",
+      "available_after": "I04",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-two-windows": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case two-windows --timeout 600",
+      "available_after": "I05",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-layout": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case layout --timeout 600",
+      "available_after": "I06",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-popup-clipboard": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case popup-clipboard --timeout 600",
+      "available_after": "I07",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-stop": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case stop --timeout 600",
+      "available_after": "L01",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-reconnect": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case reconnect --timeout 1200",
+      "available_after": "L02",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-power-lifecycle": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case power-lifecycle --timeout 7200",
+      "available_after": "L03",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "quest-soak": {
+      "kind": "quest",
+      "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case soak --timeout 18000",
+      "available_after": "L04",
+      "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    }
+  },
+  "tasks": [
+    {
+      "id": "B01",
+      "title": "Rust workspace・JNI版情報",
+      "status": "planned",
+      "depends_on": [],
+      "spec": "docs/design/phase-0-1.md#b01",
+      "files": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".gitignore",
+        "native/model/",
+        "native/android/",
+        "docs/progress.md"
+      ],
+      "steps": [
+        "modelとandroidの二crateから開始する",
+        "ID/上限とnativeBuildInfo契約を実装する",
+        "toolchain/lock/変更履歴を記録する"
+      ],
+      "checks": [
+        "design",
+        "fmt",
+        "host-model"
+      ],
+      "done_when": [
+        "必須fieldと版情報の決定性をhost testで確認",
+        "実機未実施をprogressへ明記"
+      ],
+      "needs_design_if": [
+        "JNI 0.22の入口を確認できない"
+      ]
+    },
+    {
+      "id": "B02",
+      "title": "Gradle→Cargo→APK同梱",
+      "status": "planned",
+      "depends_on": [
+        "B01"
+      ],
+      "spec": "docs/design/phase-0-1.md#b02",
+      "files": [
+        "scripts/build-native",
+        "scripts/build-android",
+        "scripts/check-native-package",
+        "scripts/quest-smoke",
+        "android/app/build.gradle.kts",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/NativeBridge.kt",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt"
+      ],
+      "steps": [
+        "profile別のnative生成taskをmergeへ依存させる",
+        "source/版の変更でsoとAPKが更新されることを検証する",
+        "Composeにnative版を表示し既存smokeを拡張する"
+      ],
+      "checks": [
+        "design",
+        "fmt",
+        "android",
+        "package",
+        "quest-native"
+      ],
+      "done_when": [
+        "Rust変更とAPK版だけの変更を各々検知する",
+        "Quest上でKotlin/native版一致、Composeとpassthrough継続"
+      ],
+      "needs_design_if": [
+        "既存toolchainとの互換問題が再発",
+        "誤ABIや古いso混入の原因が特定できない"
+      ]
+    },
+    {
+      "id": "B03",
+      "title": "runtime・非同期停止・診断",
+      "status": "planned",
+      "depends_on": [
+        "B02"
+      ],
+      "spec": "docs/design/phase-0-1.md#b03",
+      "files": [
+        "native/android/src/",
+        "native/core/src/",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/DiagnosticsStore.kt",
+        "android/app/src/debug/",
+        "scripts/quest-check"
+      ],
+      "steps": [
+        "handle registryとbounded queue/urgent flagsを作る",
+        "create/poll/snapshot/stop/destroyを実装する",
+        "debug固定caseとnonce付きartifact runnerを作る"
+      ],
+      "checks": [
+        "design",
+        "fmt",
+        "host-model",
+        "host-core",
+        "android",
+        "package",
+        "quest-runtime"
+      ],
+      "done_when": [
+        "10回のruntime生成停止で資源が残らない",
+        "古いhandle/queue満杯/二重停止/panicが規定結果へ収束"
+      ],
+      "needs_design_if": [
+        "panic/例外がJNI境界を越える",
+        "UI threadを停止待ちで塞ぐ"
+      ]
+    },
+    {
+      "id": "C01",
+      "title": "host・Android CI",
+      "status": "planned",
+      "depends_on": [
+        "B03"
+      ],
+      "spec": "docs/design/phase-6.md#c01",
+      "files": [
+        ".github/workflows/check.yml",
+        "scripts/check-host",
+        "scripts/check-native-package"
+      ],
+      "steps": [
+        "host/Android jobとsuite dispatcherを作る",
+        "依存/ABI/profile別cacheとchecksumを検証する",
+        "commit一致のCI結果を記録する"
+      ],
+      "checks": [
+        "design",
+        "fmt",
+        "host-model",
+        "host-core",
+        "android",
+        "package",
+        "host-ci",
+        "ci"
+      ],
+      "done_when": [
+        "host/Android CI成功",
+        "秘密/端末ログなし、Quest未実施を区別"
+      ],
+      "needs_design_if": [
+        "CI toolchainが実証済み版を供給できない"
+      ]
+    },
+    {
+      "id": "H01",
+      "title": "APK UIDのhelper exec",
+      "status": "planned",
+      "depends_on": [
+        "B03"
+      ],
+      "spec": "docs/design/phase-0-1.md#h01",
+      "files": [
+        "native/fixtures/helper-probe/",
+        "native/core/src/helper.rs",
+        "scripts/build-native",
+        "android/app/build.gradle.kts"
+      ],
+      "steps": [
+        "小さいPIE probeをnativeLibraryDirへ配置する",
+        "APK processから固定argvで起動しechoする",
+        "終了/reap/cleanupを10回観測する"
+      ],
+      "checks": [
+        "design",
+        "host-core",
+        "android",
+        "package",
+        "quest-helper"
+      ],
+      "done_when": [
+        "APK UIDで起動・echo・終了が成功",
+        "DT_NEEDEDとexec失敗の原因を判別できる"
+      ],
+      "needs_design_if": [
+        "APK UIDでのexec不可",
+        "Termux private pathに依存する"
+      ]
+    },
+    {
+      "id": "R01",
+      "title": "SDK Surface通知・所有権",
+      "status": "planned",
+      "depends_on": [
+        "B03"
+      ],
+      "spec": "docs/design/phase-0-1.md#r01",
+      "files": [
+        "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt",
+        "docs/decisions/sdk-surface-lifecycle.md"
+      ],
+      "steps": [
+        "native用panel registrationとEntity bindingを作る",
+        "callback thread/順序/世代を記録する",
+        "Menu/背景化/再生成の実機観測を契約に反映する"
+      ],
+      "checks": [
+        "design",
+        "android",
+        "package",
+        "quest-surface"
+      ],
+      "done_when": [
+        "10回の生成破棄とscene変化の通知を説明できる",
+        "SDK Surfaceを二重releaseせずlistenerを回収"
+      ],
+      "needs_design_if": [
+        "必要なAPIがAARに存在しない",
+        "callbackとEntityを安全に対応付けられない"
+      ]
+    },
+    {
+      "id": "R02",
+      "title": "Rust EGL pattern",
+      "status": "planned",
+      "depends_on": [
+        "R01"
+      ],
+      "spec": "docs/design/phase-0-1.md#r02",
+      "files": [
+        "native/render/",
+        "native/android/src/",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt"
+      ],
+      "steps": [
+        "GL owner上でEGL/GLES3を初期化する",
+        "opaque四隅patternを期限付き描画する",
+        "native寸法/GL情報/swap時間とHMD結果を保存する"
+      ],
+      "checks": [
+        "design",
+        "fmt",
+        "host-render",
+        "android",
+        "package",
+        "quest-pattern"
+      ],
+      "done_when": [
+        "Questでframe更新、正しい色/方向、現実背景を確認",
+        "非可視時に無制限render loopを回さない"
+      ],
+      "needs_design_if": [
+        "EGL native window adapterが成立しない"
+      ]
+    },
+    {
+      "id": "R03",
+      "title": "Surface世代・喪失・停止",
+      "status": "planned",
+      "depends_on": [
+        "R02"
+      ],
+      "spec": "docs/design/phase-0-1.md#r03",
+      "files": [
+        "native/render/src/",
+        "native/core/src/runtime.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt"
+      ],
+      "steps": [
+        "Attach/Detach/Lostをtupleで照合する",
+        "context loss/late frameを無害化する",
+        "20回再生成と停止応答・資源を計測する"
+      ],
+      "checks": [
+        "design",
+        "host-model",
+        "host-core",
+        "host-render",
+        "android",
+        "quest-surface-cycle"
+      ],
+      "done_when": [
+        "stale detachが現targetを壊さない",
+        "core状態取得と停止受付がGL待ちに依存しない"
+      ],
+      "needs_design_if": [
+        "同期swapが復帰せず通常停止不能"
+      ]
+    },
+    {
+      "id": "T01",
+      "title": "APK専用鍵・pin・pairing",
+      "status": "planned",
+      "depends_on": [
+        "B03"
+      ],
+      "spec": "docs/design/phase-2.md#t01",
+      "files": [
+        "native/transport/",
+        "native/android/src/",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/CredentialStore.kt",
+        "scripts/quest-pair"
+      ],
+      "steps": [
+        "専用Ed25519を生成しKeystore AES-GCMで保護する",
+        "秘密をJSON診断へ通さず短命bufferで渡す",
+        "ADBで公開情報だけをpairingしpin不一致を拒否する"
+      ],
+      "checks": [
+        "design",
+        "host-transport",
+        "android",
+        "pair",
+        "quest-credentials"
+      ],
+      "done_when": [
+        "PC秘密鍵を再利用しない",
+        "改変暗号文・未知/不一致pin・鍵喪失を処理できる"
+      ],
+      "needs_design_if": [
+        "鍵検証や秘密保護を維持できない"
+      ]
+    },
+    {
+      "id": "T02",
+      "title": "russh認証・exec",
+      "status": "planned",
+      "depends_on": [
+        "T01"
+      ],
+      "spec": "docs/design/phase-2.md#t02",
+      "files": [
+        "native/transport/src/session.rs",
+        "native/transport/src/exec.rs",
+        "native/transport/tests/"
+      ],
+      "steps": [
+        "標準featureでAndroidを先にbuildする",
+        "host key/auth/probeを状態・timeout別に実装する",
+        "stdout/stderrを上限付きで同時drainする"
+      ],
+      "checks": [
+        "design",
+        "host-transport",
+        "android",
+        "package",
+        "quest-ssh"
+      ],
+      "done_when": [
+        "APK→Termux公開鍵認証と固定probe成功",
+        "stderr洪水/timeout/exitを区別して回収"
+      ],
+      "needs_design_if": [
+        "暗号backendのAndroid互換が解決しない"
+      ]
+    },
+    {
+      "id": "T03",
+      "title": "StreamLocal echo",
+      "status": "planned",
+      "depends_on": [
+        "T02"
+      ],
+      "spec": "docs/design/phase-2.md#t03",
+      "files": [
+        "native/transport/src/forward.rs",
+        "native/transport/tests/",
+        "scripts/termux/eidolon-session.py",
+        "scripts/termux/tests/"
+      ],
+      "steps": [
+        "remote directoryとforward応答を確定する",
+        "path/session/channel上限を検査してacceptする",
+        "双方向copy/half-close/cancelを試す"
+      ],
+      "checks": [
+        "design",
+        "host-transport",
+        "launcher",
+        "android",
+        "quest-forward"
+      ],
+      "done_when": [
+        "8 MiBと同時4channelのbyte/hash一致",
+        "wrong pathと旧session拒否、片側EOFで他channel存続"
+      ],
+      "needs_design_if": [
+        "server設定でStreamLocalが拒否され理由不明",
+        "channel所有権がSDK/crate契約と不整合"
+      ]
+    },
+    {
+      "id": "T04",
+      "title": "remote launcher・lease・回収",
+      "status": "planned",
+      "depends_on": [
+        "T03"
+      ],
+      "spec": "docs/design/phase-2.md#t04",
+      "files": [
+        "scripts/termux/eidolon-session.py",
+        "scripts/termux/tests/",
+        "native/transport/src/launcher.rs"
+      ],
+      "steps": [
+        "固定mode/nonceだけを受けるlauncherを作る",
+        "heartbeat/EOF/leaseと所有processの終了を実装する",
+        "段階別失敗と二重cleanupを注入する"
+      ],
+      "checks": [
+        "design",
+        "host-transport",
+        "launcher",
+        "android",
+        "quest-remote-cleanup"
+      ],
+      "done_when": [
+        "自分のhelper/子とsocketだけを回収",
+        "切断後の未確認remote回収を成功扱いしない"
+      ],
+      "needs_design_if": [
+        "owned processを識別して回収できない"
+      ]
+    },
+    {
+      "id": "W01",
+      "title": "Smithay・native依存のAndroid build",
+      "status": "planned",
+      "depends_on": [
+        "B03"
+      ],
+      "spec": "docs/design/phase-3.md#w01",
+      "files": [
+        "native/core/src/compositor/",
+        "native/deps.lock.json",
+        "native/patches/",
+        "scripts/build-native-deps",
+        "android/app/src/main/assets/keymaps/"
+      ],
+      "steps": [
+        "Smithay最小featureとxkbcommonをcross buildする",
+        "依存版/hash/licenseとUS/JIS keymap生成元を固定する",
+        "socket/fd/memfd/keymapをAPK UIDで試す"
+      ],
+      "checks": [
+        "design",
+        "host-core",
+        "android",
+        "package",
+        "native-deps",
+        "quest-native-deps"
+      ],
+      "done_when": [
+        "host ELF/DRM系依存が入らない",
+        "API34で依存をロードし基本primitiveを実行できる"
+      ],
+      "needs_design_if": [
+        "NDK/Bionic向け依存移植に設計変更が必要"
+      ]
+    },
+    {
+      "id": "W02",
+      "title": "Wayland protocol・SHM fixture",
+      "status": "planned",
+      "depends_on": [
+        "W01",
+        "H01"
+      ],
+      "spec": "docs/design/phase-3.md#w02",
+      "files": [
+        "native/core/src/compositor/protocol.rs",
+        "native/core/src/compositor/shm.rs",
+        "native/fixtures/shm-client/"
+      ],
+      "steps": [
+        "foot必須globals/output/seatとdata-device v3の空selection・取消を実装する",
+        "initial configure/ack/commitのfixtureを作る",
+        "安全なSHM copyとreleaseを100frame検証する"
+      ],
+      "checks": [
+        "design",
+        "host-core",
+        "android",
+        "package",
+        "quest-shm"
+      ],
+      "done_when": [
+        "host/Quest APK UIDで100frameとhashが一致",
+        "不正寸法/stride/offsetを拒否し資源回収",
+        "footの必須globalが揃い、data-deviceを名前だけ広告していない"
+      ],
+      "needs_design_if": [
+        "SIGBUS保護がARTと衝突する",
+        "共有memoryの安全な読取りが成立しない"
+      ]
+    },
+    {
+      "id": "W03",
+      "title": "Wayland寿命・immutable snapshot",
+      "status": "planned",
+      "depends_on": [
+        "W02"
+      ],
+      "spec": "docs/design/phase-3.md#w03",
+      "files": [
+        "native/core/src/compositor/snapshot.rs",
+        "native/core/src/compositor/protocol.rs",
+        "native/model/src/state.rs",
+        "native/fixtures/shm-client/"
+      ],
+      "steps": [
+        "map/unmap/remapと同期surface treeをモデル化する",
+        "owned RGBA snapshotとcache予算を実装する",
+        "frame callbackとrelease/presentを分離する"
+      ],
+      "checks": [
+        "design",
+        "host-model",
+        "host-core",
+        "android",
+        "quest-wayland-state"
+      ],
+      "done_when": [
+        "世代/scale/transform/popupとbuffer再利用が正しい",
+        "truncate fixtureでもAPKは生存、対象clientだけ失敗"
+      ],
+      "needs_design_if": [
+        "resource上限をprotocol処理より前に守れない"
+      ]
+    },
+    {
+      "id": "W04",
+      "title": "APK Waypipe build・起動",
+      "status": "planned",
+      "depends_on": [
+        "H01",
+        "W03"
+      ],
+      "spec": "docs/design/phase-3.md#w04",
+      "files": [
+        "native/deps.lock.json",
+        "native/patches/",
+        "scripts/build-native-deps",
+        "native/core/src/helper.rs",
+        "THIRD_PARTY_NOTICES.md"
+      ],
+      "steps": [
+        "0.11.3 C版と依存をchecksum付きでbuildする",
+        "nativeLibraryDirから固定argvで起動する",
+        "版/features/DT_NEEDEDと終了を診断する"
+      ],
+      "checks": [
+        "design",
+        "native-deps",
+        "android",
+        "package",
+        "quest-waypipe"
+      ],
+      "done_when": [
+        "Termux prefixへの依存なし",
+        "APK UIDで起動/終了しlicense情報を保存"
+      ],
+      "needs_design_if": [
+        "spawn/loader/exec制約で上流helperを使用できない"
+      ]
+    },
+    {
+      "id": "W05",
+      "title": "WaypipeをSSHへ統合",
+      "status": "planned",
+      "depends_on": [
+        "T04",
+        "W04"
+      ],
+      "spec": "docs/design/phase-3.md#w05",
+      "files": [
+        "native/core/src/session.rs",
+        "native/transport/src/launcher.rs",
+        "scripts/termux/eidolon-session.py",
+        "native/fixtures/shm-client/"
+      ],
+      "steps": [
+        "local w/pとremote p/wを区別して起動する",
+        "forward成功後にremote fixtureを起動する",
+        "commit/hash/EOF/cleanupを通しfootへ進む準備をする"
+      ],
+      "checks": [
+        "design",
+        "host-core",
+        "host-transport",
+        "launcher",
+        "android",
+        "quest-forwarded-shm"
+      ],
+      "done_when": [
+        "Termux→Waypipe→APKで既知pixelとprotocolが一致",
+        "失敗時に自分のhelper/socket/channelを回収"
+      ],
+      "needs_design_if": [
+        "fd/SHM再構成やWaypipe版の不整合"
+      ]
+    },
+    {
+      "id": "D01",
+      "title": "GlesRendererへowned画像を入力",
+      "status": "planned",
+      "depends_on": [
+        "R03",
+        "W03"
+      ],
+      "spec": "docs/design/phase-4-5.md#d01",
+      "files": [
+        "native/render/src/compositor.rs",
+        "native/render/src/egl.rs",
+        "native/core/src/compositor/snapshot.rs"
+      ],
+      "steps": [
+        "Android EGLとSmithay rendererを同一ownerで結ぶ",
+        "ImportMemとtexture cacheでsurface treeを描く",
+        "orientation/alpha/scale/transformをreadbackする"
+      ],
+      "checks": [
+        "design",
+        "host-render",
+        "host-core",
+        "android",
+        "package",
+        "quest-render"
+      ],
+      "done_when": [
+        "既知pixelとalphaが期待通り",
+        "protocol object/共有pointerをGL threadへ渡さない"
+      ],
+      "needs_design_if": [
+        "Android EGL adapterが成立しない",
+        "RGBA/Fourccを正しく整合できない"
+      ]
+    },
+    {
+      "id": "D02",
+      "title": "一枚のfoot表示PoC",
+      "status": "planned",
+      "depends_on": [
+        "D01",
+        "W05"
+      ],
+      "spec": "docs/design/phase-4-5.md#d02",
+      "files": [
+        "native/core/src/session.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt"
+      ],
+      "steps": [
+        "mapでpanel生成しattach時に最新snapshotを描く",
+        "unmap/destroy時に入力とtargetを回収する",
+        "foot文字とpassthroughをHMDで確認する"
+      ],
+      "checks": [
+        "design",
+        "host-core",
+        "android",
+        "quest-foot"
+      ],
+      "done_when": [
+        "実footの更新がXR panelに表示される",
+        "表示PoCと物理入力未確認を区別して記録"
+      ],
+      "needs_design_if": [
+        "SDK panelとWayland windowを安定して結べない"
+      ]
+    },
+    {
+      "id": "I01",
+      "title": "ray座標・共通変換",
+      "status": "planned",
+      "depends_on": [
+        "D02"
+      ],
+      "spec": "docs/design/phase-4-5.md#i01",
+      "files": [
+        "native/model/src/input.rs",
+        "native/model/src/layout.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/InputAdapter.kt"
+      ],
+      "steps": [
+        "SDK UV/button/threadを実測する",
+        "UV→letterbox→geometry→surfaceの変換を集約する",
+        "corner/NaN/範囲外/scale/transformを検査する"
+      ],
+      "checks": [
+        "design",
+        "host-model",
+        "android",
+        "quest-ray"
+      ],
+      "done_when": [
+        "描画とhit testが同じ変換を使う",
+        "panel外を別windowの端へ誤配送しない"
+      ],
+      "needs_design_if": [
+        "SDKから必要なhit/入力値を取得できない"
+      ]
+    },
+    {
+      "id": "I02",
+      "title": "物理keyboard・keymap",
+      "status": "planned",
+      "depends_on": [
+        "I01",
+        "W01"
+      ],
+      "spec": "docs/design/phase-4-5.md#i02",
+      "files": [
+        "native/model/src/input.rs",
+        "native/core/src/compositor/protocol.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/InputAdapter.kt",
+        "android/app/src/main/assets/keymaps/"
+      ],
+      "steps": [
+        "scanCode/evdev/fallback表とUS/JIS mapを作る",
+        "wire keycodeとXKB offsetを区別する",
+        "物理keyboardで修飾/記号/repeat/focusを確認する"
+      ],
+      "checks": [
+        "design",
+        "host-model",
+        "host-core",
+        "android",
+        "quest-keyboard"
+      ],
+      "done_when": [
+        "XKBの+8を二重適用しない",
+        "物理Ctrl/Alt/Tab/Esc/記号/repeatが規定通り"
+      ],
+      "needs_design_if": [
+        "Androidから物理入力の必要情報を取得できない"
+      ]
+    },
+    {
+      "id": "I03",
+      "title": "pointer・focus・capture解除",
+      "status": "planned",
+      "depends_on": [
+        "I02"
+      ],
+      "spec": "docs/design/phase-4-5.md#i03",
+      "files": [
+        "native/model/src/input.rs",
+        "native/core/src/compositor/protocol.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/InputAdapter.kt"
+      ],
+      "steps": [
+        "hover/keyboard focus/captureを分ける",
+        "button/scrollとurgent resetを実装する",
+        "Menu/focus喪失/queue満杯で押下を解消する"
+      ],
+      "checks": [
+        "design",
+        "host-model",
+        "host-core",
+        "android",
+        "quest-pointer"
+      ],
+      "done_when": [
+        "key/button upを落とさず押下が残らない",
+        "実controller操作とWayland focusが一致"
+      ],
+      "needs_design_if": [
+        "SDK入力消費とlistener規約が両立しない"
+      ]
+    },
+    {
+      "id": "I04",
+      "title": "論理resizeと物理拡大",
+      "status": "planned",
+      "depends_on": [
+        "I03"
+      ],
+      "spec": "docs/design/phase-4-5.md#i04",
+      "files": [
+        "native/model/src/layout.rs",
+        "native/core/src/compositor/protocol.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt"
+      ],
+      "steps": [
+        "request/configure/commit/producer/physical寸法を分ける",
+        "timeout時は古い画像を維持して原因を表示する",
+        "連続resize/遅延ack/serial wrapを検査する"
+      ],
+      "checks": [
+        "design",
+        "host-model",
+        "host-core",
+        "android",
+        "quest-resize"
+      ],
+      "done_when": [
+        "ackだけで新寸法へ切替しない",
+        "物理拡大だけではWayland resizeを発行しない"
+      ],
+      "needs_design_if": [
+        "configureと画像世代の対応が不明"
+      ]
+    },
+    {
+      "id": "I05",
+      "title": "二枚の独立panel",
+      "status": "planned",
+      "depends_on": [
+        "I04"
+      ],
+      "spec": "docs/design/phase-4-5.md#i05",
+      "files": [
+        "native/model/src/state.rs",
+        "native/render/src/surface.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt"
+      ],
+      "steps": [
+        "一registrationをEntityごとにbindする",
+        "表示2枚/論理8枚の上限と第三window一覧を作る",
+        "focus/close/片側loss/表示切替を検査する"
+      ],
+      "checks": [
+        "design",
+        "host-model",
+        "host-render",
+        "android",
+        "quest-two-windows"
+      ],
+      "done_when": [
+        "二枚の入力/画像/世代が混線しない",
+        "片側lossでもcore/他panel処理が継続"
+      ],
+      "needs_design_if": [
+        "SDK layer不足",
+        "片側swap待ちが他方の表示を止める"
+      ]
+    },
+    {
+      "id": "I06",
+      "title": "配置・背景の保存と適用ack",
+      "status": "planned",
+      "depends_on": [
+        "I05"
+      ],
+      "spec": "docs/design/phase-4-5.md#i06",
+      "files": [
+        "native/model/src/layout.rs",
+        "native/core/src/session.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt"
+      ],
+      "steps": [
+        "希望値とSDK適用値をackで分ける",
+        "schema付きatomic保存とdefault復旧を作る",
+        "配置/背景切替/scene再生成を検査する"
+      ],
+      "checks": [
+        "design",
+        "host-model",
+        "host-core",
+        "android",
+        "quest-layout"
+      ],
+      "done_when": [
+        "WindowIdを再起動後の保存IDへ使わない",
+        "背景切替でSSH/Waylandを再起動しない"
+      ],
+      "needs_design_if": [
+        "SDK pose適用を確認できない"
+      ]
+    },
+    {
+      "id": "I07",
+      "title": "popup・限定clipboard",
+      "status": "planned",
+      "depends_on": [
+        "I06"
+      ],
+      "spec": "docs/design/phase-4-5.md#i07",
+      "files": [
+        "native/core/src/compositor/protocol.rs",
+        "native/model/src/input.rs",
+        "native/fixtures/shm-client/"
+      ],
+      "steps": [
+        "parent treeとpopup/grab/serialを整合させる",
+        "W02のdata-device基盤をsession内UTF-8 textのみ1 MiB/5秒制限の実転送へ拡張する",
+        "閉鎖/取消/大容量/無効UTF-8を検査する"
+      ],
+      "checks": [
+        "design",
+        "host-model",
+        "host-core",
+        "android",
+        "quest-popup-clipboard"
+      ],
+      "done_when": [
+        "popupが他window入力を奪わない",
+        "転送失敗時FD回収、clipboard本文をログにしない"
+      ],
+      "needs_design_if": [
+        "親外popup対応に別panel方式が必須になる"
+      ]
+    },
+    {
+      "id": "L01",
+      "title": "停止順序・deadline・資源回収",
+      "status": "planned",
+      "depends_on": [
+        "I04",
+        "T04",
+        "R03"
+      ],
+      "spec": "docs/design/phase-6.md#l01",
+      "files": [
+        "native/core/src/runtime.rs",
+        "native/core/src/session.rs",
+        "native/transport/src/session.rs",
+        "native/render/src/surface.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt"
+      ],
+      "steps": [
+        "所有関係とdeadline付き停止を統合する",
+        "missing/late/duplicate ackをfakeで検査する",
+        "正常停止20回でowned資源を照合する"
+      ],
+      "checks": [
+        "design",
+        "host-model",
+        "host-core",
+        "host-transport",
+        "host-render",
+        "android",
+        "quest-stop"
+      ],
+      "done_when": [
+        "正常停止10秒以内で全owner ack",
+        "GL停滞を握り潰さずruntime再利用を拒否"
+      ],
+      "needs_design_if": [
+        "同期GL停止不能",
+        "remote所有資源を識別できない"
+      ]
+    },
+    {
+      "id": "L02",
+      "title": "障害復旧・新session",
+      "status": "planned",
+      "depends_on": [
+        "L01"
+      ],
+      "spec": "docs/design/phase-6.md#l02",
+      "files": [
+        "native/core/src/session.rs",
+        "native/transport/src/session.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt"
+      ],
+      "steps": [
+        "障害行列を原因別状態へ写像する",
+        "connect連打/旧event/ADB断を処理する",
+        "20回の障害から新footへ復旧する"
+      ],
+      "checks": [
+        "design",
+        "host-model",
+        "host-core",
+        "host-transport",
+        "android",
+        "quest-reconnect"
+      ],
+      "done_when": [
+        "旧sessionを誤って復元済みと扱わない",
+        "key mismatchを自動承認せず二重起動なし"
+      ],
+      "needs_design_if": [
+        "旧資源と新sessionを分離できない"
+      ]
+    },
+    {
+      "id": "L03",
+      "title": "給電・sleep・reboot手順",
+      "status": "planned",
+      "depends_on": [
+        "L02"
+      ],
+      "spec": "docs/design/phase-6.md#l03",
+      "files": [
+        "scripts/quest-check",
+        "docs/progress.md",
+        "docs/phase-0-reproduction.md"
+      ],
+      "steps": [
+        "Menu/sleep/Activity/rebootを別caseとして記録する",
+        "30分給電でbattery/温度/性能を時系列採取する",
+        "手動復旧を含む再現手順を更新する"
+      ],
+      "checks": [
+        "design",
+        "android",
+        "quest-power-lifecycle"
+      ],
+      "done_when": [
+        "充電/残量基準と復帰手順を満たす",
+        "観測欠落とsession存続を混同しない"
+      ],
+      "needs_design_if": [
+        "電源条件で残量維持できない",
+        "OS終了後の復旧が未定義"
+      ]
+    },
+    {
+      "id": "L04",
+      "title": "二枚耐久・100回再接続",
+      "status": "planned",
+      "depends_on": [
+        "L03",
+        "I07"
+      ],
+      "spec": "docs/design/phase-6.md#l04",
+      "files": [
+        "scripts/quest-check",
+        "native/fixtures/",
+        "docs/progress.md",
+        "docs/benchmarks.md"
+      ],
+      "steps": [
+        "二枚2時間と静止/scroll/fixture負荷を分ける",
+        "100回再接続でFD/所有資源/PSSを測る",
+        "性能基準とHMD操作を判定しbottleneckを記録する"
+      ],
+      "checks": [
+        "design",
+        "host-core",
+        "host-transport",
+        "host-render",
+        "android",
+        "quest-soak"
+      ],
+      "done_when": [
+        "phase-6の資源/遅延基準を満たす",
+        "未達を隠さず回帰可能な測定手順とデータを保存"
+      ],
+      "needs_design_if": [
+        "資源増加/停止不能/性能未達に構造変更が必要"
+      ]
+    },
+    {
+      "id": "C02",
+      "title": "release・公開鍵pairing・利用手順",
+      "status": "planned",
+      "depends_on": [
+        "L04",
+        "C01"
+      ],
+      "spec": "docs/design/phase-6.md#c02",
+      "files": [
+        "scripts/build-release",
+        "scripts/termux/eidolon-pair",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/CredentialStore.kt",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt",
+        "android/app/build.gradle.kts",
+        "android/app/src/main/AndroidManifest.xml",
+        "THIRD_PARTY_NOTICES.md",
+        "docs/usage.md"
+      ],
+      "steps": [
+        "debug入口/fixtureを除いたreleaseを生成する",
+        "公開鍵交換とpin照合UIを仕上げる",
+        "license/署名保管/通常UIの実機smokeと手順を確認する"
+      ],
+      "checks": [
+        "design",
+        "host-ci",
+        "android",
+        "package",
+        "release",
+        "release-smoke"
+      ],
+      "done_when": [
+        "releaseがdebug操作へ依存しない",
+        "新規設定から二枚操作・復旧まで再現できる"
+      ],
+      "needs_design_if": [
+        "releaseでhelper/SIGBUS/SDK制約が異なる",
+        "配布依存のlicense条件を満たせない"
+      ]
+    }
+  ]
+}

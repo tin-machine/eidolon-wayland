@@ -1,5 +1,7 @@
 # Phase 4 — RustでWaylandの各ウィンドウをXR Surfaceへ描画
 
+**実装時の正本（2026-11-04詳細化）:** [Sol向けタスク一覧](design/README.md)と[本フェーズの契約](design/phase-4-5.md)。以下の調査経緯を保ちつつ、thread・API・検証順は詳細設計を優先する。
+
 **状態:** 設計／既存API調査、実機未検証（2026-11-01）  
 **上位計画:** [Phase 4](implementation-plan.md#phase-4--wayland-windowをxrパネルに描画mvp) / [全体設計](architecture.md)  
 **前提:** [Phase 1](phase-1-rust-rendering.md)・[Phase 3](phase-3-rust-compositor-waypipe.md)  
@@ -7,7 +9,7 @@
 
 ## 結論：描画エンジンもRust中心にする
 
-初期はPhase 1の`khronos-egl + glow`でSurfaceへの出力を証明する。Wayland統合後はSmithayの[`GlesRenderer`](https://docs.rs/smithay/0.7.0/smithay/backend/renderer/gles/struct.GlesRenderer.html)を第一候補にする。`ImportMemWl`、`ImportMem`、`Bind<EGLSurface>`などがあり、SHM bufferのimportと合成処理を既存実装へ寄せられる。
+初期はPhase 1の`khronos-egl + glow`でSurfaceへの出力を証明する。Wayland統合後はSmithayの[`GlesRenderer`](https://docs.rs/smithay/0.7.0/smithay/backend/renderer/gles/struct.GlesRenderer.html)を第一候補にする。`ImportMem`で所有済みRGBAを入力し、合成処理を既存実装へ寄せる。`ImportMemWl`は今回のthread境界では使用しない。
 
 ただし`GlesRenderer`を選ぶだけではAndroid出力は完成しない。Android `ANativeWindow`をEGLへ渡すadapterと、SDK Surfaceの寿命管理が必要。[SmithayのEGLNativeSurface](https://smithay.github.io/smithay/smithay/backend/egl/native/trait.EGLNativeSurface.html)と[Local DesktopのAndroidNativeSurface実装](https://github.com/localdesktop/localdesktop.github.io/blob/fdd0275d6ec7840277def8ccd3ba3ed463900ca1/src/android/backend/wayland/winit_backend.rs)が具体的な調査対象である。
 
@@ -17,7 +19,8 @@
 flowchart LR
   F["Termux: foot / wl_shm commit"] --> W["Waypipe + localhost SSH"]
   subgraph R["Eidolon Rust core"]
-    C["Smithay surface tree"] --> I["SHM import / GlesRenderer"]
+    C["protocol owner: Smithay surface tree"] --> S["保護下copy / owned RGBA snapshot"]
+    S --> I["GL owner: ImportMem / GlesRenderer"]
     I --> E["Android EGLSurface adapter"]
   end
   W --> C
@@ -40,11 +43,11 @@ Kotlinはpanel entityとSurfaceの生成・更新通知を担当する。画素�
 
 ## スレッド・所有権の重要な制約
 
-確認した`GlesRenderer`は`!Send`／`!Sync`であり、contextが他スレッドでcurrentになっている場合は安全に使用できない。[APIのSafety記述](https://docs.rs/smithay/0.7.0/smithay/backend/renderer/gles/struct.GlesRenderer.html)に従い、**compositor stateとrendererを専用の一つのowner threadに置く**案を先に評価する。Tokio SSH runtimeとはbounded queueで連携する。
+確認した`GlesRenderer`は`!Send`／`!Sync`であり、contextが他スレッドでcurrentになっている場合は安全に使用できない。[APIのSafety記述](https://docs.rs/smithay/0.7.0/smithay/backend/renderer/gles/struct.GlesRenderer.html)に従い、GL ownerが作成から解放まで保持する。2026-11-04詳細設計では、protocol/model ownerとGL ownerを最初から分離する。
 
-一つのEGL contextから複数EGLSurfaceへ順番に描画する方式をMVPの候補にする。Surfaceのproducerは一つだけとし、SDK/別rendererとの二重接続を避ける。[Android公式EGL仕様](https://source.android.com/docs/core/graphics/arch-egl-opengl)を参照。
+protocol側で保護下のSHM copyを行い、上限付きimmutable snapshotをGL側へ渡す。`ImportMem`で所有済みRGBAをuploadし、Wayland objectや共有pointerをthread間に持ち出さない。Tokio SSH runtimeとは別のbounded queueで連携する。[copyとreleaseの契約](design/phase-3.md#shm)を参照。
 
-ただし単一owner案は、**present待ちでWayland dispatch・入力・停止処理まで止まらないことを条件**にする。[Androidの描画loop資料](https://developer.android.com/games/develop/gameloops)はBufferQueueが満杯の場合に`eglSwapBuffers()`が待つことを説明している。Phase 1から非表示／Surface喪失時の待ちを測り、Phase 4では片方のパネルの停止中ももう片方のprotocol処理が進むことを試す。Rust側のtimeoutは同期GL呼出しを安全に中断できる仕組みではない。詰まる場合は、compositorとGL ownerを分け、上限付きの所有済み画像／描画情報と完了通知で連携する。`GlesRenderer`自体をthread間で移動させない。
+GL ownerでは一つのcontextから複数EGLSurfaceへ順番に描画する候補を検証する。Surfaceのproducerは一つだけにする。[Androidの描画loop資料](https://developer.android.com/games/develop/gameloops)が説明する`eglSwapBuffers`待ちは、thread分離だけでは解消しない。片方のpanel喪失時に他方の描画が止まるならI05で再設計する。同期GL呼出しをtimeoutで安全に強制終了できるとは仮定しない。
 
 ## Window単位の描画モデル
 

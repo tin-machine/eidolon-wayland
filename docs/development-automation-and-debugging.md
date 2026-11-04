@@ -1,5 +1,7 @@
 # Eidolon Wayland — 開発自動化・デバッグの調査と実装方針
 
+**実装時の正本（2026-11-04詳細化）:** [Sol向けタスク一覧](design/README.md)と[本フェーズの契約](design/phase-6.md)。以下の調査経緯を保ちつつ、thread・API・検証順は詳細設計を優先する。
+
 **状態:** 最小build・smoke・Wi-Fi・Termux SSHスクリプトを実機確認済み。拡張自動化は調査段階<br>
 **調査整理日:** 2026-11-04（host環境・接続手順を追加レビュー）<br>
 **対象:** Ubuntu 26.04上のCodex CLI・Gradle・Cargoから、開発用Quest 3を操作する環境  

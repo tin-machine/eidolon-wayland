@@ -1,5 +1,7 @@
 # Phase 0 — Ubuntu開発PC・Quest 3・Termuxの開発環境
 
+**実装時の正本（2026-11-04詳細化）:** [Sol向けタスク一覧](design/README.md)と[本フェーズの契約](design/phase-0-1.md)。以下の調査経緯を保ちつつ、thread・API・検証順は詳細設計を優先する。
+
 **Status:** 最小APKのbuild/lint・Quest XR・給電＋Wi-Fi更新・Termux SSHを実機確認済み。Rust/JNI・長時間運転は未実施（2026-11-04）<br>
 **上位計画:** [implementation-plan.md — Phase 0](implementation-plan.md#phase-0--レポジトリと開発環境)  
 **全体設計:** [architecture.md](architecture.md)

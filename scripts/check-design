@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""実装前のtask契約・依存・文書参照を検査する。実機成功は判定しない。"""
+
+import json
+from pathlib import Path, PurePosixPath
+import re
+import sys
+from urllib.parse import unquote, urlsplit
+
+ROOT = Path(__file__).resolve().parents[1]
+DESIGN = ROOT / "docs/design"
+errors = []
+
+
+def require(condition, message):
+    if not condition:
+        errors.append(message)
+
+
+def repo_path(value):
+    path = PurePosixPath(value)
+    return bool(value) and not path.is_absolute() and ".." not in path.parts
+
+
+def explicit_anchor(path, anchor):
+    return re.search(r'<a\s+id=["\']' + re.escape(anchor) + r'["\']\s*>', path.read_text())
+
+
+def main():
+    data = json.loads((DESIGN / "tasks.json").read_text())
+    require(data.get("schema") == 1, "未対応のschema")
+    require(re.fullmatch(r"[0-9a-f]{40}", data.get("baseline_commit", "")), "baseline commitが不正")
+    tasks, checks = data["tasks"], data["checks"]
+    by_id = {task["id"]: task for task in tasks}
+    require(len(by_id) == len(tasks), "task IDが重複")
+    order = {task["id"]: i for i, task in enumerate(tasks)}
+    required = ("title", "spec", "files", "steps", "checks", "done_when", "needs_design_if")
+    for task in tasks:
+        name = task["id"]
+        require(re.fullmatch(r"[A-Z][0-9]{2}", name), f"不正task ID: {name}")
+        for field in required:
+            require(bool(task.get(field)), f"{name}: {field}が空")
+        require(task.get("status") in {"planned", "in_progress", "blocked", "done"}, f"{name}: statusが不正")
+        require(len(task["depends_on"]) == len(set(task["depends_on"])), f"{name}: 依存が重複")
+        for dependency in task["depends_on"]:
+            require(dependency in by_id, f"{name}: 未知の依存{dependency}")
+            require(order.get(dependency, len(tasks)) < order[name], f"{name}: 依存{dependency}が一覧で先行していない")
+        spec, separator, anchor = task["spec"].partition("#")
+        require(repo_path(spec) and (ROOT / spec).is_file(), f"{name}: specが存在しない")
+        if (ROOT / spec).is_file():
+            require(separator and anchor == name.lower() and explicit_anchor(ROOT / spec, anchor), f"{name}: spec anchorが不一致")
+        for path in task["files"]:
+            require(repo_path(path), f"{name}: filesはrepo相対pathにする: {path}")
+        for key in task["checks"]:
+            require(key in checks, f"{name}: 未知check {key}")
+
+    visiting, ancestors = set(), {}
+
+    def visit(name):
+        if name in visiting:
+            raise ValueError(f"task依存の循環: {name}")
+        if name in ancestors:
+            return ancestors[name]
+        visiting.add(name)
+        found = set()
+        for dependency in by_id[name]["depends_on"]:
+            if dependency in by_id:
+                found |= {dependency} | visit(dependency)
+        visiting.remove(name)
+        ancestors[name] = found
+        return found
+
+    for name in by_id:
+        visit(name)
+    used_checks = set()
+    for task in tasks:
+        for key in task["checks"]:
+            used_checks.add(key)
+            if key not in checks:
+                continue
+            creator = checks[key]["available_after"]
+            require(creator is None or creator in ancestors[task["id"]] | {task["id"]}, f"{task['id']}: check {key}の作成task {creator}が未到達")
+    for key, check in checks.items():
+        require(check.get("kind") in {"design", "host", "android", "quest", "manual", "ci"}, f"{key}: kindが不正")
+        require(bool(check.get("command")) and bool(check.get("success")), f"{key}: command/successが空")
+        require(check["available_after"] is None or check["available_after"] in by_id, f"{key}: 未知の作成task")
+        require(key in used_checks, f"{key}: どのtaskからも未参照")
+
+    # 本directory内のMarkdown相対リンクを検査。task節は明示anchorを必須にする。
+    for path in sorted(DESIGN.glob("*.md")):
+        for link in re.findall(r"\[[^\]\n]+\]\(([^\s)]+)\)", path.read_text()):
+            parsed = urlsplit(link)
+            if parsed.scheme or parsed.netloc:
+                continue
+            target = (path.parent / unquote(parsed.path)).resolve() if parsed.path else path
+            require(target.is_relative_to(ROOT) and target.exists(), f"{path.name}: リンク切れ {link}")
+            if target.is_file() and target.parent == DESIGN and parsed.fragment:
+                require(explicit_anchor(target, unquote(parsed.fragment)), f"{path.name}: anchorなし {link}")
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        return 1
+    print(f"設計検査: {len(tasks)} tasks / {len(checks)} checks / 依存DAG・参照 OK（実装・実機判定なし）")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        print(f"設計データを検査できません: {error}", file=sys.stderr)
+        sys.exit(1)

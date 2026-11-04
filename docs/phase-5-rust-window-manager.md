@@ -1,5 +1,7 @@
 # Phase 5 — Rust中心の空間ウィンドウ管理と入力
 
+**実装時の正本（2026-11-04詳細化）:** [Sol向けタスク一覧](design/README.md)と[本フェーズの契約](design/phase-4-5.md)。以下の調査経緯を保ちつつ、thread・API・検証順は詳細設計を優先する。
+
 **状態:** 採用方針／設計案。実装・実機検証前（2026-11-01）  
 **上位計画:** [Phase 5](implementation-plan.md#phase-5--xr入力と複数ウィンドウ) / [全体設計](architecture.md)  
 **前提:** [Phase 4](phase-4-rust-window-rendering.md) / **後続:** [Phase 6](phase-6-rust-lifecycle-testing.md)

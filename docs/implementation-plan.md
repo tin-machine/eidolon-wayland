@@ -12,6 +12,10 @@ JDK 25・compileSdk 36・Kotlin 2.4.21・Spatial SDK 0.15.0でassemble/lintが�
 
 USB承認・OS照合後、最初のAPK導入からWi-Fiを使った。USB APK基準試験を完了したとは扱わない。Meta Gradle pluginのKotlin互換エラーは、component生成・scene exportに依存しない最小構成でpluginを外して回避した。SDK本体は使用する。Rust JNI・APK内SSH・Wayland・CI・長時間給電試験は未実施。以下の日付付きレビュー節は、その時点の調査記録として残す。
 
+## 残フェーズをSolへ引き継ぐ詳細設計（2026-11-04）
+
+[詳細設計の入口](design/README.md)から31タスクを依存順に進める。[共通契約](design/contracts.md)でJNI・thread・ID・上限、[tasks.json](design/tasks.json)で変更先・手順・43検証・完了条件を固定した。単一compositor/render owner案は置き換え、protocol/model ownerとGL ownerを最初から分離する。helper exec、SDK Surface、SHM保護、Android EGLは小さい実機gateとして先行する。下記の日付付きレビューは当時の調査記録であり、現在の進捗と混同しない。
+
 ## 成功の定義
 
 最小MVP: Quest 3にインストールしたEidolon APKを起動し、**同じQuest上のTermuxで動くfoot**を、XR空間内の独立した長方形パネルとして表示する。通常passthroughで周囲の現実を背景にし、Bluetoothキーボードでshell/Neovimに入力でき、コントローラーでクリック、画面の再描画、リサイズ、接続の再確立が行える。
@@ -390,7 +394,7 @@ flowchart LR
 
 ## Phase 6 — 運用性、性能、耐障害性
 
-**詳細・調査結果:** [phase-6-rust-lifecycle-testing.md](phase-6-rust-lifecycle-testing.md)。Rust compositor/render owner、Tokio SSH runtime、Kotlin UIの三領域を分ける。Activity/Surface、SSH、Wayland clientは別の寿命として扱う。
+**詳細・調査結果:** [phase-6-rust-lifecycle-testing.md](phase-6-rust-lifecycle-testing.md)。Rust protocol/model owner、Rust GL owner、Tokio SSH runtime、Kotlin UIの四領域を分ける（詳細設計で更新）。Activity/Surface、SSH、Wayland clientは別の寿命として扱う。
 
 ### Phase 6の運用・回復経路
 
@@ -400,8 +404,10 @@ flowchart LR
     K["Kotlin lifecycle adapter"] --> S["Rust session supervisor"]
     S <-->|"state / cancel / retry"| N["Tokio + russh bridge"]
     N <-->|"loopback SSH"| T["Termux sshd / Waypipe / apps"]
-    S <-->|"control / status"| R["Rust compositor / render owner"]
+    S <-->|"control / status"| R["Rust protocol/model owner"]
+    R -->|"owned snapshot"| G["Rust GL owner"]
     R --> M["metrics / logcat"]
+    G --> M
     N --> M
   end
 ~~~
