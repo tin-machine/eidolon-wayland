@@ -4,7 +4,7 @@ use jni::{
     Env, EnvUnowned,
     errors::{Error, ErrorPolicy},
     jni_str,
-    objects::{JClass, JString},
+    objects::{JClass, JObject, JString},
     sys::{jint, jlong},
 };
 
@@ -54,6 +54,49 @@ fn bounded_json(env: &mut Env<'_>, text: &JString<'_>) -> jni::errors::Result<Op
     }
     let json = text.try_to_string(env)?;
     Ok((json.len() <= COMMAND_BYTES).then_some(json))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeAttachSurface<'a>(
+    mut env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    handle: jlong,
+    session: jlong,
+    window: jlong,
+    scene: jlong,
+    generation: jlong,
+    surface: JObject<'a>,
+    width: jint,
+    height: jint,
+) -> jint {
+    env.with_env(|env| -> jni::errors::Result<i32> {
+        use eidolon_model::surface::{TargetKey, validate_dimensions};
+        let key = match TargetKey::from_raw(session, window, scene, generation) {
+            Ok(key) => key,
+            Err(status) => return Ok(status as i32),
+        };
+        if let Err(status) = validate_dimensions(width, height) {
+            return Ok(status as i32);
+        }
+        if surface.is_null() {
+            return Ok(Status::InvalidArgument as i32);
+        }
+        // JNI local ref/envは保存しない。失敗時もRAIIで追加参照を回収。
+        let Some(native) = (unsafe {
+            eidolon_render::PlatformWindow::from_surface(
+                env.get_raw().cast(),
+                surface.as_raw().cast(),
+            )
+        }) else {
+            return Ok(Status::InvalidArgument as i32);
+        };
+        Ok(global()
+            .guarded(handle, |runtime| {
+                runtime.attach_surface(key, native, width, height)
+            })
+            .unwrap_or_else(|s| s) as i32)
+    })
+    .resolve_with::<BridgePolicy, _>(|| handle)
 }
 
 #[unsafe(no_mangle)]

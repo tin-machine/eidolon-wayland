@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <item name="native_panel" type="id" />
     <item name="phase0_panel" type="id" />
     <style name="EidolonTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>

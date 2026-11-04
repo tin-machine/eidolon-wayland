@@ -46,6 +46,13 @@ object NativeSessionHost {
     fun setXrState(value: String) { xrState.set(value); send("set_xr_state", "state", value) }
     fun setActivityVisible(value: Boolean) { activityVisible.set(value); send("set_activity_state", "visible", value) }
     fun requestSnapshot() { worker.execute { safely { publish() } } }
+    fun currentHandle(): Long = handle
+    fun publishCheck(value: JSONObject) { val copy = value.toString(); worker.execute { safely { store?.publishCheck(JSONObject(copy)) } } }
+    fun publishAdapter(value: JSONObject) { val copy = value.toString(); worker.execute { safely { store?.publishAdapter(JSONObject(copy)) } } }
+    fun detachSurface(target: JSONObject, runtime: Long = handle): Int {
+        return NativeBridge.nativeCommand(runtime, JSONObject().put("schema", 1).put("request_id", requests.incrementAndGet().toString())
+            .put("type", "surface_lost").put("target", target).toString())
+    }
 
     private fun send(type: String, key: String, value: Any) {
         safely {
@@ -74,6 +81,7 @@ object NativeSessionHost {
     private fun stopRuntime() {
         if (handle == 0L) return
         val old = handle
+        val started = SystemClock.elapsedRealtime()
         check(NativeBridge.nativeRequestStop(old) == NativeBridge.ACCEPTED)
         val deadline = SystemClock.elapsedRealtime() + 5000
         while (true) {
@@ -83,6 +91,7 @@ object NativeSessionHost {
             Thread.sleep(2)
         }
         handle = 0
+        Log.i(TAG, "runtime_stopped handle=$old duration_ms=${SystemClock.elapsedRealtime() - started}")
     }
     /** 診断の排他的実行。固定caseの実装自体はdebug sourceSetだけに置く。 */
     fun withStoppedRuntime(action: (DiagnosticsStore) -> Unit, completed: () -> Unit) {

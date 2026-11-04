@@ -64,7 +64,7 @@ debug専用Activity `DebugCommandActivity`を`src/debug/`へ追加し、固定ca
 
 host: stale handle、二重stop、destroy-before-stop、queue満杯、未知JSON/schema、panic変換を検査。Quest: load→create→snapshot→stop→destroyを10回、通常パネルへ戻れることを確認する。
 
-実装のruntime configは現在`{"schema":1}`。後続taskで必要な設定だけを追加する。`nativeAttachSurface`はR01/R02で導入し、B03の時点で未実装のSurface APIを成功扱いしない。debugのpanic fixtureも`cfg(debug_assertions)`へ限定し、releaseのDEX・merged manifest・native symbolに試験入口がないことをAPK検査で確認する。
+runtime configは`{"schema":1}`を基礎とし、H01でApplication由来の`paths`を追加した。正確なschemaは共通契約を参照する。`nativeAttachSurface`はR01/R02で導入し、B03の時点で未実装のSurface APIを成功扱いしない。debugのpanic fixtureも`cfg(debug_assertions)`へ限定し、releaseのDEX・merged manifest・native symbolに試験入口がないことをAPK検査で確認する。
 
 <a id="h01"></a>
 ## H01 — APK UIDでnative helperを起動する先行gate
@@ -118,7 +118,7 @@ public signatureの確認までで、callback thread・順序・UV方向・destr
 <a id="r02"></a>
 ## R02 — Rust patternを一枚に描く
 
-作成: `native/render/src/{surface,egl,pattern}.rs`。依存候補`ndk =0.9.0`、`khronos-egl =6.0.0`、glowは導入時の解決版をlockする。
+実装: `native/render/src/lib.rs`がowner/世代/停止、`android.rs`がEGL/pattern、`host.rs`がSDK不要の状態検査backend。`ndk =0.9.0`、`khronos-egl =6.0.0`を固定し、GLES3はAndroid公開libraryへ直接linkする。
 
 GL owner上でNativeWindow→EGLDisplay初期化→GLES3 context/config→window surface→current→viewport→checkerboard→swapの順。Androidの`libEGL.so`/`libGLESv3.so`を使い、Linuxの`.so.1`名を固定しない。native window geometryを1024×768へ設定し、EGL_WIDTH/HEIGHTの実測を記録する。
 

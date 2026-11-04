@@ -1,6 +1,7 @@
 package io.github.tinmachine.eidolon
 
 import android.os.Build
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import androidx.compose.foundation.background
@@ -41,6 +42,7 @@ import com.meta.spatial.vr.VRFeature
 /** XR診断パネル。nativeとAPKの版整合をここでも表示する。 */
 class MainActivity : AppSystemActivity() {
     private var panel: Entity? = null
+    private val nativePanels by lazy { SpatialPanelAdapter() }
 
     override fun registerFeatures(): List<SpatialFeature> =
         listOf(VRFeature(this), ComposeFeature())
@@ -55,20 +57,22 @@ class MainActivity : AppSystemActivity() {
         } else {
             Log.e(TAG, "native_failed version=${BuildConfig.VERSION_CODE} error=${native.error}")
         }
+        BuildHooks.accept(intent, nativePanels)
     }
 
     override fun onSceneReady() {
         super.onSceneReady()
-        NativeSessionHost.sceneReady()
+        val epoch = NativeSessionHost.sceneReady()
         scene.setReferenceSpace(ReferenceSpace.LOCAL_FLOOR)
         scene.setViewOrigin(0f, 0f, 0f, 0f)
         scene.enablePassthrough(true)
         if (panel == null) {
             panel = Entity.create(listOf(
                 Panel(R.id.phase0_panel),
-                Transform(Pose(Vector3(0f, 1.4f, 1.5f))),
+                Transform(Pose(Vector3(0.7f, 1.4f, 1.6f))),
             ))
         }
+        nativePanels.sceneReady(epoch)
         Log.i(TAG, "scene_ready version=${BuildConfig.VERSION_CODE} panel=${panel?.id}")
     }
 
@@ -87,7 +91,7 @@ class MainActivity : AppSystemActivity() {
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
                                 Text("Eidolon", color = Color.White, style = MaterialTheme.typography.headlineLarge)
-                                Text("Phase 0 · Build ${BuildConfig.VERSION_CODE}", color = Color(0xFF67E8C3))
+                                Text("Phase 1 · Build ${BuildConfig.VERSION_CODE}", color = Color(0xFF67E8C3))
                                 val native = NativeBridge.status
                                 Text(if (native.ready) "Rust ready · Build ${BuildConfig.VERSION_CODE}" else "Rust load failed: ${native.error}", color = if (native.ready) Color(0xFF67E8C3) else Color.Red)
                                 Text("Runtime: ${NativeSessionHost.summary.value}", color = Color.White)
@@ -110,7 +114,12 @@ class MainActivity : AppSystemActivity() {
                 )
             },
         ),
-    )
+    ) + nativePanels.registration
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        BuildHooks.accept(intent, nativePanels)
+    }
 
     override fun onResume() {
         super.onResume()
@@ -126,6 +135,7 @@ class MainActivity : AppSystemActivity() {
 
     override fun onSessionStateChanged(state: SessionState) {
         super.onSessionStateChanged(state)
+        Log.i(TAG, "xr_state=$state version=${BuildConfig.VERSION_CODE}")
         NativeSessionHost.setXrState(when (state) {
             SessionState.FOCUSED -> "FOCUSED"
             SessionState.VISIBLE -> "VISIBLE"
@@ -134,6 +144,7 @@ class MainActivity : AppSystemActivity() {
     }
 
     override fun onSpatialShutdown() {
+        nativePanels.close()
         panel?.destroy()
         panel = null
         Log.i(TAG, "spatial_shutdown version=${BuildConfig.VERSION_CODE}")

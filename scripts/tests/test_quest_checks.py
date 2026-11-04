@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 import unittest
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from quest_checks import runtime_result
+from quest_checks import runtime_result, surface_result
 
 
 class ResultTests(unittest.TestCase):
@@ -37,3 +37,26 @@ class ResultTests(unittest.TestCase):
         self.snapshot["check"]["result"] = "fail"
         with self.assertRaises(ValueError):
             runtime_result(self.snapshot, "new", self.info)
+
+    def test_surface_gate_requires_fresh_generation_readback_listener_cleanup_and_resumed_frames(self):
+        key = {"session": "1", "window": "1", "scene": "1", "generation": "1"}
+        target = {"key": key, "frames": 3, "readback": True, "width": 1024, "height": 768,
+                  "vendor": "fixture", "renderer": "fixture", "version": "fixture"}
+        snapshot = {"schema": 1, "build_info": self.info,
+                    "check": {"case": "pattern", "nonce": "new", "result": "pass", "cycles": [target],
+                              "paused_frames_stable": True, "stale_detach_safe": True, "duplicate_safe": True,
+                              "adapter": {"created": 1, "destroyed": 0, "bindings": 1, "listeners": 1, "pending": 0}},
+                    "runtime": {"runtime": {"state": "Ready", "activity_visible": True, "xr_state": "FOCUSED",
+                                            "render": {"workers": 1, "error": None, "paused": False, "targets": [dict(target, frames=6)]}}}}
+        self.assertTrue(surface_result(snapshot, "new", self.info, "pattern"))
+        self.assertFalse(surface_result(snapshot, "old", self.info, "pattern"))
+        for path, value in [("readback", False), ("generation", "0"), ("listeners", 2), ("paused_frames_stable", False)]:
+            bad = copy.deepcopy(snapshot)
+            check = bad["check"]
+            if path == "readback": check["cycles"][0][path] = value
+            elif path == "generation": check["cycles"][0]["key"][path] = value
+            elif path == "listeners": check["adapter"][path] = value
+            else: check[path] = value
+            with self.assertRaises(ValueError): surface_result(bad, "new", self.info, "pattern")
+        snapshot["runtime"]["runtime"]["render"]["targets"][0]["frames"] = 3
+        self.assertFalse(surface_result(snapshot, "new", self.info, "pattern"))

@@ -388,7 +388,7 @@
     {
       "id": "C01",
       "title": "host・Android CI",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [
         "B03"
       ],
@@ -472,7 +472,7 @@
     {
       "id": "R01",
       "title": "SDK Surface通知・所有権",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "B03"
       ],
@@ -505,7 +505,7 @@
     {
       "id": "R02",
       "title": "Rust EGL pattern",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "R01"
       ],
@@ -539,7 +539,7 @@
     {
       "id": "R03",
       "title": "Surface世代・喪失・停止",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "R02"
       ],

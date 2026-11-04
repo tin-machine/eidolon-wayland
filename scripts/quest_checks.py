@@ -56,3 +56,40 @@ def helper_result(snapshot, nonce, expected):
             and current.get("registry") == {"runtimes": 1, "workers": 1}
             and state.get("state") == "Ready" and state.get("activity_visible") is True
             and state.get("xr_state") in {"VISIBLE", "FOCUSED"} and state.get("helper_workers") == 0)
+
+
+def surface_result(snapshot, nonce, expected, case):
+    if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
+        return False
+    result = snapshot.get("check", {})
+    if result.get("case") != case or result.get("nonce") != nonce:
+        return False
+    if result.get("result") == "fail":
+        raise ValueError("Surface caseが失敗しました: " + result.get("stage", "unknown"))
+    if result.get("result") != "pass":
+        return False
+    count = {"surface": 10, "pattern": 1, "surface-cycle": 20}[case]
+    cycles = result.get("cycles", [])
+    if len(cycles) != count or not all(result.get(field) is True for field in
+            ("paused_frames_stable", "stale_detach_safe", "duplicate_safe")):
+        raise ValueError("Surface回数/停止/世代検査が不正です")
+    previous = 0
+    for target in cycles:
+        key = target.get("key", {})
+        generation = key.get("generation", "")
+        if (not isinstance(generation, str) or not generation.isdecimal() or not previous < int(generation) <= 2**63 - 1
+                or target.get("width") != 1024 or target.get("height") != 768 or target.get("frames", 0) < 3
+                or target.get("readback") is not True or not target.get("renderer") or not target.get("vendor") or not target.get("version")):
+            raise ValueError("Surface寸法/世代/frame/GL色検査が不正です")
+        previous = int(generation)
+    adapter = result.get("adapter", {})
+    if (adapter.get("created", 0) - adapter.get("destroyed", 0) != 1 or adapter.get("bindings") != 1
+            or adapter.get("listeners") != 1 or adapter.get("pending") != 0):
+        raise ValueError("SDK Entity/listener回収数が不正です")
+    state = snapshot.get("runtime", {}).get("runtime", {})
+    render = state.get("render", {})
+    targets = render.get("targets", [])
+    return (state.get("state") == "Ready" and state.get("activity_visible") is True
+            and state.get("xr_state") in {"VISIBLE", "FOCUSED"} and render.get("workers") == 1
+            and not render.get("paused") and render.get("error") is None and len(targets) == 1
+            and targets[0].get("key") == cycles[-1].get("key") and targets[0].get("frames", 0) > cycles[-1].get("frames", 0))

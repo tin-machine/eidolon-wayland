@@ -10,9 +10,10 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | B01 | done | Rust 1.95.0固定、model/android workspace、ID/上限、決定的build info、JNI 0.22.4。Rust test 3件・fmt・clippy成功。JNIの実機確認はB02へ分離 |
 | B02 | in_progress | assemble/lint・APK/ELF検査成功。Quest Build 3→4のnative/Kotlin版一致、scene/panel、XR FOCUSEDを自動確認。Rust版変更→復元→APK版変更の4 buildがすべて成功。HMD視認はnot_run |
 | B03 | done | runtime/JNI/診断と固定caseを実装。ホスト11件・Python10件・debug/release検査、Quest Build 8の10cyclesと停止後late panic・製品復帰に成功 |
-| C01 | in_progress | host dispatcher/Gradle checksum/GitHub Actionsを実装、ローカルhostとAndroid Build 9成功。対象commitのCI結果を待つ |
+| C01 | done | 9c83853のGitHub Actionsでhost・Android・report全成功。Actions許可、context範囲、SDK manager PATHの切り分けを記録 |
 | H01 | done | 製品runtimeの専用I/O workerからAPK内PIEを実行。host・Questで10echo/明示終了/回収、起動中stop、releaseへのfixture不在を確認 |
-| R01〜I07 | planned | 依存順に実装。独立probeの成功を製品統合の成功へ置き換えない |
+| R01〜R03 | in_progress | 製品SDK Surface/Rust EGL/世代・停止を実装。host・Questの自動部分成功。HMD、実Menu/sleep、UV、外部frameの検査を保留 |
+| T01〜I07 | planned | 独立した接続・Wayland・入力を依存順に実装 |
 
 ## B01/B02: ビルドと実機の再現
 
@@ -171,3 +172,25 @@ H01の診断改善として、exec時のerrnoを保持し、ENOENT（ファイ�
 復旧後の`06cd62c`のrun `41870384317`はpush eventを受信したが、開始直後failureでjobは0件だった。追加調査で、jobレベルの`env`に置いた`${{ runner.temp }}`が[許可context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability)の範囲外と分かった。これをstepの`env`へ移した。YAMLとして読めるだけでは検出できないため、host jobへ`actionlint v1.7.12`による構文・context検査も追加した。ローカルでは公式releaseのSHA256を照合した同版でpass。新しいGitHub connectorの汎用`github_fetch`は`actions/runs?head_sha=...`を取得でき、PR専用wrapperの制限を回避してpush runを直接観測できた。
 
 次の`6331c88`/run `41871665707`ではhostが成功し、AndroidはSDK導入の`FileNotFoundError: sdkmanager`で失敗した。runnerのPATHを仮定していたため、`ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager`を明示するよう修正。report jobは成功し、同一SHAのhost success / Android failureを記録できた。実行されなかったAPK buildを成功に数えない。
+
+C01は`9c83853ba054a32743499f97aad107cd3bfabe26`の[run 41872241492](https://github.com/tin-machine/eidolon-wayland/actions/runs/41872241492)でhost/Android/reportがすべて成功した。Androidのassemble/lint/同梱検査、実APKの拒否検査、artifact uploadまで実行済み。同一SHAの成功を根拠にC01をdoneへ変更した。今後のsource commitについてもCI結果を確認する。
+
+## R01–R03: 製品Surface・EGL描画・停止（2026-11-05）
+
+`SpatialPanelAdapter`と`native/render`を製品runtimeへ統合した。Compose診断パネルに加え、一枚のSDK VideoSurfaceへRustがopaqueな四隅patternと動く矩形を描く。1024×768、RGBA readback、GL vendor/renderer/version、実config、frame/max swap時間を保存する。60Hz以下、非可視時pause。Activity/SDK SurfaceはKotlin、NativeWindow追加参照/EGLはGL ownerに分け、coreがGL owner終了まで停止完了を保留する。`registry.workers`はcore worker数、`runtime.render.workers`はGL owner数を別々に表す。
+
+全tupleの世代比較、重複attach、遅延detach、context/Surface loss、停止をbounded queueとsnapshotへ実装した。`surface_lost`の受付と実際の`surface_detached`を分け、ack後にlistener/Entityを回収する。EGLDisplayはSDKと共有し得るためterminateしない。driver callの2秒待ちを`RENDER_STALLED`として記録し、他threadからGPU資源を破棄しない。SDK callbackの順序・thread・未確認項目は[実測記録](decisions/sdk-surface-lifecycle.md)を参照する。
+
+試行錯誤とreviewで得た修正:
+
+- 初回のBuild12で製品Surface/pattern/10回と20回再生成が成功。Build14から各cycleのFD/native heapを記録した。短時間のheap増加も隠さず保存し、長期リークなしとは判定していない。
+- host helper fixtureが断続的に失敗。単体再実行だけでは原因不明だったが、4並列×30回のcopy/execでerrno26 `ETXTBSY`を再現。tmpfs上の実行直前copyをやめ、正常fixtureはimmutable build artifactへのsymlinkを使う。EACCES試験用copyは分離し、artifact自体のpermissionを変更しない。12回の並列suite・48tests成功。製品execの失敗をretryで隠す変更はしていない。
+- queue満杯時の非表示通知がBUSYとなり、古い可視commandでGLが再開する経路を発見。再現testを先に失敗させ、最新SDK可視性を専用mailboxで保持して通常queue外でpauseする方式へ修正。BUSYを返したcommandへ完了eventを偽造せず、安全効果だけ適用する。
+- EGLのContextLostに加え、GLESの`GL_CONTEXT_LOST`も同じ再構築経路へ分類。readback mismatchとdriver context lossを取り違えない。
+- host fault injectionでdriver待ち中もsnapshot/Stop要求が100ms未満で戻り、所有threadが終了するまで回収成功を報告しないことを検査した。これは実機でdriver stallを起こした結果ではない。
+
+Build15では実際に描画中だった製品runtimeの停止・回収が10msで終了した。別helper case開始時は7ms。実Menu/sleep・HMD・ray/UVと、後続W02の外部snapshot旧世代検査を保留してR01/R02/R03はin_progressを維持する。
+
+最終candidate Build17でhostのRust22件・fmt/clippy/design、実APK付きPython15件、debug/release assemble/lint/静的検査がすべて成功。Quest smoke `20261105T020851-1832786`、surface10 `020905-d5f1c6fe`、pattern `020912-6fbff134`、surface-cycle20 `020917-1363bb93`、runtime `020924-e2bf1297`、helper `020928-8023a126`が成功した（check directoryのprefixはすべて`20261105T`）。cycle20のFDは287〜288、native heapは45,450,392→46,601,672 bytes。描画activeな製品runtimeの停止・回収8ms、helper試験開始時7ms。自動部分の受入とHMD未確認を区別している。
+
+Build17は`9c83853ba054a32743499f97aad107cd3bfabe26`からのdirty build、source digest `4457124e4d91c39699169afb55f3bf2dde2fadec584e9bd10d25e61fb776184b`、APK SHA256 `32eeb98fe45fe3b832208c2fcd8cbf519387175656b4fb8069fd7f9c89112d8f`。`builds/20261105T020613-1829190/`、`host-render17.log`、`python-render17.log`、`release17.log`、`release-package17.json`、上記checksへ保存。commit後のclean buildと取り違えない。

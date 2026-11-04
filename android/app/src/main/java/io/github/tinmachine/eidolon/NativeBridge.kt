@@ -13,6 +13,8 @@ object NativeBridge {
     @JvmStatic external fun nativeBuildInfo(): String
     @JvmStatic external fun nativeCreate(configJson: String): Long
     @JvmStatic external fun nativeCommand(handle: Long, commandJson: String): Int
+    @JvmStatic external fun nativeAttachSurface(handle: Long, session: Long, window: Long, scene: Long, generation: Long,
+        surface: android.view.Surface, widthPx: Int, heightPx: Int): Int
     @JvmStatic external fun nativePoll(handle: Long, maxEvents: Int): String
     @JvmStatic external fun nativeSnapshot(handle: Long): String
     @JvmStatic external fun nativeRequestStop(handle: Long): Int

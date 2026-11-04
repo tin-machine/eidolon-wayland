@@ -25,7 +25,7 @@ android/app/src/main/java/io/github/tinmachine/eidolon/
   InputAdapter.kt CredentialStore.kt DiagnosticsStore.kt
 ```
 
-`model`←`core`、`model`←`render`、`model`←`transport`、`android`→各crate。循環依存禁止。Android専用依存は`cfg(target_os = "android")`で囲み、host model testをSDKなしで実行する。必要になるtaskまで空のcrateを大量に追加しない。
+`model`←`core`、`model`←`render`、`model`←`transport`、`core`→`render`（GL ownerの所有と停止）、`android`→各crate。循環依存禁止。Android専用依存は`cfg(target_os = "android")`で囲み、host model testをSDKなしで実行する。必要になるtaskまで空のcrateを大量に追加しない。
 
 ## 識別子と所有者
 
@@ -89,7 +89,7 @@ command envelope:
 
 主要tag: `connect`、`disconnect`、`reset_input`、`set_xr_state`、`scene_ready`、`surface_lost`、`resize_logical`、`set_pose`、`set_physical_size`、`set_background`、`close_window`、`pointer`、`key`。`connect`は登録済みprofile IDだけを指定し、任意shell commandや秘密鍵本文を受け取らない。
 
-B03では`scene_ready`・`set_xr_state`・`reset_input`と、Activity可視性を独立に伝える`set_activity_state(visible: bool)`を実装する。H01でdebug用`helper_probe(nonce)`を追加し、releaseではNOT_READYとする。未実装tagは拒否する。`onPause`でSDKのXR状態を上書きしない。runtime再作成後はhostが最新のscene/XR/Activity状態を再送する。
+B03では`scene_ready`・`set_xr_state`・`reset_input`と、Activity可視性を独立に伝える`set_activity_state(visible: bool)`を実装する。H01でdebug用`helper_probe(nonce)`を追加し、releaseではNOT_READYとする。R01–R03では`nativeAttachSurface`と`surface_lost(target)`を追加し、targetは全tupleを含むstrict objectとする。detach受付と実際の`surface_detached {target}`を区別する。未実装tagは拒否する。`onPause`でSDKのXR状態を上書きしない。runtime再作成後はhostが最新のscene/XR/Activity状態を再送する。
 
 runtime configはschema 1と、省略可能な`paths: {native_library_dir, files_dir}`。pathはApplicationのContext由来だけを渡し、command/ADB intentから指定しない。native側でも絶対path・NUL・長さを検査する。H01の子processとpipe readerは専用I/O workerが所有し、coreの停止完了はworker回収後とする。
 

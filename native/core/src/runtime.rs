@@ -16,6 +16,8 @@ use std::{
 };
 
 struct Shared {
+    // 最新のSDK可視性。遅れて処理する通常commandで描画pauseを巻き戻さない。
+    render_visibility: [bool; 2],
     snapshot: Snapshot,
     commands: VecDeque<Command>,
     events: VecDeque<Event>,
@@ -49,6 +51,7 @@ pub struct Runtime {
     stop: Arc<AtomicBool>,
     reset: Arc<AtomicBool>,
     worker: JoinHandle<()>,
+    render: Arc<eidolon_render::Controller>,
 }
 impl Runtime {
     pub fn start(config: RuntimeConfig) -> std::io::Result<Self> {
@@ -59,7 +62,10 @@ impl Runtime {
         config: RuntimeConfig,
         ready_hook: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<Self> {
+        let render = Arc::new(eidolon_render::Controller::start()?);
+        let gl = render.clone();
         let shared = Arc::new(Mutex::new(Shared {
+            render_visibility: [false; 2],
             snapshot: Snapshot::default(),
             commands: VecDeque::new(),
             events: VecDeque::new(),
@@ -87,7 +93,27 @@ impl Runtime {
                 }
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     ready_hook();
+                    let mut detach_count = 0;
                     loop {
+                        let render = gl.snapshot();
+                        {
+                            let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                            if matches!(render.error, Some("RENDER_STALLED" | "JNI_FAILURE")) {
+                                shared.fail(render.error.unwrap());
+                            }
+                            let count = (render.detaches - detach_count) as usize;
+                            if count > render.detached.len() {
+                                shared.fail("RESOURCE_LIMIT");
+                            }
+                            for target in render
+                                .detached
+                                .iter()
+                                .skip(render.detached.len().saturating_sub(count))
+                            {
+                                shared.emit(Event::SurfaceDetached { target: *target });
+                            }
+                            detach_count = render.detaches;
+                        }
                         if helper.as_ref().is_some_and(|(_, job)| job.is_finished()) {
                             let (request_id, job) = helper.take().unwrap();
                             let report = job.join().unwrap_or_else(|_| crate::helper::Report {
@@ -110,7 +136,8 @@ impl Runtime {
                             state.emit(Event::CommandComplete { request_id, code });
                         }
                         if stopping.load(Ordering::Acquire) {
-                            if helper.is_none() {
+                            gl.request_stop();
+                            if helper.is_none() && gl.is_finished() {
                                 break;
                             }
                             state
@@ -133,6 +160,7 @@ impl Runtime {
                         if let Some(command) = state.commands.pop_front() {
                             let mut asynchronous = false;
                             let code = match &command {
+                                Command::SurfaceLost { target, .. } => gl.detach(*target),
                                 Command::HelperProbe {
                                     nonce, request_id, ..
                                 } => {
@@ -232,6 +260,17 @@ impl Runtime {
                     state.snapshot.helper = Some(report);
                     state.snapshot.helper_workers = 0;
                 }
+                gl.request_stop();
+                while !gl.is_finished() {
+                    // snapshot/Stopはこの待機に参加しない。未回収ownerのruntimeは再利用しない。
+                    if gl.snapshot().error == Some("RENDER_STALLED") {
+                        state
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .fail("RENDER_STALLED");
+                    }
+                    thread::park_timeout(Duration::from_millis(5));
+                }
                 let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                 state.snapshot.state = RuntimeState::Stopping;
                 state.snapshot.xr_state = XrState::Idle;
@@ -247,6 +286,7 @@ impl Runtime {
             stop,
             reset,
             worker,
+            render,
         })
     }
 
@@ -260,6 +300,21 @@ impl Runtime {
             self.worker.thread().unpark();
         }
         let mut state = self.lock();
+        // BUSYでも非表示の安全効果を先に適用。可視方向は受付成功時だけ更新する。
+        match &command {
+            Command::SetActivityState { visible: false, .. } => {
+                state.render_visibility[0] = false;
+                self.render.set_visible(false);
+            }
+            Command::SetXrState {
+                state: XrState::Idle,
+                ..
+            } => {
+                state.render_visibility[1] = false;
+                self.render.set_visible(false);
+            }
+            _ => (),
+        }
         if state.snapshot.state == RuntimeState::Failed {
             return Status::Failed;
         }
@@ -269,6 +324,15 @@ impl Runtime {
         if state.commands.len() == limits::CORE_COMMANDS {
             return Status::Busy;
         }
+        match &command {
+            Command::SetActivityState { visible, .. } => state.render_visibility[0] = *visible,
+            Command::SetXrState { state: xr, .. } => {
+                state.render_visibility[1] = *xr != XrState::Idle
+            }
+            _ => (),
+        }
+        self.render
+            .set_visible(state.render_visibility[0] && state.render_visibility[1]);
         state.commands.push_back(command);
         state.snapshot.commands_accepted += 1;
         self.worker.thread().unpark();
@@ -276,12 +340,14 @@ impl Runtime {
     }
     pub fn request_stop(&self) -> Status {
         self.stop.store(true, Ordering::Release);
+        self.render.request_stop();
         self.worker.thread().unpark();
         Status::Accepted
     }
     pub fn snapshot(&self) -> Snapshot {
         let state = self.lock();
         Snapshot {
+            render: self.render.snapshot(),
             commands_pending: state.commands.len(),
             events_pending: state.events.len() + state.terminal.len(),
             ..state.snapshot.clone()
@@ -320,6 +386,22 @@ impl Runtime {
     pub fn worker_finished(&self) -> bool {
         self.worker.is_finished()
     }
+    pub fn attach_surface(
+        &self,
+        key: eidolon_model::surface::TargetKey,
+        window: eidolon_render::PlatformWindow,
+        width: i32,
+        height: i32,
+    ) -> Status {
+        let state = self.lock();
+        if state.snapshot.state != RuntimeState::Ready || self.stop.load(Ordering::Acquire) {
+            return Status::NotReady;
+        }
+        if state.snapshot.scene != Some(key.scene) {
+            return Status::Stale;
+        }
+        self.render.attach(key, window, width, height)
+    }
     pub fn guarded<T>(&self, action: impl FnOnce() -> T) -> Result<T, Status> {
         catch_unwind(AssertUnwindSafe(action)).map_err(|_| {
             self.lock().fail("JNI_FAILURE");
@@ -335,6 +417,7 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.render.request_stop();
         self.worker.thread().unpark();
         // Joinしない。通常のdestroyはis_finished確認後にだけ呼ばれる。
     }
@@ -358,6 +441,51 @@ mod tests {
             request_id: CommandSeq::new(id).unwrap(),
             scene: SceneEpoch::new(id).unwrap(),
         }
+    }
+    #[test]
+    fn invisible_signal_bypasses_full_queue_and_old_visible_commands_cannot_resume_gl() {
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let (a, b) = (entered.clone(), release.clone());
+        let runtime = Runtime::start_with_hook(
+            RuntimeConfig {
+                schema: 1,
+                paths: None,
+            },
+            move || {
+                a.wait();
+                b.wait();
+            },
+        )
+        .unwrap();
+        entered.wait();
+        runtime.render.set_visible(true);
+        runtime.command(Command::SetXrState {
+            schema: 1,
+            request_id: CommandSeq::new(1).unwrap(),
+            state: XrState::Focused,
+        });
+        runtime.command(Command::SetActivityState {
+            schema: 1,
+            request_id: CommandSeq::new(2).unwrap(),
+            visible: true,
+        });
+        for id in 3..=limits::CORE_COMMANDS as i64 {
+            assert_eq!(runtime.command(scene(id)), Status::Accepted);
+        }
+        let status = runtime.command(Command::SetActivityState {
+            schema: 1,
+            request_id: CommandSeq::new(257).unwrap(),
+            visible: false,
+        });
+        let paused_at_busy = runtime.snapshot().render.paused;
+        release.wait();
+        wait(&runtime, |r| r.snapshot().commands_processed >= 2);
+        let paused_after_old_commands = runtime.snapshot().render.paused;
+        runtime.request_stop();
+        wait(&runtime, Runtime::can_destroy);
+        assert_eq!(status, Status::Busy);
+        assert!(paused_at_busy && paused_after_old_commands);
     }
     #[test]
     fn bounded_queue_stop_bypasses_full_commands_without_waiting() {

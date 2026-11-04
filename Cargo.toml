@@ -1,5 +1,5 @@
 [workspace]
-members = ["native/model", "native/core", "native/android", "native/fixtures/helper-probe"]
+members = ["native/model", "native/core", "native/render", "native/android", "native/fixtures/helper-probe"]
 default-members = ["native/model"]
 exclude = ["probes/native"]
 resolver = "3"
@@ -14,6 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 eidolon-model = { path = "native/model" }
 eidolon-core = { path = "native/core" }
+eidolon-render = { path = "native/render" }
 libc = "0.2"
 
 [profile.dev]

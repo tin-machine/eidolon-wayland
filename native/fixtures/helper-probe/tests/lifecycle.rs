@@ -28,9 +28,11 @@ fn exec_failure_reports_missing_file_and_permission_errno_and_cleans_its_directo
     );
     assert_eq!(missing.exec_errno, Some(libc::ENOENT));
     assert!(missing.directory_removed);
-    fs::set_permissions(fixture.exe(), fs::Permissions::from_mode(0o600)).unwrap();
+    let denied_executable = fixture.0.join("denied");
+    fs::copy(fixture.exe(), &denied_executable).unwrap();
+    fs::set_permissions(&denied_executable, fs::Permissions::from_mode(0o600)).unwrap();
     let denied = helper::probe(
-        &fixture.exe(),
+        &denied_executable,
         &fixture.files(),
         "0123456789abcdee",
         Arc::new(AtomicBool::new(false)),
@@ -52,7 +54,9 @@ impl Fixture {
         fs::create_dir(&root).unwrap();
         fs::create_dir(root.join("files")).unwrap();
         fs::create_dir(root.join("lib")).unwrap();
-        fs::copy(
+        // tmpfs上で並行copy/execするとETXTBSYになり得る。固定済みartifactを参照し、
+        // 正常経路で実行するinodeをfixture作成中に書き込まない。
+        std::os::unix::fs::symlink(
             env!("CARGO_BIN_EXE_eidolon-probe-bin"),
             root.join("lib/libeidolon_probe_bin.so"),
         )
@@ -89,7 +93,7 @@ fn apk_shape_helper_has_ten_framed_echoes_explicit_exit_and_owned_cleanup() {
         Arc::new(AtomicBool::new(false)),
         |_| {},
     );
-    assert_eq!(report.error, None);
+    assert_eq!(report.error, None, "{report:?}");
     assert_eq!(report.cycles, 10);
     assert_eq!(report.owned_children, 0);
     assert!(report.directory_removed);
@@ -111,7 +115,10 @@ fn cancellation_reaps_child_and_collision_preserves_other_owners_files() {
             }
         },
     );
-    assert!(report.cancelled && report.directory_removed && report.owned_children == 0);
+    assert!(
+        report.cancelled && report.directory_removed && report.owned_children == 0,
+        "{report:?}"
+    );
     let existing = fixture.files().join("rt/0123456789abcdef");
     fs::create_dir(&existing).unwrap();
     fs::write(existing.join("sentinel"), b"another owner").unwrap();

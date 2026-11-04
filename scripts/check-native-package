@@ -62,8 +62,9 @@ def inspect(apk):
         public = {"libc.so", "libm.so", "libdl.so", "liblog.so", "libandroid.so", "libEGL.so", "libGLESv3.so"}
         if set(required) - public:
             raise ValueError(f"許可されていないELF依存: {sorted(set(required) - public)}")
-        if "Java_io_github_tinmachine_eidolon_NativeBridge_nativeBuildInfo" not in output:
-            raise ValueError("JNI版情報symbolがありません")
+        for method in ("nativeBuildInfo", "nativeCreate", "nativeCommand", "nativeAttachSurface", "nativePoll", "nativeSnapshot", "nativeRequestStop", "nativeDestroy"):
+            if "Java_io_github_tinmachine_eidolon_NativeBridge_" + method not in output:
+                raise ValueError("JNI symbolがありません: " + method)
         helper_path = f"lib/{ABI}/libeidolon_probe_bin.so"
         helper_files = [name for name in names if name.endswith("/libeidolon_probe_bin.so")]
         if info["profile"] == "release" and helper_files:
