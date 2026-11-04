@@ -1,5 +1,19 @@
 # Third-party components
 
+## 固定native依存
+
+版・公式archive SHA256・build条件は[`native/deps.lock.json`](native/deps.lock.json)に記録する。
+以下の著作権表示・license本文はrepositoryへ保存し、APKの`assets/licenses/`にも同梱する。
+
+| component | 使用箇所 | license本文 |
+| --- | --- | --- |
+| Smithay 0.7.0 | Wayland protocol/SHM。[計上補助patch](native/patches/smithay/README.md)を適用 | [MIT](native/licenses/smithay-0.7.0-LICENSE) |
+| libxkbcommon 1.8.1 | static libraryと自己完結keymapのparse | [上流のlicense集](native/licenses/xkbcommon-1.8.1-LICENSE) |
+| xkeyboard-config 2.48 | US/JIS keymap生成元data | [COPYING](native/licenses/xkeyboard-config-2.48-COPYING) |
+
+debug専用のSHM clientはwayland-client 0.31.14（MIT）を使う。
+その他のRust依存は`Cargo.lock`へ固定する。全依存を対象とする配布notice監査はPhase6の受入項目。
+
 ## Gradle wrapper
 
 `android/gradlew`、`android/gradlew.bat`、`android/gradle/wrapper/gradle-wrapper.jar`はGradle 9.4.1の公式配布物を使用する。スクリプトの著作権表示を保持し、jar内の`META-INF/LICENSE`にApache License 2.0本文が含まれる。

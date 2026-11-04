@@ -1,7 +1,7 @@
 [workspace]
-members = ["native/model", "native/core", "native/render", "native/transport", "native/android", "native/fixtures/helper-probe"]
+members = ["native/model", "native/core", "native/render", "native/transport", "native/android", "native/fixtures/helper-probe", "native/fixtures/shm-client"]
 default-members = ["native/model"]
-exclude = ["probes/native"]
+exclude = ["probes/native", "native/generated/smithay"]
 resolver = "3"
 
 [workspace.package]
@@ -21,3 +21,6 @@ libc = "0.2"
 
 [profile.dev]
 debug = 1
+
+[patch.crates-io]
+smithay = { path = "native/generated/smithay" }

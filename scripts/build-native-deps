@@ -80,6 +80,7 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     lock = json.loads((ROOT / "native/deps.lock.json").read_text())
+    run([sys.executable, ROOT / "scripts/prepare-smithay"], os.environ.copy())
     cache = ROOT / "native/.cache"
     cache.mkdir(parents=True, exist_ok=True)
     # 同じcheckoutのGradle/host buildがsource展開やMeson setupを競合しない。

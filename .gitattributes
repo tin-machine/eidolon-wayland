@@ -1,0 +1,2 @@
+# unified diffの空context行はspace一文字を持つため、そのliteral形式を保持する。
+/native/patches/**/*.patch -whitespace

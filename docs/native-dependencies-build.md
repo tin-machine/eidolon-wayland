@@ -1,9 +1,9 @@
 # Native依存の固定build（W01実装中）
 
-W01を独立worktreeで実装している。製品Rust/Gradleへの組み込み、
+W01のnative実装はmainへ統合済み。製品Rust/Gradleへの組み込み、
 Smithayの最小feature検査、hostでのsocket/FD/memfd/mmap/keymap検査は成功。
 QuestのAPK UIDでも10cycle成功した。通常の製品UI復帰は未確認のため、W01はin_progressを維持する。
-SHM buffer/SIGBUS/一般Wayland clientの受入はW02以降へ残す。
+SHM buffer/SIGBUS/一般Wayland clientは[W02の検証記録](wayland-shm-checks.md)で扱う。
 
 `native/deps.lock.json`がsource版・archive SHA256・license・Meson option・keymap hashの正本。
 libxkbcommonは事前probeと同じ1.8.1、キーマップdataは
@@ -12,7 +12,7 @@ NDK27.3.13750724/API34/arm64-v8aのstatic PIC libraryと、Linux hostの生成�
 targetのpkg-configからhost libraryを検出させず、X11/Wayland tools/registry/docsを無効にする。
 
 ```bash
-# Linux、C compiler、Python/pip、Ninja、Bison、Perl、固定Android SDK/NDKが必要
+# Linux、C compiler、Python/pip、Ninja、Bison、Perl、patch、固定Android SDK/NDKが必要
 scripts/build-native-deps --abi arm64-v8a --api 34
 # Android SDKを使わず、生成とhost意味検査だけを行う場合
 scripts/build-native-deps --target host

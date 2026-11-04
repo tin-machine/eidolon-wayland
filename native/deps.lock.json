@@ -35,8 +35,16 @@
       "wayland_frontend",
       "desktop"
     ],
-    "source": "crates.io (Cargo.lock)",
-    "license": "MIT"
+    "source": "https://static.crates.io/crates/smithay/smithay-0.7.0.crate",
+    "license": "MIT",
+    "sha256": "740cea6927892bc182d5bf70c8f79806c8bc9f68f2fb96e55a30be171b63af98",
+    "license_file": "licenses/smithay-0.7.0-LICENSE",
+    "patches": [
+      {
+        "file": "native/patches/smithay/0001-shm-pool-accounting-lifetime.patch",
+        "sha256": "513d99014b096dbadc9e04c4efb0dbcb66896d05251fe8f19d6cedeca4506268"
+      }
+    ]
   },
   "xkeyboard-config": {
     "version": "2.48",

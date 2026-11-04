@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""固定crateと最小patchからSmithayを再構成し、既存生成sourceの改変も拒否する。"""
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tarfile
+import tempfile
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def tree(path):
+    result = {}
+    for file in path.rglob("*"):
+        if file.is_symlink():
+            raise RuntimeError("Smithay generated source symlink")
+        if file.is_file():
+            result[file.relative_to(path).as_posix()] = digest(file)
+    return result
+
+
+def main():
+    os.umask(0o077)
+    spec = json.loads((ROOT / "native/deps.lock.json").read_text())["smithay"]
+    cache = ROOT / "native/.cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    with (cache / "smithay.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        archive = cache / ("smithay-" + spec["version"] + ".crate")
+        if not archive.exists():
+            temporary = archive.with_suffix(".download")
+            with urllib.request.urlopen(spec["source"], timeout=60) as response, temporary.open("wb") as out:
+                shutil.copyfileobj(response, out)
+            temporary.replace(archive)
+        if digest(archive) != spec["sha256"]:
+            raise RuntimeError("Smithay archive hash mismatch")
+        with tempfile.TemporaryDirectory(prefix="smithay-", dir=cache) as stage:
+            stage = Path(stage)
+            with tarfile.open(archive) as tar:
+                tar.extractall(stage, filter="data")
+            source = stage / ("smithay-" + spec["version"])
+            for patch in spec["patches"]:
+                path = ROOT / patch["file"]
+                if digest(path) != patch["sha256"]:
+                    raise RuntimeError("Smithay patch hash mismatch")
+                subprocess.run(["patch", "--batch", "--fuzz=0", "-p1", "-i", str(path)], cwd=source, check=True)
+            license = ROOT / "native" / spec["license_file"]
+            if license.read_bytes() != (source / "LICENSE.txt").read_bytes():
+                raise RuntimeError("Smithay license mismatch")
+            expected = tree(source)
+            target = ROOT / "native/generated/smithay"
+            if target.is_symlink():
+                raise RuntimeError("Smithay generated directory symlink")
+            if target.exists():
+                if tree(target) != expected:
+                    raise RuntimeError("Smithay generated source differs from locked archive + patches")
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source.rename(target)
+            fingerprint = hashlib.sha256(json.dumps(expected, sort_keys=True).encode()).hexdigest()
+            marker = {"schema": 1, "archive_sha256": spec["sha256"], "patches": spec["patches"], "tree_sha256": fingerprint}
+            (target.parent / "smithay.json").write_text(json.dumps(marker, indent=2) + "\n")
+            print(json.dumps(marker))
+
+
+if __name__ == "__main__":
+    main()

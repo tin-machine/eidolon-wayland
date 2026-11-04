@@ -16,6 +16,13 @@ xkbcommon = { version = "=0.8.0", default-features = false }
 nix = { version = "=0.31.3", features = ["fs", "socket", "uio"] }
 memmap2 = "=0.9.12"
 sha2 = "0.11"
+eidolon-shm-fixture = { path = "../fixtures/shm-client", optional = true }
+
+[features]
+debug-fixtures = ["dep:eidolon-shm-fixture"]
+
+[dev-dependencies]
+eidolon-shm-fixture = { path = "../fixtures/shm-client" }
 
 [build-dependencies]
 serde_json.workspace = true

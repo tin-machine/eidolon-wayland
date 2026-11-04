@@ -4,6 +4,72 @@ import json
 import hashlib
 
 
+def shm_result(snapshot, nonce, expected, uid, case, *, instrumentation=False):
+    if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
+        return False
+    result = snapshot.get("check", {})
+    if result.get("case") != case or result.get("nonce") != nonce:
+        return False
+    if result.get("result") == "fail":
+        raise ValueError("端末SHM caseが失敗しました")
+    if result.get("result") != "pass":
+        return False
+    modes = [("truncate", "Truncate")] if case == "shm-truncate" else [
+        ("pattern", "Pattern"), ("shared_cache", "SharedCache"), ("invalid_dimensions", "InvalidDimensions"), ("invalid_stride", "InvalidStride"),
+        ("invalid_offset", "InvalidOffset"), ("invalid_format", "InvalidFormat"), ("negative_resize", "NegativeResize"), ("oversized_pool", "OversizedPool"), ("pool_limit", "PoolLimit")]
+    rows = result.get("cycles", [])
+    if len(rows) != len(modes) or result.get("cleanup_failed"):
+        raise ValueError("SHM scenario数・回収が不正です")
+    globals_expected = sorted([[name, version] for name, version in [
+        ("wl_compositor", 4), ("wl_subcompositor", 1), ("wl_shm", 1), ("wl_output", 3),
+        ("wl_seat", 5), ("xdg_wm_base", 1), ("wl_data_device_manager", 3)]])
+    for index, (row, (scenario, mode)) in enumerate(zip(rows, modes)):
+        report = row.get("report", {})
+        frames, configures, mapped, copies = (1, 2, 2, 2) if scenario == "shared_cache" else (100, 1, 1, 100)
+        if (row.get("cycle") != index + 1 or row.get("scenario") != scenario
+                or report.get("state") != "pass" or report.get("error") is not None
+                or report.get("fixture_revision") != "eidolon-shm-client-v1" or report.get("mode") != mode
+                or report.get("uid") != uid or report.get("nonce") != hashlib.sha256(f"{nonce}:{index}".encode()).hexdigest()[:16]
+                or report.get("verified_hashes") != copies or report.get("bad_maps") != int(scenario == "truncate")
+                or report.get("server_copies") != copies or any(report.get(field) != frames for field in ("server_releases", "server_callbacks"))
+                or any(report.get(field) != 0 for field in ("surfaces_after", "clients_after", "objects_after", "pixel_bytes_after",
+                    "pool_bytes_after", "pool_count_after", "fixture_fds_after", "fixture_maps_after"))
+                or type(report.get("elapsed_ms")) is not int or not 0 <= report["elapsed_ms"] < 60000
+                or type(row.get("fds")) is not int or row["fds"] <= 0
+                or type(row.get("native_heap_bytes")) is not int or row["native_heap_bytes"] <= 0):
+            raise ValueError("SHM hash・SIGBUS・所有資源の証明が不正です")
+        first = report.get("client", {})
+        normal = first if scenario in {"pattern", "shared_cache"} else report.get("recovery", {})
+        if scenario not in {"pattern", "shared_cache"} and first.get("protocol_error") is not True:
+            raise ValueError("悪性clientのprotocol errorがありません")
+        if (normal.get("protocol_error") is not False or sorted(normal.get("globals", [])) != globals_expected
+                or any(normal.get(field) != frames for field in ("frames", "releases", "callbacks"))
+                or any(normal.get(field) != configures for field in ("configures", "acks"))
+                or any(normal.get(field) != mapped for field in ("enters", "leaves")) or normal.get("output_scale") != 1
+                or (scenario == "shared_cache" and normal.get("release_deferred") is not True)
+                or normal.get("cancellations") != 2 or normal.get("empty_selection") is not True
+                or normal.get("output_mode") != [1024, 768, 60000] or normal.get("output_geometry") is not True
+                or normal.get("output_done") is not True or normal.get("seat_capabilities") != 0):
+            raise ValueError("正常clientのprotocol・回復・100frameが不正です")
+    after = result.get("after_stop", {})
+    if (after.get("state") != "Stopped" or any(after.get(field) != 0 for field in ("compositor_workers", "dependency_workers", "helper_workers"))
+            or after.get("render", {}).get("workers") != 0 or after.get("transport", {}).get("workers") != 0
+            or type(result.get("accept_ms")) is not int or not 0 <= result["accept_ms"] < 100
+            or type(result.get("stop_ms")) is not int or not 0 <= result["stop_ms"] < 10000):
+        raise ValueError("SHM workerの停止・受付期限が不正です")
+    if instrumentation:
+        return instrumentation_result(snapshot, result, uid)
+    last = result.get("last_handle", "")
+    current = snapshot.get("runtime", {})
+    handle = current.get("handle", "")
+    state = current.get("runtime", {})
+    return (isinstance(last, str) and last.isdecimal() and isinstance(handle, str) and handle.isdecimal()
+            and 0 < int(last) < int(handle) <= 2**63 - 1 and current.get("code") == 0
+            and current.get("registry") == {"runtimes": 1, "workers": 1} and state.get("state") == "Ready"
+            and state.get("activity_visible") is True and state.get("xr_state") in {"VISIBLE", "FOCUSED"}
+            and state.get("compositor_workers") == 0 and state.get("transport", {}).get("state") == "Idle")
+
+
 def native_deps_result(snapshot, nonce, expected, uid, dependencies, *, instrumentation=False):
     if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
         return False
@@ -242,7 +308,7 @@ def instrumentation_result(snapshot, result, apk_uid):
             or state.get("state") != "Ready" or state.get("error") is not None or state.get("activity_visible") is not False or state.get("xr_state") != "IDLE"
             or transport.get("state") != "Idle" or transport.get("journal_ready") is not True or transport.get("pending_cleanup") != []
             or stopped.get("code") != 0 or stopped.get("handle") != handle or after.get("state") != "Stopped"
-            or after.get("helper_workers") != 0 or after.get("dependency_workers", 0) != 0
+            or after.get("helper_workers") != 0 or after.get("dependency_workers", 0) != 0 or after.get("compositor_workers", 0) != 0
             or after.get("render", {}).get("workers") != 0
             or any(after.get("transport", {}).get(field) != 0 for field in ("workers", "tokio_threads", "owned_connections"))
             or after.get("transport", {}).get("forward", {}).get("active") != 0

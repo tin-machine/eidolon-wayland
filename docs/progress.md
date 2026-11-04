@@ -378,3 +378,24 @@ host Rust54件・launcher Python12件、実APK Python27件、debug/release build
 W01は通常caseの製品UI復帰が未確認のためin_progressを維持する。
 SHM buffer、SIGBUS/ART共存、一般Wayland client、Waypipe/footは後続の検証・実装へ残す。
 Phase5全体の完了ではなく、次のW02へ進むnative基盤の証拠として記録する。
+
+## W02: 最小Wayland protocolと安全なSHM copy（native検証済み）
+
+GitHub Actionsの許可変更後、W01 commit `fc4b0af`のrun `41925351431`はhost/Android/report全successとなった。
+W02では実global handlerを残して広告versionを制限し、configure/ack、仮想output、
+入力capabilityなしのseat、空selectionと取消を処理するdata-device v3を実装した。
+共有mappingの読取りを保護callback内に隔離し、premultiplied RGBA8の所有済み画像へcopyする。
+
+実mappingの遅延解放まで予算を保持するSmithayの最小patchと、原本+patchの全file検証を追加した。
+さらに、別rootの同期childが同bufferを未適用commitに保持している場合の早期releaseを
+固定clientで再現し、transactionと共に保持する使用tokenで修正した。
+
+Build43のQuest APK UIDでshm 9case、独立truncate、依存10cycle、SSH forward、remote回収7故障が全pass。
+各100frameのpixel hash、同期cacheの2consumerとrelease一度、SIGBUS後の同Display回復、
+切断後FD/mapping/object/pool/pixel予算0を照合した。全SHM caseでFD数70が一定だった。
+host Rust60/Python25/launcher12、実APK Python29、debug/release build/lint/packageも成功。
+詳細なrun ID・hash・再現command・失敗と修正は[Wayland/SHM検証記録](wayland-shm-checks.md)にまとめた。
+
+自動結果は`scope=native-instrumentation`、`normal_ui_returned=false`。
+通常UI復帰とScene稼働時SDK handlerとの共存は未確認なのでW02はin_progressを維持する。
+Phase5/I07全体を完了扱いにせず、次はW03のlifecycle、scale/transform、popupとimmutable snapshotへ進む。

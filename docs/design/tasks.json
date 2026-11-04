@@ -754,7 +754,7 @@
     {
       "id": "W02",
       "title": "Wayland protocol・SHM fixture",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "W01",
         "H01"

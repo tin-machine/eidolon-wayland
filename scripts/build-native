@@ -34,7 +34,7 @@ command = ["cargo", "ndk", "-t", ABI, "--platform", str(API),
 if args.profile == "release":
     command.append("--release")
 else:
-    command.extend(["-p", "eidolon-helper-fixture"])
+    command.extend(["-p", "eidolon-helper-fixture", "--features", "eidolon-core/debug-fixtures"])
 subprocess.run(command, cwd=ROOT, env=env, check=True)
 source_library = Path(env["CARGO_TARGET_DIR"]) / TARGET / args.profile / "libeidolon_native.so"
 if canonical(info).encode() not in source_library.read_bytes():
@@ -60,7 +60,7 @@ metadata["dependencies"] = {"lock_sha256": hashlib.sha256(dependency_lock.read_b
                             "xkbcommon_static_sha256": static["sha256"], "smithay": locked["smithay"],
                             "keymaps": locked["xkeyboard-config"]["keymaps"]}
 licenses = {}
-for component in ("libxkbcommon", "xkeyboard-config"):
+for component in ("libxkbcommon", "xkeyboard-config", "smithay"):
     name = locked[component]["license_file"]
     source = ROOT / "native" / name
     target = args.assets / name

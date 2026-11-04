@@ -12,7 +12,7 @@ from host_checks import check_members, rust_test_count
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {"model": ["eidolon-model"], "render": ["eidolon-render"], "lifecycle": ["eidolon-core", "eidolon-android", "eidolon-helper-fixture"],
-          "transport": ["eidolon-transport"], "compositor": ["eidolon-core"], "input": []}
+          "transport": ["eidolon-transport"], "compositor": ["eidolon-core", "eidolon-shm-fixture"], "input": []}
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--suite", required=True, choices=[*SUITES, "all"])
 args = parser.parse_args()
@@ -61,15 +61,13 @@ try:
         count = 0
         for package in packages:
             # core内のcompositor testは独立suiteでも使う。allではlifecycle側で一度だけ実行する。
-            if args.suite == "all" and name == "compositor":
+            if args.suite == "all" and name == "compositor" and package == "eidolon-core":
                 print(json.dumps({"suite": name, "result": "included", "in": "lifecycle"}))
-                break
+                continue
             command = ["cargo", "test", "--locked", "-p", package]
-            if name == "compositor":
+            if name == "compositor" and package == "eidolon-core":
                 command.append("compositor::")
             count += rust_test_count(run(command))
-        if args.suite == "all" and name == "compositor":
-            continue
         print(json.dumps({"suite": name, "result": "pass", "tests": count}))
     if args.suite == "all":
         python_tests(ROOT / "scripts/tests")

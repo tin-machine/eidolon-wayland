@@ -37,7 +37,7 @@ def inspect(apk):
         locked = json.loads(dependency_file.read_text())
         dependencies = metadata.get("dependencies", {})
         licenses = {locked[key]["license_file"]: hashlib.sha256((ROOT / "native" / locked[key]["license_file"]).read_bytes()).hexdigest()
-                    for key in ("libxkbcommon", "xkeyboard-config")}
+                    for key in ("libxkbcommon", "xkeyboard-config", "smithay")}
         if (dependencies.get("lock_sha256") != hashlib.sha256(dependency_file.read_bytes()).hexdigest()
                 or dependencies.get("smithay") != locked["smithay"]
                 or dependencies.get("keymaps") != locked["xkeyboard-config"]["keymaps"]
@@ -87,6 +87,8 @@ def inspect(apk):
         for method in ("nativeBuildInfo", "nativeCreate", "nativeCommand", "nativeAttachSurface", "nativePoll", "nativeSnapshot", "nativeRequestStop", "nativeDestroy", "nativeGenerateIdentity", "nativePublicKey", "nativeProvideCredential"):
             if "Java_io_github_tinmachine_eidolon_NativeBridge_" + method not in output:
                 raise ValueError("JNI symbolがありません: " + method)
+        if (b"eidolon-shm-client-v1" in data) != (info["profile"] == "debug"):
+            raise ValueError("profileとSHM fixtureの同梱が不一致です")
         helper_path = f"lib/{ABI}/libeidolon_probe_bin.so"
         helper_files = [name for name in names if name.endswith("/libeidolon_probe_bin.so")]
         if info["profile"] == "release" and helper_files:
@@ -114,7 +116,7 @@ def inspect(apk):
                 raise ValueError("helper fixtureの実API/NDK noteが不一致です")
         debug_symbol = "Java_io_github_tinmachine_eidolon_DebugNativeBridge_" in output
         dex = b"".join(archive.read(name) for name in names if re.fullmatch(r"classes\d*\.dex", name))
-        debug_classes = [b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;", b"Lio/github/tinmachine/eidolon/CredentialCase;", b"Lio/github/tinmachine/eidolon/SshCase;", b"Lio/github/tinmachine/eidolon/ProductSshCase;", b"Lio/github/tinmachine/eidolon/ForwardCase;", b"Lio/github/tinmachine/eidolon/RemoteCleanupCase;", b"Lio/github/tinmachine/eidolon/NativeCheckInstrumentation;", b"Lio/github/tinmachine/eidolon/NativeDepsCase;"]
+        debug_classes = [b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;", b"Lio/github/tinmachine/eidolon/CredentialCase;", b"Lio/github/tinmachine/eidolon/SshCase;", b"Lio/github/tinmachine/eidolon/ProductSshCase;", b"Lio/github/tinmachine/eidolon/ForwardCase;", b"Lio/github/tinmachine/eidolon/RemoteCleanupCase;", b"Lio/github/tinmachine/eidolon/NativeCheckInstrumentation;", b"Lio/github/tinmachine/eidolon/NativeDepsCase;", b"Lio/github/tinmachine/eidolon/CompositorCase;"]
         debug_dex = any(name in dex for name in debug_classes)
         if info["profile"] == "release" and (debug_symbol or debug_dex):
             raise ValueError("releaseにdebug JNI/classが混入しています")

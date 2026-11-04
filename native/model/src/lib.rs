@@ -3,5 +3,6 @@ pub mod build_info;
 pub mod commands;
 pub mod ids;
 pub mod limits;
+pub mod pixels;
 pub mod state;
 pub mod surface;

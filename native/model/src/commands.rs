@@ -111,9 +111,30 @@ pub enum CleanupScenario {
     LeaseExpire,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompositorScenario {
+    Pattern,
+    SharedCache,
+    InvalidDimensions,
+    InvalidStride,
+    InvalidOffset,
+    InvalidFormat,
+    Truncate,
+    NegativeResize,
+    OversizedPool,
+    PoolLimit,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    CompositorProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        nonce: String,
+        scenario: CompositorScenario,
+    },
     RemoteCleanupProbe {
         schema: u32,
         request_id: CommandSeq,
@@ -182,6 +203,7 @@ impl Command {
             Self::SceneReady { schema, .. }
             | Self::RemoteCleanupProbe { schema, .. }
             | Self::NativeDepsProbe { schema, .. }
+            | Self::CompositorProbe { schema, .. }
             | Self::ForwardProbe { schema, .. }
             | Self::Connect { schema, .. }
             | Self::Disconnect { schema, .. }
@@ -202,7 +224,8 @@ impl Command {
         if let Self::HelperProbe { nonce, .. }
         | Self::ForwardProbe { nonce, .. }
         | Self::RemoteCleanupProbe { nonce, .. }
-        | Self::NativeDepsProbe { nonce, .. } = &command
+        | Self::NativeDepsProbe { nonce, .. }
+        | Self::CompositorProbe { nonce, .. } = &command
             && (nonce.len() != 16
                 || !nonce
                     .bytes()
@@ -217,6 +240,7 @@ impl Command {
             Self::SceneReady { request_id, .. }
             | Self::RemoteCleanupProbe { request_id, .. }
             | Self::NativeDepsProbe { request_id, .. }
+            | Self::CompositorProbe { request_id, .. }
             | Self::ForwardProbe { request_id, .. }
             | Self::Connect { request_id, .. }
             | Self::Disconnect { request_id, .. }

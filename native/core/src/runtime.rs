@@ -109,6 +109,10 @@ impl Runtime {
                     eidolon_model::ids::CommandSeq,
                     JoinHandle<crate::compositor::primitives::Report>,
                 )> = None;
+                let mut compositor: Option<(
+                    eidolon_model::ids::CommandSeq,
+                    JoinHandle<serde_json::Value>,
+                )> = None;
                 {
                     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                     if state.snapshot.state == RuntimeState::Starting
@@ -224,11 +228,35 @@ impl Runtime {
                             shared.snapshot.dependency_workers = 0;
                             shared.emit(Event::CommandComplete { request_id, code });
                         }
+                        if compositor
+                            .as_ref()
+                            .is_some_and(|(_, job)| job.is_finished())
+                        {
+                            let (request_id, job) = compositor.take().unwrap();
+                            let report = job.join().unwrap_or_else(
+                                |_| serde_json::json!({"state":"fail", "error":"JNI_FAILURE"}),
+                            );
+                            let code = if report["error"] == "CANCELLED" {
+                                Status::Stale
+                            } else if report["state"] == "pass" {
+                                Status::Accepted
+                            } else {
+                                Status::Failed
+                            };
+                            let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                            if report["error"] == "JNI_FAILURE" {
+                                shared.fail("JNI_FAILURE");
+                            }
+                            shared.snapshot.compositor = Some(report);
+                            shared.snapshot.compositor_workers = 0;
+                            shared.emit(Event::CommandComplete { request_id, code });
+                        }
                         if stopping.load(Ordering::Acquire) {
                             gl.request_stop();
                             io.request_stop();
                             if helper.is_none()
                                 && dependencies.is_none()
+                                && compositor.is_none()
                                 && gl.is_finished()
                                 && io.is_finished()
                             {
@@ -275,10 +303,67 @@ impl Runtime {
                                         Status::NotReady
                                     }
                                 }
+                                Command::CompositorProbe {
+                                    nonce,
+                                    request_id,
+                                    scenario,
+                                    ..
+                                } => {
+                                    #[cfg(any(test, feature = "debug-fixtures"))]
+                                    {
+                                        if compositor.is_some() || dependencies.is_some() {
+                                            Status::Busy
+                                        } else if cfg!(debug_assertions) {
+                                            use eidolon_model::commands::CompositorScenario as S;
+                                            use eidolon_shm_fixture::Mode as M;
+                                            let mode = match scenario {
+                                                S::Pattern => M::Pattern,
+                                                S::SharedCache => M::SharedCache,
+                                                S::InvalidDimensions => M::InvalidDimensions,
+                                                S::InvalidStride => M::InvalidStride,
+                                                S::InvalidOffset => M::InvalidOffset,
+                                                S::InvalidFormat => M::InvalidFormat,
+
+                                                S::Truncate => M::Truncate,
+                                                S::NegativeResize => M::NegativeResize,
+                                                S::OversizedPool => M::OversizedPool,
+                                                S::PoolLimit => M::PoolLimit,
+                                            };
+                                            let (stop, nonce) = (stopping.clone(), nonce.clone());
+                                            match thread::Builder::new()
+                                                .name("eidolon-wl-check".into())
+                                                .spawn(move || {
+                                                    let report =
+                                                        crate::compositor::checks::run(mode, stop);
+                                                    let mut report = serde_json::to_value(report)
+                                                        .expect("bounded compositor report");
+                                                    report["nonce"] =
+                                                        serde_json::Value::String(nonce);
+                                                    report
+                                                }) {
+                                                Ok(job) => {
+                                                    state.snapshot.compositor_workers = 1;
+                                                    state.snapshot.compositor = None;
+                                                    compositor = Some((*request_id, job));
+                                                    asynchronous = true;
+                                                    Status::Accepted
+                                                }
+                                                Err(_) => Status::Failed,
+                                            }
+                                        } else {
+                                            Status::NotReady
+                                        }
+                                    }
+                                    #[cfg(not(any(test, feature = "debug-fixtures")))]
+                                    {
+                                        let _ = (nonce, request_id, scenario);
+                                        Status::NotReady
+                                    }
+                                }
                                 Command::NativeDepsProbe {
                                     nonce, request_id, ..
                                 } => {
-                                    if dependencies.is_some() {
+                                    if dependencies.is_some() || compositor.is_some() {
                                         Status::Busy
                                     } else if let Some(paths) =
                                         config.paths.clone().filter(|_| cfg!(debug_assertions))
@@ -454,6 +539,17 @@ impl Runtime {
                     let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
                     shared.snapshot.native_deps = Some(report);
                     shared.snapshot.dependency_workers = 0;
+                }
+                if let Some((_, job)) = compositor.take() {
+                    while !job.is_finished() {
+                        thread::park_timeout(Duration::from_millis(5));
+                    }
+                    let report = job.join().unwrap_or_else(
+                        |_| serde_json::json!({"state":"fail", "error":"JNI_FAILURE"}),
+                    );
+                    let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                    shared.snapshot.compositor = Some(report);
+                    shared.snapshot.compositor_workers = 0;
                 }
                 gl.request_stop();
                 io.request_stop();

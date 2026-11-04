@@ -6,12 +6,15 @@ import subprocess
 
 root = Path(__file__).resolve().parents[1]
 lock = json.loads((root / "native/deps.lock.json").read_text())
+subprocess.run(["python3", str(root / "scripts/prepare-smithay")], check=True)
 metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--format-version=1", "--filter-platform", "aarch64-linux-android"], cwd=root))
 packages = {p["id"]: p for p in metadata["packages"]}
 active = {node["id"]: node for node in metadata["resolve"]["nodes"]}
 smithay = [packages[key] for key in active if packages[key]["name"] == "smithay"]
 if len(smithay) != 1 or smithay[0]["version"] != lock["smithay"]["version"]:
     raise SystemExit("Smithayの固定版がresolveされていません")
+if smithay[0]["source"] is not None or Path(smithay[0]["manifest_path"]).resolve() != root / "native/generated/smithay/Cargo.toml":
+    raise SystemExit("Smithayの固定patch sourceがresolveされていません")
 features = set(active[smithay[0]["id"]]["features"])
 allowed = {"desktop", "wayland_frontend", "wayland-server", "wayland-protocols", "wayland-protocols-wlr", "wayland-protocols-misc", "tempfile"}
 if features != allowed:

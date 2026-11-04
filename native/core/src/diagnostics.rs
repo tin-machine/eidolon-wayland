@@ -22,6 +22,8 @@ pub struct Snapshot {
     pub helper_workers: usize,
     pub native_deps: Option<crate::compositor::primitives::Report>,
     pub dependency_workers: usize,
+    pub compositor: Option<serde_json::Value>,
+    pub compositor_workers: usize,
     pub render: eidolon_render::Snapshot,
     pub transport: eidolon_transport::session::Snapshot,
 }
@@ -44,6 +46,8 @@ impl Default for Snapshot {
             helper_workers: 0,
             native_deps: None,
             dependency_workers: 0,
+            compositor: None,
+            compositor_workers: 0,
             render: Default::default(),
             transport: Default::default(),
         }

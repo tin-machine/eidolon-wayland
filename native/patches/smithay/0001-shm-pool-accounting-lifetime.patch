@@ -1,0 +1,78 @@
+--- a/src/wayland/shm/pool.rs
++++ b/src/wayland/shm/pool.rs
+@@ -54,12 +54,23 @@
+ struct InnerPool {
+     map: RwLock<MemMap>,
+     fd: OwnedFd,
++    // Kept after map/fd so accounting is released only after both are dropped.
++    _drop_guard: Option<DropGuard>,
+ }
+ 
+ // SAFETY: The memmap is owned by the pool and content is only accessible via a reference.
+ unsafe impl Send for InnerPool {}
+ // SAFETY: The memmap is guarded by a RwLock, meaning no writers may mutate the memmap when it is being read.
+ unsafe impl Sync for InnerPool {}
++
++// The observer carries accounting only; never expose its contents in diagnostics.
++struct DropGuard(Box<dyn Send + Sync>);
++impl std::fmt::Debug for DropGuard {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        let _ = &self.0;
++        f.write_str("DropGuard")
++    }
++}
+ 
+ pub enum ResizeError {
+     InvalidSize,
+@@ -79,6 +90,7 @@
+         Ok(InnerPool {
+             map: RwLock::new(memmap),
+             fd,
++            _drop_guard: None,
+         })
+     }
+ 
+@@ -173,6 +185,17 @@
+ }
+ 
+ impl Pool {
++    pub fn new_with_drop_guard(
++        fd: OwnedFd,
++        size: NonZeroUsize,
++        guard: Box<dyn Send + Sync>,
++    ) -> Result<Self, OwnedFd> {
++        InnerPool::new(fd, size).map(|mut inner| {
++            inner._drop_guard = Some(DropGuard(guard));
++            Self { inner: Some(inner) }
++        })
++    }
++
+     pub fn new(fd: OwnedFd, size: NonZeroUsize) -> Result<Self, OwnedFd> {
+         InnerPool::new(fd, size).map(|p| Self { inner: Some(p) })
+     }
+--- a/src/wayland/shm/mod.rs
++++ b/src/wayland/shm/mod.rs
+@@ -470,6 +470,23 @@
+     inner: Arc<Pool>,
+ }
+ 
++impl ShmPoolUserData {
++    /// Create a pool with an accounting guard kept through the deferred unmap/close.
++    /// The guard is dropped on mapping failure, or after the actual mapping and fd.
++    pub fn new_with_drop_guard(
++        fd: std::os::fd::OwnedFd,
++        size: std::num::NonZeroUsize,
++        guard: Box<dyn Send + Sync>,
++    ) -> Result<Self, std::os::fd::OwnedFd> {
++        Pool::new_with_drop_guard(fd, size, guard).map(|inner| Self { inner: Arc::new(inner) })
++    }
++
++    /// Current mapped size, including successful pool resizes.
++    pub fn size(&self) -> usize {
++        self.inner.size()
++    }
++}
++
+ type DestructionHook = dyn Fn(&mut dyn Any, &wl_buffer::WlBuffer) + Send + Sync;
+ 
+ /// User data of shm WlBuffer
