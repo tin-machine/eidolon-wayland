@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""APK内のnative版情報・ABI・ELF依存・hashを検査する。端末実行は別判定。"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import struct
+import tempfile
+import zipfile
+
+from native_build import ABI, API, NDK, TARGET, canonical
+
+
+def inspect(apk):
+    sdk = Path(os.environ.get("ANDROID_HOME", "/opt/android-sdk"))
+    readelf = sdk / "ndk" / NDK / "toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+    with zipfile.ZipFile(apk) as archive:
+        names = archive.namelist()
+        libpath = f"lib/{ABI}/libeidolon_native.so"
+        if names.count(libpath) != 1 or names.count("assets/native-build.json") != 1:
+            raise ValueError("製品nativeまたは版情報が欠落・重複しています")
+        if any(name.endswith("/libeidolon_native.so") and name != libpath for name in names):
+            raise ValueError("想定外ABIの製品nativeがあります")
+        metadata = json.loads(archive.read("assets/native-build.json"))
+        info = metadata["build_info"]
+        if (metadata["abi"], metadata["api"], metadata["ndk"], info["target"], info["schema"]) != (ABI, API, NDK, TARGET, 1):
+            raise ValueError("ABI/API/NDK/target/schemaが不一致です")
+        data = archive.read(libpath)
+        if hashlib.sha256(data).hexdigest() != metadata["files"]["libeidolon_native.so"]:
+            raise ValueError("APK内soと生成metadataのhashが不一致です")
+        if canonical(info).encode() not in data:
+            raise ValueError("APK内soに期待した版情報がありません")
+        with tempfile.TemporaryDirectory(prefix="eidolon-elf-") as folder:
+            elf = Path(folder) / "lib.so"
+            elf.write_bytes(data)
+            output = subprocess.check_output([str(readelf), "-h", "-d", "--dyn-syms", "--wide", str(elf)], text=True)
+            note_dump = subprocess.check_output([str(readelf), "--hex-dump=.note.android.ident", str(elf)], text=True)
+        note = bytearray()
+        for line in note_dump.splitlines():
+            if re.match(r"\s*0x[0-9a-f]+\s", line):
+                for word in line.split()[1:5]:
+                    if re.fullmatch(r"[0-9a-fA-F]{8}", word):
+                        note.extend(bytes.fromhex(word))
+        # NDK linkerが付けたnoteで実際のAPI/buildも確認する。自己申告metadataだけに依存しない。
+        if len(note) < 24:
+            raise ValueError("Android ELF noteがありません")
+        name_size, description_size, note_type = struct.unpack_from("<III", note)
+        descriptor = 12 + ((name_size + 3) // 4) * 4
+        if (note[12:12 + name_size] != b"Android\0" or note_type != 1
+                or description_size < 132 or len(note) < descriptor + description_size):
+            raise ValueError("Android ELF noteが不正です")
+        actual_api = struct.unpack_from("<I", note, descriptor)[0]
+        actual_ndk_build = bytes(note[descriptor + 68:descriptor + 132]).split(b"\0", 1)[0].decode("ascii")
+        if actual_api != API or actual_ndk_build != NDK.split(".")[-1]:
+            raise ValueError("ELFの実際のAPI/NDK buildが不一致です")
+        if not re.search(r"Machine:\s+AArch64", output):
+            raise ValueError("製品nativeがAArch64ではありません")
+        required = re.findall(r"\(NEEDED\).*\[([^]]+)\]", output)
+        public = {"libc.so", "libm.so", "libdl.so", "liblog.so", "libandroid.so", "libEGL.so", "libGLESv3.so"}
+        if set(required) - public:
+            raise ValueError(f"許可されていないELF依存: {sorted(set(required) - public)}")
+        if "Java_io_github_tinmachine_eidolon_NativeBridge_nativeBuildInfo" not in output:
+            raise ValueError("JNI版情報symbolがありません")
+    badging = subprocess.check_output([str(sdk / "build-tools/35.0.0/aapt"), "dump", "badging", str(apk)], text=True)
+    version = re.search(r"package: name='io.github.tinmachine.eidolon' versionCode='(\d+)'", badging)
+    min_sdk = re.search(r"sdkVersion:'(\d+)'", badging)
+    if not version or int(version[1]) != info["apk_version_code"] or not min_sdk or int(min_sdk[1]) != API:
+        raise ValueError("APK manifestの版/APIとnative版情報が不一致です")
+    return {**metadata, "needed": required, "status": "pass"}
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--apk", type=Path, required=True)
+    args = parser.parse_args()
+    print(json.dumps(inspect(args.apk), indent=2))

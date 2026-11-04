@@ -1,0 +1,16 @@
+[package]
+name = "eidolon-android"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "eidolon_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+eidolon-model.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "=0.22.4"

@@ -93,7 +93,9 @@ docs/design/tasks.jsonのB01から、一つのタスクずつ実装してくだ�
 
 同じ会話ならモデル選択で利用可能なSolへ切り替える。CLIでは`/model`が入口である。[公式Models](https://learn.chatgpt.com/docs/models)はUI/CLIの選択方法を説明している。世代・利用可否はaccount/clientによって異なるので、設計書に特定のSol IDや料金を固定しない。今回確認したローカルCLIは0.155.1で、モデル設定自体は変更していない。
 
-別会話でもこのrepositoryだけで再開できる。実装者は`docs/progress.md`にtask ID、commit、検証結果、残件を更新する。会話の記憶を完了証拠にしない。`tasks.json`の初期statusはすべて`planned`であり、今回の設計作業で実装済みに変更しない。
+別会話でもこのrepositoryだけで再開できる。実装者は[進捗記録](../progress.md)にtask ID、commit、検証結果、残件を更新する。会話の記憶を完了証拠にしない。`tasks.json`は設計時すべて`planned`で開始し、実装検証に合わせてstatusを更新する。
+
+2026-11-04の実装開始後、ユーザーはHMD視認・物理入力の確認を最終段階にまとめると指定した。自動部分の成立を確認したtaskから後続実装・ADB試験を進めてよい。手動部分が残るcheck全体は`not_run`、taskは`in_progress`として残し、最終受入れまで`done`へ変更しない。
 
 ## 実装中の判断と引継ぎ
 

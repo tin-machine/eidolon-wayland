@@ -9,3 +9,7 @@ android/local.properties
 __pycache__/
 probes/native/target/
 probes/native-deps/build/
+/target/
+/native/build/
+/native/.cache/
+/native/generated/

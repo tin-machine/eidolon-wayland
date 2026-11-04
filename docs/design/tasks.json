@@ -2,7 +2,7 @@
   "schema": 1,
   "baseline_commit": "76baac2ca860aeb89bd51d61a23084e2fe88b285",
   "target_implementer": "Codex Sol (世代固定なし)",
-  "status_note": "全taskは未実装。commandはavailable_afterで指定するtaskが入口を作成・拡張した後に使用する。placeholdersは実測した値を指定する。",
+  "status_note": "statusは受入条件全体の状態。HMD/物理操作を含むcheckはユーザー指定により最終段階にまとめ、それまでは自動部分passと手動not_runを区別する。後続実装は自動gate成立後に進めてよい。commandはavailable_afterで指定するtaskの実装後に使う。",
   "checks": {
     "design": {
       "kind": "design",
@@ -267,7 +267,7 @@
     {
       "id": "B01",
       "title": "Rust workspace・JNI版情報",
-      "status": "planned",
+      "status": "done",
       "depends_on": [],
       "spec": "docs/design/phase-0-1.md#b01",
       "files": [
@@ -277,7 +277,9 @@
         ".gitignore",
         "native/model/",
         "native/android/",
-        "docs/progress.md"
+        "docs/progress.md",
+        "scripts/native-build-inputs",
+        "scripts/native_build.py"
       ],
       "steps": [
         "modelとandroidの二crateから開始する",
@@ -300,7 +302,7 @@
     {
       "id": "B02",
       "title": "Gradle→Cargo→APK同梱",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "B01"
       ],
@@ -312,7 +314,9 @@
         "scripts/quest-smoke",
         "android/app/build.gradle.kts",
         "android/app/src/main/java/io/github/tinmachine/eidolon/NativeBridge.kt",
-        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt"
+        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt",
+        "scripts/quest_device.py",
+        "scripts/tests/"
       ],
       "steps": [
         "profile別のnative生成taskをmergeへ依存させる",

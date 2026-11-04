@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""時刻・絶対パスを含めず、Gradle/Cargo共通のnative版情報を返す。"""
+import argparse
+from native_build import TARGET, canonical, identity
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--version", type=int, required=True)
+parser.add_argument("--profile", choices=["debug", "release"], required=True)
+parser.add_argument("--target", default=TARGET)
+args = parser.parse_args()
+print(canonical(identity(args.version, args.profile, args.target)))

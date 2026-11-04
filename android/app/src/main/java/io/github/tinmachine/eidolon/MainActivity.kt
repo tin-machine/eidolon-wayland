@@ -37,7 +37,7 @@ import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.UIPanelSettings
 import com.meta.spatial.vr.VRFeature
 
-/** Phase 0: 最小のXRパネル。Wayland/Rust rendererは後続フェーズで追加する。 */
+/** XR診断パネル。nativeとAPKの版整合をここでも表示する。 */
 class MainActivity : AppSystemActivity() {
     private var panel: Entity? = null
 
@@ -47,6 +47,12 @@ class MainActivity : AppSystemActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "activity_created version=${BuildConfig.VERSION_CODE} api=${Build.VERSION.SDK_INT}")
+        val native = NativeBridge.status
+        if (native.ready) {
+            Log.i(TAG, "native_ready version=${BuildConfig.VERSION_CODE} info=${native.info}")
+        } else {
+            Log.e(TAG, "native_failed version=${BuildConfig.VERSION_CODE} error=${native.error}")
+        }
     }
 
     override fun onSceneReady() {
@@ -79,6 +85,8 @@ class MainActivity : AppSystemActivity() {
                             ) {
                                 Text("Eidolon", color = Color.White, style = MaterialTheme.typography.headlineLarge)
                                 Text("Phase 0 · Build ${BuildConfig.VERSION_CODE}", color = Color(0xFF67E8C3))
+                                val native = NativeBridge.status
+                                Text(if (native.ready) "Rust ready · Build ${BuildConfig.VERSION_CODE}" else "Rust load failed: ${native.error}", color = if (native.ready) Color(0xFF67E8C3) else Color.Red)
                                 Text("Spatial SDK 0.15.0 · Android API ${Build.VERSION.SDK_INT}", color = Color.White)
                                 Button(onClick = {
                                     clicks++

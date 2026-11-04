@@ -1,9 +1,33 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import groovy.json.JsonOutput
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val eidolonVersion = providers.gradleProperty("eidolonVersionCode").orElse("1")
+val nativeTasks = listOf("debug", "release").associateWith { profile ->
+    val title = profile.replaceFirstChar { it.uppercaseChar() }
+    val nativeOutput = layout.buildDirectory.dir("generated/jniLibs/$profile")
+    val assetOutput = objects.directoryProperty().convention(layout.buildDirectory.dir("generated/nativeAssets/$profile"))
+    val buildInfo = providers.exec {
+        commandLine("python3", file("../../scripts/native-build-inputs"), "--version", eidolonVersion.get(), "--profile", profile)
+    }.standardOutput.asText.map { it.trim() }
+    val task = tasks.register<Exec>("build${title}EidolonNative") {
+        inputs.property("buildInfo", buildInfo)
+        inputs.property("ndk", "27.3.13750724")
+        inputs.property("api", 34)
+        inputs.property("abi", "arm64-v8a")
+        outputs.dir(nativeOutput)
+        outputs.dir(assetOutput)
+        doFirst {
+            commandLine("python3", file("../../scripts/build-native"), "--version", eidolonVersion.get(), "--profile", profile,
+                "--output", nativeOutput.get().asFile, "--assets", assetOutput.get().asFile)
+        }
+    }
+    Triple(task, assetOutput, buildInfo)
 }
 
 android {
@@ -14,7 +38,7 @@ android {
         applicationId = "io.github.tinmachine.eidolon"
         minSdk = 34
         targetSdk = 34 // Quest実機はAndroid 14。Play Store向けアプリではない。
-        versionCode = providers.gradleProperty("eidolonVersionCode").orElse("1").get().toInt()
+        versionCode = eidolonVersion.get().toInt()
         versionName = "0.1.$versionCode"
         ndk { abiFilters += "arm64-v8a" }
     }
@@ -31,6 +55,24 @@ android {
         disable += "ExpiredTargetSdkVersion"
     }
     packaging { resources.excludes += "META-INF/LICENSE" }
+    // APK検査で照合するhashを保持する。debug/releaseで同じcopyを使用しない。
+    packaging { jniLibs.keepDebugSymbols += "**/libeidolon_native.so" }
+    listOf("debug", "release").forEach { profile ->
+        sourceSets[profile].jniLibs.srcDir(layout.buildDirectory.dir("generated/jniLibs/$profile"))
+        buildTypes.getByName(profile).buildConfigField("String", "NATIVE_BUILD_INFO_JSON", JsonOutput.toJson(nativeTasks.getValue(profile).third.get()))
+    }
+}
+androidComponents {
+    onVariants { variant ->
+        val (task, assets) = nativeTasks.getValue(variant.buildType!!)
+        variant.sources.assets?.addGeneratedSourceDirectory(task) { assets }
+    }
+}
+tasks.configureEach {
+    listOf("debug", "release").forEach { profile ->
+        val title = profile.replaceFirstChar { it.uppercaseChar() }
+        if (name == "merge${title}JniLibFolders") dependsOn(nativeTasks.getValue(profile).first)
+    }
 }
 kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }
 

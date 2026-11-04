@@ -1,0 +1,19 @@
+//! 初期予算。性能保証や、入力検査済みという意味ではない。
+pub const COMMAND_BYTES: usize = 16 * 1024;
+pub const CORE_COMMANDS: usize = 256;
+pub const UI_COMMANDS: usize = 128;
+pub const POLL_EVENTS: usize = 64;
+pub const POLL_BYTES: usize = 64 * 1024;
+pub const DIAGNOSTIC_BYTES: usize = 1024 * 1024;
+pub const TOPLEVELS: usize = 8;
+pub const VISIBLE_PANELS: usize = 1; // I05で2へ拡張する。
+pub const CLIENTS: usize = 4;
+pub const SURFACES: usize = 64;
+pub const BUFFER_DIMENSION: u32 = 2048;
+pub const BUFFER_BYTES: usize = 16 * 1024 * 1024;
+pub const CLIENT_SHM_BYTES: usize = 64 * 1024 * 1024;
+pub const TOTAL_SHM_BYTES: usize = 128 * 1024 * 1024;
+pub const CLIENT_SHM_POOLS: usize = 8;
+pub const PIXEL_BYTES: usize = 128 * 1024 * 1024;
+pub const FORWARD_CHANNELS: usize = 8;
+pub const EXEC_RING_BYTES: usize = 64 * 1024;

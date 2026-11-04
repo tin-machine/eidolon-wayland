@@ -34,5 +34,6 @@ cd "$repo_root/android"
   -PeidolonVersionCode="$version_code" :app:assembleDebug :app:lintDebug \
   2>&1 | tee "$run_dir/build.log"
 cp app/build/outputs/apk/debug/app-debug.apk "$run_dir/eidolon-debug.apk"
+python3 "$repo_root/scripts/check-native-package" --apk "$run_dir/eidolon-debug.apk" | tee "$run_dir/native-package.json"
 sha256sum "$run_dir/eidolon-debug.apk" | tee "$run_dir/apk.sha256"
 printf 'APK: %s\n' "$run_dir/eidolon-debug.apk"

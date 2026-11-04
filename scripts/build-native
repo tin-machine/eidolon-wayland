@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""API34/arm64の製品nativeを生成。debug/releaseの出力と版情報を分離する。"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import shutil
+
+from native_build import ABI, API, NDK, ROOT, TARGET, canonical, identity
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--version", type=int, required=True)
+parser.add_argument("--profile", choices=["debug", "release"], default="debug")
+parser.add_argument("--output", type=Path, required=True)
+parser.add_argument("--assets", type=Path, required=True)
+args = parser.parse_args()
+os.umask(0o077)
+info = identity(args.version, args.profile)
+env = os.environ.copy()
+ndk = Path(env.get("ANDROID_HOME", "/opt/android-sdk")) / "ndk" / NDK
+if not (ndk / "source.properties").is_file():
+    raise SystemExit(f"固定NDKがありません: {ndk}")
+env["ANDROID_NDK_HOME"] = str(ndk)
+env["EIDOLON_BUILD_INFO_JSON"] = canonical(info)
+# workspace版を往復すると、Cargoが別fingerprintに対応する同名cdylibをfreshと
+# 判定する場合がある。同名出力を異なるpackage版で共有しない。
+env["CARGO_TARGET_DIR"] = str(ROOT / "target/native" / NDK / info["crate_version"])
+command = ["cargo", "ndk", "-t", ABI, "--platform", str(API),
+           "build", "--locked", "-p", "eidolon-android"]
+if args.profile == "release":
+    command.append("--release")
+subprocess.run(command, cwd=ROOT, env=env, check=True)
+source_library = Path(env["CARGO_TARGET_DIR"]) / TARGET / args.profile / "libeidolon_native.so"
+if canonical(info).encode() not in source_library.read_bytes():
+    raise SystemExit("Cargo出力の版情報が不一致です。古いsoはpackagingへ渡しません")
+library = args.output / ABI / "libeidolon_native.so"
+library.parent.mkdir(parents=True, exist_ok=True)
+# cargo-ndk 4.1.2の-oはmtime比較でcopyを省略する。古いcacheへの切替でも
+# 正しい内容を必ず採用するため、検査済み成果物を自分で無条件copyする。
+shutil.copyfile(source_library, library)
+metadata = {"build_info": info, "abi": ABI, "api": API, "ndk": NDK,
+            "files": {library.name: hashlib.sha256(library.read_bytes()).hexdigest()}}
+args.assets.mkdir(parents=True, exist_ok=True)
+(args.assets / "native-build.json").write_text(json.dumps(metadata, indent=2) + "\n")
+print(canonical(metadata))

@@ -9,8 +9,9 @@ from pathlib import Path
 import re
 import subprocess
 import time
+import zipfile
+from quest_device import PACKAGE, package_uid
 
-PACKAGE = "io.github.tinmachine.eidolon"
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--serial", required=True, help="adb devicesに出るUSB serialまたはIP:port")
 parser.add_argument("--apk", required=True, type=Path)
@@ -44,7 +45,11 @@ manifest = re.search(r"package: name='([^']+)' versionCode='([^']+)'", badging)
 if not manifest or manifest.group(1) != PACKAGE:
     parser.error("指定APKはEidolonではありません")
 expected_version = int(manifest.group(2))
-result = {"package": PACKAGE, "expected_version": expected_version, "apk_sha256": hashlib.sha256(args.apk.read_bytes()).hexdigest(), "scene_ready": False, "xr_focused": False, "hmd_visual_confirmation": "pending"}
+with (run / "native-package.json").open("w") as native_output:
+    subprocess.run(["python3", str(Path(__file__).resolve().parent / "check-native-package"), "--apk", str(args.apk)], check=True, stdout=native_output)
+with zipfile.ZipFile(args.apk) as archive:
+    expected_native = json.loads(archive.read("assets/native-build.json"))["build_info"]
+result = {"package": PACKAGE, "expected_version": expected_version, "expected_native": expected_native, "native_ready": False, "apk_sha256": hashlib.sha256(args.apk.read_bytes()).hexdigest(), "scene_ready": False, "xr_focused": False, "hmd_visual_confirmation": "pending"}
 stream = None
 stream_file = None
 logs = ""
@@ -59,12 +64,10 @@ try:
     adb("shell", "am", "force-stop", PACKAGE)
     started = adb("shell", "date", "+%m-%d_%H:%M:%S.000").strip().replace("_", " ")
     uid_text = adb("shell", "pm", "list", "packages", "-U", PACKAGE)
-    uid_match = re.search(r"uid:(\d+)", uid_text)
-    if not uid_match:
-        raise RuntimeError("APK UIDを取得できませんでした")
+    uid = package_uid(uid_text)
     # 起動直後のログをring bufferの上書きで失わないよう、起動前から連続採取する。
     stream_file = (run / "app.log").open("w")
-    stream = subprocess.Popen(["adb", "-s", args.serial, "logcat", "-v", "threadtime", "-T", started, "--uid=" + uid_match.group(1)], stdout=stream_file, stderr=subprocess.STDOUT)
+    stream = subprocess.Popen(["adb", "-s", args.serial, "logcat", "-v", "threadtime", "-T", started, "--uid=" + str(uid)], stdout=stream_file, stderr=subprocess.STDOUT)
     (run / "launch.log").write_text(adb("shell", "am", "start", "-W", "-n", PACKAGE + "/.MainActivity"))
     deadline = time.monotonic() + args.timeout
     logs = ""
@@ -78,13 +81,22 @@ try:
             if "FATAL EXCEPTION" in logs or "Fatal signal" in logs:
                 raise RuntimeError("対象プロセスに致命的エラーがあります")
             result["xr_focused"] = "XR_SESSION_STATE_FOCUSED" in logs
+            if "native_failed" in logs:
+                raise RuntimeError("native libraryの読込または版整合に失敗しました")
+            native = re.search(r"native_ready version=(\d+) info=(\{[^\n]+\})", logs)
+            if native:
+                if int(native[1]) != expected_version or json.loads(native[2]) != expected_native:
+                    raise RuntimeError("実行中nativeとAPKの版が不一致です")
+                result["native_ready"] = True
             if f"scene_ready version={expected_version}" in logs and f"panel_created version={expected_version}" in logs:
                 result["scene_ready"] = True
-                if not args.require_focus or result["xr_focused"]:
+                if result["native_ready"] and (not args.require_focus or result["xr_focused"]):
                     break
         time.sleep(2)
     if not result["scene_ready"]:
         raise RuntimeError("scene_ready / panel_createdを制限時間内に確認できませんでした。HMDの装着状態とログを確認してください")
+    if not result["native_ready"]:
+        raise RuntimeError("native_readyを制限時間内に確認できませんでした")
     if args.require_focus and not result["xr_focused"]:
         raise RuntimeError("XR FOCUSEDを確認できませんでした。HMD装着・system dialogを確認してください")
     time.sleep(3)

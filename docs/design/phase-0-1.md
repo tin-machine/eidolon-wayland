@@ -37,6 +37,8 @@ Gradleのdebug sourceSetは`app/build/generated/jniLibs/debug`を参照し、`me
 
 native taskのinputs: Cargo.lock、全workspace source、toolchain、NDK版/API/ABI/profile、source digest、APK versionCode。outputs: 対象ABIのsoとmetadata。入力digestは対象ファイル内容から作り、Git dirtyの有無だけで同一視しない。BuildConfigの版情報も同じ入力から生成する。
 
+実装時の版往復試験で、Cargoが別package版の同名cdylibをfreshと判定することを再現した。target cacheはNDK版・workspace版で分ける。さらにcargo-ndk 4.1.2の`-o`はmtime比較で古いcacheのcopyを省略するため、実装scriptでは`-o`を使わず検査済み成果物を生成先へ無条件copyする。生成直後とAPK内の両方で埋込みJSONを照合し、元の版へ戻す場合も検査する。[試行記録](../progress.md)を参照。
+
 検証順:
 
 1. `scripts/build-android 3`でassemble/lint。APK zip内に`lib/arm64-v8a/libeidolon_native.so`が一つだけあることを確認。
