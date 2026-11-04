@@ -1,6 +1,6 @@
 //! SSHはI/O ownerが作るTokio runtime上だけで実行する。再接続前に旧runtimeを回収する。
 use crate::{
-    exec,
+    exec, forward, forward_probe,
     host_key::{Profile, parse_key},
 };
 use eidolon_model::{
@@ -14,6 +14,7 @@ use russh::{
 use serde::Serialize;
 use std::{
     net::{Ipv4Addr, SocketAddr},
+    path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -26,6 +27,14 @@ use tokio::{
     time::{Instant, timeout, timeout_at},
 };
 use tokio_util::sync::CancellationToken;
+
+pub(crate) fn ssh_config() -> client::Config {
+    client::Config {
+        window_size: 256 * 1024,
+        channel_buffer_size: 128,
+        ..Default::default()
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize)]
 pub enum State {
@@ -52,6 +61,8 @@ pub struct Snapshot {
     pub credential_requests: u64,
     pub error: Option<&'static str>,
     pub probe: exec::Report,
+    pub forward: forward::Report,
+    pub forward_probe: Option<forward_probe::Report>,
 }
 #[derive(Clone, Copy)]
 struct Deadlines {
@@ -69,6 +80,8 @@ impl Default for Deadlines {
     }
 }
 struct Connect {
+    session: SessionId,
+    router: Arc<forward::Router>,
     profile: Profile,
     pin: PublicKey,
     request: CommandSeq,
@@ -80,6 +93,9 @@ struct Shared {
     credential: Option<PrivateKey>,
     busy: bool,
     cancel: Option<CancellationToken>,
+    router: Option<Arc<forward::Router>>,
+    forward: Option<(PathBuf, String)>,
+    forward_busy: bool,
 }
 struct Signals {
     shared: Mutex<Shared>,
@@ -112,6 +128,9 @@ impl Controller {
                 credential: None,
                 busy: false,
                 cancel: None,
+                router: None,
+                forward: None,
+                forward_busy: false,
             }),
             cv: Condvar::new(),
             notify: Notify::new(),
@@ -172,7 +191,11 @@ impl Controller {
         };
         let cancel = CancellationToken::new();
         s.cancel = Some(cancel.clone());
+        let router = Arc::new(forward::Router::new(session));
+        s.router = Some(router.clone());
         s.connect = Some(Connect {
+            session,
+            router,
             profile,
             pin,
             request,
@@ -234,15 +257,48 @@ impl Controller {
         Status::Accepted
     }
     pub fn snapshot(&self) -> Snapshot {
-        let mut report = self
+        let shared = self
             .signals
             .shared
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .report
-            .clone();
+            .unwrap_or_else(|e| e.into_inner());
+        let mut report = shared.report.clone();
+        if let Some(router) = &shared.router {
+            report.forward = router.report();
+        }
         report.tokio_threads = self.signals.tokio_workers.load(Ordering::Acquire);
         report
+    }
+    pub fn forward_probe(&self, session: SessionId, files: &Path, nonce: &str) -> Status {
+        if !files.is_absolute() || !forward_probe::valid_nonce(nonce) {
+            return Status::InvalidArgument;
+        }
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Status::Stale;
+        }
+        if self.signals.stop.load(Ordering::Acquire)
+            || s.report.state != State::Ready
+            || s.cancel.as_ref().is_some_and(|c| c.is_cancelled())
+        {
+            return Status::NotReady;
+        }
+        if s.forward_busy {
+            return Status::Busy;
+        }
+        s.forward_busy = true;
+        s.report.forward_probe = Some(forward_probe::Report {
+            state: "queued",
+            nonce: nonce.into(),
+            ..Default::default()
+        });
+        s.forward = Some((files.into(), nonce.into()));
+        self.signals.notify.notify_one();
+        Status::Accepted
     }
     pub fn request_stop(&self) {
         self.signals.stop.store(true, Ordering::Release);
@@ -296,12 +352,7 @@ fn owner(signals: &Arc<Signals>, endpoint: SocketAddr, deadlines: Deadlines) {
             .build();
         let result = match runtime {
             Ok(runtime) => {
-                let result = runtime.block_on(async {
-                    tokio::select! {
-                        result=connection(signals,endpoint,&connect,deadlines)=>result,
-                        _=connect.cancel.cancelled()=>Err("CANCELLED"),
-                    }
-                });
+                let result = runtime.block_on(connection(signals, endpoint, &connect, deadlines));
                 // UI/coreではなくownerでdrop。未完SSH task/FD/秘密keyとTokio workerを回収。
                 drop(runtime);
                 result
@@ -312,6 +363,10 @@ fn owner(signals: &Arc<Signals>, endpoint: SocketAddr, deadlines: Deadlines) {
             s.credential = None;
             s.cancel = None;
             s.busy = false;
+            s.forward = None;
+            s.forward_busy = false;
+            s.report.forward = connect.router.report();
+            s.router = None;
             s.report.owned_connections = 0;
             s.report.credential_request = None;
             if result == Err("CANCELLED") {
@@ -327,9 +382,71 @@ fn owner(signals: &Arc<Signals>, endpoint: SocketAddr, deadlines: Deadlines) {
 struct Peer {
     pin: PublicKey,
     mismatch: Arc<AtomicBool>,
+    session: SessionId,
+    router: Arc<forward::Router>,
 }
 impl client::Handler for Peer {
     type Error = russh::Error;
+    // この製品で受け付けるserver起点channelは登録済みStreamLocalだけ。
+    async fn server_channel_open_session(
+        &mut self,
+        _: russh::Channel<client::Msg>,
+        _: client::ChannelOpenHandle,
+        _: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        _: russh::Channel<client::Msg>,
+        _: client::ChannelOpenHandle,
+        _: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    async fn server_channel_open_direct_streamlocal(
+        &mut self,
+        _: russh::Channel<client::Msg>,
+        _: &str,
+        _: client::ChannelOpenHandle,
+        _: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    async fn server_channel_open_x11(
+        &mut self,
+        _: russh::Channel<client::Msg>,
+        _: &str,
+        _: u32,
+        _: client::ChannelOpenHandle,
+        _: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        _: russh::Channel<client::Msg>,
+        _: &str,
+        _: u32,
+        _: &str,
+        _: u32,
+        _: client::ChannelOpenHandle,
+        _: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    async fn server_channel_open_direct_tcpip(
+        &mut self,
+        _: russh::Channel<client::Msg>,
+        _: &str,
+        _: u32,
+        _: &str,
+        _: u32,
+        _: client::ChannelOpenHandle,
+        _: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
     async fn check_server_key(
         &mut self,
         key: &PublicKeyOrCertificate,
@@ -340,6 +457,16 @@ impl client::Handler for Peer {
             self.mismatch.store(true, Ordering::Release);
         }
         Ok(accepted)
+    }
+    async fn server_channel_open_forwarded_streamlocal(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        path: &str,
+        reply: client::ChannelOpenHandle,
+        _: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.router.open(self.session, path, channel, reply);
+        Ok(())
     }
 }
 async fn connection(
@@ -353,80 +480,131 @@ async fn connection(
     let peer = Peer {
         pin: connect.pin.clone(),
         mismatch: mismatch.clone(),
+        session: connect.session,
+        router: connect.router.clone(),
     };
-    let mut client = timeout(
-        deadlines.connect,
-        client::connect(Arc::new(client::Config::default()), endpoint, peer),
-    )
-    .await
-    .map_err(|_| "CONNECT_TIMEOUT")?
-    .map_err(|_| {
-        if mismatch.load(Ordering::Acquire) {
-            "HOST_KEY_MISMATCH"
-        } else {
-            "SSH_CONNECT_FAILED"
+    let setup = async {
+        let mut client = timeout(
+            deadlines.connect,
+            client::connect(Arc::new(ssh_config()), endpoint, peer),
+        )
+        .await
+        .map_err(|_| "CONNECT_TIMEOUT")?
+        .map_err(|_| {
+            if mismatch.load(Ordering::Acquire) {
+                "HOST_KEY_MISMATCH"
+            } else {
+                "SSH_CONNECT_FAILED"
+            }
+        })?;
+        signals.update(|s| {
+            s.report.owned_connections = 1;
+            s.report.state = State::AwaitingCredential;
+            s.report.credential_request = Some(connect.request);
+            s.report.credential_requests += 1;
+        });
+        let auth_deadline = Instant::now() + deadlines.auth;
+        let key = timeout_at(auth_deadline, async {
+            loop {
+                let notified = signals.notify.notified();
+                if let Some(key) = signals
+                    .shared
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .credential
+                    .take()
+                {
+                    break key;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .map_err(|_| "AUTH_TIMEOUT")?;
+        signals.update(|s| {
+            s.report.state = State::Authenticating;
+            s.report.credential_request = None;
+        });
+        let authenticated = timeout_at(
+            auth_deadline,
+            client.authenticate_publickey(
+                &connect.profile.username,
+                PrivateKeyWithHashAlg::new(Arc::new(key), None),
+            ),
+        )
+        .await
+        .map_err(|_| "AUTH_TIMEOUT")?
+        .map_err(|_| "AUTH_FAILED")?;
+        if !authenticated.success() {
+            return Err("AUTH_FAILED");
         }
-    })?;
-    signals.update(|s| {
-        s.report.owned_connections = 1;
-        s.report.state = State::AwaitingCredential;
-        s.report.credential_request = Some(connect.request);
-        s.report.credential_requests += 1;
-    });
-    let auth_deadline = Instant::now() + deadlines.auth;
-    let key = timeout_at(auth_deadline, async {
-        loop {
-            let notified = signals.notify.notified();
-            if let Some(key) = signals
+        let report = timeout(deadlines.exec, async {
+            let channel = client
+                .channel_open_session()
+                .await
+                .map_err(|_| "SSH_IO_FAILED")?;
+            exec::probe(channel, |report| {
+                signals.update(|s| s.report.probe = report.clone())
+            })
+            .await
+        })
+        .await
+        .map_err(|_| "EXEC_TIMEOUT")??;
+        signals.update(|s| {
+            s.report.probe = report;
+            s.report.state = State::Ready;
+        });
+        Ok::<_, &'static str>(client)
+    };
+    let mut client = tokio::select! { biased; _=connect.cancel.cancelled()=>return Err("CANCELLED"), result=setup=>result? };
+    loop {
+        if connect.cancel.is_cancelled() {
+            return Err("CANCELLED");
+        }
+        let notified = signals.notify.notified();
+        let forward = signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .forward
+            .take();
+        if let Some((files, nonce)) = forward {
+            let uid = signals
                 .shared
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .credential
-                .take()
-            {
-                break key;
+                .report
+                .probe
+                .uid
+                .ok_or("PROTOCOL_ERROR")?;
+            let report = forward_probe::run(
+                &client,
+                &connect.router,
+                forward_probe::Request {
+                    session: connect.session,
+                    files: &files,
+                    nonce: &nonce,
+                    uid,
+                },
+                &connect.cancel,
+                |r| signals.update(|s| s.report.forward_probe = Some(r.clone())),
+            )
+            .await;
+            signals.update(|s| s.forward_busy = false);
+            if connect.cancel.is_cancelled() {
+                return Err("CANCELLED");
             }
-            notified.await;
+            if let Some(error) = report.error {
+                return Err(error);
+            }
+        } else {
+            tokio::select! { biased;
+                _=connect.cancel.cancelled()=>return Err("CANCELLED"),
+                _=&mut client=>return Err(if mismatch.load(Ordering::Acquire) { "HOST_KEY_MISMATCH" } else { "REMOTE_EXIT" }),
+                _=notified=>(),
+            }
         }
-    })
-    .await
-    .map_err(|_| "AUTH_TIMEOUT")?;
-    signals.update(|s| {
-        s.report.state = State::Authenticating;
-        s.report.credential_request = None;
-    });
-    let authenticated = timeout_at(
-        auth_deadline,
-        client.authenticate_publickey(
-            &connect.profile.username,
-            PrivateKeyWithHashAlg::new(Arc::new(key), None),
-        ),
-    )
-    .await
-    .map_err(|_| "AUTH_TIMEOUT")?
-    .map_err(|_| "AUTH_FAILED")?;
-    if !authenticated.success() {
-        return Err("AUTH_FAILED");
     }
-    let report = timeout(deadlines.exec, async {
-        let channel = client
-            .channel_open_session()
-            .await
-            .map_err(|_| "SSH_IO_FAILED")?;
-        exec::probe(channel, |report| {
-            signals.update(|s| s.report.probe = report.clone())
-        })
-        .await
-    })
-    .await
-    .map_err(|_| "EXEC_TIMEOUT")??;
-    signals.update(|s| {
-        s.report.probe = report;
-        s.report.state = State::Ready;
-    });
-    // T03でforward操作をここへ追加する。接続はStop/Disconnectまで保持する。
-    let _ = client.await;
-    Err("REMOTE_EXIT")
 }
 
 #[cfg(test)]

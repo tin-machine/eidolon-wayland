@@ -103,6 +103,12 @@ fn valid_installation(id: &str) -> bool {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    ForwardProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        nonce: String,
+    },
     Connect {
         schema: u32,
         request_id: CommandSeq,
@@ -151,6 +157,7 @@ impl Command {
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
             Self::SceneReady { schema, .. }
+            | Self::ForwardProbe { schema, .. }
             | Self::Connect { schema, .. }
             | Self::Disconnect { schema, .. }
             | Self::SurfaceLost { schema, .. }
@@ -167,7 +174,7 @@ impl Command {
         {
             return Err(Status::InvalidArgument);
         }
-        if let Self::HelperProbe { nonce, .. } = &command
+        if let Self::HelperProbe { nonce, .. } | Self::ForwardProbe { nonce, .. } = &command
             && (nonce.len() != 16
                 || !nonce
                     .bytes()
@@ -180,6 +187,7 @@ impl Command {
     pub fn request_id(&self) -> CommandSeq {
         match *self {
             Self::SceneReady { request_id, .. }
+            | Self::ForwardProbe { request_id, .. }
             | Self::Connect { request_id, .. }
             | Self::Disconnect { request_id, .. }
             | Self::SurfaceLost { request_id, .. }

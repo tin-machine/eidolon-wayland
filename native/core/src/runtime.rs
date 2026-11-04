@@ -217,6 +217,19 @@ impl Runtime {
                         if let Some(command) = state.commands.pop_front() {
                             let mut asynchronous = false;
                             let code = match &command {
+                                Command::ForwardProbe { session, nonce, .. } => {
+                                    if let Some(paths) =
+                                        config.paths.as_ref().filter(|_| cfg!(debug_assertions))
+                                    {
+                                        io.forward_probe(
+                                            *session,
+                                            std::path::Path::new(&paths.files_dir),
+                                            nonce,
+                                        )
+                                    } else {
+                                        Status::NotReady
+                                    }
+                                }
                                 Command::Connect {
                                     profile_id,
                                     request_id,

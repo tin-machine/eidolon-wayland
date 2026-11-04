@@ -647,16 +647,19 @@
     {
       "id": "T03",
       "title": "StreamLocal echo",
-      "status": "planned",
+      "status": "done",
       "depends_on": [
         "T02"
       ],
       "spec": "docs/design/phase-2.md#t03",
       "files": [
         "native/transport/src/forward.rs",
-        "native/transport/tests/",
+        "native/transport/src/forward/",
+        "native/transport/src/forward_probe.rs",
         "scripts/termux/eidolon-session.py",
-        "scripts/termux/tests/"
+        "scripts/termux/tests/",
+        "scripts/quest-install-launcher",
+        "android/app/src/debug/java/io/github/tinmachine/eidolon/ForwardCase.kt"
       ],
       "steps": [
         "remote directoryとforward応答を確定する",

@@ -3,10 +3,33 @@ import sys
 from pathlib import Path
 import unittest
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from quest_checks import runtime_result, surface_result, credentials_result, ssh_result, product_ssh_result
+from quest_checks import runtime_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result
 
 
 class ResultTests(unittest.TestCase):
+    def test_forward_needs_bytes_hash_half_close_bounded_channels_cleanup_and_new_runtime(self):
+        info, nonce = {"profile": "debug"}, "a" * 32
+        total = 1 + 65536 + 4 * 8 * 1024 * 1024
+        report = {"state": "pass", "nonce": nonce[:16], "uid": 4242, "channels": 6, "bytes": total, "error": None,
+                  "hashes_matched": True, "half_close": True, "forward_cancelled": True, "local_cleaned": True, "remote_cleaned": True,
+                  "forwarding": {"accepted": 6, "active": 0, "peak": 4, "failed": 0, "remote_to_local": total, "local_to_remote": total + 54, "copy_buffer_limit": 512 * 1024}}
+        snapshot = {"schema": 1, "build_info": info, "check": {"case": "forward", "nonce": nonce, "result": "pass", "last_handle": "1", "credential_requests": 1,
+                    "transport": {"forward_probe": report}, "after_stop": {"workers": 0, "tokio_threads": 0, "owned_connections": 0, "forward": {"active": 0}}},
+                    "runtime": {"handle": "2", "runtime": {"state": "Ready", "activity_visible": True, "xr_state": "FOCUSED", "transport": {"state": "Idle"}}}}
+        self.assertTrue(forward_result(snapshot, nonce, info, 4242))
+        self.assertFalse(forward_result(snapshot, "old", info, 4242))
+        with self.assertRaises(ValueError): forward_result(snapshot, nonce, info, 4243)
+        for key in ["hashes_matched", "half_close", "forward_cancelled", "local_cleaned", "remote_cleaned"]:
+            bad = copy.deepcopy(snapshot); bad["check"]["transport"]["forward_probe"][key] = False
+            with self.assertRaises(ValueError): forward_result(bad, nonce, info, 4242)
+        for key, value in [("bytes", 1), ("peak", 9), ("active", 1), ("copy_buffer_limit", 0)]:
+            bad = copy.deepcopy(snapshot)
+            target = bad["check"]["transport"]["forward_probe"]
+            (target if key == "bytes" else target["forwarding"])[key] = value
+            with self.assertRaises(ValueError): forward_result(bad, nonce, info, 4242)
+        snapshot["runtime"]["handle"] = "1"
+        self.assertFalse(forward_result(snapshot, nonce, info, 4242))
+
     def test_product_ssh_needs_same_host_path_live_render_stop_and_fresh_return(self):
         info = {"profile": "debug"}
         snapshot = {"schema": 1, "build_info": info, "check": {"case": "ssh-product", "nonce": "new", "result": "pass",

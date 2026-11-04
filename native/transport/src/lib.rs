@@ -1,6 +1,8 @@
 //! SSH identity/pin。秘密型をSerialize/Debugへ公開しない。
 pub mod credentials;
 pub mod exec;
+pub mod forward;
+pub mod forward_probe;
 pub mod host_key;
 pub mod session;
 

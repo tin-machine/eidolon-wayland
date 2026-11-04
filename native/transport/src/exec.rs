@@ -79,3 +79,35 @@ pub async fn probe(
     }
     Ok(report)
 }
+
+/// 固定launcherの短いJSON応答。stderrはcapを超えてもEOFまで排出する。
+pub(crate) async fn json(
+    mut channel: Channel<client::Msg>,
+    command: String,
+) -> Result<serde_json::Value, &'static str> {
+    channel
+        .exec(true, command)
+        .await
+        .map_err(|_| "SSH_IO_FAILED")?;
+    let (mut out, mut err) = (Ring::default(), Ring::default());
+    let (mut status, mut signal, mut eof) = (None, false, false);
+    while let Some(message) = channel.wait().await {
+        match message {
+            ChannelMsg::Data { data } => out.push(&data),
+            ChannelMsg::ExtendedData { data, ext: 1 } => err.push(&data),
+            ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+            ChannelMsg::ExitSignal { .. } => signal = true,
+            ChannelMsg::Eof => eof = true,
+            ChannelMsg::Close => break,
+            ChannelMsg::Failure | ChannelMsg::ExtendedData { .. } => return Err("PROTOCOL_ERROR"),
+            _ => (),
+        }
+    }
+    if status != Some(0) || signal {
+        return Err("REMOTE_EXIT");
+    }
+    if !eof || out.total > CAP as u64 {
+        return Err("PROTOCOL_ERROR");
+    }
+    serde_json::from_slice(&out.bytes.into_iter().collect::<Vec<_>>()).map_err(|_| "PROTOCOL_ERROR")
+}

@@ -2,6 +2,7 @@
 """hostで完結するsuiteを実行する。実機・未実装suiteを成功にしない。"""
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -39,6 +40,7 @@ def python_tests(directory):
 
 try:
     if args.suite == "all":
+        run([os.environ.get("EIDOLON_TEST_SSHD", "/usr/sbin/sshd"), "-V"])
         run(["python3", "scripts/check-design"])
         run(["python3", "scripts/check-build-tools"])
         run(["cargo", "fmt", "--all", "--check"])

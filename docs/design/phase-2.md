@@ -65,6 +65,10 @@ remote socketはTermux専用session directoryの`p`、local socketはAPK専用se
 
 host: 1 byte/64 KiB/8 MiBの決定的データhash一致、同時4channel、half-close後の応答、slow reader、cancel、wrong path、古いsession、forward拒否。使用buffer上限とtask数を測る。Questで同じecho caseをAPK UIDから実行する。
 
+実装では接続ごとのRouterがSessionIdとremote pathを保持し、最大8channelのpermitをlocal connect前に予約する。受付と停止を短いgateで直列化し、取消後にtaskがjoin対象から漏れないようにする。copy bufferは方向ごと32KiB、合計上限512KiB。これはSSH library内部queue・kernel buffer・固定echoのbufferを含む総メモリー値ではない。SSH受信windowは256KiB、channel message queueは128件とする。defaultの2MiB windowではhost大容量試験が断続停止し、この設定で再検証した。無制限queueへは変更していない。
+
+大容量host試験は製品と同じOpenSSHを、合成鍵・専用port・一時directory・所有processだけで起動する。`openssh-server`が必要。拒否/上限/取消はrussh server fixtureでも検査する。launcherの配備は`scripts/quest-install-launcher --serial DEVICE`。ADBで固定配布物のSHA256を照合し、prepare応答のhashをAPKに組み込んだ配布物とも照合する。CLIはprepare/echo/cleanupと16桁hex nonceだけで、既存sessionの上書きや任意shellを許可しない。prepare成功ackがないnonceをcleanupで削除しない。応答消失時の残件照合、heartbeat/leaseとremote子回収はT04で扱う。
+
 <a id="t04"></a>
 ## T04 — remote launcher、lease、障害収束
 

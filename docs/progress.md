@@ -15,7 +15,8 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | R01〜R03 | in_progress | 製品SDK Surface/Rust EGL/世代・停止を実装。host・Questの自動部分成功。HMD、実Menu/sleep、UV、外部frameの検査を保留 |
 | T01 | done | APK専用Ed25519・Keystore AES-GCM・pin・公開情報pairing。Build21の実機保護検査、pairing冪等性、debug/release検査成功 |
 | T02 | done | APK→Termux認証/exec、pin/別鍵/取消、stderr/timeout/exit、製品Host+GL同時動作とlive停止・復帰を検証 |
-| T03〜I07 | planned | StreamLocal・Wayland・入力を依存順に実装 |
+| T03 | done | 1byte/64KiB/8MiB×4、hash/EOF/上限/取消、host反復・Quest3回、配布物hashと所有socket回収 |
+| T04〜I07 | planned | remote lease・Wayland・入力を依存順に実装 |
 
 ## B01/B02: ビルドと実機の再現
 
@@ -250,4 +251,38 @@ scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case ssh --timeout 180
 scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case ssh-product --timeout 180
 ```
 
-T01 commit0c6812cのCI run41882737833もhost/Android/report全成功を確認した。T03のStreamLocal echoとT04のremote leaseは未実装で、SSH成功だけでforward/Waypipe成功には数えない。
+T01 commit0c6812cのCI run41882737833もhost/Android/report全成功を確認した。T02受入時点ではT03のStreamLocal echoとT04のremote leaseは未実装で、SSH成功だけでforward/Waypipe成功には数えていない。T02確定commit c26ab47のCI run41892112868も全成功。
+
+
+## T03: StreamLocal echo（2026-11-05）
+
+APK内のUnix listener→remoteのexclusive prepare→StreamLocal成功応答→固定echoの順で実行する。forward callbackはsession/path完全一致と最大8channelのpermit予約だけを行い、local connect（2秒）とaccept/copyは所有taskへ渡す。任意のserver起点session/TCP/agent/X11/direct socketは拒否する。方向ごと32KiBのcopyは片側EOF後も反対側をdrainし、取消後に新taskがjoin対象から漏れないよう、受付と停止を短いgateで直列化する。正常終了ではforward取消→転送task join→owned local/remote socketとdirectory回収を確認する。
+
+Termux launcherはPython標準libraryだけ。prepare/echo/cleanupと16桁hex nonceに限定し、0700 directory/0600 owner markerを検査する。既存session/socketを上書きしない。APKはprepareのpathとlauncher SHA256を自身の配布物と完全一致検査する。配備scriptも転送前後のSHA256を検査する。APKのlocal directory/socketは作成時のdevice/inodeと照合して回収する。prepare成功ackがないnonceをcleanupで削除しない。応答消失・SSH断時のremote残件照合、heartbeat/lease/子process groupはT04へ残す。
+
+試行錯誤と判断:
+
+- sha2 0.11のdigest ArrayはLowerHexを実装しないため、byte列からの明示hex変換へ修正した。OpenSSH用鍵のLineEndingもrusshのre-exportを仮定せず引数型のDefaultを使った。compile失敗logを保存した。
+- russh両側の初期fixtureはsmallサイズ・単独8MiBに成功し、同時4本で途中停止した。server event queueを10→256へ増やすだけでは改善しなかった。callbackで転送終了までawaitする実装や無制限queueへは変更していない。
+- 製品と同じOpenSSHで、最初のQuest Build25は同時4本に成功。hostにも合成鍵/専用port/所有processだけのOpenSSH fixtureを作った。一時directoryの祖先/tmpをStrictModesが拒否したため、0700/0600の合成fixtureだけStrictModes noとする。通常host/Questのsshd設定は変更していない。host OpenSSH10.2p1ではAllowTcpForwarding noの状態でStreamLocalもport forwarding refusedになり、fixtureでyesにすると成立した。これはその環境での観測で、一般的な仕様とは断定しない。
+- OpenSSH fixture単独成功後も、全host suiteで大容量転送の途中停止が再発した。受信windowをdefault2MiB→256KiB、channel queueを128件へ固定し、製品とfixtureへ同じ設定を適用した。この構成でtransport13件を10回連続、さらに全host suiteを実行して成功。queue/flow controlの相互待ちを疑って調査したが、library内部の根本原因を確定したとは記録しない。後続の長時間/障害検査でも再発を監視する。
+- 最終Build27でQuest echoを3回実行し、全回で1byte/64KiB/同時4×8MiBのSHA256とbyte数が一致した。送信33,619,969byte、EOF後trailer込み応答33,620,023byte、peak4、終了後active0。forward取消・local/remote回収、新runtimeの描画復帰も成功。echo後のruntime停止は7/7/8ms。手動HMD確認とは別の自動結果である。
+
+最終検証: Rust38件・fmt/clippy/design・actionlint、実APK Python23件、launcher Python4件、debug/release assemble/lint/静的検査が成功。copy buffer上限512KiBは8本×2方向×32KiBであり、SSH内部queue・kernel・固定echo bufferを含む総メモリー量ではない。hostのwrong path/旧session/forward拒否/local接続失敗/8本上限/取消を検査し、host大容量caseは半閉鎖後の応答と遅い読み手も含む。
+
+Quest checksは20261105T042357-9b42d75d、042404-63924aa3、042411-09cf4a45（forward3回）、042418-4e23f05f（ssh-product）、042424-cdbefccc（ssh）、042430-15f2617f（credentials）、042436-fe9a80fd（surface-cycle20）、042445-4b7b57a2（runtime10）、042451-bfb03b48（helper10）が全pass。省略prefixはすべて20261105T。
+
+Build27はc26ab47d1718a6bd82c10e505b4db55d5d8dc29cのdirty build、source digest `04de595764bd2e3d4b5e810019ebafec8656929c03263bd8175f62b30173d8d7`、APK SHA256 `c59da58df796a7fb3ac8e1efb27604d91557a4992d850954b43b6a9f0f306ac4`。artifactはbuilds/20261105T042220-1938466、上記checks、forward-window-repro1.log、host-forward-final27.log、python-forward27.log、launcher-host1.log、release27.log、release-package27.json。失敗した初期fixtureとcompile/設定のlogも保存している。
+
+
+```bash
+# hostの専用fixtureにOpenSSH serverが必要（既存sshdの設定変更は不要）
+sudo apt-get install openssh-server
+scripts/check-host --suite all
+scripts/quest-install-launcher --serial "$EIDOLON_QUEST_SERIAL"
+scripts/build-android 27
+scripts/quest-smoke --serial "$EIDOLON_QUEST_SERIAL" --apk "$EIDOLON_APK" --require-focus
+scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case forward --timeout 180
+```
+
+接続先は製品内loopback8022固定。上記serialはADBの対象指定だけで、製品のSSH宛先には渡さない。SSH認証鍵・保存済みprofileと既存Termux processを維持して検査した。Phase5全体とT04のlease受入はまだ完了していない。

@@ -33,6 +33,7 @@ fn main() {
             "scripts/native_build.py",
             "scripts/build-native",
             "scripts/check-native-package",
+            "scripts/termux/eidolon-session.py",
             "android/app/src",
             "android/app/build.gradle.kts",
             "android/build.gradle.kts",

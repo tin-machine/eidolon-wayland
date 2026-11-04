@@ -18,6 +18,7 @@ struct Fixture {
     mode: Mode,
     passwords: Arc<AtomicUsize>,
     execs: Arc<AtomicUsize>,
+    handle: Arc<Mutex<Option<server::Handle>>>,
 }
 impl server::Server for Fixture {
     type Handler = Self;
@@ -78,6 +79,7 @@ impl server::Handler for Fixture {
             return Ok(());
         }
         self.execs.fetch_add(1, Ordering::AcqRel);
+        *self.handle.lock().unwrap() = Some(session.handle());
         session.channel_success(id)?;
         let (handle, mode) = (session.handle(), self.mode);
         tokio::spawn(async move {
@@ -136,6 +138,7 @@ async fn fixture(
         mode,
         passwords: Arc::new(AtomicUsize::new(0)),
         execs: Arc::new(AtomicUsize::new(0)),
+        handle: Arc::new(Mutex::new(None)),
     };
     let state = fixture.clone();
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -201,7 +204,43 @@ async fn valid_pin_auth_uid_and_stderr_flood_drain_to_eof_then_owned_stop() {
     assert_eq!(report.probe.exit_status, Some(0));
     assert_eq!(state.passwords.load(Ordering::Acquire), 0);
     assert_eq!(state.execs.load(Ordering::Acquire), 1);
+    let peer = state.handle.lock().unwrap().clone().unwrap();
+    assert!(
+        timeout(Duration::from_secs(1), peer.channel_open_session())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        timeout(
+            Duration::from_secs(1),
+            peer.channel_open_forwarded_tcpip("127.0.0.1", 8022, "127.0.0.1", 1234)
+        )
+        .await
+        .unwrap()
+        .is_err()
+    );
+    assert!(
+        timeout(Duration::from_secs(1), peer.channel_open_agent())
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        timeout(
+            Duration::from_secs(1),
+            peer.channel_open_x11("127.0.0.1", 1234)
+        )
+        .await
+        .unwrap()
+        .is_err()
+    );
     assert_eq!(controller.disconnect(session(2)), Status::Stale);
+    assert_eq!(
+        controller.forward_probe(session(2), Path::new("/tmp"), "aaaaaaaaaaaaaaaa"),
+        Status::Stale
+    );
+    assert!(controller.snapshot().forward_probe.is_none());
     stop(&controller).await;
     server.abort();
 }

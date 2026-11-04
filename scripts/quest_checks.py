@@ -164,6 +164,36 @@ def ssh_result(snapshot, nonce, expected, termux_uid):
             and int(snapshot.get("runtime", {}).get("handle", "0")) > int(result.get("last_handle", "0")) > 0)
 
 
+def forward_result(snapshot, nonce, expected, termux_uid):
+    if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
+        return False
+    result = snapshot.get("check", {})
+    if result.get("case") != "forward" or result.get("nonce") != nonce:
+        return False
+    if result.get("result") == "fail":
+        raise ValueError("StreamLocal case失敗: " + result.get("stage", "unknown"))
+    if result.get("result") != "pass":
+        return False
+    report = result.get("transport", {}).get("forward_probe", {})
+    forwarding = report.get("forwarding", {})
+    total = 1 + 65536 + 4 * 8 * 1024 * 1024
+    after = result.get("after_stop", {})
+    if (result.get("cleanup_failed") or result.get("credential_requests") != 1
+            or report.get("state") != "pass" or report.get("nonce") != nonce[:16] or report.get("uid") != termux_uid
+            or report.get("channels") != 6 or report.get("bytes") != total or report.get("error") is not None
+            or not all(report.get(key) for key in ["hashes_matched", "half_close", "forward_cancelled", "local_cleaned", "remote_cleaned"])
+            or forwarding.get("accepted") != 6 or forwarding.get("active") != 0 or not 4 <= forwarding.get("peak", 0) <= 8
+            or forwarding.get("failed") != 0 or forwarding.get("remote_to_local") != total or forwarding.get("local_to_remote") != total + 54
+            or forwarding.get("copy_buffer_limit") != 512 * 1024
+            or any(after.get(key) != 0 for key in ["workers", "tokio_threads", "owned_connections"])
+            or after.get("forward", {}).get("active") != 0):
+        raise ValueError("転送のbyte/hash/EOF/上限/回収検査が不正です")
+    state = snapshot.get("runtime", {}).get("runtime", {})
+    return (state.get("state") == "Ready" and state.get("activity_visible") is True
+            and state.get("xr_state") in {"VISIBLE", "FOCUSED"} and state.get("transport", {}).get("state") == "Idle"
+            and int(snapshot.get("runtime", {}).get("handle", "0")) > int(result.get("last_handle", "0")) > 0)
+
+
 def product_ssh_result(snapshot, nonce, expected, termux_uid):
     if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
         return False
