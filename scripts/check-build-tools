@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""実行前にGradle wrapperとdistributionの固定checksumを検査する。"""
+import hashlib
+import json
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[1]
+gradle = json.loads((root / "ci/toolchains.lock.json").read_text())["gradle"]
+wrapper = root / "android/gradle/wrapper"
+if hashlib.sha256((wrapper / "gradle-wrapper.jar").read_bytes()).hexdigest() != gradle["wrapper_sha256"]:
+    raise SystemExit("Gradle wrapper JARのchecksumが不一致です")
+properties = dict(line.split("=", 1) for line in (wrapper / "gradle-wrapper.properties").read_text().splitlines() if "=" in line)
+expected = f"https\\://services.gradle.org/distributions/gradle-{gradle['version']}-bin.zip"
+if properties.get("distributionUrl") != expected or properties.get("distributionSha256Sum") != gradle["distribution_sha256"]:
+    raise SystemExit("Gradle distributionの版/checksumが不一致です")
+print("Gradle wrapper/distributionの固定checksum: pass")

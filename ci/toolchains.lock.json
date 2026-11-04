@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "gradle": {
+    "version": "9.4.1",
+    "wrapper_sha256": "55243ef57851f12b070ad14f7f5bb8302daceeebc5bce5ece5fa6edb23e1145c",
+    "distribution_sha256": "2ab2958f2a1e51120c326cad6f385153bb11ee93b3c216c5fccebfdfbb7ec6cb",
+    "wrapper_checksum_url": "https://services.gradle.org/distributions/gradle-9.4.1-wrapper.jar.sha256",
+    "distribution_checksum_url": "https://services.gradle.org/distributions/gradle-9.4.1-bin.zip.sha256"
+  }
+}

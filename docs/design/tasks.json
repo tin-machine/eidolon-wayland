@@ -388,7 +388,7 @@
     {
       "id": "C01",
       "title": "host・Android CI",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "B03"
       ],
@@ -396,7 +396,11 @@
       "files": [
         ".github/workflows/check.yml",
         "scripts/check-host",
-        "scripts/check-native-package"
+        "scripts/check-native-package",
+        "scripts/check-build-tools",
+        "scripts/host_checks.py",
+        "ci/toolchains.lock.json",
+        "scripts/tests/"
       ],
       "steps": [
         "host/Android jobとsuite dispatcherを作る",

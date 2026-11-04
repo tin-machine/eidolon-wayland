@@ -29,6 +29,7 @@ printf 'Artifacts: %s\n' "$run_dir"
   printf 'JAVA_HOME=%s\nANDROID_HOME=%s\nversionCode=%s\n' "$JAVA_HOME" "$ANDROID_HOME" "$version_code"
 } > "$run_dir/environment.txt" 2>&1
 cd "$repo_root/android"
+python3 "$repo_root/scripts/check-build-tools" | tee "$run_dir/build-tools.log"
 ./gradlew --no-daemon --console=plain --version 2>&1 | tee "$run_dir/gradle-version.log"
 ./gradlew --no-daemon --console=plain \
   -PeidolonVersionCode="$version_code" :app:assembleDebug :app:lintDebug \

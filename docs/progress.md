@@ -10,7 +10,8 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | B01 | done | Rust 1.95.0固定、model/android workspace、ID/上限、決定的build info、JNI 0.22.4。Rust test 3件・fmt・clippy成功。JNIの実機確認はB02へ分離 |
 | B02 | in_progress | assemble/lint・APK/ELF検査成功。Quest Build 3→4のnative/Kotlin版一致、scene/panel、XR FOCUSEDを自動確認。Rust版変更→復元→APK版変更の4 buildがすべて成功。HMD視認はnot_run |
 | B03 | done | runtime/JNI/診断と固定caseを実装。ホスト11件・Python10件・debug/release検査、Quest Build 8の10cyclesと停止後late panic・製品復帰に成功 |
-| C01〜I07 | planned | 依存順に実装。独立probeの成功を製品統合の成功へ置き換えない |
+| C01 | in_progress | host dispatcher/Gradle checksum/GitHub Actionsを実装、ローカルhostとAndroid Build 9成功。対象commitのCI結果を待つ |
+| H01〜I07 | planned | 依存順に実装。独立probeの成功を製品統合の成功へ置き換えない |
 
 ## B01/B02: ビルドと実機の再現
 
@@ -118,3 +119,15 @@ scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case runtime --timeout 12
 Build 8は基準commit `c3954aa3ff7d27aae3242ddbfbb1b6f360c77cbb`からのdirty build、source digest `ea0720e809e4e8c2c30238ddb66f38846770ec761c8adb2336bf638de7b47213`、APK SHA256 `a118735a344de558491a3893bf2360c8c21dc227ac146b3bb539cf6bb2799dea`。
 
 復帰条件を強化した再試験 `20261105T003803-5fdb7ea7` もpass。Activity再開だけではXR再表示より早く合格するため、実ログの約1秒遅いXR Session再開を根拠にVISIBLE/FOCUSEDも待つようにした。最終snapshotのXR状態は`FOCUSED`。
+
+## C01: host/Android CI（2026-11-05）
+
+`scripts/check-host --suite all`はdesign、Gradle checksum、fmt、workspace clippy、登録済みRust crateとPython testを実行する。現時点ではmodel/lifecycleが実装済みで、transport/compositor/input/launcherは`not_run`を明示する。未実装suiteを直接指定するとexit 2。Rustのcompile成功や0 testを成功とせず、新しいworkspace crateにもsuite登録を要求する。T03以降のlauncher testは専用一時fixtureで実行し、通常Termuxへ接続しない。
+
+Gradle 9.4.1のwrapper JARとdistribution SHA256を[公式wrapper checksum](https://services.gradle.org/distributions/gradle-9.4.1-wrapper.jar.sha256)・[公式distribution checksum](https://services.gradle.org/distributions/gradle-9.4.1-bin.zip.sha256)と照合して`ci/toolchains.lock.json`へ固定した。`build-android`はJVM起動前にwrapperを検証する。破損JAR・配布checksum差し替えの拒否をfixtureで確認した。現在のnative依存はCargo.lockのchecksumと`--locked`で検証し、追加のnative archiveはW01でchecksum付きlockへ追加する。
+
+Actionsはcheckout v7 / setup-java v6 / cache v5 / upload-artifact v7の公式tagを実SHAへ解決して固定し、node24であることも確認した。host/Androidを別jobとし、AndroidはTemurin Java25、API36/build-tools35、NDK27.3.13750724、Rust1.95.0/cargo-ndk4.1.2を指定する。cacheは依存downloadだけで、OS・lock・ABI/API・NDK・profileをkeyへ含める。target/生成済みsoはcacheしない。CI artifactはdebug APKだけを3日間保存し、署名鍵や端末ログはuploadしない。
+
+GitHub連携のworkflow一覧取得はPR専用のため、pushでの検証結果は[commit status API](https://docs.github.com/en/rest/commits/statuses)にも`eidolon/host`と`eidolon/android`として記録する。report jobだけに`statuses:write`を付け、他jobは`contents:read`、fork PRではreportしない。両jobの結果とrun URLを対象SHAへ結び、ローカル成功をGitHub CI成功へ置き換えない。
+
+ローカルではhost Rust 11件、Python 11件成功・実APK用3件skipを明示し、Android Build 9のassemble/lint/APK検査が成功した。wrapper・suite gateを加えたPython testは全14件。Build 9のAPK SHA256は`b879fc0ab6f03e662bb91eeb12e51f512e7d771d81afec138cf92c23f90ba49c`。端末へは未導入で、Questは受入済みBuild 8のまま。
