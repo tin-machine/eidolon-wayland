@@ -1,11 +1,13 @@
 # Phase 1補足 — 現実の映像を背景にするPassthrough
 
-**状態:** 公式資料・ソースで実現性を確認／Eidolonの実装・Quest実機動作は未検証（2026-11-01）  
+**状態:** 最小Composeパネル＋通常passthroughをQuest 3で視認確認済み（2026-11-04）。Rustパネルとの統合は未実施<br>
 **上位計画:** [Phase 1](implementation-plan.md#phase-1--spatial-surfaceの描画スパイク) / [全体設計](architecture.md)  
 **前提:** [Phase 0](phase-0-development-environment.md) / [Rust描画spike](phase-1-rust-rendering.md)  
 **後続:** [Phase 4](phase-4-rust-window-rendering.md)・[Phase 5](phase-5-rust-window-manager.md)・[Phase 6](phase-6-rust-lifecycle-testing.md)
 
 ## 目的と確認範囲
+
+2026-11-04の最小APKでは`scene.enablePassthrough(true)`とComposeパネルを実装し、ユーザーが背景の現実映像・パネル・ボタン操作を確認した。[実機記録](phase-0-troubleshooting-20261104.md)を参照する。以下のRust Surface、MR/VR切替、再生成・寿命管理の試験は引き続き未完了である。
 
 Quest 3の現実の部屋を背景にして、その前にfoot等の独立したLinuxウィンドウを表示する。**Meta Spatial SDKの通常のpassthrough表示を利用する**方針で、カメラ画像をEidolonが取得・転送して背景動画を作る必要はない。
 

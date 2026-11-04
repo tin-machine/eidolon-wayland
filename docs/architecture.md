@@ -1,6 +1,6 @@
 # Eidolon Wayland — アーキテクチャ設計
 
-Status: **Proposed / 未実装**  
+Status: **全体設計はProposed。Phase 0のCompose XRパネル・開発用Wi-Fi/SSHのみ実機確認済み**<br>
 Last reviewed: 2026-11-04<br>
 Target: **Meta Quest 3 / Meta Horizon OS (Android)**
 
@@ -139,7 +139,7 @@ Readable版のmesh描画は比較候補だが、[Known issues](https://developer
 
 Phase 1で現実背景＋Rustテスト画像を検証し、Phase 4でfootへ接続する。Phase 5で切替・保存を実装する際には背景の希望設定をRustで保持し、KotlinがSDK操作を適用する。Phase 6でscene再生成からの復帰とlayer使用数を確認する。API呼出し記録と実際の表示結果を区別し、背景切替だけでSSH／Waylandセッションを再起動しない設計を目指す。
 
-詳細なAPI、権限の区別、公式ソース、合格条件は[Phase 1補足 — Passthrough背景](phase-1-passthrough-background.md)を正本とする。**公式資料とサンプルで方式を確認した段階で、Eidolonでの合成・可読性・寿命管理は実機未検証**である。
+詳細なAPI、権限の区別、公式ソース、合格条件は[Phase 1補足 — Passthrough背景](phase-1-passthrough-background.md)を正本とする。2026-11-04に最小Composeパネルとpassthroughの同時表示を[実機確認](phase-0-troubleshooting-20261104.md)した。Rustパネルの合成・可読性・寿命管理は未検証である。
 
 ## Spatialウィンドウ管理と入力
 

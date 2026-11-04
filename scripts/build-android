@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+version_code=${1:-1}
+[[ "$version_code" =~ ^[1-9][0-9]*$ ]] || { echo 'versionCodeは正の整数を指定してください' >&2; exit 2; }
+if [[ -z ${EIDOLON_ARTIFACT_ROOT:-} ]]; then
+  work_config="$HOME/.config/homecluster-agents/codex-work-root"
+  if [[ -f "$work_config" ]]; then
+    IFS= read -r work_root < "$work_config"
+  else
+    work_root="$HOME/.local/state/homecluster-agents/codex-work"
+  fi
+  [[ "$work_root" = /* ]] || { echo '作業rootには絶対pathが必要です' >&2; exit 2; }
+  EIDOLON_ARTIFACT_ROOT="$work_root/eidolon-phase0/builds"
+fi
+[[ "$EIDOLON_ARTIFACT_ROOT" = /* ]] || { echo 'artifact rootには絶対pathが必要です' >&2; exit 2; }
+run_dir="$EIDOLON_ARTIFACT_ROOT/$(date +%Y%m%dT%H%M%S)-$$"
+mkdir -p -- "$run_dir"
+export JAVA_HOME=${JAVA_HOME:-$(dirname -- "$(dirname -- "$(readlink -f -- "$(command -v javac)")")")}
+export ANDROID_HOME=${ANDROID_HOME:-/opt/android-sdk}
+printf 'Artifacts: %s\n' "$run_dir"
+{
+  date -Iseconds
+  git -C "$repo_root" rev-parse HEAD
+  git -C "$repo_root" status --short
+  "$JAVA_HOME/bin/java" -version
+  printf 'JAVA_HOME=%s\nANDROID_HOME=%s\nversionCode=%s\n' "$JAVA_HOME" "$ANDROID_HOME" "$version_code"
+} > "$run_dir/environment.txt" 2>&1
+cd "$repo_root/android"
+./gradlew --no-daemon --console=plain --version 2>&1 | tee "$run_dir/gradle-version.log"
+./gradlew --no-daemon --console=plain \
+  -PeidolonVersionCode="$version_code" :app:assembleDebug :app:lintDebug \
+  2>&1 | tee "$run_dir/build.log"
+cp app/build/outputs/apk/debug/app-debug.apk "$run_dir/eidolon-debug.apk"
+sha256sum "$run_dir/eidolon-debug.apk" | tee "$run_dir/apk.sha256"
+printf 'APK: %s\n' "$run_dir/eidolon-debug.apk"

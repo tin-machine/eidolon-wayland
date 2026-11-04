@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""承認済みADBからTermux SSHを構成・照合し、loopback forward経由で接続する。"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import time
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--serial", required=True)
+parser.add_argument("--bootstrap", action="store_true", help="公式GitHub debug版TermuxへOpenSSHと専用serviceを構成")
+parser.add_argument("--port", type=int, default=18022)
+parser.add_argument("--key", type=Path, default=Path.home() / ".ssh/quest_termux_ed25519")
+parser.add_argument("--known-hosts", type=Path, default=Path.home() / ".ssh/eidolon_quest_known_hosts")
+parser.add_argument("--command", default="uname -s; uname -m; id; pwd; sshd -V")
+parser.add_argument("--artifact-root", type=Path)
+args = parser.parse_args()
+os.umask(0o077)
+if not 1024 <= args.port <= 65535:
+    parser.error("portには1024〜65535を指定してください")
+config = Path.home() / ".config/homecluster-agents/codex-work-root"
+work = Path(config.read_text().strip()) if config.exists() else Path.home() / ".local/state/homecluster-agents/codex-work"
+root = args.artifact_root or work / "eidolon-phase0/termux"
+if not root.is_absolute():
+    parser.error("artifact rootには絶対pathが必要です")
+run = root / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S") + f"-{os.getpid()}")
+run.mkdir(parents=True, mode=0o700)
+print(f"Artifacts: {run}", flush=True)
+
+def adb(*command, input=None, timeout=30):
+    return subprocess.check_output(["adb", "-s", args.serial, *command], input=input, text=True, stderr=subprocess.STDOUT, timeout=timeout)
+
+def termux(command):
+    env = "export PREFIX=/data/data/com.termux/files/usr; export HOME=/data/data/com.termux/files/home; export PATH=$PREFIX/bin:/system/bin; "
+    return adb("shell", shlex.join(["run-as", "com.termux", "/system/bin/sh", "-c", env + command]))
+
+if adb("get-state").strip() != "device" or adb("shell", "getprop", "ro.product.model").strip() != "Quest 3":
+    raise SystemExit("承認済みQuest 3を指定してください")
+physical_id = adb("shell", "getprop", "ro.serialno").strip()
+if not physical_id:
+    raise SystemExit("物理端末IDを確認できません")
+alias = "eidolon-quest-" + hashlib.sha256(physical_id.encode()).hexdigest()[:12]
+if args.bootstrap:
+    args.key.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if not args.key.exists():
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(args.key), "-C", "eidolon-quest"], check=True)
+    public = Path(str(args.key) + ".pub").read_text().strip()
+    adb("shell", "cmd", "deviceidle", "whitelist", "+com.termux")
+    adb("shell", "input", "keyevent", "KEYCODE_WAKEUP")
+    adb("shell", "am", "start", "-W", "-n", "com.termux/.app.TermuxActivity")
+    for attempt in range(30):
+        try:
+            termux('test -x "$PREFIX/bin/bash"')
+            break
+        except subprocess.CalledProcessError:
+            if attempt == 29:
+                raise RuntimeError("Termux初回bootstrapが未完了です。HMD内でTermuxを開き、起動ログを確認してください")
+            time.sleep(2)
+    env = "export PREFIX=/data/data/com.termux/files/usr; export HOME=/data/data/com.termux/files/home; export PATH=$PREFIX/bin:/system/bin; exec \"$PREFIX/bin/bash\" -s -- " + shlex.quote(public)
+    script = (Path(__file__).resolve().parent / "termux-bootstrap.sh").read_text()
+    with (run / "bootstrap.log").open("w") as out:
+        process = subprocess.Popen(["adb", "-s", args.serial, "shell", "-T", shlex.join(["run-as", "com.termux", "/system/bin/sh", "-c", env])], stdin=subprocess.PIPE, stdout=out, stderr=subprocess.STDOUT, text=True)
+        try:
+            process.communicate(script, timeout=600)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            raise RuntimeError(f"Termux setup timed out; 端末側の処理状態も確認してください: {run / 'bootstrap.log'}")
+        if process.returncode:
+            raise RuntimeError(f"Termux setup failed: {run / 'bootstrap.log'}")
+
+username = termux("id -un").strip()
+public_host = termux('cat "$PREFIX/etc/ssh/ssh_host_ed25519_key.pub"').split()
+if len(public_host) < 2 or public_host[0] != "ssh-ed25519":
+    raise RuntimeError("TermuxのSSH公開host keyを取得できません")
+host_line = f"{alias} {public_host[0]} {public_host[1]}"
+args.known_hosts.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+lines = args.known_hosts.read_text().splitlines() if args.known_hosts.exists() else []
+previous = [line for line in lines if line.split() and line.split()[0] == alias]
+if previous and host_line not in previous:
+    raise RuntimeError("SSH host keyが以前と異なります。初期化・再導入の有無を確認してください")
+if not previous:
+    with args.known_hosts.open("a") as out:
+        out.write(host_line + "\n")
+args.known_hosts.chmod(0o600)
+local = f"tcp:{args.port}"
+forward = [line.split() for line in adb("forward", "--list").splitlines()]
+occupied = [entry for entry in forward if len(entry) == 3 and entry[1] == local]
+expected = [args.serial, local, "tcp:8022"]
+if occupied and occupied != [expected]:
+    raise RuntimeError("指定portは別のADB forwardが使用中です。--portで空きportを指定してください")
+if not occupied:
+    adb("forward", "--no-rebind", local, "tcp:8022")
+
+ssh = ["ssh", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-o", "HostKeyAlias=" + alias, "-o", "UserKnownHostsFile=" + str(args.known_hosts), "-i", str(args.key), "-p", str(args.port), username + "@127.0.0.1", args.command]
+process = subprocess.run(ssh, text=True, capture_output=True, timeout=60)
+(run / "ssh.log").write_text(process.stdout + process.stderr)
+(run / "result.json").write_text(json.dumps({"exit_code": process.returncode, "host_key_alias": alias, "local_port": args.port, "username": username, "forward_left_running": True}, indent=2) + "\n")
+print(process.stdout + process.stderr, end="")
+print("SSH:", shlex.join(ssh[:-1]), flush=True)
+raise SystemExit(process.returncode)

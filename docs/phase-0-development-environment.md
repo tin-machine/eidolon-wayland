@@ -1,12 +1,12 @@
 # Phase 0 — Ubuntu開発PC・Quest 3・Termuxの開発環境
 
-**Status:** Planning（2026-11-04開発PC・Quest USB/OSを実測、APKビルド・XR動作は未検証）<br>
+**Status:** 最小APKのbuild/lint・Quest XR・給電＋Wi-Fi更新・Termux SSHを実機確認済み。Rust/JNI・長時間運転は未実施（2026-11-04）<br>
 **上位計画:** [implementation-plan.md — Phase 0](implementation-plan.md#phase-0--レポジトリと開発環境)  
 **全体設計:** [architecture.md](architecture.md)
 
 **共通の操作・調査:** [開発自動化・デバッグ](development-automation-and-debugging.md)（2026-11-03追記）。Codex／ADB／Meta VR CLI、スクリーンショット、入力、自動判定、無線接続、実機CIの詳細を参照する。
 
-本ファイルは **Phase 0の実行手順・調査事項の正本**。上位planには概要と合格条件を残す。現状のレポジトリにはまだAndroidアプリ本体がない。以下の <code>android/</code> やAPKのパスは、後に実装するまで存在しない。
+本ファイルは **Phase 0の環境計画・調査事項・受入条件の正本**。現在使える`android/`と`scripts/`の操作は[実測済み再現手順](phase-0-reproduction.md)、失敗・原因・修正と結果は[試行錯誤記録](phase-0-troubleshooting-20261104.md)に集約する。Kotlinの最小Compose APKを実装済みで、Rust/JNIは後続となる。以下の日付付きレビューは実装前の観測も含む。
 
 **Rust中心構成の調査結果を[第9節](#9-rust中心構成のビルド調査2026-11-01追記)に追記した。** Kotlin＋Rustを主要言語とし、C++は必要性が実証されたshimに限定する。描画は[Phase 1](phase-1-rust-rendering.md)、SSHは[Phase 2](phase-2-rust-ssh.md)、compositor移植は[Phase 3](phase-3-rust-compositor-waypipe.md)へ続く。
 
@@ -16,7 +16,7 @@
 
 **Phase 0の目標:** Ubuntu PCでMeta Spatial SDKを利用した最小APKをビルドし、まずUSBで初期承認・APK導入・XR起動・基準診断を再現する。続いてQuestのUSB-Cを給電器へ挿し替え、Wi-Fi経由のAPK更新・install、起動、ログ、capture、TermuxへのADB forward＋SSHを検証し、通常の開発経路として採用できるか判定する。Termux/Waylandとの製品内通信はPhase 2〜5の対象で、ここで構築するSSHは開発用である。
 
-[Meta公式のQuest向けADB手順](https://developers.meta.com/vr/documentation/native/android/ts-adb/)は、USB接続中にTCP/IPモードへ切り替えて接続した後、USBを抜いてADBを利用できるとしている。**これは資料で確認した対応であり、Eidolon／手元のQuestでの実測結果ではない。** 詳細な接続・復旧手順の正本は[開発自動化・デバッグの無線ADB](development-automation-and-debugging.md#無線adb)、Phase 0での採用試験は[第5.4節](#54-usb基準からwi-fi運用への採用試験)とする。
+[Meta公式のQuest向けADB手順](https://developers.meta.com/vr/documentation/native/android/ts-adb/)は、USB接続中にTCP/IPモードへ切り替えて接続した後、USBを抜いてADBを利用できるとしている。2026-11-04にこの経路で初回APK導入・Build 2への更新・XR表示・SSHを実証した。USBでは承認・端末照合まで実施し、APK導入はWi-Fiから開始した。長時間運転とreboot復旧は[第5.4節](#54-usb基準からwi-fi運用への採用試験)の未了条件として残す。
 
 ~~~mermaid
 flowchart TB
@@ -38,24 +38,24 @@ flowchart TB
 
 ## 2. ビルドツールの基準
 
-2026-11-04に上流を再確認し、[コミット `822f4d1ec967d4975ae8db386502b60cda5218c0`](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/commit/822f4d1ec967d4975ae8db386502b60cda5218c0)でSpatial SDK **0.15.0**への更新を確認した。[Metaのrelease一覧](https://developers.meta.com/vr/release-notes/)にも2026-10-29の0.15.0が掲載されている。旧調査の`f233e232...`／0.14.0はAPI調査の根拠として残し、新規実装は0.15.0を第一候補にする。**新しい開発ツールを使える範囲で使い、Questの実行要件とは分けて選ぶ。以下は採用候補で、assemble・実機動作は未検証。**
+2026-11-04に上流を再確認し、[コミット `822f4d1ec967d4975ae8db386502b60cda5218c0`](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/commit/822f4d1ec967d4975ae8db386502b60cda5218c0)でSpatial SDK **0.15.0**への更新を確認した。[Metaのrelease一覧](https://developers.meta.com/vr/release-notes/)にも2026-10-29の0.15.0が掲載されている。旧調査の`f233e232...`／0.14.0はAPI調査の根拠として残す。**新しい開発ツールを使える範囲で使い、Questの実行要件とは分けて選ぶ。以下のJDK・Gradle・AGP・Kotlin・SDK・API構成は最小Compose APKでbuild/lint・実機動作を確認済み。Rust/NDKとMeta Gradle pluginは別判定。**
 
 | 対象 | Eidolonの第一候補 | 根拠・比較対象 |
 | --- | --- | --- |
 | 開発PC | Ubuntu 26.04 x86_64 | 既存hostを実測済み |
-| Gradle実行用JDK | **25**（既存25.0.4.1） | GradleはJava 25実行を9.1以降でサポート。SDK plugin込みの検証は別 |
+| Gradle実行用JDK | **25**（既存25.0.4.1） | 最小APKのbuild/lint成功。Meta Gradle pluginなし |
 | Gradle | **9.4.1**、wrapper固定 | 上流0.15.0のwrapperと一致 |
 | Android Gradle Plugin | **8.11.1** | 上流と一致。公式の最大対応compile APIは36 |
-| Kotlin／Compose compiler plugin | **2.4.21を検証**、両pluginを同版にする | Kotlin公式表でGradle 9.4.1／AGP 8.11.1が対応範囲。上流2.1.0は比較用 |
+| Kotlin／Compose compiler plugin | **2.4.21を採用**、両pluginを同版にする | 最小APK成功。Meta Gradle plugin併用時の失敗は別記 |
 | Java／Kotlin出力 | **17** | `sourceCompatibility`／`targetCompatibility`／`jvmTarget`を揃える。host JDK 25と区別 |
-| Meta Spatial SDK／Gradle plugin | **0.15.0** | 全Meta Spatial依存を同じ版に固定。旧0.14.0のSurface等のAPIは再照合 |
-| Android compileSdk | **36**を検証、既存**35**を比較対象 | platform 36の追加が必要。QuestがAPI 34でもcompileSdkを34へ合わせる必要はない |
+| Meta Spatial SDK | **0.15.0** | SDK依存を同版に固定。Meta Gradle pluginはcompiler衝突のため不使用。codeでscene生成 |
+| Android compileSdk | **36**を採用、既存**35**を保持 | platform 36を追加しAPI 34のQuestで動作確認 |
 | Android minSdk／targetSdk | 初期は **34／34** | 上流0.15.0と一致。実機API・依存AARのminimum・merged manifestで確認 |
 | SDK Build Tools | **35.0.0** | AGP 8.11の最低・既定版。compileSdkの数字とは独立 |
 | Android NDK | **27.3.13750724**を検証 | 既存版。Gradleの`ndkVersion`と`ANDROID_NDK_HOME`を一致させる |
 | Rust | 既存stable **1.95.0**を起点、aarch64-linux-android | crateのMSRVを確認し、toolchain／Cargo.lock／cargo-ndkを固定 |
 
-対応根拠は[GradleのJava互換表](https://docs.gradle.org/current/userguide/compatibility.html)、[AGP 8.11の互換表](https://developer.android.com/build/releases/agp-8-11-0-release-notes)、[KotlinのGradle／AGP対応表](https://kotlinlang.org/docs/gradle-configure-project.html)。上流の[README](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/822f4d1ec967d4975ae8db386502b60cda5218c0/README.md)はJDK 17／Kotlin 2.1.0を指定しているが、Kotlin公式表の2.1.0対応上限はGradle 8.10／AGP 8.7.2である。上流構成の存在だけで公式対応表内の組合せとはしない。上のKotlin更新はこの差を解消する**検証案**であり、Meta pluginとの互換性を保証しない。AGP 9系への移行はbuilt-in Kotlin等の変更が伴うため、この初期検証にはまとめて持ち込まない。
+対応根拠は[GradleのJava互換表](https://docs.gradle.org/current/userguide/compatibility.html)、[AGP 8.11の互換表](https://developer.android.com/build/releases/agp-8-11-0-release-notes)、[KotlinのGradle／AGP対応表](https://kotlinlang.org/docs/gradle-configure-project.html)。上流の[README](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/blob/822f4d1ec967d4975ae8db386502b60cda5218c0/README.md)はJDK 17／Kotlin 2.1.0を指定しているが、Kotlin公式表の2.1.0対応上限はGradle 8.10／AGP 8.7.2である。Kotlin更新後、Meta Gradle plugin 0.15.0併用ではcompiler classの互換エラーが発生した。独自componentとscene exportを使わない最小APKではpluginを外して成功した。必要になるまで互換解決済みとは扱わない。AGP 9系への移行は別作業とする。
 
 ### 2.1 Quest側のバージョンと採用ゲート
 
@@ -222,7 +222,7 @@ PCへ直接接続し、ケーブル交換後の19:03 JSTにQuest 3をUSB機器�
 | Termux | 現在userの`pm list packages --user current com.termux`は空。Termux／SSH／Waypipeの試験は未着手 |
 | ログ | 直近10分を要求し、保持されていた19:07:44〜19:11:49 JSTのmain/system/crashの警告・エラー2,831行を確認。`FATAL EXCEPTION`／`Fatal signal`／`ANR in`の一致なし、crash bufferは空。ログ保持範囲外の不具合やアプリ動作を保証しない |
 
-システム側には性能制御、SELinuxのproperty読取り拒否、Presence、カメラ／音声などの警告・エラーがある。Eidolon APKはまだ存在せず、その障害と扱わない。XR起動・背景化・復帰の試験では対象PIDと操作時刻を合わせて再取得する。端末serial・接続先・生ログを計画書へ転記しない。
+システム側には性能制御、SELinuxのproperty読取り拒否、Presence、カメラ／音声などの警告・エラーがある。この19:10頃の観測ではEidolon APKはまだ存在せず、その障害と扱わない。その後のXR試験は対象PIDと操作時刻を合わせて[別記録](phase-0-troubleshooting-20261104.md)へ保存した。端末serial・接続先・生ログを計画書へ転記しない。
 
 **切り分けへの反映:** `lsusb`／sysfsにもQuestがない段階、USBには出るがADB interfaceがない段階、ADBの`unauthorized`、`device`を分ける。`sys.usb.config=none`／`sys.usb.state`空でも今回はADB shellが成功しており、このpropertyだけで未接続と判定しない。権限はADB interfaceが現れた時点のdevice nodeと実接続で確認し、以前のUSB modeの権限を根拠にudevを変更しない。
 
@@ -259,7 +259,9 @@ adb -s "$quest_serial" logcat -d -b main -b system -b crash -v time \
 
 上のログ例は短い表示確認用である。自動試験では、先にmain／system／crash bufferを保存してから絞り込み、native crashを含む情報を残す。明示的なActivity起動、`am start -S -W`、PID／dumpsys、期限付きreadinessの詳細は[共通文書のADB操作](development-automation-and-debugging.md#adbの基本操作)へ集約する。
 
-### 5.2 Eidolon専用の空APK（未実装）
+### 5.2 Eidolon専用の最小APKとRust拡張
+
+2026-11-04、`android/`へcodeでsceneを構築するCompose APKを追加し、Build 1/2のパネル・入力・passthroughを確認した。下記はRust/JNI・CIを含む元の拡張計画で、現時点の完了状況は第7節、使える操作は[再現手順](phase-0-reproduction.md)を参照する。
 
 - [ ] 公式サンプルのライセンス/構成を確認し、Eidolon固有applicationId・AppSystemActivity・registerFeatures・registerPanelsを用意する。
 - [ ] [Passthrough背景の準備](phase-1-passthrough-background.md#manifestとfeature登録)として、merged manifestの`com.oculus.feature.PASSTHROUGH`宣言と背景entityを確認する。背景表示のためにCamera2の権限や部屋スキャンを必須化せず、実際の背景＋Rustパネル表示はPhase 1で試す。
@@ -280,7 +282,7 @@ adb -s "$quest_serial" logcat -d -b main -b system -b crash -v time \
 
 **実装上の提案:** APK側とRust側のbuild revisionを両方パネルへ表示すると、古い`.so`を同梱した場合に気づきやすい。成功した構成は`Cargo.lock`、`rust-toolchain.toml`、Gradle wrapper、version catalog等へ固定する。ファイル構成や連携方式は実装時に決めてよい。以上は未実装の成果物案である。
 
-実装後の**想定パス（現在存在しない）**:
+現在のAPKパス（Rust同梱は未実装。ログ付きのビルドは`scripts/build-android`を使う）:
 
 ~~~bash
 git clone git@github.com:tin-machine/eidolon-wayland.git
@@ -460,21 +462,23 @@ Tokenやauth.json、秘密鍵はシェル履歴・Git・logcatへ書き込まな
 
 ## 7. Phase 0完了条件と観測記録
 
-USBでの開発基準とWi-Fi通常運用の採用判定を別欄で管理する。第3.0節のPC調査と第4.1節のUSB承認・OS／ABI取得は実施済み。APKビルド・XR動作と無線運用は未達である。無線の未了項目は未了のまま残し、USB基準を満たした部分から後続フェーズへ進める。資料上の対応確認を実機成功として数えない。
+2026-11-04、APK build/lint、Composeパネル・操作・passthrough、給電器接続中のWi-Fi更新、Termux SSH、ADB切断・再接続を実証した。USBは承認・OS/端末照合までで、APK導入は最初からWi-Fi。通常更新は採用できるが、長時間運転とQuest reboot復旧は未合格として引き継ぐ。[証拠と失敗の記録](phase-0-troubleshooting-20261104.md)を参照する。
 
-- [ ] Ubuntuで採用JDK（第一候補25）と出力target 17、SDK/NDK、Gradle wrapper、Kotlin／Compose、Meta SDKの組合せを検証・固定。
+- [x] UbuntuでJDK 25と出力17、compileSdk 36、Gradle 9.4.1、AGP 8.11.1、Kotlin／Compose 2.4.21、Meta SDK 0.15.0を検証・固定。独自NDK/Rustは未対象。
 - [x] Quest 3でDeveloper Mode/USB承認、<code>adb devices -l</code>が<code>device</code>（2026-11-04）。
 - [x] Quest ABI/API/OS buildを<code>adb shell getprop</code>で取得（2026-11-04。Horizon OSの画面表示バージョンは未確認）。
-- [ ] Ubuntu上で上流StarterSampleをビルド・XR起動するか、Linux CLIの具体的な障害を記録して代替の最小Spatial APKを実証。
-- [ ] Eidolon独自の最小APKを追加。Ubuntuで<code>assembleDebug</code>し、USBで<code>adb install</code> → XR起動 → <code>logcat</code>の基準結果を再現できる。
+- [x] Ubuntu上でscene exportに依存しない代替の最小Spatial APKを実証。Meta pluginのcompiler互換障害と回避を記録。Linux Editor CLI自体は未試験。
+- [x] Eidolon独自の最小APKを追加。Ubuntuでassemble/lintし、Wi-Fiでinstall → XR起動 → logcatを再現。
+- [ ] USBでのAPK導入・起動・診断も復旧用の基準として確認する。
 - [ ] 基本CI（Gradle compile/静的検査、秘密情報除外、ライセンス確認）を用意。
 - [ ] 第5.2節の初回実装として、Rust由来の版情報表示とGradleからのnative成果物生成・同梱を確認し、ビルド成功と実機成功を分けて記録。
-- [ ] [最小smoke](development-automation-and-debugging.md#実機smokeの実装案)でserial・build情報・起動結果・JNI readiness・ログ・capture可否をrun単位で保存。自動判定とHMD確認の範囲を分け、timeout／失敗時にも証跡を残す。
-- [ ] Termuxを準備した環境では、USBでADB forward＋SSHの開発経路を確認。未準備の場合は未実施として残し、APK更新の検証は先行できる。Quest側Codexは任意。
-- [ ] USB-Cを給電器へ挿し替えた状態でWi-Fi経由のAPK更新・install、起動、ログ、captureを確認。Termux準備済みの場合はADB forward＋SSHも確認。
+- [x] 最小smokeで端末・APK版/hash・scene/panel生成・focus・ログ・Android captureをrun単位で保存。自動判定とHMD確認を分け、timeout時も証跡を保持。
+- [ ] Rust追加後にJNI readiness・native版情報をsmokeへ追加する。
+- [x] Termuxの鍵認証SSHをWi-Fi ADB forward経由で確認。USB transportでのSSHとQuest側Codexは未実施。
+- [x] USB-Cを給電器へ挿し替えた状態でWi-Fi経由のAPK更新・install、起動、ログ、capture、ADB forward＋SSHを確認。
 - [ ] 30〜60分のWi-Fi連続運用で給電条件、残量・温度、接続と診断の欠落を記録。
 - [ ] sleep／wake、Quest reboot、host再接続の結果とUSBを含む復旧条件を個別に記録し、Wi-Fi運用の採用・条件付き採用・保留を判定。
-- [ ] **Android Waypipe/Smithayは未完成**であることを後続フェーズへ引き継ぐ。
+- [x] **Android Waypipe/Smithayは未実装**であることを後続フェーズへ引き継ぐ。
 
 ~~~text
 Date / Ubuntu / JDK / Android Studio:

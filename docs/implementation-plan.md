@@ -1,10 +1,16 @@
 # Eidolon Wayland — 実装計画・検証項目
 
-Status: **Planning / 実装未着手**  
+Status: **Phase 0最小APK・開発用Wi-Fi/SSHを実機確認済み。Rust/Waylandは未実装**<br>
 Architecture: [architecture.md](architecture.md)  
 Phase 0 runbook: [phase-0-development-environment.md](phase-0-development-environment.md)  
 Automation / debugging: [development-automation-and-debugging.md](development-automation-and-debugging.md)  
 Target: **Quest 3単体 + Termux + localhost SSH + Waypipe + Spatial SDKアプリ内Wayland compositor**
+
+## 最小APKと開発基盤の実装（2026-11-04）
+
+JDK 25・compileSdk 36・Kotlin 2.4.21・Spatial SDK 0.15.0でassemble/lintが通り、Quest API 34でComposeパネル・Verify操作・通常passthrough背景を確認した。給電器接続中にWi-Fi経由のBuild 1→2更新とPC→Termux SSH、ADB再接続後のforward復旧にも成功した。[再現手順](phase-0-reproduction.md)と[試行錯誤の記録](phase-0-troubleshooting-20261104.md)を正本とする。
+
+USB承認・OS照合後、最初のAPK導入からWi-Fiを使った。USB APK基準試験を完了したとは扱わない。Meta Gradle pluginのKotlin互換エラーは、component生成・scene exportに依存しない最小構成でpluginを外して回避した。SDK本体は使用する。Rust JNI・APK内SSH・Wayland・CI・長時間給電試験は未実施。以下の日付付きレビュー節は、その時点の調査記録として残す。
 
 ## 成功の定義
 
@@ -141,17 +147,19 @@ flowchart TB
 
 **接続境界:** このUSB／Wi-Fi ADB／開発用SSHは開発・調査時限定。図は初期USB接続からWi-Fi試験へ段階的に切り替える計画である。APK自体からTermuxへ接続する製品用localhost SSH/Waypipeは後続フェーズ。UbuntuのSpatial Editor CLIとscene exportの制約もrunbookに記載。
 
-- [ ] JDK / SDK / Gradle wrapper / Meta SDKを確認する。
-- [ ] 最初はUSBケーブルで接続し、Developer Mode・USB debugとHMD内のADB認証を確認する。
-- [ ] 公式StarterSampleまたは検証済みの代替最小サンプルをビルド・実機起動し、ログを採取する。
-- [ ] Eidolon固有の最小APKを作り、ビルド・インストール・起動・診断を再現可能にする。
+- [x] JDK / SDK / Gradle wrapper / Meta SDKを確認する（2026-11-04）。
+- [x] 最初はUSBケーブルで接続し、Developer Mode・USB debugとHMD内のADB認証を確認する。
+- [x] 公式StarterSampleまたは検証済みの代替最小サンプルをビルド・実機起動し、ログを採取する（codeでsceneを生成する代替APKを実証）。
+- [x] Eidolon固有の最小APKを作り、ビルド・インストール・起動・診断を再現可能にする。
 - [ ] Rust cdylibを同梱し、Kotlinから単純なJNI呼出しを試す。renderer/compositorはまだ必須にしない。
 - [ ] Gradle→Cargo→APK同梱を一つのビルド操作へまとめる。APK側とRust側のbuild revisionをパネル等で確認できるようにし、古い`.so`の混入を見分ける。
-- [ ] [最小smokeの案](development-automation-and-debugging.md#実機smokeの実装案)に沿って対象serial、起動・JNI readiness、ログ、capture可否、終了codeを記録する。Activity起動成功とXR表示成功は分ける。
-- [ ] USBでの導入・診断が成立した後、[無線ADBの検証手順](development-automation-and-debugging.md#無線adb)に従ってUSBを給電へ回し、同じ署名の新しいAPKへの更新、起動、build revision、必要なデータ保持、ログ・画像取得をネットワーク経由で確認する。
+- [x] 最小smokeで対象端末、APK版・hash、起動・scene/panel生成・XR focus、ログ、Android capture、終了結果を記録する。Activity起動とHMD視認を分ける。
+- [ ] Rust実装後にsmokeへJNI readiness・native版情報を追加する。
+- [x] USB承認後にUSBを給電へ回し、同じ署名のBuild 1→2更新、起動、表示番号、ログ・画像取得をネットワーク経由で確認する。初回installもWi-Fi。永続アプリデータはまだないため保持試験は未対象。
+- [ ] USB経由のAPK導入・診断も復旧用の基準として確認する。
 - [ ] 給電中の30〜60分程度の接続・残量・温度を観測し、host再接続、sleep／wake、本体再起動の結果とUSB再設定の要否を別々に記録する。未成立項目は課題としてPhase 6へ引き継ぐ。
-- [ ] 必要ならPC側の公式CodexからADB forward＋SSHでTermuxを調査する。Quest内Codexの動作は任意。
-- [ ] 最小XR APKでActivity lifecycleとXR session focusを観測し、Termuxを準備した環境ではsshd/検証用プロセスの背景存続を短く試す。詳細・長時間試験はPhase 6へ引き継ぐ。
+- [x] PCからADB forward＋SSHでTermuxを調査する。Quest内Codexの動作は未実施・任意。
+- [x] 最小XR APKでActivity lifecycleとXR session focusを観測し、XR起動後にもTermux SSHへ接続できることを確認。詳細・長時間試験はPhase 6へ引き継ぐ。
 - [ ] CI、バージョン固定、ライセンス、secret除外を整備する。
 
 **進行の判定:** USB基盤の成立と無線運用の採用可否を別に記録する。無線側が失敗・未実施の場合は完了扱いにせず、影響範囲と再試験条件を残す。USBで成立したAPK/JNI基盤から、他の独立spikeを進めてよい。

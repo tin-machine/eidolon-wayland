@@ -1,0 +1,9 @@
+android/.gradle/
+android/.kotlin/
+android/**/build/
+android/local.properties
+*.apk
+*.keystore
+*.jks
+.idea/
+__pycache__/
