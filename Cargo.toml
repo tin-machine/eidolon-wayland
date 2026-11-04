@@ -1,5 +1,5 @@
 [workspace]
-members = ["native/model", "native/android"]
+members = ["native/model", "native/core", "native/android"]
 default-members = ["native/model"]
 exclude = ["probes/native"]
 resolver = "3"
@@ -13,6 +13,7 @@ rust-version = "1.95"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 eidolon-model = { path = "native/model" }
+eidolon-core = { path = "native/core" }
 
 [profile.dev]
 debug = 1

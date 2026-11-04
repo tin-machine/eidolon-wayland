@@ -1,5 +1,17 @@
 use std::{env, path::PathBuf, process::Command};
 
+fn git(root: &std::path::Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 fn main() {
     for key in [
         "EIDOLON_BUILD_INFO_JSON",
@@ -19,7 +31,27 @@ fn main() {
             "rust-toolchain.toml",
             "scripts/native-build-inputs",
             "scripts/native_build.py",
+            "scripts/build-native",
+            "scripts/check-native-package",
+            "android/app/src",
+            "android/app/build.gradle.kts",
+            "android/build.gradle.kts",
+            "android/settings.gradle.kts",
+            "android/gradle",
         ] {
+            println!("cargo:rerun-if-changed={}", root.join(path).display());
+        }
+        for name in ["HEAD", "index", "packed-refs"] {
+            if let Some(path) = git(&root, &["rev-parse", "--git-path", name]) {
+                let path = root.join(path);
+                if path.exists() {
+                    println!("cargo:rerun-if-changed={}", path.display());
+                }
+            }
+        }
+        if let Some(path) = git(&root, &["symbolic-ref", "-q", "HEAD"])
+            .and_then(|branch| git(&root, &["rev-parse", "--git-path", &branch]))
+        {
             println!("cargo:rerun-if-changed={}", root.join(path).display());
         }
         let output = Command::new("python3")

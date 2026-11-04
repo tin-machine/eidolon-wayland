@@ -12,9 +12,9 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 **実装方針:** KotlinはMeta Spatial SDK / Android adapter、RustはJNI・描画・SSH・Wayland compositor・ウィンドウ管理モデルを担当します。Waypipeは既存実装を再利用し、自作C++は必要性が確認された小さなshimに限定します。これは調査に基づく方針で、実装済みという意味ではありません。
 
-**現在できること:** `scripts/build-android 4`でRust nativeを含むAPKをビルド・lint・静的検査し、`scripts/quest-smoke`で指定Questへ更新・起動・native版一致・ログ取得、`scripts/quest-termux`でTermuxへSSH接続できます。JDK 25・compileSdk 36・Spatial SDK 0.15.0を採用しています。Build 1→2の表示・ボタン操作はHMDで確認済み、Rustを組み込んだBuild 3→4は自動実機試験に成功しHMD確認は最終段階へ残しています。[再現手順](docs/phase-0-reproduction.md)と[製品実装の進捗・失敗記録](docs/progress.md)を参照してください。
+**現在できること:** `scripts/build-android 8`でRust native/runtimeを含むAPKをビルド・lint・静的検査し、`scripts/quest-smoke`で指定Questへ更新・起動・native版一致・ログ取得、`scripts/quest-check --case runtime`で10回の生成・停止・回収とpanic変換を試験できます。`scripts/quest-termux`はTermuxへの開発用SSH接続です。JDK 25・compileSdk 36・Spatial SDK 0.15.0を採用しています。Build 1→2の表示・ボタン操作はHMDで確認済み、Rustを組み込んだBuild 8まで自動実機試験に成功しHMD確認は最終段階へ残しています。[再現手順](docs/phase-0-reproduction.md)と[製品実装の進捗・失敗記録](docs/progress.md)を参照してください。
 
-**残フェーズの実装設計:** [Sol向け引継ぎ](docs/design/README.md)に31タスク、43検証、ファイル・API・状態遷移・失敗時の判断を整理しました。B01/B02のRust基盤・APK組込みを実装中です。[進捗と試行記録](docs/progress.md)を参照してください。
+**残フェーズの実装設計:** [Sol向け引継ぎ](docs/design/README.md)に31タスク、43検証、ファイル・API・状態遷移・失敗時の判断を整理しました。B01/B03の基盤は受入済み、B02は自動部分が成功してHMD確認待ちです。Wayland表示・製品SSH接続・入力は後続タスクで実装します。[進捗と試行記録](docs/progress.md)を参照してください。
 
 **本格実装前の小さな検証:** 独立debug APKでAPK UIDのhelper実行、Rust→SDK Surfaceの4色表示と再生成を実機確認しました。[検証・スリープ設定・ADB撮影と入力の記録](docs/native-preflight-20261104.md)に、手順、失敗、確認範囲を残しています。
 
@@ -44,6 +44,6 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 - [Phase 5 — ウィンドウ管理](docs/phase-5-rust-window-manager.md) — Rustの状態モデル、Kotlin adapter、focus・配置・入力
 - [Phase 6 — 寿命と検証](docs/phase-6-rust-lifecycle-testing.md) — スレッド・所有権、再接続、性能・耐障害性
 
-開発再開時は[詳細設計](docs/design/README.md)と[tasks.json](docs/design/tasks.json)を読み、B01から依存順に進めてください。従来のP0スパイクは今回の具体的なtaskへ分解しました。
+開発再開時は[詳細設計](docs/design/README.md)・[進捗](docs/progress.md)・[tasks.json](docs/design/tasks.json)を読み、未受入taskの自動/手動の残件を区別して依存順に進めてください。従来のP0スパイクは今回の具体的なtaskへ分解しました。
 
 デバッグ方法・実機テスト・自動化の拡張は[専用文書](docs/development-automation-and-debugging.md)を参照してください。2026-11-03の調査案と、今回実装した最小smokeの範囲を区別しています。

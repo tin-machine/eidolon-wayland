@@ -28,8 +28,18 @@ dependencies = [
 name = "eidolon-android"
 version = "0.1.0"
 dependencies = [
+ "eidolon-core",
  "eidolon-model",
  "jni",
+ "serde_json",
+]
+
+[[package]]
+name = "eidolon-core"
+version = "0.1.0"
+dependencies = [
+ "eidolon-model",
+ "serde",
  "serde_json",
 ]
 

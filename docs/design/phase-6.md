@@ -93,7 +93,7 @@ debugとreleaseでversion、API34/arm64、Surface/SSH/Waypipe/入力の最低一
 <a id="checks"></a>
 ## 検証コマンドとcase契約
 
-実行scriptの実装状況は[進捗記録](../progress.md)を確認する。B02で`build-native`・`check-native-package`とnative版を検査する`quest-smoke`を追加した。`quest-check`（B03）・`check-host`（C01）は対応taskで作成する。作成taskより前には実行せず`not_run`を残す。正確なcommand、作成task、判定対象は[tasks.json](tasks.json)の`checks`が正本。
+実行scriptの実装状況は[進捗記録](../progress.md)を確認する。B02で`build-native`・`check-native-package`とnative版を検査する`quest-smoke`、B03で`quest-check --case runtime`を追加した。その他caseと`check-host`（C01）は対応taskで作成する。作成taskより前には実行せず`not_run`を残す。正確なcommand、作成task、判定対象は[tasks.json](tasks.json)の`checks`が正本。
 
 `quest-check`はB03で作る。引数は`--serial DEVICE --case NAME --timeout SECONDS`。対象同定を既存quest-smokeと共有し、private作業directoryへrun nonce、build SHA、case、開始/終了、結果JSONと連続logcatを保存する。stdoutには秘密や端末識別子のない要約だけを出す。caseは下表の固定enum、未登録/未実装はexit 2。case名から任意shellを組み立てない。
 

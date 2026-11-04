@@ -342,7 +342,7 @@
     {
       "id": "B03",
       "title": "runtime・非同期停止・診断",
-      "status": "planned",
+      "status": "done",
       "depends_on": [
         "B02"
       ],
@@ -353,7 +353,14 @@
         "android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt",
         "android/app/src/main/java/io/github/tinmachine/eidolon/DiagnosticsStore.kt",
         "android/app/src/debug/",
-        "scripts/quest-check"
+        "scripts/quest-check",
+        "Cargo.toml",
+        "Cargo.lock",
+        "native/core/Cargo.toml",
+        "native/model/src/commands.rs",
+        "native/model/src/state.rs",
+        "scripts/quest_checks.py",
+        "scripts/quest_device.py"
       ],
       "steps": [
         "handle registryとbounded queue/urgent flagsを作る",

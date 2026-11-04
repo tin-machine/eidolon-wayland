@@ -89,6 +89,10 @@ command envelope:
 
 主要tag: `connect`、`disconnect`、`reset_input`、`set_xr_state`、`scene_ready`、`surface_lost`、`resize_logical`、`set_pose`、`set_physical_size`、`set_background`、`close_window`、`pointer`、`key`。`connect`は登録済みprofile IDだけを指定し、任意shell commandや秘密鍵本文を受け取らない。
 
+B03では`scene_ready`・`set_xr_state`・`reset_input`と、Activity可視性を独立に伝える`set_activity_state(visible: bool)`だけを実装する。未実装tagは拒否する。`onPause`でSDKのXR状態を上書きしない。runtime再作成後はhostが最新のscene/XR/Activity状態を再送する。
+
+通常command 256件・UI event 128件と別に、停止flag・入力解除flag、failure/stopped各1件の予約枠を持つ。入力解除の安全効果は通常queueがBUSYでも伝えるが、BUSYを返したcommandの完了eventは発行しない。eventは既発行の通常event→failure→stoppedの順でpollし、Stopped通知後に古いruntime_ready等を返さない。
+
 Rust→Kotlin: `runtime_ready`、`create_panel`、`destroy_panel`、`set_panel_pose`、`set_panel_size`、`set_panel_title`、`set_background`、`surface_detached`、`session_state`、`failure`、`stopped`。window commandには全世代tupleとcommand_seqを含める。Kotlinは`adapter_applied`/`adapter_failed`を返し、Rustの希望値とSDK適用値を区別する。
 
 T01で追加するcredential専用JNIは通常command/診断と分離する:

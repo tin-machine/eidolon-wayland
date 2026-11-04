@@ -27,6 +27,7 @@ import com.meta.spatial.core.Pose
 import com.meta.spatial.core.SpatialFeature
 import com.meta.spatial.core.Vector3
 import com.meta.spatial.runtime.ReferenceSpace
+import com.meta.spatial.runtime.SessionState
 import com.meta.spatial.toolkit.AppSystemActivity
 import com.meta.spatial.toolkit.DpPerMeterDisplayOptions
 import com.meta.spatial.toolkit.Panel
@@ -48,6 +49,7 @@ class MainActivity : AppSystemActivity() {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "activity_created version=${BuildConfig.VERSION_CODE} api=${Build.VERSION.SDK_INT}")
         val native = NativeBridge.status
+        NativeSessionHost.initialize(applicationContext)
         if (native.ready) {
             Log.i(TAG, "native_ready version=${BuildConfig.VERSION_CODE} info=${native.info}")
         } else {
@@ -57,6 +59,7 @@ class MainActivity : AppSystemActivity() {
 
     override fun onSceneReady() {
         super.onSceneReady()
+        NativeSessionHost.sceneReady()
         scene.setReferenceSpace(ReferenceSpace.LOCAL_FLOOR)
         scene.setViewOrigin(0f, 0f, 0f, 0f)
         scene.enablePassthrough(true)
@@ -87,11 +90,13 @@ class MainActivity : AppSystemActivity() {
                                 Text("Phase 0 · Build ${BuildConfig.VERSION_CODE}", color = Color(0xFF67E8C3))
                                 val native = NativeBridge.status
                                 Text(if (native.ready) "Rust ready · Build ${BuildConfig.VERSION_CODE}" else "Rust load failed: ${native.error}", color = if (native.ready) Color(0xFF67E8C3) else Color.Red)
+                                Text("Runtime: ${NativeSessionHost.summary.value}", color = Color.White)
                                 Text("Spatial SDK 0.15.0 · Android API ${Build.VERSION.SDK_INT}", color = Color.White)
                                 Button(onClick = {
                                     clicks++
                                     Log.i(TAG, "panel_click count=$clicks version=${BuildConfig.VERSION_CODE}")
                                 }) { Text("確認 / Verify ($clicks)") }
+                                Button(onClick = { NativeSessionHost.requestSnapshot() }) { Text("診断を保存 / Snapshot") }
                             }
                         }
                     }
@@ -109,12 +114,23 @@ class MainActivity : AppSystemActivity() {
 
     override fun onResume() {
         super.onResume()
+        NativeSessionHost.setActivityVisible(true)
         Log.i(TAG, "activity_resumed version=${BuildConfig.VERSION_CODE}")
     }
 
     override fun onPause() {
+        NativeSessionHost.setActivityVisible(false)
         Log.i(TAG, "activity_paused version=${BuildConfig.VERSION_CODE}")
         super.onPause()
+    }
+
+    override fun onSessionStateChanged(state: SessionState) {
+        super.onSessionStateChanged(state)
+        NativeSessionHost.setXrState(when (state) {
+            SessionState.FOCUSED -> "FOCUSED"
+            SessionState.VISIBLE -> "VISIBLE"
+            else -> "IDLE"
+        })
     }
 
     override fun onSpatialShutdown() {

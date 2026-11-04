@@ -64,6 +64,8 @@ debug専用Activity `DebugCommandActivity`を`src/debug/`へ追加し、固定ca
 
 host: stale handle、二重stop、destroy-before-stop、queue満杯、未知JSON/schema、panic変換を検査。Quest: load→create→snapshot→stop→destroyを10回、通常パネルへ戻れることを確認する。
 
+実装のruntime configは現在`{"schema":1}`。後続taskで必要な設定だけを追加する。`nativeAttachSurface`はR01/R02で導入し、B03の時点で未実装のSurface APIを成功扱いしない。debugのpanic fixtureも`cfg(debug_assertions)`へ限定し、releaseのDEX・merged manifest・native symbolに試験入口がないことをAPK検査で確認する。
+
 <a id="h01"></a>
 ## H01 — APK UIDでnative helperを起動する先行gate
 

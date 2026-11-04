@@ -10,7 +10,7 @@ import re
 import subprocess
 import time
 import zipfile
-from quest_device import PACKAGE, package_uid
+from quest_device import PACKAGE, QuestDevice, package_uid, work_root
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--serial", required=True, help="adb devicesに出るUSB serialまたはIP:port")
@@ -20,9 +20,7 @@ parser.add_argument("--timeout", type=int, default=45)
 parser.add_argument("--require-focus", action="store_true", help="HMD装着によるXR FOCUSEDまで待つ")
 args = parser.parse_args()
 os.umask(0o077)
-config = Path.home() / ".config/homecluster-agents/codex-work-root"
-work_root = Path(config.read_text().strip()) if config.exists() else Path.home() / ".local/state/homecluster-agents/codex-work"
-root = args.artifact_root or work_root / "eidolon-phase0/smoke"
+root = args.artifact_root or work_root() / "eidolon-phase0/smoke"
 if not root.is_absolute():
     parser.error("artifact rootには絶対pathが必要です")
 run = root / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S") + f"-{os.getpid()}")
@@ -31,13 +29,8 @@ if not args.apk.is_file():
     parser.error("APKがありません")
 print(f"Artifacts: {run}", flush=True)
 
-def adb(*command, timeout=30):
-    with (run / "commands.log").open("a") as log:
-        log.write(json.dumps(["adb", "-s", "[ADB_TARGET]", *command], ensure_ascii=False) + "\n")
-    result = subprocess.run(["adb", "-s", args.serial, *command], text=True, capture_output=True, timeout=timeout)
-    if result.returncode:
-        raise RuntimeError(f"{command}: {result.stdout}\n{result.stderr}")
-    return result.stdout
+device = QuestDevice(args.serial, run)
+adb = device.adb
 
 sdk = Path(os.environ.get("ANDROID_HOME", "/opt/android-sdk"))
 badging = subprocess.check_output([str(sdk / "build-tools/35.0.0/aapt"), "dump", "badging", str(args.apk)], text=True)
@@ -54,20 +47,14 @@ stream = None
 stream_file = None
 logs = ""
 try:
-    if adb("get-state").strip() != "device":
-        raise RuntimeError("対象端末が承認済みdeviceではありません")
-    result["model"] = adb("shell", "getprop", "ro.product.model").strip()
-    result["api"] = int(adb("shell", "getprop", "ro.build.version.sdk").strip())
-    if result["model"] != "Quest 3" or result["api"] < 34:
-        raise RuntimeError("対象端末またはAndroid APIが想定外です")
+    result.update(device.validate())
     (run / "install.log").write_text(adb("install", "-r", str(args.apk.resolve()), timeout=120))
     adb("shell", "am", "force-stop", PACKAGE)
-    started = adb("shell", "date", "+%m-%d_%H:%M:%S.000").strip().replace("_", " ")
     uid_text = adb("shell", "pm", "list", "packages", "-U", PACKAGE)
     uid = package_uid(uid_text)
     # 起動直後のログをring bufferの上書きで失わないよう、起動前から連続採取する。
     stream_file = (run / "app.log").open("w")
-    stream = subprocess.Popen(["adb", "-s", args.serial, "logcat", "-v", "threadtime", "-T", started, "--uid=" + str(uid)], stdout=stream_file, stderr=subprocess.STDOUT)
+    stream = device.start_log(uid, stream_file)
     (run / "launch.log").write_text(adb("shell", "am", "start", "-W", "-n", PACKAGE + "/.MainActivity"))
     deadline = time.monotonic() + args.timeout
     logs = ""

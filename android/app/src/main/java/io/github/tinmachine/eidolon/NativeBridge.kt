@@ -4,7 +4,19 @@ import org.json.JSONObject
 
 /** JNI入口。未実装の入口は呼ばず、版整合が取れた時だけnative readyとする。 */
 object NativeBridge {
+    const val ACCEPTED = 0
+    const val STALE = 1
+    const val BUSY = 2
+    const val INVALID_ARGUMENT = 3
+    const val NOT_READY = 4
+    const val FAILED = 5
     @JvmStatic external fun nativeBuildInfo(): String
+    @JvmStatic external fun nativeCreate(configJson: String): Long
+    @JvmStatic external fun nativeCommand(handle: Long, commandJson: String): Int
+    @JvmStatic external fun nativePoll(handle: Long, maxEvents: Int): String
+    @JvmStatic external fun nativeSnapshot(handle: Long): String
+    @JvmStatic external fun nativeRequestStop(handle: Long): Int
+    @JvmStatic external fun nativeDestroy(handle: Long): Int
 
     data class Status(val ready: Boolean, val info: String?, val error: String?)
 
