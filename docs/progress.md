@@ -159,3 +159,7 @@ scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case runtime --timeout 12
 - release Build 10のassemble/lint・静的検査が成功し、helper fixture、debug Activity/class/JNIは含まれない。Waypipe本体の起動はW04で別に判定する。
 
 Build 10は基準`9a4c58a27bc727635f7095017488cf64a2a9282d`からのdirty build、source digest `2423bc4d3752dae65881e3162258ae8f59703c507a25feea8cc9b198257cdc2e`、APK SHA256 `1d41ced681d830c3f17a924eed8fbc469004c4ca429fae246ca734eaa733a0b9`。artifactは`builds/20261105T010720-1744298/`、上記`checks/`、`host-h01-first.log`、`python-h01-first.log`、`release-build10.log`、`release-package10.json`へ保存した。
+
+H01の診断改善として、exec時のerrnoを保持し、ENOENT（ファイル未存在）/EACCES（実行権限不足）を実fixtureで区別してcleanupも確認した。helper失敗時は破棄前のnative snapshotをdebug結果へ残す。stdout上限後の読み捨ても、retained長だけでなく入力がEOFまで消費されたことを検査する。
+
+この改善後のBuild 11はassemble/lint・debug/release APK検査、helper case `20261105T012453-63ae0c50`とruntime回帰caseでpass。正確なrun directoryはprivate artifactのnonce suffixとresult.jsonを参照。host Rust 16件と実APK付きPython 14件が成功。APK SHA256は`d358b639ef6cb79bac8008cb07833dd967d61f52ed3b940cafc6bf4f9c58e333`、source digestは`756a1b40dcbe95869414116d278588c3766cb3d920ad74b0c2f59f5beb485c47`、基準`72ef1e112ba52b52942107b907ae6ee0ce0a7c01`のdirty build。

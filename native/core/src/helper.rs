@@ -31,6 +31,7 @@ pub struct Report {
     pub error: Option<Error>,
     pub cancelled: bool,
     pub exit_code: Option<i32>,
+    pub exec_errno: Option<i32>,
 }
 
 struct RuntimeDirectory {
@@ -114,14 +115,21 @@ struct OwnedChild {
     stderr: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
 }
 impl OwnedChild {
-    fn spawn(executable: &Path, args: &[&std::ffi::OsStr]) -> Result<Self, Error> {
+    fn spawn(
+        executable: &Path,
+        args: &[&std::ffi::OsStr],
+        report: &mut Report,
+    ) -> Result<Self, Error> {
         let child = Command::new(executable)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|_| "HELPER_EXEC_FAILED")?;
+            .map_err(|error| {
+                report.exec_errno = error.raw_os_error();
+                "HELPER_EXEC_FAILED"
+            })?;
         let mut owned = Self {
             child,
             stdout: None,
@@ -206,7 +214,11 @@ pub fn probe(
     let result = (|| -> Result<(), Error> {
         let directory = RuntimeDirectory::create(files, nonce)?;
         let result = (|| -> Result<(), Error> {
-            let mut child = OwnedChild::spawn(executable, &[std::ffi::OsStr::new("--version")])?;
+            let mut child = OwnedChild::spawn(
+                executable,
+                &[std::ffi::OsStr::new("--version")],
+                &mut report,
+            )?;
             report.owned_children = 1;
             progress(&report);
             let (status, output) = child.wait(&stop, Instant::now() + Duration::from_secs(3))?;
@@ -239,6 +251,7 @@ pub fn probe(
                 let mut child = OwnedChild::spawn(
                     executable,
                     &[std::ffi::OsStr::new("--echo"), path.as_os_str()],
+                    &mut report,
                 )?;
                 report.owned_children = 1;
                 progress(&report);
@@ -313,9 +326,8 @@ mod tests {
     #[test]
     fn diagnostic_output_is_drained_after_limit_without_growing() {
         let data = vec![b'x'; super::OUTPUT_BYTES * 2];
-        assert_eq!(
-            super::drain(std::io::Cursor::new(data)).unwrap().len(),
-            super::OUTPUT_BYTES
-        );
+        let mut input = std::io::Cursor::new(data);
+        assert_eq!(super::drain(&mut input).unwrap().len(), super::OUTPUT_BYTES);
+        assert_eq!(input.position(), (super::OUTPUT_BYTES * 2) as u64);
     }
 }

@@ -49,6 +49,7 @@ internal object HelperCase {
             result.put("result", "pass")
         } catch (failure: Exception) {
             result.put("result", "fail").put("failure_class", failure.javaClass.simpleName)
+            if (handle != 0L) result.put("native_failure", snapshot(handle))
         } finally {
             if (handle != 0L) {
                 NativeBridge.nativeRequestStop(handle)

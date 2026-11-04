@@ -4,6 +4,7 @@ use eidolon_model::{
     ids::CommandSeq,
     state::{RuntimeState, Status},
 };
+use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
     path::PathBuf,
@@ -14,6 +15,30 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+#[test]
+fn exec_failure_reports_missing_file_and_permission_errno_and_cleans_its_directory() {
+    let fixture = Fixture::new();
+    let missing = helper::probe(
+        &fixture.0.join("missing"),
+        &fixture.files(),
+        "0123456789abcdef",
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    );
+    assert_eq!(missing.exec_errno, Some(libc::ENOENT));
+    assert!(missing.directory_removed);
+    fs::set_permissions(fixture.exe(), fs::Permissions::from_mode(0o600)).unwrap();
+    let denied = helper::probe(
+        &fixture.exe(),
+        &fixture.files(),
+        "0123456789abcdee",
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    );
+    assert_eq!(denied.exec_errno, Some(libc::EACCES));
+    assert!(denied.directory_removed);
+}
 
 struct Fixture(PathBuf);
 impl Fixture {
