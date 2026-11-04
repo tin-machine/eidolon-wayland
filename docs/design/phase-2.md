@@ -16,6 +16,8 @@
 5. TermuxのSSH host公開鍵とuser名をADB `run-as`で取得し、APK profileへ保存する。private keyをPCへ抽出しない。profile更新はtemp＋rename、既存pin不一致時は失敗させる。
 6. 正しいknown host keyでだけ接続する。未知鍵は`HOST_KEY_UNKNOWN`、不一致は`HOST_KEY_MISMATCH`。ネットワークで見えた鍵を無条件に承認しない。
 
+実装した`quest-pair`は、Phase 0でPCに登録した公開known_hostsの端末alias（ADBの物理端末ID由来）とhost keyを両方照合してから更新する。PC秘密鍵は読み出さず、APKへ渡さない。`~/.ssh/eidolon_quest_known_hosts`が既定で、未登録端末・不一致pinは失敗させる。Termux Pythonも必要で、bootstrapの依存へ含めた。既存authorized_keysのbyte列とoptionを保ち、同じ鍵は重複追加しない。profileはAPKのinstallation IDへ束縛し、再起動後は新PIDとそのPIDが発行した同じbuildの診断を照合する。
+
 debug pairingはGitHub debug版Termuxのrun-asを利用する限定経路。release向けには公開鍵を表示し、Termux側のhost fingerprintを人が照合・登録するUIが別途必要。T01でdebug成功しただけで配布版pairing完了とはしない。
 
 検証: 鍵生成の冪等性、暗号文の改変拒否、Keystore鍵喪失時の再pair案内、known/unknown/mismatch、別端末混同拒否。fixtureは合成鍵。既存のPC認証・authorized_keysを上書きしない。

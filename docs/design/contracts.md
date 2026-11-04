@@ -25,7 +25,7 @@ android/app/src/main/java/io/github/tinmachine/eidolon/
   InputAdapter.kt CredentialStore.kt DiagnosticsStore.kt
 ```
 
-`model`←`core`、`model`←`render`、`model`←`transport`、`core`→`render`（GL ownerの所有と停止）、`android`→各crate。循環依存禁止。Android専用依存は`cfg(target_os = "android")`で囲み、host model testをSDKなしで実行する。必要になるtaskまで空のcrateを大量に追加しない。
+`model`←`core`、`model`←`render`、`model`←`transport`、`core`→`render`/`transport`（ownerの停止とcredential slot）、`android`→各crate。循環依存禁止。Android専用依存は`cfg(target_os = "android")`で囲み、host model testをSDKなしで実行する。必要になるtaskまで空のcrateを大量に追加しない。
 
 ## 識別子と所有者
 
@@ -145,6 +145,6 @@ Surface target: `Absent → Attaching → Active → Detaching → Absent`、los
 
 XR `FOCUSED`は入力可能、`VISIBLE`は表示可能だが入力不可。それ以外は描画抑制・入力解除。scene/Surfaceの有無、Activity再生成、transportの状態と独立させる。
 
-安定error code: `CONFIG_INVALID`、`JNI_FAILURE`、`SURFACE_LOST`、`EGL_INIT_FAILED`、`RENDER_STALLED`、`HOST_KEY_UNKNOWN`、`HOST_KEY_MISMATCH`、`AUTH_FAILED`、`FORWARD_DENIED`、`REMOTE_EXIT`、`HELPER_EXEC_FAILED`、`PROTOCOL_ERROR`、`RESOURCE_LIMIT`、`CLEANUP_FAILED`。補足messageは秘密情報・入力文字・pixelを含めない。再試行可能かと責任領域も返す。
+安定error code: `CONFIG_INVALID`、`CREDENTIAL_INVALID`、`KEY_LOST`、`CREDENTIAL_IO`、`JNI_FAILURE`、`SURFACE_LOST`、`EGL_INIT_FAILED`、`RENDER_STALLED`、`HOST_KEY_UNKNOWN`、`HOST_KEY_MISMATCH`、`AUTH_FAILED`、`FORWARD_DENIED`、`REMOTE_EXIT`、`HELPER_EXEC_FAILED`、`PROTOCOL_ERROR`、`RESOURCE_LIMIT`、`CLEANUP_FAILED`。補足messageは秘密情報・入力文字・pixelを含めない。再試行可能かと責任領域も返す。
 
 停止の順番とdeadlineは[Phase 6](phase-6.md#l01)が正本。同期GL callをtimeoutで安全に強制終了できるとは仮定しない。GL thread停止が詰まった場合はruntime再利用を拒否し、旧NativeWindowを別threadから解放しない。

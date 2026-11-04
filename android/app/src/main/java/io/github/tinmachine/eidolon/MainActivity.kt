@@ -95,6 +95,7 @@ class MainActivity : AppSystemActivity() {
                                 val native = NativeBridge.status
                                 Text(if (native.ready) "Rust ready · Build ${BuildConfig.VERSION_CODE}" else "Rust load failed: ${native.error}", color = if (native.ready) Color(0xFF67E8C3) else Color.Red)
                                 Text("Runtime: ${NativeSessionHost.summary.value}", color = Color.White)
+                                Text(NativeSessionHost.credentialSummary.value, color = Color.White)
                                 Text("Spatial SDK 0.15.0 · Android API ${Build.VERSION.SDK_INT}", color = Color.White)
                                 Button(onClick = {
                                     clicks++

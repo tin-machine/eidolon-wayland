@@ -12,7 +12,7 @@ export DEBIAN_FRONTEND=noninteractive
 # 公式の署名付きrepositoryへ固定。既存の追加repositoryは変更しない。
 printf 'deb https://packages.termux.dev/apt/termux-main stable main\n' > "$PREFIX/etc/apt/sources.list"
 apt-get update
-apt-get install -y -o Dpkg::Options::=--force-confold openssh termux-services
+apt-get install -y -o Dpkg::Options::=--force-confold openssh termux-services python
 
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
@@ -75,5 +75,5 @@ sv -w 15 start "$service_dir"
 sv status "$service_dir"
 sv status "$service_dir/log"
 ssh-keygen -lf "$PREFIX/etc/ssh/ssh_host_ed25519_key.pub"
-dpkg-query -W openssh termux-services
+dpkg-query -W openssh termux-services python
 id

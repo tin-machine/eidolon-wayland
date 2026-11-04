@@ -3,10 +3,25 @@ import sys
 from pathlib import Path
 import unittest
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from quest_checks import runtime_result, surface_result
+from quest_checks import runtime_result, surface_result, credentials_result
 
 
 class ResultTests(unittest.TestCase):
+    def test_credentials_gate_needs_all_protections_and_no_secret_in_diagnostics(self):
+        flags = ("idempotent", "public_only", "file_mode_0600", "aes_nonexportable", "known_pin", "unknown_pin_rejected",
+                 "mismatch_pin_rejected", "unsolicited_credential_rejected", "tamper_rejected", "key_loss_rejected",
+                 "no_silent_regeneration", "production_unchanged", "save_loss_rejected")
+        info = {"profile": "debug"}
+        snapshot = {"schema": 1, "build_info": info, "check": {"case": "credentials", "nonce": "new", "result": "pass", **dict.fromkeys(flags, True)},
+                    "runtime": {"runtime": {"state": "Ready", "activity_visible": True, "xr_state": "FOCUSED", "render": {"workers": 1}}}}
+        self.assertTrue(credentials_result(snapshot, "new", info))
+        self.assertFalse(credentials_result(snapshot, "old", info))
+        for field in flags:
+            bad = copy.deepcopy(snapshot); bad["check"][field] = False
+            with self.assertRaises(ValueError): credentials_result(bad, "new", info)
+        snapshot["runtime"]["invalid_fixture"] = "-----BEGIN OPENSSH PRIVATE KEY-----"
+        with self.assertRaises(ValueError): credentials_result(snapshot, "new", info)
+
     def setUp(self):
         self.info = {"apk_version_code": 5, "source_digest": "fixture"}
         self.snapshot = {"schema": 1, "build_info": self.info,

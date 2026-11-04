@@ -11,7 +11,7 @@ from host_checks import check_members, rust_test_count
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {"model": ["eidolon-model"], "render": ["eidolon-render"], "lifecycle": ["eidolon-core", "eidolon-android", "eidolon-helper-fixture"],
-          "transport": [], "compositor": [], "input": []}
+          "transport": ["eidolon-transport"], "compositor": [], "input": []}
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--suite", required=True, choices=[*SUITES, "all"])
 args = parser.parse_args()

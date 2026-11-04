@@ -62,7 +62,7 @@ def inspect(apk):
         public = {"libc.so", "libm.so", "libdl.so", "liblog.so", "libandroid.so", "libEGL.so", "libGLESv3.so"}
         if set(required) - public:
             raise ValueError(f"許可されていないELF依存: {sorted(set(required) - public)}")
-        for method in ("nativeBuildInfo", "nativeCreate", "nativeCommand", "nativeAttachSurface", "nativePoll", "nativeSnapshot", "nativeRequestStop", "nativeDestroy"):
+        for method in ("nativeBuildInfo", "nativeCreate", "nativeCommand", "nativeAttachSurface", "nativePoll", "nativeSnapshot", "nativeRequestStop", "nativeDestroy", "nativeGenerateIdentity", "nativePublicKey", "nativeProvideCredential"):
             if "Java_io_github_tinmachine_eidolon_NativeBridge_" + method not in output:
                 raise ValueError("JNI symbolがありません: " + method)
         helper_path = f"lib/{ABI}/libeidolon_probe_bin.so"
@@ -90,12 +90,14 @@ def inspect(apk):
                                 for word in line.split()[1:5] if re.fullmatch(r"[0-9a-fA-F]{8}", word))
             if note_bytes(actual_note) != bytes(note):
                 raise ValueError("helper fixtureの実API/NDK noteが不一致です")
-        debug_symbol = "Java_io_github_tinmachine_eidolon_DebugNativeBridge_nativePanic" in output
+        debug_symbol = "Java_io_github_tinmachine_eidolon_DebugNativeBridge_" in output
         dex = b"".join(archive.read(name) for name in names if re.fullmatch(r"classes\d*\.dex", name))
-        debug_classes = [b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;"]
+        debug_classes = [b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;", b"Lio/github/tinmachine/eidolon/CredentialCase;"]
         debug_dex = any(name in dex for name in debug_classes)
         if info["profile"] == "release" and (debug_symbol or debug_dex):
             raise ValueError("releaseにdebug JNI/classが混入しています")
+        if info["profile"] == "release" and any(marker in dex for marker in (b"credential-fixtures", b"eidolon.fixture.")):
+            raise ValueError("releaseにcredential fixtureが混入しています")
         if info["profile"] == "debug" and (not debug_symbol or not all(name in dex for name in debug_classes)):
             raise ValueError("debugの固定case JNI/classがありません")
     badging = subprocess.check_output([str(sdk / "build-tools/35.0.0/aapt"), "dump", "badging", str(apk)], text=True)

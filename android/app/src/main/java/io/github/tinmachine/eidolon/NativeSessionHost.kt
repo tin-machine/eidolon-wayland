@@ -24,9 +24,11 @@ object NativeSessionHost {
     private val activityVisible = AtomicBoolean(false)
     private var store: DiagnosticsStore? = null
     private var paths: JSONObject? = null
+    private var credentials: CredentialStore? = null
     private var lastWrite = 0L
     private var state = "Starting"
     val summary = mutableStateOf("Starting")
+    val credentialSummary = mutableStateOf("鍵を確認中")
 
     init { worker.scheduleAtFixedRate({ safely { tick() } }, 0, 16, TimeUnit.MILLISECONDS) }
 
@@ -35,7 +37,12 @@ object NativeSessionHost {
         worker.execute { safely {
             if (store == null) store = DiagnosticsStore(application)
             if (paths == null) paths = JSONObject().put("native_library_dir", application.applicationInfo.nativeLibraryDir).put("files_dir", application.filesDir.absolutePath)
-            if (handle == 0L && NativeBridge.status.ready) startRuntime()
+            if (handle == 0L && NativeBridge.status.ready) {
+                if (credentials == null) credentials = CredentialStore(application)
+                checkNotNull(credentials).ensureIdentity()
+                ui.post { credentialSummary.value = "APK専用鍵を暗号化して保存済み" }
+                startRuntime()
+            }
         } }
     }
     fun sceneReady(): Long {
@@ -128,6 +135,10 @@ object NativeSessionHost {
         catch (failure: Exception) {
             Log.e(TAG, "host_failure class=${failure.javaClass.simpleName}")
             ui.post { summary.value = "Failed" }
+            if (failure is CredentialStore.Failure) {
+                Log.e(TAG, "credential_failure code=${failure.code}")
+                ui.post { credentialSummary.value = "鍵の復旧・再pairingが必要（${failure.code}）" }
+            }
         }
     }
     private const val TAG = "EidolonHost"

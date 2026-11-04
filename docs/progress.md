@@ -13,7 +13,8 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | C01 | done | 9c83853のGitHub Actionsでhost・Android・report全成功。Actions許可、context範囲、SDK manager PATHの切り分けを記録 |
 | H01 | done | 製品runtimeの専用I/O workerからAPK内PIEを実行。host・Questで10echo/明示終了/回収、起動中stop、releaseへのfixture不在を確認 |
 | R01〜R03 | in_progress | 製品SDK Surface/Rust EGL/世代・停止を実装。host・Questの自動部分成功。HMD、実Menu/sleep、UV、外部frameの検査を保留 |
-| T01〜I07 | planned | 独立した接続・Wayland・入力を依存順に実装 |
+| T01 | done | APK専用Ed25519・Keystore AES-GCM・pin・公開情報pairing。Build21の実機保護検査、pairing冪等性、debug/release検査成功 |
+| T02〜I07 | planned | 接続・Wayland・入力を依存順に実装 |
 
 ## B01/B02: ビルドと実機の再現
 
@@ -194,3 +195,32 @@ Build15では実際に描画中だった製品runtimeの停止・回収が10ms�
 最終candidate Build17でhostのRust22件・fmt/clippy/design、実APK付きPython15件、debug/release assemble/lint/静的検査がすべて成功。Quest smoke `20261105T020851-1832786`、surface10 `020905-d5f1c6fe`、pattern `020912-6fbff134`、surface-cycle20 `020917-1363bb93`、runtime `020924-e2bf1297`、helper `020928-8023a126`が成功した（check directoryのprefixはすべて`20261105T`）。cycle20のFDは287〜288、native heapは45,450,392→46,601,672 bytes。描画activeな製品runtimeの停止・回収8ms、helper試験開始時7ms。自動部分の受入とHMD未確認を区別している。
 
 Build17は`9c83853ba054a32743499f97aad107cd3bfabe26`からのdirty build、source digest `4457124e4d91c39699169afb55f3bf2dde2fadec584e9bd10d25e61fb776184b`、APK SHA256 `32eeb98fe45fe3b832208c2fcd8cbf519387175656b4fb8069fd7f9c89112d8f`。`builds/20261105T020613-1829190/`、`host-render17.log`、`python-render17.log`、`release17.log`、`release-package17.json`、上記checksへ保存。commit後のclean buildと取り違えない。
+
+R統合commit `87c673e5e42074af8a5995be1fa432a749bcc4cf`もGitHub run `41875258934`のhost/Android/reportがすべて成功した。
+
+## T01: APK専用identityと公開情報pairing
+
+RustでEd25519を生成し、Kotlinは平文をByteArrayで短時間だけ扱い、Android Keystore AES256-GCMで`noBackupFilesDir/credentials/identity.json`へ暗号化する。schemaとinstallation IDをAADへ含め、nonceはproviderに生成させる。通常診断・command JSON・file/Stringへ平文秘密鍵を通さない。一時ByteArrayとRustの対応bufferを可能な範囲で消去する。JVM全体の完全消去は保証しない。既存保存の消失・AES鍵喪失では黙って新identityへ置換せず、UIに復旧/再pairingの必要を表示する。
+
+公開exportは`public.json`だけ。`quest-pair`はPCに既登録の物理端末aliasと公開host pinをADBで照合し、公開APK鍵だけをTermuxへ追加する。既存authorized_keysとoptionを維持し、二重追加しない。PC秘密鍵をAPKへ再利用しない。秘密提供JNIはschema JSONと別で、待機中session/requestと期限を検査するslotを一度だけ使用する。slotは失敗・Stop・期限切れで消去。実SSH認証はT02の受入で別に確認する。
+
+試行と修正:
+
+- 初回Build18はJNI旧APIの配列長i32/usize差でcompile失敗。`JByteArray.len(env)`へ修正した。Kotlinの修飾子keywordと同じ局所名も変更した。
+- Build19はassemble/lint/APK検査、host Rust26件・実APK Python19件で成功。Quest credentials caseは冪等性、公開情報だけのexport、0600、非exportable AES、正しい/未知/不一致pin、未要求/停止済みruntimeへのcredential拒否、暗号文改変、fixture AES鍵喪失、黙った再生成なし、production保存不変の全項目でpass。fixtureはproductionのalias/暗号文を消していない。
+- 初回pairingは端末/host pin照合に成功し、Termux側Python未導入で公開鍵更新前に失敗。`.ssh`700・authorized_keys600は正しく、権限を緩める修正は不要だった。既存のPC開発用SSHで`pkg install -y python`を実行してPython3.14.8を導入し、bootstrap依存にも追加した。このPC接続をAPKのSSH認証の証拠にはしない。
+- pairの再起動確認で古い診断fileを誤認しないよう、診断にPIDを追加し、新PID/同一build/Ready/Activity可視性を照合する。PIDが古い・別process・別buildのfixtureは拒否する。現在この変更を含むBuild20を検証中。
+
+最終reviewでは、暗号文/public両fileが消えてKeystore aliasだけが残るケースもKEY_LOSTとするよう補強した。初回保存の途中失敗も自動で別identityへ置換せず、復旧を要求する。専用fixtureで両fileを削除しても新file/aliasを作り直さないことを確認し、productionは変更しない。ADB exec-outはremote exec失敗でも終了code0となる場合があったため、pairの変更操作はshellの終了codeとJSON resultの双方を照合する。
+
+Build21はhost Rust26件、実APK Python20件、debug/release assemble/lint/APK検査がすべて成功。Quest credentials `20261105T025641-d988fa91`、surface-cycle20 `025648-1af55e47`、runtime10 `025656-198550b4`、helper `025701-daeec2af`がpass（省略したprefixは`20261105T`）。pairingは初回の公開鍵追加、2回目の追加不要、既存行保持、profile保存、installation不変、新PID/同一buildのruntime復帰を確認した。Build21のpair再実行も追加不要で成功。これはAPKのSSH接続成功を意味せず、実認証はT02で検査する。
+
+基準`87c673e5e42074af8a5995be1fa432a749bcc4cf`のdirty build、source digest `e949c8e8ecec8dcbb55322a812f09bbe231b0e18fa5c83ff646a03ff3287f572`、APK SHA256 `489a657776ff43f8008bc7236de383ec5a404195adbce117e30606758d0f404d`。artifactは`builds/20261105T025330-1881380/`、上記checks、`pairing/`、`host-t01-final20.log`、`python-t01-21.log`、`release21.log`、`release-package21.json`。失敗したBuild18と初回pair、Python導入logも削除していない。
+
+```bash
+scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case credentials
+scripts/quest-pair --serial "$EIDOLON_QUEST_SERIAL"
+scripts/quest-pair --serial "$EIDOLON_QUEST_SERIAL"
+```
+
+公開pinを含むprofileや公開鍵自体もstdoutへ表示せず、結果は識別・保存・保持のbooleanと安定error codeだけを記録する。releaseにはCredentialCase・debug pin JNI・fixture alias/directory名がないことをAPKから検査した。

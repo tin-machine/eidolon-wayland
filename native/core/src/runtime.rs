@@ -16,6 +16,7 @@ use std::{
 };
 
 struct Shared {
+    credentials: eidolon_transport::credentials::CredentialSlot,
     // 最新のSDK可視性。遅れて処理する通常commandで描画pauseを巻き戻さない。
     render_visibility: [bool; 2],
     snapshot: Snapshot,
@@ -31,6 +32,7 @@ impl Shared {
             return;
         }
         if self.snapshot.error.is_none() {
+            self.credentials.clear();
             self.snapshot.error = Some(code);
             self.snapshot.state = RuntimeState::Failed;
             self.terminal.push_back(Event::Failure { error: code });
@@ -65,6 +67,7 @@ impl Runtime {
         let render = Arc::new(eidolon_render::Controller::start()?);
         let gl = render.clone();
         let shared = Arc::new(Mutex::new(Shared {
+            credentials: Default::default(),
             render_visibility: [false; 2],
             snapshot: Snapshot::default(),
             commands: VecDeque::new(),
@@ -149,6 +152,7 @@ impl Runtime {
                             continue;
                         }
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                        state.credentials.expire();
                         if resetting.swap(false, Ordering::AcqRel) {
                             state.snapshot.input_resets += 1;
                         }
@@ -279,6 +283,7 @@ impl Runtime {
                 state.snapshot.commands_cancelled += state.commands.len() as u64;
                 state.commands.clear();
                 state.snapshot.state = RuntimeState::Stopped;
+                state.credentials.clear();
                 state.terminal.push_back(Event::Stopped);
             })?;
         Ok(Self {
@@ -341,6 +346,7 @@ impl Runtime {
     pub fn request_stop(&self) -> Status {
         self.stop.store(true, Ordering::Release);
         self.render.request_stop();
+        self.lock().credentials.clear();
         self.worker.thread().unpark();
         Status::Accepted
     }
@@ -401,6 +407,25 @@ impl Runtime {
             return Status::Stale;
         }
         self.render.attach(key, window, width, height)
+    }
+    pub fn provide_credential(
+        &self,
+        session: eidolon_model::ids::SessionId,
+        request: eidolon_model::ids::CommandSeq,
+        private: eidolon_transport::credentials::Secret,
+    ) -> Status {
+        let mut state = self.lock();
+        if state.snapshot.state != RuntimeState::Ready || self.stop.load(Ordering::Acquire) {
+            return Status::Stale;
+        }
+        match state.credentials.provide(session, request, private) {
+            Ok(()) => {
+                self.worker.thread().unpark();
+                Status::Accepted
+            }
+            Err(eidolon_transport::Error::Stale) => Status::Stale,
+            Err(_) => Status::InvalidArgument,
+        }
     }
     pub fn guarded<T>(&self, action: impl FnOnce() -> T) -> Result<T, Status> {
         catch_unwind(AssertUnwindSafe(action)).map_err(|_| {

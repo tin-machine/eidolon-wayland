@@ -9,7 +9,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONArray
 import org.json.JSONObject
 
-object DebugNativeBridge { @JvmStatic external fun nativePanic(handle: Long): Int }
+object DebugNativeBridge {
+    @JvmStatic external fun nativePanic(handle: Long): Int
+    @JvmStatic external fun nativeVerifyPin(pin: String?, candidate: String): String
+}
 
 /** ADBから受け取るのは固定caseとnonceのみ。任意JSON/path/shellは受け取らない。 */
 class DebugCommandActivity : Activity() {
@@ -17,7 +20,7 @@ class DebugCommandActivity : Activity() {
         super.onCreate(savedInstanceState)
         val name = intent.getStringExtra("case")
         val nonce = intent.getStringExtra("nonce")
-        if (name !in setOf("runtime", "helper", "surface", "pattern", "surface-cycle") || nonce == null || !nonce.matches(Regex("[0-9a-f]{32}")) ||
+        if (name !in setOf("runtime", "helper", "surface", "pattern", "surface-cycle", "credentials") || nonce == null || !nonce.matches(Regex("[0-9a-f]{32}")) ||
             intent.extras?.keySet()?.any { it != "case" && it != "nonce" } == true || !running.compareAndSet(false, true)) {
             Log.w(TAG, "check_rejected")
             finish()
@@ -35,7 +38,8 @@ class DebugCommandActivity : Activity() {
         }
         NativeSessionHost.withStoppedRuntime({ store ->
             if (name == "runtime") RuntimeCase.run(nonce, store)
-            else HelperCase.run(nonce, NativeSessionHost.runtimeConfigJson(), store)
+            else if (name == "helper") HelperCase.run(nonce, NativeSessionHost.runtimeConfigJson(), store)
+            else CredentialCase.run(nonce, application, store)
         }, {
             running.set(false)
             application.startActivity(Intent(application, MainActivity::class.java)

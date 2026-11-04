@@ -573,7 +573,7 @@
     {
       "id": "T01",
       "title": "APK専用鍵・pin・pairing",
-      "status": "planned",
+      "status": "done",
       "depends_on": [
         "B03"
       ],

@@ -1,5 +1,6 @@
 """端末snapshotの合否判定。nonce・版・終了条件をすべて満たすまで成功にしない。"""
 import re
+import json
 
 
 def runtime_result(snapshot, nonce, expected):
@@ -93,3 +94,25 @@ def surface_result(snapshot, nonce, expected, case):
             and state.get("xr_state") in {"VISIBLE", "FOCUSED"} and render.get("workers") == 1
             and not render.get("paused") and render.get("error") is None and len(targets) == 1
             and targets[0].get("key") == cycles[-1].get("key") and targets[0].get("frames", 0) > cycles[-1].get("frames", 0))
+
+
+def credentials_result(snapshot, nonce, expected):
+    if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
+        return False
+    result = snapshot.get("check", {})
+    if result.get("case") != "credentials" or result.get("nonce") != nonce:
+        return False
+    if result.get("result") == "fail":
+        raise ValueError("credential case失敗: " + result.get("stage", "unknown"))
+    if result.get("result") != "pass":
+        return False
+    required = ("idempotent", "public_only", "file_mode_0600", "aes_nonexportable", "known_pin", "unknown_pin_rejected",
+                "mismatch_pin_rejected", "unsolicited_credential_rejected", "tamper_rejected", "key_loss_rejected",
+                "no_silent_regeneration", "production_unchanged", "save_loss_rejected")
+    if not all(result.get(key) is True for key in required) or result.get("cleanup_failed"):
+        raise ValueError("credential保護・pin拒否・回収結果が不正です")
+    if "BEGIN OPENSSH PRIVATE KEY" in json.dumps(snapshot):
+        raise ValueError("診断へ秘密鍵が混入しています")
+    state = snapshot.get("runtime", {}).get("runtime", {})
+    return (state.get("state") == "Ready" and state.get("activity_visible") is True
+            and state.get("xr_state") in {"VISIBLE", "FOCUSED"} and state.get("render", {}).get("workers") == 1)

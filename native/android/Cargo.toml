@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 eidolon-model.workspace = true
 eidolon-core.workspace = true
 eidolon-render.workspace = true
+eidolon-transport.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]

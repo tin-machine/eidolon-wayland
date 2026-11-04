@@ -21,6 +21,7 @@ class DiagnosticsStore(context: Context) {
 
     private fun write() {
         val value = JSONObject().put("schema", 1).put("sequence", (++sequence).toString())
+            .put("process_id", android.os.Process.myPid())
             .put("build_info", JSONObject(NativeBridge.status.info ?: "{}"))
             .put("runtime", runtime)
         check?.let { value.put("check", it) }
