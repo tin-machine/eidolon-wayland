@@ -10,8 +10,8 @@
 | TH00 | GL任意角度・alpha、SDK透過・余白のray、canvas/content契約 | 共通座標変換とhost実GPU readbackを実装・検証。SDK透過/余白rayは未完了 |
 | TH01 | TOML/CSS compiler、SVG cache、独立時計、focus transition、busy pulse、CPU meter、reload | compiler・再生状態・builtin三重リング・世代付き単一workerを実装。Render ownerへ接続するAPIを追加。runtime command/importへの接続は未完了 |
 | TH02 | 静止foot背後の三重リング、二枚、resize/再生成/入力 | Render ownerの二窓独立tick、resize/Surface再生成時の時計、3pass合成をhost検証。SDK透過・余白ray・入力/物理寸法の製品接続は未完了 |
-| TH03 | TerminalId、PTY登録、collector、CPU/RSS | 未実装。共有foot serverの二端末を混同せず、欠測・PID再利用・boot変更を区別すること |
-| TH04 | tmuxのsession/pane対応、共有scope、再接続 | 未実装。登録したsocketのみ観測し、観測PIDをcleanup対象へ追加しないこと |
+| TH03 | TerminalId、PTY登録、collector、CPU/RSS | Build104でQuestの二footを別PTYへ対応付け、73秒・resize/表示切替・終了をnative scopeで検証。busy/欠測の見え方はHMD未確認 |
+| TH04 | tmuxのsession/pane対応、共有scope、再接続 | 登録socket限定adapterと共通EMAを実装。host/Questの専用PTY二client・共有二pane・CPU負荷検証成功。APK window内のattach切替/HMDは残る |
 | TH05 | import/設定/無効化、性能比較、製品受入れ | 未実装。ユーザーがコード変更なしでtheme交換でき、自動検査とHMD/物理操作が成立すること |
 
 TH00のSDK経路確認と独立して、TH01の純粋処理、TH03/04のcollectorを進めてよい。
@@ -119,7 +119,8 @@ SDK合成後の透明な見え方を確認済みとしない。部屋画像・�
 `setSceneMesh`のStringはentity名でありcollision設定ではないことも、
 [Meta SceneObject API](https://developers.meta.com/vr/reference/spatial-sdk/v0.15.0/com_meta_spatial_runtime_sceneobject/)で確認した。
 
-Build103のdebug/release assemble・lint・APK境界検査、PC64件は成功。Questは未実行。
+Build103のdebug/release assemble・lint・APK境界検査、PC64件は成功。Questへ導入後、
+caseは`ready`段階でtimeoutした。Activity非表示・XR IDLEのためentity作成前であり、alpha/rayの合否は未判定。
 最初のKotlin compileでnullableな`panelShapeConfig`の扱いを修正し、再compileした。
 試行錯誤の詳細と正確なAPK/source hashはprivate作業ログに保存している。
 
@@ -128,9 +129,72 @@ Build103のdebug/release assemble・lint・APK境界検査、PC64件は成功。
 1. SDK透過Surfaceと二枚の余白rayをprobeし、入力/物理寸法/Surface世代の契約を製品へ接続する。
 2. `Loader`とRender ownerのAPIをruntime command/importへ接続し、GPU準備中に要求が更新される競合も検査する。
    不正themeでは旧themeを維持し、旧canvas世代の入力を拒否する。
-3. TerminalId/PTy登録とcollectorを実装し、1HzのCPU/RSS・coverage・stale、tmux adapterを接続する。
+3. 検証済みのcollector/tmuxを通常UIのテーマと組み合わせ、APK window内のattach切替・負荷表示・欠測を検証する。
 4. import/設定/切り戻し、二枚・popup・resize・保存・接続/終了の回帰、性能比較を終え、HMD確認を一度に依頼する。
 
 hostの再現入口は`python3 -B scripts/check-host --suite theme`、`--suite render`、実GPUの上記example。
 全suiteにもtheme crateを登録した。hostの「三重リング」は角度/再生状態と実SVG rasterの検証を含むが、
 Questにリングを表示したという意味ではない。
+
+## TerminalId・CPU/RSS・tmuxの接続
+
+Rustがsession内で再利用しないTerminalIdを払い出す。`start_terminal_v1`/`open_terminal_v1`はschemaとSessionIdを持ち、
+既存`terminal_opened`のschema1にはfieldを追加しない。APK内のlauncher SHA照合を維持するので同じsourceのscriptを配布する。
+footclientのapp-idは`io.github.tinmachine.eidolon.foot.t-<nonce>-<TerminalId>`。
+client申告値だけを信頼せず、起動receiptと同sessionのPTY登録が揃って一意の場合に負荷を対応付ける。
+同じapp-idの二windowはambiguous、登録identityの変更は拒否、別sessionのtokenは結び付けない。
+layout保存用は起動receiptを確認したbase app-idへ分離し、再接続ごとに変わるnonceを保存キーにしない。
+
+実PTY内の固定wrapperが自分のPID/starttime/TTY/boot IDを送信してからshell/fixtureへexecする。
+private UNIX datagramの`SCM_CREDENTIALS`と同UID、現在のproc identity、TTYのdevice numberを照合する。
+未発行ID・再使用ID・重複登録を受け入れず、未登録の待機枠は6秒で返す。登録不可でもshell起動自体は継続する。
+global profileは変更せず、既存の直接exec probeとLD_PRELOADを保持する。
+
+collectorは一つのworkerで目標1Hz。`/proc`列挙は4096entry、同UIDのstatは512件、走査50msを上限とする。
+他UIDのstat、cmdline、environ、terminal本文、tmuxの名前/titleは読まない。
+CPUは各PID/starttimeのutime+stime差分をCLK_TCKとcollector内の単調時計deltaで割る。
+新PID・PID再利用・boot/epoch変更・counter逆行・欠測・3秒超の間隔はbaselineを取り直す。
+RSSはpage sizeを掛けた近似合計で、共有pageの重複計上を含む。短命process、reparent、SSH先の仕事は網羅しない。
+不完全な走査を0 CPUにせず、coverageと理由を送る。観測PIDは既存の終了/cleanup権限へ追加しない。
+
+stdoutは非blockingでcontrolを優先する。計測の待機は最新一件、書き始めたJSON lineは最後まで維持する。
+各lineは16KiB、計測は14,000byte、control queueは64KiB以内。読まれなくてもlease/停止処理を進める。
+Rustもsession/nonce/UID/epoch/sequence・未知field・個数/数値を検査し、最後のsampleだけを保持する。
+
+tmuxはTermux既定のprivate socketを明示登録し、他socketは勝手に列挙しない。追加登録は対象terminal内で次を実行する。
+
+```bash
+python3 "$HOME/.local/lib/eidolon/eidolon-session.py" register-tmux \
+  "$EIDOLON_SESSION_NONCE" /absolute/private/socket
+```
+
+登録上限は4 socket。parent directoryは同UIDの0700、socketは同UIDかつworld非公開に限る。
+固定formatでclient PID/TTY→session ID→pane PIDへ辿る。各照会を150ms/32KiBで打ち切り、client一覧の再照会と
+server/socket/process identityの再確認でattach切替の競合を検出する。確定できないネストや競合はpartialへ落とす。
+未登録socketのtmuxや遠隔SSH先をshell-treeから自動推定しない。表示scopeを`tmux_session`/`shell_tree`で区別する。
+同sessionを二端末で開いた場合はpane processを重複排除し、同じworkloadのEMAを共有する。
+
+EMAの時定数は1秒、busy on >0.15 core / off <0.08 core。値は初期評価値である。
+欠測・切断・3秒超の古いsampleはbusyを解除し、同じworkloadの表示値だけを保持する。
+別workload/epochへの変更はmeterのhold-lastを消し、windowのアニメーション時計は維持する。
+CPU低下をjob完了と解釈せず、pressureも自動付与しない。
+
+host全suiteはRust139件・PC57件（実APK用7件は別）・launcher32件成功。
+実PTY登録、JSON送信詰まり、schema1との分離、session/nonce/UID/epoch/sequence不一致、欠測、PID再利用を含む。
+host tmux 3.6では二clientが同sessionの二paneを共有し、同じ二processだけへ集計することを実際のsocketで確認した。
+QuestのSSH contextでは同UIDの12プロセスのstat読み取り、footclientのapp-id指定、tmux 3.8を確認した。
+
+Build104はdebug/release assemble・lint・APK検査、実APKを使うPC64件が成功。同版のAPK/launcher/producerを配布した。
+`quest-check --case two-windows --instrumentation`で二つの実footを別TerminalId/PID/TTYへ対応付け、
+73秒の実行中にCPU/RSSがfreshのまま届くことをsnapshotで確認した。七段階の独立表示・resize・三枚目への切替・close・Stopも成功。
+これはImageReaderと合成入力/visibilityを使うnative scopeで、SDK layer/HMD/物理入力の合格ではない。
+終了時にdirectory回収・pending cleanupゼロを確認し、以前の接続の残件もreceipt照合でverifiedとなった。
+
+別のQuest専用PTY probeでは配備済みlauncher SHAを照合してから二PTYを登録し、tmux 3.8の同sessionへ接続した。
+二paneを二processとして重複なく集計し、固定の5秒CPU処理中に両terminalへ同じ約0.95 coreを報告した。
+このsampleの走査は約7.3ms、間隔約0.99秒。性能保証や全負荷での上限達成ではない。
+observerのみの終了後もclient/serverが生存し、最後にprobe所有fixtureだけを回収した。
+APK window内のtmux attach/detach切替、通常テーマでのbusy/meter表示、HMD確認は別の残件である。
+
+参考: [proc_pid_stat](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html)、
+[tmux公式Formats](https://github.com/tmux/tmux/wiki/Formats)。

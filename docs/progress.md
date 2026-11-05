@@ -605,4 +605,23 @@ launcher20件。Build102を使ったPC62件は全成功し、テーマlicense改
 Build103へdebug専用`theme-surface`を追加。mesh/layerの固定色producer readback、
 実SDK ray、NoCollision後の背後到達を独立して記録する。SDK alpha/HMD未確認のflagを維持する。
 debug/release assemble・lint・APK検査とPC64件が成功し、releaseのDEXにprobe classが無いことを検査した。
-Questでのcase実行は接続待ち。これは透過の実機合格やTH02完了ではない。
+Questへ導入してcaseを実行したが、Activity非表示・XR IDLEでready待ちがtimeoutした。
+entity作成前のため透過/rayは未判定。これは透過の実機合格やTH02完了ではない。
+
+## TH03/TH04: PTY対応付け・負荷観測・tmux adapter
+
+2026-11-06。TerminalId付き起動、実PTY credential登録、版付きtelemetry、同UIDのCPU/RSS collector、
+tmuxの登録socket/共有session対応を実装。起動receipt・登録・mapを別eventとしてjoinし、
+欠測を0にせず、busy/EMA/staleとworkload切替時のhold-last破棄をRender ownerへ接続した。
+control/leaseを待たせない最新一件の送信と、観測PIDを終了権限へ追加しない境界を検査した。
+host全suite Rust139・PC57（実APK用7件は別）・launcher32成功。実PTY/SSH、host実tmux二client/二pane成功。
+Build104のdebug/release assemble・lint・APK検査、実APK PC64成功。同版のAPK/launcher/producerを配布した。
+Questの二footを別PTYへ対応付け、73秒・七段階のresize/表示切替/close/Stopがnative instrumentationで成功。
+専用PTY二つからtmux 3.8の同sessionへattachし、二paneの負荷を重複なく報告、固定CPU負荷で約0.95 coreを確認した。
+probe所有資源の回収も成功。APK window内のtmux切替とHMD表示は未確認で、テーマはまだ通常UIから有効化できない。
+実装契約と上限は[テーマ設計](design/theme-animation.md#terminalidcpursstmuxの接続)。
+
+Quest再接続時、Termuxとservice supervisorが停止しておりSSH接続できなかった。
+既存Termux Activityと`service-daemon start`で復旧し、設定/host keyは変更していない。
+同UID proc読み取りとtmux/footclient機能を確認した。既存launcherのNeovim直接exec修正も、
+専用PTYで起動・終了成功、headless成功、LD_PRELOAD保持を確認した。実foot内の通常起動・物理キー受入れとは区別する。

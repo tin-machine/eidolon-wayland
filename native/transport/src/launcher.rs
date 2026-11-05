@@ -1,6 +1,9 @@
 //! 固定launcherの短いJSON lineとheartbeatだけを扱う。任意shell/pathを受けない。
 use crate::forward_probe::valid_nonce;
-use eidolon_model::ids::CommandSeq;
+use eidolon_model::{
+    ids::{CommandSeq, SessionId, TerminalId},
+    workload::Telemetry,
+};
 use russh::{Channel, ChannelMsg, client};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -252,6 +255,12 @@ pub struct TerminalOpened {
     pub success: bool,
     pub ordinal: u32,
 }
+#[derive(Clone, Debug, Serialize)]
+pub struct TerminalLaunch {
+    pub terminal_id: TerminalId,
+    pub request_id: Option<CommandSeq>,
+    pub accepted: Option<bool>,
+}
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Frame {
@@ -259,6 +268,8 @@ enum Frame {
     Tools(Tools),
     ChildStarted(Started),
     TerminalOpened(TerminalOpened),
+    #[serde(rename = "workload_v1")]
+    WorkloadV1(Telemetry),
     Finished(Finished),
 }
 
@@ -268,6 +279,8 @@ pub struct Report {
     pub terminal_count: u32,
     pub terminal_pending: Option<CommandSeq>,
     pub last_terminal: Option<TerminalOpened>,
+    pub terminal_launches: Vec<TerminalLaunch>,
+    pub workload: Option<Telemetry>,
     pub tools: Option<Tools>,
     pub child: Option<Identity>,
     pub finished: Option<Finished>,
@@ -280,6 +293,8 @@ pub struct Report {
     pub error: Option<&'static str>,
 }
 pub struct Launcher {
+    terminal_session: Option<SessionId>,
+    next_terminal: Option<TerminalId>,
     expected_tools: Option<String>,
     channel: Option<Channel<client::Msg>>,
     nonce: String,
@@ -332,6 +347,8 @@ impl Launcher {
         cancel: CancellationToken,
     ) -> Result<Self, &'static str> {
         Ok(Self {
+            terminal_session: None,
+            next_terminal: Some(TerminalId::new(1).unwrap()),
             expected_tools: None,
             expected_socket: remote_path(nonce)?,
             beat_every: Duration::from_secs(10),
@@ -385,7 +402,7 @@ impl Launcher {
         }
         Ok(tools)
     }
-    pub async fn start_app(&mut self, mode: &str) -> Result<(), &'static str> {
+    pub async fn start_app(&mut self, mode: &str, session: SessionId) -> Result<(), &'static str> {
         if self.report.phase != "prepared"
             || self.stopping.is_some()
             || !matches!(mode, "pattern" | "foot" | "foot_fixture")
@@ -393,7 +410,17 @@ impl Launcher {
         {
             return Err("NOT_READY");
         }
-        self.control("start", Some(mode)).await?;
+        if matches!(mode, "foot" | "foot_fixture") {
+            let terminal = self.allocate_terminal(None)?;
+            self.terminal_session = Some(session);
+            self.send_frame(
+                serde_json::json!({"type":"start_terminal_v1","schema":1,"nonce":self.nonce,
+                "mode":mode,"session":session,"terminal_id":terminal}),
+            )
+            .await?;
+        } else {
+            self.control("start", Some(mode)).await?;
+        }
         self.report.phase = "starting";
         self.deadline = Instant::now() + Duration::from_secs(70);
         Ok(())
@@ -411,12 +438,31 @@ impl Launcher {
         {
             return Err("NOT_READY");
         }
+        let terminal = self.allocate_terminal(Some(request))?;
+        let session = self.terminal_session.ok_or("NOT_READY")?;
         self.send_frame(
-            serde_json::json!({"type":"open_terminal","nonce":self.nonce,"request_id":request}),
+            serde_json::json!({"type":"open_terminal_v1","schema":1,"nonce":self.nonce,"request_id":request,
+                              "session":session,"terminal_id":terminal}),
         )
         .await?;
         self.report.terminal_pending = Some(request);
         Ok(())
+    }
+    fn allocate_terminal(
+        &mut self,
+        request: Option<CommandSeq>,
+    ) -> Result<TerminalId, &'static str> {
+        let terminal = self.next_terminal.ok_or("TERMINAL_ID_EXHAUSTED")?;
+        self.next_terminal = terminal.checked_next();
+        if self.report.terminal_launches.len() == 64 {
+            self.report.terminal_launches.remove(0);
+        }
+        self.report.terminal_launches.push(TerminalLaunch {
+            terminal_id: terminal,
+            request_id: request,
+            accepted: None,
+        });
+        Ok(terminal)
     }
     pub(crate) fn suppress_heartbeat(&mut self) {
         self.heartbeats = false;
@@ -576,7 +622,46 @@ impl Launcher {
                 }
                 self.report.terminal_count = value.ordinal;
                 self.report.terminal_pending = None;
+                if self.terminal_session.is_some() {
+                    let launch = self
+                        .report
+                        .terminal_launches
+                        .iter_mut()
+                        .rev()
+                        .find(|launch| {
+                            launch.request_id == value.request_id && launch.accepted.is_none()
+                        })
+                        .ok_or("PROTOCOL_ERROR")?;
+                    launch.accepted = Some(value.success);
+                }
                 self.report.last_terminal = Some(value);
+            }
+            Frame::WorkloadV1(value) => {
+                if !matches!(self.report.phase, "starting" | "running" | "finishing")
+                    || Some(value.session) != self.terminal_session
+                    || value.nonce != self.nonce
+                    || value.uid != self.uid
+                    || !value.valid()
+                    || self
+                        .report
+                        .workload
+                        .as_ref()
+                        .is_some_and(|before| !value.follows(before))
+                    || value
+                        .registrations
+                        .iter()
+                        .map(|r| r.terminal_id)
+                        .chain(value.workloads.iter().map(|w| w.terminal_id))
+                        .any(|id| {
+                            self.next_terminal.is_some_and(|next| id >= next)
+                                || self.report.terminal_launches.iter().any(|launch| {
+                                    launch.terminal_id == id && launch.accepted == Some(false)
+                                })
+                        })
+                {
+                    return Err("PROTOCOL_ERROR");
+                }
+                self.report.workload = Some(value);
             }
             Frame::Tools(value) => {
                 if self.report.phase != "prepared"
@@ -789,6 +874,51 @@ mod tests {
         while owner.report.phase != "prepared" {
             owner.next().await.unwrap();
         }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn workload_wire_is_separate_ordered_scoped_and_never_grants_child_ownership() {
+        let (ssh, mut owner) = fixture("import time;time.sleep(30)", 5.).await;
+        prepared(&mut owner).await;
+        owner.terminal_session = Some(SessionId::new(17).unwrap());
+        owner.allocate_terminal(None).unwrap();
+        owner.report.phase = "starting";
+        let value = serde_json::json!({"type":"workload_v1","schema":1,"nonce":owner.nonce,"uid":owner.uid,"session":"17",
+            "epoch":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","sequence":"1","sampled_monotonic_ms":1000,
+            "boot":"00000000-0000-0000-0000-000000000001","capability":"available","interval_seconds":1.,"scan_seconds":0.01,
+            "registrations":[{"terminal_id":"1","pid":123,"start":"10","tty":"/dev/pts/1"}],
+            "workloads":[{"terminal_id":"1","workload_id":"shell:1:123:10","scope":"shell_tree","cpu_cores":1.,"rss_bytes":4096,
+                          "processes":1,"coverage":"complete","reason":null}]});
+        owner.frame(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(owner.report.child.is_none());
+        assert_eq!(owner.report.terminal_count, 0);
+        assert!(owner.frame(&serde_json::to_vec(&value).unwrap()).is_err());
+        for (field, bad) in [
+            ("nonce", serde_json::json!("aaaaaaaaaaaaaaaa")),
+            ("session", serde_json::json!("18")),
+            ("uid", serde_json::json!(owner.uid + 1)),
+            ("epoch", serde_json::json!("c".repeat(32))),
+        ] {
+            let mut modified = value.clone();
+            modified["sequence"] = serde_json::json!("2");
+            modified[field] = bad;
+            assert!(
+                owner
+                    .frame(&serde_json::to_vec(&modified).unwrap())
+                    .is_err()
+            );
+        }
+        let mut unknown = value.clone();
+        unknown["sequence"] = serde_json::json!("2");
+        unknown["cmdline"] = serde_json::json!("not permitted");
+        assert!(owner.frame(&serde_json::to_vec(&unknown).unwrap()).is_err());
+        let receipt = serde_json::json!({"type":"terminal_opened","schema":1,"nonce":owner.nonce,"uid":owner.uid,
+            "request_id":null,"success":true,"ordinal":1,"terminal_id":"1"});
+        assert!(owner.frame(&serde_json::to_vec(&receipt).unwrap()).is_err());
+        assert!(owner.report.child.is_none());
+        owner.request_stop().await.unwrap();
+        assert!(!owner.finish().await.unwrap().cleanup_pending);
+        drop(owner);
+        ssh.close().await;
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn real_ssh_control_stop_waits_for_reap_eof_exit_and_cleanup_ack() {

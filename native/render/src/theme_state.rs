@@ -16,15 +16,20 @@ use std::{
     time::Duration,
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct SemanticState {
     pub focused: bool,
     pub busy: bool,
     pub cpu_cores: Option<f64>,
+    pub workload_identity: Option<String>,
 }
 impl SemanticState {
     pub fn valid(&self) -> bool {
         self.cpu_cores.is_none_or(|v| v.is_finite() && v >= 0.)
+            && self
+                .workload_identity
+                .as_ref()
+                .is_none_or(|s| s.len() <= 256)
     }
     fn classes(&self) -> BTreeSet<String> {
         [("focused", self.focused), ("busy", self.busy)]
@@ -111,6 +116,7 @@ impl Drawing {
 struct Window {
     player: Player,
     visible: bool,
+    workload_identity: Option<String>,
 }
 #[derive(Default)]
 pub struct Players {
@@ -152,7 +158,12 @@ impl Players {
         let window = self.windows.entry(key).or_insert_with(|| Window {
             player: Player::new(now),
             visible: true,
+            workload_identity: None,
         });
+        if window.workload_identity != state.workload_identity {
+            window.player.clear_metrics();
+            window.workload_identity = state.workload_identity.clone();
+        }
         let frame = window
             .player
             .evaluate(theme, now, true, reduced, &state.classes(), state.cpu_cores)
@@ -174,6 +185,48 @@ mod tests {
         raster,
         style::{Property, Transform, Value},
     };
+    #[test]
+    fn workload_change_clears_hold_last_without_replacing_window_clock() {
+        let theme = Arc::new(
+            raster::compile(
+                &eidolon_theme::cyan_orbit(),
+                &BTreeMap::new(),
+                &Default::default(),
+                &Default::default(),
+            )
+            .unwrap(),
+        );
+        let mut players = Players::default();
+        let key = (SessionId::new(1).unwrap(), WindowId::new(1).unwrap());
+        let size = LogicalSize::new(1024, 768).unwrap();
+        let mut state = SemanticState {
+            workload_identity: Some("first".into()),
+            cpu_cores: Some(1.),
+            ..Default::default()
+        };
+        let first = players
+            .draw(key, &theme, Duration::ZERO, size, false, &state)
+            .unwrap();
+        assert!(first.frame.parts["cpu-meter"].contains_key(&Property::Value));
+        state.cpu_cores = None;
+        assert!(
+            players
+                .draw(key, &theme, Duration::from_secs(1), size, false, &state)
+                .unwrap()
+                .frame
+                .parts["cpu-meter"]
+                .contains_key(&Property::Value)
+        );
+        state.workload_identity = Some("next".into());
+        let changed = players
+            .draw(key, &theme, Duration::from_secs(2), size, false, &state)
+            .unwrap();
+        assert!(!changed.frame.parts["cpu-meter"].contains_key(&Property::Value));
+        assert_ne!(
+            first.frame.parts["ring-outer"][&Property::Transform],
+            changed.frame.parts["ring-outer"][&Property::Transform]
+        );
+    }
     #[test]
     fn window_clocks_survive_surface_absence_and_resize_without_sharing_phase() {
         let theme = Arc::new(

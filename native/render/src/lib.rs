@@ -434,6 +434,9 @@ impl Controller {
             .iter_mut()
             .find(|(key, _)| *key == (session, window))
         {
+            if *value == semantic {
+                return Status::Accepted;
+            }
             *value = semantic;
         } else if state.semantic.len() < limits::TOPLEVELS {
             state.semantic.push(((session, window), semantic));

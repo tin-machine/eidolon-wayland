@@ -122,7 +122,7 @@ pub(crate) async fn run<H: client::Handler>(
         report.registered = true;
         report.state = "forwarded";
         publish(&report);
-        remote.start_app(mode.as_str()).await?;
+        remote.start_app(mode.as_str(), session).await?;
         let mut requests_open = true;
         while remote.report.phase != "finished" {
             tokio::select! {

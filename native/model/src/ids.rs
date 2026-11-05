@@ -49,7 +49,9 @@ id_type!(
     FrameSeq,
     ContentSeq,
     InputSourceId,
-    CommandSeq
+    CommandSeq,
+    TerminalId,
+    SampleSeq
 );
 
 #[cfg(test)]

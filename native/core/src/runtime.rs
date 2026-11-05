@@ -279,7 +279,7 @@ impl Runtime {
                                 let panels = shared.panels.snapshot();
                                 shared.workspace.sync(
                                     current.session(),
-                                    &current.snapshot().windows,
+                                    &current.layout_windows(),
                                     &panels,
                                 )
                             };
@@ -306,8 +306,24 @@ impl Runtime {
                             if current.snapshot().error.is_some() && !close {
                                 io.disconnect(current.session());
                             }
+                            let snapshot = current.snapshot();
+                            for workload in &snapshot.workloads {
+                                gl.set_semantic_state(
+                                    current.session(),
+                                    workload.window,
+                                    eidolon_render::theme_state::SemanticState {
+                                        focused: snapshot.input.focus_window
+                                            == Some(workload.window),
+                                        busy: workload.display.busy,
+                                        cpu_cores: (!workload.display.stale)
+                                            .then_some(workload.display.smoothed_cores)
+                                            .flatten(),
+                                        workload_identity: workload.identity.clone(),
+                                    },
+                                );
+                            }
                             state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.app =
-                                Some(current.snapshot());
+                                Some(snapshot);
                         }
                         {
                             let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());

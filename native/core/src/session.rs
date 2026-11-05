@@ -41,6 +41,7 @@ pub struct Report {
     pub window_ids: Vec<WindowId>,
     pub visible_windows: Vec<WindowId>,
     pub windows: Vec<WindowReport>,
+    pub workloads: Vec<crate::workload::WindowWorkload>,
     pub clients: usize,
     pub objects: usize,
     pub surfaces: usize,
@@ -69,6 +70,7 @@ pub struct Session {
     closing: bool,
     published: Vec<WindowId>,
     started: Instant,
+    workload: crate::workload::Tracker,
 }
 pub struct Options {
     pub virtual_clock: bool,
@@ -129,10 +131,26 @@ impl Session {
             closing: false,
             published: vec![],
             started: Instant::now(),
+            workload: Default::default(),
         })
     }
     pub fn snapshot(&self) -> Report {
         self.report.clone()
+    }
+    pub fn layout_windows(&self) -> Vec<WindowReport> {
+        let mut windows = self.report.windows.clone();
+        for window in &mut windows {
+            if let Some(base) = self
+                .report
+                .workloads
+                .iter()
+                .find(|w| w.window == window.window)
+                .and_then(|w| w.base_app_id)
+            {
+                window.app_id = Some(base.into());
+            }
+        }
+        windows
     }
     pub fn session(&self) -> SessionId {
         self.report.session.unwrap()
@@ -394,6 +412,9 @@ impl Session {
         if self.closing || self.closed() || forward.nonce != self.report.nonce {
             return;
         }
+        if let Some(remote) = forward.remote.as_ref() {
+            self.workload.ingest(remote, self.started.elapsed());
+        }
         if let Some(error) = forward.error {
             self.fail(error);
         } else if forward.state == "pass" {
@@ -605,6 +626,13 @@ impl Session {
             return;
         };
         self.report.windows = state.windows();
+        self.report.workloads = self.workload.sync(
+            self.session(),
+            &self.report.nonce,
+            &self.report.windows,
+            self.started.elapsed(),
+            !self.closing,
+        );
         self.report.input = state.input_report();
         self.report.clients = 0;
         self.report.objects = 0;
