@@ -1147,15 +1147,21 @@
     {
       "id": "I06",
       "title": "配置・背景の保存と適用ack",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "I05"
       ],
       "spec": "docs/design/phase-4-5.md#i06",
       "files": [
-        "native/model/src/layout.rs",
+        "native/model/src/workspace.rs",
+        "native/core/src/preferences.rs",
+        "native/core/src/workspace.rs",
+        "native/core/src/runtime.rs",
         "native/core/src/session.rs",
-        "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt"
+        "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/PanelPoseCodec.kt",
+        "android/app/src/debug/java/io/github/tinmachine/eidolon/LayoutNativeCase.kt",
+        "android/app/src/debug/java/io/github/tinmachine/eidolon/LayoutSdkCase.kt"
       ],
       "steps": [
         "希望値とSDK適用値をackで分ける",

@@ -58,6 +58,7 @@ pub(super) struct WindowRecord {
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct WindowReport {
     pub window: WindowId,
+    pub app_id: Option<String>,
     pub life: WindowLife,
     pub frame: Option<FrameSeq>,
     pub logical_size: Option<LogicalSize>,
@@ -541,6 +542,30 @@ impl ProtocolState {
             .ok_or("STALE")?;
         record.resize.request(size)
     }
+    pub fn restore_sizes(
+        &mut self,
+        window: WindowId,
+        physical: Option<eidolon_model::resize::PhysicalSize>,
+        logical: Option<LogicalSize>,
+    ) -> Result<(), &'static str> {
+        let record = self
+            .toplevels
+            .values_mut()
+            .find(|r| r.id == window && r.life == WindowLife::Mapped)
+            .ok_or("STALE")?;
+        record.sizing.applied_physical_size_m = None;
+        if let Some(size) = physical {
+            if !size.valid() {
+                return Err("INVALID_ARGUMENT");
+            }
+            record.sizing.physical_size_m = size;
+            record.sizing.size_command = None;
+        }
+        if let Some(size) = logical {
+            record.resize.request(size)?;
+        }
+        Ok(())
+    }
     pub fn set_physical_size(
         &mut self,
         window: WindowId,
@@ -791,6 +816,16 @@ impl ProtocolState {
             .values()
             .map(|window| WindowReport {
                 window: window.id,
+                app_id: with_states(window.surface.wl_surface(), |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .app_id
+                        .clone()
+                }),
                 life: window.life,
                 frame: window.frame,
                 logical_size: window.snapshot.as_ref().map(|s| s.logical_size),

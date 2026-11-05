@@ -43,6 +43,8 @@ class QuestDevice:
             raise RuntimeError("対象端末またはAndroid APIが想定外です")
         return {"model": model, "api": api}
 
-    def start_log(self, uid, output):
+    def start_log(self, uid, output, *, log_format="threadtime"):
+        if log_format not in {"threadtime", "epoch"}:
+            raise ValueError("未知のlog formatです")
         started = self.adb("shell", "date", "+%m-%d_%H:%M:%S.000").strip().replace("_", " ")
-        return subprocess.Popen(["adb", "-s", self.serial, "logcat", "-v", "threadtime", "-T", started, "--uid=" + str(uid)], stdout=output, stderr=subprocess.STDOUT)
+        return subprocess.Popen(["adb", "-s", self.serial, "logcat", "-v", log_format, "-T", started, "--uid=" + str(uid)], stdout=output, stderr=subprocess.STDOUT)

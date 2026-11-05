@@ -86,3 +86,15 @@ PCの負例では、片側更新不足、三枚同時選択、修飾キー残留
 Guardianのトラッキング確認画面が前面にあるため、通常SDKの二枚描画・総layer数・HMD可読性は未受入れ。
 現時点の`two-windows`コマンドはinstrumentation専用で、通常SDK用の同名自動caseは未実装。
 製品UIの追加・表示枠切替・個別closeは実装済みだが、このheadless検査からSDK表示の成功へ読み替えない。
+
+## layer数の取得を準備
+
+Meta公式の[logcat stats定義](https://developers.meta.com/vr/documentation/spatial-sdk/ts-logcat-stats/)には`LCnt`が載っている。
+[MQDHのlayer表示](https://developers.meta.com/vr/documentation/spatial-sdk/ts-mqdh-compositor-layer/)でも可視/総layer情報を確認できる。
+新しい通常SDK layout検査は二枚を2.2秒維持し、APK UID・PID・その時間窓が一致するepoch logから`LCnt`だけを抽出する。
+`ShrpLCnt`や`SSLCnt`、別process、時間窓外の値を除く負例も追加した。
+取得できなければ`not_observed`として残し、geometry検査の成功からlayer計測済みとはしない。
+
+今回のread-only調査では、dumpsysのOVRMetricsService/OculusWindowManagerは出力がなかった。
+logcatには`LCnt=4`があったが、送信元はcom.oculus.vrshellで、Eidolonの二枚の計測値ではなかった。
+通常SDKがFOCUSEDとなった状態で改めて採取する必要がある。

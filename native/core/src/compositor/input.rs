@@ -96,6 +96,36 @@ impl ProtocolState {
         self.configure_pointer();
         Ok(())
     }
+    pub fn change_keyboard_layout(&mut self, layout: KeyboardLayout) -> Result<(), &'static str> {
+        self.reset_input();
+        let keyboard = self._seat.get_keyboard().ok_or("NOT_READY")?;
+        let text = keymap(layout);
+        keyboard
+            .set_keymap_from_string(self, text.to_owned())
+            .map_err(|_| "KEYMAP_INVALID")?;
+        let (paths, wire) = keyboard.with_xkb_state(self, |context| {
+            let xkb = context.xkb().lock().unwrap();
+            // SAFETY: pinned Contextを同じowner/closure内だけ参照する。
+            unsafe {
+                (
+                    xkb.context().include_paths().count(),
+                    hash(
+                        xkb.keymap()
+                            .get_as_string(xkbcommon::xkb::KEYMAP_FORMAT_TEXT_V1)
+                            .as_bytes(),
+                    ),
+                )
+            }
+        });
+        if paths != 0 {
+            return Err("KEYMAP_EXTERNAL_INCLUDES");
+        }
+        self.input.report.layout = Some(layout);
+        self.input.report.include_paths = Some(paths);
+        self.input.report.wire_keymap_sha256 = Some(wire);
+        self.input.report.keymap_sha256 = Some(hash(text.as_bytes()));
+        Ok(())
+    }
     pub fn input_report(&self) -> InputReport {
         let mut report = self.input.report.clone();
         report.pressed = self.input.keys.pressed_count();
@@ -357,7 +387,51 @@ mod tests {
                     .add_keyboard_from_string("invalid keymap".into(), 600, 25)
                     .is_err()
             );
-            assert_eq!(state._seat.get_keyboard(), Some(keyboard));
+            assert_eq!(state._seat.get_keyboard(), Some(keyboard.clone()));
+            let other = if layout == KeyboardLayout::Us {
+                KeyboardLayout::Jis
+            } else {
+                KeyboardLayout::Us
+            };
+            state.change_keyboard_layout(other).unwrap();
+            let changed = state.input_report();
+            assert_eq!(changed.layout, Some(other));
+            assert_eq!(changed.include_paths, Some(0));
+            assert_ne!(changed.wire_keymap_sha256, report.wire_keymap_sha256);
+            assert_eq!(state._seat.get_keyboard(), Some(keyboard.clone()));
+            keyboard.input::<(), _>(
+                &mut state,
+                Keycode::new(EvdevCode::new(42).unwrap().xkb()),
+                KeyState::Pressed,
+                Serial::from(3),
+                0,
+                |_, _, _| FilterResult::Forward,
+            );
+            let symbol = keyboard.with_xkb_state(&mut state, |context| {
+                let xkb = context.xkb().lock().unwrap();
+                // SAFETY: 同じownerのclosure内だけXKB stateを参照する。
+                unsafe {
+                    xkb.state()
+                        .key_get_one_sym(Keycode::new(EvdevCode::new(3).unwrap().xkb()))
+                        .raw()
+                }
+            });
+            assert_eq!(
+                symbol,
+                u32::from(if other == KeyboardLayout::Us {
+                    b'@'
+                } else {
+                    b'"'
+                })
+            );
+            keyboard.input::<(), _>(
+                &mut state,
+                Keycode::new(EvdevCode::new(42).unwrap().xkb()),
+                KeyState::Released,
+                Serial::from(4),
+                0,
+                |_, _, _| FilterResult::Forward,
+            );
         }
     }
 }

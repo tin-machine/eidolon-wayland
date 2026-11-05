@@ -175,6 +175,32 @@ impl Session {
             .ok_or("NOT_READY")?
             .close_window(window)
     }
+    pub fn current_window(&self, window: WindowId) -> Option<WindowReport> {
+        self.protocol
+            .as_ref()?
+            .windows()
+            .into_iter()
+            .find(|w| w.window == window)
+    }
+    pub fn restore_sizes(&mut self, action: crate::workspace::Restore) -> Result<(), &'static str> {
+        self.protocol.as_mut().ok_or("NOT_READY")?.restore_sizes(
+            action.window,
+            action.physical_size_m,
+            action.logical_size,
+        )
+    }
+    pub fn set_keyboard_layout(
+        &mut self,
+        layout: eidolon_model::keyboard::KeyboardLayout,
+    ) -> Result<(), &'static str> {
+        if self.closing {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .change_keyboard_layout(layout)
+    }
     pub fn reset_input(&mut self) {
         if let Some(protocol) = self.protocol.as_mut() {
             protocol.reset_input();

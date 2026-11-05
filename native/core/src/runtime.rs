@@ -17,6 +17,7 @@ use std::{
 
 struct Shared {
     panels: crate::panels::Controller,
+    workspace: crate::workspace::Controller,
     credentials: eidolon_transport::credentials::CredentialSlot,
     // 最新のSDK可視性。遅れて処理する通常commandで描画pauseを巻き戻さない。
     render_visibility: [bool; 2],
@@ -89,6 +90,7 @@ impl Runtime {
         let gl = render.clone();
         let shared = Arc::new(Mutex::new(Shared {
             panels: Default::default(),
+            workspace: crate::workspace::Controller::load(None),
             credentials: Default::default(),
             render_visibility: [false; 2],
             snapshot: Snapshot::default(),
@@ -129,8 +131,18 @@ impl Runtime {
                     bool,
                 )> = None;
                 let clock = Instant::now();
+                let mut workspace = crate::workspace::Controller::load(
+                    config.preferences_dir.as_deref().map(std::path::Path::new),
+                );
+                if config.preferences_dir.is_none() {
+                    workspace.set_keyboard_layout(config.keyboard_layout);
+                }
+                let mut workspace_storage = workspace.detach_storage();
+                let mut last_workspace_save = Instant::now();
                 {
                     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.workspace = workspace;
+                    state.snapshot.workspace = state.workspace.snapshot();
                     if state.snapshot.state == RuntimeState::Starting
                         && !stopping.load(Ordering::Acquire)
                     {
@@ -144,6 +156,25 @@ impl Runtime {
                     let mut last_credential = None;
                     let mut last_transport = (None, eidolon_transport::session::State::Idle, None);
                     loop {
+                        if last_workspace_save.elapsed() >= Duration::from_millis(250)
+                            || stopping.load(Ordering::Acquire)
+                        {
+                            let value = state
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .workspace
+                                .take_pending_save();
+                            if let Some(value) = value {
+                                workspace_storage.value = value;
+                                let _ = workspace_storage.save();
+                                let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                                shared
+                                    .workspace
+                                    .storage_result(workspace_storage.report.clone());
+                                shared.snapshot.workspace = shared.workspace.snapshot();
+                                last_workspace_save = Instant::now();
+                            }
+                        }
                         let render = gl.snapshot();
                         let ssh = io.snapshot();
                         if !stopping.load(Ordering::Acquire)
@@ -167,6 +198,11 @@ impl Runtime {
                                     return Err("BUSY");
                                 }
                                 let paths = config.paths.as_ref().ok_or("NOT_READY")?;
+                                let keyboard_layout = state
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .workspace
+                                    .keyboard_layout();
                                 app = Some(crate::session::Session::start(
                                     session,
                                     std::path::Path::new(&paths.files_dir),
@@ -175,7 +211,7 @@ impl Runtime {
                                     &nonce,
                                     mode,
                                     virtual_clock,
-                                    config.keyboard_layout,
+                                    keyboard_layout,
                                 )?);
                                 if !virtual_clock {
                                     gl.use_windows();
@@ -235,6 +271,20 @@ impl Runtime {
                                 .panels
                                 .visible();
                             current.set_visible_windows(&selected);
+                            let restores = {
+                                let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                                let panels = shared.panels.snapshot();
+                                shared.workspace.sync(
+                                    current.session(),
+                                    &current.snapshot().windows,
+                                    &panels,
+                                )
+                            };
+                            for restore in restores {
+                                if let Err(error) = current.restore_sizes(restore) {
+                                    current.fail(error);
+                                }
+                            }
                             current.render_tick(&gl, clock.elapsed());
                             let report = current.snapshot();
                             if !close && report.ready && !report.forward_sent {
@@ -430,6 +480,7 @@ impl Runtime {
                             state.fail(code);
                         }
                         state.snapshot.panels = state.panels.snapshot();
+                        state.snapshot.workspace = state.workspace.snapshot();
                         if resetting.swap(false, Ordering::AcqRel) {
                             state.snapshot.input_resets += 1;
                             if let Some(current) = app.as_mut() {
@@ -447,6 +498,43 @@ impl Runtime {
                             let app_busy =
                                 pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
                             let code = match &command {
+                                Command::SetBackground {
+                                    request_id,
+                                    background,
+                                    ..
+                                } => {
+                                    state.workspace.set_background(*request_id, *background);
+                                    Status::Accepted
+                                }
+                                Command::BackgroundApplied {
+                                    scene,
+                                    background_command,
+                                    background,
+                                    ..
+                                } => {
+                                    if state.workspace.background_applied(
+                                        *scene,
+                                        *background_command,
+                                        *background,
+                                    ) {
+                                        Status::Accepted
+                                    } else {
+                                        Status::Stale
+                                    }
+                                }
+                                Command::SetKeyboardLayout { layout, .. } => {
+                                    let changed = app
+                                        .as_mut()
+                                        .filter(|a| !a.closed())
+                                        .map_or(Ok(()), |a| a.set_keyboard_layout(*layout));
+                                    if changed.is_ok() {
+                                        state.workspace.set_keyboard_layout(*layout);
+                                        Status::Accepted
+                                    } else {
+                                        Status::Failed
+                                    }
+                                }
+
                                 Command::OpenTerminal {
                                     session,
                                     request_id,
@@ -523,7 +611,9 @@ impl Runtime {
                                     }
                                 }
 
-                                Command::ResizeLogical { target, .. }
+                                Command::SetPose { target, .. }
+                                | Command::PoseApplied { target, .. }
+                                | Command::ResizeLogical { target, .. }
                                 | Command::SetPhysicalSize { target, .. }
                                 | Command::PhysicalSizeApplied { target, .. } => {
                                     let live = state.snapshot.scene == Some(target.scene)
@@ -546,6 +636,26 @@ impl Runtime {
                                         .filter(|a| a.session() == target.session && !a.closed())
                                     {
                                         let outcome = match &command {
+                                            Command::SetPose {
+                                                request_id, pose, ..
+                                            } => state.workspace.set_pose(
+                                                *target,
+                                                *request_id,
+                                                *pose,
+                                            ),
+                                            Command::PoseApplied {
+                                                pose_command, pose, ..
+                                            } => {
+                                                if state.workspace.pose_applied(
+                                                    *target,
+                                                    *pose_command,
+                                                    *pose,
+                                                ) {
+                                                    Ok(())
+                                                } else {
+                                                    Err("STALE")
+                                                }
+                                            }
                                             Command::ResizeLogical { width, height, .. } => current
                                                 .resize_logical(
                                                     target.window,
@@ -572,6 +682,18 @@ impl Runtime {
                                             ),
                                             _ => unreachable!(),
                                         };
+                                        if outcome.is_ok()
+                                            && matches!(
+                                                command,
+                                                Command::SetPose { .. }
+                                                    | Command::ResizeLogical { .. }
+                                                    | Command::SetPhysicalSize { .. }
+                                            )
+                                            && let Some(window) =
+                                                current.current_window(target.window)
+                                        {
+                                            state.workspace.remember(&window);
+                                        }
                                         match outcome {
                                             Ok(()) => Status::Accepted,
                                             Err("STALE") => Status::Stale,
@@ -1023,6 +1145,7 @@ impl Runtime {
                                         Status::Stale
                                     } else {
                                         state.snapshot.scene = Some(*scene);
+                                        state.workspace.scene(Some(*scene));
                                         Status::Accepted
                                     }
                                 }

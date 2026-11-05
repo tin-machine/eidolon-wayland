@@ -10,9 +10,10 @@ import android.view.KeyEvent
 /** UI threadで入口だけを判定。文字/ユーザーのkey列をログへ残さない。 */
 class PhysicalKeyboard(context: Context) : InputManager.InputDeviceListener {
     private val manager = context.getSystemService(InputManager::class.java)
+    private var active=false
     private val consumed = mutableSetOf<Pair<Int, Int>>()
-    fun resume() { manager.registerInputDeviceListener(this, Handler(Looper.getMainLooper())) }
-    fun pause() { manager.unregisterInputDeviceListener(this); NativeSessionHost.resetInput() }
+    fun resume() { active=true;manager.registerInputDeviceListener(this, Handler(Looper.getMainLooper())) }
+    fun pause(resetInput: Boolean=true) { active=false;manager.unregisterInputDeviceListener(this);if(resetInput) NativeSessionHost.resetInput() }
     fun dispatch(event: KeyEvent): Boolean {
         if (event.action !in setOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) return false
         val identity = event.deviceId to (if (event.scanCode != 0) event.scanCode else -event.keyCode)
@@ -31,8 +32,9 @@ class PhysicalKeyboard(context: Context) : InputManager.InputDeviceListener {
         return sent || previouslyConsumed
     }
     override fun onInputDeviceAdded(deviceId: Int) = Unit
-    override fun onInputDeviceChanged(deviceId: Int) { NativeSessionHost.resetInput() }
+    override fun onInputDeviceChanged(deviceId: Int) { if(active) NativeSessionHost.resetInput() }
     override fun onInputDeviceRemoved(deviceId: Int) {
+        if(!active) return
         consumed.removeAll { it.first == deviceId }
         NativeSessionHost.resetInput()
     }

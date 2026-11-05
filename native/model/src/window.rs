@@ -4,7 +4,7 @@ use crate::{
     limits,
     pixels::{OwnedRgba, byte_len},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,7 +14,8 @@ pub enum GeometryError {
     Overflow,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogicalSize {
     pub width: u32,
     pub height: u32,

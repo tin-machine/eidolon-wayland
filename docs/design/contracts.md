@@ -100,6 +100,13 @@ I03で`cancel_connect(connect_request)`を追加した。元の`connect.request_
 tokenはkeyboard focus変更ごとに更新し、同じwindowへの再入でも古いkeyを拒否する。
 pointer capture中のkeyboard focus変更はepochを進めず、同じpressのreleaseを失わない。
 
+I06では`set_pose(target,pose)`、`pose_applied(target,pose_command?,pose)`、
+`set_background(background)`、`background_applied(scene,background_command?,background)`、
+`set_keyboard_layout(layout)`を追加した。poseのJSON回転は`rotation_xyzw`。
+希望値と適用ackを分け、新scene/Surfaceの古いackを拒否する。配置編集・配列切替は入力を解除する。
+`preferences_dir`へnoBackupFilesDirを渡し、schema付き最大64KiBを原子的に保存する。
+確定model値の保存はSDK ackを待たず予約し、最新値を250msでまとめてMutex外から書く。
+
 I05では`open_terminal(session)`で固定footclientによる追加を予約し、実window mapまでCoreで直列化する。
 `show_window(session,scene,window,slot)`は表示枠0/1を選び、`close_window(session,scene,window)`は個別closeを送る。
 これらのwindow操作は現session/sceneに束縛し、表示切替とcloseでは入力を解除する。

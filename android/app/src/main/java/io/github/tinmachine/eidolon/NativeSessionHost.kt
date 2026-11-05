@@ -7,6 +7,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
 import androidx.compose.runtime.mutableStateOf
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -26,6 +27,13 @@ object NativeSessionHost {
     private val activityVisible = AtomicBoolean(false)
     private var store: DiagnosticsStore? = null
     private var paths: JSONObject? = null
+    private var preferencesDir: String? = null
+    private var selectedWindow: Pair<String,String>? = null
+    private var lastFocusedWindow: String? = null
+    private val editing = AtomicBoolean(false)
+    private val poseCompletions = ConcurrentHashMap<String,String>()
+    val layoutEditing = mutableStateOf(false)
+    val workspaceSummary = mutableStateOf("配置設定を確認中")
     private var credentials: CredentialStore? = null
     private var identity: CredentialStore.Identity? = null
     private var profiles = JSONArray()
@@ -42,7 +50,7 @@ object NativeSessionHost {
     val keyboardSummary = mutableStateOf("操作パネルへ入力")
     val layoutSummary = mutableStateOf("ターミナルを開くとサイズを変更できます")
     val layoutAvailable = mutableStateOf(false)
-    data class WindowChoice(val session: String, val scene: String, val window: String, val slot: Int?)
+    data class WindowChoice(val session: String, val scene: String, val window: String, val slot: Int?, val ambiguous: Boolean=false)
     val windowChoices = mutableStateOf<List<WindowChoice>>(emptyList())
     private data class TerminalAdding(val session: String, val windows: Set<String>, val request: String,
         val deadline: Long = SystemClock.elapsedRealtime()+8000)
@@ -65,6 +73,7 @@ object NativeSessionHost {
         val application = context.applicationContext
         worker.execute { safely {
             if (store == null) store = DiagnosticsStore(application)
+            if (preferencesDir == null) preferencesDir = application.noBackupFilesDir.absolutePath
             if (paths == null) paths = JSONObject().put("native_library_dir", application.applicationInfo.nativeLibraryDir).put("files_dir", application.filesDir.absolutePath)
             if (handle == 0L && NativeBridge.status.ready) {
                 if (credentials == null) credentials = CredentialStore(application)
@@ -81,8 +90,17 @@ object NativeSessionHost {
         send("scene_ready", "scene", scene.toString())
         return scene
     }
-    fun setXrState(value: String) { if (value != "FOCUSED") { keyboardFocus = null; inputTargets = emptyMap() }; xrState.set(value); send("set_xr_state", "state", value) }
-    fun setActivityVisible(value: Boolean) { if (!value) { keyboardFocus = null; inputTargets = emptyMap() }; activityVisible.set(value); send("set_activity_state", "visible", value) }
+    fun currentSceneEpoch(): Long = scenes.get()
+    fun setXrState(value: String, expectedScene: Long? = null): Boolean {
+        if(expectedScene!=null && expectedScene!=scenes.get()) return false
+        if(value!="FOCUSED") {keyboardFocus=null;inputTargets=emptyMap()}
+        xrState.set(value);send("set_xr_state","state",value);return true
+    }
+    fun setActivityVisible(value: Boolean, expectedScene: Long? = null): Boolean {
+        if(expectedScene!=null && expectedScene!=scenes.get()) return false
+        if(!value) {keyboardFocus=null;inputTargets=emptyMap()}
+        activityVisible.set(value);send("set_activity_state","visible",value);return true
+    }
     private fun enqueueConnect(): String? {
         val request = requests.incrementAndGet().toString()
         val command = JSONObject().put("schema", 1).put("type", "connect").put("request_id", request).put("profile_id", "termux-local")
@@ -161,6 +179,10 @@ object NativeSessionHost {
     fun requestSnapshot() { worker.execute { safely { publish() } } }
     fun currentHandle(): Long = handle
     fun keyboardFocused(): Boolean = keyboardFocus != null
+    fun keyboardFocusMatches(target: JSONObject, token: String): Boolean {
+        val focus=keyboardFocus ?: return false
+        return focus.runtime==handle && focus.token==token && targetIdentity(JSONObject(focus.target))==targetIdentity(target)
+    }
     fun publishCheck(value: JSONObject) { val copy = value.toString(); worker.execute { safely { store?.publishCheck(JSONObject(copy)) } } }
     fun publishAdapter(value: JSONObject) { val copy = value.toString(); worker.execute { safely { store?.publishAdapter(JSONObject(copy)) } } }
     fun detachSurface(target: JSONObject, runtime: Long = handle): Int {
@@ -180,15 +202,51 @@ object NativeSessionHost {
             .put("request_id", requests.incrementAndGet().toString()).put("type", "reset_input").toString())
     }
     fun inputTarget(target: String): InputTarget? {
-        if (!activityVisible.get() || xrState.get()!="FOCUSED") return null
+        if (editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED") return null
         return inputTargets[targetIdentity(JSONObject(target))]?.takeIf { it.runtime==handle }
     }
     private fun selectedTarget(runtime: JSONObject): JSONObject? {
         val plans=runtime.getJSONArray("panels")
         val focused=runtime.optJSONObject("app")?.optJSONObject("input")?.optString("focus_window")
         val live=(0 until plans.length()).map { plans.getJSONObject(it) }.filter { it.optString("action")=="create" && it.optBoolean("applied") && it.isNull("error") }
-        return (live.firstOrNull { it.getJSONObject("target").optString("window")==focused } ?: live.firstOrNull())?.getJSONObject("target")
+        return (live.firstOrNull { selectedWindow == (it.getJSONObject("target").optString("session") to it.getJSONObject("target").optString("window")) } ?: live.firstOrNull { it.getJSONObject("target").optString("window")==focused } ?: live.firstOrNull())?.getJSONObject("target")
     }
+    fun isLayoutEditing(): Boolean = editing.get()
+    fun setLayoutEditing(value: Boolean) {
+        editing.set(value); resetInput(); ui.post { layoutEditing.value=value }
+    }
+    fun selectWindow(choice: WindowChoice) { worker.execute { safely {
+        selectedWindow=choice.session to choice.window; resetInput()
+    } } }
+    fun setBackground(mode: String) { if(mode in setOf("passthrough","virtual")) worker.execute { send("set_background","background",mode) } }
+    fun setKeyboardLayout(layout: String) { if(layout in setOf("us","jis")) worker.execute { resetInput();send("set_keyboard_layout","layout",layout) } }
+    fun submitPose(target: JSONObject, pose: JSONObject, runtime: Long): String? {
+        if(runtime!=handle || poseCompletions.size>=16 || !PanelPoseCodec.valid(pose)) return null
+        val request=requests.incrementAndGet().toString();poseCompletions[request]="pending"
+        val code=NativeBridge.nativeCommand(runtime,JSONObject().put("schema",1).put("type","set_pose").put("request_id",request).put("target",target).put("pose",pose).toString())
+        if(code!=NativeBridge.ACCEPTED) {poseCompletions.remove(request);return null}
+        return request
+    }
+    fun poseCompletion(request: String): String? {
+        val code=poseCompletions[request] ?: return null
+        if(code!="pending") poseCompletions.remove(request)
+        return code
+    }
+    fun forgetPose(request: String) { poseCompletions.remove(request) }
+    fun ackPose(target: JSONObject, command: String?, pose: JSONObject, runtime: Long): Int = NativeBridge.nativeCommand(runtime,
+        JSONObject().put("schema",1).put("type","pose_applied").put("request_id",requests.incrementAndGet().toString()).put("target",target)
+            .put("pose_command",command ?: JSONObject.NULL).put("pose",pose).toString())
+    fun ackBackground(scene: Long, command: String?, background: String, runtime: Long): Int = NativeBridge.nativeCommand(runtime,
+        JSONObject().put("schema",1).put("type","background_applied").put("request_id",requests.incrementAndGet().toString()).put("scene",scene.toString())
+            .put("background_command",command ?: JSONObject.NULL).put("background",background).toString())
+    fun nudgePose(x: Double=0.0,y: Double=0.0,z: Double=0.0,yaw: Double=0.0) { worker.execute { safely {
+        if(handle==0L) return@safely
+        val runtime=snapshot().getJSONObject("runtime");val target=selectedTarget(runtime) ?: return@safely
+        val windows=runtime.getJSONObject("workspace").getJSONArray("windows")
+        val window=(0 until windows.length()).map {windows.getJSONObject(it)}.firstOrNull {it.getString("window")==target.getString("window") && it.getString("session")==target.getString("session")} ?: return@safely
+        val pose=PanelPoseCodec.nudge(window.getJSONObject("placement").getJSONObject("pose"),x,y,z,yaw)
+        if(PanelPoseCodec.valid(pose)) NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","set_pose").put("request_id",requests.incrementAndGet().toString()).put("target",target).put("pose",pose).toString())
+    } } }
     fun resizeTerminal(width: Int, height: Int) { worker.execute { safely {
         if(handle==0L) return@safely
         val target=selectedTarget(snapshot().getJSONObject("runtime")) ?: return@safely
@@ -230,7 +288,7 @@ object NativeSessionHost {
     /** 入口の物理device判定はPhysicalKeyboard。ここは短いnative enqueueだけ。 */
     fun sendPhysicalKey(event: KeyEvent): Boolean {
         val focus = keyboardFocus ?: return false
-        if (focus.runtime != handle || !activityVisible.get() || xrState.get() != "FOCUSED") return false
+        if (editing.get() || focus.runtime != handle || !activityVisible.get() || xrState.get() != "FOCUSED") return false
         val key = JSONObject().put("device", event.deviceId).put("scan_code", event.scanCode).put("key_code", event.keyCode)
             .put("action", if (event.action == KeyEvent.ACTION_DOWN) "pressed" else "released").put("repeat", event.repeatCount)
             .put("meta", event.metaState).put("time_ms", event.eventTime and 0xffffffffL)
@@ -264,8 +322,8 @@ object NativeSessionHost {
         send("set_activity_state", "visible", activityVisible.get())
         tick()
     }
-    fun runtimeConfigJson(): String = JSONObject().put("schema", 1).put("paths", checkNotNull(paths))
-        .put("installation", checkNotNull(identity).installation).put("profiles", profiles).toString()
+    fun runtimeConfigJson(): String = BuildHooks.runtimeConfiguration(JSONObject().put("schema", 1).put("paths", checkNotNull(paths))
+        .put("installation", checkNotNull(identity).installation).put("profiles", profiles).put("preferences_dir",checkNotNull(preferencesDir)).toString())
     private fun stopRuntime() {
         if (handle == 0L) return
         keyboardFocus = null
@@ -281,6 +339,7 @@ object NativeSessionHost {
             Thread.sleep(2)
         }
         handle = 0
+        poseCompletions.clear();selectedWindow=null;lastFocusedWindow=null;editing.set(false);ui.post { layoutEditing.value=false }
         terminalOpen = null; terminalError = null
         lastConnectRequest = null; pendingDisconnect = null; connectPending = false
         Log.i(TAG, "runtime_stopped handle=$old duration_ms=${SystemClock.elapsedRealtime() - started}")
@@ -310,6 +369,7 @@ object NativeSessionHost {
             val event = values.getJSONObject(index)
             if (event.optString("type") == "command_complete") {
                 BuildHooks.commandComplete(event.getString("request_id"), event.getString("code"))
+                poseCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
                 if (event.getString("request_id") == lastConnectRequest) {
                     connectPending = false
                     if (event.getString("code") != "ACCEPTED") lastConnectRequest = null
@@ -347,10 +407,12 @@ object NativeSessionHost {
         pumpDisconnect()
         val snapshot = snapshot()
         val runtime = snapshot.getJSONObject("runtime")
-        val focusedWindow = runtime.optJSONObject("app")?.optJSONObject("input")?.optString("focus_window")
+        val focusedWindow = runtime.optJSONObject("app")?.optJSONObject("input")?.optString("focus_window")?.takeIf { it.toLongOrNull()!=null }
+        if(focusedWindow!=null && (focusedWindow!=lastFocusedWindow || selectedWindow?.first!=runtime.getJSONObject("app").getString("session"))) selectedWindow=runtime.getJSONObject("app").getString("session") to focusedWindow
+        lastFocusedWindow=focusedWindow
         val plans = runtime.getJSONArray("panels")
         val renderTargets=runtime.getJSONObject("render").getJSONArray("targets")
-        inputTargets=if (runtime.getString("state")=="Ready" && runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED")
+        inputTargets=if (!editing.get() && runtime.getString("state")=="Ready" && runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED")
             (0 until plans.length()).map { plans.getJSONObject(it) }.filter { plan ->
                 plan.optString("action")=="create" && plan.optBoolean("applied") && plan.isNull("error") &&
                     (0 until renderTargets.length()).any { index ->
@@ -366,18 +428,24 @@ object NativeSessionHost {
                 it.getJSONObject("target").getString("window") == focusedWindow &&
                 it.getJSONObject("target").optString("session") == runtime.optJSONObject("app")?.optString("session")
         }
-        keyboardFocus = if (runtime.getString("state") == "Ready" && runtime.getBoolean("activity_visible") &&
+        keyboardFocus = if (!editing.get() && runtime.getString("state") == "Ready" && runtime.getBoolean("activity_visible") &&
             runtime.getString("xr_state") == "FOCUSED" && focused != null)
             KeyboardFocus(handle, runtime.getLong("input_resets"), focused.getJSONObject("target").toString(), runtime.getJSONObject("app").getJSONObject("input").getString("focus_token")) else null
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else "ターミナルへ入力"
         ui.post { keyboardSummary.value = keyboardLabel }
+        val workspace=runtime.getJSONObject("workspace");val storage=workspace.getJSONObject("storage")
+        val background=if(workspace.getString("background")=="passthrough") "現実" else "単色"
+        val saveStatus=when { !storage.isNull("error") -> "保存できません（${storage.getString("error")}）";workspace.getBoolean("pending_save")->"保存中";else->"保存済み" }
+        ui.post { workspaceSummary.value="背景: $background · キー配列: ${workspace.getString("keyboard_layout").uppercase()} · $saveStatus" }
         val selected=selectedTarget(runtime)
         val appWindows=runtime.optJSONObject("app")?.optJSONArray("windows")
         val selectedWindow=appWindows?.let { windows -> (0 until windows.length()).map { windows.getJSONObject(it) }.firstOrNull { it.optString("window")==selected?.optString("window") } }
         val currentApp=runtime.optJSONObject("app")
         val choices=appWindows?.let { windows -> (0 until windows.length()).map { windows.getJSONObject(it) }.filter { it.optString("life")=="Mapped" }.map { w ->
             val plan=(0 until plans.length()).map { plans.getJSONObject(it) }.firstOrNull { it.optString("action")=="create" && it.getJSONObject("target").optString("window")==w.getString("window") }
-            WindowChoice(checkNotNull(currentApp).getString("session"),runtime.optString("scene"),w.getString("window"),plan?.optInt("slot"))
+            val placements=workspace.getJSONArray("windows")
+            val ambiguous=(0 until placements.length()).map {placements.getJSONObject(it)}.firstOrNull {it.getString("window")==w.getString("window")}?.optBoolean("ambiguous")==true
+            WindowChoice(checkNotNull(currentApp).getString("session"),runtime.optString("scene"),w.getString("window"),plan?.optInt("slot"),ambiguous)
         } } ?: emptyList()
         ui.post { windowChoices.value=choices }
         terminalAdding?.let { operation ->
@@ -388,7 +456,7 @@ object NativeSessionHost {
         val resize=selectedWindow?.optJSONObject("resize")
         val label=if(logical==null) "ターミナルを開くとサイズを変更できます" else {
             val status=when(resize?.optString("phase")) { "timed_out"->" · サイズ変更に応答がありません"; "adjusted"->" · アプリ側でサイズ調整"; "queued","awaiting_ack","awaiting_commit"->" · 変更中";else->"" }
-            "画面サイズ: ${logical.getInt("width")}×${logical.getInt("height")}$status"
+            "ウィンドウ ${selected?.optString("window")}: ${logical.getInt("width")}×${logical.getInt("height")}$status"
         }
         ui.post { layoutAvailable.value=logical!=null; layoutSummary.value=label }
         val transport = snapshot.getJSONObject("runtime").getJSONObject("transport")

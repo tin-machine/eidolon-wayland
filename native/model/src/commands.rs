@@ -12,6 +12,8 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub keyboard_layout: crate::keyboard::KeyboardLayout,
     #[serde(default)]
+    pub preferences_dir: Option<String>,
+    #[serde(default)]
     pub paths: Option<RuntimePaths>,
     #[serde(default)]
     pub installation: Option<String>,
@@ -23,6 +25,7 @@ impl Default for RuntimeConfig {
         Self {
             schema: 1,
             keyboard_layout: Default::default(),
+            preferences_dir: None,
             paths: None,
             installation: None,
             profiles: Vec::new(),
@@ -55,6 +58,13 @@ impl RuntimeConfig {
     }
     pub fn validate(&self) -> Result<(), Status> {
         if self.schema != 1 {
+            return Err(Status::InvalidArgument);
+        }
+        if let Some(path) = &self.preferences_dir
+            && (!std::path::Path::new(path).is_absolute()
+                || path.len() > 2048
+                || path.contains('\0'))
+        {
             return Err(Status::InvalidArgument);
         }
         if let Some(paths) = &self.paths {
@@ -171,6 +181,36 @@ pub enum CompositorScenario {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    SetPose {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        pose: crate::workspace::PanelPose,
+    },
+    PoseApplied {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        pose_command: Option<CommandSeq>,
+        pose: crate::workspace::PanelPose,
+    },
+    SetBackground {
+        schema: u32,
+        request_id: CommandSeq,
+        background: crate::workspace::Background,
+    },
+    BackgroundApplied {
+        schema: u32,
+        request_id: CommandSeq,
+        scene: SceneEpoch,
+        background_command: Option<CommandSeq>,
+        background: crate::workspace::Background,
+    },
+    SetKeyboardLayout {
+        schema: u32,
+        request_id: CommandSeq,
+        layout: crate::keyboard::KeyboardLayout,
+    },
     OpenTerminal {
         schema: u32,
         request_id: CommandSeq,
@@ -350,7 +390,12 @@ impl Command {
         }
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
-            Self::OpenTerminal { schema, .. }
+            Self::SetPose { schema, .. }
+            | Self::PoseApplied { schema, .. }
+            | Self::SetBackground { schema, .. }
+            | Self::BackgroundApplied { schema, .. }
+            | Self::SetKeyboardLayout { schema, .. }
+            | Self::OpenTerminal { schema, .. }
             | Self::ShowWindow { schema, .. }
             | Self::CloseWindow { schema, .. }
             | Self::ResizeLogical { schema, .. }
@@ -424,6 +469,9 @@ impl Command {
             return Err(Status::InvalidArgument);
         }
         match &command {
+            Self::SetPose { pose, .. } | Self::PoseApplied { pose, .. } if !pose.valid() => {
+                return Err(Status::InvalidArgument);
+            }
             Self::ShowWindow { slot, .. } if *slot >= crate::limits::VISIBLE_PANELS => {
                 return Err(Status::InvalidArgument);
             }
@@ -442,7 +490,12 @@ impl Command {
     }
     pub fn request_id(&self) -> CommandSeq {
         match *self {
-            Self::OpenTerminal { request_id, .. }
+            Self::SetPose { request_id, .. }
+            | Self::PoseApplied { request_id, .. }
+            | Self::SetBackground { request_id, .. }
+            | Self::BackgroundApplied { request_id, .. }
+            | Self::SetKeyboardLayout { request_id, .. }
+            | Self::OpenTerminal { request_id, .. }
             | Self::ShowWindow { request_id, .. }
             | Self::CloseWindow { request_id, .. }
             | Self::ResizeLogical { request_id, .. }
@@ -476,6 +529,8 @@ impl Command {
         matches!(
             self,
             Self::ResetInput { .. }
+                | Self::SetPose { .. }
+                | Self::SetKeyboardLayout { .. }
                 | Self::ShowWindow { .. }
                 | Self::CloseWindow { .. }
                 | Self::Disconnect { .. }

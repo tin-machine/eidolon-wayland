@@ -1490,3 +1490,206 @@ def two_windows_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
             or not 0<=proof.get('accept_ms',999)<100 or not 0<=proof.get('stop_ms',99999)<10000):
         raise ValueError('二枚の停止後にowner/socket/画像/FDの回収漏れがあります')
     return instrumentation_result(snapshot,proof,apk_uid)
+
+
+def layout_native_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
+    if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
+        return False
+    proof=snapshot.get('check',{})
+    if proof.get('case')!='layout' or proof.get('nonce')!=nonce:
+        return False
+    if proof.get('result')=='fail':
+        raise ValueError('配置保存の実foot検査失敗: '+proof.get('stage','unknown'))
+    if proof.get('result')!='pass':
+        return False
+    if (proof.get('consumer')!='ImageReader' or any(proof.get(k) is not True for k in ('synthetic_visibility','synthetic_input','synthetic_pose_ack','synthetic_scene','product_settings_untouched','consumer_worker_stopped'))
+            or proof.get('physical_input_verified') is not False or proof.get('sdk_pose_verified') is not False or proof.get('cleanup_failed')):
+        raise ValueError('配置検査のSDK/合成/製品設定scopeが不正です')
+    first,second=proof.get('first_session'),proof.get('second_session')
+    if (any(not isinstance(v,str) or not re.fullmatch(r'[1-9][0-9]*',v) for v in (first,second)) or not int(second)>int(first)):
+        raise ValueError('設定復元に旧session IDを流用しています')
+    rows=proof.get('cycles',[])
+    if [r.get('stage') for r in rows]!=['before','pose','size','background_virtual','background_passthrough','background_virtual','keyboard','duplicate','restored','new_scene']:
+        raise ValueError('配置/背景/配列/同app/再生成の証明が不足しています')
+    def pose_near(a,b):
+        try:
+            p,q=a['position_m'],a['rotation_xyzw'];other,r=b['position_m'],b['rotation_xyzw']
+            return (len(p)==len(other)==3 and len(q)==len(r)==4 and all(abs(x-y)<.0001 for x,y in zip(p,other))
+                    and any(all(abs(x-sign*y)<.0001 for x,y in zip(q,r)) for sign in (1,-1)))
+        except (KeyError,TypeError,ValueError): return False
+    desired=proof.get('saved_pose',{})
+    if not pose_near(desired,dict(position_m=[.2,1.65,1.9],rotation_xyzw=[0,math.sin(math.pi/24),0,math.cos(math.pi/24)])):
+        raise ValueError('固定poseの移動証明がありません')
+    settings=proof.get('settings',{});saved=settings.get('placements',[])
+    if (settings.get('schema')!=1 or settings.get('background')!='virtual' or settings.get('keyboard_layout')!='jis' or len(saved)!=1
+            or saved[0].get('slot')!=0 or not saved[0].get('app_id') or not pose_near(saved[0].get('pose',{}),desired)
+            or saved[0].get('logical_size')!=dict(width=800,height=500)
+            or abs(saved[0].get('physical_size_m',{}).get('width_m',0)-1.44)>.0001
+            or abs(saved[0].get('physical_size_m',{}).get('height_m',0)-1.08)>.0001):
+        raise ValueError('保存したschema/配置/寸法/背景/配列が不正です')
+    def no_runtime_ids(value):
+        if isinstance(value,dict): return not {'session','window','generation','entity'}.intersection(value) and all(no_runtime_ids(v) for v in value.values())
+        if isinstance(value,list): return all(no_runtime_ids(v) for v in value)
+        return True
+    if not no_runtime_ids(settings) or len(json.dumps(settings).encode())>65536:
+        raise ValueError('保存DTOに寿命付きIDまたは上限超過があります')
+    target_keys=[]
+    for i,row in enumerate(rows):
+        state=row.get('runtime',{});app=state.get('app',{});transport=state.get('transport',{});render=state.get('render',{});workspace=state.get('workspace',{})
+        windows=app.get('windows',[]);count=2 if i==7 else 1;session=first if i<8 else second
+        local=app.get('local',{});forward=transport.get('app_forward',{})
+        if (state.get('state')!='Ready' or state.get('error') is not None or state.get('activity_visible') is not True or state.get('xr_state')!='FOCUSED'
+                or app.get('session')!=session or app.get('mode')!='foot_fixture' or app.get('error') is not None or app.get('callback_clock')!='target-driven'
+                or len(windows)!=count or any(w.get('life')!='Mapped' for w in windows)
+                or transport.get('session')!=session or transport.get('state')!='Ready' or transport.get('credential_requests')!=1
+                or local.get('uid')!=apk_uid or local.get('child_uid')!=apk_uid or local.get('executable_sha256')!=package['dependencies']['waypipe']['sha256']
+                or forward.get('state')!='running' or forward.get('error') is not None or forward.get('uid')!=termux_uid or forward.get('tools',{}).get('foot')!=dict(version='1.28.0')
+                or render.get('mode')!='windows' or render.get('error') is not None or render.get('contexts')!=1 or len(render.get('targets',[]))!=count
+                or len(workspace.get('windows',[]))!=count or workspace.get('storage',{}).get('persistent') is not True or workspace.get('storage',{}).get('error') is not None):
+            raise ValueError('配置検査の実SSH/foot/保存先の証明が不正です')
+        for target in render['targets']:
+            key=target.get('key',{});window=next((w for w in windows if w.get('window')==key.get('window')),{});pixels=row.get('pixels',{}).get(key.get('window'),{})
+            plan=next((p for p in state.get('panels',[]) if p.get('target')==key),{})
+            if (key.get('session')!=session or key.get('scene')!=('2' if i==9 else '1') or target.get('frames',0)<3 or target.get('content_frame')!=window.get('frame')
+                    or plan.get('action')!='create' or plan.get('applied') is not True or plan.get('error') is not None
+                    or pixels.get('distinct_images',0)<3 or pixels.get('non_uniform_images',0)<1):
+                raise ValueError('配置再生成後の実画像・Surface世代が不正です')
+        first_window=workspace['windows'][0];placement=first_window.get('placement',{})
+        if i in (1,2,3,4,5,6,8,9) and not pose_near(placement.get('pose',{}),desired):
+            raise ValueError('modelの確定poseが失われました')
+        if i==1 and (placement.get('applied_pose',{}).get('pose_command')!=placement.get('pose_command') or placement.get('applied_pose',{}).get('target')!=render['targets'][0]['key'] or not pose_near(placement.get('applied_pose',{}).get('pose',{}),desired)):
+            raise ValueError('pose ackがtarget/希望値へ束縛されていません')
+        if 3<=i<=5 and (workspace.get('background')!=('passthrough' if i==4 else 'virtual') or workspace.get('applied_background',{}).get('scene')!='1'
+                or workspace.get('applied_background',{}).get('background_command')!=workspace.get('background_command') or workspace.get('applied_background',{}).get('background')!=workspace.get('background')):
+            raise ValueError('背景の希望値とscene/command ackが不一致です')
+        if i>=2 and (windows[0].get('logical_size')!=dict(width=800,height=500) or windows[0].get('resize',{}).get('phase')!='applied'):
+            raise ValueError('配置変更後の新logical画像がありません')
+        if i>=6:
+            inputs=app.get('input',{})
+            if (workspace.get('keyboard_layout')!='jis' or not _prepared_keyboard(app,package,'jis') or inputs.get('pressed')!=0):
+                raise ValueError('JIS切替/修飾キー解除/保存配列が不正です')
+        if i==7 and (not all(w.get('ambiguous') is True for w in workspace['windows']) or app.get('input',{}).get('delivered',0)<4):
+            raise ValueError('同app二枚の既定復旧と入力がありません')
+        if i in (8,9) and (workspace.get('background')!='virtual' or workspace.get('storage',{}).get('loaded') is not True or windows[0].get('logical_size')!=dict(width=800,height=500)
+                or abs(windows[0].get('sizing',{}).get('physical_size_m',{}).get('width_m',0)-1.44)>.0001):
+            raise ValueError('再起動で保存した背景/サイズが復元されていません')
+        if i==9 and (placement.get('applied_pose') is not None or workspace.get('applied_background') is not None):
+            raise ValueError('旧scene/世代の適用ackが残っています')
+        target_keys.append(render['targets'][0]['key'])
+    if not int(target_keys[9]['generation'])>int(target_keys[8]['generation']):
+        raise ValueError('scene再生成で旧Surfaceを再利用しています')
+    malformed=proof.get('corruption',[])
+    if [r.get('stage') for r in malformed]!=['unknown_schema','invalid_pose','truncated']:
+        raise ValueError('設定破損からの復旧検査がありません')
+    for row in malformed:
+        ws=row.get('workspace',{})
+        if ws.get('background')!='passthrough' or ws.get('keyboard_layout')!='us' or ws.get('windows')!=[] or ws.get('storage',{}).get('error')!=('LAYOUT_SCHEMA' if row['stage']=='unknown_schema' else 'LAYOUT_INVALID'):
+            raise ValueError('破損原因を保持して既定値へ復旧していません')
+    stops=proof.get('stops',[])
+    if [r.get('stage') for r in stops]!=['first','restored','unknown_schema','invalid_pose','truncated']:
+        raise ValueError('再生成/破損検査の全runtime停止証明が不足しています')
+    for row in stops:
+        state=row.get('runtime',{});render=state.get('render',{});transport=state.get('transport',{});app=state.get('app')
+        if (state.get('state')!='Stopped' or any(render.get(k)!=0 for k in ('workers','contexts','latest_images','queued')) or render.get('targets')!=[]
+                or any(transport.get(k)!=0 for k in ('workers','tokio_threads','owned_connections')) or transport.get('pending_cleanup')!=[]
+                or not 0<=row.get('accept_ms',999)<100 or not 0<=row.get('stop_ms',99999)<10000):
+            raise ValueError('保存検査後にowner/画像/forwardが残っています')
+        if app is not None and (app.get('directory_cleaned') is not True or app.get('error') is not None
+                or any(app.get(k)!=0 for k in ('clients','objects','surfaces','pixel_bytes','pool_bytes','pool_count'))
+                or transport.get('app_forward',{}).get('remote_cleaned') is not True):
+            raise ValueError('配置検査のremote/Wayland回収が未完了です')
+    return instrumentation_result(snapshot,proof,apk_uid)
+
+
+def layout_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
+    if snapshot.get('schema')!=1 or snapshot.get('build_info')!=expected:
+        return False
+    p=snapshot.get('check',{})
+    if p.get('case')!='layout' or p.get('nonce')!=nonce:
+        return False
+    if p.get('result')=='fail':
+        raise ValueError('SDK配置検査失敗: '+p.get('stage','unknown'))
+    if p.get('result')!='pass':
+        return False
+    if (p.get('consumer')!='SDK' or p.get('synthetic_visibility') is not False or p.get('synthetic_pose_ack') is not False or p.get('synthetic_scene') is not False
+            or p.get('synthetic_stale_callback') is not True or p.get('synthetic_input') is not True or p.get('sdk_pose_verified') is not True or p.get('activity_recreated') is not True or p.get('source_destroyed') is not True
+            or any(p.get(k) is not False for k in ('physical_input_verified','hmd_verified','text_verified','background_optical_verified'))
+            or p.get('uid')!=apk_uid or type(p.get('pid')) is not int or p['pid']<=0 or p.get('product_settings_untouched') is not True):
+        raise ValueError('SDK配置検査の可視性/実再生成/入力/保存scopeが不正です')
+    rows=p.get('cycles',[])
+    if [r.get('stage') for r in rows]!=['before','changed','two','recreated','restored']:
+        raise ValueError('SDKの配置/二枚/Activity再生成/保存復元が不足しています')
+    def pose_near(a,b):
+        try:
+            return (len(a['position_m'])==len(b['position_m'])==3 and len(a['rotation_xyzw'])==len(b['rotation_xyzw'])==4
+                and all(abs(x-y)<.0001 for x,y in zip(a['position_m'],b['position_m']))
+                and any(all(abs(x-sign*y)<.0001 for x,y in zip(a['rotation_xyzw'],b['rotation_xyzw'])) for sign in (1,-1)))
+        except (KeyError,TypeError,ValueError):return False
+    desired=p.get('saved_pose',{})
+    if not pose_near(desired,dict(position_m=[.2,1.5,1.75],rotation_xyzw=[0,math.sin(math.pi/24),0,math.cos(math.pi/24)])):
+        raise ValueError('SDKで固定の配置変更を確認できません')
+    layer_window=p.get('layer_window',{})
+    if (type(layer_window.get('start_wall_ms')) is not int or type(layer_window.get('end_wall_ms')) is not int or layer_window['end_wall_ms']-layer_window['start_wall_ms']<2000):
+        raise ValueError('SDK二枚を維持したlayer計測の時間窓がありません')
+    original_session=None;old_scene=None;old_keys={}
+    for index,row in enumerate(rows):
+        s=row.get('runtime',{});a=s.get('app',{});t=s.get('transport',{});r=s.get('render',{});ws=s.get('workspace',{});adapter=row.get('adapter',{})
+        count=2 if index in (2,3) else 1;windows=a.get('windows',[]);targets=r.get('targets',[])
+        if (s.get('state')!='Ready' or s.get('activity_visible') is not True or s.get('xr_state')!='FOCUSED' or s.get('error') is not None
+                or a.get('mode')!='foot' or a.get('callback_clock')!='target-driven' or a.get('error') is not None or len(windows)!=count or any(w.get('life')!='Mapped' for w in windows)
+                or a.get('local',{}).get('uid')!=apk_uid or a.get('local',{}).get('child_uid')!=apk_uid or a.get('local',{}).get('executable_sha256')!=package['dependencies']['waypipe']['sha256']
+                or t.get('state')!='Ready' or t.get('session')!=a.get('session') or t.get('app_forward',{}).get('uid')!=termux_uid or t.get('app_forward',{}).get('state')!='running'
+                or t.get('app_forward',{}).get('tools',{}).get('foot')!=dict(version='1.28.0') or r.get('error') is not None or r.get('mode')!='windows' or len(targets)!=count
+                or adapter.get('bindings')!=count or adapter.get('listeners')!=count or len(ws.get('windows',[]))!=count
+                or ws.get('storage',{}).get('persistent') is not True or ws.get('storage',{}).get('error') is not None):
+            raise ValueError('通常Host/SDK二枚/SSH/footの証明が不正です')
+        for target in targets:
+            key=target.get('key',{});w=next((v for v in windows if v.get('window')==key.get('window')),{});placement=next((v.get('placement',{}) for v in ws['windows'] if v.get('window')==key.get('window')),{})
+            ack=placement.get('applied_pose') or {};plan=next((v for v in s.get('panels',[]) if v.get('target')==key),{})
+            if (key.get('session')!=a.get('session') or key.get('scene')!=s.get('scene') or target.get('frames',0)<3 or target.get('content_frame')!=w.get('frame')
+                    or plan.get('action')!='create' or plan.get('applied') is not True or ack.get('target')!=key or ack.get('pose_command')!=placement.get('pose_command') or not pose_near(ack.get('pose',{}),placement.get('pose',{}))
+                    or w.get('sizing',{}).get('applied_physical_size_m')!=w.get('sizing',{}).get('physical_size_m')):
+                raise ValueError('実SDK geometryの適用ackと描画targetが不一致です')
+        bg=ws.get('applied_background') or {}
+        if bg.get('scene')!=s.get('scene') or bg.get('background')!=ws.get('background') or bg.get('background_command')!=ws.get('background_command'):
+            raise ValueError('背景が新しいsceneへ再適用されていません')
+        if index==0:original_session=a['session']
+        elif index<4 and a['session']!=original_session:
+            raise ValueError('背景/Activity再生成でSSH接続を作り直しています')
+        if index in (1,4):
+            if (ws.get('background')!='virtual' or not _prepared_keyboard(a,package,'jis') or not pose_near(ws['windows'][0]['placement']['pose'],desired)
+                    or windows[0].get('logical_size')!=dict(width=800,height=500) or abs(windows[0].get('sizing',{}).get('physical_size_m',{}).get('width_m',0)-1.44)>.0001):
+                raise ValueError('SDKの配置/サイズ/配列/背景変更または復元がありません')
+        if index==1 and (a.get('input',{}).get('delivered',0)<4 or a['input'].get('pressed')!=0):
+            raise ValueError('移動後のSDK ray→key入力を確認できません')
+        if index==2:
+            if a.get('input',{}).get('delivered',0)<8 or not all(v.get('ambiguous') is True for v in ws['windows']):
+                raise ValueError('SDK二枚のfocus/入力/同app復旧がありません')
+            old_scene=int(s['scene']);old_keys={v['key']['window']:v['key'] for v in targets}
+        if index==3 and (int(s['scene'])<=old_scene or any(int(v['key']['generation'])<=int(old_keys[v['key']['window']]['generation']) for v in targets)):
+            raise ValueError('実Activity再生成後の新scene/Surface世代がありません')
+        if index==4 and (int(a['session'])<=int(original_session) or ws.get('storage',{}).get('loaded') is not True):
+            raise ValueError('保存設定を新しい接続へ復元していません')
+    restored=p.get('product_restored',{});render=restored.get('render',{});transport=restored.get('transport',{})
+    if (restored.get('state')!='Ready' or restored.get('activity_visible') is not True or restored.get('xr_state')!='FOCUSED'
+            or transport.get('state')!='Idle' or transport.get('pending_cleanup')!=[] or render.get('mode')!='diagnostic'
+            or len(render.get('targets',[]))!=1 or render['targets'][0].get('frames',0)<3 or render['targets'][0].get('role')!='diagnostic'
+            or not int(p.get('new_handle','0'))>int(p.get('last_handle','0'))>=int(p.get('fixture_handle','0'))>int(p.get('original_handle','0'))>0):
+        raise ValueError('検査用設定とownerを回収して通常UIへ復帰していません')
+    return True
+
+
+def compositor_layer_stats(proof, logs, apk_uid):
+    """APK UIDで採取したepoch logから、SDK二枚の時間窓とPIDが一致するLCntだけを返す。"""
+    window=proof.get('layer_window',{});start=window.get('start_wall_ms');end=window.get('end_wall_ms');pid=proof.get('pid')
+    report=dict(status='not_observed',scope='app-uid-and-pid-two-sdk-panels',uid=apk_uid,pid=pid,samples=[])
+    if proof.get('uid')!=apk_uid or type(pid) is not int or type(start) is not int or type(end) is not int or not 2000<=end-start<=60000:
+        return report
+    pattern=r'^\s*(\d+\.\d{3,9})\s+(\d+)\s+\d+\s+[VDIWEF]\s+(?:VrApi|crcs)\s*:.*?(?<![A-Za-z])LCnt=(\d+)'
+    for stamp,source,count in re.findall(pattern,logs,re.M):
+        seconds,fraction=stamp.split('.');milliseconds=int(seconds)*1000+int(fraction.ljust(3,'0')[:3])
+        if int(source)==pid and start<=milliseconds<=end:
+            report['samples'].append(dict(wall_ms=milliseconds,count=int(count)))
+    if report['samples']:
+        counts=[r['count'] for r in report['samples']];report.update(status='observed',minimum=min(counts),maximum=max(counts))
+    return report

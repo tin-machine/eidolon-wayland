@@ -46,6 +46,8 @@ import com.meta.spatial.vr.VRFeature
 /** XR診断パネル。nativeとAPKの版整合をここでも表示する。 */
 class MainActivity : AppSystemActivity() {
     private var panel: Entity? = null
+    private var sceneEpoch=0L
+    private fun ownsScene(): Boolean = !isDestroyed && (sceneEpoch==0L || sceneEpoch==NativeSessionHost.currentSceneEpoch())
     private val nativePanels by lazy { SpatialPanelAdapter() }
     private val keyboard by lazy { PhysicalKeyboard(this) }
 
@@ -62,15 +64,15 @@ class MainActivity : AppSystemActivity() {
         } else {
             Log.e(TAG, "native_failed version=${BuildConfig.VERSION_CODE} error=${native.error}")
         }
-        BuildHooks.accept(intent, nativePanels) { scene }
+        BuildHooks.accept(intent,nativePanels,applicationContext,{scene},{recreate()})
     }
 
     override fun onSceneReady() {
         super.onSceneReady()
         val epoch = NativeSessionHost.sceneReady()
+        sceneEpoch=epoch
         scene.setReferenceSpace(ReferenceSpace.LOCAL_FLOOR)
         scene.setViewOrigin(0f, 0f, 0f, 0f)
-        scene.enablePassthrough(true)
         if (panel == null) {
             panel = Entity.create(listOf(
                 Panel(R.id.phase0_panel),
@@ -78,6 +80,7 @@ class MainActivity : AppSystemActivity() {
             ))
         }
         nativePanels.sceneReady(epoch, scene)
+        BuildHooks.sceneReady(nativePanels,{scene},{recreate()})
         Log.i(TAG, "scene_ready version=${BuildConfig.VERSION_CODE} panel=${panel?.id}")
     }
 
@@ -105,10 +108,39 @@ class MainActivity : AppSystemActivity() {
                                 Button(onClick = { NativeSessionHost.openTerminal() }) { Text("ターミナルを開く") }
                                 for (window in NativeSessionHost.windowChoices.value) {
                                     Text("ウィンドウ ${window.window} · ${window.slot?.let { "表示枠 ${it+1}" } ?: "一覧に保持"}",color=Color.White)
+                                    if(window.ambiguous) Text("同じアプリを複数開いているため、配置は今回の接続中に保持します",color=Color.White)
                                     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                        Button(onClick={NativeSessionHost.selectWindow(window)}) { Text("選択") }
                                         Button(onClick={NativeSessionHost.showWindow(window,0)}) { Text("枠1へ表示") }
                                         Button(onClick={NativeSessionHost.showWindow(window,1)}) { Text("枠2へ表示") }
                                         Button(onClick={NativeSessionHost.closeWindow(window)}) { Text("閉じる") }
+                                    }
+                                }
+                                Text(NativeSessionHost.workspaceSummary.value,color=Color.White)
+                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick={NativeSessionHost.setBackground("passthrough")}) { Text("現実を背景に") }
+                                    Button(onClick={NativeSessionHost.setBackground("virtual")}) { Text("単色の背景に") }
+                                }
+                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick={NativeSessionHost.setKeyboardLayout("us")}) { Text("US配列") }
+                                    Button(onClick={NativeSessionHost.setKeyboardLayout("jis")}) { Text("JIS配列") }
+                                }
+                                Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.setLayoutEditing(!NativeSessionHost.layoutEditing.value)}) {
+                                    Text(if(NativeSessionHost.layoutEditing.value) "配置を確定して入力へ戻る" else "配置を編集")
+                                }
+                                if(NativeSessionHost.layoutEditing.value) {
+                                    Text("グリップで移動できます。ボタンは選択したパネルに適用します。",color=Color.White)
+                                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                        Button(onClick={NativeSessionHost.nudgePose(x=-.1)}) { Text("左") }
+                                        Button(onClick={NativeSessionHost.nudgePose(x=.1)}) { Text("右") }
+                                        Button(onClick={NativeSessionHost.nudgePose(y=.1)}) { Text("上") }
+                                        Button(onClick={NativeSessionHost.nudgePose(y=-.1)}) { Text("下") }
+                                    }
+                                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                        Button(onClick={NativeSessionHost.nudgePose(z=-.1)}) { Text("手前") }
+                                        Button(onClick={NativeSessionHost.nudgePose(z=.1)}) { Text("奥") }
+                                        Button(onClick={NativeSessionHost.nudgePose(yaw=-15.0)}) { Text("角度 −15°") }
+                                        Button(onClick={NativeSessionHost.nudgePose(yaw=15.0)}) { Text("角度 +15°") }
                                     }
                                 }
                                 Text(NativeSessionHost.layoutSummary.value,color=Color.White)
@@ -149,38 +181,38 @@ class MainActivity : AppSystemActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        BuildHooks.accept(intent, nativePanels) { scene }
+        BuildHooks.accept(intent,nativePanels,applicationContext,{scene},{recreate()})
     }
 
     override fun onResume() {
         super.onResume()
-        keyboard.resume()
-        NativeSessionHost.setActivityVisible(true)
+        if(ownsScene()) {keyboard.resume();NativeSessionHost.setActivityVisible(true,sceneEpoch.takeIf {it>0})}
         Log.i(TAG, "activity_resumed version=${BuildConfig.VERSION_CODE}")
     }
 
     override fun onPause() {
-        keyboard.pause()
-        NativeSessionHost.setActivityVisible(false)
+        val current=ownsScene();keyboard.pause(resetInput=current)
+        if(current) NativeSessionHost.setActivityVisible(false,sceneEpoch.takeIf {it>0})
         Log.i(TAG, "activity_paused version=${BuildConfig.VERSION_CODE}")
         super.onPause()
     }
 
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean = keyboard.dispatch(event) || super.dispatchKeyEvent(event)
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean = (ownsScene() && keyboard.dispatch(event)) || super.dispatchKeyEvent(event)
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus) NativeSessionHost.resetInput()
+        if (!hasFocus && ownsScene()) NativeSessionHost.resetInput()
     }
 
     override fun onSessionStateChanged(state: SessionState) {
         super.onSessionStateChanged(state)
+        if(!ownsScene()) return
         Log.i(TAG, "xr_state=$state version=${BuildConfig.VERSION_CODE}")
         NativeSessionHost.setXrState(when (state) {
             SessionState.FOCUSED -> "FOCUSED"
             SessionState.VISIBLE -> "VISIBLE"
             else -> "IDLE"
-        })
+        },sceneEpoch.takeIf {it>0})
     }
 
     override fun onSpatialShutdown() {

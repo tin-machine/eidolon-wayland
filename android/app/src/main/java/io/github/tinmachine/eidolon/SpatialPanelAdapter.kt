@@ -7,6 +7,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import com.meta.spatial.core.Entity
+import com.meta.spatial.core.Color4
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Vector3
 import com.meta.spatial.runtime.PanelSceneObject
@@ -34,11 +35,18 @@ class SpatialPanelAdapter {
     private var callbacks = 0
     private var lastPublish = 0L
     private var attempting: JSONObject? = null
+    private var backgroundStamp: String? = null
     private val trace = ArrayDeque<JSONObject>()
     private data class Binding(val entity: Entity, val handle: Long, var key: JSONObject,
         val role: String = "diagnostic", val commandSeq: String? = null, var destroyCommand: JSONObject? = null,
         var surface: Surface? = null, var sceneObject: PanelSceneObject? = null, var listener: Long? = null,
         var input: InputAdapter? = null,
+        val grabSources: MutableMap<Long,Pair<Entity,Int>> = linkedMapOf(),
+        var editing: Boolean = false, var wasGrabbed: Boolean = false,
+        var poseRequested: String? = null, var poseAcked: String? = null,
+        var lastDragPose: JSONObject? = null, var queuedPose: JSONObject? = null,
+        var poseRequest: String? = null, var poseAccepted: Boolean = false,
+        var poseSentAt: Long = 0,
         var physicalRequested: String? = null, var physicalAcked: String? = null,
         var attached: Boolean = false, var retire: Boolean = false, var destroy: Boolean = false,
         var hidden: Boolean = false,
@@ -67,6 +75,16 @@ class SpatialPanelAdapter {
         ui.post(poll)
     }
     fun close() {
+        bindings.values.forEach { current ->
+            if(current.role=="windows") {
+                if(current.wasGrabbed || current.editing && current.entity.getComponent<Grabbable>().isGrabbed) {
+                    val finalPose=PanelPoseCodec.fromSdk(getAbsoluteTransform(current.entity))
+                    current.poseRequest?.let {NativeSessionHost.forgetPose(it)}
+                    current.poseRequest=finalPose?.let {NativeSessionHost.submitPose(current.key,it,current.handle)}
+                }
+                cancelGrab(current);current.entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
+            }
+        }
         closed = true
         runtimeScene = null
         pendingSurfaces.clear(); pendingObjects.clear()
@@ -80,6 +98,7 @@ class SpatialPanelAdapter {
         event("recreate", current.entity.id)
         return true
     }
+    fun windowEntity(window: String): Entity? = bindings.values.firstOrNull {it.role=="windows" && !it.retire && it.key.getString("window")==window}?.entity
     fun currentKey(): JSONObject? = primary()?.key?.let { JSONObject(it.toString()) }
     fun currentEntityId(): Long? = primary()?.entity?.id
     fun currentSceneObject(): PanelSceneObject? {
@@ -122,6 +141,7 @@ class SpatialPanelAdapter {
         try {
             val position = if (plan == null) Vector3(-0.8f, 1.4f, 1.6f) else Vector3(plan.optInt("slot",0)*1.3f, 1.4f, 1.5f)
             val entity = Entity.create(listOf(Panel(R.id.native_panel), Transform(Pose(position))))
+            if(plan!=null) entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
             val current = if (plan == null) Binding(entity, handle, key()) else
                 Binding(entity, handle, JSONObject(plan.getJSONObject("target").toString()), "windows", plan.getString("command_seq"))
             bindings[entity.id] = current; created++; event("entity_created", entity.id)
@@ -162,12 +182,24 @@ class SpatialPanelAdapter {
         }
         if (current.listener == null && !closed && !current.destroy) {
             current.sceneObject = obj
-            current.input = InputAdapter(current.key)
+            current.input = InputAdapter(current.key) { source,state ->
+                if(current.editing && !current.retire && bindings[entity]===current) {
+                    if(state==0) current.grabSources.remove(source.id)
+                    else if(current.grabSources.size<8 || source.id in current.grabSources) current.grabSources[source.id]=source to state
+                }
+            }
             current.listener = obj.addInputListener(checkNotNull(current.input))
             listeners++; event("listener_added", entity)
         }
     }
+    private fun cancelGrab(current: Binding) {
+        val sdk=runtimeScene
+        current.grabSources.values.toList().forEach { (source,state) -> sdk?.onNoIntersectionInput(source,state,0) }
+        sdk?.resolveInput();current.grabSources.clear()
+    }
     private fun destroy(current: Binding) {
+        cancelGrab(current)
+        current.poseRequest?.let {NativeSessionHost.forgetPose(it)}
         current.input?.close(); current.input = null
         current.listener?.let { current.sceneObject?.removeInputListener(it); listeners--; event("listener_removed", current.entity.id) }
         current.listener = null; current.sceneObject = null; current.surface = null; current.replacement = null
@@ -190,6 +222,7 @@ class SpatialPanelAdapter {
         if (now > pendingUntil) { pendingSurfaces.clear(); pendingObjects.clear() }
         val handle = NativeSessionHost.currentHandle()
         val host = if (handle > 0) JSONObject(NativeBridge.nativeSnapshot(handle)).optJSONObject("runtime") else null
+        if(host!=null && !closed && scene>0 && host.optString("scene")==scene.toString()) applyBackground(handle,host)
         val plans = host?.optJSONArray("panels")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) } } ?: emptyList()
         val windows = host?.optJSONObject("render")?.optString("mode") == "windows"
         val desired = plans.filter { it.getString("action") == "create" && it.isNull("error") && it.getJSONObject("target").optString("scene") == scene.toString() }
@@ -204,7 +237,10 @@ class SpatialPanelAdapter {
             if (snapshot.getInt("code") == NativeBridge.STALE) { destroy(current) }
             else {
                 val render = snapshot.getJSONObject("runtime").getJSONObject("render")
-                if(current.role=="windows" && !current.retire && plan?.optBoolean("applied")==true) applyPhysical(current,snapshot.getJSONObject("runtime"))
+                if(current.role=="windows" && !current.retire && plan?.optBoolean("applied")==true) {
+                    applyPose(current,snapshot.getJSONObject("runtime"))
+                    applyPhysical(current,snapshot.getJSONObject("runtime"))
+                }
                 if (current.role == "windows" && !current.retire && plan != null && !plan.getBoolean("applied")) {
                     val targets = render.getJSONArray("targets")
                     if ((0 until targets.length()).any { sameKey(targets.getJSONObject(it).getJSONObject("key"), current.key) && targets.getJSONObject(it).getLong("frames") > 0 })
@@ -218,6 +254,7 @@ class SpatialPanelAdapter {
                 }
                 if (current.retire) {
                     if (current.role == "windows" && !current.hidden) {
+                        cancelGrab(current);current.entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
                         current.entity.setComponent(Visible(false)); current.hidden = true
                         NativeSessionHost.resetInput()
                         event("window_hidden", current.entity.id)
@@ -258,6 +295,58 @@ class SpatialPanelAdapter {
         }
         if (now - lastPublish >= 1000) { NativeSessionHost.publishAdapter(metrics()); lastPublish = now }
     }
+    private fun applyBackground(handle: Long, runtime: JSONObject) {
+        val workspace=runtime.getJSONObject("workspace");val sdk=runtimeScene ?: return
+        val mode=workspace.getString("background");val command=if(workspace.isNull("background_command")) null else workspace.getString("background_command")
+        val stamp="$handle:$scene:${command ?: "initial"}:$mode"
+        if(backgroundStamp==stamp) return
+        sdk.setBackfillColor(Color4(.025f,.035f,.05f,1f))
+        sdk.enablePassthrough(mode=="passthrough")
+        if(NativeSessionHost.ackBackground(scene,command,mode,handle)==NativeBridge.ACCEPTED) backgroundStamp=stamp
+    }
+    private fun applyPose(current: Binding, runtime: JSONObject) {
+        val windows=runtime.getJSONObject("workspace").getJSONArray("windows")
+        val state=(0 until windows.length()).map {windows.getJSONObject(it)}.firstOrNull {it.getString("window")==current.key.getString("window") && it.getString("session")==current.key.getString("session")} ?: return
+        val placement=state.getJSONObject("placement");val desired=placement.getJSONObject("pose")
+        val command=if(placement.isNull("pose_command")) null else placement.getString("pose_command")
+        val editing=NativeSessionHost.isLayoutEditing() && runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED"
+        if(current.editing!=editing) {
+            if(!editing) cancelGrab(current)
+            current.entity.setComponent(Grabbable(editing,GrabbableType.FACE,false,0f,4f))
+            current.input?.setSuppressed(editing);current.editing=editing
+        }
+        val grabbed=editing && current.entity.getComponent<Grabbable>().isGrabbed
+        val actual=PanelPoseCodec.fromSdk(getAbsoluteTransform(current.entity))
+        if((grabbed || current.wasGrabbed) && actual!=null && (current.lastDragPose?.let { !PanelPoseCodec.near(it,actual,.001) } ?: true)) {
+            current.queuedPose=actual;current.lastDragPose=actual
+        }
+        current.poseRequest?.let { request ->
+            val status=NativeSessionHost.poseCompletion(request)
+            if(status=="ACCEPTED") current.poseAccepted=true
+            if(current.poseAccepted && command==request) {current.poseRequest=null;current.poseAccepted=false}
+            else if(status!=null && status!="pending" && status!="ACCEPTED" || SystemClock.elapsedRealtime()-current.poseSentAt>5000) {
+                NativeSessionHost.forgetPose(request);current.poseRequest=null;current.poseAccepted=false
+                if(!grabbed) current.queuedPose=null
+            }
+        }
+        if(current.poseRequest==null && current.queuedPose!=null && (SystemClock.elapsedRealtime()-current.poseSentAt>=100 || !grabbed)) {
+            val request=NativeSessionHost.submitPose(current.key,checkNotNull(current.queuedPose),current.handle)
+            if(request!=null) {current.poseRequest=request;current.poseSentAt=SystemClock.elapsedRealtime();current.queuedPose=null}
+        }
+        current.wasGrabbed=grabbed
+        if(grabbed || current.poseRequest!=null || current.queuedPose!=null) {current.poseAcked=null;return}
+        val stamp="${command ?: "initial"}:$desired"
+        if(current.poseRequested!=stamp || actual==null || !PanelPoseCodec.near(actual,desired)) {
+            setAbsoluteTransform(current.entity,PanelPoseCodec.toSdk(desired));current.poseRequested=stamp;current.poseAcked=null
+        }
+        val app=runtime.optJSONObject("app") ?: return
+        val appWindows=app.getJSONArray("windows")
+        val window=(0 until appWindows.length()).map {appWindows.getJSONObject(it)}.firstOrNull {it.getString("window")==current.key.getString("window")} ?: return
+        if(current.poseAcked!=stamp && physicalGeometryMatches(current,window.getJSONObject("sizing").getJSONObject("physical_size_m"))) {
+            val observed=PanelPoseCodec.fromSdk(getAbsoluteTransform(current.entity))
+            if(observed!=null && PanelPoseCodec.near(observed,desired) && NativeSessionHost.ackPose(current.key,command,observed,current.handle)==NativeBridge.ACCEPTED) current.poseAcked=stamp
+        }
+    }
     private fun applyPhysical(current: Binding, runtime: JSONObject) {
         val app=runtime.optJSONObject("app") ?: return
         if(app.optString("session")!=current.key.optString("session")) return
@@ -277,7 +366,7 @@ class SpatialPanelAdapter {
     }
     private fun physicalGeometryMatches(current: Binding, size: JSONObject): Boolean {
         val sdk=runtimeScene ?: return false
-        val pose=current.entity.getComponent<Transform>().transform
+        val pose=getAbsoluteTransform(current.entity)
         // 公開ray APIで実quadを測る。希望componentだけを読んでSDK適用済みとはしない。
         for((u,v) in listOf(.2 to .35,.8 to .65)) {
             val x=((u-.5)*size.getDouble("width_m")).toFloat();val y=((.5-v)*size.getDouble("height_m")).toFloat()

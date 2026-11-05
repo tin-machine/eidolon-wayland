@@ -17,7 +17,7 @@ class NativeCheckInstrumentation : Instrumentation() {
         super.onCreate(arguments)
         name = arguments?.getString("case") ?: ""
         nonce = arguments?.getString("nonce") ?: ""
-        if (name !in setOf("two-windows", "resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "foot", "render", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
+        if (name !in setOf("layout", "two-windows", "resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "foot", "render", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
             arguments?.keySet()?.any { it != "case" && it != "nonce" } == true) {
             finish(Activity.RESULT_CANCELED, Bundle().apply { putString("result", "invalid_argument") })
             return
@@ -41,6 +41,7 @@ class NativeCheckInstrumentation : Instrumentation() {
             val configuration = JSONObject().put("schema", 1).put("installation", identity.installation).put("profiles", profiles)
                 .put("paths", JSONObject().put("native_library_dir", context.applicationInfo.nativeLibraryDir).put("files_dir", context.filesDir.absolutePath)).toString()
             when (name) {
+                "layout" -> LayoutNativeCase.run(nonce, context, configuration, store)
                 "two-windows" -> TwoWindowsCase.run(nonce, context, configuration, store)
                 "foot" -> FootCase.run(nonce, context, configuration, store)
                 "resize-native" -> FootCase.run(nonce, context, configuration, store, resizing=true)

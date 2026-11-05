@@ -1,6 +1,8 @@
 package io.github.tinmachine.eidolon
 
 import android.content.Intent
+import android.content.Context
+import android.system.Os
 import com.meta.spatial.runtime.Scene
 import android.os.Handler
 import android.os.Looper
@@ -14,15 +16,29 @@ import org.json.JSONObject
 object BuildHooks {
     private val ui = Handler(Looper.getMainLooper())
     private var running = false
+    private val consumedNonces = ArrayDeque<String>()
     fun commandComplete(request: String, code: String) { KeyboardCase.commandComplete(request, code) }
-    fun accept(intent: Intent?, adapter: SpatialPanelAdapter, scene: () -> Scene) {
+    @Volatile var preferencesFixture: String? = null
+    fun runtimeConfiguration(configuration: String): String {
+        val nonce=preferencesFixture ?: return configuration
+        check(nonce.matches(Regex("[0-9a-f]{32}")))
+        val config=JSONObject(configuration);val root=File(config.getString("preferences_dir")).canonicalFile;val parent=File(root,"sdk-layout-fixtures/$nonce")
+        parent.mkdirs();check(parent.canonicalFile==parent.absoluteFile);Os.chmod(parent.parentFile!!.absolutePath,448);Os.chmod(parent.absolutePath,448)
+        return config.put("preferences_dir",parent.canonicalPath).toString()
+    }
+    fun sceneReady(adapter: SpatialPanelAdapter, scene: () -> Scene, recreate: () -> Unit) { LayoutSdkCase.sceneReady(adapter,scene,recreate) }
+    fun accept(intent: Intent?, adapter: SpatialPanelAdapter, context: Context, scene: () -> Scene, recreate: () -> Unit) {
         val name = intent?.getStringExtra("case") ?: return
         val nonce = intent.getStringExtra("nonce") ?: return
-        if (running || name !in setOf("resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product") || !nonce.matches(Regex("[0-9a-f]{32}"))) return
+        if (running || name !in setOf("layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product") || !nonce.matches(Regex("[0-9a-f]{32}"))) return
         if (intent.extras?.keySet()?.any { it != "case" && it != "nonce" } == true) return
         intent.removeExtra("case"); intent.removeExtra("nonce")
+        if(nonce in consumedNonces) return
+        if(consumedNonces.size==64) consumedNonces.removeFirst()
+        consumedNonces.addLast(nonce)
         running = true
-        if (name == "resize") ResizeCase.start(nonce,adapter,scene) { running=false }
+        if (name == "layout") LayoutSdkCase.start(nonce,context,adapter,scene,recreate) {running=false}
+        else if (name == "resize") ResizeCase.start(nonce,adapter,scene) { running=false }
         else if (name == "pointer") PointerCase.start(nonce, adapter, scene) { running = false }
         else if (name == "keyboard") KeyboardCase.start(nonce, adapter) { running = false }
         else if (name == "ray") RayCase.start(nonce, adapter, scene) { running = false }

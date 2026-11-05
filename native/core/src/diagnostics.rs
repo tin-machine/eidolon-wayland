@@ -26,6 +26,7 @@ pub struct Snapshot {
     pub compositor_workers: usize,
     pub app: Option<crate::session::Report>,
     pub panels: Vec<crate::panels::PanelCommand>,
+    pub workspace: crate::workspace::Report,
     pub render: eidolon_render::Snapshot,
     pub transport: eidolon_transport::session::Snapshot,
 }
@@ -52,6 +53,7 @@ impl Default for Snapshot {
             compositor_workers: 0,
             app: None,
             panels: vec![],
+            workspace: Default::default(),
             render: Default::default(),
             transport: Default::default(),
         }

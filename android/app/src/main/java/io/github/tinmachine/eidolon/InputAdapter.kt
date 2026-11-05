@@ -16,7 +16,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** SDKから小DTOだけを渡す。描画済み製品target以外は入力を消費しない。 */
-class InputAdapter(target: JSONObject) : InputListener {
+class InputAdapter(target: JSONObject, private val editSource: (Entity,Int)->Unit = { _, _ -> }) : InputListener {
+    @Volatile private var suppressed=false
+    fun setSuppressed(value: Boolean) { if(suppressed!=value) {suppressed=value;capture=null;synchronized(inputLock) {clearLocal()} } }
     private val ui = Handler(Looper.getMainLooper())
     @Volatile private var targetJson = target.toString()
     private data class Capture(val source: Long, val target: String, val receive: (JSONObject) -> Unit)
@@ -85,6 +87,7 @@ class InputAdapter(target: JSONObject) : InputListener {
     override fun onInput(receiver: SceneObject, hitInfo: HitInfo, sourceOfInput: Entity,
         changed: Int, state: Int, downTime: Long): Boolean {
         if (closed) return false
+        if(suppressed || NativeSessionHost.isLayoutEditing()) {ui.post { if(!closed) editSource(sourceOfInput,state) };return false}
         val probe = capture
         val target = targetJson
         if (probe!=null) {
@@ -113,6 +116,7 @@ class InputAdapter(target: JSONObject) : InputListener {
         return consumed
     }
     override fun stopInput(receiver: SceneObject, sourceOfInput: Entity, downTime: Long) {
+        if(suppressed || NativeSessionHost.isLayoutEditing()) {ui.post { if(!closed) editSource(sourceOfInput,0) };return}
         val probe = capture
         val target = targetJson
         if (probe!=null) {
@@ -122,7 +126,7 @@ class InputAdapter(target: JSONObject) : InputListener {
         } else leave(sourceOfInput.id)
     }
     override fun onPointerEvent(receiver: SceneObject, hitInfo: HitInfo, type: Int, sourceOfInput: Entity, scrollInfo: Vector2, semanticType: Int) {
-        if (closed || capture!=null) return
+        if (closed || suppressed || NativeSessionHost.isLayoutEditing() || capture!=null) return
         if (type==PointerEventType.Cancel.id) { leave(sourceOfInput.id,true);return }
         if (type==PointerEventType.Unhover.id) { onHoverStop(receiver,sourceOfInput);return }
         val ticket=NativeSessionHost.inputTarget(targetJson) ?: return
@@ -134,11 +138,11 @@ class InputAdapter(target: JSONObject) : InputListener {
         NativeSessionHost.sendPointer(ticket,sourceOfInput.id,position,JSONObject().put("type","move"))
     }
     override fun onHoverStop(receiver: SceneObject, sourceOfInput: Entity) {
-        if (closed || capture!=null) return
+        if (closed || suppressed || NativeSessionHost.isLayoutEditing() || capture!=null) return
         if (synchronized(inputLock) { (sources[sourceOfInput.id]?.pressed ?: 0)==0 }) leave(sourceOfInput.id)
     }
     override fun onDragMove(receiver: SceneObject, hitInfo: HitInfo, sourceOfInput: Entity, state: Int) {
-        if (closed || capture!=null) return
+        if (closed || suppressed || NativeSessionHost.isLayoutEditing() || capture!=null) return
         val ticket=NativeSessionHost.inputTarget(targetJson) ?: return
         NativeSessionHost.sendPointer(ticket,sourceOfInput.id,uv(receiver,hitInfo),JSONObject().put("type","move"))
     }

@@ -12,3 +12,4 @@ pub mod resize;
 pub mod state;
 pub mod surface;
 pub mod window;
+pub mod workspace;
