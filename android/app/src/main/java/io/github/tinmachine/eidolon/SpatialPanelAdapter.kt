@@ -36,6 +36,7 @@ class SpatialPanelAdapter {
     private var lastPublish = 0L
     private var attempting: JSONObject? = null
     private var backgroundStamp: String? = null
+    private var backgroundApi: JSONObject? = null
     private val trace = ArrayDeque<JSONObject>()
     private data class Binding(val entity: Entity, val handle: Long, var key: JSONObject,
         val role: String = "diagnostic", val commandSeq: String? = null, var destroyCommand: JSONObject? = null,
@@ -135,6 +136,7 @@ class SpatialPanelAdapter {
     fun metrics(): JSONObject = JSONObject().put("scene", scene.toString()).put("created", created).put("destroyed", destroyed)
         .put("bindings", bindings.size).put("listeners", listeners).put("callbacks", callbacks)
         .put("pending", pendingSurfaces.size + pendingObjects.size)
+        .put("background_api", backgroundApi?.let { JSONObject(it.toString()) })
         .put("targets", JSONArray(bindings.values.map { JSONObject().put("entity",it.entity.id.toString()).put("target",JSONObject(it.key.toString())).put("role",it.role) }))
         .put("trace", JSONArray(trace.toList()))
 
@@ -323,8 +325,13 @@ class SpatialPanelAdapter {
         val mode=workspace.getString("background");val command=if(workspace.isNull("background_command")) null else workspace.getString("background_command")
         val stamp="$handle:$scene:${command ?: "initial"}:$mode"
         if(backgroundStamp==stamp) return
-        sdk.setBackfillColor(Color4(.025f,.035f,.05f,1f))
-        sdk.enablePassthrough(mode=="passthrough")
+        val passthrough=mode=="passthrough"
+        val color=if(passthrough) Color4(0f,0f,0f,0f) else Color4(.025f,.035f,.05f,1f)
+        sdk.enablePassthrough(passthrough)
+        sdk.setBackfillColor(color)
+        backgroundApi=JSONObject().put("scene",scene.toString()).put("background",mode).put("background_command",command)
+            .put("passthrough_requested",passthrough).put("backfill_rgba",JSONArray(listOf(color.red,color.green,color.blue,color.alpha)))
+            .put("optical_verified",false)
         if(NativeSessionHost.ackBackground(scene,command,mode,handle)==NativeBridge.ACCEPTED) backgroundStamp=stamp
     }
     private fun applyPose(current: Binding, runtime: JSONObject) {

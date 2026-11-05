@@ -545,3 +545,28 @@ debug/release・lint・package、実APKのPython61件が成功した。Rustは�
 Boundary回避は今回使っていない。次回実際に妨げた時にだけ試す条件と、変更・復元の記録方針は[事前検証記録](native-preflight-20261104.md#2026-11-05の追跡復帰と次回のboundary対応)を参照。
 
 **Phase 5全体はまだ未完了**。残りは[最終実機確認](phase5-manual-acceptance.md)のHMD視認・物理keyboard/controller・Menu/sleep・背景/grabである。task/check全体の状態は、その回答を受けて更新する。
+
+## 手動確認の開始とpassthrough修正（Build99/100）
+
+ユーザーがBuild99で二枚のfoot表示と文字の可読性を確認した。
+一枚目の上下黒帯は1280×720画像を1024×768 producerへletterbox表示した結果で、1024×768選択で除ける。
+背景はAPI上passthroughでもHMDでは青黒い単色だったため、Build100でpassthrough用backfillを透明にした。
+通常起動後、ユーザーが現実の部屋の表示を確認した。Boundary変更無し。
+この修正はユーザー指定のquick試行で、追加suite・release・CI・pushは未実施。Build99の全自動成功と区別する。
+残りの背景往復/grab/配置保存・物理入力/Menu/sleepを確認してからPhase5の完了判定を行う。
+
+## Build101の配備と後続機能（2026-11-06）
+
+通常のNeovim起動を直すため、launcherで実contextの二段execを一度probeし、直接execできるときだけ
+Termuxのsystem-linker modeをその子環境内で無効にする。LD_PRELOADと明示的なforce設定は維持する。
+launcher20件、Rust transport26件とClippy、debug/lint/package、release assemble、実APKのPC61件が成功した。
+Build101（SHA256 `1658f6cabbd2637fec54ce018d7434d9345d3c3daec791ffb5f9f681219649b0`）と
+同一sourceのlauncher・producerを配備済み。source digestは`60115f9773bb9d32d0163a6ee5e097186afc17a140a53b382d3a1daa495c49ed`。
+
+配備後の通常SDK layout検査は`20261106T015736-2a67dde3`でready待ちtimeout。
+snapshotはnative ReadyだがActivity非表示、XR IDLE、Scene無しだった。layout実動作の不合格とは切り分け、成功にも数えない。
+無線ADBも一時的にofflineになった。新launcher環境でのNeovim実機再検査は通信復帰後に続ける。
+電池切れ前のsession216 journalは保持し、正常な再接続の監査に任せる。古いPIDを新bootで同一所有者と扱わない。
+
+ユーザーの依頼により、テーマ・三重リング・workload連動をPhase 6全耐久/release完了より先に追加する。
+追加機能の実装・自動検証を先行し、必要なユーザーHMD/物理操作は最後にまとめる。既存Phase 5の未確認条件は維持する。

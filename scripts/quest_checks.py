@@ -1729,6 +1729,13 @@ def layout_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package, *
         bg=ws.get('applied_background') or {}
         if bg.get('scene')!=s.get('scene') or bg.get('background')!=ws.get('background') or bg.get('background_command')!=ws.get('background_command'):
             raise ValueError('背景が新しいsceneへ再適用されていません')
+        api=adapter.get('background_api',{});rgba=api.get('backfill_rgba',[])
+        passthrough=ws.get('background')=='passthrough'
+        expected_rgba=[0,0,0,0] if passthrough else [.025,.035,.05,1]
+        if (api.get('scene')!=s.get('scene') or api.get('background')!=ws.get('background') or api.get('background_command')!=ws.get('background_command')
+                or api.get('passthrough_requested') is not passthrough or api.get('optical_verified') is not False
+                or len(rgba)!=4 or any(type(x) not in {int,float} or not math.isfinite(x) or abs(x-y)>1e-6 for x,y in zip(rgba,expected_rgba))):
+            raise ValueError('passthroughの透明背景または単色背景のSDK API適用記録が不正です')
         if index==0:original_session=a['session']
         elif index<4 and a['session']!=original_session:
             raise ValueError('背景/Activity再生成でSSH接続を作り直しています')

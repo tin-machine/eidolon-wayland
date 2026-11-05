@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import socket
+import subprocess
 import time
 from pathlib import Path
 import sys
@@ -17,6 +18,43 @@ spec.loader.exec_module(launcher)
 
 
 class ToolTests(unittest.TestCase):
+    def test_direct_exec_probe_uses_a_second_exec_and_caches_success(self):
+        with tempfile.TemporaryDirectory(prefix="eidolon-direct-exec-") as folder:
+            root = Path(folder)
+            (root / 'bin').mkdir()
+            (root / 'bin/python3').symlink_to(sys.executable)
+            with patch.object(launcher, 'TERMUX_PREFIX', root), patch.object(launcher, '_direct_exec_supported', None):
+                self.assertTrue(launcher.termux_direct_exec_available(os.environ.copy()))
+                with patch.object(launcher.subprocess, 'run', side_effect=AssertionError('probe repeated')):
+                    self.assertTrue(launcher.termux_direct_exec_available(os.environ.copy()))
+
+    def test_failed_or_timed_out_probe_does_not_disable_required_linker_exec(self):
+        with tempfile.TemporaryDirectory(prefix="eidolon-direct-exec-fail-") as folder:
+            root = Path(folder)
+            (root / 'bin').mkdir()
+            (root / 'bin/python3').symlink_to(sys.executable)
+            for failure in [subprocess.CompletedProcess([], 1), subprocess.TimeoutExpired('probe', 1), OSError('denied')]:
+                options = {'return_value': failure} if isinstance(failure, subprocess.CompletedProcess) else {'side_effect': failure}
+                with self.subTest(failure=type(failure).__name__), patch.object(launcher, 'TERMUX_PREFIX', root), \
+                        patch.object(launcher, '_direct_exec_supported', None), patch.dict(os.environ, {}, clear=True), \
+                        patch.object(launcher.subprocess, 'run', **options):
+                    env = launcher.tool_environment(root / 'runtime')
+                    self.assertNotIn('TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE', env)
+
+    def test_direct_exec_environment_preserves_preload_and_explicit_operator_modes(self):
+        original = {'LD_PRELOAD': '/termux/libtermux-exec-ld-preload.so', 'TERMUX_EXEC__PROC_SELF_EXE': '/old/bash'}
+        with patch.dict(os.environ, original, clear=True), patch.object(launcher, 'termux_direct_exec_available', return_value=True):
+            env = launcher.tool_environment(Path('/runtime'))
+            self.assertEqual(env['TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE'], 'disable')
+            self.assertEqual(env['LD_PRELOAD'], original['LD_PRELOAD'])
+            self.assertNotIn('TERMUX_EXEC__PROC_SELF_EXE', env)
+        for mode in ['force', 'disable']:
+            with self.subTest(mode=mode), patch.dict(os.environ, {**original, 'TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE': mode}, clear=True), \
+                    patch.object(launcher, 'termux_direct_exec_available', side_effect=AssertionError('explicit mode probed')):
+                env = launcher.tool_environment(Path('/runtime'))
+                self.assertEqual(env['TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE'], mode)
+                self.assertEqual(env['LD_PRELOAD'], original['LD_PRELOAD'])
+
     def test_terminal_request_is_single_bounded_and_owned_child_is_reaped(self):
         with tempfile.TemporaryDirectory(prefix="eidolon-terminal-") as folder:
             directory=Path(folder)

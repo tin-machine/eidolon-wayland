@@ -67,7 +67,9 @@ class LayoutTests(unittest.TestCase):
                 s['panels'][j]['target']=copy.deepcopy(key)
                 size=s['app']['windows'][j]['sizing'];size['applied_physical_size_m']=copy.deepcopy(size['physical_size_m'])
             w=s['workspace'];w['applied_background']=dict(scene=s['scene'],background=w['background'],background_command=w['background_command'])
-            row['adapter']=dict(bindings=len(s['app']['windows']),listeners=len(s['app']['windows']))
+            row['adapter']=dict(bindings=len(s['app']['windows']),listeners=len(s['app']['windows']),background_api=dict(
+                scene=s['scene'],background=w['background'],background_command=w['background_command'],passthrough_requested=w['background']=='passthrough',
+                backfill_rgba=[0,0,0,0] if w['background']=='passthrough' else [.025,.035,.05,1],optical_verified=False))
             rows.append(row)
         p['cycles']=rows;p['product_restored']=dict(state='Ready',activity_visible=True,xr_state='FOCUSED',transport=dict(state='Idle',pending_cleanup=[]),render=dict(mode='diagnostic',targets=[dict(role='diagnostic',frames=3)]))
         package=dict(dependencies=dict(waypipe=dict(sha256='0'*64),keymaps=dict(jis=dict(sha256='1'*64))))
@@ -79,6 +81,10 @@ class LayoutTests(unittest.TestCase):
         self.assertTrue(judge(f))
         for path,value in [(['synthetic_visibility'],True),(['synthetic_pose_ack'],True),(['activity_recreated'],False),
                 (['cycles',3,'runtime','scene'],'1'),(['cycles',2,'adapter','bindings'],1),
+                (['cycles',0,'adapter','background_api','backfill_rgba'],[.025,.035,.05,1]),
+                (['cycles',1,'adapter','background_api','backfill_rgba'],[0,0,0,0]),
+                (['cycles',3,'adapter','background_api','scene'],'1'),
+                (['cycles',0,'adapter','background_api','optical_verified'],True),
                 (['cycles',4,'runtime','workspace','storage','loaded'],False),(['product_restored','transport','pending_cleanup'],[dict(nonce='pending')])]:
             bad=copy.deepcopy(f);target=bad['check']
             for key in path[:-1]:target=target[key]

@@ -22,6 +22,7 @@ TRAILER = b"AFTER_EOF"
 RING_BYTES = 65536
 TERMUX_PREFIX = Path('/data/data/com.termux/files/usr')
 TERMUX_HOME = Path('/data/data/com.termux/files/home')
+_direct_exec_supported = None
 
 
 def checked(directory):
@@ -316,11 +317,40 @@ class TerminalStarter:
         return dict(request_id=self.request, success=success, ordinal=self.count)
 
 
+def termux_direct_exec_available(env):
+    """実contextで直接execできる場合だけlinker迂回を外す。結果はlauncher内で一度だけ確認。"""
+    global _direct_exec_supported
+    if _direct_exec_supported is not None:
+        return _direct_exec_supported
+    python = TERMUX_PREFIX / 'bin/python3'
+    if not python.is_file():
+        _direct_exec_supported = False
+        return False
+    probe_env = env.copy()
+    probe_env['TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE'] = 'disable'
+    probe_env.pop('TERMUX_EXEC__PROC_SELF_EXE', None)
+    # 最初のexecは親の既存interceptorが迂回し得る。新設定を読んだ子からもう一度execする。
+    source = f'import os; os.execv({str(python)!r}, [{str(python)!r}, "-c", "pass"])'
+    try:
+        result = subprocess.run([str(python), '-c', source], env=probe_env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=1, check=False)
+        _direct_exec_supported = result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        _direct_exec_supported = False
+    return _direct_exec_supported
+
+
 def tool_environment(directory):
     env = os.environ.copy()
     env.update(PATH=str(TERMUX_PREFIX / 'bin') + ':/system/bin', PREFIX=str(TERMUX_PREFIX),
                HOME=str(TERMUX_HOME), TMPDIR=str(TERMUX_PREFIX / 'tmp'),
                XDG_RUNTIME_DIR=str(directory), SHELL=str(TERMUX_PREFIX / 'bin/bash'))
+    # ADB由来のSSH環境では不要なlinker経由execが有効になり、Neovimの自己再実行を壊す。
+    # force等の明示設定と、直接execできないAndroid contextは維持する。LD_PRELOADは外さない。
+    if env.get('TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE', 'enable') == 'enable' and termux_direct_exec_available(env):
+        env['TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE'] = 'disable'
+        env.pop('TERMUX_EXEC__PROC_SELF_EXE', None)
     return env
 
 

@@ -141,3 +141,12 @@ journalを消したり、保存PIDへsignalを送ったりせずに復旧した�
 
 Build99の通常layout `20261105T235226-94c7d967`は、実Activity再生成・新Scene適用・保存復元・製品設定不変まで連続suite内で成功した。
 背景API適用とHMDでの実際の背景表示は、引き続き別の確認項目である。
+
+## HMDで確認したpassthroughの不具合とBuild100
+
+Build99でユーザーが二枚のfoot表示と文字の可読性を確認した。
+一方、設定/SDK ACKがpassthroughでも、HMDの外側は青黒い単色で部屋が見えなかった。
+常にalpha=1のbackfillを設定していたため、Build100ではpassthrough時をRGBA(0,0,0,0)、virtual時を従来の不透明暗色にした。
+ユーザーの時短指定に従い、修正版を実機へ上書きして通常起動するquick試行とし、追加suite・release・CI・pushは行っていない。
+Build100で「部屋が見えるようになった」とHMDでの復旧確認を得た。Boundaryは変更していない。
+単色背景との往復、grab、物理入力は次回の確認事項として残す。

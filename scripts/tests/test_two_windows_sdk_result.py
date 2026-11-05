@@ -25,7 +25,7 @@ class TwoWindowsSdkTests(unittest.TestCase):
                 placement['placement']['applied_pose'].update(target=copy.deepcopy(target['key']))
                 plan=copy.deepcopy(plan_template);plan['target']=copy.deepcopy(target['key']);s['panels'].append(plan)
             s['app']['input'].update(pressed=1 if i==5 else 0,focus_window='2' if i in (0,2,3,4,5) else ('3' if i==7 else None),delivered=[8,8,12,12,12,13,14,18,18,18][i])
-            rows.append(dict(stage=label,runtime=s,adapter=dict(bindings=len(visible),listeners=len(visible))))
+            rows.append(dict(stage=label,runtime=s,adapter=dict(bindings=len(visible),listeners=len(visible),background_api=copy.deepcopy(p['cycles'][2]['adapter']['background_api']))))
         p['two_window_cycles']=rows
         return f,package
 

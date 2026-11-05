@@ -121,3 +121,36 @@ scripts/quest-check --serial "$QUEST_SERIAL" --case keyboard
 hostの全Rust85test、Clippy/fmt、PC拒否検査とdebug/release/lint/package検査を実施した。
 Android実Bluetooth、shell/tmux/Neovimの文字・修飾キー操作、HMDでの視認は最終受入れで確認する。
 raw receiptは起動時に読み直す`codex-work-root`の`eidolon-phase5-implementation/`以下へ保存する。
+
+## Build100の物理USキーボード確認（2026-11-06）
+
+Questへ接続した物理USキーボードで、ユーザーが以下を確認した。
+
+- footでの文字入力とBackspace。
+- Ctrl+Lによるclear。
+- controllerで別のfootを選ぶと、そのwindowだけへ入力が切り替わる。
+- Shift+英字の大文字と、Shiftを離した後の小文字。
+- 長押しrepeatと、離した後の停止。
+
+最初はTermuxがOS topResumed、EidolonはVISIBLEで、footへのkey/button配送がなかった。
+実際のAndroid `am start`でEidolonを前面へ戻すとSDK FOCUSEDへ遷移し、物理入力が通った。
+入力本文を採取せず、window/focus・配送件数・押下残留だけを記録した。
+この復帰はADBを使用したため、controllerだけでTermuxからEidolonへ戻る経路は未確認として残す。
+FOCUSEDを合成したり、VISIBLE時の入力を無条件に許可したりはしていない。
+残りの記号・行編集・Tab/Esc/Fkey・tmux/Neovim・Menu/sleepを確認してI02全体を判定する。
+
+追加で、US記号、Ctrl+A/Eの行頭末移動、Alt+B/Fの単語移動、Tabのshell補完もユーザーが確認した。
+
+### Neovimの実行環境差
+
+tmuxの起動・pane分割は物理操作で成功した。Neovimはheadlessだけでは問題が見えず、通常TUIがすぐ終了した。
+footのSSH環境で継承されたtermux-execにより、Neovimの自己実行パスが`linker64`になり、`--embed`起動に失敗していた。
+同じ環境を専用PTYで再現し、modeをdisableにすると実行パスがNeovim本体へ戻り、TUIが起動・終了できた。
+[Termux上流のADB entrypoint問題](https://github.com/termux/termux-exec-package/issues/40)と
+[公式exec modeの説明](https://github.com/termux/termux-exec-package/blob/master/site/pages/en/projects/docs/usage/index.md#termux_exec__system_linker_exec__mode)も照合した。
+
+ユーザーが`TERMUX_EXEC__SYSTEM_LINKER_EXEC__MODE=disable nvim --clean`で起動・文字入力・終了を確認した。
+これは一時設定付きの成功であり、plain `nvim`の修正完了には数えない。
+launcherへ、実contextで二段の固定execを成功させた場合だけmodeを選ぶ処理をローカルに用意した。
+確認は1秒上限・launcher内一回、失敗時は元の動作を維持し、明示force/disableやLD_PRELOADも維持する。
+このlauncher変更と負例はまだ未検証・未配備で、現在のAPK100/remote launcher83には含まれない。
