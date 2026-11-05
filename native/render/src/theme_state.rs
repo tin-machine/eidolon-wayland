@@ -46,6 +46,7 @@ pub struct Canvas {
 }
 impl Canvas {
     pub fn for_content(content: LogicalSize) -> Result<Self, &'static str> {
+        LogicalSize::new(content.width, content.height).map_err(|_| "THEME_LAYOUT_INVALID")?;
         // 正方形外周。大きいappではリングの規定sizeを維持し、文字をresizeしない。
         let side = content
             .width
@@ -55,7 +56,7 @@ impl Canvas {
                     .checked_add(32)
                     .ok_or("THEME_LAYOUT_INVALID")?,
             )
-            .max(1280);
+            .clamp(1280, eidolon_model::limits::BUFFER_DIMENSION);
         let size = LogicalSize::new(side, side).map_err(|_| "THEME_LAYOUT_INVALID")?;
         Ok(Self {
             size,

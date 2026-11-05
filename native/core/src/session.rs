@@ -355,6 +355,7 @@ impl Session {
                     && t.frames > 0
             })
             .filter_map(|t| {
+                // producerは実Surfaceの大きさ。app logical_size/resize configureと混同しない。
                 eidolon_model::window::BufferSizePx::new(t.gpu.width as u32, t.gpu.height as u32)
                     .ok()
                     .map(|size| (t.key.window, size))

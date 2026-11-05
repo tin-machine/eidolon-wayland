@@ -34,6 +34,12 @@ object NativeSessionHost {
     private val poseCompletions = ConcurrentHashMap<String,String>()
     val layoutEditing = mutableStateOf(false)
     val workspaceSummary = mutableStateOf("配置設定を確認中")
+    data class ThemeUi(val selection: String = "off", val reduced: Boolean = false, val imported: Boolean = false,
+        val loading: Boolean = false, val message: String = "装飾なし")
+    val themeUi = mutableStateOf(ThemeUi())
+    private val themeRequests = linkedMapOf<String, (String) -> Unit>()
+    @Volatile private var themeImportToken: String? = null
+    private var themeImportMessage: String? = null
     private var credentials: CredentialStore? = null
     private var identity: CredentialStore.Identity? = null
     private var profiles = JSONArray()
@@ -224,6 +230,56 @@ object NativeSessionHost {
     } } }
     fun setBackground(mode: String) { if(mode in setOf("passthrough","virtual")) worker.execute { send("set_background","background",mode) } }
     fun setKeyboardLayout(layout: String) { if(layout in setOf("us","jis")) worker.execute { resetInput();send("set_keyboard_layout","layout",layout) } }
+    private fun themeCommand(command: JSONObject, done: (String) -> Unit = {}) {
+        if (handle == 0L || themeRequests.size >= 8) { done("NOT_READY"); return }
+        val request = requests.incrementAndGet().toString()
+        command.put("schema", 1).put("request_id", request)
+        val code = NativeBridge.nativeCommand(handle, command.toString())
+        if (code == NativeBridge.ACCEPTED) themeRequests[request] = done else done("REJECTED")
+    }
+    fun setTheme(selection: String, reduced: Boolean = themeUi.value.reduced) {
+        if (selection !in setOf("off", "builtin", "imported")) return
+        worker.execute { safely {
+            themeImportToken = null; themeImportMessage = null
+            themeCommand(JSONObject().put("type", "set_theme").put("selection", selection).put("reduced_motion", reduced)) {
+                if (it != "ACCEPTED") themeImportMessage = "テーマの変更を開始できませんでした"
+            }
+        } }
+    }
+    fun beginThemeImport(ready: (String) -> Unit) { worker.execute { safely {
+        val token = java.util.UUID.randomUUID().toString().replace("-", "")
+        themeImportToken = token; themeImportMessage = null
+        themeCommand(JSONObject().put("type", "begin_theme_import").put("token", token)) { code ->
+            if (themeImportToken == token) {
+                if (code == "ACCEPTED") ui.post { ready(token) }
+                else { themeImportToken = null; themeImportMessage = "テーマの読み込みを開始できませんでした" }
+            }
+        }
+    } } }
+    fun cancelThemeImport(token: String) { worker.execute { safely {
+        if (themeImportToken == token) {
+            themeImportToken = null; themeImportMessage = null
+            themeCommand(JSONObject().put("type", "cancel_theme_import").put("token", token))
+        }
+    } } }
+    fun readTheme(context: Context, uri: android.net.Uri, token: String) {
+        ThemeImporter.read(context, uri, token, { themeImportToken == token }) { file, error ->
+            worker.execute { safely {
+                if (themeImportToken != token || handle == 0L) { file?.delete(); return@safely }
+                if (file == null) {
+                    themeImportToken = null; themeImportMessage = error
+                    themeCommand(JSONObject().put("type", "cancel_theme_import").put("token", token))
+                } else {
+                    themeCommand(JSONObject().put("type", "apply_theme_import").put("token", token)) { code ->
+                        if (code != "ACCEPTED") {
+                            file.delete()
+                            if (themeImportToken == token) { themeImportToken = null; themeImportMessage = "読み込みを適用できませんでした" }
+                        }
+                    }
+                }
+            } }
+        }
+    }
     fun submitPose(target: JSONObject, pose: JSONObject, runtime: Long): String? {
         if(runtime!=handle || poseCompletions.size>=16 || !PanelPoseCodec.valid(pose)) return null
         val request=requests.incrementAndGet().toString();poseCompletions[request]="pending"
@@ -333,6 +389,7 @@ object NativeSessionHost {
         keyboardFocus = null
         inputTargets = emptyMap()
         val old = handle
+        themeImportToken = null; themeRequests.clear(); themeImportMessage = null
         val started = SystemClock.elapsedRealtime()
         check(NativeBridge.nativeRequestStop(old) == NativeBridge.ACCEPTED)
         val deadline = SystemClock.elapsedRealtime() + 5000
@@ -372,6 +429,7 @@ object NativeSessionHost {
         for (index in 0 until values.length()) {
             val event = values.getJSONObject(index)
             if (event.optString("type") == "command_complete") {
+                themeRequests.remove(event.getString("request_id"))?.invoke(event.getString("code"))
                 BuildHooks.commandComplete(event.getString("request_id"), event.getString("code"))
                 poseCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
                 if (event.getString("request_id") == lastConnectRequest) {
@@ -438,6 +496,20 @@ object NativeSessionHost {
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else "ターミナルへ入力"
         ui.post { keyboardSummary.value = keyboardLabel }
         val workspace=runtime.getJSONObject("workspace");val storage=workspace.getJSONObject("storage")
+        runtime.optJSONObject("theme")?.let { theme ->
+            val label = when (theme.getString("selection")) { "builtin" -> "Cyan Orbit"; "imported" -> "読み込んだテーマ"; else -> "装飾なし" }
+            val loading = theme.getBoolean("loading")
+            val message = themeImportMessage ?: when {
+                !theme.isNull("error") -> "テーマを適用できませんでした。現在の表示を維持しています。"
+                loading -> "テーマを読み込み中…"
+                !theme.getJSONObject("storage").isNull("error") -> "$label · 設定を保存できませんでした"
+                theme.getJSONObject("storage").getBoolean("pending") -> "$label · 保存中"
+                else -> label
+            }
+            val value = ThemeUi(if (loading) theme.getString("requested") else theme.getString("selection"),
+                theme.getBoolean("reduced_motion"), theme.getBoolean("imported_available"), loading, message)
+            ui.post { themeUi.value = value }
+        }
         val background=if(workspace.getString("background")=="passthrough") "現実" else "単色"
         val saveStatus=when { !storage.isNull("error") -> "保存できません（${storage.getString("error")}）";workspace.getBoolean("pending_save")->"保存中";else->"保存済み" }
         ui.post { workspaceSummary.value="背景: $background · キー配列: ${workspace.getString("keyboard_layout").uppercase()} · $saveStatus" }

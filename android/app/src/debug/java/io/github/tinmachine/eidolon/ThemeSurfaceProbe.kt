@@ -30,7 +30,8 @@ object ThemeSurfaceProbe {
                 layerBlendType=PanelShapeLayerBlendType.ALPHA_BLEND
             }
             val obj=PanelSceneObject(scene,entity,options)
-            ui.post {active?.ready(entity,obj)}
+            val owner=active
+            ui.post {if(active===owner) owner?.ready(entity,obj)}
             obj
         }
     }
@@ -53,7 +54,7 @@ object ThemeSurfaceProbe {
             .put("synthetic_visibility",false).put("synthetic_raycast",true).put("ui_thread",Process.myTid())
         val rows=JSONArray()
         val objects=mutableMapOf<Long,PanelSceneObject>()
-        var back:Entity?=null;var front:Entity?=null
+        var back:Entity?=null;var front:Entity?=null;var input:Entity?=null
         var painter:ThemeProbePainter?=null
         var mode=0;var stage="ready";var sample=JSONObject()
         var notBefore=0L
@@ -61,11 +62,11 @@ object ThemeSurfaceProbe {
         var pendingFailure:Exception?=null
         val deadline=SystemClock.elapsedRealtime()+45000
         fun start() {NativeSessionHost.publishCheck(result);ui.post(this)}
-        fun ready(entity:Entity,obj:PanelSceneObject) {if(!closing) objects[entity.id]=obj}
+        fun ready(entity:Entity,obj:PanelSceneObject) {if(!closing && entity.id in listOfNotNull(front?.id,back?.id)) objects[entity.id]=obj}
         private fun hit(x:Float):Long? = scene().lineSegmentIntersect(Vector3(x,1.4f,0.2f),Vector3(x,1.4f,2.5f))?.entity?.id
         private fun clearEntities() {
-            val owned=listOfNotNull(front,back)
-            front=null;back=null;objects.clear()
+            val owned=listOfNotNull(front,back,input)
+            front=null;back=null;input=null;objects.clear()
             owned.forEach {runCatching {it.destroy()}.onFailure {result.put("cleanup_failed",true)}}
         }
         fun abort() {
@@ -123,12 +124,24 @@ object ThemeSurfaceProbe {
                         val center=hit(-2.5f);val margin=hit(-1.85f)
                         if(center==checkNotNull(back).id && margin==checkNotNull(back).id) {
                             sample.put("no_collision_center_hit",center.toString()).put("no_collision_margin_hit",margin.toString())
+                            input=Entity.create(listOf(Mesh(android.net.Uri.parse(ThemeHitMesh.URI),MeshCollision.LineTest),Transform(Pose(Vector3(-2.5f,1.4f,1.4f)))))
+                            stage="content_input";notBefore=SystemClock.elapsedRealtime()+200
+                        }
+                    }
+                    "content_input" -> if(visible && SystemClock.elapsedRealtime()>=notBefore) {
+                        val center=hit(-2.5f);val margin=hit(-1.85f)
+                        val sampleHit=scene().lineSegmentIntersect(Vector3(-2.86f,1.535f,.2f),Vector3(-2.86f,1.535f,2.5f))
+                        if(center==checkNotNull(input).id && margin==checkNotNull(back).id && sampleHit?.entity?.id==checkNotNull(input).id) {
+                            val uv=sampleHit.textureCoordinate
+                            check(kotlin.math.abs(uv.x-.2f)<.005f && kotlin.math.abs(uv.y-.35f)<.005f)
+                            sample.put("content_input",center.toString()).put("content_margin_hit",margin.toString())
+                                .put("content_uv",JSONArray(listOf(uv.x,uv.y)))
                             rows.put(sample);clearEntities();stage="removed";notBefore=SystemClock.elapsedRealtime()+200
                         }
                     }
                     "removed" -> if(SystemClock.elapsedRealtime()>=notBefore) {
                         val old=rows.getJSONObject(rows.length()-1)
-                        val ids=setOf(old.getString("front"),old.getString("back"))
+                        val ids=setOf(old.getString("front"),old.getString("back"),old.getString("content_input"))
                         if(hit(-2.5f)?.toString() !in ids && hit(-1.85f)?.toString() !in ids) {
                             old.put("removed_from_raycast",true)
                             if(mode++==0) stage="create" else stage="complete"

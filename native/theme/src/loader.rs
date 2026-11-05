@@ -20,12 +20,35 @@ impl Generation {
 }
 struct Request {
     generation: Generation,
-    bundle: Bundle,
+    source: Source,
     slots: BTreeMap<Slot, [u32; 2]>,
+}
+enum Source {
+    Bundle(Bundle),
+    Package(Arc<[u8]>),
+    File { path: std::path::PathBuf, uid: u32 },
+}
+impl Source {
+    fn load(self) -> Result<(Bundle, Vec<u8>), Error> {
+        match self {
+            Self::Bundle(bundle) => {
+                let bytes = crate::package::encode(&bundle);
+                Ok((bundle, bytes))
+            }
+            Self::Package(bytes) => Ok((crate::package::decode(&bytes)?, bytes.to_vec())),
+            Self::File { path, uid } => {
+                let bytes = crate::package::read_file(&path, uid)?;
+                let bundle = crate::package::decode(&bytes)?;
+                Ok((bundle, bytes))
+            }
+        }
+    }
 }
 pub struct Completion {
     pub generation: Generation,
     pub result: Result<Arc<CompiledTheme>, Error>,
+    /// compileしたものと同一の入力。GPU適用成功後に永続化するためのboundedな所有copy。
+    pub source: Option<Arc<[u8]>>,
 }
 #[derive(Default)]
 struct State {
@@ -43,12 +66,12 @@ pub struct Loader {
 impl Loader {
     /// pixel/quotaは旧theme・現在のcompile・次のreloadを通じて共有する。
     pub fn start(pixels: PixelBudget, quota: RasterBudget) -> std::io::Result<Self> {
-        Self::start_with(move |request| {
-            raster::compile(&request.bundle, &request.slots, &pixels, &quota)
-        })
+        Self::start_with(move |_, bundle, slots| raster::compile(bundle, slots, &pixels, &quota))
     }
     fn start_with(
-        compile: impl Fn(&Request) -> Result<CompiledTheme, Error> + Send + 'static,
+        compile: impl Fn(Generation, &Bundle, &BTreeMap<Slot, [u32; 2]>) -> Result<CompiledTheme, Error>
+        + Send
+        + 'static,
     ) -> std::io::Result<Self> {
         let state = Arc::new((Mutex::new(State::default()), Condvar::new()));
         let owned = state.clone();
@@ -69,17 +92,28 @@ impl Loader {
                         request
                     };
                     // compilerは共有lock/GL/SDKを保持せず、panicも次のrequestを妨げない。
+                    let Request {
+                        generation,
+                        source,
+                        slots,
+                    } = request;
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        compile(&request)
+                        let (bundle, bytes) = source.load()?;
+                        compile(generation, &bundle, &slots)
+                            .map(|theme| (Arc::new(theme), Arc::<[u8]>::from(bytes)))
                     }))
-                    .unwrap_or_else(|_| Err(Error("theme compiler panicked".into())))
-                    .map(Arc::new);
+                    .unwrap_or_else(|_| Err(Error("theme compiler panicked".into())));
                     let mut s = owned.0.lock().unwrap_or_else(|e| e.into_inner());
                     s.compiling = None;
-                    if !s.stop && s.generation == request.generation.0 {
+                    if !s.stop && s.generation == generation.0 {
+                        let (result, source) = match result {
+                            Ok((theme, source)) => (Ok(theme), Some(source)),
+                            Err(error) => (Err(error), None),
+                        };
                         s.ready = Some(Completion {
-                            generation: request.generation,
+                            generation,
                             result,
+                            source,
                         });
                     }
                 }
@@ -92,6 +126,28 @@ impl Loader {
     pub fn request(
         &self,
         bundle: Bundle,
+        slots: BTreeMap<Slot, [u32; 2]>,
+    ) -> Result<Generation, Error> {
+        self.request_source(Source::Bundle(bundle), slots)
+    }
+    pub fn request_file(
+        &self,
+        path: std::path::PathBuf,
+        uid: u32,
+        slots: BTreeMap<Slot, [u32; 2]>,
+    ) -> Result<Generation, Error> {
+        self.request_source(Source::File { path, uid }, slots)
+    }
+    pub fn request_package(
+        &self,
+        bytes: Arc<[u8]>,
+        slots: BTreeMap<Slot, [u32; 2]>,
+    ) -> Result<Generation, Error> {
+        self.request_source(Source::Package(bytes), slots)
+    }
+    fn request_source(
+        &self,
+        source: Source,
         slots: BTreeMap<Slot, [u32; 2]>,
     ) -> Result<Generation, Error> {
         let mut s = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -107,7 +163,7 @@ impl Loader {
         let generation = Generation(next);
         s.pending = Some(Request {
             generation,
-            bundle,
+            source,
             slots,
         });
         self.state.1.notify_one();
@@ -169,8 +225,8 @@ mod tests {
     fn coalesces_pending_discards_old_completion_and_cancels_inflight() {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
-        let loader = Loader::start_with(move |r| {
-            entered_tx.send(r.generation).unwrap();
+        let loader = Loader::start_with(move |generation, _, _| {
+            entered_tx.send(generation).unwrap();
             release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             Err(Error("fixture rejected".into()))
         })

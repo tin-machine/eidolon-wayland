@@ -120,6 +120,15 @@ pub enum AppMode {
     FootFixture,
 }
 
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeSelection {
+    #[default]
+    Off,
+    Builtin,
+    Imported,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelAction {
@@ -183,6 +192,27 @@ pub enum CompositorScenario {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    SetTheme {
+        schema: u32,
+        request_id: CommandSeq,
+        selection: ThemeSelection,
+        reduced_motion: bool,
+    },
+    BeginThemeImport {
+        schema: u32,
+        request_id: CommandSeq,
+        token: String,
+    },
+    ApplyThemeImport {
+        schema: u32,
+        request_id: CommandSeq,
+        token: String,
+    },
+    CancelThemeImport {
+        schema: u32,
+        request_id: CommandSeq,
+        token: String,
+    },
     SetPose {
         schema: u32,
         request_id: CommandSeq,
@@ -392,7 +422,11 @@ impl Command {
         }
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
-            Self::SetPose { schema, .. }
+            Self::SetTheme { schema, .. }
+            | Self::BeginThemeImport { schema, .. }
+            | Self::ApplyThemeImport { schema, .. }
+            | Self::CancelThemeImport { schema, .. }
+            | Self::SetPose { schema, .. }
             | Self::PoseApplied { schema, .. }
             | Self::SetBackground { schema, .. }
             | Self::BackgroundApplied { schema, .. }
@@ -427,6 +461,13 @@ impl Command {
             | Self::ResetInput { schema, .. } => schema,
         };
         if schema != 1 {
+            return Err(Status::InvalidArgument);
+        }
+        if let Self::BeginThemeImport { token, .. }
+        | Self::ApplyThemeImport { token, .. }
+        | Self::CancelThemeImport { token, .. } = &command
+            && !valid_installation(token)
+        {
             return Err(Status::InvalidArgument);
         }
         if let Self::Connect { profile_id, .. } = &command
@@ -492,7 +533,11 @@ impl Command {
     }
     pub fn request_id(&self) -> CommandSeq {
         match *self {
-            Self::SetPose { request_id, .. }
+            Self::SetTheme { request_id, .. }
+            | Self::BeginThemeImport { request_id, .. }
+            | Self::ApplyThemeImport { request_id, .. }
+            | Self::CancelThemeImport { request_id, .. }
+            | Self::SetPose { request_id, .. }
             | Self::PoseApplied { request_id, .. }
             | Self::SetBackground { request_id, .. }
             | Self::BackgroundApplied { request_id, .. }
@@ -550,6 +595,32 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn theme_import_only_accepts_fixed_private_tokens_and_closed_selection() {
+        for kind in [
+            "begin_theme_import",
+            "apply_theme_import",
+            "cancel_theme_import",
+        ] {
+            let value = serde_json::json!({"schema":1,"request_id":"1","type":kind,"token":"0123456789abcdef0123456789abcdef"});
+            assert!(Command::parse(&value.to_string()).is_ok());
+            for token in [
+                "../source",
+                "/private/file",
+                "0",
+                "0123456789abcdef0123456789abcdeG",
+            ] {
+                let mut bad = value.clone();
+                bad["token"] = token.into();
+                assert!(Command::parse(&bad.to_string()).is_err());
+            }
+        }
+        let value = serde_json::json!({"schema":1,"request_id":"1","type":"set_theme","selection":"builtin","reduced_motion":true});
+        assert!(Command::parse(&value.to_string()).is_ok());
+        let mut bad = value;
+        bad["selection"] = "/some/path".into();
+        assert!(Command::parse(&bad.to_string()).is_err());
+    }
     #[test]
     fn pointer_payload_source_and_key_focus_token_are_validated_before_enqueue() {
         let pointer = r#"{"schema":1,"request_id":"1","type":"pointer","target":{"session":"1","window":"1","scene":"1","generation":"1"},"input_epoch":0,"pointer":{"source":"9","uv":[0.5,0.5],"event":{"type":"buttons","changed":1,"state":1},"time_ms":12}}"#;

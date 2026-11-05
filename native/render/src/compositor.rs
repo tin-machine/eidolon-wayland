@@ -1,5 +1,5 @@
 //! GL owner専用の画像合成。入力はimmutableなowned pixelと検査済みgeometryだけ。
-use crate::decoration::{Composition, Decorations, Draw};
+use crate::decoration::{Composition, Decorations, Draw, PreparedDecorations};
 use eidolon_model::{
     ids::{ContentSeq, SessionId, SurfaceId, WindowId},
     limits,
@@ -102,7 +102,9 @@ struct Cached {
 pub struct Compositor {
     // texture Dropの通知をrendererより先に送る。
     cache: HashMap<ImageKey, Cached>,
+    staged_theme: Option<Option<PreparedDecorations>>,
     decorations: Option<Decorations>,
+    theme_active: bool,
     renderer: GlesRenderer,
     report: Report,
 }
@@ -122,7 +124,9 @@ impl Compositor {
             .map_err(|_| "EGL_INIT_FAILED")?;
         Ok(Self {
             cache: HashMap::new(),
+            staged_theme: None,
             decorations: None,
+            theme_active: false,
             renderer,
             report: Report::default(),
         })
@@ -144,7 +148,9 @@ impl Compositor {
     }
     pub fn clear(&mut self) -> Result<(), Error> {
         self.cache.clear();
+        self.staged_theme = None;
         self.decorations = None;
+        self.theme_active = false;
         self.report.decoration_texture_bytes = 0;
         self.refresh();
         self.renderer
@@ -159,6 +165,14 @@ impl Compositor {
         &mut self,
         theme: Option<&eidolon_theme::raster::CompiledTheme>,
     ) -> Result<(), Error> {
+        self.stage_theme(theme)?;
+        self.finish_theme(true)
+    }
+    pub fn stage_theme(
+        &mut self,
+        theme: Option<&eidolon_theme::raster::CompiledTheme>,
+    ) -> Result<(), Error> {
+        self.finish_theme(false)?;
         if let Some(theme) = theme {
             if self.decorations.is_none() {
                 self.decorations = Some(Decorations::new(&mut self.renderer).map_err(gpu_error)?);
@@ -166,19 +180,54 @@ impl Compositor {
             }
             let decorations = self.decorations.as_mut().unwrap();
             let before = decorations.uploads();
-            let result = decorations.prepare_with_limit(
+            let result = decorations.stage(
                 &mut self.renderer,
                 theme,
                 limits::PIXEL_BYTES.saturating_sub(self.report.texture_bytes),
             );
             self.report.decoration_uploads += decorations.uploads() - before;
-            self.report.decoration_texture_bytes = decorations.texture_bytes();
-            result
+            match result {
+                Ok(prepared) => {
+                    self.report.decoration_texture_bytes = decorations.staged_bytes(&prepared);
+                    self.staged_theme = Some(Some(prepared));
+                    Ok(())
+                }
+                Err(error) => {
+                    let cleanup = self.finish_theme(false);
+                    if cleanup == Err("EGL_CONTEXT_LOST") {
+                        cleanup
+                    } else {
+                        Err(error)
+                    }
+                }
+            }
         } else {
-            self.decorations = None;
-            self.report.decoration_texture_bytes = 0;
-            self.renderer.cleanup_texture_cache().map_err(gpu_error)
+            self.staged_theme = Some(None);
+            Ok(())
         }
+    }
+    pub fn finish_theme(&mut self, adopt: bool) -> Result<(), Error> {
+        if let Some(prepared) = self.staged_theme.take()
+            && adopt
+        {
+            if let Some(prepared) = prepared {
+                self.decorations
+                    .as_mut()
+                    .ok_or("THEME_TEXTURE_MISSING")?
+                    .adopt(prepared);
+                self.theme_active = true;
+            } else {
+                self.theme_active = false;
+            }
+        }
+        if !self.theme_active {
+            self.decorations = None;
+        }
+        self.report.decoration_texture_bytes = self
+            .decorations
+            .as_ref()
+            .map_or(0, Decorations::texture_bytes);
+        self.renderer.cleanup_texture_cache().map_err(gpu_error)
     }
     fn decoration_pass(
         &mut self,

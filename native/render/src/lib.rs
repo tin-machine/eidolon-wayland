@@ -70,6 +70,7 @@ pub struct TargetReport {
     pub content_frame: Option<FrameSeq>,
     pub role: RenderMode,
     pub canvas: Option<theme_state::Canvas>,
+    pub content_size: Option<eidolon_model::window::LogicalSize>,
     pub decoration_frames: u64,
     #[serde(flatten)]
     pub gpu: GpuInfo,
@@ -91,6 +92,8 @@ pub struct Snapshot {
     pub latest_images: usize,
     pub composition: compositor::Report,
     pub theme_revision: u64,
+    pub theme_attempted_revision: u64,
+    pub theme_discarded: u64,
     pub theme_id: Option<String>,
     pub theme_error: Option<&'static str>,
     pub error: Option<&'static str>,
@@ -118,6 +121,10 @@ struct Shared {
     theme: Option<Arc<eidolon_theme::raster::CompiledTheme>>,
     theme_revision: u64,
     reduced_motion: bool,
+    accepted_theme: Option<Arc<eidolon_theme::raster::CompiledTheme>>,
+    accepted_reduced: bool,
+    #[cfg(test)]
+    theme_hook: Option<Arc<platform::TestControl>>,
     semantic: Vec<((SessionId, WindowId), theme_state::SemanticState)>,
 }
 struct Submission {
@@ -194,6 +201,10 @@ impl Controller {
                 theme: None,
                 theme_revision: 0,
                 reduced_motion: false,
+                accepted_theme: None,
+                accepted_reduced: false,
+                #[cfg(test)]
+                theme_hook: None,
                 semantic: vec![],
             }),
             Condvar::new(),
@@ -213,6 +224,7 @@ impl Controller {
                 state.latest.clear();
                 state.logical.clear();
                 state.theme = None;
+                state.accepted_theme = None;
                 state.semantic.clear();
                 state.snapshot.latest_images = 0;
                 state.snapshot.contexts = 0;
@@ -400,18 +412,38 @@ impl Controller {
         theme: Option<Arc<eidolon_theme::raster::CompiledTheme>>,
         reduced_motion: bool,
     ) -> Status {
+        self.request_theme(theme, reduced_motion)
+            .map_or_else(|status| status, |_| Status::Accepted)
+    }
+    pub fn request_theme(
+        &self,
+        theme: Option<Arc<eidolon_theme::raster::CompiledTheme>>,
+        reduced_motion: bool,
+    ) -> Result<u64, Status> {
         let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
         if state.stop {
-            return Status::NotReady;
+            return Err(Status::NotReady);
         }
         let Some(next) = state.theme_revision.checked_add(1) else {
-            return Status::Failed;
+            return Err(Status::Failed);
         };
         state.theme = theme;
         state.theme_revision = next;
         state.reduced_motion = reduced_motion;
         self.state.1.notify_one();
-        Status::Accepted
+        Ok(next)
+    }
+    /// 新しいCPU読み込みの開始時にも、転送中の旧候補を失効させる。
+    pub fn cancel_pending_theme(&self) -> Result<Snapshot, Status> {
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.stop {
+            return Err(Status::NotReady);
+        }
+        state.theme_revision = state.theme_revision.checked_add(1).ok_or(Status::Failed)?;
+        state.theme = state.accepted_theme.clone();
+        state.reduced_motion = state.accepted_reduced;
+        self.state.1.notify_one();
+        Ok(state.snapshot.clone())
     }
     pub fn set_semantic_state(
         &self,
@@ -633,6 +665,7 @@ fn owner(state: &State) {
                                     content_frame: None,
                                     role,
                                     canvas: None,
+                                    content_size: None,
                                     decoration_frames: 0,
                                     gpu: gpu.info(),
                                 },
@@ -678,18 +711,57 @@ fn owner(state: &State) {
         }
         players.retain(&logical);
         let mut theme_context_lost = false;
-        if requested_revision != theme_revision && (requested_theme.is_none() || device.is_some()) {
-            let result = device
-                .as_mut()
-                .map(|d| busy(state, || d.prepare_theme(requested_theme.as_deref())))
-                .unwrap_or(Ok(()));
+        if requested_revision != theme_revision {
+            let mut result = busy(state, || {
+                if requested_theme.is_some() && device.is_none() {
+                    device = Some(platform::Device::new()?);
+                }
+                device
+                    .as_mut()
+                    .map_or(Ok(()), |d| d.stage_theme(requested_theme.as_deref()))
+            });
+            #[cfg(test)]
+            {
+                let hook = state.0.lock().unwrap().theme_hook.clone();
+                if let Some(hook) = hook {
+                    use std::sync::atomic::Ordering;
+                    hook.entered.store(true, Ordering::Release);
+                    while hook.blocked.load(Ordering::Acquire) {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            }
+            // 採用の線形化点。GL呼び出しを短い共有lockの外で行う。
+            let current = {
+                let mut shared = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                let current = !shared.stop && shared.theme_revision == requested_revision;
+                if current && result.is_ok() {
+                    shared.accepted_theme = requested_theme.clone();
+                    shared.accepted_reduced = requested_reduced;
+                    shared.snapshot.theme_revision = requested_revision;
+                    shared.snapshot.theme_attempted_revision = requested_revision;
+                    shared.snapshot.theme_id =
+                        requested_theme.as_ref().map(|t| t.manifest.id.clone());
+                    shared.snapshot.theme_error = None;
+                }
+                current
+            };
+            if !current {
+                update(state, |s| s.snapshot.theme_discarded += 1);
+            }
+            if let Some(device) = device.as_mut() {
+                let finish = busy(state, || device.finish_theme(current && result.is_ok()));
+                if finish.is_err() {
+                    result = finish;
+                }
+            }
             // この要求の失敗では旧themeを維持する。再要求またはcontext再生成時だけ再試行。
             if result == Err("EGL_CONTEXT_LOST") {
                 for target in &mut active {
                     target.needs_redraw = true;
                 }
                 theme_context_lost = true;
-            } else {
+            } else if current {
                 theme_revision = requested_revision;
                 if result.is_ok() {
                     theme = requested_theme;
@@ -702,6 +774,7 @@ fn owner(state: &State) {
                     }
                 }
                 update(state, |s| {
+                    s.snapshot.theme_attempted_revision = requested_revision;
                     s.snapshot.theme_error = result.err();
                     if result.is_ok() {
                         s.snapshot.theme_revision = theme_revision;
@@ -806,6 +879,8 @@ fn owner(state: &State) {
                     Ok(()) => {
                         target.needs_redraw = false;
                         target.report.canvas = drawing.as_ref().map(|d| d.canvas.clone());
+                        target.report.content_size =
+                            image.as_ref().map(|i| i.snapshot.logical_size);
                         target.report.decoration_frames += u64::from(drawing.is_some());
                         target.report.frames += 1;
                         target.report.content_frame =
@@ -878,6 +953,38 @@ fn owner(state: &State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn theme_upload_is_cancelled_without_blocking_commands_or_resurrecting_old_candidate() {
+        use std::sync::atomic::Ordering;
+        let renderer = Controller::start().unwrap();
+        let hook = Arc::new(platform::TestControl::default());
+        hook.blocked.store(true, Ordering::Release);
+        renderer.state.0.lock().unwrap().theme_hook = Some(hook.clone());
+        let theme = Arc::new(
+            eidolon_theme::raster::compile(
+                &eidolon_theme::cyan_orbit(),
+                &Default::default(),
+                &renderer.pixel_budget(),
+                &Default::default(),
+            )
+            .unwrap(),
+        );
+        let first = renderer.request_theme(Some(theme), false).unwrap();
+        wait(|| hook.entered.load(Ordering::Acquire));
+        let cancelled = renderer.cancel_pending_theme().unwrap();
+        let off = renderer.request_theme(None, true).unwrap();
+        assert!(off > first);
+        assert_eq!(cancelled.theme_revision, 0);
+        assert_eq!(renderer.snapshot().theme_revision, 0);
+        hook.blocked.store(false, Ordering::Release);
+        wait(|| renderer.snapshot().theme_revision == off);
+        let snapshot = renderer.snapshot();
+        assert_eq!(snapshot.theme_attempted_revision, off);
+        assert_eq!(snapshot.theme_discarded, 1);
+        assert!(snapshot.theme_id.is_none());
+        renderer.request_stop();
+        wait(|| renderer.is_finished());
+    }
     #[test]
     fn static_window_stops_presenting_and_redraws_on_resume_new_image_and_rebuild() {
         use std::sync::atomic::Ordering;

@@ -151,6 +151,11 @@ impl Runtime {
                     }
                 }
                 let result = catch_unwind(AssertUnwindSafe(|| {
+                    let mut themes = crate::theme::Controller::start(
+                        config.preferences_dir.as_deref().map(std::path::Path::new),
+                        &gl,
+                    )
+                    .expect("theme worker creation failed");
                     ready_hook();
                     let mut detach_count = 0;
                     let mut last_credential = None;
@@ -176,6 +181,15 @@ impl Runtime {
                             }
                         }
                         let render = gl.snapshot();
+                        themes.poll(&gl);
+                        if stopping.load(Ordering::Acquire) {
+                            themes.stop();
+                        }
+                        state
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .snapshot
+                            .theme = themes.report();
                         let ssh = io.snapshot();
                         if !stopping.load(Ordering::Acquire)
                             && let Some((session, nonce, mode, virtual_clock)) = pending_app.take()
@@ -455,6 +469,7 @@ impl Runtime {
                                 && app.as_ref().is_none_or(|a| a.closed())
                                 && gl.is_finished()
                                 && io.is_finished()
+                                && themes.finished()
                             {
                                 break;
                             }
@@ -495,7 +510,34 @@ impl Runtime {
                             .collect();
                         let scene = state.snapshot.scene;
                         let may_create = state.snapshot.activity_visible;
-                        if let Err(code) = state.panels.reconcile(scene, &mapped, may_create) {
+                        let layouts = state
+                            .snapshot
+                            .app
+                            .as_ref()
+                            .into_iter()
+                            .flat_map(|app| {
+                                app.windows.iter().filter_map(|w| {
+                                    render.theme_id.as_ref()?;
+                                    let content = w.logical_size?;
+                                    let canvas =
+                                        eidolon_render::theme_state::Canvas::for_content(content)
+                                            .ok()?;
+                                    Some((
+                                        app.session?,
+                                        w.window,
+                                        crate::panels::DecorationLayout {
+                                            content,
+                                            canvas: canvas.size,
+                                            content_origin: canvas.content_origin,
+                                        },
+                                    ))
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        if let Err(code) = state
+                            .panels
+                            .reconcile_layouts(scene, &mapped, may_create, &layouts)
+                        {
                             state.fail(code);
                         }
                         state.snapshot.panels = state.panels.snapshot();
@@ -517,6 +559,20 @@ impl Runtime {
                             let app_busy =
                                 pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
                             let code = match &command {
+                                Command::SetTheme {
+                                    selection,
+                                    reduced_motion,
+                                    ..
+                                } => themes.select(*selection, *reduced_motion, &gl),
+                                Command::BeginThemeImport { token, .. } => {
+                                    themes.begin_import(token, &gl)
+                                }
+                                Command::ApplyThemeImport { token, .. } => {
+                                    themes.apply_import(token)
+                                }
+                                Command::CancelThemeImport { token, .. } => {
+                                    themes.cancel_import(token, &gl)
+                                }
                                 Command::SetBackground {
                                     request_id,
                                     background,
@@ -777,7 +833,26 @@ impl Runtime {
                                                     .targets
                                                     .iter()
                                                     .find(|t| t.key == *target)
-                                                    .map(|t| (t.gpu.width, t.gpu.height));
+                                                    .map(|t| {
+                                                        // 装飾panelの入力quadはcontentだけを覆い、そのUVを受け取る。
+                                                        // canvasの余白はSDK側でNoCollisionとし、背後の面へrayを通す。
+                                                        state
+                                                            .panels
+                                                            .snapshot()
+                                                            .iter()
+                                                            .find(|p| p.target == *target)
+                                                            .and_then(|p| p.decoration.as_ref())
+                                                            .map_or(
+                                                                (t.gpu.width, t.gpu.height),
+                                                                |layout| {
+                                                                    (
+                                                                        layout.content.width as i32,
+                                                                        layout.content.height
+                                                                            as i32,
+                                                                    )
+                                                                },
+                                                            )
+                                                    });
                                                 match size {
                                                     Some((width, height)) => current.pointer(
                                                         target.window,
@@ -1271,6 +1346,8 @@ impl Runtime {
                 state.snapshot.commands_cancelled += state.commands.len() as u64;
                 state.commands.clear();
                 state.snapshot.state = RuntimeState::Stopped;
+                state.snapshot.theme.workers = 0;
+                state.snapshot.theme.loading = false;
                 state.snapshot.panels.clear();
                 state.credentials.clear();
                 state.terminal.push_back(Event::Stopped);

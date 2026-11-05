@@ -14,7 +14,7 @@ use std::{
     },
 };
 
-const MAX_SOURCE: usize = 8 * 1024 * 1024;
+pub const MAX_SOURCE: usize = 8 * 1024 * 1024;
 pub const MAX_RASTER_BYTES: usize = 32 * 1024 * 1024;
 
 /// 同じtheme ownerのreloadも同じquotaを使う。旧画像の最後の参照が消えるまで返却しない。
@@ -62,7 +62,7 @@ impl RasterPixels {
 }
 
 pub struct Bundle {
-    files: BTreeMap<String, Vec<u8>>,
+    pub(crate) files: BTreeMap<String, Vec<u8>>,
 }
 impl Bundle {
     pub fn new(entries: impl IntoIterator<Item = (String, Vec<u8>)>) -> Result<Self, Error> {

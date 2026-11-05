@@ -10,7 +10,12 @@ import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Color4
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Vector3
+import com.meta.spatial.core.SpatialContext
 import com.meta.spatial.runtime.PanelSceneObject
+import com.meta.spatial.runtime.SceneObject
+import com.meta.spatial.runtime.PanelConfigOptions
+import com.meta.spatial.runtime.AlphaMode
+import com.meta.spatial.runtime.PanelShapeLayerBlendType
 import com.meta.spatial.runtime.Scene
 import com.meta.spatial.toolkit.*
 import java.util.concurrent.atomic.AtomicLong
@@ -27,7 +32,10 @@ class SpatialPanelAdapter {
     private val bindings = linkedMapOf<Long, Binding>()
     private fun primary(): Binding? = bindings.values.firstOrNull()
     private val pendingSurfaces = mutableMapOf<Long, Surface>()
-    private val pendingObjects = mutableMapOf<Long, PanelSceneObject>()
+    private val pendingObjects = mutableMapOf<Long, SceneObject>()
+    private var objects: SceneObjectSystem? = null
+    private data class VisualConfig(val width: Int, val height: Int, val epoch: Long)
+    private val visuals = java.util.concurrent.ConcurrentHashMap<Long, VisualConfig>()
     private var pendingUntil = 0L
     private var created = 0
     private var destroyed = 0
@@ -40,7 +48,8 @@ class SpatialPanelAdapter {
     private val trace = ArrayDeque<JSONObject>()
     private data class Binding(val entity: Entity, val handle: Long, var key: JSONObject,
         val role: String = "diagnostic", val commandSeq: String? = null, var destroyCommand: JSONObject? = null,
-        var surface: Surface? = null, var sceneObject: PanelSceneObject? = null, var listener: Long? = null,
+        var surface: Surface? = null, var sceneObject: SceneObject? = null, var listener: Long? = null,
+        val decoration: JSONObject? = null, var visual: Entity? = null,
         var input: InputAdapter? = null,
         val grabSources: MutableMap<Long,Pair<Entity,Int>> = linkedMapOf(),
         var editing: Boolean = false, var wasGrabbed: Boolean = false,
@@ -64,6 +73,32 @@ class SpatialPanelAdapter {
             val tid = Process.myTid()
             ui.post { event("panel_setup", entity.id, tid); objectReady(entity.id, obj) }
         })
+
+    val decorationRegistration = object : PanelRegistration(R.id.decoration_panel) {
+        override fun panelCreator(sdkScene: Scene, spatialContext: SpatialContext): (Entity) -> PanelSceneObject = { entity ->
+            val config = checkNotNull(visuals[entity.id])
+            val options = PanelConfigOptions().apply {
+                layoutWidthInPx = config.width; layoutHeightInPx = config.height
+                width = 1.2f; height = .9f
+                alphaMode = AlphaMode.PREMULTIPLIED; enableTransparent = true; forceSceneTexture = true
+                layerConfig = null; layerBlendType = PanelShapeLayerBlendType.ALPHA_BLEND
+            }
+            PanelSceneObject(sdkScene, entity, options).also { obj ->
+                ui.post {
+                    if (!closed && scene == config.epoch && runtimeScene === sdkScene) {
+                        bindings.values.firstOrNull { it.visual?.id == entity.id && !it.destroy }?.let { current ->
+                            event("decoration_surface", current.entity.id)
+                            surfaceReady(current.entity.id, obj.surface)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fun initialize(activity: AppSystemActivity) {
+        activity.registerMeshCreator(ThemeHitMesh.URI) { _: Entity -> ThemeHitMesh.create() }
+        objects = activity.systemManager.findSystem<SceneObjectSystem>()
+    }
 
     fun sceneReady(epoch: Long, sdkScene: Scene) {
         check(Looper.myLooper() == Looper.getMainLooper())
@@ -115,7 +150,7 @@ class SpatialPanelAdapter {
     fun windowEntity(window: String): Entity? = bindings.values.firstOrNull {it.role=="windows" && !it.retire && it.key.getString("window")==window}?.entity
     fun currentKey(): JSONObject? = primary()?.key?.let { JSONObject(it.toString()) }
     fun currentEntityId(): Long? = primary()?.entity?.id
-    fun currentSceneObject(): PanelSceneObject? {
+    fun currentSceneObject(): SceneObject? {
         check(Looper.myLooper() == Looper.getMainLooper())
         return primary()?.sceneObject
     }
@@ -137,7 +172,9 @@ class SpatialPanelAdapter {
         .put("bindings", bindings.size).put("listeners", listeners).put("callbacks", callbacks)
         .put("pending", pendingSurfaces.size + pendingObjects.size)
         .put("background_api", backgroundApi?.let { JSONObject(it.toString()) })
-        .put("targets", JSONArray(bindings.values.map { JSONObject().put("entity",it.entity.id.toString()).put("target",JSONObject(it.key.toString())).put("role",it.role) }))
+        .put("decoration_entities", visuals.size)
+        .put("targets", JSONArray(bindings.values.map { JSONObject().put("entity",it.entity.id.toString()).put("target",JSONObject(it.key.toString())).put("role",it.role)
+            .put("decoration",it.decoration).put("visual_entity",it.visual?.id?.toString()) }))
         .put("trace", JSONArray(trace.toList()))
 
     private fun event(name: String, entity: Long = 0, tid: Int = Process.myTid()) {
@@ -155,11 +192,33 @@ class SpatialPanelAdapter {
         attempting = plan
         try {
             val position = if (plan == null) Vector3(0f, 1.4f, 1.6f) else Vector3(plan.optInt("slot",0)*1.3f, 1.4f, 1.5f)
-            val entity = Entity.create(listOf(Panel(R.id.native_panel), Transform(Pose(position))))
+            val decoration = plan?.optJSONObject("decoration")
+            val entity = if (decoration == null) Entity.create(listOf(Panel(R.id.native_panel), Transform(Pose(position))))
+                else Entity.create(listOf(Mesh(android.net.Uri.parse(ThemeHitMesh.URI), MeshCollision.LineTest), Transform(Pose(position))))
             if(plan!=null) entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
             val current = if (plan == null) Binding(entity, handle, key()) else
-                Binding(entity, handle, JSONObject(plan.getJSONObject("target").toString()), "windows", plan.getString("command_seq"))
+                Binding(entity, handle, JSONObject(plan.getJSONObject("target").toString()), "windows", plan.getString("command_seq"), decoration=decoration)
             bindings[entity.id] = current; created++; event("entity_created", entity.id)
+            if (decoration != null) {
+                val content = decoration.getJSONObject("content"); val canvas = decoration.getJSONObject("canvas")
+                val origin = decoration.getJSONArray("content_origin")
+                val w=content.getDouble("width"); val h=content.getDouble("height")
+                val cw=canvas.getInt("width"); val ch=canvas.getInt("height")
+                val offset = Vector3(((cw-w-2*origin.getInt(0))*.6/w).toFloat(), (-(ch-h-2*origin.getInt(1))*.45/h).toFloat(), 0f)
+                val visual = Entity.create(listOf(Transform(Pose(offset)), TransformParent(entity),
+                    Scale(Vector3((cw/w).toFloat(),(ch/h).toFloat(),1f)), Hittable(MeshCollision.NoCollision)))
+                current.visual = visual
+                visuals[visual.id] = VisualConfig(cw,ch,scene)
+                visual.setComponent(Panel(R.id.decoration_panel))
+                val epoch=scene
+                val system = checkNotNull(objects)
+                (system.getSceneObject(entity) ?: system.replaceOrReuseSceneObjectFuture(entity)).whenComplete { obj, failure -> ui.post {
+                    if (!closed && scene == epoch && bindings[entity.id] === current && !current.destroy) {
+                        if (failure == null && obj != null) objectReady(entity.id,obj)
+                        else { NativeSessionHost.ackPanel(checkNotNull(plan),handle,false); current.retire=true; current.destroy=true }
+                    }
+                } }
+            }
             pendingObjects.remove(entity.id)?.let { objectReady(entity.id,it) }
             pendingSurfaces.remove(entity.id)?.let { surfaceReady(entity.id,it) }
         } finally { creating = false }
@@ -185,10 +244,12 @@ class SpatialPanelAdapter {
     }
     private fun attach(current: Binding, surface: Surface): Int = if (current.role == "windows")
         NativeBridge.nativeAttachWindowSurface(current.handle, current.key.getString("session").toLong(), current.key.getString("window").toLong(),
-            current.key.getString("scene").toLong(), current.key.getString("generation").toLong(), surface, 1024, 768)
+            current.key.getString("scene").toLong(), current.key.getString("generation").toLong(), surface,
+            current.decoration?.getJSONObject("canvas")?.getInt("width") ?: 1024,
+            current.decoration?.getJSONObject("canvas")?.getInt("height") ?: 768)
         else NativeBridge.nativeAttachSurface(current.handle, 1, 1, current.key.getString("scene").toLong(),
             current.key.getString("generation").toLong(), surface, 1024, 768)
-    private fun objectReady(entity: Long, obj: PanelSceneObject) {
+    private fun objectReady(entity: Long, obj: SceneObject) {
         val current = bindings[entity]
         if (current == null) {
             if (creating && pendingObjects.size < 2) { pendingObjects[entity] = obj; pendingUntil = SystemClock.elapsedRealtime() + 5000 }
@@ -224,6 +285,7 @@ class SpatialPanelAdapter {
             listeners--; event("listener_removed",current.entity.id)
         }
         current.listener = null; current.sceneObject = null; current.surface = null; current.replacement = null
+        current.visual?.let { visual -> visuals.remove(visual.id); dispose { visual.destroy() } }; current.visual=null
         dispose {current.entity.destroy()}; destroyed++; event("entity_destroyed", current.entity.id)
     }
     private fun destroy(current: Binding) {
@@ -267,7 +329,7 @@ class SpatialPanelAdapter {
                 }
                 if (current.role == "windows" && !current.retire && plan != null && !plan.getBoolean("applied")) {
                     val targets = render.getJSONArray("targets")
-                    if ((0 until targets.length()).any { sameKey(targets.getJSONObject(it).getJSONObject("key"), current.key) && targets.getJSONObject(it).getLong("frames") > 0 })
+                    if (current.listener != null && (0 until targets.length()).any { sameKey(targets.getJSONObject(it).getJSONObject("key"), current.key) && targets.getJSONObject(it).getLong("frames") > 0 })
                         NativeSessionHost.ackPanel(plan, current.handle)
                 }
                 val detached = render.getJSONArray("detached")
@@ -280,6 +342,7 @@ class SpatialPanelAdapter {
                     if (current.role == "windows" && !current.hidden) {
                         cancelGrab(current);current.entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
                         current.entity.setComponent(Visible(false)); current.hidden = true
+                        current.visual?.setComponent(Visible(false))
                         NativeSessionHost.resetInput()
                         event("window_hidden", current.entity.id)
                     }

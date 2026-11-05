@@ -22,6 +22,15 @@ impl Device {
     ) -> Result<(), &'static str> {
         Ok(())
     }
+    pub fn stage_theme(
+        &mut self,
+        theme: Option<&eidolon_theme::raster::CompiledTheme>,
+    ) -> Result<(), &'static str> {
+        self.prepare_theme(theme)
+    }
+    pub fn finish_theme(&mut self, _: bool) -> Result<(), &'static str> {
+        Ok(())
+    }
     pub fn report(&self) -> super::compositor::Report {
         Default::default()
     }

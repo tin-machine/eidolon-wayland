@@ -32,7 +32,7 @@ cd "$repo_root/android"
 python3 "$repo_root/scripts/check-build-tools" | tee "$run_dir/build-tools.log"
 ./gradlew --no-daemon --console=plain --version 2>&1 | tee "$run_dir/gradle-version.log"
 ./gradlew --no-daemon --console=plain \
-  -PeidolonVersionCode="$version_code" :app:assembleDebug :app:lintDebug \
+  -PeidolonVersionCode="$version_code" :app:assembleDebug :app:lintDebug :app:testDebugUnitTest \
   2>&1 | tee "$run_dir/build.log"
 cp app/build/outputs/apk/debug/app-debug.apk "$run_dir/eidolon-debug.apk"
 python3 "$repo_root/scripts/check-native-package" --apk "$run_dir/eidolon-debug.apk" | tee "$run_dir/native-package.json"

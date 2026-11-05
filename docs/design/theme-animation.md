@@ -8,11 +8,11 @@
 | 段階 | 成果物 | 現在の状態 / 未完了条件 |
 | --- | --- | --- |
 | TH00 | GL任意角度・alpha、SDK透過・余白のray、canvas/content契約 | 共通座標変換とhost実GPU readbackを実装・検証。SDK透過/余白rayは未完了 |
-| TH01 | TOML/CSS compiler、SVG cache、独立時計、focus transition、busy pulse、CPU meter、reload | compiler・再生状態・builtin三重リング・世代付き単一workerを実装。Render ownerへ接続するAPIを追加。runtime command/importへの接続は未完了 |
-| TH02 | 静止foot背後の三重リング、二枚、resize/再生成/入力 | Render ownerの二窓独立tick、resize/Surface再生成時の時計、3pass合成をhost検証。SDK透過・余白ray・入力/物理寸法の製品接続は未完了 |
+| TH01 | TOML/CSS compiler、SVG cache、独立時計、focus transition、busy pulse、CPU meter、reload | runtime command・ZIP import・設定UI・GPU採用前の世代再検査を接続。hostの取消/不正reload/復元を検証。Quest製品受入れは継続中 |
+| TH02 | 静止foot背後の三重リング、二枚、resize/再生成/入力 | SDKの非入力表示面＋content専用入力meshを接続。旧Surface回収後の世代交換を実装。実SDK透過・余白ray・文字品質は未判定 |
 | TH03 | TerminalId、PTY登録、collector、CPU/RSS | Build104でQuestの二footを別PTYへ対応付け、73秒・resize/表示切替・終了をnative scopeで検証。busy/欠測の見え方はHMD未確認 |
 | TH04 | tmuxのsession/pane対応、共有scope、再接続 | 登録socket限定adapterと共通EMAを実装。host/Questの専用PTY二client・共有二pane・CPU負荷検証成功。APK window内のattach切替/HMDは残る |
-| TH05 | import/設定/無効化、性能比較、製品受入れ | 未実装。ユーザーがコード変更なしでtheme交換でき、自動検査とHMD/物理操作が成立すること |
+| TH05 | import/設定/無効化、性能比較、製品受入れ | ZIP選択、builtin/import済み/無効化、動きを抑える設定と原子的保存を実装。性能比較とHMD/物理操作の受入れは未完了 |
 
 TH00のSDK経路確認と独立して、TH01の純粋処理、TH03/04のcollectorを進めてよい。
 いずれもデモやhost検査だけで製品受入れ済みにしない。既定ONはTH05の受入れ後とする。
@@ -43,8 +43,9 @@ API確認は実機成立の証拠ではない。
 `ContentViewport`はcanvas、app logical、target pixel、content原点を区別する。
 1024×768 content、1280×1280 canvas、原点[128,256]なら、appの1.2×0.9mを維持したcanvasは1.5×1.5m。
 theme無効時は従来のletterboxと同じ逆変換になる。余白はapp入力へ変換しない。
-この変換を装飾付きrenderへ接続した。input/SDKへの接続と実際のray click-throughは未確認。
-`Controller::set_theme`はnative統合用で、通常UIからのテーマ有効化はまだ提供していない。
+この変換を装飾付きrenderへ接続した。SDKの入力quadはcontentだけを覆い、そのUVはcontentの0〜1に対応する。
+透明表示面はNoCollisionとして背後の入力を妨げない構成にした。実SDKでのray click-throughは別途検査する。
+通常UIに「装飾なし」「Cyan Orbit」「読み込んだテーマ」「テーマZIPを読み込む」「動きを抑える」を追加した。
 
 `native/theme`の入口は`Bundle::new`→`raster::compile`→`Player::evaluate`。
 loaderはimmutableな相対path/byte列を受け、Android storageやGLを直接操作しない。
@@ -58,7 +59,7 @@ collector/workloadの対応変更時は`clear_metrics`で他作業のhold-last�
 | CSS | 256KiB、256rule、32clip、各64keyframe。`#part`と既知状態class、opacity/tint/value/transform、transition、単一animation |
 | 補間 | transformは同じ関数列のみ。0→360度の巻き数を保持。標準easingのBézierはxを解いて評価する |
 | animation | 1ms〜24h、finite count 1〜1,000,000またはinfinite、fill none。focus/metrics/同一定義reloadで再開始しない |
-| import bundle | 相対path、重複拒否、34file、合計8MiB。archive展開・Android importは今後接続する |
+| import bundle | ZIPは8MiB+64KiB、directory込み128entry、file34個・展開後合計8MiB。相対path/重複/CRC/長さを検査し、entry名を保存先パスに使わない |
 | SVG | 512KiB/素材、4096 XML node、深さ32。svg/g/path/circle/ellipse/rect/line/polyline/polygonの静的subset |
 | SVG拒否 | DTD/entity、外部resource、image/text/font/style/script/animation/filter/mask、group opacity等の中間layer生成。色はprimitiveのfill/strokeとCSS tintで指定 |
 | raster | 各辺2048px、装飾32MiBを旧/新themeの同時保持込みで制限。既存128MiB pixel予算にも計上 |
@@ -66,6 +67,9 @@ collector/workloadの対応変更時は`clear_metrics`で他作業のhold-last�
 | cache | 同一素材hash/寸法をcompile内で共有。GPU cacheはGL ownerのcontextに所有させる。context再生成で全textureを再生成 |
 | lifecycle | visibilityの変更時だけ時計をpause/resume。無限clip終了/無効化後の最終frameを`changed`で伝える |
 | reduced motion | base styleへ即時反映、transitionを止める。解除時はclipを新しく開始する |
+
+size省略時のraster基準はbackdrop 1280×1280、frame 1024×768、titlebar-end 24×24、titlebar-bottom 1024×3。
+windowごとのslotへGPUで配置し、毎frameの再rasterはしない。必要な解像度は素材のsizeで明示する。
 
 SVG subsetを広げる場合は中間bufferの予算とresource resolverを先に検証する。
 現段階のcompilerはSVGの全仕様互換を表明しない。
@@ -126,15 +130,52 @@ caseは`ready`段階でtimeoutした。Activity非表示・XR IDLEのためentit
 
 ## 次の統合と受入れ
 
-1. SDK透過Surfaceと二枚の余白rayをprobeし、入力/物理寸法/Surface世代の契約を製品へ接続する。
-2. `Loader`とRender ownerのAPIをruntime command/importへ接続し、GPU準備中に要求が更新される競合も検査する。
-   不正themeでは旧themeを維持し、旧canvas世代の入力を拒否する。
+1. 接続済みSDK透過Surfaceとcontent入力meshを実rayで検査し、二枚の余白・popup・文字品質を確認する。
+2. `theme-runtime --instrumentation`で実APKのcompile/upload・失敗時維持・無効化・保存復元を検査し、製品のSDK検査へ進む。
 3. 検証済みのcollector/tmuxを通常UIのテーマと組み合わせ、APK window内のattach切替・負荷表示・欠測を検証する。
 4. import/設定/切り戻し、二枚・popup・resize・保存・接続/終了の回帰、性能比較を終え、HMD確認を一度に依頼する。
 
 hostの再現入口は`python3 -B scripts/check-host --suite theme`、`--suite render`、実GPUの上記example。
 全suiteにもtheme crateを登録した。hostの「三重リング」は角度/再生状態と実SVG rasterの検証を含むが、
 Questにリングを表示したという意味ではない。
+
+## テーマ読み込み・保存・SDK入力の接続
+
+AndroidのStorage Access FrameworkでZIPを選択し、application scopeのworkerが読み込む。
+実行中一件・待機最新一件、30秒の取消期限、圧縮/展開サイズ上限を設ける。
+ZIPのentryはメモリ内の限定形式`EIDTHEME\x01`へ変換する。保存先は生成した32桁tokenだけで決め、
+`noBackupFilesDir/themes/<token>.bundle`をmode0600で作成する。native側でもowner/regular file/FD identity/サイズを再検査する。
+新しいimport開始・無効化はCPU loaderとGPU候補の両方を失効させる。失敗時は最後に適用したthemeを保つ。
+
+GPU uploadは旧cacheを保持したままstageし、短いlockで最新revisionか確かめてから採用する。
+GL呼び出し中にUI/coreの共有lockを保持しない。GPU側の採用receiptと新要求の取消を同じlockで順序付け、
+適用済みsourceだけを設定保存へ送る。設定と最後のimportを一つのversioned recordにまとめ、
+専用workerがmode0600のtemporary→fsync→rename→directory fsyncで保存する。既定は無効。
+無効化してもimport元を保持し、再起動後に再選択できる。破損recordは無効へ戻し、明示変更で保存を修復できる。
+
+テーマ有効時のSDK表示は公開`PanelSceneObject`、PREMULTIPLIED/SceneTexture/NoCollisionを使う。
+入力は別のcontent quadを`SceneMesh.meshWithMaterials(..., createBVH=true)`で作る。
+入力meshはColorWrite=0、DepthWrite=DISABLE、DepthTest=NEVERで色/depthへ書かず、LineTestで交差判定する。
+表示面を入力meshの子Entityとし、contentのm/px・中心位置を保つscale/offsetを設定する。
+layout変更は旧targetのDestroy/SurfaceDetached後に新generationを作り、旧入力を拒否する。
+`producer_size_px`は実GPU canvasの寸法であり、appの`logical_size`やresize configureを置換しない。
+2048px上限ではcanvasを2048に制限し、入り切らない外周装飾はclipする。
+
+APIは同梱0.15.0 AARでも確認した。[SceneMesh公式API](https://developers.meta.com/vr/reference/spatial-sdk/v0.15.0/com_meta_spatial_runtime_scenemesh/)、
+[SceneMaterial公式API](https://developers.meta.com/vr/reference/spatial-sdk/v0.14.0/com_meta_spatial_runtime_scenematerial/)。
+この構成のSDK alpha・depth順・rayの実動作はhostコンパイルだけでは確認できない。
+
+再現入口:
+
+```sh
+cargo run --locked -p eidolon-render --example theme-gl-probe
+python3 -B scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case theme-runtime --instrumentation
+python3 -B scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case theme-surface
+```
+
+`theme-runtime`は専用private設定領域でbuiltin→ZIP import→不正reload→reduced motion→無効化→再生成/復元→Stopを検査する。
+`theme-surface`は非入力表示面の背後到達に加え、製品と同じ入力meshの中心/余白/UV/回収を検査する。
+どちらもHMDの見え方や物理入力を自動合格にしない。ZIPは直下に`theme.toml`、そこから参照するCSS/SVGを置く。
 
 ## TerminalId・CPU/RSS・tmuxの接続
 

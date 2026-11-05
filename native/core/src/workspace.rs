@@ -323,6 +323,7 @@ mod tests {
             slot,
             applied: true,
             error: None,
+            decoration: None,
         }
     }
     #[test]

@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 eidolon-model.workspace = true
+libc.workspace = true
 serde.workspace = true
 toml = { version = "=0.9.8", default-features = false, features = ["parse", "serde"] }
 cssparser = "=0.38.0"

@@ -1,6 +1,7 @@
 //! 制限付きテーマのcompileと時刻評価。GL・SDK・プロセス操作を所有しない。
 pub mod loader;
 pub mod manifest;
+pub mod package;
 pub mod player;
 pub mod raster;
 pub mod style;

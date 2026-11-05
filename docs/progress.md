@@ -625,3 +625,30 @@ Quest再接続時、Termuxとservice supervisorが停止しておりSSH接続で
 既存Termux Activityと`service-daemon start`で復旧し、設定/host keyは変更していない。
 同UID proc読み取りとtmux/footclient機能を確認した。既存launcherのNeovim直接exec修正も、
 専用PTYで起動・終了成功、headless成功、LD_PRELOAD保持を確認した。実foot内の通常起動・物理キー受入れとは区別する。
+
+
+## Build105/106: テーマの取り込み・保存・SDK接続（2026-11-06）
+
+通常UIから装飾なし/Cyan Orbit/取り込んだテーマ/ZIP/動きの抑制を選択できるようにした。
+CPU compile、GPU候補の採用、設定のatomic保存を別ownerへ分け、取消・不正ZIP・GPU予算不足で最後の正常themeを保持する。
+size省略SVGの基準寸法と、SDK panel作成失敗後に装飾を無効化して復旧する経路も追加した。
+表示面はpremultiplied/NoCollision、入力面はcontentだけの透明meshへ接続した。実SDK/HMDの成立は未確認。
+
+Build106はdebug/release assemble・lint・APK境界検査・ZIP JUnit 2件、host Rust 150件・PC 58件（APKなしの7件skip）・launcher 32件、
+実APK指定PC 65件が成功。Questのtheme-runtimeは7段階の実EGL upload、不正reload時の保持、動き抑制、
+無効化でGPU装飾0byte、runtime再生成後の設定/import復元、Stop/worker/GL回収に成功した。
+これは専用private領域を使うnative検証であり、製品設定・SDK描画・物理入力の合格ではない。
+Build105のSDK probeはActivity非表示・XR IDLEでready期限となり、entity作成前で未判定。
+
+試行錯誤:
+
+- SDK Kotlin compileのnullable Future/SceneObject型/Surface property、Rust Clippyのstyle指摘を修正して再build。初回ログは保持した。
+- 前回mainのCI run 42093209538はclipboard fixtureの独立Cargo.lockがtheme依存に追従せず、locked buildで失敗。
+  rootと同じ依存版/checksumへ更新し、実Waypipe clipboard検査を再実行して成功。失敗ログの末尾をCIにも出すようにした。
+  Waypipe中継全体のtimeout成立は引き続き別問題である。
+- Build106のhost全体検査でpopupの共有メモリ解放が一度遅延し、後続の共有test lockもpoisonした。
+  単独・全体再実行は成功。同梱SmithayのShm dropping threadによる非同期解放を確認したため、
+  検査側に期限付きの後処理待ちを追加する。
+
+再現入口と現在の制限は[theme-animation.md](design/theme-animation.md)。
+厳密なsource/APK hashと失敗を含むrawログは作業rootのeidolon-theme-reviewに保存する。

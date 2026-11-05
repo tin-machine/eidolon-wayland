@@ -50,15 +50,18 @@ class MainActivity : AppSystemActivity() {
     private fun ownsScene(): Boolean = !isDestroyed && (sceneEpoch==0L || sceneEpoch==NativeSessionHost.currentSceneEpoch())
     private val nativePanels by lazy { SpatialPanelAdapter() }
     private val keyboard by lazy { PhysicalKeyboard(this) }
+    private var themePickerToken: String? = null
 
     override fun registerFeatures(): List<SpatialFeature> =
         listOf(VRFeature(this), ComposeFeature())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        themePickerToken = savedInstanceState?.getString("theme_picker_token")
         Log.i(TAG, "activity_created version=${BuildConfig.VERSION_CODE} api=${Build.VERSION.SDK_INT}")
         val native = NativeBridge.status
         NativeSessionHost.initialize(applicationContext)
+        nativePanels.initialize(this)
         if (native.ready) {
             Log.i(TAG, "native_ready version=${BuildConfig.VERSION_CODE} info=${native.info}")
         } else {
@@ -117,6 +120,19 @@ class MainActivity : AppSystemActivity() {
                                     }
                                 }
                                 Text(NativeSessionHost.workspaceSummary.value,color=Color.White)
+                                val theme = NativeSessionHost.themeUi.value
+                                Text(theme.message, color=Color.White)
+                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick={NativeSessionHost.setTheme("off")}) { Text("装飾なし") }
+                                    Button(onClick={NativeSessionHost.setTheme("builtin")}) { Text("Cyan Orbit") }
+                                    Button(enabled=theme.imported,onClick={NativeSessionHost.setTheme("imported")}) { Text("読み込んだテーマ") }
+                                }
+                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick={chooseTheme()}) { Text("テーマZIPを読み込む") }
+                                    Button(enabled=!theme.loading,onClick={NativeSessionHost.setTheme(theme.selection,!theme.reduced)}) {
+                                        Text(if(theme.reduced) "アニメーションを有効に" else "動きを抑える")
+                                    }
+                                }
                                 Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                                     Button(onClick={NativeSessionHost.setBackground("passthrough")}) { Text("現実を背景に") }
                                     Button(onClick={NativeSessionHost.setBackground("virtual")}) { Text("単色の背景に") }
@@ -177,11 +193,42 @@ class MainActivity : AppSystemActivity() {
                 )
             },
         ),
-    ) + nativePanels.registration + BuildHooks.additionalPanels()
+    ) + nativePanels.registration + nativePanels.decorationRegistration + BuildHooks.additionalPanels()
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         BuildHooks.accept(intent,nativePanels,applicationContext,{scene},{recreate()})
+    }
+
+    @Suppress("DEPRECATION")
+    private fun chooseTheme() {
+        if (themePickerToken != null) return
+        NativeSessionHost.beginThemeImport { token ->
+            if (isDestroyed || isFinishing) { NativeSessionHost.cancelThemeImport(token); return@beginThemeImport }
+            themePickerToken = token
+            try {
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE); type = "application/zip"
+                    putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+                }, THEME_PICKER)
+            } catch (_: android.content.ActivityNotFoundException) {
+                themePickerToken = null; NativeSessionHost.cancelThemeImport(token)
+            }
+        }
+    }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("theme_picker_token", themePickerToken)
+        super.onSaveInstanceState(outState)
+    }
+    @Deprecated("Activity result bridge required by Spatial activity")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != THEME_PICKER) return
+        val token = themePickerToken ?: return
+        themePickerToken = null
+        val uri = data?.data
+        if (resultCode == RESULT_OK && uri != null) NativeSessionHost.readTheme(applicationContext,uri,token)
+        else NativeSessionHost.cancelThemeImport(token)
     }
 
     override fun onResume() {
@@ -224,5 +271,5 @@ class MainActivity : AppSystemActivity() {
         super.onSpatialShutdown()
     }
 
-    companion object { private const val TAG = "EidolonPhase0" }
+    companion object { private const val TAG = "EidolonPhase0"; private const val THEME_PICKER = 4201 }
 }

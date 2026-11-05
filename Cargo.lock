@@ -689,6 +689,7 @@ dependencies = [
  "eidolon-model",
  "eidolon-render",
  "eidolon-shm-fixture",
+ "eidolon-theme",
  "eidolon-transport",
  "libc",
  "memmap2",
@@ -751,6 +752,7 @@ version = "0.1.0"
 dependencies = [
  "cssparser",
  "eidolon-model",
+ "libc",
  "resvg",
  "roxmltree",
  "serde",

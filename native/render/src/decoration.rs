@@ -190,6 +190,9 @@ struct Cached {
     texture: GlesTexture,
     bytes: usize,
 }
+pub struct PreparedDecorations {
+    cache: BTreeMap<AssetKey, Cached>,
+}
 
 pub struct Decorations {
     // shader/textureはrendererより先にdropする。
@@ -219,6 +222,19 @@ impl Decorations {
     pub fn texture_bytes(&self) -> usize {
         4 + self.cache.values().map(|v| v.bytes).sum::<usize>()
     }
+    pub fn staged_bytes(&self, prepared: &PreparedDecorations) -> usize {
+        self.texture_bytes()
+            + prepared
+                .cache
+                .iter()
+                .filter(|(key, _)| !self.cache.contains_key(key))
+                .map(|(_, v)| v.bytes)
+                .sum::<usize>()
+    }
+    /// GLを呼ばずに所有cacheを入れ替える。dropされたtextureの実回収はcallerのowner上で行う。
+    pub fn adopt(&mut self, prepared: PreparedDecorations) {
+        self.cache = prepared.cache;
+    }
 
     /// 全upload成功後だけcacheを置換する。旧/新の重複GPU容量も上限に含める。
     pub fn prepare(
@@ -235,13 +251,25 @@ impl Decorations {
         theme: &CompiledTheme,
         limit: usize,
     ) -> Result<(), &'static str> {
+        let prepared = self.stage(renderer, theme, limit)?;
+        self.adopt(prepared);
+        renderer.cleanup_texture_cache().map_err(gpu_error)
+    }
+    pub fn stage(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        theme: &CompiledTheme,
+        limit: usize,
+    ) -> Result<PreparedDecorations, &'static str> {
+        renderer.cleanup_texture_cache().map_err(gpu_error)?;
         let result = self.prepare_inner(renderer, theme, limit.min(MAX_RASTER_BYTES));
         // texture Dropは削除通知。候補失敗時も次の準備前にowner上で実allocationを回収する。
         let cleanup = renderer.cleanup_texture_cache().map_err(gpu_error);
         if cleanup == Err("EGL_CONTEXT_LOST") {
-            return cleanup;
+            return Err("EGL_CONTEXT_LOST");
         }
-        result.and(cleanup)
+        cleanup?;
+        result
     }
 
     fn prepare_inner(
@@ -249,7 +277,7 @@ impl Decorations {
         renderer: &mut GlesRenderer,
         theme: &CompiledTheme,
         limit: usize,
-    ) -> Result<(), &'static str> {
+    ) -> Result<PreparedDecorations, &'static str> {
         let mut next = BTreeMap::new();
         let mut bytes = self.texture_bytes();
         if bytes > limit {
@@ -287,8 +315,7 @@ impl Decorations {
             };
             next.insert(raster.key, cached);
         }
-        self.cache = next;
-        Ok(())
+        Ok(PreparedDecorations { cache: next })
     }
 
     /// pass開始前にcallerがSmithayのfilter APIでLinearを設定し、app pass前にNearestへ戻す。

@@ -27,6 +27,7 @@ pub struct Snapshot {
     pub app: Option<crate::session::Report>,
     pub panels: Vec<crate::panels::PanelCommand>,
     pub workspace: crate::workspace::Report,
+    pub theme: crate::theme::Report,
     pub render: eidolon_render::Snapshot,
     pub transport: eidolon_transport::session::Snapshot,
 }
@@ -54,6 +55,7 @@ impl Default for Snapshot {
             app: None,
             panels: vec![],
             workspace: Default::default(),
+            theme: Default::default(),
             render: Default::default(),
             transport: Default::default(),
         }

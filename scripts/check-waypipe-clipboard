@@ -26,8 +26,13 @@ if (metadata.get('target')!='host' or metadata.get('version')!='0.11.3'
 argv=['cargo','+1.95.0','run','--locked','--offline','--manifest-path',str(ROOT/'scripts/fixtures/clipboard-waypipe/Cargo.toml'),
       '--target-dir',str(ROOT/'target'),'--',str(ROOT),str(run)]
 (run/'command.json').write_text(json.dumps(argv,ensure_ascii=False,indent=2)+'\n')
-with (run/'build-and-run.log').open('w') as log:
-    subprocess.run(argv,cwd=ROOT,check=True,stdout=log,stderr=subprocess.STDOUT,timeout=600)
+try:
+    with (run/'build-and-run.log').open('w') as log:
+        subprocess.run(argv,cwd=ROOT,check=True,stdout=log,stderr=subprocess.STDOUT,timeout=600)
+except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    print((run/'build-and-run.log').read_text(errors='replace')[-16384:],flush=True)
+    print('検査ログ: '+str(run),flush=True)
+    raise
 result=json.loads((run/'result.json').read_text())
 if result.get('status') not in {'observed_intermediary_buffering','observed_core_backpressure'} or result.get('core_bounds_verified') is not True:
     raise SystemExit('Waypipe経由のclipboardの証拠が不正です')

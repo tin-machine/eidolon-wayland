@@ -184,6 +184,15 @@ impl Device {
     ) -> Result<(), &'static str> {
         self.compositor.prepare_theme(theme)
     }
+    pub fn stage_theme(
+        &mut self,
+        theme: Option<&eidolon_theme::raster::CompiledTheme>,
+    ) -> Result<(), &'static str> {
+        self.compositor.stage_theme(theme)
+    }
+    pub fn finish_theme(&mut self, adopt: bool) -> Result<(), &'static str> {
+        self.compositor.finish_theme(adopt)
+    }
     pub fn report(&self) -> Report {
         self.compositor.report()
     }

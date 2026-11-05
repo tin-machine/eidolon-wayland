@@ -16,6 +16,14 @@ pub struct PanelCommand {
     pub applied: bool,
     pub slot: usize,
     pub error: Option<&'static str>,
+    pub decoration: Option<DecorationLayout>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DecorationLayout {
+    pub content: eidolon_model::window::LogicalSize,
+    pub canvas: eidolon_model::window::LogicalSize,
+    pub content_origin: [u32; 2],
 }
 
 #[derive(Default)]
@@ -61,6 +69,21 @@ impl Controller {
         mapped: &[(SessionId, WindowId)],
         may_create: bool,
     ) -> Result<(), &'static str> {
+        self.reconcile_layouts(scene, mapped, may_create, &[])
+    }
+    pub fn reconcile_layouts(
+        &mut self,
+        scene: Option<SceneEpoch>,
+        mapped: &[(SessionId, WindowId)],
+        may_create: bool,
+        layouts: &[(SessionId, WindowId, DecorationLayout)],
+    ) -> Result<(), &'static str> {
+        let layout = |session, window| {
+            layouts
+                .iter()
+                .find(|(s, w, _)| *s == session && *w == window)
+                .map(|(_, _, l)| l.clone())
+        };
         for slot in &mut self.visible {
             if slot.is_some_and(|key| !mapped.contains(&key)) {
                 *slot = None;
@@ -74,7 +97,15 @@ impl Controller {
             }
         }
         self.failed.retain(|(session, window, failed_scene)| {
-            scene == Some(*failed_scene) && mapped.contains(&(*session, *window))
+            scene == Some(*failed_scene)
+                && mapped.contains(&(*session, *window))
+                && !self.commands.iter().any(|command| {
+                    command.target.session == *session
+                        && command.target.window == *window
+                        && command.target.scene == *failed_scene
+                        && command.error.is_some()
+                        && command.decoration != layout(*session, *window)
+                })
         });
         let obsolete: Vec<_> = self
             .commands
@@ -82,6 +113,8 @@ impl Controller {
             .filter(|command| {
                 command.action == Action::Create
                     && (scene != Some(command.target.scene)
+                        || command.decoration
+                            != layout(command.target.session, command.target.window)
                         || self.visible[command.slot]
                             != Some((command.target.session, command.target.window)))
             })
@@ -125,6 +158,7 @@ impl Controller {
                 applied: false,
                 slot,
                 error: None,
+                decoration: layout(session, window),
             });
         }
         Ok(())
@@ -190,6 +224,78 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disabling_decoration_can_recover_from_sdk_creation_failure_without_automatic_retry() {
+        use eidolon_model::window::LogicalSize;
+        let mut panels = Controller::default();
+        let scene = Some(SceneEpoch::new(1).unwrap());
+        let mapped = mapped();
+        let layouts = [(
+            mapped[0].0,
+            mapped[0].1,
+            DecorationLayout {
+                content: LogicalSize::new(1024, 768).unwrap(),
+                canvas: LogicalSize::new(1280, 1280).unwrap(),
+                content_origin: [128, 256],
+            },
+        )];
+        panels
+            .reconcile_layouts(scene, &mapped, true, &layouts)
+            .unwrap();
+        let failed = panels.snapshot()[0].clone();
+        panels.acknowledge(failed.command_seq, failed.target, Action::Create, false);
+        panels
+            .reconcile_layouts(scene, &mapped, true, &layouts)
+            .unwrap();
+        assert!(panels.snapshot()[0].error.is_some()); // 同じ希望値を自動再試行しない。
+        panels.reconcile(scene, &mapped, true).unwrap();
+        let retiring = panels.snapshot()[0].clone();
+        assert_eq!(retiring.action, Action::Destroy);
+        panels.acknowledge(retiring.command_seq, retiring.target, Action::Destroy, true);
+        panels.reconcile(scene, &mapped, true).unwrap();
+        let plain = panels.snapshot()[0].clone();
+        assert_eq!(plain.action, Action::Create);
+        assert!(plain.decoration.is_none() && plain.error.is_none());
+        assert!(plain.target.generation > failed.target.generation);
+    }
+    #[test]
+    fn decoration_layout_change_retires_old_tuple_and_keeps_content_independent_of_canvas() {
+        use eidolon_model::window::LogicalSize;
+        let mut panels = Controller::default();
+        let scene = Some(SceneEpoch::new(1).unwrap());
+        let mapped = mapped();
+        panels.reconcile(scene, &mapped, true).unwrap();
+        let old = panels.snapshot()[0].clone();
+        let layout = DecorationLayout {
+            content: LogicalSize::new(1024, 768).unwrap(),
+            canvas: LogicalSize::new(1280, 1280).unwrap(),
+            content_origin: [128, 256],
+        };
+        let layouts = [(mapped[0].0, mapped[0].1, layout.clone())];
+        panels
+            .reconcile_layouts(scene, &mapped, true, &layouts)
+            .unwrap();
+        let retiring = panels.snapshot()[0].clone();
+        assert_eq!(retiring.action, Action::Destroy);
+        assert!(!panels.accepts(old.target));
+        panels
+            .reconcile_layouts(scene, &mapped, true, &layouts)
+            .unwrap();
+        assert_eq!(panels.snapshot().len(), 1);
+        panels.acknowledge(retiring.command_seq, retiring.target, Action::Destroy, true);
+        panels
+            .reconcile_layouts(scene, &mapped, true, &layouts)
+            .unwrap();
+        let current = panels.snapshot()[0].clone();
+        assert!(current.target.generation > old.target.generation);
+        assert_eq!(current.decoration, Some(layout));
+        assert_eq!(
+            panels.acknowledge(old.command_seq, old.target, Action::Create, true),
+            Status::Stale
+        );
+        panels.reconcile(scene, &mapped, true).unwrap();
+        assert_eq!(panels.snapshot()[0].action, Action::Destroy);
+    }
     #[test]
     fn two_slots_keep_third_logical_and_wait_for_destroy_before_reuse() {
         let session = SessionId::new(7).unwrap();

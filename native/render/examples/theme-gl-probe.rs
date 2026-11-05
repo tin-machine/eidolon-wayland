@@ -124,8 +124,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let quota = RasterBudget::default();
     let theme = compile(&source, &BTreeMap::new(), &cpu, &quota).map_err(|e| e.0)?;
     decorations.prepare(&mut renderer, &theme)?;
-    let uploads = decorations.uploads();
     let key = theme.parts["a"].raster.as_ref().unwrap().key;
+    // 別assetをGPUへstage後に取り消しても、旧textureは描画可能であることを実readbackする。
+    let other_source = Bundle::new([
+        ("theme.toml".into(), b"format_version=1\nid='other'\nname='Other'\nstyle='style.css'\n[parts.a]\nkind='svg'\nslot='window-backdrop'\nsrc='a.svg'\nsize=[8.0,8.0]".to_vec()),
+        ("style.css".into(),b"#a {opacity:1;}".to_vec()),
+        ("a.svg".into(),br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#0000ff"/></svg>"##.to_vec()),
+    ]).map_err(|e| e.0)?;
+    let other = compile(&other_source, &BTreeMap::new(), &cpu, &quota).map_err(|e| e.0)?;
+    let prior_bytes = decorations.texture_bytes();
+    assert!(
+        decorations
+            .stage(&mut renderer, &other, prior_bytes)
+            .is_err()
+    );
+    assert_eq!(decorations.texture_bytes(), prior_bytes);
+    let candidate = decorations.stage(&mut renderer, &other, 32 * 1024 * 1024)?;
+    assert!(decorations.staged_bytes(&candidate) > prior_bytes);
+    drop(candidate);
+    drop(other);
+    renderer.cleanup_texture_cache()?;
+    assert_eq!(decorations.texture_bytes(), prior_bytes);
+    let uploads = decorations.uploads();
     let draws = [
         Draw {
             asset: Some(key),
@@ -222,7 +242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{}",
         serde_json::json!({"status":"pass", "backend":"host-egl", "driver":driver, "readback_samples":samples, "uploads":uploads,
-        "texture_bytes":gpu_bytes, "composite_readback_samples":composite_samples, "cpu_bytes_after_drop":0, "quest_verified":false, "hmd_verified":false})
+        "texture_bytes":gpu_bytes, "staged_cancel_and_budget_failure_preserved_old":true, "composite_readback_samples":composite_samples, "cpu_bytes_after_drop":0, "quest_verified":false, "hmd_verified":false})
     );
     Ok(())
 }
