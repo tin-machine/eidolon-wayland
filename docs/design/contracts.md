@@ -93,6 +93,13 @@ command envelope:
 
 主要tag: `connect`、`disconnect`、`reset_input`、`set_xr_state`、`scene_ready`、`surface_lost`、`resize_logical`、`set_pose`、`set_physical_size`、`set_background`、`close_window`、`pointer`、`key`。`connect`は登録済みprofile IDだけを指定し、任意shell commandや秘密鍵本文を受け取らない。
 
+I03で`cancel_connect(connect_request)`を追加した。元の`connect.request_id`と一致する進行中の接続だけを取り消す。
+両IDは正のi64を表す文字列で、SessionId割当前も有効。古いrequestはSTALEとなり、再接続やその入力を解除しない。
+通常の`disconnect(session)`も維持する。どちらも受付と完了eventを区別し、取消完了後のowner回収はtransport snapshotで確認する。
+入力commandは全target tupleと`input_epoch`を持ち、keyはさらに`focus_token`を必須とする。
+tokenはkeyboard focus変更ごとに更新し、同じwindowへの再入でも古いkeyを拒否する。
+pointer capture中のkeyboard focus変更はepochを進めず、同じpressのreleaseを失わない。
+
 B03では`scene_ready`・`set_xr_state`・`reset_input`と、Activity可視性を独立に伝える`set_activity_state(visible: bool)`を実装する。H01でdebug用`helper_probe(nonce)`を追加し、releaseではNOT_READYとする。R01–R03では`nativeAttachSurface`と`surface_lost(target)`を追加し、targetは全tupleを含むstrict objectとする。detach受付と実際の`surface_detached {target}`を区別する。未実装tagは拒否する。`onPause`でSDKのXR状態を上書きしない。runtime再作成後はhostが最新のscene/XR/Activity状態を再送する。
 
 runtime configはschema 1と、省略可能な`paths: {native_library_dir, files_dir}`。T02で`installation`と`profiles`（最大一件）を追加した。profileのfieldはschema/profile_id/installation/username/host_keyだけで、NativeCreate前にinstallation束縛とEd25519 pinを検証する。接続先は127.0.0.1:8022固定、通常commandは登録済み`profile_id`だけを指定する。pathはApplicationのContext由来だけを渡し、command/ADB intentから指定しない。native側でも絶対path・NUL・長さを検査する。H01の子processとpipe readerは専用I/O workerが所有し、coreの停止完了はworker回収後とする。

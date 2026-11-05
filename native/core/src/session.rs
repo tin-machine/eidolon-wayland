@@ -146,17 +146,36 @@ impl Session {
     pub fn key(
         &mut self,
         window: WindowId,
+        focus_token: eidolon_model::ids::CommandSeq,
         key: eidolon_model::keyboard::KeyPacket,
     ) -> Result<(), &'static str> {
         if self.closing {
             return Err("STALE");
         }
-        self.protocol.as_mut().ok_or("NOT_READY")?.key(window, key)
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .key_at_focus(window, focus_token, key)
     }
     pub fn reset_input(&mut self) {
         if let Some(protocol) = self.protocol.as_mut() {
             protocol.reset_input();
         }
+    }
+    pub fn pointer(
+        &mut self,
+        window: WindowId,
+        pointer: eidolon_model::pointer::PointerPacket,
+        width: i32,
+        height: i32,
+    ) -> Result<(), &'static str> {
+        if self.closing {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .pointer(window, pointer, width, height)
     }
     /// normal modeだけが実際のpresented snapshotに応じてclientを進める。
     pub fn render_tick(&mut self, gl: &eidolon_render::Controller, now: Duration) {

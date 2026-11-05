@@ -1036,15 +1036,18 @@
     {
       "id": "I03",
       "title": "pointer・focus・capture解除",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "I02"
       ],
       "spec": "docs/design/phase-4-5.md#i03",
       "files": [
-        "native/model/src/input.rs",
-        "native/core/src/compositor/protocol.rs",
-        "android/app/src/main/java/io/github/tinmachine/eidolon/InputAdapter.kt"
+        "native/model/src/pointer.rs",
+        "native/core/src/compositor/pointer.rs",
+        "native/core/src/compositor/pointer_checks.rs",
+        "native/fixtures/shm-client/src/pointer.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/InputAdapter.kt",
+        "android/app/src/debug/java/io/github/tinmachine/eidolon/PointerCase.kt"
       ],
       "steps": [
         "hover/keyboard focus/captureを分ける",

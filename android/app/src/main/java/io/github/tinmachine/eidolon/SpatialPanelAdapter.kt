@@ -76,6 +76,10 @@ class SpatialPanelAdapter {
     }
     fun currentKey(): JSONObject? = binding?.key?.let { JSONObject(it.toString()) }
     fun currentEntityId(): Long? = binding?.entity?.id
+    fun currentSceneObject(): PanelSceneObject? {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        return binding?.sceneObject
+    }
     fun beginInputCapture(source: Long, receive: (JSONObject) -> Unit): Boolean {
         val input = binding?.input ?: return false
         input.beginCapture(source, receive); return true
@@ -158,7 +162,7 @@ class SpatialPanelAdapter {
         }
     }
     private fun destroy(current: Binding) {
-        current.input?.endCapture(); current.input = null
+        current.input?.close(); current.input = null
         current.listener?.let { current.sceneObject?.removeInputListener(it); listeners--; event("listener_removed", current.entity.id) }
         current.listener = null; current.sceneObject = null; current.surface = null; current.replacement = null
         current.entity.destroy(); destroyed++; event("entity_destroyed", current.entity.id)

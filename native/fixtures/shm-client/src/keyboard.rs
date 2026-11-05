@@ -1,6 +1,7 @@
 //! 固定入力だけを受けるwire検査。ユーザーのkeyboardを記録する入口には使わない。
 use super::*;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
+use wayland_client::Proxy;
 use wayland_client::protocol::wl_keyboard;
 
 #[derive(Clone, Copy, Debug)]
@@ -22,6 +23,7 @@ pub struct Report {
     pub keymap_bytes: usize,
     pub repeat: Option<(i32, i32)>,
     pub enters: Vec<Vec<u32>>,
+    pub enter_surfaces: Vec<u32>,
     pub leaves: u32,
     pub keys: Vec<(u32, u32, u32)>,
     pub modifiers: Vec<[u32; 4]>,
@@ -171,7 +173,8 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
                 report.repeat = Some((rate, delay));
                 report.order.push("repeat");
             }
-            wl_keyboard::Event::Enter { keys, .. } => {
+            wl_keyboard::Event::Enter { keys, surface, .. } => {
+                report.enter_surfaces.push(surface.id().protocol_id());
                 if keys.len() % 4 != 0 {
                     report.error = Some("ENTER_KEYS");
                     return;

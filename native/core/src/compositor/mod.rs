@@ -4,6 +4,8 @@ pub mod checks;
 #[cfg(any(test, feature = "debug-fixtures"))]
 pub mod input_checks;
 #[cfg(any(test, feature = "debug-fixtures"))]
+pub mod pointer_checks;
+#[cfg(any(test, feature = "debug-fixtures"))]
 pub mod state_checks;
 #[cfg(test)]
 pub(crate) static FIXTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

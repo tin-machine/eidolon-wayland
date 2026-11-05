@@ -119,6 +119,7 @@ struct Shared {
     connect: Option<PendingConnect>,
     credential: Option<PrivateKey>,
     busy: bool,
+    active_connect_request: Option<CommandSeq>,
     cancel: Option<CancellationToken>,
     router: Option<Arc<forward::Router>>,
     forward: Option<(PathBuf, String, Option<CleanupScenario>)>,
@@ -161,6 +162,14 @@ impl Controller {
         deadlines: Deadlines,
         root: Option<PathBuf>,
     ) -> std::io::Result<Self> {
+        Self::start_at_with_hook(endpoint, deadlines, root, || {})
+    }
+    fn start_at_with_hook(
+        endpoint: SocketAddr,
+        deadlines: Deadlines,
+        root: Option<PathBuf>,
+        before_owner: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<Self> {
         let signals = Arc::new(Signals {
             shared: Mutex::new(Shared {
                 report: Snapshot {
@@ -171,6 +180,7 @@ impl Controller {
                 connect: None,
                 credential: None,
                 busy: false,
+                active_connect_request: None,
                 cancel: None,
                 router: None,
                 forward: None,
@@ -187,12 +197,14 @@ impl Controller {
             .name("eidolon-ssh-owner".into())
             .spawn(move || {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    before_owner();
                     owner(&owned, endpoint, deadlines, root.as_deref())
                 }));
                 owned.update(|s| {
                     s.connect = None;
                     s.credential = None;
                     s.busy = false;
+                    s.active_connect_request = None;
                     s.report.workers = 0;
                     s.report.owned_connections = 0;
                     s.report.credential_request = None;
@@ -228,6 +240,7 @@ impl Controller {
             return Status::Busy;
         }
         s.busy = true;
+        s.active_connect_request = Some(request);
         s.report = Snapshot {
             state: State::Connecting,
             session: None,
@@ -299,6 +312,25 @@ impl Controller {
         if s.busy {
             s.report.state = State::Disconnecting;
         }
+        self.signals.notify.notify_one();
+        Status::Accepted
+    }
+    /// SessionIdの割当より前でも、自分が開始した接続だけを取り消す。
+    pub fn cancel_connect(&self, request: CommandSeq) -> Status {
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !s.busy || s.active_connect_request != Some(request) {
+            return Status::Stale;
+        }
+        if let Some(cancel) = &s.cancel {
+            cancel.cancel();
+        }
+        s.credential = None;
+        s.report.credential_request = None;
+        s.report.state = State::Disconnecting;
         self.signals.notify.notify_one();
         Status::Accepted
     }
@@ -458,12 +490,22 @@ fn owner(
             }
             s.connect.take().unwrap()
         };
+        if pending.cancel.is_cancelled() {
+            signals.update(|s| {
+                s.cancel = None;
+                s.active_connect_request = None;
+                s.busy = false;
+                s.report.state = State::Disconnected;
+            });
+            continue;
+        }
         let session = match journal.allocate_session() {
             Ok(session) => session,
             Err(error) => {
                 signals.update(|s| {
                     s.cancel = None;
                     s.busy = false;
+                    s.active_connect_request = None;
                     s.report.state = State::Failed;
                     s.report.error = Some(error);
                 });
@@ -514,6 +556,7 @@ fn owner(
             s.credential = None;
             s.cancel = None;
             s.busy = false;
+            s.active_connect_request = None;
             s.forward = None;
             s.app = None;
             s.forward_busy = false;

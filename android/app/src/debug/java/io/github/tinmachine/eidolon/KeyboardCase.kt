@@ -26,6 +26,7 @@ object KeyboardCase {
         var handle = 0L
         var target = JSONObject()
         var epoch = 0L
+        var focusToken = ""
         var base = 0L
         var copies = 0L
         var deadline = SystemClock.elapsedRealtime()+45000
@@ -68,6 +69,7 @@ object KeyboardCase {
                         "focus" -> if (input?.optString("focus_window")==target.getString("window") && NativeSessionHost.keyboardFocused()) {
                             check(current==handle && focused)
                             epoch=state.getLong("input_resets"); base=input.getLong("delivered"); copies=checkNotNull(app).getLong("copies")
+                            focusToken=input.getString("focus_token")
                             record("focused",state)
                             send(KeyEvent.ACTION_DOWN,KeyEvent.KEYCODE_A,30); send(KeyEvent.ACTION_DOWN,KeyEvent.KEYCODE_A,30,1)
                             send(KeyEvent.ACTION_UP,KeyEvent.KEYCODE_A,30)
@@ -87,7 +89,7 @@ object KeyboardCase {
                             val key = JSONObject().put("action","released").put("device",Int.MAX_VALUE-7).put("scan_code",42)
                                 .put("key_code",KeyEvent.KEYCODE_SHIFT_LEFT).put("repeat",0).put("meta",0).put("time_ms",0)
                             check(NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","key").put("request_id",lateRequest)
-                                .put("target",target).put("input_epoch",epoch).put("key",key).toString())==NativeBridge.ACCEPTED)
+                                .put("target",target).put("input_epoch",epoch).put("focus_token",focusToken).put("key",key).toString())==NativeBridge.ACCEPTED)
                             stage="late"
                         }
                         "late" -> if (lateCompletion.getAndSet(null)=="STALE") {

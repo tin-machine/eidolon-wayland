@@ -48,6 +48,7 @@ id_type!(
     SurfaceGeneration,
     FrameSeq,
     ContentSeq,
+    InputSourceId,
     CommandSeq
 );
 

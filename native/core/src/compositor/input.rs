@@ -1,7 +1,7 @@
 //! seat/keymap/input状態はprotocol ownerに置き、GL/UIへxkbやWayland resourceを渡さない。
 use super::ProtocolState;
 use eidolon_model::{
-    ids::WindowId,
+    ids::{CommandSeq, WindowId},
     keyboard::{KeyAction, KeyPacket, KeyTracker, KeyboardLayout},
     window::WindowLife,
 };
@@ -16,12 +16,14 @@ use smithay::{
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct InputReport {
+    pub pointer: super::pointer::PointerReport,
     pub keyboard: bool,
     pub layout: Option<KeyboardLayout>,
     pub keymap_sha256: Option<String>,
     pub wire_keymap_sha256: Option<String>,
     pub include_paths: Option<usize>,
     pub focus_window: Option<WindowId>,
+    pub focus_token: Option<CommandSeq>,
     pub pressed: usize,
     pub delivered: u64,
     pub resets: u64,
@@ -29,8 +31,11 @@ pub struct InputReport {
 
 #[derive(Default)]
 pub(super) struct InputState {
-    report: InputReport,
+    pub(super) report: InputReport,
+    pub(super) pointer: super::pointer::PointerState,
     keys: KeyTracker,
+    next_focus: i64,
+    last_key_time: u32,
 }
 
 fn keymap(layout: KeyboardLayout) -> &'static str {
@@ -88,11 +93,13 @@ impl ProtocolState {
             ),
             ..Default::default()
         };
+        self.configure_pointer();
         Ok(())
     }
     pub fn input_report(&self) -> InputReport {
         let mut report = self.input.report.clone();
         report.pressed = self.input.keys.pressed_count();
+        report.pointer = self.pointer_report();
         report
     }
     #[cfg(any(test, feature = "debug-fixtures"))]
@@ -109,6 +116,11 @@ impl ProtocolState {
         })
     }
     pub fn focus_window(&mut self, window: WindowId) -> Result<(), &'static str> {
+        self.focus_keyboard(window)?;
+        self.reset_pointer();
+        Ok(())
+    }
+    pub(super) fn focus_keyboard(&mut self, window: WindowId) -> Result<(), &'static str> {
         let surface = self
             .toplevels
             .values()
@@ -119,9 +131,13 @@ impl ProtocolState {
         if self.input.report.focus_window == Some(window) {
             return Ok(());
         }
+        let next = self.input.next_focus.checked_add(1).ok_or("ID_EXHAUSTED")?;
+        let token = CommandSeq::new(next).map_err(|_| "ID_EXHAUSTED")?;
         // 新しいwindowへ古い押下を持ち込まない。
-        self.reset_input();
+        self.reset_keyboard();
         self.input.report.focus_window = Some(window);
+        self.input.next_focus = next;
+        self.input.report.focus_token = Some(token);
         self.set_activated(Some(window));
         keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
         Ok(())
@@ -142,7 +158,18 @@ impl ProtocolState {
             record.surface.send_pending_configure();
         }
     }
-    pub fn key(&mut self, window: WindowId, key: KeyPacket) -> Result<(), &'static str> {
+    pub fn key_at_focus(
+        &mut self,
+        window: WindowId,
+        token: CommandSeq,
+        key: KeyPacket,
+    ) -> Result<(), &'static str> {
+        if self.input.report.focus_token != Some(token) {
+            return Err("STALE");
+        }
+        self.key(window, key)
+    }
+    fn key(&mut self, window: WindowId, key: KeyPacket) -> Result<(), &'static str> {
         if self.input.report.focus_window != Some(window) {
             return Err("NOT_READY");
         }
@@ -176,24 +203,31 @@ impl ProtocolState {
                 |_, _, _| FilterResult::Forward,
             );
             self.input.report.delivered += 1;
+            self.input.last_key_time = key.time_ms;
         }
         Ok(())
     }
     /// urgent lane/焦点喪失から呼ぶ。keyup→modifiers→leaveをownerで送ってから忘れる。
     pub fn reset_input(&mut self) {
+        self.reset_pointer();
+        self.reset_keyboard();
+    }
+    fn reset_keyboard(&mut self) {
         let keys = self.input.keys.reset();
         let focused = self.input.report.focus_window.take().is_some();
+        self.input.report.focus_token = None;
         if !focused && keys.is_empty() {
             return;
         }
         if let Some(keyboard) = self._seat.get_keyboard() {
+            let now = monotonic_time_ms(self.input.last_key_time);
             for code in keys {
                 keyboard.input::<(), _>(
                     self,
                     Keycode::new(code.xkb()),
                     KeyState::Released,
                     SERIAL_COUNTER.next_serial(),
-                    0,
+                    now,
                     |_, _, _| FilterResult::Forward,
                 );
                 self.input.report.delivered += 1;
@@ -204,6 +238,7 @@ impl ProtocolState {
         self.input.report.resets += 1;
     }
     pub(super) fn refresh_input_focus(&mut self) {
+        self.refresh_pointer();
         if let Some(window) = self.input.report.focus_window
             && !self
                 .toplevels
@@ -212,6 +247,23 @@ impl ProtocolState {
         {
             self.reset_input();
         }
+    }
+}
+
+/// Android uptimeMillisと同じCLOCK_MONOTONIC。wireの32bit wrapは仕様どおり維持する。
+pub(crate) fn monotonic_time_ms(fallback: u32) -> u32 {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: 初期化済みtimespecの有効なmutable pointerを同期callへ渡す。
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) } != 0
+        || time.tv_sec < 0
+        || !(0..1_000_000_000).contains(&time.tv_nsec)
+    {
+        fallback
+    } else {
+        ((time.tv_sec as u64).wrapping_mul(1000) + (time.tv_nsec as u64) / 1_000_000) as u32
     }
 }
 

@@ -92,9 +92,11 @@ try:
             if name == "input":
                 if package == "eidolon-model":
                     count += rust_test_count(run(command + ["keyboard::"]))
+                    count += rust_test_count(run(command + ["pointer::"]))
                     command.append("input::")
                 else:
                     count += rust_test_count(run(command + ["compositor::input_checks::"]))
+                    count += rust_test_count(run(command + ["compositor::pointer_checks::"]))
                     command.append("compositor::protocol::input::")
             count += rust_test_count(run(command))
         if count < 1:

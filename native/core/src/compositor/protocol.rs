@@ -105,12 +105,16 @@ impl Cacheable for BufferUse {
 
 #[path = "input.rs"]
 mod input;
+#[path = "pointer.rs"]
+mod pointer;
 #[path = "positioner.rs"]
 mod positioner;
 /// 所有済みsnapshot以外はprotocol ownerから持ち出さない。
 #[path = "snapshot.rs"]
 mod snapshot;
 pub use input::InputReport;
+pub(crate) use input::monotonic_time_ms;
+pub use pointer::PointerReport;
 pub use snapshot::WindowReport;
 
 pub struct ProtocolState {
@@ -697,7 +701,7 @@ impl Dispatch<WlDataDevice, DataDeviceUserData> for ProtocolState {
         init: &mut DataInit<'_, Self>,
     ) {
         match request {
-            // keyboard/pointer/touch未提供なので有効なfocus/serialは存在しない。I02/I03/I07で拡張する。
+            // seat入力とclipboardを分ける。I07まではselection/dragを明示的に取消す。
             wl_data_device::Request::SetSelection { source, .. }
             | wl_data_device::Request::StartDrag { source, .. } => {
                 if let Some(source) = source {

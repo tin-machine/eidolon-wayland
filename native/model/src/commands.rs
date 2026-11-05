@@ -141,6 +141,7 @@ pub enum CleanupScenario {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompositorScenario {
+    Pointer,
     KeyboardUs,
     KeyboardJis,
     Lifecycle,
@@ -169,6 +170,13 @@ pub enum CompositorScenario {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    Pointer {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        input_epoch: u64,
+        pointer: crate::pointer::PointerPacket,
+    },
     FocusWindow {
         schema: u32,
         request_id: CommandSeq,
@@ -180,6 +188,7 @@ pub enum Command {
         request_id: CommandSeq,
         target: crate::surface::TargetKey,
         input_epoch: u64,
+        focus_token: CommandSeq,
         key: crate::keyboard::KeyPacket,
     },
     AdapterApplied {
@@ -253,6 +262,11 @@ pub enum Command {
         request_id: CommandSeq,
         session: crate::ids::SessionId,
     },
+    CancelConnect {
+        schema: u32,
+        request_id: CommandSeq,
+        connect_request: CommandSeq,
+    },
     SurfaceLost {
         schema: u32,
         request_id: CommandSeq,
@@ -295,7 +309,8 @@ impl Command {
         }
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
-            Self::FocusWindow { schema, .. }
+            Self::Pointer { schema, .. }
+            | Self::FocusWindow { schema, .. }
             | Self::Key { schema, .. }
             | Self::AdapterApplied { schema, .. }
             | Self::AdapterFailed { schema, .. }
@@ -309,6 +324,7 @@ impl Command {
             | Self::ForwardProbe { schema, .. }
             | Self::Connect { schema, .. }
             | Self::Disconnect { schema, .. }
+            | Self::CancelConnect { schema, .. }
             | Self::SurfaceLost { schema, .. }
             | Self::WaypipeProbe { schema, .. }
             | Self::HelperProbe { schema, .. }
@@ -355,11 +371,17 @@ impl Command {
         {
             return Err(Status::InvalidArgument);
         }
+        if let Self::Pointer { pointer, .. } = &command
+            && !pointer.valid()
+        {
+            return Err(Status::InvalidArgument);
+        }
         Ok(command)
     }
     pub fn request_id(&self) -> CommandSeq {
         match *self {
-            Self::FocusWindow { request_id, .. }
+            Self::Pointer { request_id, .. }
+            | Self::FocusWindow { request_id, .. }
             | Self::Key { request_id, .. }
             | Self::AdapterApplied { request_id, .. }
             | Self::AdapterFailed { request_id, .. }
@@ -373,6 +395,7 @@ impl Command {
             | Self::ForwardProbe { request_id, .. }
             | Self::Connect { request_id, .. }
             | Self::Disconnect { request_id, .. }
+            | Self::CancelConnect { request_id, .. }
             | Self::SurfaceLost { request_id, .. }
             | Self::WaypipeProbe { request_id, .. }
             | Self::HelperProbe { request_id, .. }
@@ -400,6 +423,26 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pointer_payload_source_and_key_focus_token_are_validated_before_enqueue() {
+        let pointer = r#"{"schema":1,"request_id":"1","type":"pointer","target":{"session":"1","window":"1","scene":"1","generation":"1"},"input_epoch":0,"pointer":{"source":"9","uv":[0.5,0.5],"event":{"type":"buttons","changed":1,"state":1},"time_ms":12}}"#;
+        assert!(Command::parse(pointer).is_ok());
+        for invalid in [
+            pointer.replace("\"source\":\"9\"", "\"source\":\"0\""),
+            pointer.replace("\"source\":\"9\"", "\"source\":9"),
+            pointer.replace("\"changed\":1", "\"changed\":8"),
+            pointer.replace("[0.5,0.5]", "[1e999,0.5]"),
+            pointer.replace("\"time_ms\":12", "\"time_ms\":12,\"text\":\"x\""),
+        ] {
+            assert!(Command::parse(&invalid).is_err());
+        }
+        let key = r#"{"schema":1,"request_id":"1","type":"key","target":{"session":"1","window":"1","scene":"1","generation":"1"},"input_epoch":0,"focus_token":"1","key":{"device":7,"scan_code":30,"key_code":29,"action":"pressed","repeat":0,"meta":0,"time_ms":12}}"#;
+        assert!(Command::parse(key).is_ok());
+        assert!(Command::parse(&key.replace("\"focus_token\":\"1\",", "")).is_err());
+        assert!(
+            Command::parse(&key.replace("\"focus_token\":\"1\"", "\"focus_token\":\"0\"")).is_err()
+        );
+    }
     #[test]
     fn profile_shape_installation_and_fixed_profile_id_are_validated_without_crypto() {
         let profile = ConnectionProfile {

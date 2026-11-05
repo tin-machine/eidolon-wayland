@@ -416,7 +416,12 @@ impl Runtime {
                             let app_busy =
                                 pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
                             let code = match &command {
-                                Command::FocusWindow {
+                                Command::Pointer {
+                                    target,
+                                    input_epoch,
+                                    ..
+                                }
+                                | Command::FocusWindow {
                                     target,
                                     input_epoch,
                                     ..
@@ -455,8 +460,25 @@ impl Runtime {
                                             Command::FocusWindow { .. } => {
                                                 current.focus_window(target.window)
                                             }
-                                            Command::Key { key, .. } => {
-                                                current.key(target.window, *key)
+                                            Command::Key {
+                                                key, focus_token, ..
+                                            } => current.key(target.window, *focus_token, *key),
+                                            Command::Pointer { pointer, .. } => {
+                                                let render = gl.snapshot();
+                                                let size = render
+                                                    .targets
+                                                    .iter()
+                                                    .find(|t| t.key == *target)
+                                                    .map(|t| (t.gpu.width, t.gpu.height));
+                                                match size {
+                                                    Some((width, height)) => current.pointer(
+                                                        target.window,
+                                                        *pointer,
+                                                        width,
+                                                        height,
+                                                    ),
+                                                    None => Err("STALE"),
+                                                }
                                             }
                                             _ => unreachable!(),
                                         };
@@ -732,6 +754,17 @@ impl Runtime {
                                         io.unknown_profile()
                                     }
                                 }
+                                Command::CancelConnect {
+                                    connect_request, ..
+                                } => {
+                                    let code = io.cancel_connect(*connect_request);
+                                    if code == Status::Accepted {
+                                        state.credentials.clear();
+                                        last_credential = None;
+                                        resetting.store(true, Ordering::Release);
+                                    }
+                                    code
+                                }
                                 Command::Disconnect { session, .. } => {
                                     let code = io.disconnect(*session);
                                     if code == Status::Accepted {
@@ -975,7 +1008,10 @@ impl Runtime {
             return Status::NotReady;
         }
         if state.commands.len() == limits::CORE_COMMANDS {
-            if matches!(command, Command::Key { .. } | Command::FocusWindow { .. }) {
+            if matches!(
+                command,
+                Command::Key { .. } | Command::FocusWindow { .. } | Command::Pointer { .. }
+            ) {
                 self.reset.store(true, Ordering::Release);
                 self.worker.thread().unpark();
             }
@@ -1211,6 +1247,7 @@ mod tests {
                 request_id: CommandSeq::new(999).unwrap(),
                 target,
                 input_epoch: 0,
+                focus_token: CommandSeq::new(1).unwrap(),
                 key: KeyPacket {
                     device: 7,
                     scan_code: 42,
@@ -1219,6 +1256,26 @@ mod tests {
                     repeat: 0,
                     meta: 0,
                     time_ms: 1
+                }
+            }),
+            Status::Busy
+        );
+        assert!(runtime.reset.load(Ordering::Acquire));
+        runtime.reset.store(false, Ordering::Release);
+        assert_eq!(
+            runtime.command(Command::Pointer {
+                schema: 1,
+                request_id: CommandSeq::new(1000).unwrap(),
+                target,
+                input_epoch: 0,
+                pointer: eidolon_model::pointer::PointerPacket {
+                    source: eidolon_model::ids::InputSourceId::new(1).unwrap(),
+                    uv: None,
+                    event: eidolon_model::pointer::PointerEvent::Buttons {
+                        changed: 1,
+                        state: 0
+                    },
+                    time_ms: 0,
                 }
             }),
             Status::Busy

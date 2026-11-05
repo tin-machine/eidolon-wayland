@@ -40,7 +40,8 @@ object RayCase {
                 check(SystemClock.elapsedRealtime()<deadline)
                 val current=NativeSessionHost.currentHandle()
                 if (current>0) {
-                    val runtime=JSONObject(NativeBridge.nativeSnapshot(current)).optJSONObject("runtime")
+                    val snapshot=JSONObject(NativeBridge.nativeSnapshot(current))
+                    val runtime=snapshot.optJSONObject("runtime")
                     val render=runtime?.getJSONObject("render")
                     val targets=render?.getJSONArray("targets")
                     val target=if (targets?.length()==1) targets.getJSONObject(0) else null
@@ -109,7 +110,15 @@ object RayCase {
                             }
                             cleanup()
                             result.put("cycles",rows).put("inputs",inputs).put("uv_origin",origin)
-                                .put("after",JSONObject(NativeBridge.nativeSnapshot(handle))).put("result","pass")
+                            stage="visible"
+                        }
+                        "visible" -> if(runtime?.getString("state")=="Ready" && runtime.getBoolean("activity_visible") &&
+                            runtime.getString("xr_state") in setOf("VISIBLE","FOCUSED") && target?.optString("role")=="diagnostic" &&
+                            target.getLong("frames")>result.getJSONObject("ready").getJSONObject("render").getJSONArray("targets").getJSONObject(0).getLong("frames")) {
+                            check(current==handle && adapter.currentKey().toString()==key.toString())
+                            val renderedKey=target.getJSONObject("key")
+                            check(listOf("session","window","scene","generation").all { renderedKey.getString(it)==checkNotNull(key).getString(it) })
+                            result.put("after",snapshot).put("result","pass")
                             NativeSessionHost.publishCheck(result); complete(); return
                         }
                     }

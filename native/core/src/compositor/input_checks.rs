@@ -31,7 +31,9 @@ pub struct Report {
     pub synthetic_input: bool,
     pub physical_input_verified: bool,
     pub checkpoints: u32,
+    pub input_time_ms: u32,
     pub shifted_two: u32,
+    pub old_focus_rejected: bool,
     pub keyboard: InputReport,
     pub client: Option<fixture::Report>,
     pub clients_after: usize,
@@ -50,6 +52,7 @@ pub fn run(layout: KeyboardLayout, stop: Arc<AtomicBool>) -> Report {
         fixture_revision: "eidolon-keyboard-wire-fixture-v1",
         layout,
         synthetic_input: true,
+        input_time_ms: super::protocol::monotonic_time_ms(0),
         ..Default::default()
     };
     // SAFETY: getuidはpointerを受け取らない。
@@ -93,9 +96,11 @@ pub fn run(layout: KeyboardLayout, stop: Arc<AtomicBool>) -> Report {
                         .iter()
                         .find(|w| w.life == WindowLife::Mapped)
                         .map(|w| w.window);
+                    let focus_token = state.input_report().focus_token;
                     let key = |state: &mut ProtocolState, code, action, device, repeat| {
-                        state.key(
+                        state.key_at_focus(
                             window.ok_or("NO_WINDOW")?,
+                            focus_token.ok_or("NO_FOCUS_TOKEN")?,
                             KeyPacket {
                                 action,
                                 device,
@@ -103,7 +108,7 @@ pub fn run(layout: KeyboardLayout, stop: Arc<AtomicBool>) -> Report {
                                 key_code: 0,
                                 repeat,
                                 meta: 0,
-                                time_ms: 123,
+                                time_ms: report.input_time_ms,
                             },
                         )
                     };
@@ -132,7 +137,7 @@ pub fn run(layout: KeyboardLayout, stop: Arc<AtomicBool>) -> Report {
                             }
                             state.reset_input();
                             state.reset_input();
-                            if key(&mut state, 30, KeyAction::Released, 7, 0) != Err("NOT_READY") {
+                            if key(&mut state, 30, KeyAction::Released, 7, 0) != Err("STALE") {
                                 return Err("LATE_UP");
                             }
                             let input = state.input_report();
@@ -147,6 +152,26 @@ pub fn run(layout: KeyboardLayout, stop: Arc<AtomicBool>) -> Report {
                         Stage::Reset => {
                             if state.input_report().pressed != 0 {
                                 return Err("REPLAYED_KEYS");
+                            }
+                            let old = eidolon_model::ids::CommandSeq::new(1).unwrap();
+                            if state.input_report().focus_token == Some(old) {
+                                return Err("REUSED_FOCUS_TOKEN");
+                            }
+                            report.old_focus_rejected = state.key_at_focus(
+                                window.ok_or("NO_WINDOW")?,
+                                old,
+                                KeyPacket {
+                                    action: KeyAction::Pressed,
+                                    device: 7,
+                                    scan_code: 30,
+                                    key_code: 29,
+                                    repeat: 0,
+                                    meta: 0,
+                                    time_ms: report.input_time_ms,
+                                },
+                            ) == Err("STALE");
+                            if !report.old_focus_rejected {
+                                return Err("OLD_FOCUS_KEY");
                             }
                         }
                         Stage::Unmapped => {
@@ -269,9 +294,11 @@ mod tests {
                     .count(),
                 12
             );
-            assert_eq!(
-                client.keys[9..].iter().map(|e| e.2).collect::<Vec<_>>(),
-                [0, 0, 0]
+            assert!(client.keys[..9].iter().all(|e| e.2 == report.input_time_ms));
+            assert!(
+                client.keys[9..]
+                    .iter()
+                    .all(|e| e.2.wrapping_sub(report.input_time_ms) < 30_000)
             );
         }
     }

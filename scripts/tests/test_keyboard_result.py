@@ -18,11 +18,11 @@ class KeyboardWireTests(unittest.TestCase):
                             wire_keymap_sha256='3'*64, focus_window=None, pressed=0, delivered=12, resets=2)
             client = dict(keymap_format=1, keymap_sha256='3'*64, keymap_bytes=50000, repeat=[25,600], enters=[[],[]], leaves=2,
                           keys=[[42,1,123],[3,1,123],[3,0,123],[42,0,123],[30,1,123],[30,0,123],
-                                [29,1,123],[42,1,123],[30,1,123],[29,0,0],[30,0,0],[42,0,0]],
+                                [29,1,123],[42,1,123],[30,1,123],[29,0,124],[30,0,124],[42,0,124]],
                           modifiers=[[1,0,0,0],[0,0,0,0]], order=['keymap','repeat','enter']+['key']*12+['leave','enter','leave'], error=None)
             report = dict(state='pass', error=None, uid=4242, layout=layout, fixture_revision='eidolon-keyboard-wire-fixture-v1',
-                          nonce=hashlib.sha256(f'{nonce}:{index}'.encode()).hexdigest()[:16], synthetic_input=True,
-                          physical_input_verified=False, checkpoints=5, shifted_two=ord('@' if layout=='us' else '"'), keyboard=keyboard, client=client)
+                          nonce=hashlib.sha256(f'{nonce}:{index}'.encode()).hexdigest()[:16], synthetic_input=True, input_time_ms=123,
+                          physical_input_verified=False, old_focus_rejected=True, checkpoints=5, shifted_two=ord('@' if layout=='us' else '"'), keyboard=keyboard, client=client)
             report.update({k:0 for k in ['clients_after','objects_after','surfaces_after','windows_after','pixel_bytes_after',
                                         'pool_bytes_after','fixture_fds_after','fixture_maps_after']})
             rows.append(dict(cycle=index+1, scenario='keyboard_'+layout, report=report))
@@ -57,6 +57,17 @@ class KeyboardWireTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             keyboard_wire_result(snapshot,nonce,build,4242,package)
 
+    def test_monotonic_wire_clock_wrap_and_zero_reset_are_distinguished(self):
+        snapshot,nonce,build,package=self.fixture()
+        for row in snapshot['check']['cycles']:
+            report=row['report'];report['input_time_ms']=2**32-2
+            for index,key in enumerate(report['client']['keys']): key[2]=2**32-2 if index<9 else 3
+        self.assertTrue(keyboard_wire_result(snapshot,nonce,build,4242,package))
+        snapshot,nonce,build,package=self.fixture()
+        snapshot['check']['cycles'][0]['report']['client']['keys'][-1][2]=0
+        with self.assertRaises(ValueError):
+            keyboard_wire_result(snapshot,nonce,build,4242,package)
+
 
 class ProductKeyboardTests(unittest.TestCase):
     def fixture(self):
@@ -65,6 +76,7 @@ class ProductKeyboardTests(unittest.TestCase):
         rows=[]
         for index, stage in enumerate(['before','focused','typed','held','reset','late','refocused','final']):
             keyboard=dict(keyboard=True,layout='us',include_paths=0,keymap_sha256='1'*64,
+                          focus_token=None if index in [0,4,5] else ('1' if index<4 else '2'),
                           focus_window=None if index in [0,4,5] else '1', pressed=2 if index==3 else 0,
                           delivered=[0,0,4,6,8,8,8,10][index])
             state=dict(state='Ready',activity_visible=True,xr_state='FOCUSED',scene='1',input_resets=1 if index<4 else 2,

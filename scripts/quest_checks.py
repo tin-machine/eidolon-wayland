@@ -13,6 +13,11 @@ def _prepared_keyboard(app, package, layout='us'):
             and report.get('include_paths') == 0 and report.get('keymap_sha256') == expected)
 
 
+def _wire_time(value, origin):
+    return (type(value) is int and type(origin) is int and 0<=value<2**32 and 0<=origin<2**32
+            and ((value-origin)&0xffffffff)<30000)
+
+
 def keyboard_wire_result(snapshot, nonce, expected, uid, package, *, instrumentation=False):
     if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
         return False
@@ -26,19 +31,23 @@ def keyboard_wire_result(snapshot, nonce, expected, uid, package, *, instrumenta
     rows = result.get('cycles', [])
     if len(rows) != 2 or result.get('cleanup_failed'):
         raise ValueError('US/JISのwire検査と回収が必要です')
-    keys = [[42,1,123],[3,1,123],[3,0,123],[42,0,123],[30,1,123],[30,0,123],
-            [29,1,123],[42,1,123],[30,1,123],[29,0,0],[30,0,0],[42,0,0]]
+    keys = [[42,1],[3,1],[3,0],[42,0],[30,1],[30,0],[29,1],[42,1],[30,1],[29,0],[30,0],[42,0]]
     for index, (row, layout) in enumerate(zip(rows, ['us','jis'])):
         report = row.get('report', {})
         keyboard, client = report.get('keyboard', {}), report.get('client', {})
         order, modifiers = client.get('order', []), client.get('modifiers', [])
         wire_hash = keyboard.get('wire_keymap_sha256')
+        actual=client.get('keys',[]);origin=report.get('input_time_ms')
+        trace_ok=(len(actual)==12 and all(isinstance(k,list) and len(k)==3 and _wire_time(k[2],origin) for k in actual)
+                  and [k[:2] for k in actual]==keys and all(k[2]==origin for k in actual[:9])
+                  and len({k[2] for k in actual[9:]})==1)
         if (row.get('cycle') != index+1 or row.get('scenario') != 'keyboard_'+layout
                 or report.get('nonce') != hashlib.sha256(f'{nonce}:{index}'.encode()).hexdigest()[:16]
                 or report.get('state') != 'pass' or report.get('error') is not None or report.get('uid') != uid
                 or report.get('fixture_revision') != 'eidolon-keyboard-wire-fixture-v1' or report.get('layout') != layout
                 or report.get('synthetic_input') is not True or report.get('physical_input_verified') is not False
                 or report.get('checkpoints') != 5 or report.get('shifted_two') != ord('@' if layout=='us' else '"')
+                or report.get('old_focus_rejected') is not True
                 or not _prepared_keyboard(dict(input=keyboard), package, layout)
                 or keyboard.get('focus_window') is not None or keyboard.get('pressed') != 0
                 or keyboard.get('delivered') != 12 or keyboard.get('resets') != 2
@@ -46,7 +55,7 @@ def keyboard_wire_result(snapshot, nonce, expected, uid, package, *, instrumenta
                 or client.get('keymap_format') != 1 or client.get('keymap_sha256') != wire_hash
                 or type(client.get('keymap_bytes')) is not int or not 1000 < client['keymap_bytes'] < 1024*1024
                 or client.get('repeat') != [25,600] or client.get('enters') != [[],[]] or client.get('leaves') != 2
-                or client.get('keys') != keys or client.get('error') is not None
+                or not trace_ok or client.get('error') is not None
                 or not modifiers or modifiers[-1] != [0,0,0,0] or not any(m[0] != 0 for m in modifiers)
                 or 'leave' not in order or order[:order.index('leave')].count('key') != 12
                 or order.count('keymap') != 1 or order.count('enter') != 2 or order.count('leave') != 2
@@ -105,6 +114,7 @@ def keyboard_result(snapshot, nonce, expected, uid, termux_uid, package):
         panels = render.get('targets', [])
         forward = transport.get('app_forward', {})
         expected_focus = None if index in [0,4,5] else target['window']
+        token=keyboard.get('focus_token')
         if (state.get('state') != 'Ready' or state.get('activity_visible') is not True or state.get('xr_state') != 'FOCUSED'
                 or state.get('scene') != target['scene'] or app.get('session') != target['session'] or app.get('mode') != 'foot'
                 or app.get('callback_clock') != 'target-driven' or app.get('error') is not None or not _prepared_keyboard(app,package)
@@ -113,9 +123,15 @@ def keyboard_result(snapshot, nonce, expected, uid, termux_uid, package):
                 or forward.get('uid') != termux_uid or forward.get('mode') != 'foot' or forward.get('state') != 'running' or forward.get('error') is not None
                 or len(panels) != 1 or panels[0].get('key') != target or panels[0].get('role') != 'windows' or panels[0].get('frames',0) < 3
                 or keyboard.get('focus_window') != expected_focus or keyboard.get('pressed') != (2 if index==3 else 0)
+                or (token is not None if expected_focus is None else not isinstance(token,str) or not re.fullmatch('[1-9][0-9]*',token))
                 or keyboard.get('delivered') != base+[0,0,4,6,8,8,8,10][index]
                 or type(state.get('input_resets')) is not int or (state['input_resets'] != epoch if index<4 else state['input_resets'] <= epoch)):
             raise ValueError('製品Host/foot/SDKとkey/resetの結果が不正です')
+    first_token=rows[1]['runtime']['app']['input']['focus_token']
+    second_token=rows[6]['runtime']['app']['input']['focus_token']
+    if (any(rows[i]['runtime']['app']['input']['focus_token'] != first_token for i in [2,3])
+            or int(second_token)<=int(first_token) or rows[7]['runtime']['app']['input']['focus_token'] != second_token):
+        raise ValueError('再フォーカスに古いkeyの識別子を再利用しています')
     if rows[2]['runtime']['app'].get('copies',0) <= rows[1]['runtime']['app'].get('copies',0):
         raise ValueError('入力中の実footフレーム更新がありません')
     stop, restored = result.get('stop', {}), result.get('restored', {})
@@ -128,6 +144,166 @@ def keyboard_result(snapshot, nonce, expected, uid, termux_uid, package):
             or len(panels) != 1 or panels[0].get('role') != 'diagnostic' or panels[0].get('frames',0) < 3):
         raise ValueError('入力中の停止/通常UI復帰が不正です')
     return True
+
+
+def pointer_result(snapshot, nonce, expected, uid, termux_uid, package):
+    if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
+        return False
+    result = snapshot.get('check', {})
+    if result.get('case') != 'pointer' or result.get('nonce') != nonce:
+        return False
+    if result.get('result') == 'fail':
+        raise ValueError('製品pointer検査失敗: '+result.get('stage','unknown'))
+    if result.get('result') != 'pass':
+        return False
+    if (result.get('consumer') != 'SDK' or result.get('dispatch') != 'Scene.onInput' or result.get('raycast') != 'Scene.lineSegmentIntersect'
+            or any(result.get(k) is not True for k in ['synthetic_input','synthetic_menu','product_host_path','sources_destroyed'])
+            or any(result.get(k) is not False for k in ['synthetic_visibility','physical_input_verified','os_menu_verified'])):
+        raise ValueError('SDK合成入力/実OS menu/物理操作の範囲が不正です')
+    target = result.get('target', {})
+    positive = lambda value: isinstance(value,str) and re.fullmatch('[1-9][0-9]*',value) is not None
+    sources = result.get('sources', [])
+    points = result.get('points', [])
+    if (any(not positive(target.get(k)) for k in ['session','window','scene','generation']) or type(uid) is not int
+            or type(termux_uid) is not int or uid == termux_uid or len(sources) != 2 or any(not positive(s) for s in sources)
+            or sources[0] == sources[1] or len(points) != 2):
+        raise ValueError('pointer入力先/source/UIDが不正です')
+    for row, uv in zip(points, [[.23,.31],[.73,.61]]):
+        world = [(uv[0]-.5)*1.2,1.4+(.5-uv[1])*.9,1.5]
+        if (row.get('expected') != uv or not positive(row.get('entity')) or row['entity'] in sources
+                or any(not isinstance(row.get(k),list) or len(row[k]) != n for k,n in [('uv',2),('world',3),('hit_point',3)])
+                or any(not math.isfinite(a) or abs(a-b) >= .02 for a,b in zip(row['uv'],uv))
+                or any(not math.isfinite(a) or abs(a-b) >= 1e-4 for k in ['world','hit_point'] for a,b in zip(row[k],world))):
+            raise ValueError('SDK実交差のUV/worldが既知quadと一致しません')
+    if points[0]['entity'] != points[1]['entity']:
+        raise ValueError('別panelのUVを混ぜています')
+    cancelled = result.get('cancelled', {})
+    before = cancelled.get('transport', {})
+    credential_base = result.get('credential_base')
+    if (cancelled.get('state') != 'Ready' or cancelled.get('app') is not None or before.get('state') != 'Disconnected'
+            or before.get('owned_connections') != 0 or before.get('tokio_threads') != 0 or before.get('pending_cleanup') != []
+            or type(credential_base) is not int or not 0 <= credential_base <= 1 or before.get('credential_requests') != credential_base):
+        raise ValueError('開始直後の取消が接続/アプリを残しました')
+    rows = result.get('cycles', [])
+    stages = ['before','hover','pressed','foreign','drag','released','scroll','scroll_stop','held','reset','old_held','refocused']
+    if [r.get('stage') for r in rows] != stages:
+        raise ValueError('pointer操作/捕捉/解除/再入力の記録がありません')
+    first = rows[0].get('runtime', {})
+    base_input = first.get('app', {}).get('input', {})
+    base_pointer = base_input.get('pointer', {})
+    counters = [base_pointer.get('buttons'),base_pointer.get('axis_frames'),base_input.get('delivered'),first.get('input_resets')]
+    if any(type(n) is not int or n < 0 for n in counters):
+        raise ValueError('pointerの基準counterが不正です')
+    buttons,axes,keys,epoch = counters
+    capture = rows[2].get('runtime', {}).get('app', {}).get('input', {}).get('pointer', {}).get('capture_surface')
+    token = rows[2].get('runtime', {}).get('app', {}).get('input', {}).get('focus_token')
+    if not positive(capture) or not positive(token):
+        raise ValueError('pointer捕捉/keyboard focus識別子がありません')
+    for index,row in enumerate(rows):
+        state = row.get('runtime', {})
+        app,transport = state.get('app', {}),state.get('transport', {})
+        inputs = app.get('input', {}); pointer = inputs.get('pointer', {})
+        panels = state.get('render', {}).get('targets', [])
+        forward = transport.get('app_forward', {})
+        grabbed = index in [2,3,4,8]
+        unfocused = index in [0,1,9,10]
+        if (state.get('state') != 'Ready' or state.get('activity_visible') is not True or state.get('xr_state') != 'FOCUSED'
+                or state.get('scene') != target['scene'] or app.get('session') != target['session'] or app.get('mode') != 'foot'
+                or app.get('callback_clock') != 'target-driven' or app.get('error') is not None or not _prepared_keyboard(app,package)
+                or app.get('local', {}).get('uid') != uid or app.get('local', {}).get('executable_sha256') != package.get('dependencies', {}).get('waypipe', {}).get('sha256')
+                or transport.get('state') != 'Ready' or transport.get('session') != target['session'] or transport.get('credential_requests') != credential_base+1
+                or forward.get('uid') != termux_uid or forward.get('mode') != 'foot' or forward.get('state') != 'running' or forward.get('error') is not None
+                or len(panels) != 1 or panels[0].get('key') != target or panels[0].get('role') != 'windows' or panels[0].get('frames',0) < 3
+                or pointer.get('ready') is not True or pointer.get('pressed') != int(grabbed)
+                or pointer.get('capture_window') != (target['window'] if grabbed else None)
+                or pointer.get('capture_surface') != (capture if grabbed else None)
+                or pointer.get('buttons') != buttons+[0,0,1,1,1,2,2,2,3,4,4,6][index]
+                or pointer.get('axis_frames') != axes+(0 if index<6 else 1 if index==6 else 2)
+                or inputs.get('pressed') != int(index==8) or inputs.get('delivered') != keys+(0 if index<8 else 1 if index==8 else 2)
+                or inputs.get('focus_window') != (None if unfocused else target['window'])
+                or (inputs.get('focus_token') is not None if unfocused else not positive(inputs.get('focus_token')))
+                or (not unfocused and index<9 and inputs.get('focus_token') != token)
+                or type(state.get('input_resets')) is not int or (state['input_resets'] != epoch if index<9 else state['input_resets'] <= epoch)):
+            raise ValueError('通常SDK/Host/footとpointer焦点・捕捉・解除の結果が不正です')
+    if (int(rows[11]['runtime']['app']['input']['focus_token']) <= int(token)
+            or rows[4]['runtime']['app']['input']['pointer']['motions'] <= rows[3]['runtime']['app']['input']['pointer']['motions']
+            or rows[10]['runtime']['app']['input']['pointer']['motions'] <= rows[9]['runtime']['app']['input']['pointer']['motions']):
+        raise ValueError('drag/古held後のmotion/新focusがありません')
+    stop,restored = result.get('stop', {}),result.get('restored', {})
+    panels = restored.get('render', {}).get('targets', [])
+    if (stop.get('old_runtime_destroyed') is not True or type(stop.get('stop_ms')) is not int or not 0 <= stop['stop_ms'] < 10000
+            or not positive(result.get('old_handle')) or not positive(result.get('new_handle')) or int(result['new_handle']) <= int(result['old_handle'])
+            or restored.get('state') != 'Ready' or restored.get('activity_visible') is not True or restored.get('xr_state') != 'FOCUSED'
+            or restored.get('transport', {}).get('state') != 'Idle' or restored.get('transport', {}).get('pending_cleanup') != []
+            or len(panels) != 1 or panels[0].get('role') != 'diagnostic' or panels[0].get('frames',0) < 3):
+        raise ValueError('pointer入力中の停止/通常UI復帰が不正です')
+    return True
+
+
+def pointer_wire_result(snapshot, nonce, expected, uid, package, *, instrumentation=False):
+    if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
+        return False
+    result=snapshot.get('check', {})
+    if result.get('case') != 'pointer-wire' or result.get('nonce') != nonce:
+        return False
+    if result.get('result') == 'fail':
+        raise ValueError('pointer wire検査が失敗しました')
+    if result.get('result') != 'pass':
+        return False
+    rows=result.get('cycles', [])
+    if len(rows)!=1 or result.get('cleanup_failed'):
+        raise ValueError('pointer wireの回数/回収が不正です')
+    row=rows[0];report=row.get('report',{});client=report.get('client',{});events=client.get('events',[])
+    phases=client.get('checkpoints',[]);wanted=['Mapped','HoverChild','Hole','Pressed','Released','FocusedB','Reset','UnmappedB','DestroyedChild']
+    if ([p.get('stage') for p in phases]!=wanted or any(type(p.get('events')) is not int or not 0<=p['events']<=len(events) for p in phases)
+            or [p['events'] for p in phases]!=sorted(p['events'] for p in phases)):
+        raise ValueError('pointerの受信checkpointが不正です')
+    reset=phases[6];normal=events[:reset['events']];unmapped=events[:phases[7]['events']]
+    buttons=lambda trace:[(e.get('surface'),e.get('code'),e.get('state')) for e in trace if e.get('event')=='button']
+    expected_buttons=[('child',272,1),('child',272,0),('root_b',273,1),('root_b',273,0),('root_b',272,1),('root_b',274,1),('root_b',272,0),('root_b',274,0)]
+    inputs=report.get('input',{});pointer=inputs.get('pointer',{});keyboard=client.get('keyboard',{})
+    fields=['letterbox_rejected','region_checked','source_capture_checked','off_panel_release','hover_keeps_keyboard',
+            'focus_changed','duplicate_reset','late_source_ignored','unmap_released','destroy_released']
+    ids=[client.get(k) for k in ['root_a','root_b','child']]
+    if (any(type(i) is not int or not 0<i<2**32 for i in ids) or len(set(ids))!=3):
+        raise ValueError('pointer clientのsurface IDが不正です')
+    if (row.get('cycle')!=1 or row.get('scenario')!='pointer' or type(uid) is not int or report.get('uid')!=uid or report.get('state')!='pass' or report.get('error') is not None
+            or report.get('nonce')!=hashlib.sha256(f'{nonce}:0'.encode()).hexdigest()[:16]
+            or report.get('fixture_revision')!='eidolon-pointer-wire-fixture-v1' or report.get('checkpoints')!=9
+            or report.get('synthetic_input') is not True or report.get('physical_input_verified') is not False
+            or any(report.get(k) is not True for k in fields) or client.get('error') is not None
+            or not _prepared_keyboard(dict(input=inputs),package) or inputs.get('focus_window') is not None or inputs.get('focus_token') is not None or inputs.get('pressed')!=0
+            or pointer.get('ready') is not True or pointer.get('pressed')!=0
+            or any(pointer.get(k) is not None for k in ['hover_window','hover_surface','capture_window','capture_surface'])
+            or buttons(normal)!=expected_buttons or buttons(unmapped)!=expected_buttons+[('root_b',272,1),('root_b',272,0)]
+            or [(e.get('axis'),e.get('value')) for e in normal if e.get('event')=='axis']!=[(1,2.5),(0,-15),(0,3)]
+            or [e.get('axis') for e in normal if e.get('event')=='axis_stop']!=[1,0,0]
+            or any(not _wire_time(e.get('time'),report.get('input_time_ms')) for e in events if e.get('event')=='button')
+            or not any(e.get('event')=='axis_source' and e.get('source')==2 for e in normal)
+            or not any(e.get('event')=='frame' for e in normal)
+            or not any(e.get('event')=='motion' and e.get('surface')=='child' and e.get('position')==[-12,8] for e in normal)
+            or not normal or normal[0]!=dict(event='enter',surface='child',position=[8,8])
+            or reset.get('keyboard_enters')!=[client.get('root_a'),client.get('root_b')] or reset.get('keyboard_leaves')!=2 or reset.get('keys')!=2
+            or [k[:2] for k in keyboard.get('keys',[])]!=[[42,1],[42,0]]
+            or any(len(k)!=3 or not _wire_time(k[2],report.get('input_time_ms')) for k in keyboard.get('keys',[]))
+            or keyboard.get('keymap_sha256')!=inputs.get('wire_keymap_sha256')
+            or any(report.get(k)!=0 for k in ['clients_after','objects_after','surfaces_after','windows_after','pixel_bytes_after',
+                    'pool_bytes_after','fixture_fds_after','fixture_maps_after'])):
+        raise ValueError('pointerのregion/capture/axis/focus/reset/wire/回収の証明が不正です')
+    after=result.get('after_stop',{})
+    if (after.get('state')!='Stopped' or any(after.get(k)!=0 for k in ['compositor_workers','dependency_workers','helper_workers'])
+            or after.get('render',{}).get('workers')!=0 or after.get('transport',{}).get('workers')!=0
+            or type(result.get('accept_ms')) is not int or not 0<=result['accept_ms']<100
+            or type(result.get('stop_ms')) is not int or not 0<=result['stop_ms']<10000
+            or not re.fullmatch('[1-9][0-9]*',str(result.get('last_handle','')))):
+        raise ValueError('pointer検査runtimeの停止が不正です')
+    if instrumentation:
+        return instrumentation_result(snapshot,result,uid)
+    current=snapshot.get('runtime',{});runtime=current.get('runtime',{})
+    return (current.get('code')==0 and current.get('registry')==dict(runtimes=1,workers=1)
+            and str(current.get('handle','')).isdecimal() and int(current['handle'])>int(result['last_handle'])
+            and runtime.get('state')=='Ready' and runtime.get('activity_visible') is True and runtime.get('xr_state') in {'VISIBLE','FOCUSED'}
+            and runtime.get('transport',{}).get('state')=='Idle')
 
 
 def ray_result(snapshot, nonce, expected):

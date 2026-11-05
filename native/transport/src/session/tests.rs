@@ -202,6 +202,51 @@ fn request(n: i64) -> CommandSeq {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancel_before_session_allocation_and_old_request_cannot_cancel_reconnect() {
+    let (address, profile, key, state, server) = fixture(Mode::Flood).await;
+    let (release, gate) = std::sync::mpsc::channel();
+    let controller =
+        Controller::start_at_with_hook(address, Deadlines::default(), None, move || {
+            gate.recv_timeout(Duration::from_secs(4)).unwrap();
+        })
+        .unwrap();
+    assert_eq!(
+        controller.connect(profile.clone(), request(1)),
+        Status::Accepted
+    );
+    assert_eq!(controller.snapshot().session, None);
+    assert_eq!(controller.cancel_connect(request(2)), Status::Stale);
+    assert_eq!(controller.snapshot().state, State::Connecting);
+    assert_eq!(controller.cancel_connect(request(1)), Status::Accepted);
+    assert_eq!(controller.snapshot().state, State::Disconnecting);
+    assert_eq!(controller.snapshot().session, None);
+    release.send(()).unwrap();
+    wait(&controller, |s| s.state == State::Disconnected).await;
+    let report = controller.snapshot();
+    assert_eq!(report.session, None);
+    assert_eq!(report.credential_requests, 0);
+    assert_eq!(report.tokio_threads, 0);
+    assert_eq!(report.owned_connections, 0);
+    assert_eq!(controller.connect(profile, request(2)), Status::Accepted);
+    wait(&controller, |s| s.state == State::AwaitingCredential).await;
+    assert_eq!(controller.cancel_connect(request(1)), Status::Stale);
+    assert_eq!(
+        controller.provide(controller.snapshot().session.unwrap(), request(2), key),
+        Status::Accepted
+    );
+    wait(&controller, |s| s.state == State::Ready).await;
+    assert_eq!(controller.cancel_connect(request(1)), Status::Stale);
+    assert_eq!(controller.snapshot().state, State::Ready);
+    assert_eq!(state.execs.load(Ordering::Acquire), 1);
+    assert_eq!(controller.cancel_connect(request(2)), Status::Accepted);
+    wait(&controller, |s| s.state == State::Disconnected).await;
+    assert_eq!(controller.snapshot().owned_connections, 0);
+    assert_eq!(controller.snapshot().tokio_threads, 0);
+    stop(&controller).await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn valid_pin_auth_uid_and_stderr_flood_drain_to_eof_then_owned_stop() {
     let (address, profile, key, state, server) = fixture(Mode::Flood).await;
     let controller = Controller::start_on(address, Deadlines::default()).unwrap();

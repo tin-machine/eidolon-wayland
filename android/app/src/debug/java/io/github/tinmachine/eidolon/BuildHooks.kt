@@ -18,11 +18,12 @@ object BuildHooks {
     fun accept(intent: Intent?, adapter: SpatialPanelAdapter, scene: () -> Scene) {
         val name = intent?.getStringExtra("case") ?: return
         val nonce = intent.getStringExtra("nonce") ?: return
-        if (running || name !in setOf("keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product") || !nonce.matches(Regex("[0-9a-f]{32}"))) return
+        if (running || name !in setOf("pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product") || !nonce.matches(Regex("[0-9a-f]{32}"))) return
         if (intent.extras?.keySet()?.any { it != "case" && it != "nonce" } == true) return
         intent.removeExtra("case"); intent.removeExtra("nonce")
         running = true
-        if (name == "keyboard") KeyboardCase.start(nonce, adapter) { running = false }
+        if (name == "pointer") PointerCase.start(nonce, adapter, scene) { running = false }
+        else if (name == "keyboard") KeyboardCase.start(nonce, adapter) { running = false }
         else if (name == "ray") RayCase.start(nonce, adapter, scene) { running = false }
         else if (name == "foot") FootSdkCase.start(nonce, adapter) { running = false }
         else if (name == "ssh-product") ProductSshCase.start(nonce) { running = false }
