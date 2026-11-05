@@ -899,7 +899,7 @@
     {
       "id": "D01",
       "title": "GlesRendererへowned画像を入力",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "R03",
         "W03"

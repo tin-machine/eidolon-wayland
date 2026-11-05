@@ -17,6 +17,7 @@ if smithay[0]["source"] is not None or Path(smithay[0]["manifest_path"]).resolve
     raise SystemExit("Smithayの固定patch sourceがresolveされていません")
 features = set(active[smithay[0]["id"]]["features"])
 allowed = {"desktop", "wayland_frontend", "wayland-server", "wayland-protocols", "wayland-protocols-wlr", "wayland-protocols-misc", "tempfile"}
+allowed.update({'renderer_gl', 'backend_egl', 'gl_generator', 'libloading'})
 if features != allowed:
     raise SystemExit("Smithayの最小feature契約が不一致: " + ", ".join(sorted(features)))
 # wayland-sysはbackendの型定義依存として無featureでも現れる。system linkの有効化を拒否する。

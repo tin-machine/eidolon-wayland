@@ -370,6 +370,35 @@ impl Runtime {
                             let app_busy =
                                 pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
                             let code = match &command {
+                                Command::RenderProbe {
+                                    target,
+                                    stage,
+                                    width,
+                                    height,
+                                    request_id,
+                                    ..
+                                } => {
+                                    #[cfg(any(test, feature = "debug-fixtures"))]
+                                    {
+                                        match eidolon_render::fixtures::make(
+                                            *stage,
+                                            request_id.get(),
+                                            *target,
+                                            *width,
+                                            *height,
+                                        ) {
+                                            Ok((image, probes)) if cfg!(debug_assertions) => {
+                                                gl.submit(image, probes)
+                                            }
+                                            _ => Status::NotReady,
+                                        }
+                                    }
+                                    #[cfg(not(any(test, feature = "debug-fixtures")))]
+                                    {
+                                        let _ = (target, stage, width, height, request_id);
+                                        Status::NotReady
+                                    }
+                                }
                                 Command::AppProbe {
                                     session,
                                     nonce,

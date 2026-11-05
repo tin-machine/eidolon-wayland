@@ -33,7 +33,9 @@
     "default_features": false,
     "features": [
       "wayland_frontend",
-      "desktop"
+      "desktop",
+      "backend_egl",
+      "renderer_gl"
     ],
     "source": "https://static.crates.io/crates/smithay/smithay-0.7.0.crate",
     "license": "MIT",
@@ -43,6 +45,10 @@
       {
         "file": "native/patches/smithay/0001-shm-pool-accounting-lifetime.patch",
         "sha256": "513d99014b096dbadc9e04c4efb0dbcb66896d05251fe8f19d6cedeca4506268"
+      },
+      {
+        "file": "native/patches/smithay/0002-android-egl-library.patch",
+        "sha256": "d78136012ad94871891d67ad37d09f42d348433359e9dff0793c1fa3856ed17d"
       }
     ]
   },

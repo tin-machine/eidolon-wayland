@@ -19,7 +19,8 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | T04 | in_progress | 永続journal・再接続audit・lease・7故障caseのnative検査に成功。通常UI復帰は未確認 |
 | W01〜W04 | in_progress | native依存・SHM・window model・APK向けWaypipeを実機検証済み。通常UI/SDKとの共存確認を残す |
 | W05 | in_progress | SSH経由の100frame/hash・実foot受信・Stop回収がBuild49で成功。通常UI復帰は未確認 |
-| D01〜I07 | planned | owned画像のSDK描画と製品入力・複数windowを依存順に実装 |
+| D01 | in_progress | owned画像→Smithay/Android EGLの実GPU readbackが成功。SDKパネルへの接続と通常UI確認は後続 |
+| D02〜I07 | planned | 実footのSDK描画と製品入力・複数windowを依存順に実装 |
 
 ## B01/B02: ビルドと実機の再現
 
@@ -454,3 +455,18 @@ footの512MiB仮想SHM最適化とcompositor予算、停止時に残る`w` socke
 調べて修正した。Build48の残件は原本記録と対象identityを照合して手動復旧し、自動回復の成功と区別した。
 [再現手順・実測値・hash・失敗と復旧](waypipe-forwarded-shm-checks.md)に記録を集約した。
 W05は共通UI確認を残してin_progress。次はD01/D02でowned snapshotをSDKパネルへ描く。
+
+## D01: owned画像→Android EGL/Smithayと実GPU readback（native検証済み）
+
+Androidの公開EGL handleとNativeWindowをSmithayへ渡すadapterと、GL owner一つのcontextを実装した。
+owned RGBA以外をrendererへ渡さず、texture cache/update、letterbox、clip、transform、premultiplied alphaを扱う。
+既存の四色診断もSmithay経由へ移し、raw GLの描画stateを混在させない。
+
+Build55のImageReader実機caseは四色と36stageを通過した。8transform×scale1/2、透過/重なり/clip、
+同寸法更新とSurface再生成、readback496sample、Stop受付0ms・全16ms、全owned資源0を確認した。
+host Rust69/実APK Python38/launcher16、debug/release assemble/lint/packageと既存実機8系統の回帰も全pass。
+最初の色不一致を段階診断で切り分け、EGL出力だけの上下補正と元error保持で修正した。
+[再現・run/hash・失敗と修正](owned-image-render-checks.md)へ記録した。
+
+これはImageReaderとsynthetic visibilityでのGPU検査で、SDKパネルへの実foot表示やHMDの合格ではない。
+D01は通常UI共通scopeを残してin_progress、次はD02のmap/SDK binding/frame callbackを接続する。

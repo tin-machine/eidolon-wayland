@@ -10,12 +10,17 @@ R03/W03の成功が前提。`native/render/src/compositor.rs`にAndroid EGL adap
 入力は[所有済みWindowSnapshot](phase-3.md#w03)。`ImportMemWl`でprotocol objectをGL threadへ渡す方式は採用しない。0.7.0の`ImportMem::import_memory(data, Fourcc, size, flipped)`と`update_memory`を使い、GL objectはGL ownerだけに保持する。
 
 1. R02のEGL/NativeWindow管理をadapterの基礎にし、Androidで公開されたEGL/GLES名だけを使う。
-2. 一つのcontextでtargetを順にbindする。context stateはGlesRendererへ所有させ、同じcontextへglowのpattern描画を混在させない。診断patternは別modeとしてrender開始前に選ぶ。
+2. 一つのcontextでtargetを順にbindする。context stateはGlesRendererへ所有させ、独立したraw GL描画を混在させない。D01実装では診断patternもSmithayのdraw_solidへ移した。readbackだけはframeのwith_context内でGL stateを変更せずに行う。
 3. `mem_formats()`を確認し、共通のpacked RGBA8に対応するFourccを選ぶ。byte order/上下向き/alphaを色パターンとreadbackで検査する。format非対応を黙って別formatとして描かない。
 4. texture cacheは`(session,surface,content_seq)`。同じ画像を何度もuploadせず、サイズ変更時は作り直す。surface destroy/context lossで解放する。
 5. backgroundは不透明な黒、surface treeを順に合成し、popupは親clip内。初期は全体damageでよい。
 
 gate: host画像変換test、Questで既知snapshot→四隅/文字代替pattern→resize/再生成。GlesRendererとAndroid EGLの適合が失敗した場合は原因とpatch範囲を記録し、別rendererへの変更をD01の設計差分としてレビューする。無検証のfallbackを完成扱いにしない。
+
+[D01の実装・検証記録](../owned-image-render-checks.md)では、Android公開名libEGL.soへの固定patchと
+外部EGLContext/NativeWindow adapterを使う。公式minimal exampleと同じFlipped180をwindow framebufferの出力に適用し、
+ImageReader上の実GPUでtransform/scale/alpha/clipとSurface再生成を検査した。
+synthetic visibilityによるnative scopeであり、SDKパネル/HMDはD02以降へ残す。
 
 <a id="d02"></a>
 ## D02 — foot一枚の表示PoC

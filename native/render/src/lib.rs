@@ -1,14 +1,21 @@
 //! EGL所有thread。共有lockの保持中にはplatform/GL関数を呼ばない。
 #[cfg(target_os = "android")]
 mod android;
+pub mod compositor;
+#[cfg(target_os = "android")]
+pub mod egl;
+#[cfg(any(test, feature = "debug-fixtures"))]
+pub mod fixtures;
 #[cfg(not(target_os = "android"))]
 mod host;
 #[cfg(target_os = "android")]
 use android as platform;
 use eidolon_model::{
+    ids::{FrameSeq, SessionId, WindowId},
     limits,
     state::Status,
     surface::{TargetKey, validate_dimensions},
+    window::WindowSnapshot,
 };
 #[cfg(not(target_os = "android"))]
 use host as platform;
@@ -26,7 +33,6 @@ const ACKS: usize = 64;
 const STALL: Duration = Duration::from_secs(2);
 const FRAME: Duration = Duration::from_nanos(16_666_667);
 
-#[cfg(any(target_os = "android", test))]
 fn check_gl_error(error: u32) -> Result<(), &'static str> {
     match error {
         0 => Ok(()),
@@ -51,6 +57,7 @@ pub struct GpuInfo {
 pub struct TargetReport {
     pub key: TargetKey,
     pub frames: u64,
+    pub content_frame: Option<FrameSeq>,
     #[serde(flatten)]
     pub gpu: GpuInfo,
 }
@@ -66,6 +73,9 @@ pub struct Snapshot {
     pub duplicates: u64,
     pub stale: u64,
     pub context_rebuilds: u64,
+    pub contexts: usize,
+    pub latest_images: usize,
+    pub composition: compositor::Report,
     pub error: Option<&'static str>,
 }
 enum Message {
@@ -83,6 +93,11 @@ struct Shared {
     stop: bool,
     visible: bool,
     busy_since: Option<Instant>,
+    latest: Vec<Arc<Submission>>,
+}
+struct Submission {
+    snapshot: Arc<WindowSnapshot>,
+    probes: Vec<compositor::Probe>,
 }
 type State = Arc<(Mutex<Shared>, Condvar)>;
 pub struct Controller {
@@ -132,6 +147,7 @@ impl Controller {
                 stop: false,
                 visible: false,
                 busy_since: None,
+                latest: vec![],
             }),
             Condvar::new(),
         ));
@@ -147,6 +163,10 @@ impl Controller {
                 }
                 state.queue.clear(); // queued ANativeWindowの追加参照もここで回収。
                 state.snapshot.targets.clear();
+                state.latest.clear();
+                state.snapshot.latest_images = 0;
+                state.snapshot.contexts = 0;
+                state.snapshot.composition = Default::default();
                 state.snapshot.workers = 0;
                 state.busy_since = None;
             })?;
@@ -189,6 +209,45 @@ impl Controller {
     }
     pub fn detach(&self, key: TargetKey) -> Status {
         self.enqueue(Message::Detach(key))
+    }
+    /// 同じwindowの古い画像をcoalesceし、frameを通常command queueへためない。
+    pub fn submit(&self, snapshot: Arc<WindowSnapshot>, probes: Vec<compositor::Probe>) -> Status {
+        if snapshot.layers.len() > limits::SURFACES || probes.len() > 1024 {
+            return Status::InvalidArgument;
+        }
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.stop {
+            return Status::NotReady;
+        }
+        let index = state.latest.iter().position(|old| {
+            old.snapshot.session == snapshot.session && old.snapshot.window == snapshot.window
+        });
+        if let Some(index) = index {
+            if state.latest[index].snapshot.frame_seq >= snapshot.frame_seq {
+                return Status::Stale;
+            }
+        } else if state.latest.len() >= limits::TOPLEVELS {
+            return Status::Busy;
+        }
+        let image = Arc::new(Submission { snapshot, probes });
+        let old = if let Some(index) = index {
+            Some(std::mem::replace(&mut state.latest[index], image))
+        } else {
+            state.latest.push(image);
+            None
+        };
+        state.snapshot.latest_images = state.latest.len();
+        drop(state);
+        drop(old);
+        self.state.1.notify_one();
+        Status::Accepted
+    }
+    pub fn forget_window(&self, session: SessionId, window: WindowId) {
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .latest
+            .retain(|image| image.snapshot.session != session || image.snapshot.window != window);
+        state.snapshot.latest_images = state.latest.len();
     }
     pub fn set_visible(&self, visible: bool) {
         self.state
@@ -247,6 +306,7 @@ fn busy<T>(state: &State, action: impl FnOnce() -> T) -> T {
 }
 fn owner(state: &State) {
     let mut active: Vec<Active> = Vec::new();
+    let mut device = None;
     let mut generations = Generations::default();
     let mut next = Instant::now();
     loop {
@@ -293,12 +353,18 @@ fn owner(state: &State) {
                         });
                         continue;
                     }
-                    match busy(state, || platform::Target::new(window, width, height)) {
+                    match busy(state, || {
+                        if device.is_none() {
+                            device = Some(platform::Device::new()?);
+                        }
+                        platform::Target::new(device.as_mut().unwrap(), window, width, height)
+                    }) {
                         Ok(gpu) => {
                             active.push(Active {
                                 report: TargetReport {
                                     key,
                                     frames: 0,
+                                    content_frame: None,
                                     gpu: gpu.info(),
                                 },
                                 gpu,
@@ -318,6 +384,12 @@ fn owner(state: &State) {
                 }
                 Message::Detach(key) => {
                     if let Some(index) = active.iter().position(|a| a.report.key == key) {
+                        if let Some(device) = device.as_mut()
+                            && let Err(error) =
+                                busy(state, || device.forget(key.session, key.window))
+                        {
+                            update(state, |s| s.snapshot.error = Some(error));
+                        }
                         busy(state, || drop(active.remove(index)));
                     } else {
                         update(state, |s| s.snapshot.stale += 1);
@@ -330,44 +402,94 @@ fn owner(state: &State) {
         if visible && Instant::now() >= next {
             let mut lost = Vec::new();
             for (index, target) in active.iter_mut().enumerate() {
-                match busy(state, || target.gpu.frame(target.report.frames)) {
+                let image = state
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .latest
+                    .iter()
+                    .find(|image| {
+                        image.snapshot.session == target.report.key.session
+                            && image.snapshot.window == target.report.key.window
+                    })
+                    .cloned();
+                match busy(state, || {
+                    target.gpu.frame(
+                        device.as_mut().unwrap(),
+                        target.report.frames,
+                        image.as_ref().map(|image| image.snapshot.as_ref()),
+                        image
+                            .as_ref()
+                            .map(|image| image.probes.as_slice())
+                            .unwrap_or(&[]),
+                    )
+                }) {
                     Ok(()) => {
                         target.report.frames += 1;
+                        target.report.content_frame =
+                            image.as_ref().map(|image| image.snapshot.frame_seq);
                         target.report.gpu = target.gpu.info();
                     }
                     Err("EGL_CONTEXT_LOST") => {
                         // 全contextを同じowner上で無効化・再構築する。
-                        lost.push((index, true));
+                        lost.push((index, "EGL_CONTEXT_LOST"));
                         break;
                     }
-                    Err(_) => lost.push((index, false)),
+                    Err(error) => lost.push((index, error)),
                 }
             }
-            if lost.iter().any(|(_, context)| *context) {
+            if lost.iter().any(|(_, error)| *error == "EGL_CONTEXT_LOST") {
                 lost.clear();
+                busy(state, || {
+                    if let Some(device) = device.as_mut() {
+                        let _ = device.clear();
+                    }
+                    for target in &mut active {
+                        target.gpu.invalidate();
+                    }
+                    drop(device.take());
+                    device = platform::Device::new().ok();
+                });
                 for (index, target) in active.iter_mut().enumerate() {
                     update(state, |s| s.snapshot.context_rebuilds += 1);
-                    if busy(state, || target.gpu.rebuild()).is_err() {
-                        lost.push((index, false));
+                    if device
+                        .as_mut()
+                        .is_none_or(|device| busy(state, || target.gpu.rebuild(device)).is_err())
+                    {
+                        lost.push((index, "SURFACE_LOST"));
                     }
                 }
             }
-            for (index, _) in lost.into_iter().rev() {
+            for (index, error) in lost.into_iter().rev() {
                 let key = active[index].report.key;
+                if let Some(device) = device.as_mut() {
+                    let _ = busy(state, || device.forget(key.session, key.window));
+                }
                 busy(state, || drop(active.remove(index)));
                 update(state, |s| {
-                    s.snapshot.error = Some("SURFACE_LOST");
+                    s.snapshot.error = Some(error);
                     ack(s, key);
                 });
             }
             next = Instant::now() + FRAME;
         }
         update(state, |s| {
-            s.snapshot.targets = active.iter().map(|a| a.report.clone()).collect()
+            s.snapshot.targets = active.iter().map(|a| a.report.clone()).collect();
+            s.snapshot.contexts = usize::from(device.is_some());
+            s.snapshot.composition = device
+                .as_ref()
+                .map(|device| device.report())
+                .unwrap_or_default();
         });
     }
     // 別threadはEGLを破棄しない。停止完了はこのdropの後。
+    if let Some(device) = device.as_mut()
+        && let Err(error) = busy(state, || device.clear())
+    {
+        update(state, |s| s.snapshot.error = Some(error));
+    }
     busy(state, || drop(active));
+    busy(state, || drop(device));
 }
 
 #[cfg(test)]
@@ -379,6 +501,43 @@ mod tests {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(2));
         }
+    }
+    #[test]
+    fn coalesces_owned_snapshots_before_attach_rejects_old_frames_and_releases_at_stop() {
+        let renderer = Controller::start().unwrap();
+        let key = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        let (first, probes) = fixtures::make(0, 1, key, 64, 64).unwrap();
+        let weak = Arc::downgrade(&first);
+        assert_eq!(renderer.submit(first, probes), Status::Accepted);
+        for sequence in 2..=1000 {
+            let (image, probes) = fixtures::make(0, sequence, key, 64, 64).unwrap();
+            assert_eq!(renderer.submit(image, probes), Status::Accepted);
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "old snapshotを1000frame保持しない"
+        );
+        let (old, probes) = fixtures::make(0, 999, key, 64, 64).unwrap();
+        assert_eq!(renderer.submit(old, probes), Status::Stale);
+        assert_eq!(renderer.snapshot().latest_images, 1);
+        assert_eq!(renderer.snapshot().queued, 0);
+        assert_eq!(
+            renderer.attach(key, PlatformWindow::default(), 64, 64),
+            Status::Accepted
+        );
+        renderer.set_visible(true);
+        wait(|| {
+            renderer
+                .snapshot()
+                .targets
+                .first()
+                .is_some_and(|target| target.content_frame == Some(FrameSeq::new(1000).unwrap()))
+        });
+        assert_eq!(renderer.snapshot().contexts, 1);
+        renderer.request_stop();
+        wait(|| renderer.is_finished());
+        assert_eq!(renderer.snapshot().latest_images, 0);
+        assert_eq!(renderer.snapshot().contexts, 0);
     }
     #[test]
     fn twenty_cycles_late_detach_duplicates_and_pause() {
@@ -485,6 +644,18 @@ mod tests {
             renderer.snapshot().targets.is_empty() && renderer.snapshot().detached.contains(&key)
         });
         assert_eq!(renderer.snapshot().error, Some("SURFACE_LOST"));
+        let next = TargetKey::from_raw(1, 1, 1, 2).unwrap();
+        control.fault.store(3, Ordering::Release);
+        renderer.attach(
+            next,
+            PlatformWindow {
+                control: Some(control),
+            },
+            1024,
+            768,
+        );
+        wait(|| renderer.snapshot().detached.contains(&next));
+        assert_eq!(renderer.snapshot().error, Some("COMPOSITE_MISMATCH"));
         renderer.request_stop();
         wait(|| renderer.is_finished());
     }

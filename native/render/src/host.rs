@@ -1,5 +1,28 @@
 //! Android APIに依存しないowner/世代/停止test用のbackend。
 use super::GpuInfo;
+pub struct Device;
+// Androidと同じ明示的なdevice破棄の境界を持つhost adapter。
+impl Drop for Device {
+    fn drop(&mut self) {}
+}
+impl Device {
+    pub fn new() -> Result<Self, &'static str> {
+        Ok(Self)
+    }
+    pub fn forget(
+        &mut self,
+        _: eidolon_model::ids::SessionId,
+        _: eidolon_model::ids::WindowId,
+    ) -> Result<(), &'static str> {
+        Ok(())
+    }
+    pub fn report(&self) -> super::compositor::Report {
+        Default::default()
+    }
+    pub fn clear(&mut self) -> Result<(), &'static str> {
+        Ok(())
+    }
+}
 #[derive(Default)]
 pub struct PlatformWindow {
     #[cfg(test)]
@@ -18,7 +41,12 @@ pub struct Target {
     control: Option<std::sync::Arc<TestControl>>,
 }
 impl Target {
-    pub fn new(_window: PlatformWindow, width: i32, height: i32) -> Result<Self, &'static str> {
+    pub fn new(
+        _device: &mut Device,
+        _window: PlatformWindow,
+        width: i32,
+        height: i32,
+    ) -> Result<Self, &'static str> {
         Ok(Self {
             #[cfg(test)]
             control: _window.control,
@@ -33,7 +61,13 @@ impl Target {
     pub fn info(&self) -> GpuInfo {
         self.info.clone()
     }
-    pub fn frame(&mut self, _: u64) -> Result<(), &'static str> {
+    pub fn frame(
+        &mut self,
+        _: &mut Device,
+        _: u64,
+        _: Option<&eidolon_model::window::WindowSnapshot>,
+        _: &[super::compositor::Probe],
+    ) -> Result<(), &'static str> {
         #[cfg(test)]
         if let Some(control) = &self.control {
             use std::sync::atomic::Ordering;
@@ -44,12 +78,14 @@ impl Target {
             match control.fault.swap(0, Ordering::AcqRel) {
                 1 => return Err("SURFACE_LOST"),
                 2 => return Err("EGL_CONTEXT_LOST"),
+                3 => return Err("COMPOSITE_MISMATCH"),
                 _ => (),
             }
         }
         Ok(())
     }
-    pub fn rebuild(&mut self) -> Result<(), &'static str> {
+    pub fn invalidate(&mut self) {}
+    pub fn rebuild(&mut self, _: &mut Device) -> Result<(), &'static str> {
         Ok(())
     }
 }

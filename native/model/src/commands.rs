@@ -155,6 +155,15 @@ pub enum CompositorScenario {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    RenderProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        nonce: String,
+        target: crate::surface::TargetKey,
+        stage: u32,
+        width: i32,
+        height: i32,
+    },
     CompositorProbe {
         schema: u32,
         request_id: CommandSeq,
@@ -239,6 +248,7 @@ impl Command {
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
             Self::SceneReady { schema, .. }
+            | Self::RenderProbe { schema, .. }
             | Self::RemoteCleanupProbe { schema, .. }
             | Self::NativeDepsProbe { schema, .. }
             | Self::AppProbe { schema, .. }
@@ -262,6 +272,7 @@ impl Command {
             return Err(Status::InvalidArgument);
         }
         if let Self::WaypipeProbe { nonce, .. }
+        | Self::RenderProbe { nonce, .. }
         | Self::HelperProbe { nonce, .. }
         | Self::ForwardProbe { nonce, .. }
         | Self::RemoteCleanupProbe { nonce, .. }
@@ -275,11 +286,22 @@ impl Command {
         {
             return Err(Status::InvalidArgument);
         }
+        if let Self::RenderProbe {
+            stage,
+            width,
+            height,
+            ..
+        } = &command
+            && (*stage >= 18 || crate::surface::validate_dimensions(*width, *height).is_err())
+        {
+            return Err(Status::InvalidArgument);
+        }
         Ok(command)
     }
     pub fn request_id(&self) -> CommandSeq {
         match *self {
             Self::SceneReady { request_id, .. }
+            | Self::RenderProbe { request_id, .. }
             | Self::RemoteCleanupProbe { request_id, .. }
             | Self::NativeDepsProbe { request_id, .. }
             | Self::AppProbe { request_id, .. }

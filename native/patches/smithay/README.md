@@ -1,4 +1,9 @@
-# Smithay 0.7.0のSHM計上補助
+# Smithay 0.7.0の固定patch
+
+`0002-android-egl-library.patch`はAndroidだけEGLの公開library名`libEGL.so`を使う。
+その他のtargetでは上流の`libEGL.so.1`を維持する。EGL function/extensionの動作は変えない。
+外部で初期化したAndroid EGLDisplay/ContextをSmithayの`from_raw`へ渡し、
+SDKと共有されるDisplayへ`eglTerminate`しない契約を維持する。
 
 `0001-shm-pool-accounting-lifetime.patch`はpool作成時にdrop guardを預けるAPIと、
 現在のmapping sizeを読むAPIを追加する。Wayland handler、SIGBUS handler、map/copy手順は変更しない。

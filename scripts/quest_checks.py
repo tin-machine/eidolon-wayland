@@ -4,6 +4,65 @@ import json
 import hashlib
 
 
+def render_result(snapshot, nonce, expected, apk_uid):
+    if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
+        return False
+    result = snapshot.get('check', {})
+    if result.get('case') != 'render' or result.get('nonce') != nonce:
+        return False
+    if result.get('result') == 'fail':
+        raise ValueError('GPU検査失敗: ' + result.get('stage', 'unknown'))
+    if result.get('result') != 'pass':
+        return False
+    if (result.get('consumer') != 'ImageReader' or result.get('synthetic_visibility') is not True
+            or result.get('consumer_worker_stopped') is not True or result.get('cleanup_failed')
+            or type(result.get('consumer_images')) is not int or result['consumer_images'] < 1):
+        raise ValueError('実GPU consumerの証拠が不正です')
+    pattern = result.get('pattern', {})
+    targets = pattern.get('targets', [])
+    if (pattern.get('error') is not None or pattern.get('contexts') != 1 or pattern.get('latest_images') != 0
+            or pattern.get('composition', {}).get('pattern_readback_samples') != 4 or len(targets) != 1
+            or targets[0].get('readback') is not True or targets[0].get('content_frame') is not None
+            or targets[0].get('key') != dict(session='1',window='1',scene='1',generation='1')):
+        raise ValueError('Smithay経由の四色patternのreadbackがありません')
+    rows = result.get('cycles', [])
+    if len(rows) != 36:
+        raise ValueError('全18stageとSurface再生成が必要です')
+    samples = 0
+    prior = {}
+    for index, row in enumerate(rows):
+        generation, stage = index//18+1, index%18
+        render = row.get('render', {})
+        target = render.get('targets', [])
+        composition = render.get('composition', {})
+        count = 16 if stage >= 16 else (8 if generation == 1 else 6)
+        if (row.get('cycle') != index+1 or row.get('generation') != generation or row.get('stage') != stage or row.get('frame') != str(100+index)
+                or render.get('workers') != 1 or render.get('contexts') != 1 or render.get('latest_images') != 1
+                or render.get('paused') is not False or render.get('error') is not None or len(target) != 1
+                or target[0].get('key') != dict(session='1',window='1',scene='1',generation=str(generation))
+                or target[0].get('content_frame') != str(100+index) or target[0].get('readback') is not True
+                or target[0].get('width') != (64 if generation == 1 else 128) or target[0].get('height') != (64 if generation == 1 else 96)
+                or any(not target[0].get(key) for key in ('vendor','renderer','version'))
+                or len(target[0].get('rgba_bits', [])) != 4 or any(value < 8 for value in target[0]['rgba_bits'])
+                or type(composition.get('readback_samples')) is not int or composition['readback_samples'] < samples+count
+                or composition.get('textures') != (1 if stage < 16 else 3)
+                or type(composition.get('texture_bytes')) is not int or not 0 < composition['texture_bytes'] <= 128*1024*1024
+                or type(composition.get('uploads')) is not int or composition['uploads'] < 1):
+            raise ValueError('transform/scale/alpha/clip/readback/一contextの証明が不正です')
+        if stage == 17 and (composition.get('updates',0) < prior.get('updates',0)+3 or composition['uploads'] != prior['uploads']):
+            raise ValueError('同寸法textureのupdate再利用がありません')
+        samples, prior = composition['readback_samples'], composition
+    after = result.get('after_stop', {})
+    render = after.get('render', {})
+    if (after.get('state') != 'Stopped' or render.get('targets') != []
+            or any(render.get(key) != 0 for key in ('workers','contexts','latest_images','queued'))
+            or any(render.get('composition',{}).get(key) != 0 for key in ('textures','texture_bytes'))
+            or type(result.get('accept_ms')) is not int or not 0 <= result['accept_ms'] < 100
+            or type(result.get('stop_ms')) is not int or not 0 <= result['stop_ms'] < 10000):
+        raise ValueError('GL所有資源の停止が不正です')
+    return instrumentation_result(snapshot, result, apk_uid)
+
+
 def forwarded_shm_result(snapshot, nonce, expected, apk_uid, termux_uid, package, *, instrumentation=False):
     if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
         return False

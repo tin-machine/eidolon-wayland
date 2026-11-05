@@ -2,7 +2,7 @@
 
 > Linuxに肉体を残し、その姿だけを異界へ投影する。
 
-**Status: XR/SSH基盤とWayland protocol・SHM・window modelをQuest APK内で検証済み（2026-11-05）。Waypipe経由のfoot受信まで成功し、SDKパネルへの画像描画と入力は開発中。**
+**Status: XR/SSH基盤とWayland protocol・SHM・window modelをQuest APK内で検証済み（2026-11-05）。Waypipe経由のfoot受信まで成功し、owned画像の実GPU readbackも成功し、SDKパネル表示と入力は開発中。**
 
 Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndroidアプリにWayland compositorを組み込み、**同じQuestのTermuxへlocalhost SSHで接続**し、**Waypipe**で転送した既存Waylandアプリを**Meta Spatial SDKの独立したXRパネル**として表示することを目指します。
 
@@ -12,13 +12,13 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 **実装方針:** KotlinはMeta Spatial SDK / Android adapter、RustはJNI・描画・SSH・Wayland compositor・ウィンドウ管理モデルを担当します。Waypipeは既存実装を再利用し、自作C++は必要性が確認された小さなshimに限定します。これは調査に基づく方針で、実装済みという意味ではありません。
 
-**現在できること:** `scripts/build-android 49`でRust runtime/helperを含むAPKをビルド・lint・静的検査できます。QuestではEGLパネル、専用鍵によるSSH、StreamLocal echo・障害回収、Smithay/native依存、SHM、window寿命・変換・popup、Waypipeの起動停止、SSH経由の100frame/hashとfoot受信をAPK UIDで検証しています。`scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case native-deps --instrumentation`等はActivityを開かずAPK UIDで検査し、UI復帰と区別して結果を保存します。JDK 25・compileSdk 36・target API 34・Spatial SDK 0.15.0を採用しています。HMD・実入力は最終段階の確認に残しています。[再現手順](docs/phase-0-reproduction.md)、[製品実装の進捗・失敗記録](docs/progress.md)、[native依存の固定build](docs/native-dependencies-build.md)、[window stateの実機検証](docs/wayland-window-state-checks.md)、[APK向けWaypipe](docs/waypipe-build-checks.md)、[SSH経由の画像とfoot受信](docs/waypipe-forwarded-shm-checks.md)を参照してください。
+**現在できること:** `scripts/build-android 55`でRust runtime/helperを含むAPKをビルド・lint・静的検査できます。QuestではEGLパネル、専用鍵によるSSH、StreamLocal echo・障害回収、Smithay/native依存、SHM、window寿命・変換・popup、Waypipeの起動停止、SSH経由の100frame/hashとfoot受信、owned画像のtransform/alpha/clipとGL readbackをAPK UIDで検証しています。`scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case native-deps --instrumentation`等はActivityを開かずAPK UIDで検査し、UI復帰と区別して結果を保存します。JDK 25・compileSdk 36・target API 34・Spatial SDK 0.15.0を採用しています。HMD・実入力は最終段階の確認に残しています。[再現手順](docs/phase-0-reproduction.md)、[製品実装の進捗・失敗記録](docs/progress.md)、[native依存の固定build](docs/native-dependencies-build.md)、[window stateの実機検証](docs/wayland-window-state-checks.md)、[APK向けWaypipe](docs/waypipe-build-checks.md)、[SSH経由の画像とfoot受信](docs/waypipe-forwarded-shm-checks.md)、[owned画像のGPU描画](docs/owned-image-render-checks.md)を参照してください。
 
-**残フェーズの実装設計:** [Sol向け引継ぎ](docs/design/README.md)に31タスク、44検証、ファイル・API・状態遷移・失敗時の判断を整理しました。B01/B03/C01/H01等は受入済みです。T04/W01〜W05はnative検証が成立し、通常UI/HMDの確認を残しています。SDKへの画像描画と製品入力は後続タスクです。[進捗と試行記録](docs/progress.md)を参照してください。
+**残フェーズの実装設計:** [Sol向け引継ぎ](docs/design/README.md)に31タスク、44検証、ファイル・API・状態遷移・失敗時の判断を整理しました。B01/B03/C01/H01等は受入済みです。T04/W01〜W05/D01はnative検証が成立し、通常UI/HMDの確認を残しています。SDKへの画像描画と製品入力は後続タスクです。[進捗と試行記録](docs/progress.md)を参照してください。
 
 **本格実装前の小さな検証:** 独立debug APKでAPK UIDのhelper実行、Rust→SDK Surfaceの4色表示と再生成を実機確認しました。[検証・スリープ設定・ADB撮影と入力の記録](docs/native-preflight-20261104.md)に、手順、失敗、確認範囲を残しています。
 
-**次の到達点:** 受信済みのowned snapshotをGL ownerへつなぎ、既知画像をSDKパネルに表示します。その後、footと入力・複数windowへ進み、HMD確認を最終段階にまとめます。
+**次の到達点:** 検証済みのGL ownerへ実footのowned snapshotを渡し、SDKパネルへ表示します。その後、footと入力・複数windowへ進み、HMD確認を最終段階にまとめます。
 
 **開発時の接続（2026-11-04実測）:** USBで初回デバッグ承認と端末照合を済ませ、USB-Cを給電器へ回した状態でWi-Fi経由のAPK導入・更新・起動・ログ・Android画像取得とTermux SSHに成功しました。ADBの切断・再接続後もSSHを復旧できました。USB経由のAPK導入、長時間の残量維持、sleep／Quest再起動後の自動復旧は未検証です。
 
