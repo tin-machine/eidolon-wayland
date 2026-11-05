@@ -314,32 +314,14 @@ impl Runtime {
                                         if compositor.is_some() || dependencies.is_some() {
                                             Status::Busy
                                         } else if cfg!(debug_assertions) {
-                                            use eidolon_model::commands::CompositorScenario as S;
-                                            use eidolon_shm_fixture::Mode as M;
-                                            let mode = match scenario {
-                                                S::Pattern => M::Pattern,
-                                                S::SharedCache => M::SharedCache,
-                                                S::InvalidDimensions => M::InvalidDimensions,
-                                                S::InvalidStride => M::InvalidStride,
-                                                S::InvalidOffset => M::InvalidOffset,
-                                                S::InvalidFormat => M::InvalidFormat,
-
-                                                S::Truncate => M::Truncate,
-                                                S::NegativeResize => M::NegativeResize,
-                                                S::OversizedPool => M::OversizedPool,
-                                                S::PoolLimit => M::PoolLimit,
-                                            };
+                                            let scenario = *scenario;
                                             let (stop, nonce) = (stopping.clone(), nonce.clone());
                                             match thread::Builder::new()
                                                 .name("eidolon-wl-check".into())
                                                 .spawn(move || {
-                                                    let report =
-                                                        crate::compositor::checks::run(mode, stop);
-                                                    let mut report = serde_json::to_value(report)
-                                                        .expect("bounded compositor report");
-                                                    report["nonce"] =
-                                                        serde_json::Value::String(nonce);
-                                                    report
+                                                    crate::compositor::checks::run_scenario(
+                                                        scenario, stop, nonce,
+                                                    )
                                                 }) {
                                                 Ok(job) => {
                                                     state.snapshot.compositor_workers = 1;

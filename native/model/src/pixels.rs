@@ -127,6 +127,9 @@ impl fmt::Debug for OwnedRgba {
 
 impl Drop for OwnedRgba {
     fn drop(&mut self) {
+        // GL等のconsumer threadが最後の参照を落とす場合も、実allocationを
+        // 解放してからprotocol ownerの次の割当に予算を返す。
+        drop(std::mem::take(&mut self.pixels));
         self.budget.0.used.fetch_sub(self.charged, Ordering::AcqRel);
     }
 }

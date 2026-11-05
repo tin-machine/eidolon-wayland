@@ -42,7 +42,7 @@ pub struct Report {
     pub error: Option<&'static str>,
 }
 
-fn object_counts(display: &Display<ProtocolState>) -> (usize, usize) {
+pub(super) fn object_counts(display: &Display<ProtocolState>) -> (usize, usize) {
     let backend = display.handle().backend_handle();
     let mut clients = vec![];
     backend.with_all_clients(|client| clients.push(client));
@@ -53,7 +53,7 @@ fn object_counts(display: &Display<ProtocolState>) -> (usize, usize) {
     (clients.len(), objects)
 }
 
-fn fixture_resources() -> Result<(usize, usize), &'static str> {
+pub(super) fn fixture_resources() -> Result<(usize, usize), &'static str> {
     let fds = std::fs::read_dir("/proc/self/fd")
         .map_err(|_| "PROC_FD")?
         .filter_map(Result::ok)
@@ -88,6 +88,7 @@ fn client(
         .map_err(|_| "FIXTURE_THREAD")?;
     let deadline = Instant::now() + Duration::from_secs(25);
     let mut copied = state.counters.copies;
+    let mut virtual_tick = 0u64;
     let outcome = loop {
         if stop.load(Ordering::Acquire) {
             break Err("CANCELLED");
@@ -135,8 +136,10 @@ fn client(
             copied += 1;
         }
         // このfixed fixtureだけに仮想presentを通知する。通常製品のcallback schedulerとは別。
-        for surface in state.surfaces_for_check() {
-            state.complete_frame(&surface, copied as u32 * 16);
+        let virtual_now = Duration::from_nanos(virtual_tick * 16_666_667);
+        virtual_tick += 1;
+        for window in state.windows() {
+            state.frame_callbacks(window.window, virtual_now, true, true, true);
         }
         if display.flush_clients().is_err() {
             break Err("SERVER_FLUSH");
@@ -185,7 +188,10 @@ pub fn run(mode: Mode, stop: Arc<AtomicBool>) -> Report {
             return Err("FIXTURE_ALREADY_RUNNING");
         }
         let mut display = Display::<ProtocolState>::new().map_err(|_| "DISPLAY_CREATE")?;
-        let mut state = ProtocolState::new(&display.handle());
+        let mut state = ProtocolState::new(
+            &display.handle(),
+            eidolon_model::ids::SessionId::new(1).unwrap(),
+        );
         let outcome = (|| {
             let first = client(
                 &mut display,
@@ -293,12 +299,56 @@ pub fn run(mode: Mode, stop: Arc<AtomicBool>) -> Report {
     report
 }
 
+/// 固定scenarioをdebug専用workerへ振り分け、応答を同じnonceへ束縛する。
+pub fn run_scenario(
+    scenario: eidolon_model::commands::CompositorScenario,
+    stop: Arc<AtomicBool>,
+    nonce: String,
+) -> serde_json::Value {
+    use eidolon_model::commands::CompositorScenario as S;
+    use eidolon_shm_fixture::state::Scenario as F;
+    enum Probe {
+        Shm(Mode),
+        State(F),
+    }
+    let probe = match scenario {
+        S::Lifecycle => Probe::State(F::Lifecycle),
+        S::Transforms => Probe::State(F::Transforms),
+        S::FrameGates => Probe::State(F::FrameGates),
+        S::Tree => Probe::State(F::Tree),
+        S::BadSerial => Probe::State(F::BadSerial),
+        S::StaleConfigure => Probe::State(F::StaleConfigure),
+        S::PrematureBuffer => Probe::State(F::PrematureBuffer),
+        S::UnconfiguredRemap => Probe::State(F::UnconfiguredRemap),
+        S::BadScale => Probe::State(F::BadScale),
+        S::PositionerOverflow => Probe::State(F::PositionerOverflow),
+        S::Pattern => Probe::Shm(Mode::Pattern),
+        S::SharedCache => Probe::Shm(Mode::SharedCache),
+        S::InvalidDimensions => Probe::Shm(Mode::InvalidDimensions),
+        S::InvalidStride => Probe::Shm(Mode::InvalidStride),
+        S::InvalidOffset => Probe::Shm(Mode::InvalidOffset),
+        S::InvalidFormat => Probe::Shm(Mode::InvalidFormat),
+        S::Truncate => Probe::Shm(Mode::Truncate),
+        S::NegativeResize => Probe::Shm(Mode::NegativeResize),
+        S::OversizedPool => Probe::Shm(Mode::OversizedPool),
+        S::PoolLimit => Probe::Shm(Mode::PoolLimit),
+    };
+    let mut report = match probe {
+        Probe::Shm(mode) => serde_json::to_value(run(mode, stop)),
+        Probe::State(scenario) => serde_json::to_value(super::state_checks::run(scenario, stop)),
+    }
+    .expect("bounded compositor report");
+    report["nonce"] = serde_json::Value::String(nonce);
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     // /procのfixture名とprocess-wide signal handlerを共有するため、同じ実例群は直列にする。
     #[test]
     fn real_client_patterns_and_malformed_pools_recover_in_same_display() {
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
         for mode in [
             Mode::Pattern,
             Mode::SharedCache,

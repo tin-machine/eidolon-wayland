@@ -4,6 +4,81 @@ import json
 import hashlib
 
 
+def wayland_state_result(snapshot, nonce, expected, uid, *, instrumentation=False):
+    if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
+        return False
+    result = snapshot.get("check", {})
+    if result.get("case") != "wayland-state" or result.get("nonce") != nonce:
+        return False
+    if result.get("result") == "fail":
+        raise ValueError("端末Wayland state caseが失敗しました")
+    if result.get("result") != "pass":
+        return False
+    scenarios = [("lifecycle", "Lifecycle"), ("transforms", "Transforms"), ("frame_gates", "FrameGates"), ("tree", "Tree"),
+                 ("bad_serial", "BadSerial"), ("stale_configure", "StaleConfigure"), ("premature_buffer", "PrematureBuffer"),
+                 ("unconfigured_remap", "UnconfiguredRemap"), ("bad_scale", "BadScale"), ("positioner_overflow", "PositionerOverflow")]
+    rows = result.get("cycles", [])
+    if len(rows) != len(scenarios) or result.get("cleanup_failed"):
+        raise ValueError("Wayland stateのscenario数・回収が不正です")
+    for index, (row, (scenario, mode)) in enumerate(zip(rows, scenarios)):
+        report = row.get("report", {})
+        if (row.get("cycle") != index + 1 or row.get("scenario") != scenario
+                or report.get("state") != "pass" or report.get("error") is not None
+                or report.get("fixture_revision") != "eidolon-wayland-state-v1" or report.get("callback_clock") != "virtual" or report.get("scenario") != mode
+                or report.get("uid") != uid or report.get("nonce") != hashlib.sha256(f"{nonce}:{index}".encode()).hexdigest()[:16]
+                or any(type(report.get(field)) is not int or report[field] != 0 for field in ("surfaces_after", "clients_after", "objects_after", "windows_after",
+                    "pixel_bytes_after", "pool_bytes_after", "pool_count_after", "fixture_fds_after", "fixture_maps_after"))
+                or type(report.get("elapsed_ms")) is not int or not 0 <= report["elapsed_ms"] < 60000
+                or type(row.get("fds")) is not int or row["fds"] <= 0
+                or type(row.get("native_heap_bytes")) is not int or row["native_heap_bytes"] <= 0):
+            raise ValueError("Wayland stateのnonce・UID・資源回収が不正です")
+        primary = report.get("proof", {})
+        if index >= 4:
+            if primary.get("client", {}).get("protocol_error") is not True:
+                raise ValueError("異常clientのprotocol errorがありません")
+            proof = report.get("recovery") or {}
+        else:
+            proof = primary
+        client = proof.get("client", {})
+        if (client.get("protocol_error") is not False or type(proof.get("checkpoints")) is not int
+                or client.get("checkpoints") != proof["checkpoints"]
+                or type(proof.get("cadence_checks")) is not int or proof["cadence_checks"] <= 0
+                or type(proof.get("immutable_checks")) is not int or proof["immutable_checks"] < 3):
+            raise ValueError("正常client・immutable snapshot・callbackの証明が不正です")
+        ids = proof.get("window_ids", [])
+        if not ids or any(not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]*", value) or int(value) > 2**63 - 1 for value in ids):
+            raise ValueError("Wayland window IDが不正です")
+        if scenario == "lifecycle":
+            if (any(proof.get(field) is not True for field in ("mapped", "unmapped", "remapped", "resize_commit_only", "consecutive_configures", "recreated", "rejected_resize"))
+                    or len(ids) != 2 or int(ids[1]) <= int(ids[0]) or client.get("withheld") != 1):
+                raise ValueError("map/unmap/remap・configure・ID非再利用が不正です")
+        elif scenario == "frame_gates":
+            if proof.get("withheld") != 3 or client.get("withheld") != 3:
+                raise ValueError("visible/target/budgetによるcallback抑制が不正です")
+        elif scenario == "tree":
+            if (proof.get("tree_flags") != 127 or proof.get("tree_immutable_checks", 0) < 5 or proof.get("clip_checks") != 2
+                    or proof.get("content_reused") is not True or client.get("popup_done") != 3
+                    or client.get("popup_positions") != [[10, 10, 8, 8], [6, 6, 6, 6], [24, 26, 8, 8]]):
+                raise ValueError("同期・重なり・nested popup・親clipが不正です")
+        elif (proof.get("transforms") != 255 or proof.get("scales") != 3 or proof.get("checkpoints") != 16 or proof.get("immutable_checks") != 15):
+            raise ValueError("8transform/scaleと異常client後の回復が不正です")
+    after = result.get("after_stop", {})
+    if (after.get("state") != "Stopped" or any(after.get(field) != 0 for field in ("compositor_workers", "dependency_workers", "helper_workers"))
+            or after.get("render", {}).get("workers") != 0 or after.get("transport", {}).get("workers") != 0
+            or type(result.get("accept_ms")) is not int or not 0 <= result["accept_ms"] < 100
+            or type(result.get("stop_ms")) is not int or not 0 <= result["stop_ms"] < 10000):
+        raise ValueError("Wayland state workerの停止・受付期限が不正です")
+    if instrumentation:
+        return instrumentation_result(snapshot, result, uid)
+    last, current = result.get("last_handle", ""), snapshot.get("runtime", {})
+    handle, state = current.get("handle", ""), current.get("runtime", {})
+    return (isinstance(last, str) and last.isdecimal() and isinstance(handle, str) and handle.isdecimal()
+            and 0 < int(last) < int(handle) <= 2**63 - 1 and current.get("code") == 0
+            and current.get("registry") == {"runtimes": 1, "workers": 1} and state.get("state") == "Ready"
+            and state.get("activity_visible") is True and state.get("xr_state") in {"VISIBLE", "FOCUSED"}
+            and state.get("compositor_workers") == 0 and state.get("transport", {}).get("state") == "Idle")
+
+
 def shm_result(snapshot, nonce, expected, uid, case, *, instrumentation=False):
     if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
         return False

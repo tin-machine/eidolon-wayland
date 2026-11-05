@@ -18,7 +18,11 @@ object CompositorCase {
             active = NativeBridge.nativeCreate(configuration)
             check(active > 0)
             waitFor { runtime(active).getString("state") == "Ready" }
-            val scenarios = if (name == "shm-truncate") listOf("truncate") else listOf("pattern", "shared_cache", "invalid_dimensions", "invalid_stride", "invalid_offset", "invalid_format", "negative_resize", "oversized_pool", "pool_limit")
+            val scenarios = when (name) {
+                "shm-truncate" -> listOf("truncate")
+                "wayland-state" -> listOf("lifecycle", "transforms", "frame_gates", "tree", "bad_serial", "stale_configure", "premature_buffer", "unconfigured_remap", "bad_scale", "positioner_overflow")
+                else -> listOf("pattern", "shared_cache", "invalid_dimensions", "invalid_stride", "invalid_offset", "invalid_format", "negative_resize", "oversized_pool", "pool_limit")
+            }
             scenarios.forEachIndexed { index, scenario ->
                 val token = MessageDigest.getInstance("SHA-256").digest("$nonce:$index".toByteArray()).take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
                 val request = (index + 1).toString()

@@ -114,6 +114,17 @@ pub enum CleanupScenario {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompositorScenario {
+    Lifecycle,
+    Transforms,
+    FrameGates,
+    Tree,
+    BadSerial,
+    StaleConfigure,
+    PrematureBuffer,
+    UnconfiguredRemap,
+    BadScale,
+    PositionerOverflow,
+
     Pattern,
     SharedCache,
     InvalidDimensions,

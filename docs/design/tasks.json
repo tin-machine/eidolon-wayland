@@ -790,7 +790,7 @@
     {
       "id": "W03",
       "title": "Wayland寿命・immutable snapshot",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "W02"
       ],

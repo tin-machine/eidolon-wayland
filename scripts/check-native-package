@@ -89,6 +89,8 @@ def inspect(apk):
                 raise ValueError("JNI symbolがありません: " + method)
         if (b"eidolon-shm-client-v1" in data) != (info["profile"] == "debug"):
             raise ValueError("profileとSHM fixtureの同梱が不一致です")
+        if (b"eidolon-wayland-state-v1" in data) != (info["profile"] == "debug"):
+            raise ValueError("profileとWayland state fixtureの同梱が不一致です")
         helper_path = f"lib/{ABI}/libeidolon_probe_bin.so"
         helper_files = [name for name in names if name.endswith("/libeidolon_probe_bin.so")]
         if info["profile"] == "release" and helper_files:

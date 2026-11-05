@@ -15,7 +15,7 @@ import zipfile
 
 from native_build import ROOT, identity
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
-from quest_checks import runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result, native_deps_result, shm_result
+from quest_checks import runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result, native_deps_result, shm_result, wayland_state_result
 
 CASES = ("runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup",
          "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm", "render", "foot", "ray", "keyboard",
@@ -27,9 +27,9 @@ parser.add_argument("--timeout", type=int, default=120)
 parser.add_argument("--artifact-root", type=Path)
 parser.add_argument("--instrumentation", action="store_true", help="Activityを起動しないnative検査。UI復帰は別に検査する")
 args = parser.parse_args()
-if args.instrumentation and args.case not in {"forward", "remote-cleanup", "native-deps", "shm", "shm-truncate"}:
-    parser.error("instrumentationはforward/remote-cleanup/native-deps/shm/shm-truncateだけです")
-if args.case not in {"runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate"}:
+if args.instrumentation and args.case not in {"forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state"}:
+    parser.error("instrumentationはforward/remote-cleanup/native-deps/shm/shm-truncate/wayland-stateだけです")
+if args.case not in {"runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state"}:
     parser.error("このcaseは未実装です")
 if not 1 <= args.timeout <= 7200:
     parser.error("timeoutは1〜7200秒です")
@@ -105,6 +105,8 @@ try:
             accepted = forward_result(snapshot, nonce, expected, termux_uid, instrumentation=args.instrumentation, apk_uid=uid)
         elif args.case == "remote-cleanup":
             accepted = remote_cleanup_result(snapshot, nonce, expected, termux_uid, instrumentation=args.instrumentation, apk_uid=uid)
+        elif args.case == "wayland-state":
+            accepted = wayland_state_result(snapshot, nonce, expected, uid, instrumentation=args.instrumentation)
         elif args.case in {"shm", "shm-truncate"}:
             accepted = shm_result(snapshot, nonce, expected, uid, args.case, instrumentation=args.instrumentation)
         elif args.case == "native-deps":

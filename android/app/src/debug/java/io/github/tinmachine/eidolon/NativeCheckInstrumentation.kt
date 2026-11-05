@@ -17,7 +17,7 @@ class NativeCheckInstrumentation : Instrumentation() {
         super.onCreate(arguments)
         name = arguments?.getString("case") ?: ""
         nonce = arguments?.getString("nonce") ?: ""
-        if (name !in setOf("forward", "remote-cleanup", "native-deps", "shm", "shm-truncate") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
+        if (name !in setOf("forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
             arguments?.keySet()?.any { it != "case" && it != "nonce" } == true) {
             finish(Activity.RESULT_CANCELED, Bundle().apply { putString("result", "invalid_argument") })
             return
@@ -44,7 +44,7 @@ class NativeCheckInstrumentation : Instrumentation() {
                 "forward" -> ForwardCase.run(nonce, context, configuration, store)
                 "remote-cleanup" -> RemoteCleanupCase.run(nonce, context, configuration, store)
                 "native-deps" -> NativeDepsCase.run(nonce, configuration, store)
-                "shm", "shm-truncate" -> CompositorCase.run(name, nonce, configuration, store)
+                "shm", "shm-truncate", "wayland-state" -> CompositorCase.run(name, nonce, configuration, store)
             }
             result = JSONObject(File(context.noBackupFilesDir, "diagnostics/latest.json").readText()).getJSONObject("check")
             check(result.getString("nonce") == nonce && result.getString("result") == "pass")

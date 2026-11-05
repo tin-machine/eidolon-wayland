@@ -4,11 +4,12 @@ use super::{
     shm_budget::{PoolBudget, PoolLease, Usage},
 };
 use eidolon_model::{
+    ids::{ContentSeq, SessionId, SurfaceId, WindowId},
     limits,
     pixels::{OwnedRgba, PixelBudget},
 };
 use smithay::{
-    delegate_compositor, delegate_output, delegate_seat, delegate_xdg_shell,
+    delegate_compositor, delegate_output, delegate_seat,
     input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::wayland_server::{
@@ -77,6 +78,8 @@ pub struct Counters {
     pub callbacks: u64,
     pub bad_maps: u64,
     pub cancellations: u64,
+    pub maps: u64,
+    pub unmaps: u64,
 }
 
 /// SurfaceAttributesと同じtransaction/cacheを通る使用token。未適用の同期commitも保持する。
@@ -98,7 +101,13 @@ impl Cacheable for BufferUse {
     }
 }
 
+#[path = "positioner.rs"]
+mod positioner;
 /// 所有済みsnapshot以外はprotocol ownerから持ち出さない。
+#[path = "snapshot.rs"]
+mod snapshot;
+pub use snapshot::WindowReport;
+
 pub struct ProtocolState {
     compositor: CompositorState,
     shell: XdgShellState,
@@ -109,7 +118,14 @@ pub struct ProtocolState {
     output: Output,
     _globals: Vec<GlobalId>,
     surfaces: Vec<WlSurface>,
-    toplevels: HashMap<ObjectId, ToplevelSurface>,
+    toplevels: HashMap<ObjectId, snapshot::WindowRecord>,
+    popups: Vec<PopupSurface>,
+    dismissed_popups: HashSet<ObjectId>,
+    session: SessionId,
+    next_window: Option<WindowId>,
+    next_surface: Option<SurfaceId>,
+    next_content: Option<ContentSeq>,
+    surface_meta: HashMap<ObjectId, snapshot::SurfaceMeta>,
     pixels: HashMap<ObjectId, Arc<OwnedRgba>>,
     pixel_budget: PixelBudget,
     pools: PoolBudget,
@@ -131,7 +147,7 @@ fn cap<I: Resource + 'static>(dh: &DisplayHandle, old: GlobalId, version: u32) -
 }
 
 impl ProtocolState {
-    pub fn new(dh: &DisplayHandle) -> Self {
+    pub fn new(dh: &DisplayHandle, session: SessionId) -> Self {
         let compositor = CompositorState::new::<Self>(dh);
         let shell = XdgShellState::new::<Self>(dh);
         let shm = ShmState::new::<Self>(dh, []);
@@ -183,6 +199,13 @@ impl ProtocolState {
             _globals: globals,
             surfaces: vec![],
             toplevels: HashMap::new(),
+            popups: vec![],
+            dismissed_popups: HashSet::new(),
+            session,
+            next_window: WindowId::new(1).ok(),
+            next_surface: SurfaceId::new(1).ok(),
+            next_content: ContentSeq::new(1).ok(),
+            surface_meta: HashMap::new(),
             pixels: HashMap::new(),
             pixel_budget: PixelBudget::default(),
             pools: PoolBudget::default(),
@@ -280,7 +303,7 @@ impl ProtocolState {
     }
 
     /// visible/presentが確認できたsurfaceだけに呼ぶ。protocol fixtureは明示的な仮想clockを使う。
-    pub fn complete_frame(&mut self, surface: &WlSurface, time_ms: u32) {
+    pub(super) fn complete_frame(&mut self, surface: &WlSurface, time_ms: u32) {
         if self.pixels.contains_key(&surface.id()) {
             with_states(surface, |states| {
                 for callback in states
@@ -299,12 +322,12 @@ impl ProtocolState {
 
     fn copy_committed(&mut self, surface: &WlSurface) {
         let assignment = with_states(surface, |states| {
-            states
-                .cached_state
-                .get::<SurfaceAttributes>()
-                .current()
-                .buffer
-                .take()
+            let mut cached = states.cached_state.get::<SurfaceAttributes>();
+            let attrs = cached.current();
+            // owned画像は全体copyするため、damageを次frameへ蓄積しない。
+            attrs.damage.clear();
+            attrs.buffer_delta.take();
+            attrs.buffer.take()
         });
         let changed = assignment.is_some();
         match assignment {
@@ -316,6 +339,7 @@ impl ProtocolState {
                             self.output.enter(surface);
                         }
                         self.counters.copies += 1;
+                        self.update_surface_metadata(surface, true);
                     }
                     Err(shm::CopyError::BadMap) => {
                         self.counters.bad_maps += 1;
@@ -327,10 +351,13 @@ impl ProtocolState {
                 self.release_queue.insert(buffer.id(), buffer);
             }
             Some(BufferAssignment::Removed) => {
+                self.reset_unmapped_toplevel(surface);
                 self.pixels.remove(&surface.id());
                 self.output.leave(surface);
             }
-            None => (),
+            None => {
+                self.update_surface_metadata(surface, false);
+            }
         }
         if changed {
             // 実copyの終了後だけ、このsurfaceのcurrent使用tokenを外す。
@@ -361,6 +388,9 @@ impl CompositorHandler for ProtocolState {
         if self.surfaces.len() >= limits::SURFACES {
             surface.post_error(wl_surface::Error::InvalidSize, "surface budget exceeded");
         } else {
+            if !self.register_surface(surface) {
+                return;
+            }
             self.surfaces.push(surface.clone());
             add_pre_commit_hook::<Self, _>(surface, |state, _, surface| {
                 let pending = with_states(surface, |states| {
@@ -396,11 +426,8 @@ impl CompositorHandler for ProtocolState {
     }
     fn commit(&mut self, surface: &WlSurface) {
         self.counters.commits += 1;
-        if let Some(toplevel) = self.toplevels.get(&surface.id())
-            && !toplevel.is_initial_configure_sent()
-        {
-            toplevel.send_configure();
-            self.counters.configures += 1;
+        if !self.prepare_role_commit(surface) {
+            return;
         }
         if is_sync_subsurface(surface) {
             return;
@@ -416,12 +443,33 @@ impl CompositorHandler for ProtocolState {
         for surface in applied {
             self.copy_committed(&surface);
         }
+        if let Some(root) = self.root_for_surface(surface) {
+            self.refresh_window(&root);
+        }
     }
     fn destroyed(&mut self, surface: &WlSurface) {
+        let window = self
+            .surface_meta
+            .get(&surface.id())
+            .and_then(|meta| meta.window);
+        self.forget_toplevel(surface);
+        self.forget_popup(surface);
+        self.surface_meta.remove(&surface.id());
+        self.popups.retain(|popup| popup.wl_surface() != surface);
+        self.dismissed_popups.remove(&surface.id());
         self.pixels.remove(&surface.id());
-        self.toplevels.remove(&surface.id());
         self.surfaces.retain(|s| s != surface);
         self.output.leave(surface);
+        if let Some(window) = window {
+            let root = self
+                .toplevels
+                .iter()
+                .find(|(_, record)| record.id == window)
+                .map(|(id, _)| id.clone());
+            if let Some(root) = root {
+                self.refresh_window(&root);
+            }
+        }
     }
 }
 
@@ -444,16 +492,23 @@ impl XdgShellHandler for ProtocolState {
                 .wl_surface()
                 .post_error(wl_surface::Error::InvalidSize, "toplevel budget exceeded");
         } else {
-            self.toplevels.insert(toplevel.wl_surface().id(), toplevel);
+            self.register_toplevel(toplevel);
         }
     }
     fn new_popup(&mut self, popup: PopupSurface, _: PositionerState) {
-        popup.send_configure().ok();
+        if popup.get_parent_surface().is_none() {
+            popup
+                .wl_surface()
+                .post_error(wl_surface::Error::InvalidSize, "popup parent required");
+        } else {
+            self.popups.push(popup);
+        }
     }
     fn grab(&mut self, _: PopupSurface, _: WlSeat, _: Serial) {}
     fn reposition_request(&mut self, _: PopupSurface, _: PositionerState, _: u32) {}
-    fn ack_configure(&mut self, _: WlSurface, _: Configure) {
+    fn ack_configure(&mut self, surface: WlSurface, _: Configure) {
         self.counters.acks += 1;
+        self.role_acked(&surface);
     }
     fn title_changed(&mut self, surface: ToplevelSurface) {
         with_states(surface.wl_surface(), |states| {
@@ -482,7 +537,10 @@ impl XdgShellHandler for ProtocolState {
         });
     }
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        self.toplevels.remove(&surface.wl_surface().id());
+        self.forget_toplevel(surface.wl_surface());
+    }
+    fn popup_destroyed(&mut self, surface: PopupSurface) {
+        self.forget_popup(surface.wl_surface());
     }
 }
 impl OutputHandler for ProtocolState {}
@@ -648,7 +706,17 @@ impl Dispatch<WlDataDevice, DataDeviceUserData> for ProtocolState {
 }
 
 delegate_compositor!(ProtocolState);
-delegate_xdg_shell!(ProtocolState);
+use smithay::reexports::wayland_protocols::xdg::shell::server::{
+    xdg_popup::XdgPopup, xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel, xdg_wm_base::XdgWmBase,
+};
+use smithay::wayland::shell::xdg::{
+    XdgShellSurfaceUserData, XdgSurfaceUserData, XdgWmBaseUserData,
+};
+delegate_global_dispatch!(ProtocolState: [XdgWmBase: ()] => XdgShellState);
+delegate_dispatch!(ProtocolState: [XdgWmBase: XdgWmBaseUserData] => XdgShellState);
+delegate_dispatch!(ProtocolState: [XdgSurface: XdgSurfaceUserData] => XdgShellState);
+delegate_dispatch!(ProtocolState: [XdgPopup: XdgShellSurfaceUserData] => XdgShellState);
+delegate_dispatch!(ProtocolState: [XdgToplevel: XdgShellSurfaceUserData] => XdgShellState);
 delegate_output!(ProtocolState);
 delegate_seat!(ProtocolState);
 delegate_global_dispatch!(ProtocolState: [WlShm: ()] => ShmState);

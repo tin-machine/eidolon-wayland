@@ -6,3 +6,4 @@ pub mod limits;
 pub mod pixels;
 pub mod state;
 pub mod surface;
+pub mod window;

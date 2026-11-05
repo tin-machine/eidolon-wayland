@@ -399,3 +399,22 @@ host Rust60/Python25/launcher12、実APK Python29、debug/release build/lint/pac
 自動結果は`scope=native-instrumentation`、`normal_ui_returned=false`。
 通常UI復帰とScene稼働時SDK handlerとの共存は未確認なのでW02はin_progressを維持する。
 Phase5/I07全体を完了扱いにせず、次はW03のlifecycle、scale/transform、popupとimmutable snapshotへ進む。
+
+## W03: Window寿命・owned snapshot・tree（native検証済み）
+
+map/unmap/remap、非再利用ID、configure ACKと画像commitの分離、subsurfaceの同期/非同期とstack、
+popupの位置・親clip、scale/8transform、最新のimmutable snapshotを実装した。
+所有済みpixelだけを渡し、可視/target/render予算でframe callbackを最大60Hzに制限する。
+検査は明示的な仮想clockを使い、実HMDのfpsとは区別する。
+
+Build45のQuest APK UIDで`wayland-state`10caseが全pass（run `20261105T092341-ede857b2`）。
+旧snapshot/旧treeの不変性、ACKだけではresizeしないこと、未ACK旧serialのunmap後拒否、
+nested popupの2×2/4×4 clip、popup_done 3回、異常client後の同Display回復を確認した。
+各case 58〜93ms、FD数70で一定、終了後FD/mapping/client/object/window/pool/pixel予算は0、停止6ms。
+shm9・独立truncate・native依存10・forward・remote回収7故障も同sourceで全pass。
+host Rust64/Python27/launcher12、実APK Python31、debug/release build/lint/packageが成功した。
+
+Rust借用のcompile失敗、positioner Dispatch未登録、独自cache時のrole reset、検証器のcleanup迂回を修正し、
+[再現手順・run/hash・試行錯誤](wayland-window-state-checks.md)へまとめた。
+W03は通常UI復帰とSDKパネルへの接続が未受入のためin_progressを維持する。
+次はW04のAPK向けWaypipe build/起動へ進む。Phase5/I07全体のgoalは継続する。

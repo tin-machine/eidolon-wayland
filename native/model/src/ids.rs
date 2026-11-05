@@ -47,6 +47,7 @@ id_type!(
     SceneEpoch,
     SurfaceGeneration,
     FrameSeq,
+    ContentSeq,
     CommandSeq
 );
 

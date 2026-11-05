@@ -15,5 +15,6 @@ pub const CLIENT_SHM_BYTES: usize = 64 * 1024 * 1024;
 pub const TOTAL_SHM_BYTES: usize = 128 * 1024 * 1024;
 pub const CLIENT_SHM_POOLS: usize = 8;
 pub const PIXEL_BYTES: usize = 128 * 1024 * 1024;
+pub const POSITIONER_COORDINATE: u32 = 32_768;
 pub const FORWARD_CHANNELS: usize = 8;
 pub const EXEC_RING_BYTES: usize = 64 * 1024;

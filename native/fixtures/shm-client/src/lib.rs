@@ -28,6 +28,8 @@ use wayland_client::{
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
+pub mod state;
+
 pub const WIDTH: i32 = 32;
 pub const HEIGHT: i32 = 32;
 pub const FRAMES: u32 = 100;
@@ -77,6 +79,11 @@ struct State {
     manager: Option<wl_data_device_manager::WlDataDeviceManager>,
     configured: bool,
     syncs: u32,
+    last_serial: u32,
+    suppress_ack: bool,
+    toplevel_size: Option<(i32, i32)>,
+    popup_positions: Vec<(i32, i32, i32, i32)>,
+    popup_done: u32,
     report: Report,
 }
 
@@ -397,9 +404,12 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for State {
     ) {
         if let xdg_surface::Event::Configure { serial } = event {
             state.report.configures += 1;
-            proxy.ack_configure(serial);
-            state.report.acks += 1;
-            state.configured = true;
+            state.last_serial = serial;
+            if !state.suppress_ack {
+                proxy.ack_configure(serial);
+                state.report.acks += 1;
+                state.configured = true;
+            }
         }
     }
 }
@@ -519,7 +529,20 @@ delegate_noop!(State: ignore wl_subcompositor::WlSubcompositor);
 delegate_noop!(State: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(State: ignore wl_shm::WlShm);
 delegate_noop!(State: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(State: ignore xdg_toplevel::XdgToplevel);
+impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &xdg_toplevel::XdgToplevel,
+        event: xdg_toplevel::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_toplevel::Event::Configure { width, height, .. } = event {
+            state.toplevel_size = Some((width, height));
+        }
+    }
+}
 delegate_noop!(State: ignore wl_data_device_manager::WlDataDeviceManager);
 
 #[cfg(test)]
