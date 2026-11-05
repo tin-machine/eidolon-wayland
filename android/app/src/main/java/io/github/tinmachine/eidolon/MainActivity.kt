@@ -74,7 +74,7 @@ class MainActivity : AppSystemActivity() {
         if (panel == null) {
             panel = Entity.create(listOf(
                 Panel(R.id.phase0_panel),
-                Transform(Pose(Vector3(0.7f, 1.4f, 1.6f))),
+                Transform(Pose(Vector3(-1.45f, 1.4f, 1.4f))),
             ))
         }
         nativePanels.sceneReady(epoch, scene)
@@ -103,6 +103,14 @@ class MainActivity : AppSystemActivity() {
                                 Text(NativeSessionHost.credentialSummary.value, color = Color.White)
                                 Text("SSH: ${NativeSessionHost.connectionSummary.value}", color = Color.White)
                                 Button(onClick = { NativeSessionHost.openTerminal() }) { Text("ターミナルを開く") }
+                                for (window in NativeSessionHost.windowChoices.value) {
+                                    Text("ウィンドウ ${window.window} · ${window.slot?.let { "表示枠 ${it+1}" } ?: "一覧に保持"}",color=Color.White)
+                                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                        Button(onClick={NativeSessionHost.showWindow(window,0)}) { Text("枠1へ表示") }
+                                        Button(onClick={NativeSessionHost.showWindow(window,1)}) { Text("枠2へ表示") }
+                                        Button(onClick={NativeSessionHost.closeWindow(window)}) { Text("閉じる") }
+                                    }
+                                }
                                 Text(NativeSessionHost.layoutSummary.value,color=Color.White)
                                 Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                                     Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.resizeTerminal(800,600)}) { Text("800×600") }

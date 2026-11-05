@@ -116,6 +116,12 @@ impl Runtime {
                     JoinHandle<serde_json::Value>,
                 )> = None;
                 let mut app: Option<crate::session::Session> = None;
+                // server ACKだけで枠の予約を解かない。新windowがmapするまで追加を直列化する。
+                let mut opening_window: Option<(
+                    eidolon_model::ids::SessionId,
+                    eidolon_model::ids::CommandSeq,
+                    Vec<eidolon_model::ids::WindowId>,
+                )> = None;
                 let mut pending_app: Option<(
                     eidolon_model::ids::SessionId,
                     String,
@@ -204,6 +210,31 @@ impl Runtime {
                                 current.forwarding(forward);
                             }
                             current.tick(close, remote_gone);
+                            if let Some((session, request, before)) = opening_window.as_ref() {
+                                let now = current.snapshot();
+                                let failed = ssh
+                                    .app_forward
+                                    .as_ref()
+                                    .and_then(|r| r.remote.as_ref())
+                                    .and_then(|r| r.last_terminal.as_ref())
+                                    .is_some_and(|r| r.request_id == Some(*request) && !r.success);
+                                if close
+                                    || current.session() != *session
+                                    || failed
+                                    || now.windows.iter().any(|w| {
+                                        !before.contains(&w.window)
+                                            && w.life == eidolon_model::window::WindowLife::Mapped
+                                    })
+                                {
+                                    opening_window = None;
+                                }
+                            }
+                            let selected = state
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .panels
+                                .visible();
+                            current.set_visible_windows(&selected);
                             current.render_tick(&gl, clock.elapsed());
                             let report = current.snapshot();
                             if !close && report.ready && !report.forward_sent {
@@ -416,6 +447,82 @@ impl Runtime {
                             let app_busy =
                                 pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
                             let code = match &command {
+                                Command::OpenTerminal {
+                                    session,
+                                    request_id,
+                                    ..
+                                } => {
+                                    if app
+                                        .as_ref()
+                                        .is_none_or(|a| a.session() != *session || a.closed())
+                                    {
+                                        Status::Stale
+                                    } else if opening_window.is_some()
+                                        || app.as_ref().is_some_and(|a| {
+                                            a.snapshot().windows.len() >= limits::TOPLEVELS
+                                        })
+                                    {
+                                        Status::Busy
+                                    } else {
+                                        let code = io.open_terminal(*session, *request_id);
+                                        if code == Status::Accepted {
+                                            opening_window = Some((
+                                                *session,
+                                                *request_id,
+                                                app.as_ref()
+                                                    .unwrap()
+                                                    .snapshot()
+                                                    .windows
+                                                    .iter()
+                                                    .map(|w| w.window)
+                                                    .collect(),
+                                            ));
+                                        }
+                                        code
+                                    }
+                                }
+
+                                Command::ShowWindow {
+                                    session,
+                                    scene,
+                                    window,
+                                    ..
+                                }
+                                | Command::CloseWindow {
+                                    session,
+                                    scene,
+                                    window,
+                                    ..
+                                } => {
+                                    let current = app.as_mut().filter(|current| {
+                                        current.session() == *session && !current.closed()
+                                    });
+                                    if state.snapshot.scene != Some(*scene)
+                                        || current.as_ref().is_none_or(|current| {
+                                            !current.snapshot().windows.iter().any(|w| {
+                                                w.window == *window
+                                                    && w.life
+                                                        == eidolon_model::window::WindowLife::Mapped
+                                            })
+                                        })
+                                    {
+                                        Status::Stale
+                                    } else {
+                                        let current = current.unwrap();
+                                        current.reset_input();
+                                        match &command {
+                                            Command::ShowWindow { slot, .. } => {
+                                                state.panels.show(*session, *window, *slot)
+                                            }
+                                            Command::CloseWindow { .. } => current
+                                                .close_window(*window)
+                                                .map(|_| Status::Accepted)
+                                                .unwrap_or(Status::Stale),
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                }
+
                                 Command::ResizeLogical { target, .. }
                                 | Command::SetPhysicalSize { target, .. }
                                 | Command::PhysicalSizeApplied { target, .. } => {

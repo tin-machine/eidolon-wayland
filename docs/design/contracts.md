@@ -100,6 +100,11 @@ I03で`cancel_connect(connect_request)`を追加した。元の`connect.request_
 tokenはkeyboard focus変更ごとに更新し、同じwindowへの再入でも古いkeyを拒否する。
 pointer capture中のkeyboard focus変更はepochを進めず、同じpressのreleaseを失わない。
 
+I05では`open_terminal(session)`で固定footclientによる追加を予約し、実window mapまでCoreで直列化する。
+`show_window(session,scene,window,slot)`は表示枠0/1を選び、`close_window(session,scene,window)`は個別closeを送る。
+これらのwindow操作は現session/sceneに束縛し、表示切替とcloseでは入力を解除する。
+slotは旧targetのdestroy ack後だけ再利用する。SDK registration一つに対しEntity別bindingを持つ。
+
 I04では`resize_logical(target,width,height)`、`set_physical_size(target,size)`、
 `physical_size_applied(target,size_command,size)`を追加した。
 logical要求は320×200〜2048×2048、`size`は`{width_m,height_m}`で両方0.25〜3mの有限値。

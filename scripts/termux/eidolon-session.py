@@ -101,10 +101,10 @@ def cleanup(home, nonce, *, creator=False):
         return {"schema": 1, "cleaned": False, "pending": True}
     # child/groupの終了後、作成者だけが転送pとWayland wを回収する。
     # unexpected fileやsymlinkならlease/markerも残し、完了を偽らない。
-    if {entry.name for entry in directory.iterdir()} - {"owner.json", "lease.json", "p", "w"}:
+    if {entry.name for entry in directory.iterdir()} - {"owner.json", "lease.json", "p", "w", "f"}:
         raise ValueError("DIRECTORY_NOT_EMPTY")
     sockets = []
-    for name in ('p', 'w'):
+    for name in ('p', 'w', 'f'):
         sock = directory / name
         try:
             info = sock.lstat()
@@ -246,18 +246,74 @@ def child_command(mode, nonce):
                     '--title=Eidolon', '--font=DejaVu Sans Mono:size=14',
                     '--override=resize-by-cells=no',
                     '--override=tweak.max-shm-pool-size-mb=0']
-        if mode == 'foot_fixture':
-            # 固定出力だけを生成する。任意command/textを制御channelから受け取らない。
-            source = ("import time\n"
-                      "print('Eidolon foot fixture: ABCD 0123456789', flush=True)\n"
-                      "for row in range(1200):\n"
-                      " print('row %04d | ABCDEFGH 0123456789 | scroll fixture' % row, flush=True)\n"
-                      " time.sleep(0.05)\n"
-                      "time.sleep(600)\n")
-            command += [sys.executable, '-u', '-c', source]
-        else:
-            command += [str(TERMUX_PREFIX / 'bin/bash'), '--noprofile', '--norc', '-i']
+        command += ['--server=' + str(directory / 'f')]
     return command
+
+
+def terminal_command(directory, mode):
+    command = [str(TERMUX_PREFIX / 'bin/footclient'), '--server-socket=' + str(directory / 'f'), '--no-wait']
+    if mode == 'foot_fixture':
+        source = ("import time\n"
+                  "print('Eidolon foot fixture: ABCD 0123456789', flush=True)\n"
+                  "for row in range(1200):\n"
+                  " print('row %04d | ABCDEFGH 0123456789 | scroll fixture' % row, flush=True)\n"
+                  " time.sleep(0.05)\n"
+                  "time.sleep(600)\n")
+        command += [sys.executable, '-u', '-c', source]
+    elif mode == 'foot':
+        command += [str(TERMUX_PREFIX / 'bin/bash'), '--noprofile', '--norc', '-i']
+    else:
+        raise ValueError('DEPENDENCY_NOT_READY')
+    return command
+
+
+class TerminalStarter:
+    """短命footclientを所有し、lease/Stopを待たせずにserverへ固定起動を依頼する。"""
+    def __init__(self, directory, mode):
+        self.directory, self.mode = directory, mode
+        self.child = None
+        self.deadline = None
+        self.request = None
+        self.count = 0
+
+    def begin(self, request):
+        if self.deadline is not None:
+            raise ValueError('CONTROL_INVALID')
+        self.request = request
+        self.deadline = time.monotonic() + 5
+
+    def close(self):
+        if self.child is not None:
+            # waitable/WNOWAITでleaderのPIDを予約している間だけ自分のgroupをsignalする。
+            try: os.killpg(self.child.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            self.child.wait(timeout=2)
+            self.child = None
+
+    def tick(self):
+        if self.deadline is None:
+            return None
+        success = False
+        if self.child is None:
+            path = self.directory / 'f'
+            try: info = path.lstat()
+            except FileNotFoundError: info = None
+            if info is not None:
+                if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+                    raise ValueError('DEPENDENCY_NOT_READY')
+                self.child = subprocess.Popen(terminal_command(self.directory, self.mode),
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True, close_fds=True, env=tool_environment(self.directory))
+        if self.child is not None and waitable(self.child):
+            # poll()/wait()より先に、同じgroupを回収してPID再利用を防ぐ。
+            status = os.waitid(os.P_PID,self.child.pid,os.WEXITED | os.WNOWAIT)
+            success = status.si_code == os.CLD_EXITED and status.si_status == 0
+        elif time.monotonic() < self.deadline:
+            return None
+        self.close()
+        self.deadline = None
+        if success: self.count += 1
+        return dict(request_id=self.request, success=success, ordinal=self.count)
 
 
 def tool_environment(directory):
@@ -323,6 +379,8 @@ def inspect_tools(mode):
             result['fixture'] = {**fixture, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
         else:
             if not tool_version(TERMUX_PREFIX / 'bin/foot').startswith('foot version: 1.28.0 '):
+                raise ValueError('DEPENDENCY_NOT_READY')
+            if not tool_version(TERMUX_PREFIX / 'bin/footclient').startswith('footclient version: 1.28.0 '):
                 raise ValueError('DEPENDENCY_NOT_READY')
             result['foot'] = {'version': '1.28.0'}
         return result
@@ -390,6 +448,7 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
     child, child_reaped = None, False
     started_mode = None
     checked_tools = None
+    terminals = None
     output = {"stdout": Tail(), "stderr": Tail()}
     opened = set()
     pending = bytearray()
@@ -443,6 +502,13 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                     status = child.wait()
                     child_reaped = True
                     report["exit_status" if status >= 0 else "exit_signal"] = status if status >= 0 else -status
+            if terminals is not None and stopping_at is None:
+                opened_terminal = terminals.tick()
+                if opened_terminal is not None:
+                    publish({**marker(nonce), 'type': 'terminal_opened', **opened_terminal})
+                    if not opened_terminal['success'] and opened_terminal['request_id'] is None:
+                        report['error'] = 'DEPENDENCY_NOT_READY'
+                        stop('ControlInvalid')
             if stopping_at is not None:
                 if child is None or child_reaped:
                     if not opened:
@@ -479,13 +545,18 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                     try:
                         value = json.loads(line)
                         kind = value["type"]
-                        expected = {"type", "nonce", "mode"} if kind in {"start", "inspect_tools"} else {"type", "nonce"}
+                        expected = {"type", "nonce", "mode"} if kind in {"start", "inspect_tools"} else ({"type", "nonce", "request_id"} if kind == "open_terminal" else {"type", "nonce"})
                         if len(line) > 1024 or set(value) != expected or value["nonce"] != nonce:
                             raise ValueError("CONTROL_INVALID")
                         if kind == "heartbeat":
                             last_heartbeat = time.monotonic()
                         elif kind == "stop":
                             stop("Stop")
+                        elif kind == 'open_terminal' and terminals is not None and terminals.count > 0:
+                            request = value['request_id']
+                            if not isinstance(request,str) or not re.fullmatch(r'[1-9][0-9]{0,18}',request) or int(request)>9223372036854775807:
+                                raise ValueError('CONTROL_INVALID')
+                            terminals.begin(request)
                         elif kind == 'inspect_tools' and child is None:
                             checked_tools = inspect_tools(value['mode'])
                             publish({**marker(nonce), 'type': 'tools', **checked_tools})
@@ -508,6 +579,9 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                                 selector.register(pipe, selectors.EVENT_READ, name)
                                 opened.add(name)
                             publish({**marker(nonce), "type": "child_started", "child": identity})
+                            if started_mode in {'foot','foot_fixture'}:
+                                terminals = TerminalStarter(directory, started_mode)
+                                terminals.begin(None)
                         else:
                             raise ValueError("CONTROL_INVALID")
                     except (KeyError, TypeError, ValueError, OSError) as error:
@@ -515,6 +589,7 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                         stop("ControlInvalid")
         report["group_alive"] = child is not None and not child_reaped and group_live(child.pid)
     finally:
+        if terminals is not None: terminals.close()
         if child is not None and not child_reaped:
             signal_owned(signal.SIGKILL)
             try:

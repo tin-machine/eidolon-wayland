@@ -125,6 +125,7 @@ struct Shared {
     forward: Option<(PathBuf, String, Option<CleanupScenario>)>,
     app: Option<(PathBuf, String, AppMode)>,
     forward_busy: bool,
+    terminal_requests: Option<tokio::sync::mpsc::Sender<CommandSeq>>,
 }
 struct Signals {
     shared: Mutex<Shared>,
@@ -186,6 +187,7 @@ impl Controller {
                 forward: None,
                 app: None,
                 forward_busy: false,
+                terminal_requests: None,
             }),
             cv: Condvar::new(),
             notify: Notify::new(),
@@ -393,6 +395,35 @@ impl Controller {
         s.app = Some((local_socket.into(), nonce.into(), mode));
         self.signals.notify.notify_one();
         Status::Accepted
+    }
+    pub fn open_terminal(&self, session: SessionId, request: CommandSeq) -> Status {
+        let s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Status::Stale;
+        }
+        if s.report.state != State::Ready || s.cancel.as_ref().is_none_or(|c| c.is_cancelled()) {
+            return Status::NotReady;
+        }
+        let Some(sender) = s.terminal_requests.as_ref() else {
+            return Status::NotReady;
+        };
+        if s.report
+            .app_forward
+            .as_ref()
+            .and_then(|r| r.remote.as_ref())
+            .is_none_or(|r| r.terminal_count == 0 || r.terminal_pending.is_some())
+        {
+            return Status::Busy;
+        }
+        match sender.try_send(request) {
+            Ok(()) => Status::Accepted,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Status::Busy,
+            Err(_) => Status::NotReady,
+        }
     }
     pub fn cleanup_probe(
         &self,
@@ -781,6 +812,8 @@ async fn connection(
             .app
             .take();
         if let Some((local_socket, nonce, mode)) = app {
+            let (sender, terminal_requests) = tokio::sync::mpsc::channel(1);
+            signals.update(|s| s.terminal_requests = Some(sender));
             let report = forward_app::run(
                 &client,
                 &connect.router,
@@ -792,6 +825,7 @@ async fn connection(
                     uid,
                     journal,
                     binding: &binding,
+                    terminal_requests,
                 },
                 &connect.cancel,
                 |r| {
@@ -802,7 +836,10 @@ async fn connection(
                 },
             )
             .await;
-            signals.update(|s| s.forward_busy = false);
+            signals.update(|s| {
+                s.forward_busy = false;
+                s.terminal_requests = None;
+            });
             if connect.cancel.is_cancelled() {
                 return Err("CANCELLED");
             }
@@ -831,7 +868,10 @@ async fn connection(
                 },
             )
             .await;
-            signals.update(|s| s.forward_busy = false);
+            signals.update(|s| {
+                s.forward_busy = false;
+                s.terminal_requests = None;
+            });
             if connect.cancel.is_cancelled() {
                 return Err("CANCELLED");
             }

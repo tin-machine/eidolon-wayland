@@ -23,9 +23,10 @@ class SpatialPanelAdapter {
     private var runtimeScene: Scene? = null
     private var closed = false
     private var creating = false
-    private var binding: Binding? = null
-    private var pendingSurface: Pair<Long, Surface>? = null
-    private var pendingObject: Pair<Long, PanelSceneObject>? = null
+    private val bindings = linkedMapOf<Long, Binding>()
+    private fun primary(): Binding? = bindings.values.firstOrNull()
+    private val pendingSurfaces = mutableMapOf<Long, Surface>()
+    private val pendingObjects = mutableMapOf<Long, PanelSceneObject>()
     private var pendingUntil = 0L
     private var created = 0
     private var destroyed = 0
@@ -60,7 +61,7 @@ class SpatialPanelAdapter {
         scene = epoch
         runtimeScene = sdkScene
         closed = false
-        binding?.let { it.retire = true; it.destroy = true }
+        bindings.values.forEach { it.retire = true; it.destroy = true }
         event("scene_ready")
         ui.removeCallbacks(poll)
         ui.post(poll)
@@ -68,46 +69,47 @@ class SpatialPanelAdapter {
     fun close() {
         closed = true
         runtimeScene = null
-        pendingSurface = null; pendingObject = null
-        binding?.let { it.retire = true; it.destroy = true }
+        pendingSurfaces.clear(); pendingObjects.clear()
+        bindings.values.forEach { it.retire = true; it.destroy = true }
         event("shutdown")
     }
     fun recreate(): Boolean {
-        val current = binding ?: return false
+        val current = primary() ?: return false
         if (current.retire) return false
         current.retire = true; current.destroy = true
         event("recreate", current.entity.id)
         return true
     }
-    fun currentKey(): JSONObject? = binding?.key?.let { JSONObject(it.toString()) }
-    fun currentEntityId(): Long? = binding?.entity?.id
+    fun currentKey(): JSONObject? = primary()?.key?.let { JSONObject(it.toString()) }
+    fun currentEntityId(): Long? = primary()?.entity?.id
     fun currentSceneObject(): PanelSceneObject? {
         check(Looper.myLooper() == Looper.getMainLooper())
-        return binding?.sceneObject
+        return primary()?.sceneObject
     }
     fun beginInputCapture(source: Long, receive: (JSONObject) -> Unit): Boolean {
-        val input = binding?.input ?: return false
+        val input = primary()?.input ?: return false
         input.beginCapture(source, receive); return true
     }
-    fun endInputCapture() { binding?.input?.endCapture() }
+    fun endInputCapture() { primary()?.input?.endCapture() }
     fun currentRender(): JSONObject? {
-        val current = binding ?: return null
+        val current = primary() ?: return null
         val snapshot = JSONObject(NativeBridge.nativeSnapshot(current.handle))
         return snapshot.optJSONObject("runtime")?.optJSONObject("render")
     }
     fun duplicateCurrent(): Int {
-        val current = binding ?: return NativeBridge.NOT_READY
+        val current = primary() ?: return NativeBridge.NOT_READY
         return attach(current, current.surface ?: return NativeBridge.NOT_READY)
     }
     fun metrics(): JSONObject = JSONObject().put("scene", scene.toString()).put("created", created).put("destroyed", destroyed)
-        .put("bindings", if (binding == null) 0 else 1).put("listeners", listeners).put("callbacks", callbacks)
-        .put("pending", if (pendingSurface != null || pendingObject != null) 1 else 0)
+        .put("bindings", bindings.size).put("listeners", listeners).put("callbacks", callbacks)
+        .put("pending", pendingSurfaces.size + pendingObjects.size)
+        .put("targets", JSONArray(bindings.values.map { JSONObject().put("entity",it.entity.id.toString()).put("target",JSONObject(it.key.toString())).put("role",it.role) }))
         .put("trace", JSONArray(trace.toList()))
 
     private fun event(name: String, entity: Long = 0, tid: Int = Process.myTid()) {
         val record = JSONObject().put("event", name).put("thread", tid).put("elapsed_ms", SystemClock.elapsedRealtime())
             .put("scene", scene.toString()).put("entity", entity.toString())
-        binding?.let { record.put("target", JSONObject(it.key.toString())) }
+        bindings[entity]?.let { record.put("target", JSONObject(it.key.toString())) }
         if (trace.size == 128) trace.removeFirst()
         trace.addLast(record)
         Log.i("EidolonSurface", record.toString())
@@ -118,20 +120,19 @@ class SpatialPanelAdapter {
         creating = true
         attempting = plan
         try {
-            val position = if (plan == null) Vector3(-0.8f, 1.4f, 1.6f) else Vector3(0f, 1.4f, 1.5f)
+            val position = if (plan == null) Vector3(-0.8f, 1.4f, 1.6f) else Vector3(plan.optInt("slot",0)*1.3f, 1.4f, 1.5f)
             val entity = Entity.create(listOf(Panel(R.id.native_panel), Transform(Pose(position))))
             val current = if (plan == null) Binding(entity, handle, key()) else
                 Binding(entity, handle, JSONObject(plan.getJSONObject("target").toString()), "windows", plan.getString("command_seq"))
-            binding = current; created++; event("entity_created", entity.id)
-            pendingObject?.takeIf { it.first == entity.id }?.let { objectReady(it.first, it.second) }
-            pendingSurface?.takeIf { it.first == entity.id }?.let { surfaceReady(it.first, it.second) }
-            pendingObject = null; pendingSurface = null
+            bindings[entity.id] = current; created++; event("entity_created", entity.id)
+            pendingObjects.remove(entity.id)?.let { objectReady(entity.id,it) }
+            pendingSurfaces.remove(entity.id)?.let { surfaceReady(entity.id,it) }
         } finally { creating = false }
     }
     private fun surfaceReady(entity: Long, surface: Surface) {
-        val current = binding
-        if (current == null || current.entity.id != entity) {
-            if (creating && pendingSurface == null) { pendingSurface = entity to surface; pendingUntil = SystemClock.elapsedRealtime() + 5000 }
+        val current = bindings[entity]
+        if (current == null) {
+            if (creating && pendingSurfaces.size < 2) { pendingSurfaces[entity] = surface; pendingUntil = SystemClock.elapsedRealtime() + 5000 }
             else event("surface_discarded", entity)
             return
         }
@@ -153,9 +154,9 @@ class SpatialPanelAdapter {
         else NativeBridge.nativeAttachSurface(current.handle, 1, 1, current.key.getString("scene").toLong(),
             current.key.getString("generation").toLong(), surface, 1024, 768)
     private fun objectReady(entity: Long, obj: PanelSceneObject) {
-        val current = binding
-        if (current == null || current.entity.id != entity) {
-            if (creating && pendingObject == null) { pendingObject = entity to obj; pendingUntil = SystemClock.elapsedRealtime() + 5000 }
+        val current = bindings[entity]
+        if (current == null) {
+            if (creating && pendingObjects.size < 2) { pendingObjects[entity] = obj; pendingUntil = SystemClock.elapsedRealtime() + 5000 }
             else event("object_discarded", entity)
             return
         }
@@ -171,7 +172,7 @@ class SpatialPanelAdapter {
         current.listener?.let { current.sceneObject?.removeInputListener(it); listeners--; event("listener_removed", current.entity.id) }
         current.listener = null; current.sceneObject = null; current.surface = null; current.replacement = null
         current.entity.destroy(); destroyed++; event("entity_destroyed", current.entity.id)
-        binding = null
+        bindings.remove(current.entity.id)
         current.destroyCommand?.let { NativeSessionHost.ackPanel(it, current.handle) }
     }
     private fun sameKey(a: JSONObject, b: JSONObject): Boolean = listOf("session", "window", "scene", "generation").all { a.optString(it) == b.optString(it) }
@@ -181,19 +182,18 @@ class SpatialPanelAdapter {
                 event("adapter_failure_${failure.javaClass.simpleName}")
                 attempting?.let { NativeSessionHost.ackPanel(it, NativeSessionHost.currentHandle(), false) }
             }
-            if (!closed || binding != null) ui.postDelayed(this, 32)
+            if (!closed || bindings.isNotEmpty()) ui.postDelayed(this, 32)
         }
     }
     private fun tick() {
         val now = SystemClock.elapsedRealtime()
-        if (now > pendingUntil) { pendingSurface = null; pendingObject = null }
+        if (now > pendingUntil) { pendingSurfaces.clear(); pendingObjects.clear() }
         val handle = NativeSessionHost.currentHandle()
         val host = if (handle > 0) JSONObject(NativeBridge.nativeSnapshot(handle)).optJSONObject("runtime") else null
         val plans = host?.optJSONArray("panels")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) } } ?: emptyList()
         val windows = host?.optJSONObject("render")?.optString("mode") == "windows"
-        val desired = plans.firstOrNull { it.getString("action") == "create" && it.isNull("error") && it.getJSONObject("target").optString("scene") == scene.toString() }
-        val current = binding
-        if (current != null) {
+        val desired = plans.filter { it.getString("action") == "create" && it.isNull("error") && it.getJSONObject("target").optString("scene") == scene.toString() }
+        for (current in bindings.values.toList()) {
             val plan = plans.firstOrNull { sameKey(it.getJSONObject("target"), current.key) }
             if (current.role == "diagnostic" && windows || current.handle != handle ||
                 current.role == "windows" && (plan == null || plan.getString("action") == "destroy" || !plan.isNull("error"))) {
@@ -241,15 +241,20 @@ class SpatialPanelAdapter {
             }
         }
         // 一度もEntityを作らなかった旧sceneのdestroyも、native参照が無ければackする。
-        if (binding == null && host != null) {
+        if (host != null) {
             val targets = host.getJSONObject("render").getJSONArray("targets")
             plans.filter { it.getString("action") == "destroy" && it.isNull("error") }.forEach { plan ->
-                if ((0 until targets.length()).none { sameKey(targets.getJSONObject(it).getJSONObject("key"), plan.getJSONObject("target")) })
+                if (bindings.values.none { sameKey(it.key,plan.getJSONObject("target")) } && (0 until targets.length()).none { sameKey(targets.getJSONObject(it).getJSONObject("key"), plan.getJSONObject("target")) })
                     NativeSessionHost.ackPanel(plan, handle)
             }
         }
-        if (!closed && binding == null && scene > 0) {
-            if (host?.optString("state") == "Ready" && host.optString("scene") == scene.toString() && (!windows || desired != null)) create(handle, if (windows) desired else null)
+        if (!closed && scene > 0 && host?.optString("state") == "Ready" && host.optString("scene") == scene.toString()) {
+            if (windows && bindings.values.none { it.role == "diagnostic" }) {
+                for (plan in desired) {
+                    if (bindings.size >= 2) break
+                    if (bindings.values.none { sameKey(it.key,plan.getJSONObject("target")) }) create(handle,plan)
+                }
+            } else if (!windows && bindings.isEmpty()) create(handle)
         }
         if (now - lastPublish >= 1000) { NativeSessionHost.publishAdapter(metrics()); lastPublish = now }
     }

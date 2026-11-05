@@ -42,6 +42,11 @@ object NativeSessionHost {
     val keyboardSummary = mutableStateOf("操作パネルへ入力")
     val layoutSummary = mutableStateOf("ターミナルを開くとサイズを変更できます")
     val layoutAvailable = mutableStateOf(false)
+    data class WindowChoice(val session: String, val scene: String, val window: String, val slot: Int?)
+    val windowChoices = mutableStateOf<List<WindowChoice>>(emptyList())
+    private data class TerminalAdding(val session: String, val windows: Set<String>, val request: String,
+        val deadline: Long = SystemClock.elapsedRealtime()+8000)
+    private var terminalAdding: TerminalAdding? = null
     private var lastWrite = 0L
     private var state = "Starting"
     private var sshState = "未接続"
@@ -96,7 +101,17 @@ object NativeSessionHost {
         val runtime = snapshot().getJSONObject("runtime")
         val transport = runtime.getJSONObject("transport")
         val app = runtime.optJSONObject("app")
-        if (app != null && app.optString("session") == transport.optString("session") && app.isNull("error") && app.optString("state") != "stopped") return@safely
+        if (app != null && app.optString("session") == transport.optString("session") && app.isNull("error") && app.optString("state") != "stopped") {
+            val windows=app.getJSONArray("windows")
+            if(app.optString("mode")!="foot" || app.optString("state")!="running" || windows.length()>=8 || terminalAdding!=null) return@safely
+            val request=requests.incrementAndGet().toString()
+            val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","open_terminal").put("request_id",request).put("session",app.getString("session")).toString())
+            if(code==NativeBridge.ACCEPTED) {
+                terminalError=null
+                terminalAdding=TerminalAdding(app.getString("session"),(0 until windows.length()).map { windows.getJSONObject(it).getString("window") }.toSet(),request)
+            } else terminalError="追加できません（$code）"
+            return@safely
+        }
         if (transport.getJSONArray("pending_cleanup").length() != 0) { terminalError = "前回の終了を確認してください"; return@safely }
         val bytes = ByteArray(8).also { java.security.SecureRandom().nextBytes(it) }
         val operation = TerminalOpen(bytes.joinToString("") { "%02x".format(it.toInt() and 255) }, transport.optString("session"))
@@ -109,7 +124,7 @@ object NativeSessionHost {
         terminalOpen = operation
     } } }
     fun disconnect() { worker.execute { safely {
-        terminalOpen = null; terminalError = null
+        terminalOpen = null; terminalAdding=null; terminalError = null
         resetInput()
         if (handle == 0L || pendingDisconnect != null) return@safely
         val session = snapshot().getJSONObject("runtime").getJSONObject("transport").optString("session").takeIf { it.toLongOrNull() != null }
@@ -133,6 +148,16 @@ object NativeSessionHost {
             else -> { pendingDisconnect = null; terminalError = "切断を開始できません（$code）" }
         }
     }
+    fun showWindow(choice: WindowChoice, slot: Int) { windowCommand(choice,"show_window",slot) }
+    fun closeWindow(choice: WindowChoice) { windowCommand(choice,"close_window",null) }
+    private fun windowCommand(choice: WindowChoice, type: String, slot: Int?) { worker.execute { safely {
+        if(handle==0L) return@safely
+        resetInput()
+        val command=JSONObject().put("schema",1).put("request_id",requests.incrementAndGet().toString()).put("type",type)
+            .put("session",choice.session).put("scene",choice.scene).put("window",choice.window)
+        if(slot!=null) command.put("slot",slot)
+        NativeBridge.nativeCommand(handle,command.toString())
+    } } }
     fun requestSnapshot() { worker.execute { safely { publish() } } }
     fun currentHandle(): Long = handle
     fun keyboardFocused(): Boolean = keyboardFocus != null
@@ -298,6 +323,11 @@ object NativeSessionHost {
                         }
                     }
                 }
+                terminalAdding?.let { operation ->
+                    if(event.getString("request_id")==operation.request && event.getString("code")!="ACCEPTED") {
+                        terminalError="追加できません（${event.getString("code")}）"; terminalAdding=null
+                    }
+                }
                 terminalOpen?.let { operation ->
                     val request = event.getString("request_id")
                     if (request == operation.connectRequest || request == operation.startRequest) {
@@ -344,6 +374,16 @@ object NativeSessionHost {
         val selected=selectedTarget(runtime)
         val appWindows=runtime.optJSONObject("app")?.optJSONArray("windows")
         val selectedWindow=appWindows?.let { windows -> (0 until windows.length()).map { windows.getJSONObject(it) }.firstOrNull { it.optString("window")==selected?.optString("window") } }
+        val currentApp=runtime.optJSONObject("app")
+        val choices=appWindows?.let { windows -> (0 until windows.length()).map { windows.getJSONObject(it) }.filter { it.optString("life")=="Mapped" }.map { w ->
+            val plan=(0 until plans.length()).map { plans.getJSONObject(it) }.firstOrNull { it.optString("action")=="create" && it.getJSONObject("target").optString("window")==w.getString("window") }
+            WindowChoice(checkNotNull(currentApp).getString("session"),runtime.optString("scene"),w.getString("window"),plan?.optInt("slot"))
+        } } ?: emptyList()
+        ui.post { windowChoices.value=choices }
+        terminalAdding?.let { operation ->
+            if(currentApp?.optString("session")!=operation.session || choices.any { it.window !in operation.windows }) terminalAdding=null
+            else if(SystemClock.elapsedRealtime()>operation.deadline) { terminalError="ウィンドウの追加を確認できません。接続を閉じて再試行してください";terminalAdding=null }
+        }
         val logical=selectedWindow?.optJSONObject("logical_size")
         val resize=selectedWindow?.optJSONObject("resize")
         val label=if(logical==null) "ターミナルを開くとサイズを変更できます" else {

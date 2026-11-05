@@ -1109,16 +1109,19 @@
     {
       "id": "I05",
       "title": "二枚の独立panel",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "I04"
       ],
       "spec": "docs/design/phase-4-5.md#i05",
       "files": [
-        "native/model/src/state.rs",
-        "native/render/src/surface.rs",
+        "native/core/src/panels.rs",
+        "native/core/src/session.rs",
+        "native/transport/src/launcher.rs",
+        "scripts/termux/eidolon-session.py",
         "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt",
-        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt"
+        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt",
+        "android/app/src/debug/java/io/github/tinmachine/eidolon/TwoWindowsCase.kt"
       ],
       "steps": [
         "一registrationをEntityごとにbindする",

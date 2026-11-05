@@ -172,6 +172,7 @@ def inspect(apk):
         debug_classes.append(b"Lio/github/tinmachine/eidolon/RayCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/PointerCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ResizeCase;")
+        debug_classes.append(b"Lio/github/tinmachine/eidolon/TwoWindowsCase;")
         debug_dex = any(name in dex for name in debug_classes)
         if info["profile"] == "release" and (debug_symbol or debug_dex):
             raise ValueError("releaseにdebug JNI/classが混入しています")

@@ -235,7 +235,7 @@ object FootCase {
             store.publishCheck(result)
         }
     }
-    private class Pixels {
+    internal class Pixels {
         private var count = 0
         private var nonUniform = 0
         private val hashes = mutableSetOf<String>()
@@ -276,7 +276,7 @@ object FootCase {
         return value
     }
     private fun runtime(handle: Long): JSONObject = JSONObject(NativeBridge.nativeSnapshot(handle)).getJSONObject("runtime")
-    private fun closeReader(reader: ImageReader, handler: Handler) {
+    internal fun closeReader(reader: ImageReader, handler: Handler) {
         val done = CountDownLatch(1)
         check(handler.post { try { reader.setOnImageAvailableListener(null, null); reader.close() } finally { done.countDown() } })
         check(done.await(3, TimeUnit.SECONDS))

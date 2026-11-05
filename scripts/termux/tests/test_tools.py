@@ -3,6 +3,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import socket
+import time
 from pathlib import Path
 import sys
 import tempfile
@@ -15,6 +17,31 @@ spec.loader.exec_module(launcher)
 
 
 class ToolTests(unittest.TestCase):
+    def test_terminal_request_is_single_bounded_and_owned_child_is_reaped(self):
+        with tempfile.TemporaryDirectory(prefix="eidolon-terminal-") as folder:
+            directory=Path(folder)
+            server=socket.socket(socket.AF_UNIX)
+            try:
+                server.bind(str(directory/'f'))
+                starter=launcher.TerminalStarter(directory,'foot')
+                with patch.object(launcher,'terminal_command',return_value=[sys.executable,'-c','pass']):
+                    starter.begin('17')
+                    with self.assertRaisesRegex(ValueError,'CONTROL_INVALID'):starter.begin('18')
+                    deadline=time.monotonic()+3
+                    result=None
+                    while result is None:
+                        result=starter.tick()
+                        self.assertLess(time.monotonic(),deadline)
+                        time.sleep(.005)
+                    self.assertEqual(result,dict(request_id='17',success=True,ordinal=1))
+                    self.assertIsNone(starter.child)
+                with patch.object(launcher,'terminal_command',return_value=[sys.executable,'-c','import time;time.sleep(30)']):
+                    starter.begin('19');self.assertIsNone(starter.tick())
+                    pid=starter.child.pid
+                    starter.close()
+                    with self.assertRaises(ProcessLookupError):os.kill(pid,0)
+            finally:server.close()
+
     def test_version_mismatch_and_nonregular_producer_cannot_start_app(self):
         with tempfile.TemporaryDirectory(prefix="eidolon-tools-") as folder:
             root = Path(folder)

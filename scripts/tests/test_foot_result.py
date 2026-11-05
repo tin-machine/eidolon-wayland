@@ -7,10 +7,45 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from quest_checks import foot_result, foot_sdk_result
+from quest_checks import foot_result, foot_sdk_result, two_windows_result
 
 
 class FootTests(unittest.TestCase):
+    def test_two_windows_require_independent_progress_hidden_selection_reset_and_reclaim(self):
+        fixture=self.fixture();proof=fixture['check']
+        proof.update(case='two-windows',first='1',second='2',third='3',synthetic_input=True,
+            physical_input_verified=False,text_verified=False,sdk_layers_verified=False,stale_resize_rejected=True,running_observed_ms=73000)
+        base=copy.deepcopy(proof['cycles'][0]['runtime']);rows=[]
+        for i,stage in enumerate(['two','one_surface_missing','resized','third_hidden','switched','closed_one','long_running']):
+            state=copy.deepcopy(base);state.update(activity_visible=True,xr_state='FOCUSED')
+            logical=['1','2','3'] if i in (3,4) else ['1','2']
+            visible=['2'] if i==1 else (['3','2'] if i==4 else ['1','2'])
+            state['app'].update(visible_windows=['3','2'] if i==4 else ['1','2'],windows=[dict(window=w,life='Mapped',frame=str(10+i),logical_size=dict(width=1280,height=720),resize=dict(phase='applied')) for w in logical])
+            state['app']['input'].update(focus_window='3' if i==4 else '2',delivered=6 if i>=4 else 2,pressed=0,pointer=dict(pressed=0))
+            state['render']['targets']=[];state['panels']=[];pixels={}
+            for w in visible:
+                generation='2' if w=='2' else ('6' if w=='3' else ('1' if i==0 else ('4' if i<5 else '8')))
+                key=dict(session='1',window=w,scene='1',generation=generation)
+                state['render']['targets'].append(dict(role='windows',key=key,frames=3,content_frame=str(10+i),width=1024,height=768))
+                state['panels'].append(dict(target=key,action='create',applied=True,error=None,slot=1 if w=='2' else 0))
+                count=3+i*6
+                pixels[w]=dict(non_uniform_images=1,distinct_images=count,sample_step=4,hashes=[f'{n:064x}' for n in range(count)])
+            rows.append(dict(stage=stage,runtime=state,pixels=pixels))
+        proof['cycles']=rows;proof['after_stop']['app']['windows']=[]
+        package=dict(dependencies=dict(waypipe=dict(sha256='0'*64)))
+        def judge(value):return two_windows_result(value,'a'*32,dict(profile='debug'),4242,4343,package)
+        with patch('quest_checks.instrumentation_result',return_value=True):
+            self.assertTrue(judge(fixture))
+            for path,value in [(['physical_input_verified'],True),(['running_observed_ms'],1000),
+                    (['cycles',3,'runtime','app','visible_windows'],['1','2','3']),
+                    (['cycles',4,'runtime','app','input','pressed'],1),
+                    (['cycles',1,'pixels','2','distinct_images'],3),
+                    (['after_stop','transport','workers'],1)]:
+                bad=copy.deepcopy(fixture);target=bad['check']
+                for key in path[:-1]:target=target[key]
+                target[path[-1]]=value
+                with self.subTest(path=path),self.assertRaises(ValueError):judge(bad)
+
     def test_native_resize_surface_loss_old_generation_and_input_are_required(self):
         fixture=self.fixture();result=fixture['check'];result.update(case='resize-native',synthetic_input=True,physical_input_verified=False,text_verified=False,stale_resize_rejected=True)
         baseline=dict(delivered=0,pressed=0,pointer=dict(pressed=0,buttons=0,axis_frames=0))

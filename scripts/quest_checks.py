@@ -1411,3 +1411,82 @@ def product_ssh_result(snapshot, nonce, expected, termux_uid):
             and state.get("activity_visible") is True and state.get("xr_state") in {"VISIBLE", "FOCUSED"}
             and state.get("transport", {}).get("state") == "Idle"
             and state.get("transport", {}).get("owned_connections") == 0 and len(state.get("render", {}).get("targets", [])) == 1)
+
+
+def two_windows_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
+    if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
+        return False
+    proof = snapshot.get('check', {})
+    if proof.get('case') != 'two-windows' or proof.get('nonce') != nonce:
+        return False
+    if proof.get('result') == 'fail':
+        raise ValueError('二枚の実foot検査失敗: ' + proof.get('stage', 'unknown'))
+    if proof.get('result') != 'pass':
+        return False
+    if (proof.get('consumer') != 'ImageReader' or proof.get('synthetic_visibility') is not True
+            or proof.get('synthetic_input') is not True or proof.get('physical_input_verified') is not False
+            or proof.get('text_verified') is not False or proof.get('sdk_layers_verified') is not False
+            or proof.get('consumer_worker_stopped') is not True or proof.get('stale_resize_rejected') is not True):
+        raise ValueError('二枚検査の可視性・合成入力scopeが不正です')
+    session, first, second, third = (proof.get(key) for key in ('session', 'first', 'second', 'third'))
+    if (any(not isinstance(v, str) or not re.fullmatch(r'[1-9][0-9]*', v) for v in (session, first, second, third))
+            or len({first, second, third}) != 3 or proof.get('credential_requests') != 1
+            or proof.get('token') != hashlib.sha256(nonce.encode()).hexdigest()[:16]
+            or proof.get('running_observed_ms', 0) < 72000):
+        raise ValueError('二枚検査のsession/window/接続証明が不正です')
+    rows = proof.get('cycles', [])
+    if [r.get('stage') for r in rows] != ['two', 'one_surface_missing', 'resized', 'third_hidden', 'switched', 'closed_one', 'long_running']:
+        raise ValueError('二枚/Surface喪失/三枚目切替/個別closeの証明が必要です')
+    previous_second_images = 0
+    keys = []
+    for index, row in enumerate(rows):
+        runtime=row.get('runtime', {}); app=runtime.get('app', {}); render=runtime.get('render', {}); transport=runtime.get('transport', {})
+        windows={w.get('window'):w for w in app.get('windows', [])}; targets=render.get('targets', [])
+        logical={first,second,third} if index in (3,4) else {first,second}
+        visible={second} if index==1 else ({third,second} if index==4 else {first,second})
+        actual={t.get('key',{}).get('window') for t in targets}
+        selected={second,third} if index==4 else {first,second}
+        forward=transport.get('app_forward', {}); local=app.get('local', {})
+        if (runtime.get('state')!='Ready' or runtime.get('error') is not None or runtime.get('xr_state')!='FOCUSED' or runtime.get('activity_visible') is not True
+                or app.get('session')!=session or app.get('mode')!='foot_fixture' or app.get('callback_clock')!='target-driven' or app.get('error') is not None
+                or set(windows)!=logical or any(w.get('life')!='Mapped' for w in windows.values()) or set(app.get('visible_windows',[]))!=selected
+                or actual!=visible or len(targets)!=len(visible) or render.get('mode')!='windows' or render.get('error') is not None or render.get('contexts')!=1
+                or local.get('uid')!=apk_uid or local.get('child_uid')!=apk_uid or local.get('executable_sha256')!=package['dependencies']['waypipe']['sha256']
+                or transport.get('state')!='Ready' or transport.get('session')!=session or transport.get('credential_requests')!=1
+                or forward.get('state')!='running' or forward.get('error') is not None or forward.get('uid')!=termux_uid
+                or forward.get('tools',{}).get('foot')!=dict(version='1.28.0') or forward.get('nonce')!=proof['token']):
+            raise ValueError('独立した二枚と非表示のlogical windowが一致しません')
+        for target in targets:
+            key=target.get('key',{}); window=key.get('window'); pixels=row.get('pixels',{}).get(window,{})
+            plan=next((p for p in runtime.get('panels',[]) if p.get('target')==key),{})
+            if (key.get('session')!=session or key.get('scene')!='1' or target.get('role')!='windows' or target.get('frames',0)<3
+                    or target.get('content_frame')!=windows[window].get('frame') or target.get('width')!=1024 or target.get('height')!=768
+                    or plan.get('action')!='create' or plan.get('applied') is not True or plan.get('error') is not None or plan.get('slot') not in (0,1)
+                    or pixels.get('non_uniform_images',0)<1 or pixels.get('distinct_images',0)<3 or pixels.get('sample_step')!=4
+                    or len(set(pixels.get('hashes',[])))!=pixels.get('distinct_images')):
+                raise ValueError('二枚の世代・SDK適用ack・実pixel/present証明が不正です')
+        if index==1:
+            input_state=app.get('input',{})
+            if (row['pixels'][second]['distinct_images']<previous_second_images+5 or input_state.get('focus_window')!=second
+                    or input_state.get('delivered',0)<2 or input_state.get('pressed')!=0):
+                raise ValueError('一枚のSurface喪失中に他方の描画・入力が進んでいません')
+        if index==2 and (windows[first].get('logical_size')!=dict(width=1280,height=720) or windows[first].get('resize',{}).get('phase')!='applied'):
+            raise ValueError('片側resize後の画像がありません')
+        if index==4 and (app.get('input',{}).get('focus_window')!=third or app.get('input',{}).get('pressed')!=0 or app.get('input',{}).get('pointer',{}).get('pressed')!=0):
+            raise ValueError('表示切替前の修飾キー解除と新windowへの入力がありません')
+        previous_second_images=row['pixels'][second]['distinct_images']
+        keys.append({t['key']['window']:t['key']['generation'] for t in targets})
+    if not int(keys[2][first])>int(keys[0][first]) or not int(keys[5][first])>int(keys[2][first]):
+        raise ValueError('表示枠再割当てで旧Surface世代を再利用しています')
+    after=proof.get('after_stop',{}); app=after.get('app',{}); transport=after.get('transport',{}); render=after.get('render',{})
+    forward=transport.get('app_forward',{}); finished=forward.get('remote',{}).get('finished',{}); local=app.get('local',{})
+    if (after.get('state')!='Stopped' or app.get('state')!='stopped' or app.get('directory_cleaned') is not True or app.get('error') is not None
+            or any(app.get(k)!=0 for k in ('clients','objects','surfaces','pool_bytes','pixel_bytes','pool_count'))
+            or app.get('windows')!=[] or local.get('workers')!=0 or local.get('owned_groups')!=0 or local.get('waited') is not True
+            or forward.get('state')!='stopped' or forward.get('error') is not None or forward.get('remote_cleaned') is not True or forward.get('forward_cancelled') is not True
+            or finished.get('reason')!='Stop' or finished.get('cleaned') is not True or finished.get('group_alive') is not False or finished.get('pipes_closed') is not True
+            or transport.get('pending_cleanup')!=[] or any(transport.get(k)!=0 for k in ('workers','tokio_threads','owned_connections'))
+            or render.get('targets')!=[] or any(render.get(k)!=0 for k in ('workers','contexts','latest_images','queued'))
+            or not 0<=proof.get('accept_ms',999)<100 or not 0<=proof.get('stop_ms',99999)<10000):
+        raise ValueError('二枚の停止後にowner/socket/画像/FDの回収漏れがあります')
+    return instrumentation_result(snapshot,proof,apk_uid)

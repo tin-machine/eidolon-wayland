@@ -171,6 +171,26 @@ pub enum CompositorScenario {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    OpenTerminal {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+    },
+    ShowWindow {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        scene: SceneEpoch,
+        window: crate::ids::WindowId,
+        slot: usize,
+    },
+    CloseWindow {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        scene: SceneEpoch,
+        window: crate::ids::WindowId,
+    },
     ResizeLogical {
         schema: u32,
         request_id: CommandSeq,
@@ -330,7 +350,10 @@ impl Command {
         }
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
-            Self::ResizeLogical { schema, .. }
+            Self::OpenTerminal { schema, .. }
+            | Self::ShowWindow { schema, .. }
+            | Self::CloseWindow { schema, .. }
+            | Self::ResizeLogical { schema, .. }
             | Self::SetPhysicalSize { schema, .. }
             | Self::PhysicalSizeApplied { schema, .. }
             | Self::Pointer { schema, .. }
@@ -401,6 +424,9 @@ impl Command {
             return Err(Status::InvalidArgument);
         }
         match &command {
+            Self::ShowWindow { slot, .. } if *slot >= crate::limits::VISIBLE_PANELS => {
+                return Err(Status::InvalidArgument);
+            }
             Self::ResizeLogical { width, height, .. } => {
                 crate::resize::logical_size(*width, *height)
                     .map_err(|_| Status::InvalidArgument)?;
@@ -416,7 +442,10 @@ impl Command {
     }
     pub fn request_id(&self) -> CommandSeq {
         match *self {
-            Self::ResizeLogical { request_id, .. }
+            Self::OpenTerminal { request_id, .. }
+            | Self::ShowWindow { request_id, .. }
+            | Self::CloseWindow { request_id, .. }
+            | Self::ResizeLogical { request_id, .. }
             | Self::SetPhysicalSize { request_id, .. }
             | Self::PhysicalSizeApplied { request_id, .. }
             | Self::Pointer { request_id, .. }
@@ -447,6 +476,8 @@ impl Command {
         matches!(
             self,
             Self::ResetInput { .. }
+                | Self::ShowWindow { .. }
+                | Self::CloseWindow { .. }
                 | Self::Disconnect { .. }
                 | Self::SurfaceLost { .. }
                 | Self::SceneReady { .. }

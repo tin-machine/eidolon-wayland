@@ -802,6 +802,15 @@ impl ProtocolState {
         windows.sort_by_key(|window| window.window);
         windows
     }
+    pub fn close_window(&mut self, window: WindowId) -> Result<(), &'static str> {
+        let record = self
+            .toplevels
+            .values()
+            .find(|record| record.id == window)
+            .ok_or("STALE")?;
+        record.surface.send_close();
+        Ok(())
+    }
     pub fn latest_snapshot(&self, window: WindowId) -> Option<Arc<WindowSnapshot>> {
         self.toplevels
             .values()

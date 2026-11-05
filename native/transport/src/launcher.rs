@@ -1,5 +1,6 @@
 //! 固定launcherの短いJSON lineとheartbeatだけを扱う。任意shell/pathを受けない。
 use crate::forward_probe::valid_nonce;
+use eidolon_model::ids::CommandSeq;
 use russh::{Channel, ChannelMsg, client};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -241,18 +242,32 @@ struct Started {
     uid: u32,
     child: Identity,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalOpened {
+    pub schema: u32,
+    pub nonce: String,
+    pub uid: u32,
+    pub request_id: Option<CommandSeq>,
+    pub success: bool,
+    pub ordinal: u32,
+}
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Frame {
     Prepared(Prepared),
     Tools(Tools),
     ChildStarted(Started),
+    TerminalOpened(TerminalOpened),
     Finished(Finished),
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
     pub phase: &'static str,
+    pub terminal_count: u32,
+    pub terminal_pending: Option<CommandSeq>,
+    pub last_terminal: Option<TerminalOpened>,
     pub tools: Option<Tools>,
     pub child: Option<Identity>,
     pub finished: Option<Finished>,
@@ -383,6 +398,26 @@ impl Launcher {
         self.deadline = Instant::now() + Duration::from_secs(70);
         Ok(())
     }
+    pub async fn open_terminal(&mut self, request: CommandSeq) -> Result<(), &'static str> {
+        if self.report.phase != "running"
+            || self.stopping.is_some()
+            || self.report.terminal_count == 0
+            || self.report.terminal_pending.is_some()
+            || self
+                .report
+                .tools
+                .as_ref()
+                .is_none_or(|t| !matches!(t.mode.as_str(), "foot" | "foot_fixture"))
+        {
+            return Err("NOT_READY");
+        }
+        self.send_frame(
+            serde_json::json!({"type":"open_terminal","nonce":self.nonce,"request_id":request}),
+        )
+        .await?;
+        self.report.terminal_pending = Some(request);
+        Ok(())
+    }
     pub(crate) fn suppress_heartbeat(&mut self) {
         self.heartbeats = false;
     }
@@ -402,6 +437,9 @@ impl Launcher {
         if let Some(mode) = mode {
             value["mode"] = mode.into();
         }
+        self.send_frame(value).await
+    }
+    async fn send_frame(&self, value: serde_json::Value) -> Result<(), &'static str> {
         let bytes = format!("{value}\n").into_bytes();
         timeout(
             Duration::from_secs(2),
@@ -432,7 +470,13 @@ impl Launcher {
                 _=self.cancel.cancelled(),if self.stopping.is_none()=>{self.request_stop().await?;continue;},
                 _=sleep_until(self.deadline)=>{self.report.error=Some("LAUNCHER_TIMEOUT");return Err("LAUNCHER_TIMEOUT");},
                 _=sleep_until(self.heartbeat),if self.stopping.is_none() && self.heartbeats=>{
-                    self.control("heartbeat",None).await?; self.heartbeat=Instant::now()+self.beat_every;continue;
+                    self.control("heartbeat",None).await?;
+                    self.heartbeat=Instant::now()+self.beat_every;
+                    // quietなterminalはstdoutを送らない。正常な制御送信で稼働中appの監視期限を延長する。
+                    if self.report.phase == "running" && self.report.tools.as_ref().is_some_and(|t| matches!(t.mode.as_str(), "foot" | "foot_fixture")) {
+                        self.deadline=Instant::now()+Duration::from_secs(70);
+                    }
+                    continue;
                 },
                 message=self.channel.as_mut().ok_or("STALE")?.wait()=>message,
             };
@@ -516,6 +560,23 @@ impl Launcher {
                 }
                 self.report.child = Some(value.child);
                 self.report.phase = "running";
+            }
+            Frame::TerminalOpened(value) => {
+                let initial = value.request_id.is_none() && self.report.terminal_count == 0;
+                if value.schema != 1
+                    || value.nonce != self.nonce
+                    || value.uid != self.uid
+                    || !matches!(self.report.phase, "running" | "finishing")
+                    || (!initial
+                        && (value.request_id.is_none()
+                            || value.request_id != self.report.terminal_pending))
+                    || value.ordinal != self.report.terminal_count + u32::from(value.success)
+                {
+                    return Err("PROTOCOL_ERROR");
+                }
+                self.report.terminal_count = value.ordinal;
+                self.report.terminal_pending = None;
+                self.report.last_terminal = Some(value);
             }
             Frame::Tools(value) => {
                 if self.report.phase != "prepared"
@@ -755,7 +816,14 @@ mod tests {
         owner.heartbeat = Instant::now() + owner.beat_every;
         prepared(&mut owner).await;
         owner.start_echo().await.unwrap();
+        while owner.report.phase != "running" {
+            owner.next().await.unwrap();
+        }
+        // 実SSHと固定helperで、footの監視期限だけを120msへ短縮して検査する。
+        owner.report.tools=Some(serde_json::from_value(serde_json::json!({"schema":1,"nonce":"bbbbbbbbbbbbbbbb","uid":owner.uid,"mode":"foot","waypipe":{"version":"0.11.3","features":["lz4","zstd"],"unavailable":["dmabuf","video","vaapi"]},"foot":{"version":"1.28.0"}})).unwrap());
+        owner.deadline = Instant::now() + Duration::from_millis(120);
         let report = owner.finish().await.unwrap();
+        assert!(report.error.is_none());
         assert!(!report.cleanup_pending);
         let remote = report.finished.as_ref().unwrap();
         assert_eq!(remote.reason, "Completed");

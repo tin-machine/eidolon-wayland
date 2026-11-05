@@ -37,6 +37,7 @@ pub(crate) struct Request<'a> {
     pub uid: u32,
     pub journal: &'a mut journal::Journal,
     pub binding: &'a str,
+    pub terminal_requests: tokio::sync::mpsc::Receiver<eidolon_model::ids::CommandSeq>,
 }
 
 pub(crate) async fn run<H: client::Handler>(
@@ -54,6 +55,7 @@ pub(crate) async fn run<H: client::Handler>(
         uid,
         journal,
         binding,
+        mut terminal_requests,
     } = request;
     let started = std::time::Instant::now();
     let mut report = Report {
@@ -121,8 +123,16 @@ pub(crate) async fn run<H: client::Handler>(
         report.state = "forwarded";
         publish(&report);
         remote.start_app(mode.as_str()).await?;
+        let mut requests_open = true;
         while remote.report.phase != "finished" {
-            report.remote = Some(remote.next().await?);
+            tokio::select! {
+                biased;
+                value = remote.next() => { report.remote = Some(value?); }
+                request = terminal_requests.recv(), if requests_open && remote.report.phase == "running" && remote.report.terminal_count > 0 && remote.report.terminal_pending.is_none() => {
+                    if let Some(request) = request { remote.open_terminal(request).await?; report.remote=Some(remote.report.clone()); }
+                    else { requests_open=false; }
+                }
+            }
             if let Some(child) = &remote.report.child {
                 journal.child(nonce, child)?;
             }

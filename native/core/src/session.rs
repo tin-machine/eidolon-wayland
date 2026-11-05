@@ -39,6 +39,7 @@ pub struct Report {
     pub non_uniform: bool,
     pub last_size: Option<LogicalSize>,
     pub window_ids: Vec<WindowId>,
+    pub visible_windows: Vec<WindowId>,
     pub windows: Vec<WindowReport>,
     pub clients: usize,
     pub objects: usize,
@@ -159,6 +160,21 @@ impl Session {
             .ok_or("NOT_READY")?
             .key_at_focus(window, focus_token, key)
     }
+    pub fn set_visible_windows(&mut self, selected: &[(SessionId, WindowId)]) {
+        self.report.visible_windows = selected
+            .iter()
+            .filter_map(|(session, window)| (*session == self.session()).then_some(*window))
+            .collect();
+    }
+    pub fn close_window(&mut self, window: WindowId) -> Result<(), &'static str> {
+        if self.closing {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .close_window(window)
+    }
     pub fn reset_input(&mut self) {
         if let Some(protocol) = self.protocol.as_mut() {
             protocol.reset_input();
@@ -244,7 +260,9 @@ impl Session {
         }
         let mapped: Vec<_> = windows
             .iter()
-            .filter(|w| w.life == WindowLife::Mapped)
+            .filter(|w| {
+                w.life == WindowLife::Mapped && self.report.visible_windows.contains(&w.window)
+            })
             .map(|w| w.window)
             .collect();
         for old in self.published.iter().filter(|old| !mapped.contains(old)) {
@@ -255,7 +273,9 @@ impl Session {
         }
         self.published = mapped;
         for window in &windows {
-            if window.life != WindowLife::Mapped {
+            if window.life != WindowLife::Mapped
+                || !self.report.visible_windows.contains(&window.window)
+            {
                 continue;
             }
             if let Some(snapshot) = state.latest_snapshot(window.window) {
@@ -289,13 +309,14 @@ impl Session {
             .collect::<Vec<_>>();
         state.observe_producers(&producers);
         for window in &windows {
-            let presented = render.targets.iter().any(|target| {
-                target.role == eidolon_render::RenderMode::Windows
-                    && target.key.session == session
-                    && target.key.window == window.window
-                    && target.content_frame == window.frame
-                    && target.frames > 0
-            });
+            let presented = self.report.visible_windows.contains(&window.window)
+                && render.targets.iter().any(|target| {
+                    target.role == eidolon_render::RenderMode::Windows
+                        && target.key.session == session
+                        && target.key.window == window.window
+                        && target.content_frame == window.frame
+                        && target.frames > 0
+                });
             state.frame_callbacks(
                 window.window,
                 now,
