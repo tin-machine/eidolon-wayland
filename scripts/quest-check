@@ -15,7 +15,7 @@ import zipfile
 
 from native_build import ROOT, identity
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
-from quest_checks import runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result, native_deps_result, shm_result, wayland_state_result, waypipe_result, forwarded_shm_result, render_result, foot_result, foot_sdk_result
+from quest_checks import runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result, native_deps_result, shm_result, wayland_state_result, waypipe_result, forwarded_shm_result, render_result, foot_result, foot_sdk_result, ray_result
 
 CASES = ("runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup",
          "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm", "render", "foot", "ray", "keyboard",
@@ -31,7 +31,7 @@ if args.instrumentation and args.case not in {"foot", "render", "forward", "remo
     parser.error("instrumentationはfoot/render/forward/remote-cleanup/native-deps/shm/shm-truncate/wayland-state/waypipe/forwarded-shmだけです")
 if args.case == "render" and not args.instrumentation:
     parser.error("renderの通常UI検査は未実装です。--instrumentationを指定してください")
-if args.case not in {"foot", "render", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm"}:
+if args.case not in {"ray", "foot", "render", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm"}:
     parser.error("このcaseは未実装です")
 if not 1 <= args.timeout <= 7200:
     parser.error("timeoutは1〜7200秒です")
@@ -99,6 +99,8 @@ try:
             raise RuntimeError("instrumentationが成功codeを返しませんでした")
         if args.case in {"surface", "pattern", "surface-cycle"}:
             accepted = surface_result(snapshot, nonce, expected, args.case)
+        elif args.case == "ray":
+            accepted = ray_result(snapshot, nonce, expected)
         elif args.case == "foot":
             judge = foot_result if args.instrumentation else foot_sdk_result
             accepted = judge(snapshot, nonce, expected, uid, termux_uid, json.loads((run / "native-package.json").read_text()))

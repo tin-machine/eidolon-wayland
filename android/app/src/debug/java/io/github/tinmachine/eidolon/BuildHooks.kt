@@ -1,6 +1,7 @@
 package io.github.tinmachine.eidolon
 
 import android.content.Intent
+import com.meta.spatial.runtime.Scene
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -13,14 +14,15 @@ import org.json.JSONObject
 object BuildHooks {
     private val ui = Handler(Looper.getMainLooper())
     private var running = false
-    fun accept(intent: Intent?, adapter: SpatialPanelAdapter) {
+    fun accept(intent: Intent?, adapter: SpatialPanelAdapter, scene: () -> Scene) {
         val name = intent?.getStringExtra("case") ?: return
         val nonce = intent.getStringExtra("nonce") ?: return
-        if (running || name !in setOf("foot", "surface", "pattern", "surface-cycle", "ssh-product") || !nonce.matches(Regex("[0-9a-f]{32}"))) return
+        if (running || name !in setOf("ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product") || !nonce.matches(Regex("[0-9a-f]{32}"))) return
         if (intent.extras?.keySet()?.any { it != "case" && it != "nonce" } == true) return
         intent.removeExtra("case"); intent.removeExtra("nonce")
         running = true
-        if (name == "foot") FootSdkCase.start(nonce, adapter) { running = false }
+        if (name == "ray") RayCase.start(nonce, adapter, scene) { running = false }
+        else if (name == "foot") FootSdkCase.start(nonce, adapter) { running = false }
         else if (name == "ssh-product") ProductSshCase.start(nonce) { running = false }
         else Case(name, nonce, adapter).start()
     }

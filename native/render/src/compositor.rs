@@ -2,7 +2,7 @@
 use eidolon_model::{
     ids::{ContentSeq, SessionId, SurfaceId, WindowId},
     limits,
-    window::{LogicalRect, LogicalSize, WindowSnapshot},
+    window::{LogicalRect, WindowSnapshot},
 };
 use serde::Serialize;
 use smithay::{
@@ -36,56 +36,14 @@ fn record_gpu<E: std::fmt::Debug + Into<smithay::backend::SwapBuffersError>>(
 type ImageKey = (SessionId, SurfaceId, ContentSeq);
 type WindowKey = (SessionId, WindowId);
 
-/// 左上原点。window全体の縦横比を保ち、余白をhit可能な画像へ含めない。
-#[derive(Clone, Copy, Debug)]
-pub struct Viewport {
-    pub target: LogicalSize,
-    pub logical: LogicalSize,
-    pub origin: [f64; 2],
-    pub scale: f64,
-}
-impl Viewport {
-    pub fn new(logical: LogicalSize, width: i32, height: i32) -> Result<Self, Error> {
-        super::validate_dimensions(width, height).map_err(|_| "INVALID_ARGUMENT")?;
-        let logical =
-            LogicalSize::new(logical.width, logical.height).map_err(|_| "INVALID_ARGUMENT")?;
-        let scale = (f64::from(width) / f64::from(logical.width))
-            .min(f64::from(height) / f64::from(logical.height));
-        Ok(Self {
-            target: LogicalSize {
-                width: width as u32,
-                height: height as u32,
-            },
-            logical,
-            scale,
-            origin: [
-                (f64::from(width) - f64::from(logical.width) * scale) / 2.,
-                (f64::from(height) - f64::from(logical.height) * scale) / 2.,
-            ],
-        })
-    }
-    pub fn logical_at(&self, x: f64, y: f64) -> Option<[f64; 2]> {
-        let x = (x - self.origin[0]) / self.scale;
-        let y = (y - self.origin[1]) / self.scale;
-        (x.is_finite()
-            && y.is_finite()
-            && x >= 0.
-            && y >= 0.
-            && x < f64::from(self.logical.width)
-            && y < f64::from(self.logical.height))
-        .then_some([x, y])
-    }
-    fn rect(&self, rect: LogicalRect) -> Rectangle<i32, Physical> {
-        let x = (self.origin[0] + f64::from(rect.origin.x) * self.scale).round() as i32;
-        let y = (self.origin[1] + f64::from(rect.origin.y) * self.scale).round() as i32;
-        let right = (self.origin[0]
-            + (f64::from(rect.origin.x) + f64::from(rect.size.width)) * self.scale)
-            .round() as i32;
-        let bottom = (self.origin[1]
-            + (f64::from(rect.origin.y) + f64::from(rect.size.height)) * self.scale)
-            .round() as i32;
-        Rectangle::new((x, y).into(), (right - x, bottom - y).into())
-    }
+pub use eidolon_model::layout::Viewport;
+
+fn viewport_rect(viewport: &Viewport, rect: LogicalRect) -> Rectangle<i32, Physical> {
+    let rect = viewport.pixel_rect(rect);
+    Rectangle::new(
+        (rect.origin[0], rect.origin[1]).into(),
+        (rect.size[0], rect.size[1]).into(),
+    )
 }
 
 /// readback用fixtureのCPU基準。terminal本文を診断へ渡すAPIではない。
@@ -196,7 +154,8 @@ impl Compositor {
         probes: &[Probe],
     ) -> Result<(), Error> {
         let size = surface.get_size().ok_or("SURFACE_LOST")?;
-        let viewport = Viewport::new(snapshot.logical_size, size.w, size.h)?;
+        let viewport =
+            Viewport::new(snapshot.logical_size, size.w, size.h).map_err(|_| "INVALID_ARGUMENT")?;
         if snapshot.layers.len() > limits::SURFACES {
             return Err("INVALID_ARGUMENT");
         }
@@ -215,8 +174,8 @@ impl Compositor {
             {
                 return Err("INVALID_ARGUMENT");
             }
-            let dst = viewport.rect(layer.rect().map_err(|_| "INVALID_ARGUMENT")?);
-            let Some(clip) = viewport.rect(layer.clip_logical).intersection(dst) else {
+            let dst = viewport_rect(&viewport, layer.rect().map_err(|_| "INVALID_ARGUMENT")?);
+            let Some(clip) = viewport_rect(&viewport, layer.clip_logical).intersection(dst) else {
                 continue;
             };
             if dst.size.is_empty() || clip.size.is_empty() {
@@ -528,6 +487,7 @@ impl Compositor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eidolon_model::window::LogicalSize;
     #[test]
     fn letterbox_rejects_bars_nonfinite_and_right_bottom_edges() {
         let viewport = Viewport::new(LogicalSize::new(64, 32).unwrap(), 128, 128).unwrap();

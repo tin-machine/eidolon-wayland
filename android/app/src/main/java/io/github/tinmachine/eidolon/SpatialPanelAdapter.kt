@@ -9,7 +9,6 @@ import android.view.Surface
 import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Vector3
-import com.meta.spatial.runtime.InputListener
 import com.meta.spatial.runtime.PanelSceneObject
 import com.meta.spatial.toolkit.*
 import java.util.concurrent.atomic.AtomicLong
@@ -36,6 +35,7 @@ class SpatialPanelAdapter {
     private data class Binding(val entity: Entity, val handle: Long, var key: JSONObject,
         val role: String = "diagnostic", val commandSeq: String? = null, var destroyCommand: JSONObject? = null,
         var surface: Surface? = null, var sceneObject: PanelSceneObject? = null, var listener: Long? = null,
+        var input: InputAdapter? = null,
         var attached: Boolean = false, var retire: Boolean = false, var destroy: Boolean = false,
         var hidden: Boolean = false,
         var detachSent: Boolean = false, var replacement: Surface? = null)
@@ -75,6 +75,12 @@ class SpatialPanelAdapter {
         return true
     }
     fun currentKey(): JSONObject? = binding?.key?.let { JSONObject(it.toString()) }
+    fun currentEntityId(): Long? = binding?.entity?.id
+    fun beginInputCapture(source: Long, receive: (JSONObject) -> Unit): Boolean {
+        val input = binding?.input ?: return false
+        input.beginCapture(source, receive); return true
+    }
+    fun endInputCapture() { binding?.input?.endCapture() }
     fun currentRender(): JSONObject? {
         val current = binding ?: return null
         val snapshot = JSONObject(NativeBridge.nativeSnapshot(current.handle))
@@ -146,11 +152,13 @@ class SpatialPanelAdapter {
         }
         if (current.listener == null && !closed && !current.destroy) {
             current.sceneObject = obj
-            current.listener = obj.addInputListener(object : InputListener {})
+            current.input = InputAdapter(current.key)
+            current.listener = obj.addInputListener(checkNotNull(current.input))
             listeners++; event("listener_added", entity)
         }
     }
     private fun destroy(current: Binding) {
+        current.input?.endCapture(); current.input = null
         current.listener?.let { current.sceneObject?.removeInputListener(it); listeners--; event("listener_removed", current.entity.id) }
         current.listener = null; current.sceneObject = null; current.surface = null; current.replacement = null
         current.entity.destroy(); destroyed++; event("entity_destroyed", current.entity.id)
@@ -215,6 +223,7 @@ class SpatialPanelAdapter {
                             val replacement = current.replacement
                             current.replacement = null; current.surface = null
                             current.key = key(); current.retire = false; current.detachSent = false
+                            current.input?.updateTarget(current.key)
                             if (replacement != null) surfaceReady(current.entity.id, replacement)
                         }
                     }

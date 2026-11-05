@@ -13,7 +13,7 @@ from host_checks import check_members, rust_test_count
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {"model": ["eidolon-model"], "render": ["eidolon-render"], "lifecycle": ["eidolon-core", "eidolon-android", "eidolon-helper-fixture"],
-          "transport": ["eidolon-transport"], "compositor": ["eidolon-core", "eidolon-shm-fixture"], "input": []}
+          "transport": ["eidolon-transport"], "compositor": ["eidolon-core", "eidolon-shm-fixture"], "input": ["eidolon-model"]}
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--suite", required=True, choices=[*SUITES, "all"])
 args = parser.parse_args()
@@ -77,6 +77,9 @@ try:
         if not packages:
             print(json.dumps({"suite": name, "result": "not_run", "reason": "未実装"}, ensure_ascii=False))
             continue
+        if args.suite == "all" and name == "input":
+            print(json.dumps({"suite": name, "result": "included", "in": "model"}))
+            continue
         count = 0
         for package in packages:
             # core内のcompositor testは独立suiteでも使う。allではlifecycle側で一度だけ実行する。
@@ -86,7 +89,11 @@ try:
             command = ["cargo", "test", "--locked", "-p", package]
             if name == "compositor" and package == "eidolon-core":
                 command.append("compositor::")
+            if name == "input":
+                command.append("input::")
             count += rust_test_count(run(command))
+        if count < 1:
+            raise RuntimeError("実行testが0件のsuiteを成功にしません")
         print(json.dumps({"suite": name, "result": "pass", "tests": count}))
         if name == "render":
             renderer_static_link()

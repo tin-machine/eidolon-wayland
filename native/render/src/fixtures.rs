@@ -125,7 +125,7 @@ pub fn make(
             }
         }
     }
-    let viewport = Viewport::new(logical, width, height)?;
+    let viewport = Viewport::new(logical, width, height).map_err(|_| "INVALID_ARGUMENT")?;
     let mut probes = vec![];
     for (index, rgba) in expected.into_iter().enumerate() {
         let x = (index % logical.width as usize) as f64 + 0.5;

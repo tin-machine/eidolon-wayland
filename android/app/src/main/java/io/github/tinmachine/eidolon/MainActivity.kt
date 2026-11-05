@@ -57,7 +57,7 @@ class MainActivity : AppSystemActivity() {
         } else {
             Log.e(TAG, "native_failed version=${BuildConfig.VERSION_CODE} error=${native.error}")
         }
-        BuildHooks.accept(intent, nativePanels)
+        BuildHooks.accept(intent, nativePanels) { scene }
     }
 
     override fun onSceneReady() {
@@ -122,7 +122,7 @@ class MainActivity : AppSystemActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        BuildHooks.accept(intent, nativePanels)
+        BuildHooks.accept(intent, nativePanels) { scene }
     }
 
     override fun onResume() {

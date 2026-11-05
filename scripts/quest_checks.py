@@ -2,6 +2,70 @@
 import re
 import json
 import hashlib
+import math
+
+
+def ray_result(snapshot, nonce, expected):
+    if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
+        return False
+    result = snapshot.get('check', {})
+    if result.get('case') != 'ray' or result.get('nonce') != nonce:
+        return False
+    if result.get('result') == 'fail':
+        raise ValueError('SDK ray校正失敗: ' + result.get('stage', 'unknown'))
+    if result.get('result') != 'pass':
+        return False
+    key, origin, source = result.get('target', {}), result.get('uv_origin'), result.get('source')
+    if (result.get('synthetic_input') is not True or result.get('synthetic_visibility') is not False
+            or result.get('physical_input_verified') is not False or result.get('dispatch') != 'Scene.onInput'
+            or result.get('raycast') != 'Scene.lineSegmentIntersect' or result.get('capture_detached') is not True
+            or result.get('source_destroyed') is not True or result.get('cleanup_failed') or origin not in {'top_left','bottom_left'}
+            or not isinstance(source,str) or not re.fullmatch(r'[1-9][0-9]*',source)
+            or any(not isinstance(key.get(k),str) or not re.fullmatch(r'[1-9][0-9]*',key[k]) for k in ('session','window','scene','generation'))
+            or type(result.get('ui_thread')) is not int or result['ui_thread'] < 1):
+        raise ValueError('ray検査の範囲/世代/回収が不正です')
+    rows, inputs = result.get('cycles', []), result.get('inputs', [])
+    points = [('top_left',.01,.01),('top_right',.99,.01),('bottom_left',.01,.99),('bottom_right',.99,.99),('center',.5,.5)]
+    if len(rows) != 5 or len(inputs) != 11:
+        raise ValueError('四隅/中央の交差とpress/up/stopが必要です')
+    def near(value, expected, tolerance=.02):
+        return type(value) in {int,float} and math.isfinite(value) and abs(value-expected) < tolerance
+    entity = None
+    for index, (row, (label,u,v)) in enumerate(zip(rows,points)):
+        uv, world = row.get('uv', []), row.get('world', [])
+        hit, start, end = (row.get(k,[]) for k in ('hit_point','ray_start','ray_end'))
+        if (row.get('label') != label or len(uv) != 2 or len(world) != 3
+                or not near(uv[0],u) or not near(uv[1],v if origin=='top_left' else 1-v)
+                or not near(world[0],-.8+(u-.5)*1.2,1e-4) or not near(world[1],1.4+(.5-v)*.9,1e-4) or not near(world[2],1.6,1e-4)
+                or len(hit) != 3 or any(not near(hit[axis],world[axis],1e-4) for axis in range(3))
+                or len(start) != 3 or any(not near(start[axis],[0,1.4,.2][axis],1e-4) for axis in range(3))
+                or len(end) != 3 or not near(end[2],2.5,1e-4)
+                or any(not near(start[axis]+(end[axis]-start[axis])*(1.6-.2)/(2.5-.2),world[axis],1e-4) for axis in range(2))
+                or not isinstance(row.get('entity'),str) or not re.fullmatch(r'[1-9][0-9]*',row['entity'])
+                or row['entity'] == source or entity is not None and row['entity'] != entity):
+            raise ValueError('実quadの交差/UV原点/fixture位置が不正です')
+        entity = row['entity']
+        for phase in range(2):
+            event = inputs[index*2+phase]
+            observed = event.get('uv', [])
+            if (event.get('event') != 'input' or event.get('target') != key or event.get('source') != source
+                    or event.get('changed') != ['trigger_right'] or event.get('state') != (['trigger_right'] if phase==0 else [])
+                    or len(observed) != 2 or any(not near(observed[axis],uv[axis],1e-6) for axis in range(2))):
+                raise ValueError('SDK listenerのchanged/state/UVが不正です')
+    for event in inputs:
+        if (type(event.get('callback_thread')) is not int or event['callback_thread'] < 1
+                or event.get('delivery_thread') != result['ui_thread'] or event.get('target') != key or event.get('source') != source):
+            raise ValueError('SDK listenerのthread/世代が不正です')
+    if inputs[-1].get('event') != 'stop':
+        raise ValueError('SDK stopInputがありません')
+    for wire in [dict(code=0, runtime=result.get('ready',{})), result.get('after',{})]:
+        state = wire.get('runtime', {})
+        targets = state.get('render',{}).get('targets',[])
+        if (wire.get('code') != 0 or state.get('state') != 'Ready' or state.get('activity_visible') is not True
+                or state.get('xr_state') not in {'VISIBLE','FOCUSED'} or state.get('scene') != key['scene']
+                or len(targets) != 1 or targets[0].get('key') != key or targets[0].get('role') != 'diagnostic' or targets[0].get('frames',0) < 3):
+            raise ValueError('実SDK可視性/描画の継続が不正です')
+    return True
 
 
 def foot_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package):

@@ -21,6 +21,7 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | W05 | done | SSH経由の100frame/hash・実foot受信・Stop回収と通常SDK/UI復帰がBuild62で成功 |
 | D01 | done | owned画像→Smithay/Android EGLの実GPU readbackと、通常SDK上のfoot描画・UI復帰に成功 |
 | D02 | in_progress | 実footの通常SDKパネル描画・世代再生成・Stop後UI復帰に成功。HMD視認と物理入力は未受入 |
+| I01 | in_progress | 共通Viewport・surface候補変換と、SDK四隅/中央のUV校正が成功。実コントローラーとWayland入力配送は後続 |
 | D02〜I07 | planned | 実footのSDK描画と製品入力・複数windowを依存順に実装 |
 
 ## B01/B02: ビルドと実機の再現

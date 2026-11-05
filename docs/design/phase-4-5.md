@@ -51,6 +51,10 @@ SDK UV → 左上原点の正規化UV → panel pixel座標
 
 同じ変換parameterをrendererとhit testが使う。UV=1の境界、負値、NaN、scale 2、全buffer transform、letterbox、popup clipをhost testにする。範囲外hitを端へclampして別windowへ誤クリックしない。対象surface決定はcoreの重なり順に従う。
 
+Build66で共通Viewport/model変換と実SDK quadの5点校正が成功した。
+SDK 0.15.0のUVは左上原点で、合成入力のchanged/state/stopも確認した。
+物理入力とWayland配送の未確認を分け、[試行・再現記録](../ray-coordinate-checks.md)へ残す。
+
 <a id="i02"></a>
 ## I02 — 物理キーボード
 
