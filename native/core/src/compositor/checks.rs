@@ -327,6 +327,7 @@ pub fn run_scenario(
         State(F),
     }
     let probe = match scenario {
+        S::LogicalResize => Probe::State(F::LogicalResize),
         S::Pointer | S::KeyboardUs | S::KeyboardJis => unreachable!(),
         S::Lifecycle => Probe::State(F::Lifecycle),
         S::Transforms => Probe::State(F::Transforms),

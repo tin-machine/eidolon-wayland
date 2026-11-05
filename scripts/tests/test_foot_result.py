@@ -11,6 +11,31 @@ from quest_checks import foot_result, foot_sdk_result
 
 
 class FootTests(unittest.TestCase):
+    def test_native_resize_surface_loss_old_generation_and_input_are_required(self):
+        fixture=self.fixture();result=fixture['check'];result.update(case='resize-native',synthetic_input=True,physical_input_verified=False,text_verified=False,stale_resize_rejected=True)
+        baseline=dict(delivered=0,pressed=0,pointer=dict(pressed=0,buttons=0,axis_frames=0))
+        result['input_before']=copy.deepcopy(baseline)
+        rows=[]
+        for i,stage in enumerate(['first','lost','recreated','input']):
+            state=copy.deepcopy(result['cycles'][0 if i<2 else 1]['runtime'])
+            size=dict(width=800,height=500) if i==0 else dict(width=1280,height=720)
+            window=state['app']['windows'][0]
+            window.update(logical_size=size,resize=dict(phase='applied',requested_logical_size=size,committed_size=size))
+            if i==1:state['render']['targets']=[]
+            if i==3:state['app']['input'].update(focus_window=result['window'],delivered=6,pressed=0,pointer=dict(pressed=0,buttons=2,axis_frames=2))
+            rows.append(dict(stage=stage,runtime=state))
+        result['resize_cycles']=rows
+        package=dict(dependencies=dict(waypipe=dict(sha256='0'*64),keymaps=dict(us=dict(sha256='1'*64))))
+        def judge(value):return foot_result(value,'a'*32,dict(profile='debug'),4242,4343,package,case='resize-native')
+        with patch('quest_checks.instrumentation_result',return_value=True):
+            self.assertTrue(judge(fixture))
+            for index,section,field,value in [(0,'resize','phase','awaiting_commit'),(2,'resize','committed_size',dict(width=800,height=500)),(3,'input','pressed',1),(3,'input','delivered',5)]:
+                bad=copy.deepcopy(fixture);app=bad['check']['resize_cycles'][index]['runtime']['app']
+                (app['input'] if section=='input' else app['windows'][0][section])[field]=value
+                with self.subTest(index=index,field=field),self.assertRaises(ValueError):judge(bad)
+            fixture['check']['stale_resize_rejected']=False
+            with self.assertRaises(ValueError):judge(fixture)
+
     def fixture(self):
         nonce = 'a'*32
         token = hashlib.sha256(nonce.encode()).hexdigest()[:16]

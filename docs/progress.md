@@ -24,7 +24,8 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | I01 | in_progress | 共通Viewport・surface候補変換と、SDK四隅/中央のUV校正が成功。実コントローラーとWayland入力配送は後続 |
 | I02 | in_progress | 同梱US/JIS seat・evdev・focus/reset・Android物理入口を実装。Questでwire両layoutと通常Hostの固定合成key→実footセッション/解除/再入力/UI復帰が成功。Bluetooth物理操作は最終待ち |
 | I03 | in_progress | Core region/capture/axis・SDK adapter・focus token・接続取消を実装。Build74で通常SDKの合成pointer操作12stage、wire、key/foot/ray回帰が成功。物理controller/OS Menuの最終確認は残件。詳細はpointer-checks.md |
-| I04〜I07 | planned | 論理resize・二枚の独立パネル・配置/背景保存・popup/限定clipboardを依存順に実装 |
+| I04 | in_progress | logical request/configure/ack/画像commitとtimeout・client調整を分離。host実client11checkpoint、Build82で実footのresize応答待ち中Surface喪失→再生成→入力・停止が成功。SDK physical寸法計測と通常SDK resizeはトラッキング復帰後、HMDは最終待ち。詳細はresize-checks.md |
+| I05〜I07 | planned | 二枚の独立パネル・配置/背景保存・popup/限定clipboardを依存順に実装 |
 
 ## B01/B02: ビルドと実機の再現
 

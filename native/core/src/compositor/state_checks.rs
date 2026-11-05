@@ -44,6 +44,8 @@ pub struct Proof {
     pub withheld: u32,
     pub window_ids: Vec<WindowId>,
     pub cadence_checks: u32,
+    pub logical_resize_flags: u32,
+    pub resize_serials: Vec<u32>,
 }
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
@@ -214,6 +216,136 @@ impl Observer {
             self.proof.tree_immutable_checks += 1;
         }
         match stage {
+            Stage::SizingQueued => {
+                let window = self.first.ok_or("NO_INITIAL_WINDOW")?;
+                let before = state.counters.configures;
+                for (w, h) in [(320, 200), (640, 400), (800, 600)] {
+                    state.request_resize(window, LogicalSize::new(w, h).unwrap())?;
+                }
+                if state.counters.configures != before {
+                    return Err("RESIZE_NOT_COALESCED");
+                }
+                state.resize_tick(Duration::ZERO);
+                if state.counters.configures != before + 1 {
+                    return Err("RESIZE_CONFIGURE_COUNT");
+                }
+                let report = state.windows()[0].resize.clone();
+                self.proof
+                    .resize_serials
+                    .push(report.configured_serial.ok_or("NO_RESIZE_SERIAL")?);
+                self.proof.logical_resize_flags |= 1;
+            }
+            Stage::SizingAcked | Stage::SizingEmpty => {
+                let snapshot = current(state)?;
+                size_and_color(&snapshot, 32, 32, [128, 0, 0, 128])?;
+                let report = &state.windows()[0].resize;
+                if report.phase != eidolon_model::resize::Phase::AwaitingCommit
+                    || report.requested_logical_size != Some(LogicalSize::new(800, 600).unwrap())
+                {
+                    return Err("RESIZE_COMPLETED_WITHOUT_IMAGE");
+                }
+                self.proof.logical_resize_flags |= match stage {
+                    Stage::SizingAcked => 2,
+                    Stage::SizingEmpty => 4,
+                    _ => unreachable!(),
+                };
+                if stage == Stage::SizingAcked {
+                    // EGL targetが使えなくてもprotocol/resizeは進める。実Surface破棄はSDK scopeで別検査。
+                    self.target = false;
+                    state.observe_producers(&[]);
+                }
+            }
+            Stage::SizingAdjusted => {
+                let snapshot = current(state)?;
+                size_and_color(&snapshot, 640, 400, [0, 128, 0, 128])?;
+                let report = &state.windows()[0].resize;
+                if report.phase != eidolon_model::resize::Phase::Adjusted
+                    || report.requested_logical_size != Some(LogicalSize::new(800, 600).unwrap())
+                    || report.committed_size != Some(snapshot.logical_size)
+                {
+                    return Err("CLIENT_SIZE_ADJUSTMENT_LOST");
+                }
+                self.proof.logical_resize_flags |= 8;
+            }
+            Stage::SizingApplied | Stage::SizingLate => {
+                let snapshot = current(state)?;
+                let (width, height, color, flag) = if stage == Stage::SizingApplied {
+                    (800, 600, [0, 0, 128, 128], 16)
+                } else {
+                    (960, 640, [64, 64, 64, 128], 64)
+                };
+                size_and_color(&snapshot, width, height, color)?;
+                let report = &state.windows()[0].resize;
+                if report.phase != eidolon_model::resize::Phase::Applied
+                    || report.committed_size != Some(snapshot.logical_size)
+                    || report.error.is_some()
+                {
+                    return Err("RESIZE_NOT_APPLIED");
+                }
+                self.updated(&snapshot)?;
+                self.proof.logical_resize_flags |= flag;
+                if stage == Stage::SizingApplied {
+                    if self.target || state.windows()[0].sizing.producer_size_px.is_some() {
+                        return Err("RESIZE_REQUIRED_RENDER_TARGET");
+                    }
+                    self.target = true;
+                    self.proof.logical_resize_flags |= 256;
+                    let before = state.counters.configures;
+                    let size = eidolon_model::resize::PhysicalSize {
+                        width_m: 1.44,
+                        height_m: 1.08,
+                    };
+                    let command = eidolon_model::ids::CommandSeq::new(9).unwrap();
+                    state.set_physical_size(snapshot.window, command, size)?;
+                    if state.physical_size_applied(snapshot.window, None, size) != Err("STALE") {
+                        return Err("OLD_SIZE_ACK");
+                    }
+                    state.physical_size_applied(snapshot.window, Some(command), size)?;
+                    if state.counters.configures != before {
+                        return Err("METERS_SENT_CONFIGURE");
+                    }
+                    self.proof.logical_resize_flags |= 512;
+                }
+            }
+            Stage::SizingTimeout | Stage::SizingUnmapRequest => {
+                let window = self.first.ok_or("NO_INITIAL_WINDOW")?;
+                let (w, h, now) = if stage == Stage::SizingTimeout {
+                    (960, 640, 1)
+                } else {
+                    (1280, 720, 7)
+                };
+                state.request_resize(window, LogicalSize::new(w, h).unwrap())?;
+                state.resize_tick(Duration::from_secs(now));
+                self.proof.resize_serials.push(
+                    state.windows()[0]
+                        .resize
+                        .configured_serial
+                        .ok_or("NO_RESIZE_SERIAL")?,
+                );
+            }
+            Stage::SizingTimedOut => {
+                state.resize_tick(Duration::from_secs(6));
+                let report = &state.windows()[0].resize;
+                size_and_color(current(state)?.as_ref(), 800, 600, [0, 0, 128, 128])?;
+                if report.phase != eidolon_model::resize::Phase::TimedOut
+                    || report.error != Some("RESIZE_TIMEOUT")
+                {
+                    return Err("RESIZE_TIMEOUT_NOT_REPORTED");
+                }
+                self.proof.logical_resize_flags |= 32;
+            }
+            Stage::SizingUnmapped => {
+                let windows = state.windows();
+                let report = windows.first().ok_or("WINDOW_LOST_ON_UNMAP")?;
+                if report.life != WindowLife::Unmapped
+                    || report.resize.phase != eidolon_model::resize::Phase::Idle
+                    || report.resize.requested_logical_size.is_some()
+                    || state.latest_snapshot(report.window).is_some()
+                {
+                    return Err("UNMAPPED_RESIZE_REPLAY");
+                }
+                self.proof.logical_resize_flags |= 128;
+            }
             Stage::FirstMapped => {
                 let snapshot = current(state)?;
                 self.remember(&snapshot);
@@ -607,110 +739,123 @@ pub fn run(scenario: Scenario, stop: Arc<AtomicBool>) -> Report {
     };
     // SAFETY: getuidには引数もpointerもない。
     report.uid = unsafe { libc::getuid() };
-    let outcome = (|| {
-        if fixture_resources()? != (0, 0) {
-            return Err("FIXTURE_ALREADY_RUNNING");
-        }
-        let mut display = Display::<ProtocolState>::new().map_err(|_| "DISPLAY_CREATE")?;
-        let mut state = ProtocolState::new(&display.handle(), SessionId::new(1).unwrap());
-        let scenario_result = (|| {
-            drive(&mut display, &mut state, scenario, &stop, &mut report.proof)?;
-            if !matches!(
-                scenario,
-                Scenario::Lifecycle | Scenario::Transforms | Scenario::FrameGates | Scenario::Tree
-            ) {
-                if !report
-                    .proof
-                    .client
-                    .as_ref()
-                    .is_some_and(|client| client.protocol_error)
-                {
-                    return Err("BAD_CLIENT_NOT_REJECTED");
+    let outcome =
+        (|| {
+            if fixture_resources()? != (0, 0) {
+                return Err("FIXTURE_ALREADY_RUNNING");
+            }
+            let mut display = Display::<ProtocolState>::new().map_err(|_| "DISPLAY_CREATE")?;
+            let mut state = ProtocolState::new(&display.handle(), SessionId::new(1).unwrap());
+            let scenario_result = (|| {
+                drive(&mut display, &mut state, scenario, &stop, &mut report.proof)?;
+                if !matches!(
+                    scenario,
+                    Scenario::LogicalResize
+                        | Scenario::Lifecycle
+                        | Scenario::Transforms
+                        | Scenario::FrameGates
+                        | Scenario::Tree
+                ) {
+                    if !report
+                        .proof
+                        .client
+                        .as_ref()
+                        .is_some_and(|client| client.protocol_error)
+                    {
+                        return Err("BAD_CLIENT_NOT_REJECTED");
+                    }
+                    let mut recovery = Proof::default();
+                    let outcome = drive(
+                        &mut display,
+                        &mut state,
+                        Scenario::Transforms,
+                        &stop,
+                        &mut recovery,
+                    );
+                    report.recovery = Some(recovery);
+                    outcome?;
                 }
-                let mut recovery = Proof::default();
-                let outcome = drive(
-                    &mut display,
-                    &mut state,
-                    Scenario::Transforms,
-                    &stop,
-                    &mut recovery,
-                );
-                report.recovery = Some(recovery);
-                outcome?;
+                Ok(())
+            })();
+            report.surfaces_after = state.surface_count();
+            report.windows_after = state.windows().len();
+            (report.clients_after, report.objects_after) = object_counts(&display);
+            report.pixel_bytes_after = state.pixel_bytes();
+            report.pool_bytes_after = state.pool_usage().bytes;
+            report.pool_count_after = state.pool_usage().pools;
+            (report.fixture_fds_after, report.fixture_maps_after) = fixture_resources()?;
+            scenario_result?;
+            let proof = report.recovery.as_ref().unwrap_or(&report.proof);
+            if proof.client.as_ref().is_none_or(|client| {
+                client.protocol_error || client.checkpoints != proof.checkpoints
+            }) {
+                return Err("CHECKPOINT_EVIDENCE");
+            }
+            match scenario {
+                Scenario::Lifecycle
+                    if !(proof.mapped
+                        && proof.unmapped
+                        && proof.remapped
+                        && proof.resize_commit_only
+                        && proof.consecutive_configures
+                        && proof.recreated
+                        && proof.rejected_resize
+                        && proof.immutable_checks >= 3) =>
+                {
+                    return Err("LIFECYCLE_EVIDENCE");
+                }
+                Scenario::FrameGates
+                    if proof.withheld != 3
+                        || proof.immutable_checks < 3
+                        || proof.client.as_ref().unwrap().withheld != 3 =>
+                {
+                    return Err("FRAME_GATE_EVIDENCE");
+                }
+                Scenario::Tree
+                    if proof.tree_flags != 127
+                        || proof.tree_immutable_checks < 5
+                        || proof.clip_checks != 2
+                        || !proof.content_reused
+                        || proof.client.as_ref().unwrap().popup_done != 3
+                        || proof.client.as_ref().unwrap().popup_positions
+                            != vec![(10, 10, 8, 8), (6, 6, 6, 6), (24, 26, 8, 8)] =>
+                {
+                    return Err("TREE_EVIDENCE");
+                }
+                Scenario::LogicalResize
+                    if proof.logical_resize_flags != 1023
+                        || proof.checkpoints != 11
+                        || proof.resize_serials.len() != 3 =>
+                {
+                    return Err("LOGICAL_RESIZE_EVIDENCE");
+                }
+                Scenario::LogicalResize
+                | Scenario::Lifecycle
+                | Scenario::FrameGates
+                | Scenario::Tree => (),
+                _ if proof.transforms != 255
+                    || proof.scales != 3
+                    || proof.checkpoints != 16
+                    || proof.immutable_checks != 15 =>
+                {
+                    return Err("TRANSFORM_EVIDENCE");
+                }
+                _ => (),
+            }
+            if report.surfaces_after != 0
+                || report.windows_after != 0
+                || report.clients_after != 0
+                || report.objects_after != 0
+                || report.pixel_bytes_after != 0
+                || report.pool_bytes_after != 0
+                || report.pool_count_after != 0
+                || report.fixture_fds_after != 0
+                || report.fixture_maps_after != 0
+            {
+                return Err("RESOURCE_CLEANUP");
             }
             Ok(())
         })();
-        report.surfaces_after = state.surface_count();
-        report.windows_after = state.windows().len();
-        (report.clients_after, report.objects_after) = object_counts(&display);
-        report.pixel_bytes_after = state.pixel_bytes();
-        report.pool_bytes_after = state.pool_usage().bytes;
-        report.pool_count_after = state.pool_usage().pools;
-        (report.fixture_fds_after, report.fixture_maps_after) = fixture_resources()?;
-        scenario_result?;
-        let proof = report.recovery.as_ref().unwrap_or(&report.proof);
-        if proof
-            .client
-            .as_ref()
-            .is_none_or(|client| client.protocol_error || client.checkpoints != proof.checkpoints)
-        {
-            return Err("CHECKPOINT_EVIDENCE");
-        }
-        match scenario {
-            Scenario::Lifecycle
-                if !(proof.mapped
-                    && proof.unmapped
-                    && proof.remapped
-                    && proof.resize_commit_only
-                    && proof.consecutive_configures
-                    && proof.recreated
-                    && proof.rejected_resize
-                    && proof.immutable_checks >= 3) =>
-            {
-                return Err("LIFECYCLE_EVIDENCE");
-            }
-            Scenario::FrameGates
-                if proof.withheld != 3
-                    || proof.immutable_checks < 3
-                    || proof.client.as_ref().unwrap().withheld != 3 =>
-            {
-                return Err("FRAME_GATE_EVIDENCE");
-            }
-            Scenario::Tree
-                if proof.tree_flags != 127
-                    || proof.tree_immutable_checks < 5
-                    || proof.clip_checks != 2
-                    || !proof.content_reused
-                    || proof.client.as_ref().unwrap().popup_done != 3
-                    || proof.client.as_ref().unwrap().popup_positions
-                        != vec![(10, 10, 8, 8), (6, 6, 6, 6), (24, 26, 8, 8)] =>
-            {
-                return Err("TREE_EVIDENCE");
-            }
-            Scenario::Lifecycle | Scenario::FrameGates | Scenario::Tree => (),
-            _ if proof.transforms != 255
-                || proof.scales != 3
-                || proof.checkpoints != 16
-                || proof.immutable_checks != 15 =>
-            {
-                return Err("TRANSFORM_EVIDENCE");
-            }
-            _ => (),
-        }
-        if report.surfaces_after != 0
-            || report.windows_after != 0
-            || report.clients_after != 0
-            || report.objects_after != 0
-            || report.pixel_bytes_after != 0
-            || report.pool_bytes_after != 0
-            || report.pool_count_after != 0
-            || report.fixture_fds_after != 0
-            || report.fixture_maps_after != 0
-        {
-            return Err("RESOURCE_CLEANUP");
-        }
-        Ok(())
-    })();
     report.error = outcome.err();
     report.state = if report.error.is_some() {
         "fail"
@@ -724,6 +869,12 @@ pub fn run(scenario: Scenario, stop: Arc<AtomicBool>) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn real_resize_client_requires_new_buffer_and_survives_timeout_late_commit_and_unmap() {
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let report = run(Scenario::LogicalResize, Arc::new(AtomicBool::new(false)));
+        assert_eq!(report.state, "pass", "{report:#?}");
+    }
     #[test]
     fn actual_client_lifecycle_transforms_visibility_and_bad_requests() {
         let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();

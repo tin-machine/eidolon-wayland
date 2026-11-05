@@ -19,6 +19,7 @@ object CompositorCase {
             check(active > 0)
             waitFor { runtime(active).getString("state") == "Ready" }
             val scenarios = when (name) {
+                "resize-wire" -> listOf("logical_resize")
                 "pointer-wire" -> listOf("pointer")
                 "keyboard-wire" -> listOf("keyboard_us", "keyboard_jis")
                 "shm-truncate" -> listOf("truncate")

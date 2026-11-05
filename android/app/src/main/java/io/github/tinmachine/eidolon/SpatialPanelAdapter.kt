@@ -10,6 +10,7 @@ import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.Vector3
 import com.meta.spatial.runtime.PanelSceneObject
+import com.meta.spatial.runtime.Scene
 import com.meta.spatial.toolkit.*
 import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONArray
@@ -19,6 +20,7 @@ import org.json.JSONObject
 class SpatialPanelAdapter {
     private val ui = Handler(Looper.getMainLooper())
     private var scene = 0L
+    private var runtimeScene: Scene? = null
     private var closed = false
     private var creating = false
     private var binding: Binding? = null
@@ -36,6 +38,7 @@ class SpatialPanelAdapter {
         val role: String = "diagnostic", val commandSeq: String? = null, var destroyCommand: JSONObject? = null,
         var surface: Surface? = null, var sceneObject: PanelSceneObject? = null, var listener: Long? = null,
         var input: InputAdapter? = null,
+        var physicalRequested: String? = null, var physicalAcked: String? = null,
         var attached: Boolean = false, var retire: Boolean = false, var destroy: Boolean = false,
         var hidden: Boolean = false,
         var detachSent: Boolean = false, var replacement: Surface? = null)
@@ -52,9 +55,10 @@ class SpatialPanelAdapter {
             ui.post { event("panel_setup", entity.id, tid); objectReady(entity.id, obj) }
         })
 
-    fun sceneReady(epoch: Long) {
+    fun sceneReady(epoch: Long, sdkScene: Scene) {
         check(Looper.myLooper() == Looper.getMainLooper())
         scene = epoch
+        runtimeScene = sdkScene
         closed = false
         binding?.let { it.retire = true; it.destroy = true }
         event("scene_ready")
@@ -63,6 +67,7 @@ class SpatialPanelAdapter {
     }
     fun close() {
         closed = true
+        runtimeScene = null
         pendingSurface = null; pendingObject = null
         binding?.let { it.retire = true; it.destroy = true }
         event("shutdown")
@@ -199,6 +204,7 @@ class SpatialPanelAdapter {
             if (snapshot.getInt("code") == NativeBridge.STALE) { destroy(current) }
             else {
                 val render = snapshot.getJSONObject("runtime").getJSONObject("render")
+                if(current.role=="windows" && !current.retire && plan?.optBoolean("applied")==true) applyPhysical(current,snapshot.getJSONObject("runtime"))
                 if (current.role == "windows" && !current.retire && plan != null && !plan.getBoolean("applied")) {
                     val targets = render.getJSONArray("targets")
                     if ((0 until targets.length()).any { sameKey(targets.getJSONObject(it).getJSONObject("key"), current.key) && targets.getJSONObject(it).getLong("frames") > 0 })
@@ -246,6 +252,38 @@ class SpatialPanelAdapter {
             if (host?.optString("state") == "Ready" && host.optString("scene") == scene.toString() && (!windows || desired != null)) create(handle, if (windows) desired else null)
         }
         if (now - lastPublish >= 1000) { NativeSessionHost.publishAdapter(metrics()); lastPublish = now }
+    }
+    private fun applyPhysical(current: Binding, runtime: JSONObject) {
+        val app=runtime.optJSONObject("app") ?: return
+        if(app.optString("session")!=current.key.optString("session")) return
+        val windows=app.getJSONArray("windows")
+        val window=(0 until windows.length()).map { windows.getJSONObject(it) }.firstOrNull { it.getString("window")==current.key.getString("window") } ?: return
+        val sizing=window.getJSONObject("sizing"); val size=sizing.getJSONObject("physical_size_m")
+        val command=if(sizing.isNull("size_command")) null else sizing.getString("size_command")
+        val stamp="${command ?: "initial"}:$size"
+        val x=size.getDouble("width_m").toFloat()/1.2f; val y=size.getDouble("height_m").toFloat()/.9f
+        if(current.physicalRequested!=stamp) {
+            current.entity.setComponent(Scale(Vector3(x,y,1f)))
+            current.physicalRequested=stamp; current.physicalAcked=null
+        }
+        if(current.physicalAcked!=stamp && physicalGeometryMatches(current,size)) {
+            if(NativeSessionHost.ackPhysicalSize(current.key,command,size,current.handle)==NativeBridge.ACCEPTED) current.physicalAcked=stamp
+        }
+    }
+    private fun physicalGeometryMatches(current: Binding, size: JSONObject): Boolean {
+        val sdk=runtimeScene ?: return false
+        val pose=current.entity.getComponent<Transform>().transform
+        // 公開ray APIで実quadを測る。希望componentだけを読んでSDK適用済みとはしない。
+        for((u,v) in listOf(.2 to .35,.8 to .65)) {
+            val x=((u-.5)*size.getDouble("width_m")).toFloat();val y=((.5-v)*size.getDouble("height_m")).toFloat()
+            val world=pose*Vector3(x,y,0f)
+            val start=pose*Vector3(.27f,.31f,-1.3f)
+            val end=pose*Vector3(x+(x-.27f)*(.8f/1.3f),y+(y-.31f)*(.8f/1.3f),.8f)
+            val hit=sdk.lineSegmentIntersect(start,end) ?: return false
+            if(hit.entity?.id!=current.entity.id || kotlin.math.abs(hit.textureCoordinate.x-u)>=.005 || kotlin.math.abs(hit.textureCoordinate.y-v)>=.005 ||
+                kotlin.math.abs(hit.point.x-world.x)>=.0001 || kotlin.math.abs(hit.point.y-world.y)>=.0001 || kotlin.math.abs(hit.point.z-world.z)>=.0001) return false
+        }
+        return true
     }
     companion object { private val generations = AtomicLong(0) }
 }

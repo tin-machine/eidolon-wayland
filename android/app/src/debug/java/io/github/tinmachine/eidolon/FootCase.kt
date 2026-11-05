@@ -6,6 +6,7 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import android.view.KeyEvent
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -14,9 +15,12 @@ import org.json.JSONObject
 
 /** 実SSH/foot→SHM→Smithay→EGL→ImageReader。SDK/HMD可視性・物理入力は別に確認する。 */
 object FootCase {
-    fun run(nonce: String, context: Context, configuration: String, store: DiagnosticsStore) {
-        val result = JSONObject().put("case", "foot").put("nonce", nonce).put("result", "running")
+    fun run(nonce: String, context: Context, configuration: String, store: DiagnosticsStore, resizing: Boolean = false) {
+        val result = JSONObject().put("case", if(resizing) "resize-native" else "foot").put("nonce", nonce).put("result", "running")
             .put("consumer", "ImageReader").put("synthetic_visibility", true)
+        if(resizing) result.put("synthetic_input",true).put("physical_input_verified",false).put("text_verified",false)
+        val resizeRows=JSONArray()
+        var oldTarget:JSONObject?=null
         val thread = HandlerThread("eidolon-foot-consumer").apply { start() }
         val handler = Handler(thread.looper)
         val pixels = Pixels()
@@ -114,6 +118,35 @@ object FootCase {
                 }
                 rows.put(JSONObject().put("generation", generation).put("target_generation", targetGeneration.toString()).put("runtime", current).put("pixels", pixels.summary()))
                 result.put("cycles", rows); store.publishCheck(result)
+                if(resizing && generation==2) {
+                    stage="resize-recreated"
+                    resizeRows.put(JSONObject().put("stage","recreated").put("runtime",resizedSnapshot(active,1280,720)))
+                    send(active,command("resize_logical",80).put("target",checkNotNull(oldTarget)).put("width",640).put("height",480),"STALE")
+                    resizedSnapshot(active,1280,720)
+                    result.put("stale_resize_rejected",true)
+                    stage="resize-input"
+                    val baseline=healthy(active).getJSONObject("app").getJSONObject("input")
+                    result.put("input_before",baseline)
+                    val epoch=healthy(active).getLong("input_resets")
+                    fun pointer(request:Long,event:JSONObject) {
+                        val packet=JSONObject().put("source","777").put("uv",JSONArray(listOf(.53,.47))).put("event",event).put("time_ms",SystemClock.uptimeMillis() and 0xffffffffL)
+                        send(active,command("pointer",request).put("target",target).put("input_epoch",epoch).put("pointer",packet))
+                    }
+                    pointer(81,JSONObject().put("type","buttons").put("changed",1).put("state",1))
+                    pointer(82,JSONObject().put("type","buttons").put("changed",1).put("state",0))
+                    waitFor { !healthy(active).getJSONObject("app").getJSONObject("input").isNull("focus_token") }
+                    val focus=healthy(active).getJSONObject("app").getJSONObject("input").getString("focus_token")
+                    for((index,key) in listOf(Triple("pressed",42,KeyEvent.KEYCODE_SHIFT_LEFT),Triple("pressed",30,KeyEvent.KEYCODE_A),Triple("released",30,KeyEvent.KEYCODE_A),Triple("released",42,KeyEvent.KEYCODE_SHIFT_LEFT),Triple("pressed",14,KeyEvent.KEYCODE_DEL),Triple("released",14,KeyEvent.KEYCODE_DEL)).withIndex()) {
+                        val packet=JSONObject().put("device",Int.MAX_VALUE-10).put("action",key.first).put("scan_code",key.second).put("key_code",key.third).put("repeat",0).put("meta",0).put("time_ms",SystemClock.uptimeMillis() and 0xffffffffL)
+                        send(active,command("key",90L+index).put("target",target).put("input_epoch",epoch).put("focus_token",focus).put("key",packet))
+                    }
+                    pointer(97,JSONObject().put("type","scroll").put("delta",JSONArray(listOf(0,24))).put("stop",JSONArray(listOf(false,false))))
+                    pointer(98,JSONObject().put("type","scroll").put("delta",JSONArray(listOf(0,0))).put("stop",JSONArray(listOf(false,true))))
+                    var inputState=healthy(active)
+                    waitFor { inputState=healthy(active);val input=inputState.getJSONObject("app").getJSONObject("input");input.getLong("delivered")==baseline.getLong("delivered")+6 && input.getJSONObject("pointer").getLong("axis_frames")==baseline.getJSONObject("pointer").getLong("axis_frames")+2 && resized(inputState,1280,720) }
+                    resizeRows.put(JSONObject().put("stage","input").put("runtime",inputState))
+                    result.put("resize_cycles",resizeRows);store.publishCheck(result)
+                }
                 if (generation == 1) {
                     stage = "pause"
                     send(active, command("set_activity_state", 6).put("visible", false))
@@ -127,8 +160,31 @@ object FootCase {
                     send(active, command("set_activity_state", 7).put("visible", true))
                     waitFor { healthy(active).getJSONObject("app").getLong("callbacks") >= held.getJSONObject("app").getLong("callbacks")+3 }
                     result.put("resumed", healthy(active))
-                    send(active, command("surface_lost", 8).put("target", target))
-                    waitFor { healthy(active).getJSONObject("render").getJSONArray("targets").length() == 0 }
+                    if(resizing) {
+                        stage="resize-first"
+                        send(active,command("resize_logical",70).put("target",target).put("width",800).put("height",500))
+                        resizeRows.put(JSONObject().put("stage","first").put("runtime",resizedSnapshot(active,800,500)))
+                        oldTarget=JSONObject(target.toString())
+                        // 同じqueueへ続けて入れ、detachとbuffer commitの順序を実測する。
+                        val commands=listOf(command("resize_logical",71).put("target",target).put("width",1280).put("height",720),command("surface_lost",8).put("target",target))
+                        commands.forEach { check(NativeBridge.nativeCommand(active,it.toString())==NativeBridge.ACCEPTED) }
+                        val pending=commands.map { it.getString("request_id") }.toMutableSet()
+                        waitFor {
+                            val events=JSONObject(NativeBridge.nativePoll(active,64)).getJSONArray("events")
+                            for(index in 0 until events.length()) { val event=events.getJSONObject(index);if(event.optString("type")=="command_complete" && event.optString("request_id") in pending) { check(event.getString("code")=="ACCEPTED");pending.remove(event.getString("request_id")) } }
+                            pending.isEmpty()
+                        }
+                    } else send(active, command("surface_lost", 8).put("target", target))
+                    var lostState=healthy(active)
+                    waitFor {
+                        lostState=healthy(active)
+                        lostState.getJSONObject("render").getJSONArray("targets").length()==0 && (!resizing ||
+                            lostState.getJSONObject("app").getJSONArray("windows").getJSONObject(0).getJSONObject("resize").optJSONObject("requested_logical_size")?.optInt("width")==1280)
+                    }
+                    if(resizing) {
+                        resizeRows.put(JSONObject().put("stage","lost").put("runtime",lostState))
+                        result.put("resize_cycles",resizeRows);store.publishCheck(result)
+                    }
                     closeReader(local, handler); reader = null
                     var retire = JSONObject()
                     waitFor {
@@ -226,7 +282,7 @@ object FootCase {
         check(done.await(3, TimeUnit.SECONDS))
     }
     private fun command(type: String, request: Long): JSONObject = JSONObject().put("schema", 1).put("type", type).put("request_id", request.toString())
-    private fun send(handle: Long, command: JSONObject) {
+    private fun send(handle: Long, command: JSONObject, expected: String = "ACCEPTED") {
         check(NativeBridge.nativeCommand(handle, command.toString()) == NativeBridge.ACCEPTED)
         var complete = false
         waitFor {
@@ -234,11 +290,23 @@ object FootCase {
             for (index in 0 until events.length()) {
                 val event = events.getJSONObject(index)
                 if (event.optString("type") == "command_complete" && event.optString("request_id") == command.getString("request_id")) {
-                    check(event.getString("code") == "ACCEPTED"); complete = true
+                    check(event.getString("code") == expected); complete = true
                 }
             }
             complete
         }
+    }
+    private fun resized(state:JSONObject,width:Int,height:Int):Boolean {
+        val window=state.getJSONObject("app").getJSONArray("windows").getJSONObject(0)
+        val resize=window.getJSONObject("resize");val size=window.getJSONObject("logical_size")
+        val targets=state.getJSONObject("render").getJSONArray("targets")
+        return resize.getString("phase")=="applied" && size.getInt("width")==width && size.getInt("height")==height && targets.length()==1 &&
+            targets.getJSONObject(0).optString("content_frame")==window.getString("frame")
+    }
+    private fun resizedSnapshot(handle:Long,width:Int,height:Int):JSONObject {
+        var state=healthy(handle)
+        waitFor { state=healthy(handle);resized(state,width,height) }
+        return state
     }
     private fun waitFor(milliseconds: Long = 20000, test: () -> Boolean) {
         val deadline = SystemClock.elapsedRealtime()+milliseconds

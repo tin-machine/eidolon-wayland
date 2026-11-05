@@ -1072,15 +1072,19 @@
     {
       "id": "I04",
       "title": "論理resizeと物理拡大",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "I03"
       ],
       "spec": "docs/design/phase-4-5.md#i04",
       "files": [
-        "native/model/src/layout.rs",
-        "native/core/src/compositor/protocol.rs",
-        "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt"
+        "native/model/src/resize.rs",
+        "native/core/src/compositor/snapshot.rs",
+        "native/core/src/compositor/state_checks.rs",
+        "native/fixtures/shm-client/src/state.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt",
+        "android/app/src/debug/java/io/github/tinmachine/eidolon/ResizeCase.kt",
+        "android/app/src/debug/java/io/github/tinmachine/eidolon/FootCase.kt"
       ],
       "steps": [
         "request/configure/commit/producer/physical寸法を分ける",

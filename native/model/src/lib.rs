@@ -8,6 +8,7 @@ pub mod layout;
 pub mod limits;
 pub mod pixels;
 pub mod pointer;
+pub mod resize;
 pub mod state;
 pub mod surface;
 pub mod window;

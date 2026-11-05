@@ -15,7 +15,7 @@ use std::{
     fs,
     os::unix::net::UnixListener,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -67,6 +67,7 @@ pub struct Session {
     virtual_tick: u64,
     closing: bool,
     published: Vec<WindowId>,
+    started: Instant,
 }
 impl Session {
     pub fn start(
@@ -117,6 +118,7 @@ impl Session {
             virtual_tick: 0,
             closing: false,
             published: vec![],
+            started: Instant::now(),
         })
     }
     pub fn snapshot(&self) -> Report {
@@ -161,6 +163,47 @@ impl Session {
         if let Some(protocol) = self.protocol.as_mut() {
             protocol.reset_input();
         }
+    }
+    pub fn resize_logical(
+        &mut self,
+        window: WindowId,
+        size: LogicalSize,
+    ) -> Result<(), &'static str> {
+        if self.closing {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .request_resize(window, size)
+    }
+    pub fn set_physical_size(
+        &mut self,
+        window: WindowId,
+        request: eidolon_model::ids::CommandSeq,
+        size: eidolon_model::resize::PhysicalSize,
+    ) -> Result<(), &'static str> {
+        if self.closing {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .set_physical_size(window, request, size)
+    }
+    pub fn physical_size_applied(
+        &mut self,
+        window: WindowId,
+        command: Option<eidolon_model::ids::CommandSeq>,
+        size: eidolon_model::resize::PhysicalSize,
+    ) -> Result<(), &'static str> {
+        if self.closing {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .physical_size_applied(window, command, size)
     }
     pub fn pointer(
         &mut self,
@@ -230,6 +273,21 @@ impl Session {
             }
         }
         let render = gl.snapshot();
+        let producers = render
+            .targets
+            .iter()
+            .filter(|t| {
+                t.role == eidolon_render::RenderMode::Windows
+                    && t.key.session == session
+                    && t.frames > 0
+            })
+            .filter_map(|t| {
+                eidolon_model::window::BufferSizePx::new(t.gpu.width as u32, t.gpu.height as u32)
+                    .ok()
+                    .map(|size| (t.key.window, size))
+            })
+            .collect::<Vec<_>>();
+        state.observe_producers(&producers);
         for window in &windows {
             let presented = render.targets.iter().any(|target| {
                 target.role == eidolon_render::RenderMode::Windows
@@ -326,6 +384,11 @@ impl Session {
         }
         if let Err(error) = self.dispatch() {
             self.fail(error);
+        }
+        if !self.closing
+            && let Some(protocol) = self.protocol.as_mut()
+        {
+            protocol.resize_tick(self.started.elapsed());
         }
         self.refresh_stats();
         self.report.local = self.local.snapshot();

@@ -141,6 +141,7 @@ pub enum CleanupScenario {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompositorScenario {
+    LogicalResize,
     Pointer,
     KeyboardUs,
     KeyboardJis,
@@ -170,6 +171,26 @@ pub enum CompositorScenario {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    ResizeLogical {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        width: u32,
+        height: u32,
+    },
+    SetPhysicalSize {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        size: crate::resize::PhysicalSize,
+    },
+    PhysicalSizeApplied {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        size_command: Option<CommandSeq>,
+        size: crate::resize::PhysicalSize,
+    },
     Pointer {
         schema: u32,
         request_id: CommandSeq,
@@ -309,7 +330,10 @@ impl Command {
         }
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
-            Self::Pointer { schema, .. }
+            Self::ResizeLogical { schema, .. }
+            | Self::SetPhysicalSize { schema, .. }
+            | Self::PhysicalSizeApplied { schema, .. }
+            | Self::Pointer { schema, .. }
             | Self::FocusWindow { schema, .. }
             | Self::Key { schema, .. }
             | Self::AdapterApplied { schema, .. }
@@ -376,11 +400,26 @@ impl Command {
         {
             return Err(Status::InvalidArgument);
         }
+        match &command {
+            Self::ResizeLogical { width, height, .. } => {
+                crate::resize::logical_size(*width, *height)
+                    .map_err(|_| Status::InvalidArgument)?;
+            }
+            Self::SetPhysicalSize { size, .. } | Self::PhysicalSizeApplied { size, .. }
+                if !size.valid() =>
+            {
+                return Err(Status::InvalidArgument);
+            }
+            _ => (),
+        }
         Ok(command)
     }
     pub fn request_id(&self) -> CommandSeq {
         match *self {
-            Self::Pointer { request_id, .. }
+            Self::ResizeLogical { request_id, .. }
+            | Self::SetPhysicalSize { request_id, .. }
+            | Self::PhysicalSizeApplied { request_id, .. }
+            | Self::Pointer { request_id, .. }
             | Self::FocusWindow { request_id, .. }
             | Self::Key { request_id, .. }
             | Self::AdapterApplied { request_id, .. }

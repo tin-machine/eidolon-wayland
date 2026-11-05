@@ -40,6 +40,8 @@ object NativeSessionHost {
     @Volatile private var inputTargets: Map<String, InputTarget> = emptyMap()
     private fun targetIdentity(target: JSONObject): String = listOf("session","window","scene","generation").joinToString(":") { target.getString(it) }
     val keyboardSummary = mutableStateOf("操作パネルへ入力")
+    val layoutSummary = mutableStateOf("ターミナルを開くとサイズを変更できます")
+    val layoutAvailable = mutableStateOf(false)
     private var lastWrite = 0L
     private var state = "Starting"
     private var sshState = "未接続"
@@ -156,6 +158,29 @@ object NativeSessionHost {
         if (!activityVisible.get() || xrState.get()!="FOCUSED") return null
         return inputTargets[targetIdentity(JSONObject(target))]?.takeIf { it.runtime==handle }
     }
+    private fun selectedTarget(runtime: JSONObject): JSONObject? {
+        val plans=runtime.getJSONArray("panels")
+        val focused=runtime.optJSONObject("app")?.optJSONObject("input")?.optString("focus_window")
+        val live=(0 until plans.length()).map { plans.getJSONObject(it) }.filter { it.optString("action")=="create" && it.optBoolean("applied") && it.isNull("error") }
+        return (live.firstOrNull { it.getJSONObject("target").optString("window")==focused } ?: live.firstOrNull())?.getJSONObject("target")
+    }
+    fun resizeTerminal(width: Int, height: Int) { worker.execute { safely {
+        if(handle==0L) return@safely
+        val target=selectedTarget(snapshot().getJSONObject("runtime")) ?: return@safely
+        NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","resize_logical")
+            .put("request_id",requests.incrementAndGet().toString()).put("target",target).put("width",width).put("height",height).toString())
+    } } }
+    fun setPhysicalSize(width: Double, height: Double) { worker.execute { safely {
+        if(handle==0L) return@safely
+        val target=selectedTarget(snapshot().getJSONObject("runtime")) ?: return@safely
+        NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","set_physical_size")
+            .put("request_id",requests.incrementAndGet().toString()).put("target",target)
+            .put("size",JSONObject().put("width_m",width).put("height_m",height)).toString())
+    } } }
+    fun ackPhysicalSize(target: JSONObject, command: String?, size: JSONObject, runtime: Long): Int =
+        NativeBridge.nativeCommand(runtime,JSONObject().put("schema",1).put("type","physical_size_applied")
+            .put("request_id",requests.incrementAndGet().toString()).put("target",target)
+            .put("size_command",command ?: JSONObject.NULL).put("size",size).toString())
     /** SDK callbackではimmutableなtargetと小DTOだけをenqueueする。座標をログへ出さない。 */
     fun sendPointer(target: InputTarget, source: Long, uv: List<Double>?, event: JSONObject): Boolean {
         if (source<=0 || inputTarget(target.target)!=target) return false
@@ -316,6 +341,16 @@ object NativeSessionHost {
             KeyboardFocus(handle, runtime.getLong("input_resets"), focused.getJSONObject("target").toString(), runtime.getJSONObject("app").getJSONObject("input").getString("focus_token")) else null
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else "ターミナルへ入力"
         ui.post { keyboardSummary.value = keyboardLabel }
+        val selected=selectedTarget(runtime)
+        val appWindows=runtime.optJSONObject("app")?.optJSONArray("windows")
+        val selectedWindow=appWindows?.let { windows -> (0 until windows.length()).map { windows.getJSONObject(it) }.firstOrNull { it.optString("window")==selected?.optString("window") } }
+        val logical=selectedWindow?.optJSONObject("logical_size")
+        val resize=selectedWindow?.optJSONObject("resize")
+        val label=if(logical==null) "ターミナルを開くとサイズを変更できます" else {
+            val status=when(resize?.optString("phase")) { "timed_out"->" · サイズ変更に応答がありません"; "adjusted"->" · アプリ側でサイズ調整"; "queued","awaiting_ack","awaiting_commit"->" · 変更中";else->"" }
+            "画面サイズ: ${logical.getInt("width")}×${logical.getInt("height")}$status"
+        }
+        ui.post { layoutAvailable.value=logical!=null; layoutSummary.value=label }
         val transport = snapshot.getJSONObject("runtime").getJSONObject("transport")
         terminalOpen?.let { operation ->
             val ready = transport.getString("state") == "Ready" && (operation.connectRequest == null ||

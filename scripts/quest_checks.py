@@ -146,6 +146,65 @@ def keyboard_result(snapshot, nonce, expected, uid, termux_uid, package):
     return True
 
 
+def resize_result(snapshot, nonce, expected, uid, termux_uid, package):
+    if snapshot.get('schema')!=1 or snapshot.get('build_info')!=expected: return False
+    result=snapshot.get('check',{})
+    if result.get('case')!='resize' or result.get('nonce')!=nonce: return False
+    if result.get('result')=='fail': raise ValueError('製品resize検査失敗: '+result.get('stage','unknown'))
+    if result.get('result')!='pass': return False
+    if (result.get('consumer')!='SDK' or any(result.get(k) is not True for k in ['product_host_path','synthetic_input','source_destroyed'])
+            or any(result.get(k) is not False for k in ['synthetic_visibility','physical_input_verified','text_verified']) or result.get('cleanup_failed')):
+        raise ValueError('resizeのSDK/合成操作/物理未検証の範囲が不正です')
+    target=result.get('target',{}); rows=result.get('cycles',[])
+    positive=lambda n:isinstance(n,str) and re.fullmatch('[1-9][0-9]*',n) is not None and int(n)<=2**63-1
+    if (any(not positive(target.get(k)) for k in ['session','window','scene','generation']) or type(uid) is not int or type(termux_uid) is not int or uid==termux_uid
+            or [r.get('stage') for r in rows]!=['before','small','wide','physical','clicked','typed']):
+        raise ValueError('resizeの入力先/stage/UIDが不正です')
+    def near(a,b): return type(a) in {int,float} and math.isfinite(a) and abs(a-b)<1e-4
+    for i,row in enumerate(rows):
+        state=row.get('runtime',{});app=state.get('app',{});transport=state.get('transport',{})
+        panels=state.get('render',{}).get('targets',[]);windows=app.get('windows',[])
+        forward=transport.get('app_forward',{})
+        if len(windows)!=1 or len(panels)!=1: raise ValueError('resize対象window/panelが一枚ではありません')
+        window=windows[0];sizing=window.get('sizing',{});resize=window.get('resize',{})
+        size=dict(width=1024,height=768) if i==0 else dict(width=800,height=500) if i==1 else dict(width=1280,height=720)
+        physical=[1.2,.9] if i<3 else [1.44,1.08]
+        if (state.get('state')!='Ready' or state.get('activity_visible') is not True or state.get('xr_state')!='FOCUSED'
+                or state.get('scene')!=target['scene'] or app.get('session')!=target['session'] or app.get('mode')!='foot' or app.get('callback_clock')!='target-driven'
+                or app.get('error') is not None or not _prepared_keyboard(app,package) or app.get('local',{}).get('uid')!=uid
+                or app.get('local',{}).get('executable_sha256')!=package.get('dependencies',{}).get('waypipe',{}).get('sha256')
+                or transport.get('state')!='Ready' or transport.get('session')!=target['session'] or transport.get('credential_requests')!=1
+                or forward.get('uid')!=termux_uid or forward.get('state')!='running' or forward.get('mode')!='foot' or forward.get('error') is not None
+                or panels[0].get('role')!='windows' or panels[0].get('key')!=target or panels[0].get('frames',0)<3
+                or panels[0].get('width')!=1024 or panels[0].get('height')!=768
+                or window.get('window')!=target['window'] or window.get('life')!='Mapped' or window.get('logical_size')!=size or resize.get('committed_size')!=size
+                or resize.get('error') is not None or (i>0 and (resize.get('phase')!='applied' or resize.get('requested_logical_size')!=size
+                    or not positive(panels[0].get('content_frame')) or not positive(window.get('frame')) or int(panels[0]['content_frame'])<int(window['frame'])))
+                or sizing.get('producer_size_px')!=dict(width=1024,height=768)
+                or any(not isinstance(sizing.get(k),dict) or not near(sizing[k].get(field),v) for k in ['physical_size_m','applied_physical_size_m'] for field,v in zip(['width_m','height_m'],physical))):
+            raise ValueError('通常footのconfigure/画像/SDKメートル/実EGL寸法が不正です')
+    apps=[r['runtime']['app'] for r in rows]
+    if (apps[1]['configures']<=apps[0]['configures'] or not apps[1]['configures']<apps[2]['configures']<=apps[1]['configures']+2
+            or apps[3]['configures']!=apps[2]['configures'] or any(apps[i]['configures']<apps[3]['configures'] for i in [4,5])
+            or any(apps[i]['windows'][0]['resize']['configured_serial']!=apps[2]['windows'][0]['resize']['configured_serial'] for i in [3,4,5])
+            or apps[5]['input']['delivered']!=apps[4]['input']['delivered']+4 or apps[5]['copies']<=apps[4]['copies']
+            or apps[4]['input']['pointer']['buttons']!=apps[3]['input']['pointer']['buttons']+2
+            or any(apps[i]['input'].get('focus_window')!=target['window'] or apps[i]['input'].get('pressed')!=0 or apps[i]['input']['pointer'].get('pressed')!=0 for i in [4,5])):
+        raise ValueError('physical拡大がconfigureを変更したか、resize後の入力が配送されていません')
+    hit=result.get('hit',{});uv=hit.get('uv',[]);world=hit.get('world',[])
+    if (len(uv)!=2 or len(world)!=3 or any(type(a) not in {int,float} or not math.isfinite(a) or abs(a-b)>=.02 for a,b in zip(uv,[.53,.47]))
+            or any(not near(a,b) for a,b in zip(world,[.03*1.44,1.4+.03*1.08,1.5]))):
+        raise ValueError('拡大後の実SDK ray交差が不正です')
+    stopped=result.get('stop',{});restored=result.get('restored',{});panels=restored.get('render',{}).get('targets',[])
+    if (stopped.get('old_runtime_destroyed') is not True or type(stopped.get('stop_ms')) is not int or not 0<=stopped['stop_ms']<10000
+            or not positive(result.get('old_handle')) or not positive(result.get('new_handle')) or int(result['new_handle'])<=int(result['old_handle'])
+            or restored.get('state')!='Ready' or restored.get('activity_visible') is not True or restored.get('xr_state')!='FOCUSED'
+            or restored.get('transport',{}).get('state')!='Idle' or restored.get('transport',{}).get('pending_cleanup')!=[]
+            or len(panels)!=1 or panels[0].get('role')!='diagnostic' or panels[0].get('frames',0)<3):
+        raise ValueError('resize後の停止・通常UI復帰が不正です')
+    return True
+
+
 def pointer_result(snapshot, nonce, expected, uid, termux_uid, package):
     if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
         return False
@@ -436,11 +495,11 @@ def foot_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
     return True
 
 
-def foot_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
+def foot_result(snapshot, nonce, expected, apk_uid, termux_uid, package, *, case='foot'):
     if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
         return False
     result = snapshot.get('check', {})
-    if result.get('case') != 'foot' or result.get('nonce') != nonce:
+    if result.get('case') != case or result.get('nonce') != nonce:
         return False
     if result.get('result') == 'fail':
         raise ValueError('foot描画検査失敗: ' + result.get('stage', 'unknown'))
@@ -539,6 +598,33 @@ def foot_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
             or type(result.get('accept_ms')) is not int or not 0 <= result['accept_ms'] < 100
             or type(result.get('stop_ms')) is not int or not 0 <= result['stop_ms'] < 10000):
         raise ValueError('foot描画中の全owner/remote停止が不正です')
+    if case=='resize-native':
+        resize_rows=result.get('resize_cycles',[])
+        if (result.get('synthetic_input') is not True or result.get('physical_input_verified') is not False or result.get('text_verified') is not False
+                or result.get('stale_resize_rejected') is not True or [r.get('stage') for r in resize_rows]!=['first','lost','recreated','input']):
+            raise ValueError('resize/Surface loss/古世代/合成入力のscopeが不正です')
+        for i,row in enumerate(resize_rows):
+            state=row.get('runtime',{});a,r=app_state(state)
+            w=a.get('windows',[])
+            if len(w)!=1: raise ValueError('resize対象が失われました')
+            size=dict(width=800,height=500) if i==0 else dict(width=1280,height=720)
+            resize=w[0].get('resize',{})
+            if resize.get('requested_logical_size')!=size or w[0].get('window')!=window:
+                raise ValueError('Surface loss中にresize要求が失われました')
+            if i==1:
+                if r.get('targets')!=[]: raise ValueError('旧Surfaceが残っています')
+            else:
+                targets=r.get('targets',[])
+                expected_generation=rows[0]['target_generation'] if i==0 else rows[1]['target_generation']
+                if (resize.get('phase')!='applied' or resize.get('committed_size')!=size or w[0].get('logical_size')!=size or len(targets)!=1
+                        or targets[0].get('key')!=dict(session=session,window=window,scene='1',generation=expected_generation)
+                        or targets[0].get('content_frame')!=w[0].get('frame')):
+                    raise ValueError('新世代に新しいlogical画像がpresentされていません')
+        before=result.get('input_before',{}); inputs=resize_rows[3]['runtime']['app'].get('input',{})
+        if (inputs.get('focus_window')!=window or inputs.get('pressed')!=0 or inputs.get('delivered')!=before.get('delivered',-99)+6
+                or inputs.get('pointer',{}).get('pressed')!=0 or inputs['pointer'].get('buttons')!=before.get('pointer',{}).get('buttons',-99)+2
+                or inputs['pointer'].get('axis_frames')!=before.get('pointer',{}).get('axis_frames',-99)+2):
+            raise ValueError('resize後のclick/修飾key/scroll/解除がありません')
     return instrumentation_result(snapshot, result, apk_uid)
 
 
@@ -705,11 +791,11 @@ def forwarded_shm_result(snapshot, nonce, expected, apk_uid, termux_uid, package
             and state.get("transport", {}).get("state") == "Idle")
 
 
-def wayland_state_result(snapshot, nonce, expected, uid, *, instrumentation=False):
+def wayland_state_result(snapshot, nonce, expected, uid, *, instrumentation=False, case='wayland-state'):
     if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
         return False
     result = snapshot.get("check", {})
-    if result.get("case") != "wayland-state" or result.get("nonce") != nonce:
+    if result.get("case") != case or result.get("nonce") != nonce:
         return False
     if result.get("result") == "fail":
         raise ValueError("端末Wayland state caseが失敗しました")
@@ -718,6 +804,7 @@ def wayland_state_result(snapshot, nonce, expected, uid, *, instrumentation=Fals
     scenarios = [("lifecycle", "Lifecycle"), ("transforms", "Transforms"), ("frame_gates", "FrameGates"), ("tree", "Tree"),
                  ("bad_serial", "BadSerial"), ("stale_configure", "StaleConfigure"), ("premature_buffer", "PrematureBuffer"),
                  ("unconfigured_remap", "UnconfiguredRemap"), ("bad_scale", "BadScale"), ("positioner_overflow", "PositionerOverflow")]
+    if case=='resize-wire': scenarios=[('logical_resize','LogicalResize')]
     rows = result.get("cycles", [])
     if len(rows) != len(scenarios) or result.get("cleanup_failed"):
         raise ValueError("Wayland stateのscenario数・回収が不正です")
@@ -744,12 +831,18 @@ def wayland_state_result(snapshot, nonce, expected, uid, *, instrumentation=Fals
         if (client.get("protocol_error") is not False or type(proof.get("checkpoints")) is not int
                 or client.get("checkpoints") != proof["checkpoints"]
                 or type(proof.get("cadence_checks")) is not int or proof["cadence_checks"] <= 0
-                or type(proof.get("immutable_checks")) is not int or proof["immutable_checks"] < 3):
+                or type(proof.get("immutable_checks")) is not int or proof["immutable_checks"] < (2 if scenario=='logical_resize' else 3)):
             raise ValueError("正常client・immutable snapshot・callbackの証明が不正です")
         ids = proof.get("window_ids", [])
         if not ids or any(not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]*", value) or int(value) > 2**63 - 1 for value in ids):
             raise ValueError("Wayland window IDが不正です")
-        if scenario == "lifecycle":
+        if scenario == 'logical_resize':
+            serials=proof.get('resize_serials',[])
+            if (proof.get('logical_resize_flags')!=1023 or proof.get('checkpoints')!=11
+                    or len(serials)!=3 or any(type(s) is not int or not 0<=s<2**32 for s in serials) or len(set(serials))!=3
+                    or client.get('protocol',{}).get('configures')!=4):
+                raise ValueError('resizeのcoalesce/ack/画像/timeout/unmapの検証がありません')
+        elif scenario == "lifecycle":
             if (any(proof.get(field) is not True for field in ("mapped", "unmapped", "remapped", "resize_commit_only", "consecutive_configures", "recreated", "rejected_resize"))
                     or len(ids) != 2 or int(ids[1]) <= int(ids[0]) or client.get("withheld") != 1):
                 raise ValueError("map/unmap/remap・configure・ID非再利用が不正です")

@@ -8,6 +8,7 @@ use wayland_protocols::xdg::shell::client::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scenario {
+    LogicalResize,
     Lifecycle,
     Transforms,
     FrameGates,
@@ -27,6 +28,16 @@ pub enum Gate {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
+    SizingQueued,
+    SizingAcked,
+    SizingEmpty,
+    SizingAdjusted,
+    SizingApplied,
+    SizingTimeout,
+    SizingTimedOut,
+    SizingLate,
+    SizingUnmapRequest,
+    SizingUnmapped,
     FirstMapped,
     RejectResize,
     TreePending,
@@ -196,6 +207,13 @@ impl Context {
         surface.commit();
         self.pump(|s| s.report.callbacks == next)
     }
+    fn present_without_frame(&mut self, root: &Root, image: &Image) -> Result<(), &'static str> {
+        let release = self.state.report.releases + 1;
+        root.surface.attach(Some(&image.buffer), 0, 0);
+        root.surface.damage(0, 0, i32::MAX, i32::MAX);
+        root.surface.commit();
+        self.pump(|s| s.report.releases >= release)
+    }
     fn popup(
         &mut self,
         parent: &XdgSurface,
@@ -334,6 +352,45 @@ fn lifecycle(c: &mut Context) -> Result<(), &'static str> {
     c.checkpoint(Stage::Recreated)?;
     new.destroy();
     image.destroy();
+    c.sync()
+}
+
+fn logical_resize(c: &mut Context) -> Result<(), &'static str> {
+    let root = c.root()?;
+    c.configure(&root)?;
+    let first = c.image(32, 32, &solid(32, 32, [128, 0, 0, 128]))?;
+    c.present(&root, &first)?;
+    c.checkpoint(Stage::FirstMapped)?;
+    let next = c.state.report.configures + 1;
+    c.checkpoint(Stage::SizingQueued)?;
+    c.pump(|s| s.report.configures == next)?;
+    c.checkpoint(Stage::SizingAcked)?;
+    root.surface.commit();
+    c.checkpoint(Stage::SizingEmpty)?;
+    let wrong = c.image(640, 400, &solid(640, 400, [0, 128, 0, 128]))?;
+    c.present_without_frame(&root, &wrong)?;
+    c.checkpoint(Stage::SizingAdjusted)?;
+    let correct = c.image(800, 600, &solid(800, 600, [0, 0, 128, 128]))?;
+    c.present_without_frame(&root, &correct)?;
+    c.checkpoint(Stage::SizingApplied)?;
+    let next = c.state.report.configures + 1;
+    c.checkpoint(Stage::SizingTimeout)?;
+    c.pump(|s| s.report.configures == next)?;
+    c.checkpoint(Stage::SizingTimedOut)?;
+    let late = c.image(960, 640, &solid(960, 640, [64, 64, 64, 128]))?;
+    c.present(&root, &late)?;
+    c.checkpoint(Stage::SizingLate)?;
+    let next = c.state.report.configures + 1;
+    c.checkpoint(Stage::SizingUnmapRequest)?;
+    c.pump(|s| s.report.configures == next)?;
+    root.surface.attach(None, 0, 0);
+    root.surface.commit();
+    c.checkpoint(Stage::SizingUnmapped)?;
+    root.destroy();
+    first.destroy();
+    wrong.destroy();
+    correct.destroy();
+    late.destroy();
     c.sync()
 }
 
@@ -560,6 +617,7 @@ pub fn run(
     c.connection.display().get_registry(&c.queue.handle(), ());
     c.sync()?;
     match scenario {
+        Scenario::LogicalResize => logical_resize(&mut c)?,
         Scenario::Lifecycle => lifecycle(&mut c)?,
         Scenario::Transforms => transforms(&mut c)?,
         Scenario::FrameGates => frame_gates(&mut c)?,

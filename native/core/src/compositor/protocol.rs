@@ -518,8 +518,13 @@ impl XdgShellHandler for ProtocolState {
     }
     fn grab(&mut self, _: PopupSurface, _: WlSeat, _: Serial) {}
     fn reposition_request(&mut self, _: PopupSurface, _: PositionerState, _: u32) {}
-    fn ack_configure(&mut self, surface: WlSurface, _: Configure) {
+    fn ack_configure(&mut self, surface: WlSurface, configure: Configure) {
         self.counters.acks += 1;
+        if let Configure::Toplevel(configure) = configure
+            && let Some(window) = self.toplevels.get_mut(&surface.id())
+        {
+            window.resize.acknowledge(configure.serial.into());
+        }
         self.role_acked(&surface);
     }
     fn title_changed(&mut self, surface: ToplevelSurface) {

@@ -416,6 +416,66 @@ impl Runtime {
                             let app_busy =
                                 pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
                             let code = match &command {
+                                Command::ResizeLogical { target, .. }
+                                | Command::SetPhysicalSize { target, .. }
+                                | Command::PhysicalSizeApplied { target, .. } => {
+                                    let live = state.snapshot.scene == Some(target.scene)
+                                        && state.panels.snapshot().iter().any(|p| {
+                                            p.target == *target
+                                                && p.action
+                                                    == eidolon_model::commands::PanelAction::Create
+                                                && p.applied
+                                                && p.error.is_none()
+                                        })
+                                        && gl
+                                            .snapshot()
+                                            .targets
+                                            .iter()
+                                            .any(|t| t.key == *target && t.frames > 0);
+                                    if !live {
+                                        Status::Stale
+                                    } else if let Some(current) = app
+                                        .as_mut()
+                                        .filter(|a| a.session() == target.session && !a.closed())
+                                    {
+                                        let outcome = match &command {
+                                            Command::ResizeLogical { width, height, .. } => current
+                                                .resize_logical(
+                                                    target.window,
+                                                    eidolon_model::window::LogicalSize {
+                                                        width: *width,
+                                                        height: *height,
+                                                    },
+                                                ),
+                                            Command::SetPhysicalSize {
+                                                request_id, size, ..
+                                            } => current.set_physical_size(
+                                                target.window,
+                                                *request_id,
+                                                *size,
+                                            ),
+                                            Command::PhysicalSizeApplied {
+                                                size_command,
+                                                size,
+                                                ..
+                                            } => current.physical_size_applied(
+                                                target.window,
+                                                *size_command,
+                                                *size,
+                                            ),
+                                            _ => unreachable!(),
+                                        };
+                                        match outcome {
+                                            Ok(()) => Status::Accepted,
+                                            Err("STALE") => Status::Stale,
+                                            Err("INVALID_ARGUMENT") => Status::InvalidArgument,
+                                            Err("RESOURCE_LIMIT") => Status::Busy,
+                                            Err(_) => Status::NotReady,
+                                        }
+                                    } else {
+                                        Status::Stale
+                                    }
+                                }
                                 Command::Pointer {
                                     target,
                                     input_epoch,

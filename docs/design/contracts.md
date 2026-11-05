@@ -88,7 +88,7 @@ external fun nativeDestroy(handle: Long): Int
 command envelope:
 
 ```json
-{"schema":1,"request_id":"17","session":"1","type":"resize_logical","window":"2","width":1024,"height":768}
+{"schema":1,"request_id":"17","type":"resize_logical","target":{"session":"1","window":"2","scene":"1","generation":"1"},"width":1024,"height":768}
 ```
 
 主要tag: `connect`、`disconnect`、`reset_input`、`set_xr_state`、`scene_ready`、`surface_lost`、`resize_logical`、`set_pose`、`set_physical_size`、`set_background`、`close_window`、`pointer`、`key`。`connect`は登録済みprofile IDだけを指定し、任意shell commandや秘密鍵本文を受け取らない。
@@ -99,6 +99,14 @@ I03で`cancel_connect(connect_request)`を追加した。元の`connect.request_
 入力commandは全target tupleと`input_epoch`を持ち、keyはさらに`focus_token`を必須とする。
 tokenはkeyboard focus変更ごとに更新し、同じwindowへの再入でも古いkeyを拒否する。
 pointer capture中のkeyboard focus変更はepochを進めず、同じpressのreleaseを失わない。
+
+I04では`resize_logical(target,width,height)`、`set_physical_size(target,size)`、
+`physical_size_applied(target,size_command,size)`を追加した。
+logical要求は320×200〜2048×2048、`size`は`{width_m,height_m}`で両方0.25〜3mの有限値。
+SDKの適用ackは元のsize command IDと希望値が一致する場合だけ受け付ける。
+initial defaultのsize commandはnullで、全target tupleの世代照合は同じように行う。
+configureのackと新画像commitは別で、5秒未応答はwindowのresize診断へ記録し、旧画像を維持する。
+SDKのphysical sizeだけを変えた場合はWayland configureを発行しない。
 
 B03では`scene_ready`・`set_xr_state`・`reset_input`と、Activity可視性を独立に伝える`set_activity_state(visible: bool)`を実装する。H01でdebug用`helper_probe(nonce)`を追加し、releaseではNOT_READYとする。R01–R03では`nativeAttachSurface`と`surface_lost(target)`を追加し、targetは全tupleを含むstrict objectとする。detach受付と実際の`surface_detached {target}`を区別する。未実装tagは拒否する。`onPause`でSDKのXR状態を上書きしない。runtime再作成後はhostが最新のscene/XR/Activity状態を再送する。
 

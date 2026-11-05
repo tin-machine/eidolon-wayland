@@ -244,6 +244,7 @@ def child_command(mode, nonce):
     else:
         command += [str(TERMUX_PREFIX / 'bin/foot'), '--app-id=io.github.tinmachine.eidolon.foot',
                     '--title=Eidolon', '--font=DejaVu Sans Mono:size=14',
+                    '--override=resize-by-cells=no',
                     '--override=tweak.max-shm-pool-size-mb=0']
         if mode == 'foot_fixture':
             # 固定出力だけを生成する。任意command/textを制御channelから受け取らない。

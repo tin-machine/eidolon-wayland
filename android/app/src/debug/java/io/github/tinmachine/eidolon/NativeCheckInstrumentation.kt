@@ -17,7 +17,7 @@ class NativeCheckInstrumentation : Instrumentation() {
         super.onCreate(arguments)
         name = arguments?.getString("case") ?: ""
         nonce = arguments?.getString("nonce") ?: ""
-        if (name !in setOf("pointer-wire", "keyboard-wire", "foot", "render", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
+        if (name !in setOf("resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "foot", "render", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
             arguments?.keySet()?.any { it != "case" && it != "nonce" } == true) {
             finish(Activity.RESULT_CANCELED, Bundle().apply { putString("result", "invalid_argument") })
             return
@@ -42,13 +42,14 @@ class NativeCheckInstrumentation : Instrumentation() {
                 .put("paths", JSONObject().put("native_library_dir", context.applicationInfo.nativeLibraryDir).put("files_dir", context.filesDir.absolutePath)).toString()
             when (name) {
                 "foot" -> FootCase.run(nonce, context, configuration, store)
+                "resize-native" -> FootCase.run(nonce, context, configuration, store, resizing=true)
                 "render" -> RenderCase.run(nonce, configuration, store)
                 "forwarded-shm" -> ForwardedShmCase.run(nonce, context, configuration, store)
                 "forward" -> ForwardCase.run(nonce, context, configuration, store)
                 "remote-cleanup" -> RemoteCleanupCase.run(nonce, context, configuration, store)
                 "waypipe" -> WaypipeCase.run(nonce, configuration, store)
                 "native-deps" -> NativeDepsCase.run(nonce, configuration, store)
-                "pointer-wire", "keyboard-wire", "shm", "shm-truncate", "wayland-state" -> CompositorCase.run(name, nonce, configuration, store)
+                "resize-wire", "pointer-wire", "keyboard-wire", "shm", "shm-truncate", "wayland-state" -> CompositorCase.run(name, nonce, configuration, store)
             }
             result = JSONObject(File(context.noBackupFilesDir, "diagnostics/latest.json").readText()).getJSONObject("check")
             check(result.getString("nonce") == nonce && result.getString("result") == "pass")

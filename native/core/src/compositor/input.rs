@@ -1,9 +1,9 @@
 //! seat/keymap/input状態はprotocol ownerに置き、GL/UIへxkbやWayland resourceを渡さない。
-use super::ProtocolState;
+use super::{ProtocolState, XdgToplevelSurfaceData, with_states};
 use eidolon_model::{
     ids::{CommandSeq, WindowId},
     keyboard::{KeyAction, KeyPacket, KeyTracker, KeyboardLayout},
-    window::WindowLife,
+    window::{LogicalSize, WindowLife},
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -142,10 +142,10 @@ impl ProtocolState {
         keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
         Ok(())
     }
-    fn set_activated(&self, window: Option<WindowId>) {
+    fn set_activated(&mut self, window: Option<WindowId>) {
         for record in self
             .toplevels
-            .values()
+            .values_mut()
             .filter(|w| w.life == WindowLife::Mapped)
         {
             record.surface.with_pending_state(|state| {
@@ -155,7 +155,24 @@ impl ProtocolState {
                     state.states.unset(xdg_toplevel::State::Activated);
                 }
             });
-            record.surface.send_pending_configure();
+            if let Some(serial) = record.surface.send_pending_configure() {
+                self.counters.configures += 1;
+                let size = with_states(record.surface.wl_surface(), |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .current_server_state()
+                        .size
+                });
+                if let Some(size) = size.and_then(|s| LogicalSize::new(s.w as u32, s.h as u32).ok())
+                {
+                    // 上限時は現在のresizeを成功にせず、既知ticketだけで判定する。
+                    let _ = record.resize.alias(serial.into(), size);
+                }
+            }
         }
     }
     pub fn key_at_focus(

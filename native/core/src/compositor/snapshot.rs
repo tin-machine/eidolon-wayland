@@ -51,6 +51,8 @@ pub(super) struct WindowRecord {
     frame: Option<FrameSeq>,
     snapshot: Option<Arc<WindowSnapshot>>,
     clock: FrameClock,
+    pub(super) resize: eidolon_model::resize::ResizeState,
+    pub(super) sizing: eidolon_model::resize::Sizing,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -60,6 +62,8 @@ pub struct WindowReport {
     pub frame: Option<FrameSeq>,
     pub logical_size: Option<LogicalSize>,
     pub layers: usize,
+    pub resize: eidolon_model::resize::Report,
+    pub sizing: eidolon_model::resize::Sizing,
 }
 
 struct Layer {
@@ -221,6 +225,8 @@ impl ProtocolState {
                 frame: None,
                 snapshot: None,
                 clock: FrameClock::default(),
+                resize: Default::default(),
+                sizing: Default::default(),
             },
         );
     }
@@ -372,6 +378,7 @@ impl ProtocolState {
         }
         window.life = WindowLife::Unmapped;
         window.snapshot = None;
+        window.resize.unmap();
         let old_parent = window.surface.parent();
         with_states(surface, |states| {
             let mut attrs = states
@@ -522,6 +529,84 @@ impl ProtocolState {
         Ok(serial.into())
     }
 
+    pub fn request_resize(
+        &mut self,
+        window: WindowId,
+        size: LogicalSize,
+    ) -> Result<(), &'static str> {
+        let record = self
+            .toplevels
+            .values_mut()
+            .find(|r| r.id == window && r.life == WindowLife::Mapped)
+            .ok_or("STALE")?;
+        record.resize.request(size)
+    }
+    pub fn set_physical_size(
+        &mut self,
+        window: WindowId,
+        request: eidolon_model::ids::CommandSeq,
+        size: eidolon_model::resize::PhysicalSize,
+    ) -> Result<(), &'static str> {
+        self.toplevels
+            .values_mut()
+            .find(|r| r.id == window && r.life == WindowLife::Mapped)
+            .ok_or("STALE")?
+            .sizing
+            .request(request, size)
+    }
+    pub fn physical_size_applied(
+        &mut self,
+        window: WindowId,
+        command: Option<eidolon_model::ids::CommandSeq>,
+        size: eidolon_model::resize::PhysicalSize,
+    ) -> Result<(), &'static str> {
+        self.toplevels
+            .values_mut()
+            .find(|r| r.id == window && r.life == WindowLife::Mapped)
+            .ok_or("STALE")?
+            .sizing
+            .applied(command, size)
+    }
+    pub fn observe_producers(&mut self, producers: &[(WindowId, BufferSizePx)]) {
+        for record in self.toplevels.values_mut() {
+            let size = producers
+                .iter()
+                .find(|(id, _)| *id == record.id)
+                .map(|(_, size)| *size);
+            if record.sizing.producer_size_px.is_some() && size.is_none() {
+                record.sizing.applied_physical_size_m = None;
+            }
+            record.sizing.producer_size_px = size;
+        }
+    }
+    /// protocol ownerのclock。command batchで最後に残った希望値だけをconfigureする。
+    pub fn resize_tick(&mut self, now: Duration) {
+        for record in self
+            .toplevels
+            .values_mut()
+            .filter(|r| r.life == WindowLife::Mapped)
+        {
+            record.resize.tick(now);
+            if let Some(size) = record.resize.next_size() {
+                let content = self
+                    .surface_meta
+                    .get(&record.surface.wl_surface().id())
+                    .and_then(|m| m.content);
+                record.surface.with_pending_state(|s| {
+                    s.size = Some((size.width as i32, size.height as i32).into())
+                });
+                let serial = record.surface.send_configure();
+                if let Err(error) = record.resize.sent(serial.into(), content, now) {
+                    record
+                        .surface
+                        .wl_surface()
+                        .post_error(wl_surface::Error::InvalidSize, error);
+                }
+                self.counters.configures += 1;
+            }
+        }
+    }
+
     pub(super) fn refresh_window(&mut self, root: &ObjectId) {
         let Some(window) = self.toplevels.get(root) else {
             return;
@@ -542,6 +627,20 @@ impl ProtocolState {
         match self.build_snapshot(&surface, id, frame) {
             Ok(snapshot) => {
                 let window = self.toplevels.get_mut(root).unwrap();
+                let serial = with_states(&surface, |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .current_serial
+                        .map(u32::from)
+                });
+                let content = self.surface_meta.get(root).and_then(|m| m.content);
+                if !window.resize.commit(serial, content, snapshot.logical_size) {
+                    return;
+                }
                 if window.life != WindowLife::Mapped {
                     self.counters.maps += 1;
                 }
@@ -696,6 +795,8 @@ impl ProtocolState {
                 frame: window.frame,
                 logical_size: window.snapshot.as_ref().map(|s| s.logical_size),
                 layers: window.snapshot.as_ref().map_or(0, |s| s.layers.len()),
+                resize: window.resize.report(),
+                sizing: window.sizing.clone(),
             })
             .collect::<Vec<_>>();
         windows.sort_by_key(|window| window.window);

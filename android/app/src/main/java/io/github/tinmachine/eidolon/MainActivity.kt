@@ -6,8 +6,11 @@ import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
@@ -74,7 +77,7 @@ class MainActivity : AppSystemActivity() {
                 Transform(Pose(Vector3(0.7f, 1.4f, 1.6f))),
             ))
         }
-        nativePanels.sceneReady(epoch)
+        nativePanels.sceneReady(epoch, scene)
         Log.i(TAG, "scene_ready version=${BuildConfig.VERSION_CODE} panel=${panel?.id}")
     }
 
@@ -88,18 +91,29 @@ class MainActivity : AppSystemActivity() {
                         MaterialTheme {
                             var clicks by remember { mutableIntStateOf(0) }
                             Column(
-                                Modifier.fillMaxSize().background(Color(0xFF102331)).padding(32.dp),
+                                Modifier.fillMaxSize().background(Color(0xFF102331)).padding(32.dp).verticalScroll(rememberScrollState()),
                                 verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterVertically),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
                                 Text("Eidolon", color = Color.White, style = MaterialTheme.typography.headlineLarge)
-                                Text("Phase 1 · Build ${BuildConfig.VERSION_CODE}", color = Color(0xFF67E8C3))
+                                Text("Build ${BuildConfig.VERSION_CODE}", color = Color(0xFF67E8C3))
                                 val native = NativeBridge.status
                                 Text(if (native.ready) "Rust ready · Build ${BuildConfig.VERSION_CODE}" else "Rust load failed: ${native.error}", color = if (native.ready) Color(0xFF67E8C3) else Color.Red)
                                 Text("Runtime: ${NativeSessionHost.summary.value}", color = Color.White)
                                 Text(NativeSessionHost.credentialSummary.value, color = Color.White)
                                 Text("SSH: ${NativeSessionHost.connectionSummary.value}", color = Color.White)
                                 Button(onClick = { NativeSessionHost.openTerminal() }) { Text("ターミナルを開く") }
+                                Text(NativeSessionHost.layoutSummary.value,color=Color.White)
+                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.resizeTerminal(800,600)}) { Text("800×600") }
+                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.resizeTerminal(1024,768)}) { Text("1024×768") }
+                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.resizeTerminal(1280,720)}) { Text("1280×720") }
+                                }
+                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.setPhysicalSize(.96,.72)}) { Text("小さく表示") }
+                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.setPhysicalSize(1.2,.9)}) { Text("標準表示") }
+                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.setPhysicalSize(1.44,1.08)}) { Text("大きく表示") }
+                                }
                                 Text(NativeSessionHost.keyboardSummary.value, color = Color.White)
                                 Button(onClick = { NativeSessionHost.focusTerminal() }) { Text("ターミナルへキー入力") }
                                 Button(onClick = { NativeSessionHost.resetInput() }) { Text("操作パネルへ戻る") }
