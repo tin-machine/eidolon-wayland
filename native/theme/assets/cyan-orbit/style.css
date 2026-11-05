@@ -1,0 +1,33 @@
+#ring-outer {
+  -eidolon-tint: #a5f3fc;
+  opacity: 0.16;
+  transform: rotate(0deg);
+  animation: spin-cw 12s linear infinite;
+}
+#ring-middle {
+  -eidolon-tint: #67e8f9;
+  opacity: 0.24;
+  transform: rotate(0deg);
+  animation: spin-ccw 18s linear infinite;
+}
+#ring-inner {
+  -eidolon-tint: #7dd3fc;
+  opacity: 0.32;
+  transform: rotate(0deg);
+  animation: spin-cw 8s linear infinite;
+}
+#ring-inner.focused { opacity: 0.40; }
+#cpu-meter {
+  -eidolon-tint: #7dd3fc;
+  opacity: 0.70;
+  transition: -eidolon-value 250ms linear;
+}
+#cpu-meter.telemetry-stale { opacity: 0.18; }
+@keyframes spin-cw {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+@keyframes spin-ccw {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(-360deg); }
+}

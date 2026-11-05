@@ -570,3 +570,16 @@ snapshotはnative ReadyだがActivity非表示、XR IDLE、Scene無しだった�
 
 ユーザーの依頼により、テーマ・三重リング・workload連動をPhase 6全耐久/release完了より先に追加する。
 追加機能の実装・自動検証を先行し、必要なユーザーHMD/物理操作は最後にまとめる。既存Phase 5の未確認条件は維持する。
+
+## テーマのhost基礎（TH00/TH01、2026-11-06）
+
+`native/theme`に制限付きTOML/CSS、resvgによるpremultiplied画像化、bundle検証、
+共通pixel予算と装飾32MiB予算、window単位の独立時計・補間・再生状態を追加した。
+builtinの三重リングは12/18/8秒・逆方向を持ち、focus/負荷通知・同一定義reloadで回転をresetしない。
+動きを減らす設定、非表示pause、欠測とhold-last、workload切替での値破棄をhostで検査した。
+`ContentViewport`はapp論理サイズを維持し、装飾canvasと描画/入力座標を共有する入口となる。
+
+全host suite、workspace Clippy/fmt、設計参照検査が成功。theme13件、model31件を含むRust検査と
+PC55件・launcher20件を実行した。PCの実APKを要する6件はこのtheme checkoutでは未実行で、Build101の61件成功とは別に扱う。
+GLES/SDK/通常UIへの接続とQuest上のリング表示はまだ未実装・未確認。
+後続のTH00〜TH05は[追加設計と残件](design/theme-animation.md)に記録する。Phase 5全体の完了判定は変更しない。

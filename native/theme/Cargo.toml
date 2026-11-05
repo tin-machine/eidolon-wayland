@@ -1,0 +1,15 @@
+[package]
+name = "eidolon-theme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+eidolon-model.workspace = true
+serde.workspace = true
+toml = { version = "=0.9.8", default-features = false, features = ["parse", "serde"] }
+cssparser = "=0.38.0"
+resvg = { version = "=0.49.0", default-features = false }
+roxmltree = "=0.21.1"
+sha2 = "0.11"
+

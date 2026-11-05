@@ -100,6 +100,9 @@ pub struct OwnedRgba {
 }
 
 impl OwnedRgba {
+    pub fn allocated_bytes(&self) -> usize {
+        self.charged
+    }
     pub fn width_px(&self) -> u32 {
         self.width_px
     }

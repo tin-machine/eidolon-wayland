@@ -1,5 +1,5 @@
 [workspace]
-members = ["native/model", "native/core", "native/render", "native/transport", "native/android", "native/fixtures/helper-probe", "native/fixtures/shm-client"]
+members = ["native/model", "native/core", "native/render", "native/transport", "native/android", "native/fixtures/helper-probe", "native/fixtures/shm-client", "native/theme"]
 default-members = ["native/model"]
 exclude = ["probes/native", "native/generated/smithay"]
 resolver = "3"
@@ -16,6 +16,7 @@ eidolon-model = { path = "native/model" }
 eidolon-core = { path = "native/core" }
 eidolon-render = { path = "native/render" }
 eidolon-transport = { path = "native/transport" }
+eidolon-theme = { path = "native/theme" }
 zeroize = "1"
 libc = "0.2"
 
