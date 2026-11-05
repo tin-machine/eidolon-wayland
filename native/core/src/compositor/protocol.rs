@@ -80,6 +80,8 @@ pub struct Counters {
     pub cancellations: u64,
     pub maps: u64,
     pub unmaps: u64,
+    pub pool_rejections: u64,
+    pub last_rejected_pool_bytes: usize,
 }
 
 /// SurfaceAttributesと同じtransaction/cacheを通る使用token。未適用の同期commitも保持する。
@@ -591,6 +593,8 @@ impl Dispatch<WlShm, ()> for ProtocolState {
                 return;
             };
             let Ok(lease) = state.pools.reserve(client.id(), size.get()) else {
+                state.counters.pool_rejections += 1;
+                state.counters.last_rejected_pool_bytes = size.get();
                 shm.post_error(wl_shm::Error::InvalidFd, "SHM pool budget exceeded");
                 return;
             };

@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""NDKでbuildした固定producerをTermuxへ配備し、SHA/版/UIDを照合する。"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+
+from native_build import ROOT, identity
+from quest_device import QuestDevice, package_uid, work_root
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--serial", required=True)
+args = parser.parse_args()
+os.umask(0o077)
+artifact = ROOT / "native/generated/remote-fixture"
+metadata = json.loads((artifact / "result.json").read_text())
+binary = (artifact / "eidolon-shm-fixture").read_bytes()
+if (metadata["build_info"]["source_digest"] != identity(1, "release")["source_digest"]
+        or hashlib.sha256(binary).hexdigest() != metadata["sha256"] or len(binary) > 8 * 1024 * 1024):
+    raise SystemExit("先に現在sourceからscripts/build-wayland-fixtureを実行してください")
+run = work_root() / "eidolon-phase5-implementation/fixture-install" / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S") + "-" + str(os.getpid()))
+run.mkdir(mode=0o700, parents=True)
+device = QuestDevice(args.serial, run)
+device.validate()
+uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux")
+script = r'''
+import hashlib,json,os,pathlib,stat,subprocess,sys,tempfile
+os.umask(0o077)
+data=sys.stdin.buffer.read(8388609)
+assert len(data)<=8388608 and hashlib.sha256(data).hexdigest()==sys.argv[1]
+directory=pathlib.Path('/data/data/com.termux/files/home')
+for part in ['.local','lib','eidolon']:
+    directory=directory/part
+    try:directory.mkdir(mode=0o700)
+    except FileExistsError:pass
+    info=directory.lstat()
+    assert stat.S_ISDIR(info.st_mode) and info.st_uid==os.getuid() and not info.st_mode&0o022
+target=directory/'eidolon-shm-fixture'
+if target.exists() or target.is_symlink():
+    info=target.lstat()
+    assert stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid()
+fd,name=tempfile.mkstemp(prefix='.fixture-',dir=directory)
+try:
+    with os.fdopen(fd,'wb') as out:out.write(data);out.flush();os.fsync(out.fileno())
+    os.chmod(name,0o700);os.replace(name,target)
+finally:
+    if os.path.exists(name):os.unlink(name)
+assert hashlib.sha256(target.read_bytes()).hexdigest()==sys.argv[1]
+version=json.loads(subprocess.check_output([str(target),'--version'],timeout=5))
+assert version=={'schema':1,'fixture_revision':'eidolon-shm-client-v1','frames':100},version
+print(json.dumps({'status':'pass','sha256':sys.argv[1],'uid':os.getuid(),'version':version}))
+'''
+command = ["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python3", "-c", script, metadata["sha256"]]
+result = subprocess.run(["adb", "-s", args.serial, "shell", "-T", shlex.join(command)], input=binary, capture_output=True, timeout=60)
+(run / "installer.log").write_bytes(result.stdout + result.stderr)
+if result.returncode:
+    raise SystemExit("producer配備失敗。保存したinstaller.logを確認してください")
+report = json.loads(result.stdout)
+if report.get("sha256") != metadata["sha256"] or report.get("uid") != uid:
+    raise SystemExit("producer SHA/UIDが不一致です")
+(run / "result.json").write_text(json.dumps({"installed": report, "build": metadata}, indent=2) + "\n")
+print(json.dumps(report))

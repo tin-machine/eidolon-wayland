@@ -2,6 +2,7 @@
 pub mod credentials;
 pub mod exec;
 pub mod forward;
+pub mod forward_app;
 pub mod forward_probe;
 pub mod host_key;
 pub mod journal;

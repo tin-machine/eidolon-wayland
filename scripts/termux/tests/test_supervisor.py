@@ -124,6 +124,35 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(result["exit_signal"], signal.SIGKILL)
         self.assertGreater(time.monotonic() - started, 0.15)
 
+    def test_waypipe_display_socket_left_by_signal_is_owned_and_removed(self):
+        source = ("import pathlib,socket,time;home=pathlib.Path(READY_FILE).parent;"
+                  "peer=socket.socket(socket.AF_UNIX);peer.bind(str(home/'.eidolon'/('s-'+'c'*16)/'w'));"
+                  "pathlib.Path(READY_FILE).touch();time.sleep(30)")
+        result, _ = self.run_case(source, 'stop')
+        self.assertEqual(result['reason'], 'Stop')
+        self.assertEqual(result['exit_signal'], signal.SIGTERM)
+
+    def test_unexpected_file_keeps_lease_and_emits_failed_cleanup_receipt(self):
+        with tempfile.TemporaryDirectory(prefix='eidolon-unknown-') as value:
+            home, nonce = Path(value), 'a' * 16
+            read, write = os.pipe()
+            def emit(event):
+                if event['type'] == 'prepared':
+                    directory = Path(event['socket']).parent
+                    (directory / 'unexpected').write_text('preserve')
+                    os.write(write, (json.dumps({'type':'stop','nonce':nonce})+'\n').encode())
+            try:
+                result = launcher.supervise(home, nonce, read, emit)
+                self.assertFalse(result['cleaned'])
+                self.assertEqual(result['error'], 'CLEANUP_FAILED')
+                directory = home / '.eidolon' / ('s-' + nonce)
+                self.assertTrue((directory / 'lease.json').is_file())
+                self.assertEqual((directory / 'unexpected').read_text(), 'preserve')
+                self.assertFalse((directory.parent / ('r-' + nonce + '.json')).exists())
+            finally:
+                os.close(write)
+                os.close(read)
+
     def test_stdout_stderr_flood_drains_with_separate_bounded_tails(self):
         source = "import os;os.write(1,b'fixture-sensitive-text\\n');[os.write(1,b'x'*65536) for _ in range(40)];[os.write(2,b'y'*65536) for _ in range(40)]"
         result, _ = self.run_case(source, "natural", lease=5)

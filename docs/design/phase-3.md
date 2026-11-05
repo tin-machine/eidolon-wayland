@@ -118,13 +118,23 @@ Termux側のインストール済み版が0.11.3と違えば、黙って混在�
 
 footの基準候補は固定Termux recipeで確認した1.28.0。導入版・package revision・font/terminfo依存を記録し、異なる版を使う場合はその配布sourceの必須global判定を読み直す。既知の起動必須globalはW02で用意する。fixture成功だけでfoot起動成功と推定しない。
 
-起動順を固定する。
+[Build49の実機検査](../waypipe-forwarded-shm-checks.md)では、固定起動引数へ
+`--override=tweak.max-shm-pool-size-mb=0`を追加した。foot既定の512MiB仮想SHM pool最適化を無効にし、
+compositorの64MiB/client上限は維持する。利用者の設定fileは書き換えない。
+100frame/hashと実footのbuffer受信・所有資源の停止をnative scopeで確認した。
+通常UI復帰、SDK表示と物理入力は未受入である。
 
-1. core compositorが`w`をlisten。
-2. APK Waypipe clientが`p`をlisten。
-3. T02/T03のSSH認証とremote directory準備・forwardが成功。
-4. remote launcherがTermux側Waypipe serverを起動。
-5. 最初はSHM pattern fixture、次にfootを選ぶ。forward成功前にremote appを開始しない。
+T02の認証済み接続を再利用し、journalで採番されたSessionIdへcompositorを束縛する。
+認証前に仮のSessionIdを発行せず、次の依存順で開始する。
+
+1. T02のpin検証・SSH認証がReadyに到達する。
+2. そのSessionIdでcore compositorが`w`をlistenする。
+3. APK Waypipe clientが`p`をlistenし、実接続と生存を確認する。
+4. remote directoryを準備し、両端の版/featuresを照合してT03のforward ACKを確認する。
+5. remote launcherがTermux側Waypipe serverと固定appを起動する。最初はSHM pattern fixture、次にfootを選ぶ。
+
+同じSessionIdでDisplayを再作成してwindow/surface IDを再利用しない。
+[Termuxの固定版・font・producerの準備記録](../termux-wayland-tools.md)を使い、forward成功前にremote appを開始しない。
 
 remote launcherが使うargv:
 

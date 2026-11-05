@@ -10,3 +10,4 @@ wayland-protocols = { version = "=0.32.13", features = ["client"] }
 nix = { version = "=0.31.3", features = ["fs", "poll"] }
 sha2 = "0.11"
 serde.workspace = true
+serde_json.workspace = true

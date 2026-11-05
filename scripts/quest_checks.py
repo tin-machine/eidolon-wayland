@@ -4,6 +4,110 @@ import json
 import hashlib
 
 
+def forwarded_shm_result(snapshot, nonce, expected, apk_uid, termux_uid, package, *, instrumentation=False):
+    if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
+        return False
+    result = snapshot.get("check", {})
+    if result.get("case") != "forwarded-shm" or result.get("nonce") != nonce:
+        return False
+    if result.get("result") == "fail":
+        raise ValueError("端末Waypipe転送case失敗: " + result.get("stage", "unknown"))
+    if result.get("result") != "pass":
+        return False
+    session = result.get("session")
+    def positive_id(value):
+        return isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value) and int(value) <= 2**63-1
+    if (not positive_id(session) or result.get("credential_requests") != 1 or result.get("stale_rejected") is not True
+            or result.get("cleanup_failed") or type(apk_uid) is not int or type(termux_uid) is not int or apk_uid == termux_uid):
+        raise ValueError("転送の認証/session/stale拒否が不正です")
+    rows = result.get("cycles", [])
+    if len(rows) != 2:
+        raise ValueError("pattern/footの両方が必要です")
+    waypipe_hash = package.get("dependencies", {}).get("waypipe", {}).get("sha256")
+    fixture_hash = package.get("remote_fixture", {}).get("sha256")
+    if not all(isinstance(h, str) and re.fullmatch(r"[0-9a-f]{64}", h) for h in (waypipe_hash, fixture_hash)):
+        raise ValueError("実APKのWaypipe/producer hashがありません")
+    prior_ids = []
+    for index, (row, mode) in enumerate(zip(rows, ("pattern", "foot"))):
+        token = hashlib.sha256(f"{nonce}:{index}".encode()).hexdigest()[:16]
+        app, transport = row.get("app", {}), row.get("transport", {})
+        forward = transport.get("app_forward", {})
+        local, tools = app.get("local", {}), forward.get("tools", {})
+        if (row.get("cycle") != index+1 or row.get("mode") != mode or app.get("session") != session
+                or app.get("nonce") != token or app.get("mode") != mode or app.get("error") is not None
+                or app.get("pool_rejections") != 0 or app.get("last_rejected_pool_bytes") is not None
+                or app.get("callback_clock") != "virtual" or app.get("ready") is not True or app.get("forward_sent") is not True
+                or local.get("uid") != apk_uid or local.get("child_uid") != apk_uid or local.get("workers") != 1 or local.get("owned_groups") != 1
+                or local.get("ready") is not True or local.get("error") is not None or local.get("version") != "0.11.3"
+                or local.get("executable_sha256") != waypipe_hash or not local.get("child_context")
+                or transport.get("session") != session or transport.get("state") != "Ready" or transport.get("owned_connections") != 1
+                or transport.get("credential_requests") != 1 or transport.get("pending_cleanup") != ([] if mode=="pattern" else forward.get("pending_cleanup"))
+                or forward.get("nonce") != token or forward.get("mode") != mode or forward.get("uid") != termux_uid
+                or forward.get("error") is not None or forward.get("registered") is not True
+                or tools.get("schema") != 1 or tools.get("nonce") != token or tools.get("uid") != termux_uid or tools.get("mode") != mode
+                or tools.get("waypipe") != dict(version="0.11.3", features=["lz4", "zstd"], unavailable=["dmabuf", "video", "vaapi"])):
+            raise ValueError("同じ認証済みsession/実UID/版/forward順序の証明が不正です")
+        ids = app.get("window_ids", [])
+        if not ids or any(not positive_id(value) for value in ids) or len(set(ids)) != len(ids):
+            raise ValueError("window IDの証明が不正です")
+        remote = forward.get("remote", {})
+        if mode == "pattern":
+            finished = remote.get("finished", {})
+            producer = finished.get("pattern", {}) or {}
+            protocol = producer.get("protocol", {})
+            if (app.get("state") != "pass" or app.get("verified_hashes") != 100 or app.get("copies") != 100
+                    or any(app.get(key) != 100 for key in ("releases", "callbacks")) or any(app.get(key) != 1 for key in ("configures", "acks"))
+                    or any(app.get(key) != 0 for key in ("clients", "objects", "surfaces", "pixel_bytes", "pool_bytes", "pool_count")) or app.get("windows") != []
+                    or forward.get("state") != "pass" or forward.get("remote_cleaned") is not True or forward.get("forward_cancelled") is not True
+                    or forward.get("pending_cleanup") != [] or forward.get("forwarding", {}).get("active") != 0
+                    or remote.get("phase") != "finished" or remote.get("cleanup_pending") is not False
+                    or finished.get("reason") != "Completed" or finished.get("exit_status") != 0 or finished.get("cleaned") is not True
+                    or finished.get("group_alive") is not False or finished.get("pipes_closed") is not True
+                    or producer.get("schema") != 1 or producer.get("uid") != termux_uid or producer.get("result") != "pass"
+                    or producer.get("fixture_revision") != "eidolon-shm-client-v1" or protocol.get("protocol_error") is not False
+                    or any(protocol.get(key) != 100 for key in ("frames", "releases", "callbacks"))
+                    or any(protocol.get(key) != 1 for key in ("configures", "acks"))
+                    or tools.get("fixture") != dict(schema=1,fixture_revision="eidolon-shm-client-v1",frames=100,sha256=fixture_hash)):
+                raise ValueError("100frameの実転送/hash/producer/receipt回収が不正です")
+            prior_ids = ids
+        else:
+            windows = app.get("windows", [])
+            if (app.get("state") != "running" or type(app.get("copies")) is not int or app["copies"] < 1 or app.get("non_uniform") is not True
+                    or len(windows) != 1 or windows[0].get("life") != "Mapped" or not positive_id(windows[0].get("window"))
+                    or windows[0]["window"] in prior_ids or int(windows[0]["window"]) <= max(map(int, prior_ids))
+                    or not positive_id(windows[0].get("frame")) or forward.get("state") != "running"
+                    or tools.get("foot") != dict(version="1.28.0") or remote.get("phase") != "running" or not remote.get("child")):
+                raise ValueError("実footのtoplevel/buffer/非一様描画/ID非再利用が不正です")
+    after = result.get("after_stop", {})
+    app, transport = after.get("app", {}), after.get("transport", {})
+    local, forward = app.get("local", {}), transport.get("app_forward", {})
+    remote = forward.get("remote", {})
+    finished = remote.get("finished", {}) or {}
+    if (after.get("state") != "Stopped" or app.get("state") != "stopped" or app.get("error") is not None or app.get("directory_cleaned") is not True
+            or app.get("session") != session or app.get("nonce") != rows[1]["app"]["nonce"] or app.get("mode") != "foot"
+            or any(type(app.get(key)) is not int or app[key] != 0 for key in ("clients", "objects", "surfaces", "pixel_bytes", "pool_bytes", "pool_count", "memfd_fds_after", "memfd_maps_after"))
+            or app.get("windows") != [] or local.get("workers") != 0 or local.get("owned_groups") != 0 or local.get("waited") is not True
+            or local.get("error") is not None or forward.get("state") != "stopped" or forward.get("cancelled") is not True
+            or forward.get("remote_cleaned") is not True or forward.get("forward_cancelled") is not True or forward.get("error") is not None
+            or remote.get("phase") != "finished" or remote.get("cleanup_pending") is not False
+            or finished.get("reason") != "Stop" or finished.get("cleaned") is not True or finished.get("group_alive") is not False
+            or finished.get("pipes_closed") is not True or finished.get("term_sent") is not True
+            or forward.get("pending_cleanup") != [] or transport.get("pending_cleanup") != []
+            or any(transport.get(key) != 0 for key in ("workers", "tokio_threads", "owned_connections")) or transport.get("forward", {}).get("active") != 0
+            or any(after.get(key) != 0 for key in ("helper_workers", "dependency_workers", "compositor_workers")) or after.get("render", {}).get("workers") != 0
+            or type(result.get("accept_ms")) is not int or not 0 <= result["accept_ms"] < 100
+            or type(result.get("stop_ms")) is not int or not 0 <= result["stop_ms"] < 10000 or not positive_id(result.get("last_handle"))):
+        raise ValueError("foot実行中の停止/全owner・SHM・bridge回収が不正です")
+    if instrumentation:
+        return instrumentation_result(snapshot, result, apk_uid)
+    current = snapshot.get("runtime", {})
+    state, handle = current.get("runtime", {}), current.get("handle")
+    return (positive_id(handle) and int(handle) > int(result["last_handle"]) and current.get("code") == 0
+            and current.get("registry") == dict(runtimes=1,workers=1) and state.get("state") == "Ready"
+            and state.get("activity_visible") is True and state.get("xr_state") in {"VISIBLE","FOCUSED"}
+            and state.get("transport", {}).get("state") == "Idle")
+
+
 def wayland_state_result(snapshot, nonce, expected, uid, *, instrumentation=False):
     if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
         return False
@@ -445,6 +549,7 @@ def instrumentation_result(snapshot, result, apk_uid):
             or not 0 < int(result.get("last_handle", "0")) < int(handle) <= 2**63 - 1
             or ready.get("code") != 0 or ready.get("handle") != handle or ready.get("registry") != {"runtimes": 1, "workers": 1}
             or state.get("state") != "Ready" or state.get("error") is not None or state.get("activity_visible") is not False or state.get("xr_state") != "IDLE"
+            or state.get("app") is not None or after.get("app") is not None
             or transport.get("state") != "Idle" or transport.get("journal_ready") is not True or transport.get("pending_cleanup") != []
             or stopped.get("code") != 0 or stopped.get("handle") != handle or after.get("state") != "Stopped"
             or after.get("helper_workers") != 0 or after.get("dependency_workers", 0) != 0 or after.get("compositor_workers", 0) != 0

@@ -31,6 +31,18 @@ def inspect(apk):
             raise ValueError("想定外ABIの製品nativeがあります")
         metadata = json.loads(archive.read("assets/native-build.json"))
         info = metadata["build_info"]
+        fixture = metadata.get("remote_fixture")
+        if info["profile"] == "debug":
+            if (not isinstance(fixture, dict) or fixture.get("schema") != 1
+                    or fixture.get("abi") != ABI or fixture.get("api") != API or fixture.get("ndk") != NDK
+                    or fixture.get("fixture_revision") != "eidolon-shm-client-v1"
+                    or fixture.get("build_info", {}).get("source_digest") != info["source_digest"]
+                    or fixture.get("build_info", {}).get("profile") != "release"
+                    or not re.fullmatch(r"[0-9a-f]{64}", fixture.get("sha256", ""))
+                    or set(fixture.get("needed", [])) - {"libc.so", "libm.so", "libdl.so"}):
+                raise ValueError("remote fixtureのsource/ABI/API/hashが不一致です")
+        elif fixture is not None:
+            raise ValueError("releaseにremote fixture情報が混入しています")
         if (metadata["abi"], metadata["api"], metadata["ndk"], info["target"], info["schema"]) != (ABI, API, NDK, TARGET, 1):
             raise ValueError("ABI/API/NDK/target/schemaが不一致です")
         data = archive.read(libpath)
@@ -117,7 +129,7 @@ def inspect(apk):
         for method in ("nativeBuildInfo", "nativeCreate", "nativeCommand", "nativeAttachSurface", "nativePoll", "nativeSnapshot", "nativeRequestStop", "nativeDestroy", "nativeGenerateIdentity", "nativePublicKey", "nativeProvideCredential"):
             if "Java_io_github_tinmachine_eidolon_NativeBridge_" + method not in output:
                 raise ValueError("JNI symbolがありません: " + method)
-        if (b"eidolon-shm-client-v1" in data) != (info["profile"] == "debug"):
+        if (b"eidolon-local-shm-fixture-code-v1" in data) != (info["profile"] == "debug"):
             raise ValueError("profileとSHM fixtureの同梱が不一致です")
         if (b"eidolon-wayland-state-v1" in data) != (info["profile"] == "debug"):
             raise ValueError("profileとWayland state fixtureの同梱が不一致です")
@@ -147,6 +159,7 @@ def inspect(apk):
         dex = b"".join(archive.read(name) for name in names if re.fullmatch(r"classes\d*\.dex", name))
         debug_classes = [b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;", b"Lio/github/tinmachine/eidolon/CredentialCase;", b"Lio/github/tinmachine/eidolon/SshCase;", b"Lio/github/tinmachine/eidolon/ProductSshCase;", b"Lio/github/tinmachine/eidolon/ForwardCase;", b"Lio/github/tinmachine/eidolon/RemoteCleanupCase;", b"Lio/github/tinmachine/eidolon/NativeCheckInstrumentation;", b"Lio/github/tinmachine/eidolon/NativeDepsCase;", b"Lio/github/tinmachine/eidolon/CompositorCase;"]
         debug_classes.append(b"Lio/github/tinmachine/eidolon/WaypipeCase;")
+        debug_classes.append(b"Lio/github/tinmachine/eidolon/ForwardedShmCase;")
         debug_dex = any(name in dex for name in debug_classes)
         if info["profile"] == "release" and (debug_symbol or debug_dex):
             raise ValueError("releaseにdebug JNI/classが混入しています")

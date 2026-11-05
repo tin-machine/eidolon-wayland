@@ -20,7 +20,7 @@ use std::{
     path::Path,
     process::{Child, Command, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -188,8 +188,15 @@ impl OwnedProcess {
         }
         Ok(started.elapsed().as_millis() as u64)
     }
-    fn capture(mut self, stop: &AtomicBool) -> Result<Vec<u8>, Error> {
-        let deadline = Instant::now() + Duration::from_secs(3);
+    fn capture(self, stop: &AtomicBool) -> Result<Vec<u8>, Error> {
+        self.capture_until(stop, Duration::from_secs(3))
+    }
+    pub(crate) fn capture_until(
+        mut self,
+        stop: &AtomicBool,
+        duration: Duration,
+    ) -> Result<Vec<u8>, Error> {
+        let deadline = Instant::now() + duration;
         loop {
             self.pump()?;
             if stop.load(Ordering::Acquire) {
@@ -216,6 +223,157 @@ impl OwnedProcess {
 impl Drop for OwnedProcess {
     fn drop(&mut self) {
         let _ = self.finish();
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ClientReport {
+    pub ready: bool,
+    pub workers: usize,
+    pub owned_groups: usize,
+    pub waited: bool,
+    pub cancelled: bool,
+    pub uid: u32,
+    pub child_uid: u32,
+    pub child_context: String,
+    pub version: String,
+    pub executable_sha256: String,
+    pub stop_ms: u64,
+    pub error: Option<Error>,
+}
+
+/// protocol ownerは起動/停止flagとsnapshotだけを扱い、process待ちはこのI/O workerが所有する。
+pub(crate) struct LocalClient {
+    state: Arc<Mutex<ClientReport>>,
+    stop: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+impl LocalClient {
+    pub(crate) fn start(executable: &Path, directory: &Path) -> Result<Self, Error> {
+        let (executable, directory) = (executable.to_path_buf(), directory.to_path_buf());
+        let state = Arc::new(Mutex::new(ClientReport {
+            workers: 1,
+            uid: unsafe { libc::getuid() },
+            ..Default::default()
+        }));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (output, cancel) = (state.clone(), stop.clone());
+        let worker = thread::Builder::new()
+            .name("eidolon-waypipe".into())
+            .spawn(move || {
+                let update = |action: &dyn Fn(&mut ClientReport)| {
+                    action(&mut output.lock().unwrap_or_else(|e| e.into_inner()))
+                };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let bytes = fs::read(&executable).map_err(|_| "HELPER_EXEC_FAILED")?;
+                    let hash: String = Sha256::digest(bytes)
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    let version = OwnedProcess::spawn(Command::new(&executable).arg("--version"))?
+                        .capture(&cancel)?;
+                    if version
+                        != b"waypipe 0.11.3\nfeatures: lz4 zstd\nunavailable: dmabuf video vaapi\n"
+                    {
+                        return Err("WAYPIPE_VERSION_MISMATCH");
+                    }
+                    update(&|r| {
+                        r.version = "0.11.3".into();
+                        r.executable_sha256 = hash.clone();
+                    });
+                    if cancel.load(Ordering::Acquire) {
+                        return Err("CANCELLED");
+                    }
+                    let transfer = directory.join("p");
+                    let mut child = OwnedProcess::spawn(
+                        Command::new(&executable)
+                            .args([
+                                "--no-gpu",
+                                "--compress",
+                                "none",
+                                "--threads",
+                                "1",
+                                "--socket",
+                            ])
+                            .arg(&transfer)
+                            .arg("client")
+                            .env("XDG_RUNTIME_DIR", &directory)
+                            .env("WAYLAND_DISPLAY", "w"),
+                    )?;
+                    update(&|r| r.owned_groups = 1);
+                    let run = (|| {
+                        let uid = unsafe { libc::getuid() };
+                        let context = child.identity(uid)?;
+                        update(&|r| {
+                            r.child_uid = uid;
+                            r.child_context = context.clone();
+                        });
+                        let deadline = Instant::now() + Duration::from_secs(3);
+                        let mut ready = false;
+                        loop {
+                            if cancel.load(Ordering::Acquire) {
+                                break;
+                            }
+                            child.pump()?;
+                            if child.exited()? {
+                                return Err("WAYPIPE_EARLY_EXIT");
+                            }
+                            if !ready {
+                                if let Ok(stream) = UnixStream::connect(&transfer) {
+                                    drop(stream);
+                                    ready = true;
+                                    update(&|r| r.ready = true);
+                                } else if Instant::now() >= deadline {
+                                    return Err("HELPER_EXEC_FAILED");
+                                }
+                            }
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Ok(())
+                    })();
+                    let stopped = child.finish()?;
+                    update(&|r| {
+                        r.ready = false;
+                        r.waited = true;
+                        r.owned_groups = 0;
+                        r.stop_ms = stopped;
+                    });
+                    run
+                }))
+                .unwrap_or(Err("JNI_FAILURE"));
+                update(&|r| {
+                    r.workers = 0;
+                    r.ready = false;
+                    r.cancelled = cancel.load(Ordering::Acquire);
+                    r.error = result.err().filter(|e| *e != "CANCELLED");
+                });
+            })
+            .map_err(|_| "RESOURCE_LIMIT")?;
+        Ok(Self {
+            state,
+            stop,
+            worker: Some(worker),
+        })
+    }
+    pub(crate) fn snapshot(&self) -> ClientReport {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    pub(crate) fn request_stop(&self) {
+        self.stop.store(true, Ordering::Release);
+    }
+    pub(crate) fn finished(&mut self) -> bool {
+        if self.worker.as_ref().is_some_and(|w| w.is_finished()) {
+            let _ = self.worker.take().unwrap().join();
+        }
+        self.worker.is_none()
+    }
+}
+impl Drop for LocalClient {
+    fn drop(&mut self) {
+        self.request_stop();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -337,13 +495,14 @@ pub fn probe(
                     display
                         .dispatch_clients(&mut state)
                         .map_err(|_| "SERVER_DISPATCH")?;
-                    let mut clients = 0;
                     let mut objects = 0;
                     let backend = display.handle().backend_handle();
-                    backend.with_all_clients(|client| {
-                        clients += 1;
+                    let mut ids = vec![];
+                    backend.with_all_clients(|client| ids.push(client));
+                    let clients = ids.len();
+                    for client in ids {
                         backend.with_all_objects_for(client, |_| objects += 1).ok();
-                    });
+                    }
                     proof.clients_after = clients;
                     proof.objects_after = objects;
                     if clients == 0 {

@@ -1,11 +1,11 @@
 //! SSHはI/O ownerが作るTokio runtime上だけで実行する。再接続前に旧runtimeを回収する。
 use crate::{
-    exec, forward, forward_probe,
+    exec, forward, forward_app, forward_probe,
     host_key::{Profile, parse_key},
     journal, launcher,
 };
 use eidolon_model::{
-    commands::CleanupScenario,
+    commands::{AppMode, CleanupScenario},
     ids::{CommandSeq, SessionId},
     state::Status,
 };
@@ -67,6 +67,7 @@ pub struct Snapshot {
     pub probe: exec::Report,
     pub forward: forward::Report,
     pub forward_probe: Option<forward_probe::Report>,
+    pub app_forward: Option<forward_app::Report>,
     pub journal_ready: bool,
     pub pending_cleanup: Vec<journal::Pending>,
     pub cleanup_audits: Vec<CleanupAudit>,
@@ -121,6 +122,7 @@ struct Shared {
     cancel: Option<CancellationToken>,
     router: Option<Arc<forward::Router>>,
     forward: Option<(PathBuf, String, Option<CleanupScenario>)>,
+    app: Option<(PathBuf, String, AppMode)>,
     forward_busy: bool,
 }
 struct Signals {
@@ -172,6 +174,7 @@ impl Controller {
                 cancel: None,
                 router: None,
                 forward: None,
+                app: None,
                 forward_busy: false,
             }),
             cv: Condvar::new(),
@@ -314,6 +317,50 @@ impl Controller {
     }
     pub fn forward_probe(&self, session: SessionId, files: &Path, nonce: &str) -> Status {
         self.queue_probe(session, files, nonce, None)
+    }
+    pub fn start_app(
+        &self,
+        session: SessionId,
+        local_socket: &Path,
+        nonce: &str,
+        mode: AppMode,
+    ) -> Status {
+        if mode == AppMode::Pattern && !cfg!(debug_assertions) {
+            return Status::NotReady;
+        }
+        if !local_socket.is_absolute()
+            || local_socket.as_os_str().len() > 103
+            || !forward_probe::valid_nonce(nonce)
+        {
+            return Status::InvalidArgument;
+        }
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Status::Stale;
+        }
+        if self.signals.stop.load(Ordering::Acquire)
+            || s.report.state != State::Ready
+            || s.cancel.as_ref().is_some_and(|c| c.is_cancelled())
+        {
+            return Status::NotReady;
+        }
+        if s.forward_busy {
+            return Status::Busy;
+        }
+        s.forward_busy = true;
+        s.report.app_forward = Some(forward_app::Report {
+            state: "queued",
+            nonce: nonce.into(),
+            mode: mode.as_str().into(),
+            ..Default::default()
+        });
+        s.app = Some((local_socket.into(), nonce.into(), mode));
+        self.signals.notify.notify_one();
+        Status::Accepted
     }
     pub fn cleanup_probe(
         &self,
@@ -468,6 +515,7 @@ fn owner(
             s.cancel = None;
             s.busy = false;
             s.forward = None;
+            s.app = None;
             s.forward_busy = false;
             s.report.forward = connect.router.report();
             s.router = None;
@@ -683,7 +731,42 @@ async fn connection(
             .unwrap_or_else(|e| e.into_inner())
             .forward
             .take();
-        if let Some((files, nonce, scenario)) = forward {
+        let app = signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .app
+            .take();
+        if let Some((local_socket, nonce, mode)) = app {
+            let report = forward_app::run(
+                &client,
+                &connect.router,
+                forward_app::Request {
+                    session: connect.session,
+                    local_socket: &local_socket,
+                    nonce: &nonce,
+                    mode,
+                    uid,
+                    journal,
+                    binding: &binding,
+                },
+                &connect.cancel,
+                |r| {
+                    signals.update(|s| {
+                        s.report.app_forward = Some(r.clone());
+                        s.report.pending_cleanup = r.pending_cleanup.clone();
+                    })
+                },
+            )
+            .await;
+            signals.update(|s| s.forward_busy = false);
+            if connect.cancel.is_cancelled() {
+                return Err("CANCELLED");
+            }
+            if let Some(error) = report.error {
+                return Err(error);
+            }
+        } else if let Some((files, nonce, scenario)) = forward {
             let report = forward_probe::run(
                 &client,
                 &connect.router,

@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""識別済みQuestのTermuxへW05の固定版tools/fontを導入し、公開版情報を保存する。"""
+import argparse
+import datetime
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+
+from quest_device import QuestDevice, work_root
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--serial", required=True)
+parser.add_argument("--install", action="store_true", help="x11 repositoryと固定Waypipe/foot/fontを導入する")
+args = parser.parse_args()
+os.umask(0o077)
+run = work_root() / "eidolon-phase5-implementation/termux-wayland-tools" / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S") + "-" + str(os.getpid()))
+run.mkdir(mode=0o700, parents=True)
+device = QuestDevice(args.serial, run)
+device.validate()
+script = r'''
+import json,os,pathlib,subprocess,sys
+prefix='/data/data/com.termux/files/usr'
+env=os.environ.copy()
+env.update(PATH=prefix+'/bin:/system/bin', PREFIX=prefix, TMPDIR=prefix+'/tmp', DEBIAN_FRONTEND='noninteractive')
+def run(argv):
+    result=subprocess.run(argv,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=240)
+    sys.stderr.write(result.stdout)
+    result.check_returncode()
+    return result.stdout
+if sys.argv[1]=='install':
+    run([prefix+'/bin/apt-get','install','-y','--no-install-recommends','x11-repo'])
+    run([prefix+'/bin/apt-get','update'])
+    # 版が無ければapt側で失敗する。異なるWaypipe/footへ黙って追従しない。
+    run([prefix+'/bin/apt-get','install','-y','--no-install-recommends','waypipe=0.11.3','foot=1.28.0','fontconfig','fontconfig-utils','ttf-dejavu'])
+packages=run([prefix+'/bin/dpkg-query','-W','-f=${Package} ${Version}\n','waypipe','foot','liblz4','zstd','fontconfig','fontconfig-utils','ttf-dejavu','ncurses','x11-repo'])
+waypipe=run([prefix+'/bin/waypipe','--version'])
+foot=run([prefix+'/bin/foot','--version'])
+fonts=run([prefix+'/bin/fc-list',':','family'])
+assert waypipe.splitlines()==['waypipe 0.11.3','features: lz4 zstd','unavailable: dmabuf video vaapi'],waypipe
+assert foot.startswith('foot version: 1.28.0') or foot.startswith('foot version 1.28.0') or foot.startswith('foot 1.28.0'),foot
+assert fonts.strip(),'No font found'
+print(json.dumps({'schema':1,'status':'pass','packages':packages.splitlines(),'waypipe':waypipe.splitlines(),'foot':foot.splitlines(),'font_families':sorted(set(fonts.splitlines()))}))
+'''
+command = ["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python3", "-c", script, "install" if args.install else "inspect"]
+result = subprocess.run(["adb", "-s", args.serial, "shell", "-T", shlex.join(command)], capture_output=True, timeout=900)
+(run / "apt-tools.log").write_bytes(result.stdout + result.stderr)
+if result.returncode:
+    raise SystemExit("Termux toolsの準備失敗。保存したapt-tools.logを確認してください")
+report = json.loads(result.stdout)
+(run / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+print(json.dumps({**{key: report[key] for key in ("status", "packages", "waypipe", "foot")}, "font_families": len(report["font_families"])}, ensure_ascii=False))

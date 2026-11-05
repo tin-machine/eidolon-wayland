@@ -74,6 +74,89 @@ pub struct Echo {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WaypipeTools {
+    pub version: String,
+    pub features: Vec<String>,
+    pub unavailable: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureTools {
+    pub schema: u32,
+    pub fixture_revision: String,
+    pub frames: u32,
+    pub sha256: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FootTools {
+    pub version: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tools {
+    pub schema: u32,
+    pub nonce: String,
+    pub uid: u32,
+    pub mode: String,
+    pub waypipe: WaypipeTools,
+    #[serde(default)]
+    pub fixture: Option<FixtureTools>,
+    #[serde(default)]
+    pub foot: Option<FootTools>,
+}
+impl Tools {
+    fn valid(&self) -> bool {
+        self.schema == 1
+            && self.waypipe.version == "0.11.3"
+            && self.waypipe.features == ["lz4", "zstd"]
+            && self.waypipe.unavailable == ["dmabuf", "video", "vaapi"]
+            && match self.mode.as_str() {
+                "pattern" => {
+                    self.foot.is_none()
+                        && self.fixture.as_ref().is_some_and(|f| {
+                            f.schema == 1
+                                && f.fixture_revision == "eidolon-shm-client-v1"
+                                && f.frames == 100
+                                && f.sha256.len() == 64
+                                && f.sha256
+                                    .bytes()
+                                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                        })
+                }
+                "foot" => {
+                    self.fixture.is_none()
+                        && self.foot.as_ref().is_some_and(|f| f.version == "1.28.0")
+                }
+                _ => false,
+            }
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pattern {
+    pub schema: u32,
+    pub result: String,
+    pub fixture_revision: String,
+    pub uid: u32,
+    pub protocol: serde_json::Value,
+}
+impl Pattern {
+    fn valid(&self) -> bool {
+        self.schema == 1
+            && self.result == "pass"
+            && self.fixture_revision == "eidolon-shm-client-v1"
+            && self.protocol["protocol_error"] == false
+            && ["frames", "callbacks", "releases"]
+                .iter()
+                .all(|key| self.protocol[key].as_u64() == Some(100))
+            && ["configures", "acks"]
+                .iter()
+                .all(|key| self.protocol[key].as_u64().is_some_and(|n| n > 0))
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Finished {
     pub schema: u32,
     pub nonce: String,
@@ -92,6 +175,8 @@ pub struct Finished {
     #[serde(default)]
     pub echo: Option<Echo>,
     #[serde(default)]
+    pub pattern: Option<Pattern>,
+    #[serde(default)]
     pub error: Option<String>,
 }
 impl Finished {
@@ -109,7 +194,10 @@ impl Finished {
         ) && self.error.as_ref().is_none_or(|e| {
             matches!(
                 e.as_str(),
-                "CONTROL_INVALID" | "DEPENDENCY_NOT_READY" | "CHILD_SPAWN_FAILED"
+                "CONTROL_INVALID"
+                    | "DEPENDENCY_NOT_READY"
+                    | "CHILD_SPAWN_FAILED"
+                    | "CLEANUP_FAILED"
             )
         }) && self.child.as_ref().is_none_or(Identity::valid)
             && self.stdout.valid()
@@ -126,6 +214,10 @@ impl Finished {
                                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                     })
             })
+            && self
+                .pattern
+                .as_ref()
+                .is_none_or(|p| p.uid == self.uid && p.valid())
     }
 }
 #[derive(Deserialize)]
@@ -149,6 +241,7 @@ struct Started {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Frame {
     Prepared(Prepared),
+    Tools(Tools),
     ChildStarted(Started),
     Finished(Finished),
 }
@@ -156,6 +249,7 @@ enum Frame {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
     pub phase: &'static str,
+    pub tools: Option<Tools>,
     pub child: Option<Identity>,
     pub finished: Option<Finished>,
     pub stdout_bytes: u64,
@@ -167,6 +261,7 @@ pub struct Report {
     pub error: Option<&'static str>,
 }
 pub struct Launcher {
+    expected_tools: Option<String>,
     channel: Option<Channel<client::Msg>>,
     nonce: String,
     uid: u32,
@@ -218,6 +313,7 @@ impl Launcher {
         cancel: CancellationToken,
     ) -> Result<Self, &'static str> {
         Ok(Self {
+            expected_tools: None,
             expected_socket: remote_path(nonce)?,
             beat_every: Duration::from_secs(10),
             heartbeats: true,
@@ -241,6 +337,44 @@ impl Launcher {
             return Err("NOT_READY");
         }
         self.control("start", Some("echo")).await?;
+        self.report.phase = "starting";
+        self.deadline = Instant::now() + Duration::from_secs(70);
+        Ok(())
+    }
+    /// remote helperの版を照合してからforward/startへ進む。Echo経路には要求しない。
+    pub async fn inspect_tools(&mut self, mode: &str) -> Result<Tools, &'static str> {
+        if self.report.phase != "prepared"
+            || self.stopping.is_some()
+            || self.report.tools.is_some()
+            || self.expected_tools.is_some()
+            || !matches!(mode, "pattern" | "foot")
+        {
+            return Err("NOT_READY");
+        }
+        self.expected_tools = Some(mode.into());
+        self.deadline = Instant::now() + Duration::from_secs(12);
+        self.control("inspect_tools", Some(mode)).await?;
+        while self.report.tools.is_none() {
+            self.next().await?;
+            if self.report.phase == "finished" {
+                return Err("DEPENDENCY_NOT_READY");
+            }
+        }
+        let tools = self.report.tools.clone().ok_or("DEPENDENCY_NOT_READY")?;
+        if tools.mode != mode {
+            return Err("PROTOCOL_ERROR");
+        }
+        Ok(tools)
+    }
+    pub async fn start_app(&mut self, mode: &str) -> Result<(), &'static str> {
+        if self.report.phase != "prepared"
+            || self.stopping.is_some()
+            || !matches!(mode, "pattern" | "foot")
+            || self.report.tools.as_ref().is_none_or(|t| t.mode != mode)
+        {
+            return Err("NOT_READY");
+        }
+        self.control("start", Some(mode)).await?;
         self.report.phase = "starting";
         self.deadline = Instant::now() + Duration::from_secs(70);
         Ok(())
@@ -378,6 +512,21 @@ impl Launcher {
                 }
                 self.report.child = Some(value.child);
                 self.report.phase = "running";
+            }
+            Frame::Tools(value) => {
+                if self.report.phase != "prepared"
+                    || self.report.tools.is_some()
+                    || self.stopping.is_some()
+                    || self.expected_tools.as_deref() != Some(value.mode.as_str())
+                    || value.nonce != self.nonce
+                    || value.uid != self.uid
+                    || !value.valid()
+                {
+                    return Err("PROTOCOL_ERROR");
+                }
+                self.expected_tools = None;
+                self.report.tools = Some(value);
+                self.deadline = Instant::now() + Duration::from_secs(60);
             }
             Frame::Finished(value) => {
                 if value.schema != 1

@@ -55,6 +55,7 @@ shutil.copyfile(waypipe_source, waypipe_target)
 waypipe_target.chmod(0o755)
 files[waypipe_target.name] = waypipe["sha256"]
 if args.profile == "debug":
+    subprocess.run(["python3", str(ROOT / "scripts/build-wayland-fixture")], cwd=ROOT, check=True)
     helper = Path(env["CARGO_TARGET_DIR"]) / TARGET / "debug/eidolon-probe-bin"
     target = args.output / ABI / "libeidolon_probe_bin.so"
     shutil.copyfile(helper, target)
@@ -62,6 +63,11 @@ if args.profile == "debug":
     files[target.name] = hashlib.sha256(target.read_bytes()).hexdigest()
 metadata = {"build_info": info, "abi": ABI, "api": API, "ndk": NDK,
             "files": files}
+if args.profile == "debug":
+    fixture = json.loads((ROOT / "native/generated/remote-fixture/result.json").read_text())
+    if fixture["build_info"]["source_digest"] != info["source_digest"]:
+        raise SystemExit("remote fixtureとAPKのsource digestが不一致です")
+    metadata["remote_fixture"] = fixture
 dependency_lock = ROOT / "native/deps.lock.json"
 locked = json.loads(dependency_lock.read_text())
 static = json.loads((ROOT / "native/generated/xkbcommon-android.json").read_text())

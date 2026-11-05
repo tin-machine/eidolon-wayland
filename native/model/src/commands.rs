@@ -99,6 +99,21 @@ fn valid_installation(id: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppMode {
+    Pattern,
+    Foot,
+}
+impl AppMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pattern => "pattern",
+            Self::Foot => "foot",
+        }
+    }
+}
+
 /// 未実装tagを成功扱いしない。接続・入力等は担当taskでこのenumへ追加する。
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -157,6 +172,13 @@ pub enum Command {
         schema: u32,
         request_id: CommandSeq,
         nonce: String,
+    },
+    AppProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        nonce: String,
+        mode: AppMode,
     },
     ForwardProbe {
         schema: u32,
@@ -219,6 +241,7 @@ impl Command {
             Self::SceneReady { schema, .. }
             | Self::RemoteCleanupProbe { schema, .. }
             | Self::NativeDepsProbe { schema, .. }
+            | Self::AppProbe { schema, .. }
             | Self::CompositorProbe { schema, .. }
             | Self::ForwardProbe { schema, .. }
             | Self::Connect { schema, .. }
@@ -243,6 +266,7 @@ impl Command {
         | Self::ForwardProbe { nonce, .. }
         | Self::RemoteCleanupProbe { nonce, .. }
         | Self::NativeDepsProbe { nonce, .. }
+        | Self::AppProbe { nonce, .. }
         | Self::CompositorProbe { nonce, .. } = &command
             && (nonce.len() != 16
                 || !nonce
@@ -258,6 +282,7 @@ impl Command {
             Self::SceneReady { request_id, .. }
             | Self::RemoteCleanupProbe { request_id, .. }
             | Self::NativeDepsProbe { request_id, .. }
+            | Self::AppProbe { request_id, .. }
             | Self::CompositorProbe { request_id, .. }
             | Self::ForwardProbe { request_id, .. }
             | Self::Connect { request_id, .. }

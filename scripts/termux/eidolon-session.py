@@ -20,6 +20,8 @@ SIZES = (1, 65536, *(8 * 1024 * 1024 for _ in range(4)))
 BLOCK = bytes(range(256)) * 256
 TRAILER = b"AFTER_EOF"
 RING_BYTES = 65536
+TERMUX_PREFIX = Path('/data/data/com.termux/files/usr')
+TERMUX_HOME = Path('/data/data/com.termux/files/home')
 
 
 def checked(directory):
@@ -87,24 +89,34 @@ def cleanup(home, nonce, *, creator=False):
     lease = directory / "lease.json"
     if lease.exists() or lease.is_symlink():
         record = read_record(lease, nonce)
-        if same_process(record.get("owner")) or same_process(record.get("child")):
+        now = process_identity(os.getpid())
+        owner_is_self = isinstance(record.get('owner'), dict) and all(
+            record['owner'].get(key) == now[key] for key in ('pid', 'start', 'group'))
+        if same_process(record.get("child")) or (same_process(record.get("owner")) and not (creator and owner_is_self)):
             return {"schema": 1, "cleaned": False, "active": same_process(record.get("owner")), "orphaned": same_process(record.get("child"))}
         if not creator:
             return {"schema": 1, "cleaned": False, "pending": True, "orphaned": True}
-        lease.unlink()  # stale recordからsignalしない。生存identity不一致を確認したfileだけ。
     if not creator:
         # 後日の照合では既存directoryの所有権を新たに取得しない。
         return {"schema": 1, "cleaned": False, "pending": True}
-    sock = directory / "p"
-    try:
-        info = sock.lstat()
-    except FileNotFoundError:
-        pass
-    else:
+    # child/groupの終了後、作成者だけが転送pとWayland wを回収する。
+    # unexpected fileやsymlinkならlease/markerも残し、完了を偽らない。
+    if {entry.name for entry in directory.iterdir()} - {"owner.json", "lease.json", "p", "w"}:
+        raise ValueError("DIRECTORY_NOT_EMPTY")
+    sockets = []
+    for name in ('p', 'w'):
+        sock = directory / name
+        try:
+            info = sock.lstat()
+        except FileNotFoundError:
+            continue
         if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
             raise ValueError("SOCKET_INVALID")
+        sockets.append(sock)
+    for sock in sockets:
         sock.unlink()
-    # 予期しないfileがあればmarkerを消さず失敗させ、他の内容を消去しない。
+    if lease.exists():
+        lease.unlink()
     if {entry.name for entry in directory.iterdir()} != {"owner.json"}:
         raise ValueError("DIRECTORY_NOT_EMPTY")
     (directory / "owner.json").unlink()
@@ -219,10 +231,107 @@ class Tail:
 
 
 def child_command(mode, nonce):
-    if mode != "echo":
-        # W04で固定Waypipe/fixture/footの実binaryへ接続する。
+    if mode == "echo":
+        return [sys.executable, str(Path(__file__).resolve()), "echo", nonce]
+    if mode not in {"pattern", "foot"}:
         raise ValueError("DEPENDENCY_NOT_READY")
-    return [sys.executable, str(Path(__file__).resolve()), "echo", nonce]
+    _, directory = paths(TERMUX_HOME, nonce)
+    checked(directory)
+    command = [str(TERMUX_PREFIX / 'bin/waypipe'), '--no-gpu', '--compress', 'none', '--threads', '1',
+               '--socket', str(directory / 'p'), '--display', str(directory / 'w'), 'server', '--']
+    if mode == 'pattern':
+        command += [str(TERMUX_HOME / '.local/lib/eidolon/eidolon-shm-fixture'), '--pattern']
+    else:
+        command += [str(TERMUX_PREFIX / 'bin/foot'), '--app-id=io.github.tinmachine.eidolon.foot',
+                    '--title=Eidolon', '--font=DejaVu Sans Mono:size=14',
+                    '--override=tweak.max-shm-pool-size-mb=0',
+                    str(TERMUX_PREFIX / 'bin/bash'), '--noprofile', '--norc', '-i']
+    return command
+
+
+def tool_environment(directory):
+    env = os.environ.copy()
+    env.update(PATH=str(TERMUX_PREFIX / 'bin') + ':/system/bin', PREFIX=str(TERMUX_PREFIX),
+               HOME=str(TERMUX_HOME), TMPDIR=str(TERMUX_PREFIX / 'tmp'),
+               XDG_RUNTIME_DIR=str(directory), SHELL=str(TERMUX_PREFIX / 'bin/bash'))
+    return env
+
+
+def tool_version(path):
+    child = subprocess.Popen([str(path), '--version'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, start_new_session=True, close_fds=True)
+    selector = selectors.DefaultSelector()
+    output = {'stdout': bytearray(), 'stderr': bytearray()}
+    try:
+        for name in output:
+            pipe = getattr(child, name)
+            os.set_blocking(pipe.fileno(), False)
+            selector.register(pipe, selectors.EVENT_READ, name)
+        deadline = time.monotonic() + 3
+        while selector.get_map() or not waitable(child):
+            if time.monotonic() >= deadline:
+                raise ValueError('DEPENDENCY_NOT_READY')
+            for key, _ in selector.select(timeout=0.02):
+                block = os.read(key.fd, 4096)
+                if not block:
+                    selector.unregister(key.fd)
+                elif len(output[key.data]) + len(block) > 4096:
+                    raise ValueError('DEPENDENCY_NOT_READY')
+                else:
+                    output[key.data].extend(block)
+    finally:
+        # leaderをWNOWAITで保持する間だけ、自分がspawnしたgroupを終了する。
+        try:os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:pass
+        status = child.wait(timeout=2)
+        selector.close()
+        child.stdout.close()
+        child.stderr.close()
+    if status != 0:
+        raise ValueError('DEPENDENCY_NOT_READY')
+    return output['stdout'].decode('utf-8')
+
+
+def inspect_tools(mode):
+    if mode not in {'pattern', 'foot'}:
+        raise ValueError('DEPENDENCY_NOT_READY')
+    try:
+        waypipe = tool_version(TERMUX_PREFIX / 'bin/waypipe').splitlines()
+        if waypipe != ['waypipe 0.11.3', 'features: lz4 zstd', 'unavailable: dmabuf video vaapi']:
+            raise ValueError('DEPENDENCY_NOT_READY')
+        result = {'mode': mode, 'waypipe': {'version': '0.11.3', 'features': ['lz4', 'zstd'],
+                                          'unavailable': ['dmabuf', 'video', 'vaapi']}}
+        if mode == 'pattern':
+            path = TERMUX_HOME / '.local/lib/eidolon/eidolon-shm-fixture'
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 8388608:
+                raise ValueError('DEPENDENCY_NOT_READY')
+            fixture = json.loads(tool_version(path))
+            if fixture != {'schema': 1, 'fixture_revision': 'eidolon-shm-client-v1', 'frames': 100}:
+                raise ValueError('DEPENDENCY_NOT_READY')
+            result['fixture'] = {**fixture, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        else:
+            if not tool_version(TERMUX_PREFIX / 'bin/foot').startswith('foot version: 1.28.0 '):
+                raise ValueError('DEPENDENCY_NOT_READY')
+            result['foot'] = {'version': '1.28.0'}
+        return result
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
+        raise ValueError('DEPENDENCY_NOT_READY') from None
+
+
+def pattern_summary(data):
+    value = json.loads(data)
+    if (set(value) != {'schema', 'result', 'fixture_revision', 'uid', 'protocol'} or value['schema'] != 1
+            or value['result'] != 'pass' or value['fixture_revision'] != 'eidolon-shm-client-v1' or value['uid'] != os.getuid()
+            or not isinstance(value['protocol'], dict) or value['protocol'].get('protocol_error') is not False):
+        raise ValueError('PATTERN_SUMMARY_INVALID')
+    for key in ('frames', 'callbacks', 'releases'):
+        if type(value['protocol'].get(key)) is not int or value['protocol'][key] != 100:
+            raise ValueError('PATTERN_SUMMARY_INVALID')
+    for key in ('configures', 'acks'):
+        if type(value['protocol'].get(key)) is not int or value['protocol'][key] < 1:
+            raise ValueError('PATTERN_SUMMARY_INVALID')
+    return value
 
 
 def group_live(pid):
@@ -269,6 +378,7 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
               "cleaned": False, "group_alive": False, "pipes_closed": False}
     child, child_reaped = None, False
     started_mode = None
+    checked_tools = None
     output = {"stdout": Tail(), "stderr": Tail()}
     opened = set()
     pending = bytearray()
@@ -358,18 +468,24 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                     try:
                         value = json.loads(line)
                         kind = value["type"]
-                        expected = {"type", "nonce", "mode"} if kind == "start" else {"type", "nonce"}
+                        expected = {"type", "nonce", "mode"} if kind in {"start", "inspect_tools"} else {"type", "nonce"}
                         if len(line) > 1024 or set(value) != expected or value["nonce"] != nonce:
                             raise ValueError("CONTROL_INVALID")
                         if kind == "heartbeat":
                             last_heartbeat = time.monotonic()
                         elif kind == "stop":
                             stop("Stop")
+                        elif kind == 'inspect_tools' and child is None:
+                            checked_tools = inspect_tools(value['mode'])
+                            publish({**marker(nonce), 'type': 'tools', **checked_tools})
                         elif kind == "start" and child is None and value["mode"] in {"echo", "pattern", "foot"}:
                             started_mode = value["mode"]
+                            if started_mode != 'echo' and (checked_tools is None or checked_tools['mode'] != started_mode):
+                                raise ValueError('DEPENDENCY_NOT_READY')
                             command = factory(value["mode"], nonce)
                             child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                                     start_new_session=True, close_fds=True)
+                                                     start_new_session=True, close_fds=True,
+                                                     env=tool_environment(directory) if started_mode != 'echo' else None)
                             identity = process_identity(child.pid)
                             if identity is None or identity["group"] != child.pid:
                                 raise ValueError("CHILD_IDENTITY_INVALID")
@@ -407,11 +523,15 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
         try:
             if started_mode == "echo":
                 report["echo"] = echo_summary(output["stdout"].data)
+            elif started_mode == 'pattern':
+                report['pattern'] = pattern_summary(output['stdout'].data)
         except (ValueError, TypeError, KeyError):
             pass
         if (child is None or child_reaped) and not report["group_alive"] and not opened:
-            (directory / "lease.json").unlink()
-            report["cleaned"] = cleanup(home, nonce, creator=True)["cleaned"]
+            try:
+                report["cleaned"] = cleanup(home, nonce, creator=True)["cleaned"]
+            except (OSError, ValueError):
+                report['error'] = 'CLEANUP_FAILED'
         if report["cleaned"]:
             write_record(directory.parent / ("r-" + nonce + ".json"), report)
             receipts = []

@@ -17,7 +17,7 @@ class NativeCheckInstrumentation : Instrumentation() {
         super.onCreate(arguments)
         name = arguments?.getString("case") ?: ""
         nonce = arguments?.getString("nonce") ?: ""
-        if (name !in setOf("forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
+        if (name !in setOf("forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
             arguments?.keySet()?.any { it != "case" && it != "nonce" } == true) {
             finish(Activity.RESULT_CANCELED, Bundle().apply { putString("result", "invalid_argument") })
             return
@@ -41,6 +41,7 @@ class NativeCheckInstrumentation : Instrumentation() {
             val configuration = JSONObject().put("schema", 1).put("installation", identity.installation).put("profiles", profiles)
                 .put("paths", JSONObject().put("native_library_dir", context.applicationInfo.nativeLibraryDir).put("files_dir", context.filesDir.absolutePath)).toString()
             when (name) {
+                "forwarded-shm" -> ForwardedShmCase.run(nonce, context, configuration, store)
                 "forward" -> ForwardCase.run(nonce, context, configuration, store)
                 "remote-cleanup" -> RemoteCleanupCase.run(nonce, context, configuration, store)
                 "waypipe" -> WaypipeCase.run(nonce, configuration, store)

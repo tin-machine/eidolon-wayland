@@ -113,6 +113,12 @@ impl Runtime {
                     eidolon_model::ids::CommandSeq,
                     JoinHandle<serde_json::Value>,
                 )> = None;
+                let mut app: Option<crate::session::Session> = None;
+                let mut pending_app: Option<(
+                    eidolon_model::ids::SessionId,
+                    String,
+                    eidolon_model::commands::AppMode,
+                )> = None;
                 {
                     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                     if state.snapshot.state == RuntimeState::Starting
@@ -130,6 +136,83 @@ impl Runtime {
                     loop {
                         let render = gl.snapshot();
                         let ssh = io.snapshot();
+                        if !stopping.load(Ordering::Acquire)
+                            && let Some((session, nonce, mode)) = pending_app.take()
+                        {
+                            let started = (|| {
+                                if ssh.session != Some(session)
+                                    || ssh.state != eidolon_transport::session::State::Ready
+                                {
+                                    return Err("STALE");
+                                }
+                                if let Some(current) = app.as_mut()
+                                    && current.session() == session
+                                {
+                                    return current.select_app(&nonce, mode);
+                                }
+                                if app.as_ref().is_some_and(|a| !a.closed()) {
+                                    return Err("BUSY");
+                                }
+                                let paths = config.paths.as_ref().ok_or("NOT_READY")?;
+                                app = Some(crate::session::Session::start(
+                                    session,
+                                    std::path::Path::new(&paths.files_dir),
+                                    &std::path::Path::new(&paths.native_library_dir)
+                                        .join("libwaypipe_bin.so"),
+                                    &nonce,
+                                    mode,
+                                    true,
+                                )?);
+                                Ok(())
+                            })();
+                            if let Err(error) = started {
+                                state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.app =
+                                    Some(crate::session::Report {
+                                        state: "fail",
+                                        session: Some(session),
+                                        nonce,
+                                        mode: Some(mode),
+                                        error: Some(error),
+                                        ..Default::default()
+                                    });
+                            }
+                        }
+                        if let Some(current) = app.as_mut() {
+                            let close = stopping.load(Ordering::Acquire)
+                                || ssh.session != Some(current.session())
+                                || matches!(
+                                    ssh.state,
+                                    eidolon_transport::session::State::Failed
+                                        | eidolon_transport::session::State::Disconnected
+                                        | eidolon_transport::session::State::Stopped
+                                )
+                                || current.snapshot().error.is_some();
+                            let remote_gone = io.is_finished()
+                                || (ssh.owned_connections == 0 && ssh.forward.active == 0);
+                            if let Some(forward) = ssh.app_forward.as_ref() {
+                                current.forwarding(forward);
+                            }
+                            current.tick(close, remote_gone);
+                            let report = current.snapshot();
+                            if !close && report.ready && !report.forward_sent {
+                                let code = io.start_app(
+                                    current.session(),
+                                    &current.socket().unwrap(),
+                                    current.nonce(),
+                                    current.mode(),
+                                );
+                                if code == Status::Accepted {
+                                    current.forward_started();
+                                } else {
+                                    current.fail("NOT_READY");
+                                }
+                            }
+                            if current.snapshot().error.is_some() && !close {
+                                io.disconnect(current.session());
+                            }
+                            state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.app =
+                                Some(current.snapshot());
+                        }
                         {
                             let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
                             if ssh.error == Some("JNI_FAILURE") {
@@ -257,6 +340,7 @@ impl Runtime {
                             if helper.is_none()
                                 && dependencies.is_none()
                                 && compositor.is_none()
+                                && app.as_ref().is_none_or(|a| a.closed())
                                 && gl.is_finished()
                                 && io.is_finished()
                             {
@@ -283,7 +367,52 @@ impl Runtime {
                         }
                         if let Some(command) = state.commands.pop_front() {
                             let mut asynchronous = false;
+                            let app_busy =
+                                pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
                             let code = match &command {
+                                Command::AppProbe {
+                                    session,
+                                    nonce,
+                                    mode,
+                                    ..
+                                } => {
+                                    let prior = ssh.app_forward.as_ref().is_none_or(|r| {
+                                        matches!(r.state, "pass" | "stopped" | "fail")
+                                    }) && ssh
+                                        .forward_probe
+                                        .as_ref()
+                                        .is_none_or(|r| matches!(r.state, "pass" | "fail"));
+                                    if !cfg!(debug_assertions) || config.paths.is_none() {
+                                        Status::NotReady
+                                    } else if ssh.session != Some(*session) {
+                                        Status::Stale
+                                    } else if ssh.state != eidolon_transport::session::State::Ready
+                                    {
+                                        Status::NotReady
+                                    } else if app
+                                        .as_ref()
+                                        .is_some_and(|a| a.session() == *session && a.closed())
+                                    {
+                                        Status::Stale
+                                    } else if pending_app.is_some()
+                                        || helper.is_some()
+                                        || dependencies.is_some()
+                                        || compositor.is_some()
+                                        || !prior
+                                    {
+                                        Status::Busy
+                                    } else {
+                                        pending_app = Some((*session, nonce.clone(), *mode));
+                                        state.snapshot.app = Some(crate::session::Report {
+                                            state: "queued",
+                                            session: Some(*session),
+                                            nonce: nonce.clone(),
+                                            mode: Some(*mode),
+                                            ..Default::default()
+                                        });
+                                        Status::Accepted
+                                    }
+                                }
                                 Command::RemoteCleanupProbe {
                                     session,
                                     nonce,
@@ -293,12 +422,16 @@ impl Runtime {
                                     if let Some(paths) =
                                         config.paths.as_ref().filter(|_| cfg!(debug_assertions))
                                     {
-                                        io.cleanup_probe(
-                                            *session,
-                                            std::path::Path::new(&paths.files_dir),
-                                            nonce,
-                                            *scenario,
-                                        )
+                                        if app_busy {
+                                            Status::Busy
+                                        } else {
+                                            io.cleanup_probe(
+                                                *session,
+                                                std::path::Path::new(&paths.files_dir),
+                                                nonce,
+                                                *scenario,
+                                            )
+                                        }
                                     } else {
                                         Status::NotReady
                                     }
@@ -311,7 +444,10 @@ impl Runtime {
                                 } => {
                                     #[cfg(any(test, feature = "debug-fixtures"))]
                                     {
-                                        if compositor.is_some() || dependencies.is_some() {
+                                        if compositor.is_some()
+                                            || dependencies.is_some()
+                                            || app_busy
+                                        {
                                             Status::Busy
                                         } else if cfg!(debug_assertions) {
                                             let scenario = *scenario;
@@ -345,7 +481,7 @@ impl Runtime {
                                 Command::NativeDepsProbe {
                                     nonce, request_id, ..
                                 } => {
-                                    if dependencies.is_some() || compositor.is_some() {
+                                    if dependencies.is_some() || compositor.is_some() || app_busy {
                                         Status::Busy
                                     } else if let Some(paths) =
                                         config.paths.clone().filter(|_| cfg!(debug_assertions))
@@ -378,11 +514,15 @@ impl Runtime {
                                     if let Some(paths) =
                                         config.paths.as_ref().filter(|_| cfg!(debug_assertions))
                                     {
-                                        io.forward_probe(
-                                            *session,
-                                            std::path::Path::new(&paths.files_dir),
-                                            nonce,
-                                        )
+                                        if app_busy {
+                                            Status::Busy
+                                        } else {
+                                            io.forward_probe(
+                                                *session,
+                                                std::path::Path::new(&paths.files_dir),
+                                                nonce,
+                                            )
+                                        }
                                     } else {
                                         Status::NotReady
                                     }
@@ -392,7 +532,9 @@ impl Runtime {
                                     request_id,
                                     ..
                                 } => {
-                                    if let Some(profile) = profiles.get(profile_id) {
+                                    if app_busy {
+                                        Status::Busy
+                                    } else if let Some(profile) = profiles.get(profile_id) {
                                         io.connect(profile.clone(), *request_id)
                                     } else {
                                         io.unknown_profile()
@@ -413,7 +555,7 @@ impl Runtime {
                                 | Command::HelperProbe {
                                     nonce, request_id, ..
                                 } => {
-                                    if helper.is_some() {
+                                    if helper.is_some() || app_busy {
                                         Status::Busy
                                     } else if let Some(paths) =
                                         config.paths.clone().filter(|_| cfg!(debug_assertions))
@@ -560,6 +702,14 @@ impl Runtime {
                 io.request_stop();
                 while !io.is_finished() {
                     thread::park_timeout(Duration::from_millis(5));
+                }
+                if let Some(current) = app.as_mut() {
+                    while !current.closed() {
+                        current.tick(true, true);
+                        state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.app =
+                            Some(current.snapshot());
+                        thread::park_timeout(Duration::from_millis(5));
+                    }
                 }
                 while !gl.is_finished() {
                     // snapshot/Stopはこの待機に参加しない。未回収ownerのruntimeは再利用しない。

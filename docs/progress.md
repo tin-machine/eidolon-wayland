@@ -16,8 +16,10 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | T01 | done | APK専用Ed25519・Keystore AES-GCM・pin・公開情報pairing。Build21の実機保護検査、pairing冪等性、debug/release検査成功 |
 | T02 | done | APK→Termux認証/exec、pin/別鍵/取消、stderr/timeout/exit、製品Host+GL同時動作とlive停止・復帰を検証 |
 | T03 | done | 1byte/64KiB/8MiB×4、hash/EOF/上限/取消、host反復・Quest3回、配布物hashと所有socket回収 |
-| T04 | in_progress | lease/heartbeat/所有process回収のhost基盤とQuest正常echoを確認。切断後auditのcontroller統合・故障系実機caseは残件 |
-| W01〜I07 | planned | Wayland・入力を依存順に実装 |
+| T04 | in_progress | 永続journal・再接続audit・lease・7故障caseのnative検査に成功。通常UI復帰は未確認 |
+| W01〜W04 | in_progress | native依存・SHM・window model・APK向けWaypipeを実機検証済み。通常UI/SDKとの共存確認を残す |
+| W05 | in_progress | SSH経由の100frame/hash・実foot受信・Stop回収がBuild49で成功。通常UI復帰は未確認 |
+| D01〜I07 | planned | owned画像のSDK描画と製品入力・複数windowを依存順に実装 |
 
 ## B01/B02: ビルドと実機の再現
 
@@ -437,5 +439,18 @@ window-state10・shm9・独立truncate・native依存10・forward・remote7故�
 
 host Rust65/Python28/launcher12、source cache改変拒否1、実APK Python34、debug/release build/lint/packageが成功。
 [再現手順・固定依存・hash・失敗と修正](waypipe-build-checks.md)へ集約した。
-W04は共通の通常UI復帰確認を残すためin_progress。Termux側のWaypipe/foot/fontconfigは未導入であり、
-次のW05で導入版を確認してSHMを実転送する。Phase5/I07のgoalは継続する。
+W04は共通の通常UI復帰確認を残すためin_progress。続くW05でTermux側toolsとSHM実転送を検証した。
+Phase5/I07 goalは継続中。
+
+## W05: SSH経由の100frame/hashと実foot受信（native検証済み）
+
+同じ認証済みSSH SessionIdへDisplay/Waypipe/remote ownerを束縛し、tools照合とforward成功ACKの後に
+固定producerとfootを順に起動した。Build49のrun `20261105T105352-410c6b8d`は100frameすべてのhashと
+release/callback一致、footの非一様な9buffer、WindowId1→2の非再利用、STALE session拒否に成功した。
+実行中Stopは受付0ms・全回収206ms、所有worker/group/socket/SHM/pool/pixelとpending journalは0。
+新native runtimeの生成・停止・destroyも成功した。通常UI/XRパネルへの表示は未受入である。
+
+footの512MiB仮想SHM最適化とcompositor予算、停止時に残る`w` socket、backend列挙の再入deadlockを
+調べて修正した。Build48の残件は原本記録と対象identityを照合して手動復旧し、自動回復の成功と区別した。
+[再現手順・実測値・hash・失敗と復旧](waypipe-forwarded-shm-checks.md)に記録を集約した。
+W05は共通UI確認を残してin_progress。次はD01/D02でowned snapshotをSDKパネルへ描く。

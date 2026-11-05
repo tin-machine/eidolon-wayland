@@ -170,6 +170,8 @@ fn sync(
 }
 
 pub fn run(stream: UnixStream, mode: Mode, stop: Arc<AtomicBool>) -> Result<Report, &'static str> {
+    // 転送protocolのrevision文字列と、APKへclient実装をlinkした証拠を分ける。
+    std::hint::black_box("eidolon-local-shm-fixture-code-v1");
     let deadline = Instant::now() + Duration::from_secs(20);
     let connection = Connection::from_socket(stream).map_err(|_| "CLIENT_CONNECT")?;
     let mut queue = connection.new_event_queue();

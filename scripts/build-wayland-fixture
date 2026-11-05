@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""Termux用の固定SHM producerをNDK API34でbuildし、source/ELF hashを保存する。"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+
+from native_build import ABI, API, NDK, ROOT, TARGET, identity
+
+argparse.ArgumentParser(description=__doc__).parse_args()
+os.umask(0o077)
+env = os.environ.copy()
+ndk = Path(env.get("ANDROID_HOME", "/opt/android-sdk")) / "ndk" / NDK
+env["ANDROID_NDK_HOME"] = str(ndk)
+env["CARGO_TARGET_DIR"] = str(ROOT / "target/remote-fixture" / NDK)
+subprocess.run(["cargo", "ndk", "-t", ABI, "--platform", str(API), "build", "--locked", "--release", "-p", "eidolon-shm-fixture", "--bin", "eidolon-shm-fixture"], cwd=ROOT, env=env, check=True)
+source = Path(env["CARGO_TARGET_DIR"]) / TARGET / "release/eidolon-shm-fixture"
+tool = ndk / "toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+elf = subprocess.check_output([tool, "-h", "-d", "-l", "--wide", source], text=True)
+needed = re.findall(r"\(NEEDED\).*\[([^]]+)\]", elf)
+if (not re.search(r"Machine:\s+AArch64", elf) or not re.search(r"Type:\s+DYN", elf)
+        or "/system/bin/linker64" not in elf or set(needed) - {"libc.so", "libm.so", "libdl.so"}):
+    raise SystemExit("fixtureがNDKのAArch64 PIE/公開依存ではありません")
+output = ROOT / "native/generated/remote-fixture"
+output.mkdir(parents=True, exist_ok=True)
+target = output / "eidolon-shm-fixture"
+shutil.copyfile(source, target)
+target.chmod(0o755)
+report = {"schema":1, "build_info":identity(1, "release"), "abi":ABI,"api":API,"ndk":NDK,
+          "fixture_revision":"eidolon-shm-client-v1","sha256":hashlib.sha256(target.read_bytes()).hexdigest(), "needed":needed}
+(output / "elf.txt").write_text(elf)
+(output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+print(json.dumps(report))

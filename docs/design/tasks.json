@@ -863,7 +863,7 @@
     {
       "id": "W05",
       "title": "WaypipeをSSHへ統合",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "T04",
         "W04"
