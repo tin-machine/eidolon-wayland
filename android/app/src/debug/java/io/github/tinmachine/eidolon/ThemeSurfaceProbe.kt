@@ -21,7 +21,9 @@ object ThemeSurfaceProbe {
     private class Registration(id:Int, val front:Boolean, val layer:Boolean):PanelRegistration(id) {
         override fun panelCreator(scene:Scene, spatialContext:SpatialContext):(Entity)->PanelSceneObject = {entity ->
             val options=PanelConfigOptions().apply {
-                layoutWidthInPx=256;layoutHeightInPx=256;width=1.5f;height=1.5f
+                layoutWidthInPx=256;layoutHeightInPx=256
+                width=if(registrationId==R.id.theme_probe_input) 1.2f else 1.5f
+                height=if(registrationId==R.id.theme_probe_input) .9f else 1.5f
                 alphaMode=if(front) AlphaMode.PREMULTIPLIED else AlphaMode.OPAQUE
                 enableTransparent=front;forceSceneTexture=true
                 layerConfig=if(layer) LayerConfig(alphaBlend=LayerAlphaBlend(
@@ -38,6 +40,7 @@ object ThemeSurfaceProbe {
     fun registrations():List<PanelRegistration> = listOf(
         Registration(R.id.theme_probe_back,false,false),
         Registration(R.id.theme_probe_mesh,true,false),
+        Registration(R.id.theme_probe_input,false,false),
         Registration(R.id.theme_probe_layer,true,true))
     fun start(nonce:String,scene:()->Scene,done:()->Unit) {
         retired.removeAll {it.finished()}
@@ -59,11 +62,20 @@ object ThemeSurfaceProbe {
         var mode=0;var stage="ready";var sample=JSONObject()
         var notBefore=0L
         var closing=false
+        var contentDeadline=0L;var candidateIndex=0
+        val candidates=JSONArray()
         var pendingFailure:Exception?=null
         val deadline=SystemClock.elapsedRealtime()+45000
         fun start() {NativeSessionHost.publishCheck(result);ui.post(this)}
         fun ready(entity:Entity,obj:PanelSceneObject) {if(!closing && entity.id in listOfNotNull(front?.id,back?.id)) objects[entity.id]=obj}
-        private fun hit(x:Float):Long? = scene().lineSegmentIntersect(Vector3(x,1.4f,0.2f),Vector3(x,1.4f,2.5f))?.entity?.id
+        // 既存RayCaseと同じく、既知の交点を保った斜めsegmentを使う。
+        // SDK 0.15の垂直segmentがnullになる実測はray-coordinate-checks.mdに記録済み。
+        private fun intersect(x:Float,y:Float=1.4f):HitInfo? {
+            val from=Vector3(x+.13f,y+.11f,.2f)
+            val factor=(2.5f-.2f)/(1.4f-.2f)
+            return scene().lineSegmentIntersect(from,Vector3(from.x+(x-from.x)*factor,from.y+(y-from.y)*factor,2.5f))
+        }
+        private fun hit(x:Float):Long? = intersect(x)?.entity?.id
         private fun clearEntities() {
             val owned=listOfNotNull(front,back,input)
             front=null;back=null;input=null;objects.clear()
@@ -89,19 +101,29 @@ object ThemeSurfaceProbe {
                         stage="create"
                     }
                     "create" -> {
+                        // 操作UIはx=-1.45、診断quadはx=0。右側へ置き両方との重なりを避ける。
                         val id=if(mode==0) R.id.theme_probe_mesh else R.id.theme_probe_layer
-                        back=Entity.create(listOf(Panel(R.id.theme_probe_back),Transform(Pose(Vector3(-2.5f,1.4f,1.6f))),Hittable(MeshCollision.LineTest)))
-                        front=Entity.create(listOf(Panel(id),Transform(Pose(Vector3(-2.5f,1.4f,1.4f))),Hittable(MeshCollision.LineTest)))
+                        back=Entity.create(listOf(Panel(R.id.theme_probe_back),Transform(Pose(Vector3(1.2f,1.4f,1.6f))),Hittable(MeshCollision.LineTest)))
+                        front=Entity.create(listOf(Panel(id),Transform(Pose(Vector3(1.2f,1.4f,1.4f))),Hittable(MeshCollision.LineTest)))
                         stage="surfaces"
                     }
                     "surfaces" -> {
                         val b=objects[checkNotNull(back).id];val f=objects[checkNotNull(front).id]
                         if(b!=null && f!=null && b.surface.isValid && f.surface.isValid) {
                             val shape=checkNotNull(f.panelShapeConfig)
-                            check(shape.alphaMode==AlphaMode.PREMULTIPLIED && shape.forceSceneTexture)
                             sample=JSONObject().put("mode",if(mode==0) "mesh" else "layer")
                                 .put("front",checkNotNull(front).id.toString()).put("back",checkNotNull(back).id.toString())
                                 .put("alpha_mode",shape.alphaMode.name).put("scene_texture",f.texture!=null)
+                                .put("layer_enabled",shape.enableLayer).put("layer_blend_type",shape.layerBlendType.name)
+                            val blend=shape.layerConfig?.alphaBlend
+                            sample.put("layer_blend",blend?.let { JSONArray(listOf(it.sourceFactorColor.name,it.destinationFactorColor.name,
+                                it.sourceFactorAlpha.name,it.destinationFactorAlpha.name)) } ?: JSONObject.NULL)
+                            // SDK 0.15はlayerのALPHA_BLENDをhole-punch用mesh alphaへ正規化する。
+                            val alpha=if(mode==0) AlphaMode.PREMULTIPLIED else AlphaMode.TRANSLUCENT_HOLE_PUNCH
+                            check(shape.alphaMode==alpha && shape.forceSceneTexture && shape.enableLayer==(mode==1))
+                            check(shape.layerBlendType==PanelShapeLayerBlendType.ALPHA_BLEND)
+                            check(if(mode==0) blend==null else blend==LayerAlphaBlend(BlendFactor.ONE,BlendFactor.ONE_MINUS_SOURCE_ALPHA,
+                                BlendFactor.ONE,BlendFactor.ONE_MINUS_SOURCE_ALPHA))
                             painter=ThemeProbePainter(listOf(b.surface to false,f.surface to true)).also {it.start()}
                             stage="paint"
                         }
@@ -112,37 +134,76 @@ object ThemeSurfaceProbe {
                         stage="default_ray";notBefore=SystemClock.elapsedRealtime()+200
                     }
                     "default_ray" -> if(visible && SystemClock.elapsedRealtime()>=notBefore) {
-                        val center=hit(-2.5f);val margin=hit(-1.85f)
-                        check(center==checkNotNull(front).id)
-                        check(margin in listOf(checkNotNull(front).id,checkNotNull(back).id))
-                        sample.put("default_center_hit",center.toString()).put("default_margin_hit",margin.toString())
-                            .put("margin_blocks_back",margin==checkNotNull(front).id)
-                        checkNotNull(front).setComponent(Hittable(MeshCollision.NoCollision))
-                        stage="no_collision";notBefore=SystemClock.elapsedRealtime()+200
+                        val center=hit(1.2f);val margin=hit(1.85f)
+                        sample.put("default_center_hit",center?.toString() ?: JSONObject.NULL)
+                            .put("default_margin_hit",margin?.toString() ?: JSONObject.NULL)
+                        // Surfaceの準備とcollision geometryの準備は別。期限内で実交差を待つ。
+                        if(center==checkNotNull(front).id && margin in listOf(checkNotNull(front).id,checkNotNull(back).id)) {
+                            sample.put("margin_blocks_back",margin==checkNotNull(front).id)
+                            checkNotNull(front).setComponent(Hittable(MeshCollision.NoCollision))
+                            stage="no_collision";notBefore=SystemClock.elapsedRealtime()+200
+                        }
                     }
                     "no_collision" -> if(visible && SystemClock.elapsedRealtime()>=notBefore) {
-                        val center=hit(-2.5f);val margin=hit(-1.85f)
+                        val center=hit(1.2f);val margin=hit(1.85f)
                         if(center==checkNotNull(back).id && margin==checkNotNull(back).id) {
                             sample.put("no_collision_center_hit",center.toString()).put("no_collision_margin_hit",margin.toString())
-                            input=Entity.create(listOf(Mesh(android.net.Uri.parse(ThemeHitMesh.URI),MeshCollision.LineTest),Transform(Pose(Vector3(-2.5f,1.4f,1.4f)))))
-                            stage="content_input";notBefore=SystemClock.elapsedRealtime()+200
+                            input=Entity.create(listOf(Mesh(android.net.Uri.parse(ThemeHitMesh.URI),MeshCollision.LineTest),Transform(Pose(Vector3(1.2f,1.4f,1.4f)))))
+                            stage="content_visibility";notBefore=SystemClock.elapsedRealtime()+1000
                         }
                     }
+                    "content_visibility" -> if(visible && SystemClock.elapsedRealtime()>=notBefore) {
+                        sample.put("visible_only_content_hit",hit(1.2f)?.toString() ?: JSONObject.NULL)
+                        checkNotNull(input).setComponent(Hittable(ThemeHitMesh.COLLISION))
+                        sample.put("content_collision",ThemeHitMesh.COLLISION.name)
+                        stage="content_input";notBefore=SystemClock.elapsedRealtime()+200
+                        contentDeadline=SystemClock.elapsedRealtime()+2000
+                    }
                     "content_input" -> if(visible && SystemClock.elapsedRealtime()>=notBefore) {
-                        val center=hit(-2.5f);val margin=hit(-1.85f)
-                        val sampleHit=scene().lineSegmentIntersect(Vector3(-2.86f,1.535f,.2f),Vector3(-2.86f,1.535f,2.5f))
+                        val center=hit(1.2f);val margin=hit(1.85f)
+                        val sampleHit=intersect(.84f,1.535f)
+                        sample.put("expected_content_entity",checkNotNull(input).id.toString())
+                            .put("actual_content_center",center?.toString() ?: JSONObject.NULL)
+                            .put("actual_content_margin",margin?.toString() ?: JSONObject.NULL)
+                            .put("actual_content_sample",sampleHit?.entity?.id?.toString() ?: JSONObject.NULL)
                         if(center==checkNotNull(input).id && margin==checkNotNull(back).id && sampleHit?.entity?.id==checkNotNull(input).id) {
                             val uv=sampleHit.textureCoordinate
+                            sample.put("content_uv",JSONArray(listOf(uv.x,uv.y)))
+                                .put("content_hit_point",JSONArray(listOf(sampleHit.point.x,sampleHit.point.y,sampleHit.point.z)))
                             check(kotlin.math.abs(uv.x-.2f)<.005f && kotlin.math.abs(uv.y-.35f)<.005f)
                             sample.put("content_input",center.toString()).put("content_margin_hit",margin.toString())
-                                .put("content_uv",JSONArray(listOf(uv.x,uv.y)))
                             rows.put(sample);clearEntities();stage="removed";notBefore=SystemClock.elapsedRealtime()+200
+                        } else if(SystemClock.elapsedRealtime()>contentDeadline) {
+                            input?.destroy();input=null;candidateIndex=0
+                            sample.put("input_candidates",candidates)
+                            stage="candidate_create";notBefore=SystemClock.elapsedRealtime()+200
                         }
+                    }
+                    "candidate_create" -> if(visible && SystemClock.elapsedRealtime()>=notBefore) {
+                        check(candidateIndex<=ThemeInputCandidates.names.size) {"THEME_CONTENT_INPUT_UNRESOLVED"}
+                        val parts=if(candidateIndex<ThemeInputCandidates.names.size) listOf(
+                            Mesh(android.net.Uri.parse(ThemeInputCandidates.uri(ThemeInputCandidates.names[candidateIndex])),MeshCollision.LineTest_IgnoreVisible),
+                            Transform(Pose(Vector3(1.2f,1.4f,1.4f)))) else listOf(
+                            Panel(R.id.theme_probe_input),Transform(Pose(Vector3(1.2f,1.4f,1.4f))),Visible(false),Hittable(MeshCollision.LineTest_IgnoreVisible))
+                        input=Entity.create(parts);stage="candidate_sample";notBefore=SystemClock.elapsedRealtime()+700
+                    }
+                    "candidate_sample" -> if(visible && SystemClock.elapsedRealtime()>=notBefore) {
+                        val name=ThemeInputCandidates.names.getOrNull(candidateIndex) ?: "hidden_panel"
+                        val point=intersect(.84f,1.535f)
+                        val row=JSONObject().put("name",name).put("entity",checkNotNull(input).id.toString())
+                            .put("center",hit(1.2f)?.toString() ?: JSONObject.NULL)
+                            .put("margin",hit(1.85f)?.toString() ?: JSONObject.NULL)
+                            .put("sample",point?.entity?.id?.toString() ?: JSONObject.NULL)
+                            .put("mesh_bounds",ThemeInputCandidates.metadata[name] ?: JSONObject.NULL)
+                        point?.let {row.put("uv",JSONArray(listOf(it.textureCoordinate.x,it.textureCoordinate.y)))
+                            .put("point",JSONArray(listOf(it.point.x,it.point.y,it.point.z)))}
+                        candidates.put(row);input?.destroy();input=null;candidateIndex++
+                        stage="candidate_create";notBefore=SystemClock.elapsedRealtime()+200
                     }
                     "removed" -> if(SystemClock.elapsedRealtime()>=notBefore) {
                         val old=rows.getJSONObject(rows.length()-1)
                         val ids=setOf(old.getString("front"),old.getString("back"),old.getString("content_input"))
-                        if(hit(-2.5f)?.toString() !in ids && hit(-1.85f)?.toString() !in ids) {
+                        if(hit(1.2f)?.toString() !in ids && hit(1.85f)?.toString() !in ids) {
                             old.put("removed_from_raycast",true)
                             if(mode++==0) stage="create" else stage="complete"
                         }
@@ -153,7 +214,7 @@ object ThemeSurfaceProbe {
                         NativeSessionHost.publishCheck(result);active=null;done();return
                     }
                 }
-                result.put("stage",stage).put("cycles",rows)
+                result.put("stage",stage).put("cycles",rows).put("sample",sample)
                 NativeSessionHost.publishCheck(result);ui.postDelayed(this,32)
             } catch(failure:Exception) {
                 painter?.stop()

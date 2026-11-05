@@ -6,6 +6,7 @@ import com.meta.spatial.runtime.Scene
 
 /** releaseはADB診断のintentを実行しない。 */
 object BuildHooks {
+    fun registerMeshes(activity: com.meta.spatial.toolkit.AppSystemActivity) = Unit
     fun additionalPanels(): List<com.meta.spatial.toolkit.PanelRegistration> = emptyList()
     fun sceneClosing() = Unit
     fun holdPanelCreation(window: String): Boolean = false

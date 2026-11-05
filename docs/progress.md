@@ -3,14 +3,15 @@
 ゴールはPhase 5（I07）まで。2026-11-04のユーザー指定により、HMD視認と物理入力の受入れは最終段階にまとめる。実装・host検証・ADBによる自動試験を先に進める。手動検証を含むcheck全体は、手動部分が残る間`not_run`とし、自動部分の成功を別に記録する。後続実装は自動部分の成立を根拠に進め、taskの`done`判定は省略しない。
 
 各検証のsource commit・source digest・APK SHA256はartifactと下記のBuild別記録を基準とする。
-raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-phase5-implementation/`配下。公開する記録に端末識別子・室内画像・秘密鍵は含めない。
+raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-phase5-implementation/`と、テーマ導入後の`eidolon-theme-review/`配下。公開する記録に端末識別子・室内画像・秘密鍵は含めない。
+表のBuild99は通常SDK全ケースの検証基準。後続Buildの自動検査は末尾の履歴、ユーザー回答とFキー免除は[最終実機確認](phase5-manual-acceptance.md)を参照する。
 
 | Task | 状態 | 検証と残件 |
 | --- | --- | --- |
 | B01 | done | Rust 1.95.0固定、model/android workspace、ID/上限、決定的build info、JNI 0.22.4。Rust test 3件・fmt・clippy成功。JNIの実機確認はB02へ分離 |
-| B02 | in_progress | 最新Build99のRust/Kotlin/APK版・ELF検査と通常SDK稼働が成功。HMD視認は最終確認待ち |
+| B02 | in_progress | Build99のRust/Kotlin/APK版・ELF検査と通常SDK稼働が成功。Build99/100の二枚表示・可読性・passthroughをユーザー確認済み。最新候補のHMD確認は残件 |
 | B03 | done | runtime/JNI/診断と固定caseを実装。ホスト11件・Python10件・debug/release検査、Quest Build 8の10cyclesと停止後late panic・製品復帰に成功 |
-| C01 | done | 9c83853のGitHub Actionsでhost・Android・report全成功。Actions許可、context範囲、SDK manager PATHの切り分けを記録 |
+| C01 | done | acc284bのGitHub Actions run 42110160287でhost・Android・report全成功。Rust151件・launcher33件。Actions許可、context、依存lock等の切り分けを履歴へ記録 |
 | H01 | done | 製品runtimeの専用I/O workerからAPK内PIEを実行。host・Questで10echo/明示終了/回収、起動中stop、releaseへのfixture不在を確認 |
 | R01〜R03 | in_progress | Build99の通常SDK surface10回・pattern・surface-cycle20回が連続成功。HMD色/方向・物理Menu/sleepは最終確認待ち |
 | T01 | done | APK専用Ed25519・Keystore AES-GCM・pin・公開情報pairing。Build21の実機保護検査、pairing冪等性、debug/release検査成功 |
@@ -20,13 +21,13 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | W01〜W04 | done | native依存・SHM・window model・APK向けWaypipeを実機検証済み。Build62で通常SDKとの共存・UI復帰も成功 |
 | W05 | done | SSH経由の100frame/hash・実foot受信・Stop回収と通常SDK/UI復帰がBuild62で成功 |
 | D01 | done | owned画像→Smithay/Android EGLの実GPU readbackと、通常SDK上のfoot描画・UI復帰に成功 |
-| D02 | in_progress | Build99の実foot通常SDK描画・Surface再生成・停止後UI復帰が成功。HMD可読性と物理操作は最終確認待ち |
+| D02 | in_progress | Build99の実foot通常SDK描画・Surface再生成・停止後UI復帰が成功。HMD可読性をユーザー確認済み。最新候補での通常nvim起動と残る物理操作を確認する |
 | I01 | in_progress | Build99で実quad四隅/中央のUV・交点・固定ray入力と回収が成功。診断quadのUI重なりを解消。物理controller確認は残件 |
-| I02 | in_progress | Build99の通常SDK固定key/focus/解除、既存USJIS wire検査が成功。物理キー・記号・repeatとshell/tmux/Neovimは最終確認待ち |
-| I03 | in_progress | Build99の通常SDK pointer操作・focus・解除・UI復帰が成功。実controllerのclick/drag/scrollとOS Menuは最終確認待ち |
+| I02 | in_progress | 通常SDK/wire成功。Build100でUS配列の文字・記号・repeat・修飾キー・Tab・左右矢印・tmuxをユーザー確認済み。Fキーは免除。恒久修正後の通常nvimとMenu/sleepは残件。キーボード検証の一旦中断指定を維持 |
+| I03 | in_progress | Build99の通常SDK pointer操作・focus・解除・UI復帰が成功。実controllerで二枚をクリックして入力先が切り替わることは確認済み。drag/scroll・OS前面復帰・Menuは残件 |
 | I04 | in_progress | Build99の通常SDK logical resize・実画像・SDKメートル計測・拡大後入力が成功。設定隔離と入力後の描画待ちを追加。HMD操作は最終確認待ち |
-| I05 | in_progress | Build99でSDK二枚の片側喪失・他方入力/描画・新世代・第三window・表示切替/解除・close・実Activity再生成が連続成功。LCnt観測済み。HMD/物理は残件 |
-| I06 | in_progress | Build99で実SDK pose/寸法・背景API・USJIS・実Activity再生成・保存復元・製品設定不変が成功。旧Scene寿命と再接続auditを修正。背景の光学確認/grabは残件 |
+| I05 | in_progress | Build99でSDK二枚の片側喪失・他方入力/描画・新世代・第三window・表示切替/解除・close・実Activity再生成が連続成功。HMD二枚の可読性と入力先切替も確認済み。最新候補の残るHMD操作を確認する |
+| I06 | in_progress | Build99で実SDK pose/寸法・背景API・USJIS・実Activity再生成・保存復元・製品設定不変が成功。Build100で部屋の視認も確認済み。背景往復・grab・配置保存の物理確認は残件 |
 | I07 | in_progress | Build99の通常SDK共存・popup/限定UTF8 clipboard・通常UI復帰が成功。Coreの5秒FD制限とWaypipe中継の制限を区別。Phase 5共通の手動確認は残件 |
 
 ## B01/B02: ビルドと実機の再現
@@ -264,7 +265,6 @@ scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case ssh-product --timeou
 
 T01 commit0c6812cのCI run41882737833もhost/Android/report全成功を確認した。T02受入時点ではT03のStreamLocal echoとT04のremote leaseは未実装で、SSH成功だけでforward/Waypipe成功には数えていない。T02確定commit c26ab47のCI run41892112868も全成功。
 
-
 ## T03: StreamLocal echo（2026-11-05）
 
 APK内のUnix listener→remoteのexclusive prepare→StreamLocal成功応答→固定echoの順で実行する。forward callbackはsession/path完全一致と最大8channelのpermit予約だけを行い、local connect（2秒）とaccept/copyは所有taskへ渡す。任意のserver起点session/TCP/agent/X11/direct socketは拒否する。方向ごと32KiBのcopyは片側EOF後も反対側をdrainし、取消後に新taskがjoin対象から漏れないよう、受付と停止を短いgateで直列化する。正常終了ではforward取消→転送task join→owned local/remote socketとdirectory回収を確認する。
@@ -285,7 +285,6 @@ Quest checksは20261105T042357-9b42d75d、042404-63924aa3、042411-09cf4a45（fo
 
 Build27はc26ab47d1718a6bd82c10e505b4db55d5d8dc29cのdirty build、source digest `04de595764bd2e3d4b5e810019ebafec8656929c03263bd8175f62b30173d8d7`、APK SHA256 `c59da58df796a7fb3ac8e1efb27604d91557a4992d850954b43b6a9f0f306ac4`。artifactはbuilds/20261105T042220-1938466、上記checks、forward-window-repro1.log、host-forward-final27.log、python-forward27.log、launcher-host1.log、release27.log、release-package27.json。失敗した初期fixtureとcompile/設定のlogも保存している。
 
-
 ```bash
 # hostの専用fixtureにOpenSSH serverが必要（既存sshdの設定変更は不要）
 sudo apt-get install openssh-server
@@ -298,7 +297,6 @@ scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case forward --timeout 18
 
 接続先は製品内loopback8022固定。上記serialはADBの対象指定だけで、製品のSSH宛先には渡さない。SSH認証鍵・保存済みprofileと既存Termux processを維持して検査した。Phase5全体とT04のlease受入はまだ完了していない。
 
-
 ## T04: lease owner・永続回収記録（UI受入待ち、2026-11-05）
 
 prepareを長寿命ownerに変更した。prepared JSON lineの後、stdinからnonce付きの固定heartbeat/start/stopだけを受け、子を新process groupで起動する。10秒heartbeat/60秒失効、EOF/StopでTERM→3秒後KILL→wait。PIDを保存recordから拾ってsignalせず、保有Popen handleと、そのleaderをWNOWAITでreap前に保持したgroupだけを対象にする。stdout/stderr各64KiB tailを保持し、超過後もEOFまで排出する。診断は件数・exit・固定echoのJSONだけで、任意の子出力本文を公開しない。
@@ -310,7 +308,6 @@ Rust側はscript SHA256/UID/nonce/pathとline上限を検査し、channelのEOF/
 Build28は新owner経由で従来の6channel echoに成功。Quest上でもBionic/PythonのWNOWAIT・process group・pipe回収が成立し、launcherのfinished/EOF/exit0と所有子のidentityを照合できた。受入scriptもsummary booleanだけでなく、childのstarttime一致・UID・EOF・pipe終了・cleanup_pending=falseを必須に補強した。自動echo/SSH/credential/surface-cycle20/runtime10/helper10の回帰、host Rust42件・launcher Python11件、実APK Python23件、debug/release assemble/lint/静的検査が成功した。
 
 Build28はa3b58b8e2ac28eb5228b3dc217ab82b809ecf0e4のdirty build、source digest `c7e0e222e7083de2bc4273f4fafa528ff38692730481e85b42085a8755dbd6ff`、APK SHA256 `ef09a983d83d4df2559ddc873cbdaf7a8d9dd949fd52775b5b9fc7262b061d3a`。artifactはbuilds/20261105T045211-1956275、forward28.log/forward28-ack.log、launcher-t04-host5.log、python-lease28.log、release28.log、release-package28.jsonなど。
-
 
 後日のauditが過去directoryを削除できないようcleanupを保守的に変更し、未確認資源のjournalを追加した。専用0700 directoryの0600 JSONへ、最大8件のnonce/session/UID/接続identityのhash/子のprocess identityをatomic保存する。exec前にpendingを保存し、回収ackまたは新接続のreadonly receipt照合後だけ消す。runtime再生成でも残件を読み込み、回収未確認なら新しいremote起動を許可しない。SessionIdの採番も永続化し、新runtimeで過去のIDを再利用しない。
 
@@ -428,7 +425,6 @@ Rust借用のcompile失敗、positioner Dispatch未登録、独自cache時のrol
 [再現手順・run/hash・試行錯誤](wayland-window-state-checks.md)へまとめた。
 W03は通常UI復帰とSDKパネルへの接続が未受入のためin_progressを維持する。
 次はW04のAPK向けWaypipe build/起動へ進む。Phase5/I07全体のgoalは継続する。
-
 
 ## W04: APK向けWaypipeの固定build・起動停止（native検証済み）
 
@@ -584,7 +580,6 @@ PC55件・launcher20件を実行した。PCの実APKを要する6件はこのthe
 GLES/SDK/通常UIへの接続とQuest上のリング表示はまだ未実装・未確認。
 後続のTH00〜TH05は[追加設計と残件](design/theme-animation.md)に記録する。Phase 5全体の完了判定は変更しない。
 
-
 ## TH00/TH01/TH02: hostの装飾合成・時計・reload worker
 
 2026-11-06。`native/render`へ任意角度のpremultiplied装飾を追加。背景/app/前景の3passで
@@ -598,7 +593,6 @@ Render ownerのwindow別時計はSurface寿命と分離し、二枚の静止app�
 Build102のdebug assemble/lint/APK検査成功。host全suiteはRust130件、PC55件（APKが必要な7件は別実行）、
 launcher20件。Build102を使ったPC62件は全成功し、テーマlicense改変の拒否を含む。
 実GPUは15+21点のreadback成功。QuestはWi-Fi ADB接続不可で未配備、release/実機受入れはこの結果に含めない。
-
 
 ## TH00: SDK Surface/ray部分検証の準備
 
@@ -625,7 +619,6 @@ Quest再接続時、Termuxとservice supervisorが停止しておりSSH接続で
 既存Termux Activityと`service-daemon start`で復旧し、設定/host keyは変更していない。
 同UID proc読み取りとtmux/footclient機能を確認した。既存launcherのNeovim直接exec修正も、
 専用PTYで起動・終了成功、headless成功、LD_PRELOAD保持を確認した。実foot内の通常起動・物理キー受入れとは区別する。
-
 
 ## Build105/106: テーマの取り込み・保存・SDK接続（2026-11-06）
 
@@ -691,3 +684,116 @@ releaseの権限検査を加え、元の失敗とcleanup失敗を両方保存す
 Guardian/永続設定は変更していない。SDK透過・ray・HMD受入れは未判定を維持する。
 Build111のdebug/release assemble・lint・APK検査、ZIP JUnit2件、実APK PC66件は成功。
 releaseにWAKE_LOCK権限がないことも確認した。端末との再接続後に配備・性能比較・SDK検査を再開する。
+
+## Build111の実機比較成功とnative検査の休止条件
+
+継続時に同一端末の応答が復帰し、Build111を導入した。`theme-windows`は七段階/73秒、四条件各6秒、
+観測停止/再開、合成adapter失敗から同じsessionの二窓へ復旧、Stop193msと資源回収までhost判定も成功。
+CPU wake lockの獲得・終了時保持・解放も確認した。静止条件は再描画0回、回転中もapp contentは不変で装飾uploadは増えなかった。
+約42回/秒、draw+swapのp95上限4msというnative結果を[測定表](design/theme-animation.md#観測の停止とnative性能比較)へ保存した。
+通常SDK/HMDの表示頻度や性能保証とは区別する。
+
+続く`theme-runtime`はreducedまでの四段階を採取後、ADB読出しと後処理がtimeoutし、未受入れ。
+元のerrorとcleanup-errorが別々に保存される修正は機能した。Build112ではnative instrumentation全体を
+最大5分のCPU wake lockで保護し、finallyで解放する。通常Activity/SDK・実sleep/復帰へは適用しない。
+装着を模擬する単発prox_closeと対のprox_farもtimeoutしたため、当初は受理と復元を未観測と記録した。
+接続復帰後のBuild112試験でprox_farのACKとGET_PROPERTY前後一致を確認し、復元済みになった。
+Guardianや永続propertyは変更していない。
+
+### Build112: native検査のCPU休止対策とSDK実交差の切り分け
+
+debug/release build・lint・package・ZIP JUnit2件、実APK指定PC66件が成功し、Questへ配備した。
+`theme-runtime`の7段階、不正reload時の保持、無効化、import/設定復元、Stopと資源回収が成功。
+CPU wake lockの獲得・終了時保持・finally解放も確認した。
+
+SDK `theme-surface`初回は新nonceが記録されずtimeoutした。明示的なActivity起動後は実際の
+Ready/visible/FOCUSEDに到達し、producerのRGBA/GL資源回収は成功したが、中央rayのfront判定で失敗した。
+通常起動の再試行でも再現したため、非表示待ちと区別する。
+既存の[ray校正記録](ray-coordinate-checks.md)には垂直segmentがnullになり、同じ交点を通る斜めsegmentが成功する実測がある。
+Build113のprobeはこの方式を採用し、collision準備を期限内で待ち、実hitを失敗ログにも残す。
+contentのUVに加えてworld交点もPCで照合する。中央の検証や座標の許容幅は省略しない。
+
+### Build113〜114: probe配置の重なりとSDK Mesh URI
+
+斜めsegmentだけでは不十分で、Build113は中央がback、余白が別の操作UIへ当たった。
+操作UI中心x=-1.45m/幅1.2mとprobe右余白x=-1.85mが重なっていた。
+Build114でprobeを右側へ移すと、中央/透明余白ともfrontに当たり、NoCollision後は両方ともbackへ到達した。
+元の中央がbackだった内部理由は断定しない。余白を透明clearするだけでは入力を透過しないことが実測できた。
+
+続くcontent入力mesh生成は`MeshManager.kt`の`Scheme not implemented yet`でクラッシュした。
+実SDK 0.15.0 AARのMeshManagerは登録済みcreatorを`mesh` schemeで解決する。
+独自の`eidolon://`ではその分岐へ入らないため、製品とprobe共通のURIを
+`mesh://eidolon-theme-content-hit`へ修正した。Build115で実機再検証する。
+Build114までのdebug/release・lint・package、実APK PC66件は成功していたため、コンパイル成功とは区別して記録する。
+クラッシュ前の`running` snapshotを成功とせず、後から採取したPID限定logcatと照合した。
+
+### Build115〜117: 非描画の入力形状を実SDKで比較
+
+Build115でschemeによるクラッシュは解消したが、content入力meshへの交差は成立しなかった。
+Build116でLineTest_IgnoreVisibleへ変更しても、中央と中央以外の既知点がbackへ当たった。
+可視性だけで解決したとは扱わず、Build117のdebug経路で形状を比較した。
+
+| 入力候補 | 実機での結果 |
+| --- | --- |
+| 厚み0の自作mesh、depth test ALWAYS | 中央・既知点ともbackへ到達 |
+| 厚み1mmの自作二面mesh | 入力Entityへ到達するが交点のzが期待から1mmずれる |
+| SDK標準box、厚み1mm | 中央・既知点が入力Entityへ到達、余白はback。UVとworld交点が既存許容幅内で一致 |
+| SDK標準panel、非表示・IgnoreVisible | 入力Entityへ到達するがUVが期待値とずれる |
+
+比較probeの総合結果は、製品baselineが成立していないため失敗のまま保存した。
+Build118ではSDK標準boxを採用し、color/depth書込みを両方無効にして非描画の入力面とする。
+SDK内部のBVH原因は断定せず、平面と厚みありの実測差を採用根拠にする。
+probe全体のmesh/layer回帰と、通常SDKで装飾付き二枚を検査する`theme-sdk`を追加した。
+このケースは隔離した設定内でテーマを有効にし、resize、実ray/key、片側喪失、表示切替、close、
+実Activity再生成、設定復元を行う。終了時は通常の配置設定とテーマ保存fileが不変であることも照合する。
+
+## SDKの入力面と表示面の実機修正（Build118〜120）
+
+Build118でSDK標準の薄いboxによるcontent中心・UV・world交点・余白の背後到達・削除後の非交差が成功した。
+layer比較はSDKの内部正規化を検査側が考慮しておらず失敗。SDK 0.15.0のALPHA_BLEND layerは
+表示meshをTRANSLUCENT_HOLE_PUNCHへ変更するため、mesh/layer別にalphaとblend factorを照合した。
+Build119の`theme-surface`は両方式で成功した。SDK合成後の透明な見え方やHMD確認は含めない。
+
+通常SDKの`theme-sdk`では一枚のpose/resize/key入力が通る一方、二枚目の物理サイズ・pose ackが成立せず停止した。
+失敗直前のsnapshot保存を追加し、実際のFOCUSED状態で二枚とも描画中と確認した。
+AARのPanelとHittableはともに`R.id.mesh_hittable`属性を使うため、Hittable(NoCollision)の後に
+既定Panelを追加するとLineTestで上書きする。Build120では`Panel(id, NoCollision)`で生成し、
+adapterの実属性も検査する。非表示への移行時は入力面をNoCollisionへ戻してからSurface解放を待つ。
+
+PCの空き容量不足でBuild119のrelease APKコピーと検査前のAPK取得が失敗した。
+同じSHA256のAPKコピー27個をhardlinkで共有し、約2.3GBを回収。試行ログ・APKの内容・参照pathは保持した。
+共有した成果物をin-placeで書き換えない。復旧後のrelease package検査は成功した。
+
+Build120の通常SDK回帰は5段階＋二窓10段階すべて成功した。一枚のresize/pose/key、二枚での入力切替、
+片側Surface喪失中の他方の入力継続、復旧と旧世代拒否、三枚目の表示切替とShift解放、close、
+実Activity再生成、再接続とテーマ/配置復元、検査前の製品設定への復帰を確認した。
+PC67件、debug/releaseのbuild・lint・package、JUnit2件が成功。
+最初の起動では新しいruntime snapshotが得られず、保存済み旧版のReadyを合格とせずtimeoutした。
+同APKの次の起動で実Ready/FOCUSEDを確認し成功した。HMD光学・物理入力の合格とは分ける。
+
+## 通常SDKの四条件比較を含む回帰（Build122）
+
+Build121では装飾なし・静止・回転・回転＋計測を各6秒、通常SDK上で測定できたが、後段の合成clickが
+入力ticket公開前に送られる可能性と、旧Entity上の合成hoverの残存を検査が考慮していなかった。
+Build122で同runtime/input epochのticketを待ち、測定前に専用sourceを解除・回収した。
+`theme-surface`のmesh/layer両方と、四条件比較を含む`theme-sdk`の5＋10段階が合格した。
+
+回転時は二枚とも約49.48 draw/秒、p95上限は2〜3ms。app画像と固定素材のupload回数は各区間で不変。
+装飾なし/静止時の追加drawは0。通常SDKを含むprocess CPUは約1.14→1.32 core、RSSは約333→348MiBで、
+検査処理の負荷を含む一回の比較である。draw+swap wall timeをHMDのrefresh rateや遅延として報告しない。
+詳しい値と再現CLIは[テーマ設計](design/theme-animation.md)に記録した。
+
+Build122のdebug/release build・lint・package検査、JUnit2件、実APK指定PC68件が成功。
+物理操作とHMDの見え方は最後の受入れとして残し、Phase 5/TH05を自動完了にしない。
+
+## 装飾なしの静止panel回帰も完了（Build123）
+
+Build122の装飾なし検査は、最新画像と実geometryを適用済みでも累積presentが2回で止まり、旧検査の3回待ちで失敗した。
+静止中の追加drawを止める製品動作と矛盾するため、plainの準備判定を「最新contentのpresentが1回以上」へ修正した。
+回転themeの複数frame条件は維持する。第三windowを閉じた後の残ったwindowも、実際のSDK ray/keyを送って
+focus・キー到達・画像更新を検証し、入力のない静止panelへ無意味な再描画を要求しない。
+
+Build123では`theme-surface`両mode、四条件性能比較を含む`theme-sdk`、装飾なし`two-windows`がすべて合格。
+後二つはそれぞれ5＋10段階、製品設定hash不変、通常UI復帰まで確認した。
+debug/release assemble・lint・package、JUnit2件、実APK PC68件も成功。APK123をQuestへ導入済み。
+一時装着通知は最後にprox_farで戻し、永続設定・Guardianは変更していない。

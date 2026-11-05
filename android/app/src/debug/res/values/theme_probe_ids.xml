@@ -1,4 +1,5 @@
 <resources>
+    <item name="theme_probe_input" type="id" />
     <item name="theme_probe_back" type="id" />
     <item name="theme_probe_mesh" type="id" />
     <item name="theme_probe_layer" type="id" />

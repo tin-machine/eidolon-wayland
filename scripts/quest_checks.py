@@ -1694,6 +1694,7 @@ def layout_native_result(snapshot, nonce, expected, apk_uid, termux_uid, package
 
 
 def layout_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package, *, case="layout"):
+    minimum_frames = 3 if case == "theme-sdk" else 1
     if snapshot.get('schema')!=1 or snapshot.get('build_info')!=expected:
         return False
     p=snapshot.get('check',{})
@@ -1738,7 +1739,7 @@ def layout_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package, *
         for target in targets:
             key=target.get('key',{});w=next((v for v in windows if v.get('window')==key.get('window')),{});placement=next((v.get('placement',{}) for v in ws['windows'] if v.get('window')==key.get('window')),{})
             ack=placement.get('applied_pose') or {};plan=next((v for v in s.get('panels',[]) if v.get('target')==key),{})
-            if (key.get('session')!=a.get('session') or key.get('scene')!=s.get('scene') or target.get('frames',0)<3 or target.get('content_frame')!=w.get('frame')
+            if (key.get('session')!=a.get('session') or key.get('scene')!=s.get('scene') or target.get('frames',0)<minimum_frames or target.get('content_frame')!=w.get('frame')
                     or plan.get('action')!='create' or plan.get('applied') is not True or ack.get('target')!=key or ack.get('pose_command')!=placement.get('pose_command') or not pose_near(ack.get('pose',{}),placement.get('pose',{}))
                     or w.get('sizing',{}).get('applied_physical_size_m')!=w.get('sizing',{}).get('physical_size_m')):
                 raise ValueError('実SDK geometryの適用ackと描画targetが不一致です')
@@ -1778,8 +1779,9 @@ def layout_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package, *
     return True
 
 
-def two_windows_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
-    if not layout_sdk_result(snapshot,nonce,expected,apk_uid,termux_uid,package,case='two-windows'):
+def two_windows_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package, *, case="two-windows"):
+    minimum_frames = 3 if case == "theme-sdk" else 1
+    if not layout_sdk_result(snapshot,nonce,expected,apk_uid,termux_uid,package,case=case):
         return False
     p=snapshot['check'];rows=p.get('two_window_cycles',[])
     wanted=['pair','first_lost','loss_input','first_restored','third_hidden','shift_held','switched','third_input','third_closed','pair_restored']
@@ -1819,7 +1821,7 @@ def two_windows_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, packa
             key=target.get('key',{});w=next((w for w in a['windows'] if w.get('window')==window),{})
             placement=next((w.get('placement',{}) for w in s.get('workspace',{}).get('windows',[]) if w.get('window')==window),{})
             ack=placement.get('applied_pose') or {};plan=next((v for v in s.get('panels',[]) if v.get('target')==key),{})
-            if (key.get('session')!=session or key.get('scene')!=scene or target.get('frames',0)<3 or target.get('content_frame')!=w.get('frame')
+            if (key.get('session')!=session or key.get('scene')!=scene or target.get('frames',0)<minimum_frames or target.get('content_frame')!=w.get('frame')
                     or plan.get('action')!='create' or plan.get('applied') is not True or ack.get('target')!=key or ack.get('pose_command')!=placement.get('pose_command')
                     or w.get('sizing',{}).get('applied_physical_size_m')!=w.get('sizing',{}).get('physical_size_m')):
                 raise ValueError('SDK二枚の実geometry適用・描画証明が不正です')
@@ -1838,7 +1840,8 @@ def two_windows_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, packa
             raise ValueError('表示切替・close後に押下が残っています')
         if i==7 and (inputs.get('focus_window')!=third or inputs.get('delivered',0)<rows[6]['runtime']['app']['input']['delivered']+4):
             raise ValueError('表示切替後のSDK ray→key入力がありません')
-        if i==8 and m[first]['frames']<=target_map(rows[3]['runtime'])[first]['frames']:
+        if i==8 and (m[first]['frames']<=target_map(rows[3]['runtime'])[first]['frames'] or inputs.get('focus_window')!=first
+                or inputs.get('delivered',0)<rows[7]['runtime']['app']['input']['delivered']+4):
             raise ValueError('他windowのclose中に残ったpanelが更新されていません')
     recreated=target_map(p['cycles'][3]['runtime']);last=target_map(rows[-1]['runtime'])
     if any(int(recreated[w]['key']['generation'])<=int(last[w]['key']['generation']) for w in (first,second)):

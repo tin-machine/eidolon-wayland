@@ -97,6 +97,7 @@ class SpatialPanelAdapter {
     }
     fun initialize(activity: AppSystemActivity) {
         activity.registerMeshCreator(ThemeHitMesh.URI) { _: Entity -> ThemeHitMesh.create() }
+        BuildHooks.registerMeshes(activity)
         objects = activity.systemManager.findSystem<SceneObjectSystem>()
     }
 
@@ -174,7 +175,9 @@ class SpatialPanelAdapter {
         .put("background_api", backgroundApi?.let { JSONObject(it.toString()) })
         .put("decoration_entities", visuals.size)
         .put("targets", JSONArray(bindings.values.map { JSONObject().put("entity",it.entity.id.toString()).put("target",JSONObject(it.key.toString())).put("role",it.role)
-            .put("decoration",it.decoration).put("visual_entity",it.visual?.id?.toString()) }))
+            .put("decoration",it.decoration).put("visual_entity",it.visual?.id?.toString())
+            .put("visual_collision",if(!it.sdkDisposed) it.visual?.getComponent<Panel>()?.hittable?.name else null)
+            .put("input_collision",if(!it.sdkDisposed && it.decoration!=null) it.entity.getComponent<Hittable>().hittable.name else null) }))
         .put("trace", JSONArray(trace.toList()))
 
     private fun event(name: String, entity: Long = 0, tid: Int = Process.myTid()) {
@@ -194,7 +197,7 @@ class SpatialPanelAdapter {
             val position = if (plan == null) Vector3(0f, 1.4f, 1.6f) else Vector3(plan.optInt("slot",0)*1.3f, 1.4f, 1.5f)
             val decoration = plan?.optJSONObject("decoration")
             val entity = if (decoration == null) Entity.create(listOf(Panel(R.id.native_panel), Transform(Pose(position))))
-                else Entity.create(listOf(Mesh(android.net.Uri.parse(ThemeHitMesh.URI), MeshCollision.LineTest), Transform(Pose(position))))
+                else Entity.create(listOf(Mesh(android.net.Uri.parse(ThemeHitMesh.URI), ThemeHitMesh.COLLISION), Transform(Pose(position))))
             if(plan!=null) entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
             val current = if (plan == null) Binding(entity, handle, key()) else
                 Binding(entity, handle, JSONObject(plan.getJSONObject("target").toString()), "windows", plan.getString("command_seq"), decoration=decoration)
@@ -209,7 +212,8 @@ class SpatialPanelAdapter {
                     Scale(Vector3((cw/w).toFloat(),(ch/h).toFloat(),1f)), Hittable(MeshCollision.NoCollision)))
                 current.visual = visual
                 visuals[visual.id] = VisualConfig(cw,ch,scene)
-                visual.setComponent(Panel(R.id.decoration_panel))
+                // PanelとHittableはmesh_hittable属性を共有する。後着Panelの既定値で上書きしない。
+                visual.setComponent(Panel(R.id.decoration_panel, MeshCollision.NoCollision))
                 val epoch=scene
                 val system = checkNotNull(objects)
                 (system.getSceneObject(entity) ?: system.replaceOrReuseSceneObjectFuture(entity)).whenComplete { obj, failure -> ui.post {
@@ -342,6 +346,8 @@ class SpatialPanelAdapter {
                     if (current.role == "windows" && !current.hidden) {
                         cancelGrab(current);current.entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
                         current.entity.setComponent(Visible(false)); current.hidden = true
+                        // IgnoreVisibleの入力面も、native Surface解放待ちに入る前に無効化する。
+                        current.entity.setComponent(Hittable(MeshCollision.NoCollision))
                         current.visual?.setComponent(Visible(false))
                         NativeSessionHost.resetInput()
                         event("window_hidden", current.entity.id)

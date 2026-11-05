@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 性能比較中のCPU休止だけを防ぐ。releaseへは付与しない。 -->
+    <!-- native固定検査中のCPU休止を防ぐ。通常SDK/実sleep検査やreleaseへは付与しない。 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <instrumentation android:name=".NativeCheckInstrumentation"
         android:targetPackage="io.github.tinmachine.eidolon" android:functionalTest="true" />

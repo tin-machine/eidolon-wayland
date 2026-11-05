@@ -34,12 +34,12 @@ class NativeCheckInstrumentation : Instrumentation() {
         var code = Activity.RESULT_CANCELED
         var measurementLock: android.os.PowerManager.WakeLock? = null
         try {
-            if (name == "theme-windows") {
-                val power = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
-                measurementLock = power.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "eidolon:theme-measurement")
-                measurementLock.acquire(300000L)
-                proof.put("measurement_cpu_awake", measurementLock.isHeld)
-            }
+            // native caseは実sleepを試す経路ではない。CPU休止で期限とADB採取が
+            // 中断しないよう、全caseを最大5分だけ保護する。通常Activityには適用しない。
+            val power = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            measurementLock = power.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "eidolon:native-check")
+            measurementLock.acquire(300000L)
+            proof.put("measurement_cpu_awake", measurementLock.isHeld)
             check(NativeBridge.status.ready)
             val credentials = CredentialStore(context)
             val identity = credentials.ensureIdentity()

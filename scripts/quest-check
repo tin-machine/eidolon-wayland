@@ -14,11 +14,11 @@ import traceback
 import zipfile
 
 from native_build import ROOT, identity
-from theme_probe_checks import theme_surface_result, theme_runtime_result, theme_windows_result
+from theme_probe_checks import theme_surface_result, theme_runtime_result, theme_windows_result, theme_sdk_result
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
 from quest_checks import sdk_environment_result, popup_clipboard_result, compositor_layer_stats, two_windows_sdk_result, layout_sdk_result, layout_native_result, two_windows_result, resize_result, pointer_result, pointer_wire_result, keyboard_result, keyboard_wire_result, runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result, native_deps_result, shm_result, wayland_state_result, waypipe_result, forwarded_shm_result, render_result, foot_result, foot_sdk_result, ray_result
 
-CASES = ("theme-windows", "theme-runtime", "theme-surface", "resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup",
+CASES = ("theme-sdk", "theme-windows", "theme-runtime", "theme-surface", "resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup",
          "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm", "render", "foot", "ray", "keyboard",
          "pointer", "resize", "two-windows", "layout", "popup-clipboard", "stop", "reconnect", "power-lifecycle", "soak")
 parser = argparse.ArgumentParser(description=__doc__)
@@ -36,7 +36,7 @@ if args.case == "resize-native" and not args.instrumentation:
     parser.error("resize-nativeには--instrumentationを指定してください")
 if args.case == "render" and not args.instrumentation:
     parser.error("renderの通常UI検査は未実装です。--instrumentationを指定してください")
-if args.case not in {"theme-windows", "theme-runtime", "theme-surface", "popup-clipboard", "layout", "two-windows", "resize-native", "resize", "resize-wire", "pointer", "pointer-wire", "keyboard", "keyboard-wire", "ray", "foot", "render", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm"}:
+if args.case not in {"theme-sdk", "theme-windows", "theme-runtime", "theme-surface", "popup-clipboard", "layout", "two-windows", "resize-native", "resize", "resize-wire", "pointer", "pointer-wire", "keyboard", "keyboard-wire", "ray", "foot", "render", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm"}:
     parser.error("このcaseは未実装です")
 if not 1 <= args.timeout <= 7200:
     parser.error("timeoutは1〜7200秒です")
@@ -71,14 +71,18 @@ try:
         raise RuntimeError("導入済みAPKが現在のsourceと一致しません。build/install後に再実行してください")
     result.update(build_info=expected, apk_sha256=hashlib.sha256(apk.read_bytes()).hexdigest())
     uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", PACKAGE))
-    termux_uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux") if args.case in {"theme-windows", "layout", "two-windows", "resize-native", "resize", "pointer", "keyboard", "ssh", "ssh-product", "forward", "remote-cleanup", "forwarded-shm", "foot"} else None
+    termux_uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux") if args.case in {"theme-sdk", "theme-windows", "layout", "two-windows", "resize-native", "resize", "pointer", "keyboard", "ssh", "ssh-product", "forward", "remote-cleanup", "forwarded-shm", "foot"} else None
     logfile = (run / "app.log").open("w")
-    stream = device.start_log(uid, logfile, log_format="epoch" if args.case in {"layout","two-windows"} and not args.instrumentation else "threadtime")
+    stream = device.start_log(uid, logfile, log_format="epoch" if args.case in {"layout","two-windows","theme-sdk"} and not args.instrumentation else "threadtime")
     if args.instrumentation:
         instrument_log = (run / "instrumentation.log").open("w")
         instrument = subprocess.Popen(["adb", "-s", args.serial, "shell", "am", "instrument", "-w", "-r", "-e", "case", args.case, "-e", "nonce", nonce, PACKAGE + "/.NativeCheckInstrumentation"], stdout=instrument_log, stderr=subprocess.STDOUT)
     else:
-        (run / "launch.log").write_text(device.adb("shell", "am", "start", "-n", PACKAGE + "/.DebugCommandActivity", "--es", "case", args.case, "--es", "nonce", nonce))
+        # Questのimmersive appへNoDisplay Activityを挟むと起動要求が滞留することがある。
+        # SDK caseはMainActivityのdebug専用・固定case/nonce検査へ直接渡す。
+        sdk_cases = {"theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product"}
+        activity = ".MainActivity" if args.case in sdk_cases else ".DebugCommandActivity"
+        (run / "launch.log").write_text(device.adb("shell", "am", "start", "-W", "-n", PACKAGE + "/" + activity, "--es", "case", args.case, "--es", "nonce", nonce))
     deadline = time.monotonic() + args.timeout
     snapshot = None
     while time.monotonic() < deadline:
@@ -125,6 +129,8 @@ try:
             accepted = theme_windows_result(snapshot, nonce, expected, uid, termux_uid, json.loads((run / "native-package.json").read_text()))
         elif args.case == "theme-runtime":
             accepted = theme_runtime_result(snapshot, nonce, expected, uid)
+        elif args.case == "theme-sdk":
+            accepted = theme_sdk_result(snapshot, nonce, expected, uid, termux_uid, json.loads((run / "native-package.json").read_text()))
         elif args.case == "theme-surface":
             accepted = theme_surface_result(snapshot, nonce, expected)
         elif args.case == "ray":
@@ -188,7 +194,7 @@ try:
         result.update(scope="sdk-surface-subprobe", sdk_alpha_verified=False, hmd_verified=False)
     if args.case == "runtime":
         result["panic_converted"] = True
-    if args.case in {"layout","two-windows"} and not args.instrumentation:
+    if args.case in {"layout","two-windows","theme-sdk"} and not args.instrumentation:
         result["compositor_layers"]=compositor_layer_stats(snapshot["check"], (run / "app.log").read_text(), uid)
     exit_code = 0
 except Exception as error:

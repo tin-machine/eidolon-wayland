@@ -2,6 +2,65 @@
 import re
 
 
+def theme_sdk_result(snapshot, nonce, expected, uid, termux_uid, package):
+    """通常SDKの二枚・ray/key・resize・Activity再生成に装飾の実描画を加える。"""
+    from quest_checks import two_windows_sdk_result
+    if not two_windows_sdk_result(snapshot, nonce, expected, uid, termux_uid, package, case="theme-sdk"):
+        return False
+    proof = snapshot["check"]
+    theme_sdk_performance(proof.get("performance", []))
+    for row in proof["cycles"] + proof["two_window_cycles"]:
+        state = row["runtime"]
+        render, theme = state["render"], state.get("theme", {})
+        if (theme.get("selection") != "builtin" or theme.get("loading") is not False
+                or theme.get("error") is not None or theme.get("fallback_reason") is not None
+                or render.get("theme_id") != "cyan-orbit"
+                or not 0 < render.get("composition", {}).get("decoration_texture_bytes", 0) <= 32*1024*1024):
+            raise ValueError("SDK装飾の設定/実GPU資源が不正です")
+        windows = {w["window"]: w for w in state["app"]["windows"]}
+        adapter = row.get("adapter", {})
+        if (adapter.get("decoration_entities") != len(render["targets"])
+                or len(adapter.get("targets", [])) != len(render["targets"])
+                or any(t.get("visual_collision") != "NoCollision" or t.get("input_collision") != "LineTest_IgnoreVisible"
+                       or not t.get("visual_entity") for t in adapter["targets"])):
+            raise ValueError("SDK装飾の表示面/input面/回収が不一致です")
+        for target in render["targets"]:
+            logical = windows[target["key"]["window"]]["logical_size"]
+            size = max(1280, min(2048, max(logical["width"], logical["height"]+32)))
+            plan = next((p for p in state["panels"] if p.get("target") == target["key"]), {})
+            layout = plan.get("decoration") or {}
+            timing = target.get("frame_timing", {})
+            if (layout.get("content") != logical or layout.get("canvas") != dict(width=size, height=size)
+                    or layout.get("content_origin") != [(size-logical["width"])//2, (size-logical["height"])//2]
+                    or target.get("content_size") != logical or target.get("width") != size or target.get("height") != size
+                    or target.get("decoration_frames", 0) < 3 or plan.get("error") is not None
+                    or timing.get("samples") != target["frames"]
+                    or sum(timing.get("histogram_ms", [])) != timing.get("samples")):
+                raise ValueError("SDK装飾のcontent/canvas/実描画/世代が不一致です")
+    return True
+
+
+def theme_sdk_performance(rows):
+    reports = theme_performance(rows)
+    for row, report in zip(rows, reports):
+        before, after = row['before'], row['after']
+        for state in (before, after):
+            if (state.get('state') != 'Ready' or state.get('activity_visible') is not True
+                    or state.get('xr_state') != 'FOCUSED' or state.get('scene') != before.get('scene')
+                    or not re.fullmatch(r'[1-9][0-9]*', str(state.get('scene', '')))
+                    or state.get('app', {}).get('session') != before.get('app', {}).get('session')
+                    or state.get('render', {}).get('contexts') != 1):
+                raise ValueError('SDK性能区間の実可視性/scene/context/sessionが不一致です')
+        if any(type(row.get(k)) is not int or row[k] <= 0 for k in ('rss_before','rss_after')):
+            raise ValueError('SDK性能区間の実RSSがありません')
+        if any(t.get('content_changed') is not False for t in report['targets']):
+            raise ValueError('SDK性能比較区間でapp画像が変わっています')
+        if row['mode'] != 'off' and (after['render']['composition'].get('decoration_uploads') != before['render']['composition'].get('decoration_uploads')
+                or after['render']['composition'].get('uploads') != before['render']['composition'].get('uploads')):
+            raise ValueError('SDK性能区間で固定素材を再uploadしています')
+    return reports
+
+
 def theme_runtime_result(snapshot, nonce, expected, uid):
     from quest_checks import instrumentation_result
     if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
@@ -77,17 +136,24 @@ def theme_surface_result(snapshot, nonce, expected):
         front, back = row.get("front"), row.get("back")
         content = row.get("content_input")
         uv = row.get("content_uv")
+        point = row.get("content_hit_point")
         if (row.get("mode") != mode or not all(isinstance(x,str) and re.fullmatch(r"[1-9][0-9]*",x) for x in (front,back))
-                or front == back or row.get("alpha_mode") != "PREMULTIPLIED" or row.get("scene_texture") is not True
+                or front == back or row.get("alpha_mode") != ("PREMULTIPLIED" if mode == "mesh" else "TRANSLUCENT_HOLE_PUNCH")
+                or row.get("scene_texture") is not True or row.get("layer_enabled") is not (mode == "layer")
+                or row.get("layer_blend_type") != "ALPHA_BLEND"
+                or row.get("layer_blend") != (None if mode == "mesh" else ["ONE", "ONE_MINUS_SOURCE_ALPHA"]*2)
                 or row.get("default_center_hit") != front or row.get("default_margin_hit") not in (front,back)
                 or row.get("margin_blocks_back") is not (row.get("default_margin_hit") == front)
                 or row.get("no_collision_center_hit") != back or row.get("no_collision_margin_hit") != back
                 or row.get("removed_from_raycast") is not True):
             raise ValueError("theme probe SDK config/raycast invalid")
         if (not isinstance(content, str) or not re.fullmatch(r"[1-9][0-9]*", content)
+                or row.get("content_collision") != "LineTest_IgnoreVisible"
                 or content in (front, back) or row.get("content_margin_hit") != back
                 or not isinstance(uv, list) or len(uv) != 2
-                or any(type(v) not in (int, float) or not abs(v-w) < .005 for v,w in zip(uv,(.2,.35)))):
+                or any(type(v) not in (int, float) or not abs(v-w) < .005 for v,w in zip(uv,(.2,.35)))
+                or not isinstance(point, list) or len(point) != 3
+                or any(type(v) not in (int, float) or not abs(v-w) < .0001 for v,w in zip(point,(0.84,1.535,1.4)))):
             raise ValueError("theme content-only input/margin/UV invalid")
         producer = row.get("producer", {})
         if (producer.get("result") != "pass" or producer.get("owned_egl_released") is not True
