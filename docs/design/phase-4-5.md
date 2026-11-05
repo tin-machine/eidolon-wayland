@@ -118,6 +118,6 @@ backgroundは`passthrough`/`virtual`の希望設定。Kotlinがsceneへ適用し
 
 popupは親と同じpanelで合成し、当面親rectangleでclipする。positioner制約、親子順、popup grabのserial/focus照合、popup_done、親destroy、入力targetを一貫させる。親外canvas拡張は独立した後続変更とし、clipした部分へ入力を送らない。
 
-clipboardは最初に**同じEidolon session内のWayland text/plain UTF-8**のみ。W02で導入したwl_data_device_manager v3の空selection/取消処理を、focus・serialを検査した実転送へ拡張する。受信1 MiB上限、5秒timeout、FDのdrain/close、所有client切断時のselection解除。Android system clipboard同期、画像、drag-and-dropは別機能にする。
+clipboardは最初に**同じEidolon session内のWayland text/plain UTF-8**のみ。W02で導入したwl_data_device_manager v3の空selection/取消処理を、focus・serialを検査した実転送へ拡張する。受信1 MiB上限、Coreが扱うFD転送の5秒timeout、FDのdrain/close、所有client切断時のselection解除。Waypipeの仲介bufferに渡った後の最終アプリの消費期限は保証しない。Android system clipboard同期、画像、drag-and-dropは別機能にする。
 
 二枚のtest clientでcopy/paste、owner消失、大量/遅延データ、キャンセルを試す。通常ログにclipboard本文を残さない。任意のGUI appの完全互換性をこの合格から主張しない。

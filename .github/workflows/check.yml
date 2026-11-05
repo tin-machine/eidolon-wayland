@@ -37,6 +37,8 @@ jobs:
           sudo apt-get install -y openssh-server ninja-build bison perl patch cmake pkg-config
       - name: host suiteを検証
         run: scripts/check-host --suite all
+      - name: Waypipe経由clipboardの上限と仲介bufferの範囲を確認
+        run: scripts/check-waypipe-clipboard
 
   android:
     runs-on: ubuntu-24.04

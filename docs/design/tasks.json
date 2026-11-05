@@ -267,6 +267,12 @@
       "command": "scripts/quest-check --serial \"$EIDOLON_QUEST_SERIAL\" --case soak --timeout 18000",
       "available_after": "L04",
       "success": "phase-6.mdのcase行とtask specを満たす。自動結果と必要な手動/HMD結果の両方を記録する"
+    },
+    "host-waypipe-clipboard": {
+      "kind": "host",
+      "command": "scripts/check-waypipe-clipboard",
+      "available_after": "I07",
+      "success": "実Waypipe越しの容量/UTF8/FD回収を確認し、仲介bufferと最終アプリ消費の期限を区別する"
     }
   },
   "tasks": [
@@ -1194,7 +1200,9 @@
       "files": [
         "native/core/src/compositor/protocol.rs",
         "native/model/src/input.rs",
-        "native/fixtures/shm-client/"
+        "native/fixtures/shm-client/",
+        "scripts/check-waypipe-clipboard",
+        "scripts/fixtures/clipboard-waypipe/"
       ],
       "steps": [
         "parent treeとpopup/grab/serialを整合させる",
@@ -1206,7 +1214,8 @@
         "host-model",
         "host-core",
         "android",
-        "quest-popup-clipboard"
+        "quest-popup-clipboard",
+        "host-waypipe-clipboard"
       ],
       "done_when": [
         "popupが他window入力を奪わない",

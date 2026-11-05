@@ -10,7 +10,7 @@
 focusが変わると古いserial/offerを失効させる。
 
 転送先FDへ直接中継せず、所有clientから一旦最大1 MiBを読み、EOFとUTF-8を検査してから渡す。
-転送全体の期限は5秒。同時転送4本、offer64個、入力serial64個、MIMEは既知の3表記だけに制限する。
+Coreが扱うFD転送全体の期限は5秒。同時転送4本、offer64個、入力serial64個、MIMEは既知の3表記だけに制限する。
 転送先はnonblockingにできるpipe/socketに限定する。
 各transferは一tick最大64 KiBを処理し、protocol ownerで待機read/writeを行わない。
 超過時は転送先を閉じ、残りは期限まで上限付きで読み捨てる。
@@ -91,3 +91,25 @@ Rust108件、Clippy/fmt、launcher17件、debug/release・lint・package、実AP
 [core protocolのdata-device仕様](https://wayland.freedesktop.org/docs/html/apa.html)を参照した。
 Smithay標準のclient間転送へそのまま委譲するとMIME・byte数・期限をここで検査できないため、
 source/manager基盤を使いつつofferとFD中継を製品側で管理している。
+
+## Waypipeの仲介bufferで変わる範囲
+
+同じ固定clientを、実Waypipe 0.11.3のhost client/server間へ通す検査を追加した。
+SSHを使わない専用Unix socketでの中継であり、Quest→Termux間の本文転送や任意GUI appの互換性は別の範囲。
+
+```bash
+scripts/build-native-deps --target host
+scripts/build-waypipe --target host
+scripts/check-waypipe-clipboard
+```
+
+最初の試行では、元fixtureの`stalled_receiver=false`を見落とすと、終了codeだけで全面成功と誤認できた。
+reportを照合すると、直接接続はcompleted 2・timeout 2、中継時はcompleted 3・timeout 1だった。
+受信アプリの読出しを止めても、仲介側がCoreのFDからデータを受け取るとCoreでは完了する。
+したがって、Coreの5秒期限を最終アプリが消費する期限として扱えない。
+
+再現用scriptはこの差を`observed_intermediary_buffering`として報告し、
+`core_bounds_verified=true`と`end_to_end_timeout_verified=false`を別に出力する。
+通常コピー/1 MiB境界/超過/不正UTF-8/送信停止/古offer/所有者消失/取消を照合し、
+client/object/surface/window/画像/pool/active transferを回収してから成功codeを返す。
+子processのstderrと実binary SHA256、全reportは設定済み作業rootの専用runへ保存する。

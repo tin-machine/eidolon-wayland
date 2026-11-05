@@ -184,7 +184,8 @@ popupは親panelへ合成し、親rectangleでclipする。hit testも同じclip
 
 clipboardは同じWayland Display/session内のUTF-8 textに限定する。
 selection設定にはkeyboard focusと入力serial、receiveにはfocus/selection世代を要求する。
-1 MiB、転送全体5秒、同時4本、offer64個を上限とし、EOFとUTF-8検査後に受信側pipe/socketへ渡す。
+1 MiB、Coreが扱うFD転送全体5秒、同時4本、offer64個を上限とし、EOFとUTF-8検査後に受信側pipe/socketへ渡す。
+Waypipe等の仲介がbufferへ受け取った後、最終アプリが消費するまでの時間はこの期限では保証しない。
 途中の失敗ではFDを閉じ、上限超過の送信側は期限まで上限付きでdrainする。
 本文をdiagnostics/logへ含めず、所有client消失・取消・focus変更・session終了で転送を回収する。
 
