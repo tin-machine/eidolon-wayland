@@ -99,6 +99,30 @@ cssparser 0.38.0はParserが1 lifetimeでParserInputを使わないAPIだった�
   3pass合成・Nearest境界・popup clip・前景を21点読み戻した。再描画時の再uploadなし、無効化時の復元と解放も確認。
   hostbackendのthread testと、この実GPU検証は別であり、いずれもQuest SDK/HMD確認の代替ではない。
 
+## SDK Surfaceの部分検証
+
+Build103にdebug専用`theme-surface` caseを追加した。`PanelSceneObject`の公開constructorを使い、
+`forceSceneTexture=true`、`PREMULTIPLIED`、meshまたは明示的なpremultiplied blendのlayerを生成する。
+独立EGL threadで固定色だけを描き、producer側のRGBAと資源回収を検査する。
+`Scene.lineSegmentIntersect`で中央/透明余白のhitを記録し、`Hittable(NoCollision)`後に背後のpanelへ到達するかを調べる。
+NoCollisionはpanel全体を非入力にするため、これだけでcontent入力を解決したとは扱わない。
+
+```bash
+python3 -B scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case theme-surface
+```
+
+このcaseのpassはproducer/SDK設定/rayの**部分検証**。`sdk_alpha_verified=false`、`hmd_verified=false`を必須にし、
+SDK合成後の透明な見え方を確認済みとしない。部屋画像・端末本文は収集しない。
+`SceneTexture.readAverageColor`はRGBの読み取りなのでalphaの合格判定には使わない。
+[Meta SceneTexture API](https://developers.meta.com/vr/reference/spatial-sdk/v0.13.0/com_meta_spatial_runtime_scenetexture/)、
+[Meta AlphaMode API](https://developers.meta.com/vr/reference/spatial-sdk/v0.13.1/com_meta_spatial_runtime_alphamode/)と実0.15.0 AARの署名/実装を照合した。
+`setSceneMesh`のStringはentity名でありcollision設定ではないことも、
+[Meta SceneObject API](https://developers.meta.com/vr/reference/spatial-sdk/v0.15.0/com_meta_spatial_runtime_sceneobject/)で確認した。
+
+Build103のdebug/release assemble・lint・APK境界検査、PC64件は成功。Questは未実行。
+最初のKotlin compileでnullableな`panelShapeConfig`の扱いを修正し、再compileした。
+試行錯誤の詳細と正確なAPK/source hashはprivate作業ログに保存している。
+
 ## 次の統合と受入れ
 
 1. SDK透過Surfaceと二枚の余白rayをprobeし、入力/物理寸法/Surface世代の契約を製品へ接続する。

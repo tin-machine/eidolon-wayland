@@ -20,7 +20,7 @@ class DebugCommandActivity : Activity() {
         super.onCreate(savedInstanceState)
         val name = intent.getStringExtra("case")
         val nonce = intent.getStringExtra("nonce")
-        if (name == null || name !in setOf("two-windows", "popup-clipboard", "layout", "resize", "resize-wire", "pointer", "pointer-wire", "keyboard", "keyboard-wire", "ray", "foot", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm") || nonce == null || !nonce.matches(Regex("[0-9a-f]{32}")) ||
+        if (name == null || name !in setOf("theme-surface", "two-windows", "popup-clipboard", "layout", "resize", "resize-wire", "pointer", "pointer-wire", "keyboard", "keyboard-wire", "ray", "foot", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm") || nonce == null || !nonce.matches(Regex("[0-9a-f]{32}")) ||
             intent.extras?.keySet()?.any { it != "case" && it != "nonce" } == true || !running.compareAndSet(false, true)) {
             Log.w(TAG, "check_rejected")
             finish()
@@ -28,7 +28,7 @@ class DebugCommandActivity : Activity() {
         }
         val application = applicationContext
         NativeSessionHost.initialize(application)
-        if (name in setOf("two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product")) {
+        if (name in setOf("theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product")) {
             application.startActivity(Intent(application, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 .putExtra("case", name).putExtra("nonce", nonce))

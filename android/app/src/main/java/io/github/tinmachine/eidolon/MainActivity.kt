@@ -177,7 +177,7 @@ class MainActivity : AppSystemActivity() {
                 )
             },
         ),
-    ) + nativePanels.registration
+    ) + nativePanels.registration + BuildHooks.additionalPanels()
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -216,6 +216,7 @@ class MainActivity : AppSystemActivity() {
     }
 
     override fun onSpatialShutdown() {
+        BuildHooks.sceneClosing()
         nativePanels.close()
         panel?.destroy()
         panel = null

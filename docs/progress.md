@@ -598,3 +598,11 @@ Render ownerのwindow別時計はSurface寿命と分離し、二枚の静止app�
 Build102のdebug assemble/lint/APK検査成功。host全suiteはRust130件、PC55件（APKが必要な7件は別実行）、
 launcher20件。Build102を使ったPC62件は全成功し、テーマlicense改変の拒否を含む。
 実GPUは15+21点のreadback成功。QuestはWi-Fi ADB接続不可で未配備、release/実機受入れはこの結果に含めない。
+
+
+## TH00: SDK Surface/ray部分検証の準備
+
+Build103へdebug専用`theme-surface`を追加。mesh/layerの固定色producer readback、
+実SDK ray、NoCollision後の背後到達を独立して記録する。SDK alpha/HMD未確認のflagを維持する。
+debug/release assemble・lint・APK検査とPC64件が成功し、releaseのDEXにprobe classが無いことを検査した。
+Questでのcase実行は接続待ち。これは透過の実機合格やTH02完了ではない。
