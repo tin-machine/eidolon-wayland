@@ -31,10 +31,13 @@ class SpatialPanelAdapter {
     private var listeners = 0
     private var callbacks = 0
     private var lastPublish = 0L
+    private var attempting: JSONObject? = null
     private val trace = ArrayDeque<JSONObject>()
     private data class Binding(val entity: Entity, val handle: Long, var key: JSONObject,
+        val role: String = "diagnostic", val commandSeq: String? = null, var destroyCommand: JSONObject? = null,
         var surface: Surface? = null, var sceneObject: PanelSceneObject? = null, var listener: Long? = null,
         var attached: Boolean = false, var retire: Boolean = false, var destroy: Boolean = false,
+        var hidden: Boolean = false,
         var detachSent: Boolean = false, var replacement: Surface? = null)
 
     val registration = VideoSurfacePanelRegistration(R.id.native_panel,
@@ -96,11 +99,14 @@ class SpatialPanelAdapter {
     }
     private fun key(): JSONObject = JSONObject().put("session", "1").put("window", "1").put("scene", scene.toString())
         .put("generation", generations.incrementAndGet().toString())
-    private fun create(handle: Long) {
+    private fun create(handle: Long, plan: JSONObject? = null) {
         creating = true
+        attempting = plan
         try {
-            val entity = Entity.create(listOf(Panel(R.id.native_panel), Transform(Pose(Vector3(-0.8f, 1.4f, 1.6f)))))
-            val current = Binding(entity, handle, key())
+            val position = if (plan == null) Vector3(-0.8f, 1.4f, 1.6f) else Vector3(0f, 1.4f, 1.5f)
+            val entity = Entity.create(listOf(Panel(R.id.native_panel), Transform(Pose(position))))
+            val current = if (plan == null) Binding(entity, handle, key()) else
+                Binding(entity, handle, JSONObject(plan.getJSONObject("target").toString()), "windows", plan.getString("command_seq"))
             binding = current; created++; event("entity_created", entity.id)
             pendingObject?.takeIf { it.first == entity.id }?.let { objectReady(it.first, it.second) }
             pendingSurface?.takeIf { it.first == entity.id }?.let { surfaceReady(it.first, it.second) }
@@ -118,6 +124,7 @@ class SpatialPanelAdapter {
         if (current.attached) {
             if (current.surface === surface) { event("surface_duplicate", entity); return }
             current.replacement = surface; current.retire = true
+            if (current.role == "windows") current.destroy = true
         } else {
             current.surface = surface
             val code = attach(current, surface)
@@ -125,8 +132,11 @@ class SpatialPanelAdapter {
             event("attach_$code", entity)
         }
     }
-    private fun attach(current: Binding, surface: Surface): Int = NativeBridge.nativeAttachSurface(current.handle,
-        1, 1, current.key.getString("scene").toLong(), current.key.getString("generation").toLong(), surface, 1024, 768)
+    private fun attach(current: Binding, surface: Surface): Int = if (current.role == "windows")
+        NativeBridge.nativeAttachWindowSurface(current.handle, current.key.getString("session").toLong(), current.key.getString("window").toLong(),
+            current.key.getString("scene").toLong(), current.key.getString("generation").toLong(), surface, 1024, 768)
+        else NativeBridge.nativeAttachSurface(current.handle, 1, 1, current.key.getString("scene").toLong(),
+            current.key.getString("generation").toLong(), surface, 1024, 768)
     private fun objectReady(entity: Long, obj: PanelSceneObject) {
         val current = binding
         if (current == null || current.entity.id != entity) {
@@ -145,23 +155,43 @@ class SpatialPanelAdapter {
         current.listener = null; current.sceneObject = null; current.surface = null; current.replacement = null
         current.entity.destroy(); destroyed++; event("entity_destroyed", current.entity.id)
         binding = null
+        current.destroyCommand?.let { NativeSessionHost.ackPanel(it, current.handle) }
     }
     private fun sameKey(a: JSONObject, b: JSONObject): Boolean = listOf("session", "window", "scene", "generation").all { a.optString(it) == b.optString(it) }
     private val poll = object : Runnable {
         override fun run() {
-            try { tick() } catch (failure: Exception) { event("adapter_failure_${failure.javaClass.simpleName}") }
+            try { tick() } catch (failure: Exception) {
+                event("adapter_failure_${failure.javaClass.simpleName}")
+                attempting?.let { NativeSessionHost.ackPanel(it, NativeSessionHost.currentHandle(), false) }
+            }
             if (!closed || binding != null) ui.postDelayed(this, 32)
         }
     }
     private fun tick() {
         val now = SystemClock.elapsedRealtime()
         if (now > pendingUntil) { pendingSurface = null; pendingObject = null }
+        val handle = NativeSessionHost.currentHandle()
+        val host = if (handle > 0) JSONObject(NativeBridge.nativeSnapshot(handle)).optJSONObject("runtime") else null
+        val plans = host?.optJSONArray("panels")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) } } ?: emptyList()
+        val windows = host?.optJSONObject("render")?.optString("mode") == "windows"
+        val desired = plans.firstOrNull { it.getString("action") == "create" && it.isNull("error") && it.getJSONObject("target").optString("scene") == scene.toString() }
         val current = binding
         if (current != null) {
+            val plan = plans.firstOrNull { sameKey(it.getJSONObject("target"), current.key) }
+            if (current.role == "diagnostic" && windows || current.handle != handle ||
+                current.role == "windows" && (plan == null || plan.getString("action") == "destroy" || !plan.isNull("error"))) {
+                current.retire = true; current.destroy = true
+            }
+            if (current.role == "windows" && plan?.optString("action") == "destroy") current.destroyCommand = plan
             val snapshot = JSONObject(NativeBridge.nativeSnapshot(current.handle))
             if (snapshot.getInt("code") == NativeBridge.STALE) { destroy(current) }
             else {
                 val render = snapshot.getJSONObject("runtime").getJSONObject("render")
+                if (current.role == "windows" && !current.retire && plan != null && !plan.getBoolean("applied")) {
+                    val targets = render.getJSONArray("targets")
+                    if ((0 until targets.length()).any { sameKey(targets.getJSONObject(it).getJSONObject("key"), current.key) && targets.getJSONObject(it).getLong("frames") > 0 })
+                        NativeSessionHost.ackPanel(plan, current.handle)
+                }
                 val detached = render.getJSONArray("detached")
                 val acknowledged = (0 until detached.length()).any { sameKey(detached.getJSONObject(it), current.key) }
                 if (current.attached && acknowledged) {
@@ -169,6 +199,11 @@ class SpatialPanelAdapter {
                     if (!current.retire) { current.retire = true; current.destroy = true }
                 }
                 if (current.retire) {
+                    if (current.role == "windows" && !current.hidden) {
+                        current.entity.setComponent(Visible(false)); current.hidden = true
+                        NativeSessionHost.resetInput()
+                        event("window_hidden", current.entity.id)
+                    }
                     if (current.attached && !current.detachSent) {
                         val code = NativeSessionHost.detachSurface(current.key, current.handle)
                         current.detachSent = code == NativeBridge.ACCEPTED
@@ -186,12 +221,16 @@ class SpatialPanelAdapter {
                 } else if (!current.attached && current.surface != null) surfaceReady(current.entity.id, current.surface!!)
             }
         }
-        if (!closed && binding == null && scene > 0) {
-            val handle = NativeSessionHost.currentHandle()
-            if (handle > 0) {
-                val state = JSONObject(NativeBridge.nativeSnapshot(handle)).optJSONObject("runtime")
-                if (state?.optString("state") == "Ready" && state.optString("scene") == scene.toString()) create(handle)
+        // 一度もEntityを作らなかった旧sceneのdestroyも、native参照が無ければackする。
+        if (binding == null && host != null) {
+            val targets = host.getJSONObject("render").getJSONArray("targets")
+            plans.filter { it.getString("action") == "destroy" && it.isNull("error") }.forEach { plan ->
+                if ((0 until targets.length()).none { sameKey(targets.getJSONObject(it).getJSONObject("key"), plan.getJSONObject("target")) })
+                    NativeSessionHost.ackPanel(plan, handle)
             }
+        }
+        if (!closed && binding == null && scene > 0) {
+            if (host?.optString("state") == "Ready" && host.optString("scene") == scene.toString() && (!windows || desired != null)) create(handle, if (windows) desired else null)
         }
         if (now - lastPublish >= 1000) { NativeSessionHost.publishAdapter(metrics()); lastPublish = now }
     }

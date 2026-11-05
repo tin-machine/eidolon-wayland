@@ -1,8 +1,11 @@
-# Native依存の固定build（W01実装中）
+# Native依存の固定build（W01）
 
 W01のnative実装はmainへ統合済み。製品Rust/Gradleへの組み込み、
 Smithayの最小feature検査、hostでのsocket/FD/memfd/mmap/keymap検査は成功。
-QuestのAPK UIDでも10cycle成功した。通常の製品UI復帰は未確認のため、W01はin_progressを維持する。
+QuestのAPK UIDでも10cycle成功した。Build62でSDKとの共存・10cycle・通常UI復帰も成功した。
+`20261105T130310-f959ebb8`、Stop受付1ms/全25ms。W01はdone。
+SDKとの共存で見つかったepoll FD番号再利用の監査誤認と修正は
+[D02の試行記録](foot-render-checks.md#試行記録)を参照する。
 SHM buffer/SIGBUS/一般Wayland clientは[W02の検証記録](wayland-shm-checks.md)で扱う。
 
 `native/deps.lock.json`がsource版・archive SHA256・license・Meson option・keymap hashの正本。

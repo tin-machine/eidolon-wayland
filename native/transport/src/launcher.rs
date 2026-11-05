@@ -13,7 +13,11 @@ const SCRIPT: &[u8] = include_bytes!("../../../scripts/termux/eidolon-session.py
 const LINE_BYTES: usize = 16384;
 
 pub fn command(mode: &str, nonce: &str) -> Result<String, &'static str> {
-    if !matches!(mode, "prepare" | "echo" | "pattern" | "foot" | "cleanup") || !valid_nonce(nonce) {
+    if !matches!(
+        mode,
+        "prepare" | "echo" | "pattern" | "foot" | "foot_fixture" | "cleanup"
+    ) || !valid_nonce(nonce)
+    {
         return Err("INVALID_ARGUMENT");
     }
     Ok(format!("'{PYTHON}' '{SCRIPT_PATH}' '{mode}' '{nonce}'"))
@@ -124,7 +128,7 @@ impl Tools {
                                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                         })
                 }
-                "foot" => {
+                "foot" | "foot_fixture" => {
                     self.fixture.is_none()
                         && self.foot.as_ref().is_some_and(|f| f.version == "1.28.0")
                 }
@@ -347,7 +351,7 @@ impl Launcher {
             || self.stopping.is_some()
             || self.report.tools.is_some()
             || self.expected_tools.is_some()
-            || !matches!(mode, "pattern" | "foot")
+            || !matches!(mode, "pattern" | "foot" | "foot_fixture")
         {
             return Err("NOT_READY");
         }
@@ -369,7 +373,7 @@ impl Launcher {
     pub async fn start_app(&mut self, mode: &str) -> Result<(), &'static str> {
         if self.report.phase != "prepared"
             || self.stopping.is_some()
-            || !matches!(mode, "pattern" | "foot")
+            || !matches!(mode, "pattern" | "foot" | "foot_fixture")
             || self.report.tools.as_ref().is_none_or(|t| t.mode != mode)
         {
             return Err("NOT_READY");

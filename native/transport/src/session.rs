@@ -325,7 +325,7 @@ impl Controller {
         nonce: &str,
         mode: AppMode,
     ) -> Status {
-        if mode == AppMode::Pattern && !cfg!(debug_assertions) {
+        if mode != AppMode::Foot && !cfg!(debug_assertions) {
             return Status::NotReady;
         }
         if !local_socket.is_absolute()

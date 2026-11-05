@@ -12,10 +12,11 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 struct Shared {
+    panels: crate::panels::Controller,
     credentials: eidolon_transport::credentials::CredentialSlot,
     // 最新のSDK可視性。遅れて処理する通常commandで描画pauseを巻き戻さない。
     render_visibility: [bool; 2],
@@ -87,6 +88,7 @@ impl Runtime {
         let render = Arc::new(eidolon_render::Controller::start()?);
         let gl = render.clone();
         let shared = Arc::new(Mutex::new(Shared {
+            panels: Default::default(),
             credentials: Default::default(),
             render_visibility: [false; 2],
             snapshot: Snapshot::default(),
@@ -118,7 +120,9 @@ impl Runtime {
                     eidolon_model::ids::SessionId,
                     String,
                     eidolon_model::commands::AppMode,
+                    bool,
                 )> = None;
+                let clock = Instant::now();
                 {
                     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                     if state.snapshot.state == RuntimeState::Starting
@@ -137,7 +141,7 @@ impl Runtime {
                         let render = gl.snapshot();
                         let ssh = io.snapshot();
                         if !stopping.load(Ordering::Acquire)
-                            && let Some((session, nonce, mode)) = pending_app.take()
+                            && let Some((session, nonce, mode, virtual_clock)) = pending_app.take()
                         {
                             let started = (|| {
                                 if ssh.session != Some(session)
@@ -148,6 +152,9 @@ impl Runtime {
                                 if let Some(current) = app.as_mut()
                                     && current.session() == session
                                 {
+                                    if current.virtual_clock() != virtual_clock {
+                                        return Err("NOT_READY");
+                                    }
                                     return current.select_app(&nonce, mode);
                                 }
                                 if app.as_ref().is_some_and(|a| !a.closed()) {
@@ -161,8 +168,11 @@ impl Runtime {
                                         .join("libwaypipe_bin.so"),
                                     &nonce,
                                     mode,
-                                    true,
+                                    virtual_clock,
                                 )?);
+                                if !virtual_clock {
+                                    gl.use_windows();
+                                }
                                 Ok(())
                             })();
                             if let Err(error) = started {
@@ -193,6 +203,7 @@ impl Runtime {
                                 current.forwarding(forward);
                             }
                             current.tick(close, remote_gone);
+                            current.render_tick(&gl, clock.elapsed());
                             let report = current.snapshot();
                             if !close && report.ready && !report.forward_sent {
                                 let code = io.start_app(
@@ -356,6 +367,37 @@ impl Runtime {
                         }
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                         state.credentials.expire();
+                        for key in render
+                            .targets
+                            .iter()
+                            .map(|target| &target.key)
+                            .chain(render.detached.iter())
+                        {
+                            state.panels.advance_past(key.generation.get());
+                        }
+                        let mapped: Vec<_> = state
+                            .snapshot
+                            .app
+                            .as_ref()
+                            .filter(|app| {
+                                app.callback_clock == "target-driven"
+                                    && app.error.is_none()
+                                    && app.state != "stopped"
+                            })
+                            .into_iter()
+                            .flat_map(|app| {
+                                app.windows
+                                    .iter()
+                                    .filter(|w| w.life == eidolon_model::window::WindowLife::Mapped)
+                                    .filter_map(|w| app.session.map(|session| (session, w.window)))
+                            })
+                            .collect();
+                        let scene = state.snapshot.scene;
+                        let may_create = state.snapshot.activity_visible;
+                        if let Err(code) = state.panels.reconcile(scene, &mapped, may_create) {
+                            state.fail(code);
+                        }
+                        state.snapshot.panels = state.panels.snapshot();
                         if resetting.swap(false, Ordering::AcqRel) {
                             state.snapshot.input_resets += 1;
                         }
@@ -370,6 +412,42 @@ impl Runtime {
                             let app_busy =
                                 pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
                             let code = match &command {
+                                Command::AdapterApplied {
+                                    command_seq,
+                                    target,
+                                    action,
+                                    ..
+                                }
+                                | Command::AdapterFailed {
+                                    command_seq,
+                                    target,
+                                    action,
+                                    ..
+                                } => {
+                                    let success =
+                                        matches!(&command, Command::AdapterApplied { .. });
+                                    let targets = gl.snapshot().targets;
+                                    let ready = match action {
+                                        eidolon_model::commands::PanelAction::Create => {
+                                            targets.iter().any(|t| t.key == *target && t.frames > 0)
+                                        }
+                                        eidolon_model::commands::PanelAction::Destroy => {
+                                            targets.iter().all(|t| t.key != *target)
+                                        }
+                                    };
+                                    if !state.panels.contains(*command_seq, *target, *action) {
+                                        Status::Stale
+                                    } else if success && !ready {
+                                        Status::NotReady
+                                    } else {
+                                        state.panels.acknowledge(
+                                            *command_seq,
+                                            *target,
+                                            *action,
+                                            success,
+                                        )
+                                    }
+                                }
                                 Command::RenderProbe {
                                     target,
                                     stage,
@@ -404,14 +482,29 @@ impl Runtime {
                                     nonce,
                                     mode,
                                     ..
+                                }
+                                | Command::StartApp {
+                                    session,
+                                    nonce,
+                                    mode,
+                                    ..
                                 } => {
+                                    let virtual_clock =
+                                        matches!(&command, Command::AppProbe { .. });
                                     let prior = ssh.app_forward.as_ref().is_none_or(|r| {
                                         matches!(r.state, "pass" | "stopped" | "fail")
                                     }) && ssh
                                         .forward_probe
                                         .as_ref()
                                         .is_none_or(|r| matches!(r.state, "pass" | "fail"));
-                                    if !cfg!(debug_assertions) || config.paths.is_none() {
+                                    if (virtual_clock && !cfg!(debug_assertions))
+                                        || config.paths.is_none()
+                                        || (!virtual_clock
+                                            && *mode != eidolon_model::commands::AppMode::Foot
+                                            && !(*mode
+                                                == eidolon_model::commands::AppMode::FootFixture
+                                                && cfg!(debug_assertions)))
+                                    {
                                         Status::NotReady
                                     } else if ssh.session != Some(*session) {
                                         Status::Stale
@@ -423,6 +516,11 @@ impl Runtime {
                                         .is_some_and(|a| a.session() == *session && a.closed())
                                     {
                                         Status::Stale
+                                    } else if app.as_ref().is_some_and(|a| {
+                                        a.session() == *session
+                                            && a.virtual_clock() != virtual_clock
+                                    }) {
+                                        Status::NotReady
                                     } else if pending_app.is_some()
                                         || helper.is_some()
                                         || dependencies.is_some()
@@ -431,12 +529,18 @@ impl Runtime {
                                     {
                                         Status::Busy
                                     } else {
-                                        pending_app = Some((*session, nonce.clone(), *mode));
+                                        pending_app =
+                                            Some((*session, nonce.clone(), *mode, virtual_clock));
                                         state.snapshot.app = Some(crate::session::Report {
                                             state: "queued",
                                             session: Some(*session),
                                             nonce: nonce.clone(),
                                             mode: Some(*mode),
+                                            callback_clock: if virtual_clock {
+                                                "virtual"
+                                            } else {
+                                                "target-driven"
+                                            },
                                             ..Default::default()
                                         });
                                         Status::Accepted
@@ -577,7 +681,15 @@ impl Runtime {
                                     }
                                     code
                                 }
-                                Command::SurfaceLost { target, .. } => gl.detach(*target),
+                                Command::SurfaceLost { target, .. } => {
+                                    let code = gl.detach(*target);
+                                    if code == Status::Accepted
+                                        && let Err(error) = state.panels.retire(*target)
+                                    {
+                                        state.fail(error);
+                                    }
+                                    code
+                                }
                                 Command::WaypipeProbe {
                                     nonce, request_id, ..
                                 }
@@ -758,6 +870,7 @@ impl Runtime {
                 state.snapshot.commands_cancelled += state.commands.len() as u64;
                 state.commands.clear();
                 state.snapshot.state = RuntimeState::Stopped;
+                state.snapshot.panels.clear();
                 state.credentials.clear();
                 state.terminal.push_back(Event::Stopped);
             })?;
@@ -891,6 +1004,35 @@ impl Runtime {
             return Status::Stale;
         }
         self.render.attach(key, window, width, height)
+    }
+    pub fn attach_window_surface(
+        &self,
+        key: eidolon_model::surface::TargetKey,
+        window: eidolon_render::PlatformWindow,
+        width: i32,
+        height: i32,
+    ) -> Status {
+        let state = self.lock();
+        if state.snapshot.state != RuntimeState::Ready || self.stop.load(Ordering::Acquire) {
+            return Status::NotReady;
+        }
+        if state.snapshot.scene != Some(key.scene) {
+            return Status::Stale;
+        }
+        let valid = state.snapshot.app.as_ref().is_some_and(|app| {
+            app.session == Some(key.session)
+                && app.callback_clock == "target-driven"
+                && app.ready
+                && app.error.is_none()
+                && app.windows.iter().any(|window| {
+                    window.window == key.window
+                        && window.life == eidolon_model::window::WindowLife::Mapped
+                })
+        });
+        if !valid || !state.panels.accepts(key) {
+            return Status::Stale;
+        }
+        self.render.attach_window(key, window, width, height)
     }
     pub fn provide_credential(
         &self,

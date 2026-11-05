@@ -2,9 +2,10 @@
 
 2026-11-05、Quest 3のAPK→localhost SSH→Termux Waypipe server→APK Waypipe client→
 製品compositorで、固定画像100frameと実footのbufferを受信した。
-検査は`scope=native-instrumentation`、`normal_ui_returned=false`。
-SDKパネルへの画像描画、通常UI復帰、Scene稼働時SDK signal handlerとの共存、
-HMDの可読性、物理入力は未受入である。W05は共通の通常UI確認を残してin_progressを維持する。
+最初の検査は`scope=native-instrumentation`、`normal_ui_returned=false`。
+Build62では`20261105T130318-aa8fb21f`でSDKとの共存・通常UI復帰も確認し、W05をdoneとした。
+途中で見つけた検査の完了待ち競合は修正し、PCの厳格な100frame判定を維持している。
+SDKパネルへの実foot描画は[D02](foot-render-checks.md)で扱い、HMDの可読性・物理入力は最終確認に残す。
 
 ## 所有者と起動順
 

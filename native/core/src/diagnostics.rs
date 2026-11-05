@@ -25,6 +25,7 @@ pub struct Snapshot {
     pub compositor: Option<serde_json::Value>,
     pub compositor_workers: usize,
     pub app: Option<crate::session::Report>,
+    pub panels: Vec<crate::panels::PanelCommand>,
     pub render: eidolon_render::Snapshot,
     pub transport: eidolon_transport::session::Snapshot,
 }
@@ -50,6 +51,7 @@ impl Default for Snapshot {
             compositor: None,
             compositor_workers: 0,
             app: None,
+            panels: vec![],
             render: Default::default(),
             transport: Default::default(),
         }

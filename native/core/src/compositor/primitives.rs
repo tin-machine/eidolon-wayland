@@ -143,21 +143,98 @@ impl Drop for Directory {
     }
 }
 
+enum AuditedFd {
+    File(i32, u64, u64),
+    Epoll,
+}
+struct EpollMarker {
+    fd: OwnedFd,
+    tag: u64,
+}
 #[derive(Default)]
-struct Audit(Vec<(i32, u64, u64)>);
+struct Audit {
+    entries: Vec<AuditedFd>,
+    markers: Vec<EpollMarker>,
+}
 impl Audit {
     fn record(&mut self, fd: &impl AsFd) -> Result<(), Error> {
         let raw = fd.as_fd().as_raw_fd();
         let meta = fs::metadata(format!("/proc/self/fd/{raw}")).map_err(|_| "IPC_FAILED")?;
-        self.0.push((raw, meta.dev(), meta.ino()));
+        if fs::read_link(format!("/proc/self/fd/{raw}")).map_err(|_| "IPC_FAILED")?
+            == Path::new("anon_inode:[eventpoll]")
+        {
+            // eventpollは異なるopenでもdev/inodeが一致する。永続する非readyの
+            // eventfdをwatchに入れ、番号再利用と本物のepoll/dup漏れを区別する。
+            // SAFETY: 引数は固定flag、返された新規fdだけを一度所有する。
+            let marker = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+            if marker < 0 {
+                return Err("IPC_FAILED");
+            }
+            // SAFETY: eventfdが返した新規fdで、他のownerへ渡していない。
+            let fd = unsafe { OwnedFd::from_raw_fd(marker) };
+            let tag = 0xe1d0_10fd_a0d1_7000_u64 ^ marker as u64;
+            let mut event = libc::epoll_event {
+                events: libc::EPOLLIN as u32,
+                u64: tag,
+            };
+            // SAFETY: 借用中のepollと所有eventfd、初期化済みepoll_eventを渡す。
+            if unsafe { libc::epoll_ctl(raw, libc::EPOLL_CTL_ADD, marker, &mut event) } != 0 {
+                return Err("IPC_FAILED");
+            }
+            self.markers.push(EpollMarker { fd, tag });
+            self.entries.push(AuditedFd::Epoll);
+        } else {
+            self.entries
+                .push(AuditedFd::File(raw, meta.dev(), meta.ino()));
+        }
         Ok(())
     }
     fn closed(&self) -> bool {
-        self.0.iter().all(|(raw, dev, ino)| {
-            fs::metadata(format!("/proc/self/fd/{raw}"))
-                .map(|m| (m.dev(), m.ino()) != (*dev, *ino))
-                .unwrap_or(true)
-        })
+        if !self.entries.iter().all(|entry| match entry {
+            AuditedFd::Epoll => true,
+            AuditedFd::File(raw, dev, ino) => match fs::metadata(format!("/proc/self/fd/{raw}")) {
+                Ok(meta) => (meta.dev(), meta.ino()) != (*dev, *ino),
+                Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+            },
+        }) {
+            return false;
+        }
+        if self.markers.is_empty() {
+            return true;
+        }
+        let Ok(files) = fs::read_dir("/proc/self/fdinfo") else {
+            return false;
+        };
+        // 元のraw番号に限定せず、dupされた同じepollも検出する。
+        for file in files {
+            let Ok(file) = file else {
+                return false;
+            };
+            let info = match fs::read_to_string(file.path()) {
+                Ok(info) => info,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return false,
+            };
+            for line in info.lines().filter(|line| line.starts_with("tfd:")) {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                let target = fields.get(1).and_then(|value| value.parse::<i32>().ok());
+                let tag = fields
+                    .windows(2)
+                    .find(|pair| pair[0] == "data:")
+                    .and_then(|pair| u64::from_str_radix(pair[1], 16).ok());
+                if target.is_none() || tag.is_none() {
+                    return false;
+                }
+                if self
+                    .markers
+                    .iter()
+                    .any(|marker| target == Some(marker.fd.as_raw_fd()) && tag == Some(marker.tag))
+                {
+                    return false;
+                }
+            }
+        }
+        true
     }
 }
 fn cancelled(stop: &AtomicBool) -> Result<(), Error> {
@@ -211,7 +288,7 @@ pub fn run(parent: &Path, nonce: &str, stop: &AtomicBool) -> Report {
         }
         operation
     })();
-    report.audited_fds = audit.0.len();
+    report.audited_fds = audit.entries.len();
     report.owned_fds_closed = audit.closed();
     report.error = result.err();
     if !report.owned_fds_closed {
@@ -450,6 +527,33 @@ fn keymap(layout: &'static str, text: &str) -> Result<KeymapReport, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn epoll_reuse_is_distinct_but_a_duplicated_owned_epoll_still_fails_audit() {
+        fn epoll() -> OwnedFd {
+            // SAFETY: 固定flag、新規fdを一度だけOwnedFdへ移す。
+            let raw = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+            assert!(raw >= 0);
+            // SAFETY: epoll_create1の新規fdである。
+            unsafe { OwnedFd::from_raw_fd(raw) }
+        }
+        let first = epoll();
+        let identity = fs::metadata(format!("/proc/self/fd/{}", first.as_raw_fd())).unwrap();
+        let mut audit = Audit::default();
+        audit.record(&first).unwrap();
+        assert!(!audit.closed());
+        let duplicate = first.as_fd().try_clone_to_owned().unwrap();
+        drop(first);
+        let replacement = epoll();
+        let other = fs::metadata(format!("/proc/self/fd/{}", replacement.as_raw_fd())).unwrap();
+        assert_eq!((identity.dev(), identity.ino()), (other.dev(), other.ino()));
+        assert!(!audit.closed(), "元のepollのdupを見逃してはいけない");
+        drop(duplicate);
+        assert!(
+            audit.closed(),
+            "他ownerのepollを元のfdの漏れと誤認してはいけない"
+        );
+        drop(replacement);
+    }
     #[test]
     fn product_dependencies_sync_fd_mapping_and_both_standalone_keymaps() {
         let nonce = format!("{:016x}", std::process::id());

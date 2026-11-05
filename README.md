@@ -2,7 +2,7 @@
 
 > Linuxに肉体を残し、その姿だけを異界へ投影する。
 
-**Status: XR/SSH基盤とWayland protocol・SHM・window modelをQuest APK内で検証済み（2026-11-05）。Waypipe経由のfoot受信まで成功し、owned画像の実GPU readbackも成功し、SDKパネル表示と入力は開発中。**
+**Status: XR/SSH基盤とWayland protocol・SHM・window modelをQuest APK内で検証済み（2026-11-05）。実footの通常SDKパネルへの描画・再生成・停止後UI復帰まで自動検証に成功。HMD視認と物理入力は未確認。**
 
 Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndroidアプリにWayland compositorを組み込み、**同じQuestのTermuxへlocalhost SSHで接続**し、**Waypipe**で転送した既存Waylandアプリを**Meta Spatial SDKの独立したXRパネル**として表示することを目指します。
 
@@ -18,7 +18,7 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 **本格実装前の小さな検証:** 独立debug APKでAPK UIDのhelper実行、Rust→SDK Surfaceの4色表示と再生成を実機確認しました。[検証・スリープ設定・ADB撮影と入力の記録](docs/native-preflight-20261104.md)に、手順、失敗、確認範囲を残しています。
 
-**次の到達点:** 検証済みのGL ownerへ実footのowned snapshotを渡し、SDKパネルへ表示します。その後、footと入力・複数windowへ進み、HMD確認を最終段階にまとめます。
+**次の到達点:** [foot描画検査](docs/foot-render-checks.md)を基に、ray/キーボード入力・focus・複数windowへ進み、HMD確認を最終段階にまとめます。
 
 **開発時の接続（2026-11-04実測）:** USBで初回デバッグ承認と端末照合を済ませ、USB-Cを給電器へ回した状態でWi-Fi経由のAPK導入・更新・起動・ログ・Android画像取得とTermux SSHに成功しました。ADBの切断・再接続後もSSHを復旧できました。USB経由のAPK導入、長時間の残量維持、sleep／Quest再起動後の自動復旧は未検証です。
 

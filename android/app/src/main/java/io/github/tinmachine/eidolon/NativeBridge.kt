@@ -18,6 +18,8 @@ object NativeBridge {
     @JvmStatic external fun nativeProvideCredential(handle: Long, session: Long, requestId: Long, privateKey: ByteArray): Int
     @JvmStatic external fun nativeAttachSurface(handle: Long, session: Long, window: Long, scene: Long, generation: Long,
         surface: android.view.Surface, widthPx: Int, heightPx: Int): Int
+    @JvmStatic external fun nativeAttachWindowSurface(handle: Long, session: Long, window: Long, scene: Long, generation: Long,
+        surface: android.view.Surface, widthPx: Int, heightPx: Int): Int
     @JvmStatic external fun nativePoll(handle: Long, maxEvents: Int): String
     @JvmStatic external fun nativeSnapshot(handle: Long): String
     @JvmStatic external fun nativeRequestStop(handle: Long): Int

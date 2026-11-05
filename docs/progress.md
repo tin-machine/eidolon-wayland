@@ -16,10 +16,11 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | T01 | done | APK専用Ed25519・Keystore AES-GCM・pin・公開情報pairing。Build21の実機保護検査、pairing冪等性、debug/release検査成功 |
 | T02 | done | APK→Termux認証/exec、pin/別鍵/取消、stderr/timeout/exit、製品Host+GL同時動作とlive停止・復帰を検証 |
 | T03 | done | 1byte/64KiB/8MiB×4、hash/EOF/上限/取消、host反復・Quest3回、配布物hashと所有socket回収 |
-| T04 | in_progress | 永続journal・再接続audit・lease・7故障caseのnative検査に成功。通常UI復帰は未確認 |
-| W01〜W04 | in_progress | native依存・SHM・window model・APK向けWaypipeを実機検証済み。通常UI/SDKとの共存確認を残す |
-| W05 | in_progress | SSH経由の100frame/hash・実foot受信・Stop回収がBuild49で成功。通常UI復帰は未確認 |
-| D01 | in_progress | owned画像→Smithay/Android EGLの実GPU readbackが成功。SDKパネルへの接続と通常UI確認は後続 |
+| T04 | done | 永続journal・再接続audit・lease・7故障caseと通常SDK/UI復帰がBuild62で成功 |
+| W01〜W04 | done | native依存・SHM・window model・APK向けWaypipeを実機検証済み。Build62で通常SDKとの共存・UI復帰も成功 |
+| W05 | done | SSH経由の100frame/hash・実foot受信・Stop回収と通常SDK/UI復帰がBuild62で成功 |
+| D01 | done | owned画像→Smithay/Android EGLの実GPU readbackと、通常SDK上のfoot描画・UI復帰に成功 |
+| D02 | in_progress | 実footの通常SDKパネル描画・世代再生成・Stop後UI復帰に成功。HMD視認と物理入力は未受入 |
 | D02〜I07 | planned | 実footのSDK描画と製品入力・複数windowを依存順に実装 |
 
 ## B01/B02: ビルドと実機の再現
@@ -470,3 +471,26 @@ host Rust69/実APK Python38/launcher16、debug/release assemble/lint/packageと�
 
 これはImageReaderとsynthetic visibilityでのGPU検査で、SDKパネルへの実foot表示やHMDの合格ではない。
 D01は通常UI共通scopeを残してin_progress、次はD02のmap/SDK binding/frame callbackを接続する。
+
+## D02 — 実footと通常SDKパネルの接続（Build63）
+
+SSH→Waypipe→owned RGBA→Smithay/Android EGL→実SDKパネルを接続した。
+Coreの希望create/destroyとSDK適用済みをcommand_seq・全世代tupleで分け、
+旧Entityの解放を待って再生成する。通常UIの「ターミナルを開く」は認証後に固定footを起動する。
+画像のない通常targetを診断四色で代用せず、同じframeの実presentと可視性を確認したときだけ
+Waylandへ更新通知を返す。
+
+Build62でT04/W01〜W05の通常SDK共存・UI復帰が全成功し、D01のGPU readback回帰と
+通常foot描画も成功した。これらの共通gateをdoneへ更新した。
+Build63では画面下部を含む連続出力の画素変化、pause/resume、Surface再生成、停止・通常UI復帰を確認した。
+D02はHMD視認を最終段階へ残してin_progress、物理入力はまだ未受入である。
+
+通常SDKで初めて表面化した検査上の問題も修正した。
+W05検査がcompositor側完了を待たない競合と、W01 auditがSDKの新しいepollを
+自分のFDの解放漏れと誤認する問題である。後者は元epollのdup漏れも検出するmarker監査に変更した。
+失敗run、切り分け、kernel一次資料、再現command、最終runとAPK hashは
+[foot描画検査](foot-render-checks.md)へ集約した。
+
+Rust75test/Clippy/fmt、Python実APK40test、launcher16test、debug/release/lint/packageが成功。
+次はI01のSDK ray/共通座標変換から入力・focus・二枚のwindowへ進む。
+Phase5/I07 goalは継続し、HMD/実入力の確認は最終段階にまとめる。

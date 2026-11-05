@@ -97,7 +97,7 @@ class MainActivity : AppSystemActivity() {
                                 Text("Runtime: ${NativeSessionHost.summary.value}", color = Color.White)
                                 Text(NativeSessionHost.credentialSummary.value, color = Color.White)
                                 Text("SSH: ${NativeSessionHost.connectionSummary.value}", color = Color.White)
-                                Button(onClick = { NativeSessionHost.connect() }) { Text("Termuxへ接続") }
+                                Button(onClick = { NativeSessionHost.openTerminal() }) { Text("ターミナルを開く") }
                                 Button(onClick = { NativeSessionHost.disconnect() }) { Text("接続を閉じる") }
                                 Text("Spatial SDK 0.15.0 · Android API ${Build.VERSION.SDK_INT}", color = Color.White)
                                 Button(onClick = {

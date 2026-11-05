@@ -104,12 +104,21 @@ fn valid_installation(id: &str) -> bool {
 pub enum AppMode {
     Pattern,
     Foot,
+    FootFixture,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelAction {
+    Create,
+    Destroy,
 }
 impl AppMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pattern => "pattern",
             Self::Foot => "foot",
+            Self::FootFixture => "foot_fixture",
         }
     }
 }
@@ -155,6 +164,20 @@ pub enum CompositorScenario {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    AdapterApplied {
+        schema: u32,
+        request_id: CommandSeq,
+        command_seq: CommandSeq,
+        target: crate::surface::TargetKey,
+        action: PanelAction,
+    },
+    AdapterFailed {
+        schema: u32,
+        request_id: CommandSeq,
+        command_seq: CommandSeq,
+        target: crate::surface::TargetKey,
+        action: PanelAction,
+    },
     RenderProbe {
         schema: u32,
         request_id: CommandSeq,
@@ -183,6 +206,13 @@ pub enum Command {
         nonce: String,
     },
     AppProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        nonce: String,
+        mode: AppMode,
+    },
+    StartApp {
         schema: u32,
         request_id: CommandSeq,
         session: crate::ids::SessionId,
@@ -247,11 +277,14 @@ impl Command {
         }
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
-            Self::SceneReady { schema, .. }
+            Self::AdapterApplied { schema, .. }
+            | Self::AdapterFailed { schema, .. }
+            | Self::SceneReady { schema, .. }
             | Self::RenderProbe { schema, .. }
             | Self::RemoteCleanupProbe { schema, .. }
             | Self::NativeDepsProbe { schema, .. }
             | Self::AppProbe { schema, .. }
+            | Self::StartApp { schema, .. }
             | Self::CompositorProbe { schema, .. }
             | Self::ForwardProbe { schema, .. }
             | Self::Connect { schema, .. }
@@ -278,6 +311,7 @@ impl Command {
         | Self::RemoteCleanupProbe { nonce, .. }
         | Self::NativeDepsProbe { nonce, .. }
         | Self::AppProbe { nonce, .. }
+        | Self::StartApp { nonce, .. }
         | Self::CompositorProbe { nonce, .. } = &command
             && (nonce.len() != 16
                 || !nonce
@@ -300,11 +334,14 @@ impl Command {
     }
     pub fn request_id(&self) -> CommandSeq {
         match *self {
-            Self::SceneReady { request_id, .. }
+            Self::AdapterApplied { request_id, .. }
+            | Self::AdapterFailed { request_id, .. }
+            | Self::SceneReady { request_id, .. }
             | Self::RenderProbe { request_id, .. }
             | Self::RemoteCleanupProbe { request_id, .. }
             | Self::NativeDepsProbe { request_id, .. }
             | Self::AppProbe { request_id, .. }
+            | Self::StartApp { request_id, .. }
             | Self::CompositorProbe { request_id, .. }
             | Self::ForwardProbe { request_id, .. }
             | Self::Connect { request_id, .. }

@@ -685,7 +685,7 @@
     {
       "id": "T04",
       "title": "remote launcher・lease・回収",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [
         "T03"
       ],
@@ -718,7 +718,7 @@
     {
       "id": "W01",
       "title": "Smithay・native依存のAndroid build",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [
         "B03"
       ],
@@ -754,7 +754,7 @@
     {
       "id": "W02",
       "title": "Wayland protocol・SHM fixture",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [
         "W01",
         "H01"
@@ -790,7 +790,7 @@
     {
       "id": "W03",
       "title": "Wayland寿命・immutable snapshot",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [
         "W02"
       ],
@@ -824,7 +824,7 @@
     {
       "id": "W04",
       "title": "APK Waypipe build・起動",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [
         "H01",
         "W03"
@@ -863,7 +863,7 @@
     {
       "id": "W05",
       "title": "WaypipeをSSHへ統合",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [
         "T04",
         "W04"
@@ -899,7 +899,7 @@
     {
       "id": "D01",
       "title": "GlesRendererへowned画像を入力",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [
         "R03",
         "W03"
@@ -935,7 +935,7 @@
     {
       "id": "D02",
       "title": "一枚のfoot表示PoC",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "D01",
         "W05"

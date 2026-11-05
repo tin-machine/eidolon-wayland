@@ -16,11 +16,12 @@ object BuildHooks {
     fun accept(intent: Intent?, adapter: SpatialPanelAdapter) {
         val name = intent?.getStringExtra("case") ?: return
         val nonce = intent.getStringExtra("nonce") ?: return
-        if (running || name !in setOf("surface", "pattern", "surface-cycle", "ssh-product") || !nonce.matches(Regex("[0-9a-f]{32}"))) return
+        if (running || name !in setOf("foot", "surface", "pattern", "surface-cycle", "ssh-product") || !nonce.matches(Regex("[0-9a-f]{32}"))) return
         if (intent.extras?.keySet()?.any { it != "case" && it != "nonce" } == true) return
         intent.removeExtra("case"); intent.removeExtra("nonce")
         running = true
-        if (name == "ssh-product") ProductSshCase.start(nonce) { running = false }
+        if (name == "foot") FootSdkCase.start(nonce, adapter) { running = false }
+        else if (name == "ssh-product") ProductSshCase.start(nonce) { running = false }
         else Case(name, nonce, adapter).start()
     }
     private class Case(val name: String, val nonce: String, val adapter: SpatialPanelAdapter) : Runnable {

@@ -1,8 +1,9 @@
 # Window stateとowned snapshotの検証（W03）
 
 windowのmap/unmap/remap、configure、surface tree、8変換とscale、immutable snapshotを実装し、
-Linux hostとQuest Build45のAPK UIDで検証した。通常の製品UIへの復帰、SDK panelへの画像転送、
-HMD上の表示・入力は後続の受入に残す。W03のstatusはin_progress。
+Linux hostとQuest Build45のAPK UIDで検証した。Build62では通常SDKとの共存・UI復帰も
+`20261105T130339-c30729ee`の10caseとtruncate隔離で確認し、W03はdoneとした。
+実footのSDK描画は[D02](foot-render-checks.md)、HMD上の視認・物理入力は最終段階に残す。
 
 ## 実装
 

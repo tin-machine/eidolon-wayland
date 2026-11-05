@@ -233,7 +233,7 @@ class Tail:
 def child_command(mode, nonce):
     if mode == "echo":
         return [sys.executable, str(Path(__file__).resolve()), "echo", nonce]
-    if mode not in {"pattern", "foot"}:
+    if mode not in {"pattern", "foot", "foot_fixture"}:
         raise ValueError("DEPENDENCY_NOT_READY")
     _, directory = paths(TERMUX_HOME, nonce)
     checked(directory)
@@ -244,8 +244,18 @@ def child_command(mode, nonce):
     else:
         command += [str(TERMUX_PREFIX / 'bin/foot'), '--app-id=io.github.tinmachine.eidolon.foot',
                     '--title=Eidolon', '--font=DejaVu Sans Mono:size=14',
-                    '--override=tweak.max-shm-pool-size-mb=0',
-                    str(TERMUX_PREFIX / 'bin/bash'), '--noprofile', '--norc', '-i']
+                    '--override=tweak.max-shm-pool-size-mb=0']
+        if mode == 'foot_fixture':
+            # 固定出力だけを生成する。任意command/textを制御channelから受け取らない。
+            source = ("import time\n"
+                      "print('Eidolon foot fixture: ABCD 0123456789', flush=True)\n"
+                      "for row in range(1200):\n"
+                      " print('row %04d | ABCDEFGH 0123456789 | scroll fixture' % row, flush=True)\n"
+                      " time.sleep(0.05)\n"
+                      "time.sleep(600)\n")
+            command += [sys.executable, '-u', '-c', source]
+        else:
+            command += [str(TERMUX_PREFIX / 'bin/bash'), '--noprofile', '--norc', '-i']
     return command
 
 
@@ -293,7 +303,7 @@ def tool_version(path):
 
 
 def inspect_tools(mode):
-    if mode not in {'pattern', 'foot'}:
+    if mode not in {'pattern', 'foot', 'foot_fixture'}:
         raise ValueError('DEPENDENCY_NOT_READY')
     try:
         waypipe = tool_version(TERMUX_PREFIX / 'bin/waypipe').splitlines()
@@ -478,7 +488,7 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                         elif kind == 'inspect_tools' and child is None:
                             checked_tools = inspect_tools(value['mode'])
                             publish({**marker(nonce), 'type': 'tools', **checked_tools})
-                        elif kind == "start" and child is None and value["mode"] in {"echo", "pattern", "foot"}:
+                        elif kind == "start" and child is None and value["mode"] in {"echo", "pattern", "foot", "foot_fixture"}:
                             started_mode = value["mode"]
                             if started_mode != 'echo' and (checked_tools is None or checked_tools['mode'] != started_mode):
                                 raise ValueError('DEPENDENCY_NOT_READY')
@@ -555,13 +565,13 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
 
 def main(argv):
     os.umask(0o077)
-    if len(argv) != 2 or argv[0] not in {"prepare", "echo", "pattern", "foot", "cleanup"}:
+    if len(argv) != 2 or argv[0] not in {"prepare", "echo", "pattern", "foot", "foot_fixture", "cleanup"}:
         raise ValueError("MODE_INVALID")
     mode, nonce = argv
     if mode == "prepare":
         supervise(Path.home(), nonce, sys.stdin.fileno(), lambda value: print(json.dumps(value, separators=(",", ":")), flush=True))
         return
-    if mode in {"pattern", "foot"}:
+    if mode in {"pattern", "foot", "foot_fixture"}:
         raise ValueError("DEPENDENCY_NOT_READY")
     operation = {"prepare": prepare, "echo": echo, "cleanup": cleanup}[mode]
     print(json.dumps(operation(Path.home(), nonce), separators=(",", ":")), flush=True)

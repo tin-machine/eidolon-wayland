@@ -66,6 +66,10 @@ external fun nativeAttachSurface(
     handle: Long, session: Long, window: Long, scene: Long, generation: Long,
     surface: android.view.Surface, widthPx: Int, heightPx: Int
 ): Int
+external fun nativeAttachWindowSurface(
+    handle: Long, session: Long, window: Long, scene: Long, generation: Long,
+    surface: android.view.Surface, widthPx: Int, heightPx: Int
+): Int
 external fun nativePoll(handle: Long, maxEvents: Int): String
 external fun nativeSnapshot(handle: Long): String
 external fun nativeRequestStop(handle: Long): Int
@@ -96,6 +100,15 @@ runtime configはschema 1と、省略可能な`paths: {native_library_dir, files
 通常command 256件・UI event 128件と別に、停止flag・入力解除flag、failure/stopped各1件の予約枠を持つ。入力解除の安全効果は通常queueがBUSYでも伝えるが、BUSYを返したcommandの完了eventは発行しない。eventは既発行の通常event→failure→stoppedの順でpollし、Stopped通知後に古いruntime_ready等を返さない。
 
 Rust→Kotlin: `runtime_ready`、`create_panel`、`destroy_panel`、`set_panel_pose`、`set_panel_size`、`set_panel_title`、`set_background`、`surface_detached`、`session_state`、`failure`、`stopped`。window commandには全世代tupleとcommand_seqを含める。Kotlinは`adapter_applied`/`adapter_failed`を返し、Rustの希望値とSDK適用値を区別する。
+
+D02のcreate/destroyは、poll eventを消費するHostとSDK ownerの間で要求を失わないよう、
+`runtime.panels`の最大16件のcommand表で配送する。行は`command_seq/action/target/applied/error`。
+ackまで同じ行を保持し、同windowの次世代はdestroy ack後に生成する。
+`adapter_applied`/`adapter_failed`は`request_id/command_seq/target/action`を必須とする。
+createの成功ackは実present後、destroyの成功ackはnative detachとSDK Entity破棄後に送る。
+`nativeAttachSurface`は診断用、`nativeAttachWindowSurface`はmapped windowの希望tupleを検査する通常用とする。
+通常`start_app`はtarget-driven callback、debug `app_probe`はvirtual callbackで、同Displayで混在させない。
+詳細と受入範囲は[foot描画検査](../foot-render-checks.md)を参照する。
 
 T01で追加するcredential専用JNIは通常command/診断と分離する:
 

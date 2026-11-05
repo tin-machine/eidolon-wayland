@@ -53,7 +53,7 @@ object ForwardedShmCase {
                     if (app.optString("nonce") == token) check(app.isNull("error"))
                     if (forward.optString("nonce") == token) check(forward.isNull("error"))
                     app.optString("nonce") == token && forward.optString("nonce") == token &&
-                        if (mode == "pattern") app.optInt("verified_hashes") == 100 && forward.optString("state") == "pass" &&
+                        if (mode == "pattern") app.optString("state") == "pass" && app.optInt("verified_hashes") == 100 && forward.optString("state") == "pass" &&
                             app.optInt("clients") == 0 && app.optInt("objects") == 0 && app.optInt("pool_bytes") == 0 && app.optInt("pixel_bytes") == 0
                         else app.optLong("copies") > 0 && app.optBoolean("non_uniform") && app.optJSONArray("windows")?.length() == 1 && forward.optString("state") == "running"
                 }

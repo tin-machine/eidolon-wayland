@@ -4,6 +4,178 @@ import json
 import hashlib
 
 
+def foot_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
+    if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
+        return False
+    result = snapshot.get('check', {})
+    if result.get('case') != 'foot' or result.get('nonce') != nonce:
+        return False
+    if result.get('result') == 'fail':
+        raise ValueError('通常SDK foot検査失敗: ' + result.get('stage', 'unknown'))
+    if result.get('result') != 'pass':
+        return False
+    if (result.get('consumer') != 'SDK' or result.get('synthetic_visibility') is not False
+            or result.get('product_host_path') is not True or result.get('hmd_verified') is not False
+            or type(apk_uid) is not int or type(termux_uid) is not int or apk_uid == termux_uid):
+        raise ValueError('通常SDK/Host/可視性の検査範囲が不正です')
+    rows = result.get('cycles', [])
+    if len(rows) != 2:
+        raise ValueError('SDKパネル再生成の証明がありません')
+    waypipe_hash = package.get('dependencies', {}).get('waypipe', {}).get('sha256')
+    if not isinstance(waypipe_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', waypipe_hash):
+        raise ValueError('WaypipeのAPK同梱hashが不正です')
+    previous, first_key = 0, None
+    previous_adapter = None
+    for row in rows:
+        state, adapter = row.get('runtime', {}), row.get('adapter', {})
+        app, transport, render = (state.get(k, {}) for k in ('app','transport','render'))
+        local, forward = app.get('local', {}), transport.get('app_forward', {})
+        targets, windows, plans = render.get('targets', []), app.get('windows', []), state.get('panels', [])
+        key = targets[0].get('key', {}) if len(targets) == 1 else {}
+        if (any(not isinstance(key.get(k), str) or not re.fullmatch(r'[1-9][0-9]*', key[k]) or int(key[k]) > 2**63-1 for k in ('session','window','scene','generation'))
+                or int(key.get('generation','0')) <= previous):
+            raise ValueError('SDKパネルのtuple/世代が不正です')
+        if first_key is not None and any(key[k] != first_key[k] for k in ('session','window','scene')):
+            raise ValueError('同じlogical windowの再生成ではありません')
+        if (state.get('state') != 'Ready' or state.get('activity_visible') is not True or state.get('xr_state') not in {'VISIBLE','FOCUSED'}
+                or state.get('scene') != key['scene'] or app.get('session') != key['session'] or app.get('mode') != 'foot'
+                or app.get('callback_clock') != 'target-driven' or app.get('error') is not None or app.get('non_uniform') is not True
+                or app.get('callbacks',0) < 1 or app.get('copies',0) < 1 or app.get('pool_rejections') != 0
+                or local.get('uid') != apk_uid or local.get('child_uid') != apk_uid or local.get('executable_sha256') != waypipe_hash
+                or transport.get('state') != 'Ready' or transport.get('session') != key['session'] or transport.get('credential_requests') != 1
+                or forward.get('mode') != 'foot' or forward.get('state') != 'running' or forward.get('uid') != termux_uid or forward.get('error') is not None
+                or forward.get('tools',{}).get('foot') != dict(version='1.28.0')
+                or render.get('mode') != 'windows' or render.get('error') is not None or render.get('contexts') != 1 or render.get('paused') is not False
+                or targets[0].get('role') != 'windows' or targets[0].get('frames',0) < 3 or targets[0].get('width') != 1024 or targets[0].get('height') != 768
+                or len(windows) != 1 or windows[0].get('window') != key['window'] or windows[0].get('life') != 'Mapped'
+                or not isinstance(targets[0].get('content_frame'),str) or not re.fullmatch(r'[1-9][0-9]*', targets[0]['content_frame'])
+                or len(plans) != 1 or plans[0].get('action') != 'create' or plans[0].get('target') != key
+                or plans[0].get('applied') is not True or plans[0].get('error') is not None
+                or adapter.get('bindings') != 1 or adapter.get('listeners') != 1):
+            raise ValueError('通常SDKでの実foot/実可視性/適用済みの証明が不正です')
+        if previous_adapter and (adapter.get('created',0) <= previous_adapter.get('created',0) or adapter.get('destroyed',0) <= previous_adapter.get('destroyed',0)):
+            raise ValueError('旧SDK Entityの回収がありません')
+        previous, first_key, previous_adapter = int(key['generation']), key, adapter
+    stop, restored = result.get('stop', {}), result.get('restored', {})
+    render, transport = restored.get('render', {}), restored.get('transport', {})
+    targets = render.get('targets', [])
+    handles = [result.get(k) for k in ('old_handle','new_handle')]
+    if (any(not isinstance(v,str) or not re.fullmatch(r'[1-9][0-9]*',v) or int(v)>2**63-1 for v in handles)
+            or int(handles[1]) <= int(handles[0]) or stop.get('old_runtime_destroyed') is not True
+            or type(stop.get('stop_ms')) is not int or not 0 <= stop['stop_ms'] < 10000
+            or restored.get('state') != 'Ready' or restored.get('activity_visible') is not True or restored.get('xr_state') not in {'VISIBLE','FOCUSED'}
+            or transport.get('state') != 'Idle' or transport.get('pending_cleanup') != []
+            or render.get('mode') != 'diagnostic' or len(targets) != 1 or targets[0].get('role') != 'diagnostic'
+            or targets[0].get('readback') is not True or targets[0].get('frames',0) < 3):
+        raise ValueError('通常SDK runtime/UI復帰の証明が不正です')
+    return True
+
+
+def foot_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
+    if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
+        return False
+    result = snapshot.get('check', {})
+    if result.get('case') != 'foot' or result.get('nonce') != nonce:
+        return False
+    if result.get('result') == 'fail':
+        raise ValueError('foot描画検査失敗: ' + result.get('stage', 'unknown'))
+    if result.get('result') != 'pass':
+        return False
+    session, window = result.get('session'), result.get('window')
+    token = hashlib.sha256(nonce.encode()).hexdigest()[:16]
+    if (not all(isinstance(v, str) and re.fullmatch(r'[1-9][0-9]*', v) and int(v) <= 2**63-1 for v in (session, window))
+            or result.get('token') != token or result.get('credential_requests') != 1
+            or type(apk_uid) is not int or type(termux_uid) is not int or apk_uid == termux_uid
+            or result.get('consumer') != 'ImageReader' or result.get('synthetic_visibility') is not True
+            or result.get('consumer_worker_stopped') is not True or result.get('cleanup_failed')):
+        raise ValueError('foot認証/世代/consumerの証拠が不正です')
+    waypipe_hash = package.get('dependencies', {}).get('waypipe', {}).get('sha256')
+    if not isinstance(waypipe_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', waypipe_hash):
+        raise ValueError('APK内Waypipeのhashがありません')
+
+    def app_state(state):
+        app, transport, render = (state.get(key, {}) for key in ('app', 'transport', 'render'))
+        local, forward = app.get('local', {}), transport.get('app_forward', {})
+        if (state.get('state') != 'Ready' or app.get('session') != session or app.get('nonce') != token
+                or app.get('mode') != 'foot_fixture' or app.get('callback_clock') != 'target-driven'
+                or app.get('ready') is not True or app.get('error') is not None or app.get('pool_rejections') != 0
+                or local.get('uid') != apk_uid or local.get('child_uid') != apk_uid or local.get('executable_sha256') != waypipe_hash
+                or local.get('workers') != 1 or local.get('owned_groups') != 1 or local.get('error') is not None
+                or transport.get('state') != 'Ready' or transport.get('session') != session or transport.get('credential_requests') != 1
+                or forward.get('uid') != termux_uid or forward.get('nonce') != token or forward.get('mode') != 'foot_fixture'
+                or forward.get('state') != 'running' or forward.get('error') is not None or forward.get('registered') is not True
+                or forward.get('tools', {}).get('foot') != dict(version='1.28.0')
+                or render.get('mode') != 'windows' or render.get('error') is not None or render.get('latest_images') != 1):
+            raise ValueError('実foot/SSH/SHM/target駆動の証明が不正です')
+        return app, render
+
+    before, render = app_state(result.get('before_target', {}))
+    if before.get('callbacks') != 0 or render.get('targets') != []:
+        raise ValueError('targetなしでcallbackが進んでいます')
+    rows = result.get('cycles', [])
+    if len(rows) != 2:
+        raise ValueError('Surface再生成の証明が必要です')
+    callbacks, distinct, previous_generation = 0, 0, 0
+    for generation, row in enumerate(rows, 1):
+        app, render = app_state(row.get('runtime', {}))
+        targets, windows, pixels = render.get('targets', []), app.get('windows', []), row.get('pixels', {})
+        target_generation = row.get('target_generation')
+        if (not isinstance(target_generation, str) or not re.fullmatch(r'[1-9][0-9]*', target_generation)
+                or not previous_generation < int(target_generation) <= 2**63-1):
+            raise ValueError('Surface世代が進んでいません')
+        key = dict(session=session, window=window, scene='1', generation=target_generation)
+        plans = row.get('runtime', {}).get('panels', [])
+        if (row.get('generation') != generation or render.get('paused') is not False or render.get('contexts') != 1
+                or len(targets) != 1 or targets[0].get('role') != 'windows'
+                or targets[0].get('key') != key or len(plans) != 1 or plans[0].get('target') != key
+                or plans[0].get('action') != 'create' or plans[0].get('applied') is not True or plans[0].get('error') is not None
+                or targets[0].get('width') != (1024 if generation == 1 else 800) or targets[0].get('height') != (768 if generation == 1 else 600)
+                or len(windows) != 1 or windows[0].get('window') != window or windows[0].get('life') != 'Mapped'
+                or not windows[0].get('frame') or windows[0].get('frame') != targets[0].get('content_frame')
+                or app.get('non_uniform') is not True or app.get('callbacks', 0) < callbacks+5
+                or render.get('composition', {}).get('updates', 0) < 1 or render.get('composition', {}).get('textures', 0) < 1
+                or pixels.get('distinct_images', 0) < distinct+4 or pixels.get('non_uniform_images', 0) < 1
+                or pixels.get('sample_step') != 4 or len(set(pixels.get('hashes', []))) != pixels.get('distinct_images')
+                or any(not isinstance(h, str) or not re.fullmatch(r'[0-9a-f]{64}', h) for h in pixels.get('hashes', []))):
+            raise ValueError('footの実pixel/更新/present世代の証明が不正です')
+        callbacks, distinct, previous_generation = app['callbacks'], pixels['distinct_images'], int(target_generation)
+    paused, paused_render = app_state(result.get('pause', {}))
+    held, held_render = app_state(result.get('pause_held', {}))
+    resumed, resumed_render = app_state(result.get('resumed', {}))
+    if (paused_render.get('paused') is not True or held_render.get('paused') is not True
+            or paused.get('callbacks') != held.get('callbacks') or resumed_render.get('paused') is not False
+            or resumed.get('callbacks', 0) < held.get('callbacks', 0)+3):
+        raise ValueError('非表示のcallback停止/表示復帰が不正です')
+    scroll = result.get('scroll', {})
+    scrolling, scroll_render = app_state(scroll.get('runtime', {}))
+    pixels = scroll.get('pixels', {})
+    if (type(scroll.get('observed_ms')) is not int or scroll['observed_ms'] < 4000
+            or type(scroll.get('callbacks_before')) is not int or scrolling.get('callbacks',0) < scroll['callbacks_before']+8
+            or pixels.get('lower_distinct_images',0) < 5 or pixels.get('lower_non_uniform_images',0) < 1
+            or pixels.get('lower_distinct_images') != len(set(pixels.get('lower_hashes',[])))
+            or any(not isinstance(h,str) or not re.fullmatch(r'[0-9a-f]{64}',h) for h in pixels.get('lower_hashes',[]))
+            or len(scroll_render.get('targets',[])) != 1 or scroll_render['targets'][0].get('key') != key):
+        raise ValueError('連続出力と画面下部の更新の証明が不正です')
+    after = result.get('after_stop', {})
+    app, transport, render = (after.get(key, {}) for key in ('app', 'transport', 'render'))
+    forward, local = transport.get('app_forward', {}), app.get('local', {})
+    finished = forward.get('remote', {}).get('finished', {})
+    if (after.get('state') != 'Stopped' or app.get('state') != 'stopped' or app.get('directory_cleaned') is not True
+            or app.get('error') is not None or any(app.get(key) != 0 for key in ('clients','objects','surfaces','pool_bytes','pixel_bytes','pool_count'))
+            or local.get('workers') != 0 or local.get('owned_groups') != 0 or local.get('waited') is not True
+            or forward.get('state') != 'stopped' or forward.get('error') is not None or forward.get('remote_cleaned') is not True
+            or forward.get('forward_cancelled') is not True or finished.get('reason') != 'Stop' or finished.get('cleaned') is not True
+            or finished.get('group_alive') is not False or finished.get('pipes_closed') is not True
+            or transport.get('pending_cleanup') != [] or forward.get('pending_cleanup') != []
+            or any(transport.get(key) != 0 for key in ('workers','tokio_threads','owned_connections'))
+            or render.get('targets') != [] or any(render.get(key) != 0 for key in ('workers','contexts','latest_images','queued'))
+            or any(render.get('composition', {}).get(key) != 0 for key in ('textures','texture_bytes'))
+            or type(result.get('accept_ms')) is not int or not 0 <= result['accept_ms'] < 100
+            or type(result.get('stop_ms')) is not int or not 0 <= result['stop_ms'] < 10000):
+        raise ValueError('foot描画中の全owner/remote停止が不正です')
+    return instrumentation_result(snapshot, result, apk_uid)
+
+
 def render_result(snapshot, nonce, expected, apk_uid):
     if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
         return False

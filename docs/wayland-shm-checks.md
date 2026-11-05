@@ -2,7 +2,8 @@
 
 最小protocolと共有mappingから所有済みRGBA8へのcopyを実装し、
 host/Quest Build43で正常100frame、同期cache、悪性client切断後の同Displayでの回復に成功した。
-通常UIへの復帰と、Scene稼働時のSDK handlerとの共存はまだ受け入れていない。
+Build62でSDKとの共存・通常UI復帰も確認した。正常/異常9caseは
+`20261105T130325-8e1010de`、truncate隔離は`20261105T130333-e0e97eec`でpass。W02はdone。
 W03の完全なsurface lifecycle・snapshot、GL表示、SSH転送、footの成功とは区別する。
 
 `ProtocolState`はrenderer/SSHを持たず、protocol ownerでdispatchする。

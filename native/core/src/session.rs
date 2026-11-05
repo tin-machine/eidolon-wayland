@@ -65,6 +65,7 @@ pub struct Session {
     virtual_clock: bool,
     virtual_tick: u64,
     closing: bool,
+    published: Vec<WindowId>,
 }
 impl Session {
     pub fn start(
@@ -110,6 +111,7 @@ impl Session {
             virtual_clock,
             virtual_tick: 0,
             closing: false,
+            published: vec![],
         })
     }
     pub fn snapshot(&self) -> Report {
@@ -123,6 +125,76 @@ impl Session {
     }
     pub fn nonce(&self) -> &str {
         &self.report.nonce
+    }
+    pub fn virtual_clock(&self) -> bool {
+        self.virtual_clock
+    }
+    /// normal modeだけが実際のpresented snapshotに応じてclientを進める。
+    pub fn render_tick(&mut self, gl: &eidolon_render::Controller, now: Duration) {
+        if self.virtual_clock {
+            return;
+        }
+        let session = self.session();
+        if self.closing || self.closed() {
+            let _ = gl.windows(session, &[]);
+            for window in self.published.drain(..) {
+                let _ = gl.forget_window(session, window);
+            }
+            return;
+        }
+        let Some(state) = self.protocol.as_mut() else {
+            return;
+        };
+        let windows = state.windows();
+        let logical: Vec<_> = windows.iter().map(|window| window.window).collect();
+        if gl.windows(session, &logical) != eidolon_model::state::Status::Accepted {
+            self.fail("RENDER_BUDGET");
+            return;
+        }
+        let mapped: Vec<_> = windows
+            .iter()
+            .filter(|w| w.life == WindowLife::Mapped)
+            .map(|w| w.window)
+            .collect();
+        for old in self.published.iter().filter(|old| !mapped.contains(old)) {
+            if gl.forget_window(session, *old) != eidolon_model::state::Status::Accepted {
+                self.fail("RENDER_BUSY");
+                return;
+            }
+        }
+        self.published = mapped;
+        for window in &windows {
+            if window.life != WindowLife::Mapped {
+                continue;
+            }
+            if let Some(snapshot) = state.latest_snapshot(window.window)
+                && !matches!(
+                    gl.submit(snapshot, vec![]),
+                    eidolon_model::state::Status::Accepted | eidolon_model::state::Status::Stale
+                )
+            {
+                self.fail("RENDER_BUDGET");
+                return;
+            }
+        }
+        let render = gl.snapshot();
+        for window in &windows {
+            let presented = render.targets.iter().any(|target| {
+                target.role == eidolon_render::RenderMode::Windows
+                    && target.key.session == session
+                    && target.key.window == window.window
+                    && target.content_frame == window.frame
+                    && target.frames > 0
+            });
+            state.frame_callbacks(
+                window.window,
+                now,
+                !render.paused,
+                presented,
+                render.error.is_none(),
+            );
+        }
+        self.refresh_stats();
     }
     pub fn socket(&self) -> Option<PathBuf> {
         self.directory.as_ref().map(|d| d.path.join("p"))

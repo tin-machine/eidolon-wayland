@@ -3,6 +3,9 @@
 固定C版Waypipeをhost/API34 arm64へbuildし、APKの`nativeLibraryDir`から実行する。
 SHM転送・SSH経由の画像・SDK表示の合格は、W05以降で別に検査する。
 
+Build62の通常SDK共存・UI復帰は`20261105T130345-bd61c0e2`の3caseでpass。
+W04はdone。後続の実foot描画と残るHMD確認は[D02](foot-render-checks.md)を参照する。
+
 ## 固定sourceと依存
 
 正本は`native/deps.lock.json`。Waypipe 0.11.3 C版、LZ4 1.10.0 library、Zstd 1.5.7 libraryを使う。

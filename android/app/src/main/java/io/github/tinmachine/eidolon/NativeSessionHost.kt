@@ -32,6 +32,11 @@ object NativeSessionHost {
     private var lastWrite = 0L
     private var state = "Starting"
     private var sshState = "未接続"
+    private data class TerminalOpen(val nonce: String, val previousSession: String,
+        var connectRequest: String? = null, var connectAccepted: Boolean = false,
+        var startRequest: String? = null, val deadline: Long = SystemClock.elapsedRealtime()+30000)
+    private var terminalOpen: TerminalOpen? = null // workerだけで操作し、二重clickをcoalesceする。
+    private var terminalError: String? = null
     val summary = mutableStateOf("Starting")
     val credentialSummary = mutableStateOf("鍵を確認中")
     val connectionSummary = mutableStateOf("未接続")
@@ -61,7 +66,29 @@ object NativeSessionHost {
     fun setXrState(value: String) { xrState.set(value); send("set_xr_state", "state", value) }
     fun setActivityVisible(value: Boolean) { activityVisible.set(value); send("set_activity_state", "visible", value) }
     fun connect() { send("connect", "profile_id", "termux-local") }
-    fun disconnect() { val session = connection.get(); if (session > 0) send("disconnect", "session", session.toString()) }
+    fun openTerminal() { worker.execute { safely {
+        if (handle == 0L || terminalOpen != null) return@safely
+        val runtime = snapshot().getJSONObject("runtime")
+        val transport = runtime.getJSONObject("transport")
+        val app = runtime.optJSONObject("app")
+        if (app != null && app.optString("session") == transport.optString("session") && app.isNull("error") && app.optString("state") != "stopped") return@safely
+        if (transport.getJSONArray("pending_cleanup").length() != 0) { terminalError = "前回の終了を確認してください"; return@safely }
+        val bytes = ByteArray(8).also { java.security.SecureRandom().nextBytes(it) }
+        val operation = TerminalOpen(bytes.joinToString("") { "%02x".format(it.toInt() and 255) }, transport.optString("session"))
+        terminalError = null
+        if (transport.getString("state") != "Ready") {
+            if (transport.getString("state") !in setOf("Idle", "Disconnected", "Failed")) return@safely
+            val request = requests.incrementAndGet().toString()
+            operation.connectRequest = request
+            val command = JSONObject().put("schema", 1).put("type", "connect").put("request_id", request).put("profile_id", "termux-local")
+            if (NativeBridge.nativeCommand(handle, command.toString()) != NativeBridge.ACCEPTED) { terminalError = "接続を開始できません"; return@safely }
+        }
+        terminalOpen = operation
+    } } }
+    fun disconnect() { worker.execute { safely {
+        terminalOpen = null; terminalError = null
+        val session = connection.get(); if (session > 0) send("disconnect", "session", session.toString())
+    } } }
     fun requestSnapshot() { worker.execute { safely { publish() } } }
     fun currentHandle(): Long = handle
     fun publishCheck(value: JSONObject) { val copy = value.toString(); worker.execute { safely { store?.publishCheck(JSONObject(copy)) } } }
@@ -70,6 +97,13 @@ object NativeSessionHost {
         return NativeBridge.nativeCommand(runtime, JSONObject().put("schema", 1).put("request_id", requests.incrementAndGet().toString())
             .put("type", "surface_lost").put("target", target).toString())
     }
+    fun ackPanel(plan: JSONObject, runtime: Long, success: Boolean = true): Int = NativeBridge.nativeCommand(runtime,
+        JSONObject().put("schema", 1).put("request_id", requests.incrementAndGet().toString())
+            .put("type", if (success) "adapter_applied" else "adapter_failed")
+            .put("command_seq", plan.getString("command_seq")).put("target", plan.getJSONObject("target"))
+            .put("action", plan.getString("action")).toString())
+    fun resetInput(): Int = NativeBridge.nativeCommand(handle, JSONObject().put("schema", 1)
+        .put("request_id", requests.incrementAndGet().toString()).put("type", "reset_input").toString())
 
     private fun send(type: String, key: String, value: Any) {
         safely {
@@ -109,6 +143,7 @@ object NativeSessionHost {
             Thread.sleep(2)
         }
         handle = 0
+        terminalOpen = null; terminalError = null
         Log.i(TAG, "runtime_stopped handle=$old duration_ms=${SystemClock.elapsedRealtime() - started}")
     }
     /** 診断の排他的実行。固定caseの実装自体はdebug sourceSetだけに置く。 */
@@ -134,6 +169,17 @@ object NativeSessionHost {
         val values = events.getJSONArray("events")
         for (index in 0 until values.length()) {
             val event = values.getJSONObject(index)
+            if (event.optString("type") == "command_complete") {
+                terminalOpen?.let { operation ->
+                    val request = event.getString("request_id")
+                    if (request == operation.connectRequest || request == operation.startRequest) {
+                        if (event.getString("code") != "ACCEPTED") {
+                            terminalError = "開始できません（${event.getString("code")}）"; terminalOpen = null
+                        } else if (request == operation.connectRequest) operation.connectAccepted = true
+                        else terminalOpen = null
+                    }
+                }
+            }
             if (event.optString("type") == "credential_required" && event.optString("profile_id") == "termux-local") {
                 val code = checkNotNull(credentials).provide(handle, event.getString("session").toLong(), event.getString("request_id").toLong())
                 if (code != NativeBridge.ACCEPTED) Log.w(TAG, "credential_rejected code=$code")
@@ -142,13 +188,34 @@ object NativeSessionHost {
         val snapshot = snapshot()
         val transport = snapshot.getJSONObject("runtime").getJSONObject("transport")
         connection.set(transport.optString("session").toLongOrNull() ?: 0)
+        terminalOpen?.let { operation ->
+            val ready = transport.getString("state") == "Ready" && (operation.connectRequest == null ||
+                operation.connectAccepted && transport.optString("session") != operation.previousSession)
+            if (ready && operation.startRequest == null) {
+                val request = requests.incrementAndGet().toString()
+                val command = JSONObject().put("schema", 1).put("type", "start_app").put("request_id", request)
+                    .put("session", transport.getString("session")).put("nonce", operation.nonce).put("mode", "foot")
+                val code = NativeBridge.nativeCommand(handle, command.toString())
+                if (code == NativeBridge.ACCEPTED) operation.startRequest = request
+                else { terminalError = "ターミナルを開始できません（$code）"; terminalOpen = null }
+            } else if (SystemClock.elapsedRealtime() >= operation.deadline ||
+                transport.getString("state") == "Failed" && transport.optString("session") != operation.previousSession) {
+                terminalError = "接続を開始できません"; terminalOpen = null
+            }
+        }
         val phase = when (val value = transport.getString("state")) {
             "Recovering" -> "前回の終了を確認中"
             "CleanupPending" -> "前回の終了を確認できません"
             else -> value
         }
         val pending = transport.optJSONArray("pending_cleanup")?.length() ?: 0
-        val ssh = phase + (if (pending > 0) " · 未確認の回収 ${pending}件" else "") + if (transport.isNull("error")) "" else " · ${transport.getString("error")}"
+        val appError = snapshot.getJSONObject("runtime").optJSONObject("app")?.optString("error", "")?.takeIf { it.isNotEmpty() }
+        val panelError = snapshot.getJSONObject("runtime").optJSONArray("panels")?.let { plans ->
+            (0 until plans.length()).map { plans.getJSONObject(it) }.firstOrNull { !it.isNull("error") }?.getString("error")
+        }
+        val error = terminalError ?: panelError ?: appError
+        val ssh = phase + (if (pending > 0) " · 未確認の回収 ${pending}件" else "") +
+            (if (transport.isNull("error")) "" else " · ${transport.getString("error")}") + (error?.let { " · $it" } ?: "")
         if (ssh != sshState) { sshState = ssh; ui.post { connectionSummary.value = ssh } }
         val next = snapshot.getJSONObject("runtime").getString("state")
         val now = SystemClock.elapsedRealtime()

@@ -33,6 +33,14 @@ const ACKS: usize = 64;
 const STALL: Duration = Duration::from_secs(2);
 const FRAME: Duration = Duration::from_nanos(16_666_667);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderMode {
+    #[default]
+    Diagnostic,
+    Windows,
+}
+
 fn check_gl_error(error: u32) -> Result<(), &'static str> {
     match error {
         0 => Ok(()),
@@ -58,11 +66,13 @@ pub struct TargetReport {
     pub key: TargetKey,
     pub frames: u64,
     pub content_frame: Option<FrameSeq>,
+    pub role: RenderMode,
     #[serde(flatten)]
     pub gpu: GpuInfo,
 }
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct Snapshot {
+    pub mode: RenderMode,
     pub workers: usize,
     pub targets: Vec<TargetReport>,
     pub detached: VecDeque<TargetKey>,
@@ -84,8 +94,10 @@ enum Message {
         window: PlatformWindow,
         width: i32,
         height: i32,
+        role: RenderMode,
     },
     Detach(TargetKey),
+    Forget(SessionId, WindowId),
 }
 struct Shared {
     queue: VecDeque<Message>,
@@ -94,6 +106,8 @@ struct Shared {
     visible: bool,
     busy_since: Option<Instant>,
     latest: Vec<Arc<Submission>>,
+    mode: RenderMode,
+    logical: Vec<(SessionId, WindowId)>,
 }
 struct Submission {
     snapshot: Arc<WindowSnapshot>,
@@ -109,9 +123,17 @@ pub struct Controller {
 #[derive(Default)]
 struct Generations {
     latest: Vec<TargetKey>,
+    diagnostic_floor: Vec<TargetKey>,
 }
 impl Generations {
     fn attach(&mut self, key: TargetKey) -> Status {
+        if self
+            .diagnostic_floor
+            .iter()
+            .any(|floor| floor.same_window(key) && !key.newer_than(*floor))
+        {
+            return Status::Stale;
+        }
         if let Some(previous) = self.latest.iter_mut().find(|p| p.same_window(key)) {
             if *previous == key {
                 return Status::Stale;
@@ -148,6 +170,8 @@ impl Controller {
                 visible: false,
                 busy_since: None,
                 latest: vec![],
+                mode: RenderMode::Diagnostic,
+                logical: vec![],
             }),
             Condvar::new(),
         ));
@@ -164,6 +188,7 @@ impl Controller {
                 state.queue.clear(); // queued ANativeWindowの追加参照もここで回収。
                 state.snapshot.targets.clear();
                 state.latest.clear();
+                state.logical.clear();
                 state.snapshot.latest_images = 0;
                 state.snapshot.contexts = 0;
                 state.snapshot.composition = Default::default();
@@ -197,15 +222,91 @@ impl Controller {
         width: i32,
         height: i32,
     ) -> Status {
+        self.attach_role(key, window, width, height, RenderMode::Diagnostic)
+    }
+    pub fn attach_window(
+        &self,
+        key: TargetKey,
+        window: PlatformWindow,
+        width: i32,
+        height: i32,
+    ) -> Status {
+        self.attach_role(key, window, width, height, RenderMode::Windows)
+    }
+    fn attach_role(
+        &self,
+        key: TargetKey,
+        window: PlatformWindow,
+        width: i32,
+        height: i32,
+        role: RenderMode,
+    ) -> Status {
         if let Err(status) = validate_dimensions(width, height) {
             return status;
+        }
+        {
+            let state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+            if state.mode != role {
+                return Status::NotReady;
+            }
+            if state
+                .snapshot
+                .targets
+                .iter()
+                .any(|target| target.key == key && target.role != role)
+            {
+                return Status::Stale;
+            }
+            if role == RenderMode::Windows
+                && !state.latest.iter().any(|image| {
+                    image.snapshot.session == key.session && image.snapshot.window == key.window
+                })
+            {
+                return Status::Stale;
+            }
         }
         self.enqueue(Message::Attach {
             key,
             window,
             width,
             height,
+            role,
         })
+    }
+    /// 製品window modeへ一方向に移る。診断へ戻すには新runtimeを作る。
+    pub fn use_windows(&self) {
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.mode == RenderMode::Windows {
+            return;
+        }
+        state.mode = RenderMode::Windows;
+        state.snapshot.mode = RenderMode::Windows;
+        let old = std::mem::take(&mut state.latest);
+        state.snapshot.latest_images = 0;
+        drop(state);
+        drop(old);
+        self.state.1.notify_one();
+    }
+    /// unmap中もlogical windowは登録を保ち、古いSurface世代を再利用させない。
+    pub fn windows(&self, session: SessionId, windows: &[WindowId]) -> Status {
+        if windows.len() > limits::TOPLEVELS
+            || windows
+                .iter()
+                .enumerate()
+                .any(|(index, id)| windows[..index].contains(id))
+        {
+            return Status::InvalidArgument;
+        }
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.logical.iter().filter(|(s, _)| *s != session).count() + windows.len()
+            > limits::TOPLEVELS
+        {
+            return Status::Busy;
+        }
+        state.logical.retain(|(s, _)| *s != session);
+        state.logical.extend(windows.iter().map(|w| (session, *w)));
+        self.state.1.notify_one();
+        Status::Accepted
     }
     pub fn detach(&self, key: TargetKey) -> Status {
         self.enqueue(Message::Detach(key))
@@ -242,12 +343,26 @@ impl Controller {
         self.state.1.notify_one();
         Status::Accepted
     }
-    pub fn forget_window(&self, session: SessionId, window: WindowId) {
+    pub fn forget_window(&self, session: SessionId, window: WindowId) -> Status {
         let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
-        state
+        let old = state
             .latest
-            .retain(|image| image.snapshot.session != session || image.snapshot.window != window);
+            .iter()
+            .position(|image| image.snapshot.session == session && image.snapshot.window == window)
+            .map(|index| state.latest.swap_remove(index));
         state.snapshot.latest_images = state.latest.len();
+        let code = if state.stop {
+            Status::Accepted
+        } else if state.queue.len() == QUEUE {
+            Status::Busy
+        } else {
+            state.queue.push_back(Message::Forget(session, window));
+            Status::Accepted
+        };
+        drop(state);
+        drop(old);
+        self.state.1.notify_one();
+        code
     }
     pub fn set_visible(&self, visible: bool) {
         self.state
@@ -306,11 +421,12 @@ fn busy<T>(state: &State, action: impl FnOnce() -> T) -> T {
 }
 fn owner(state: &State) {
     let mut active: Vec<Active> = Vec::new();
-    let mut device = None;
+    let mut device: Option<platform::Device> = None;
     let mut generations = Generations::default();
     let mut next = Instant::now();
+    let mut owner_mode = RenderMode::Diagnostic;
     loop {
-        let (message, visible, stop) = {
+        let (message, visible, stop, mode, logical) = {
             let mut shared = state.0.lock().unwrap_or_else(|e| e.into_inner());
             if !shared.stop
                 && shared.queue.is_empty()
@@ -327,10 +443,28 @@ fn owner(state: &State) {
                     .unwrap_or_else(|e| e.into_inner())
                     .0;
             }
-            (shared.queue.pop_front(), shared.visible, shared.stop)
+            (
+                shared.queue.pop_front(),
+                shared.visible,
+                shared.stop,
+                shared.mode,
+                shared.logical.clone(),
+            )
         };
         if stop {
             break;
+        }
+        if owner_mode != mode {
+            if let Some(device) = device.as_mut() {
+                let _ = busy(state, || device.clear());
+            }
+            generations.diagnostic_floor = std::mem::take(&mut generations.latest);
+            owner_mode = mode;
+        }
+        if mode == RenderMode::Windows {
+            generations
+                .latest
+                .retain(|key| logical.contains(&(key.session, key.window)));
         }
         if let Some(message) = message {
             match message {
@@ -339,9 +473,27 @@ fn owner(state: &State) {
                     window,
                     width,
                     height,
+                    role,
                 } => {
-                    if active.iter().any(|a| a.report.key == key) {
-                        update(state, |s| s.snapshot.duplicates += 1);
+                    if let Some(prior) = active.iter().find(|a| a.report.key == key) {
+                        update(state, |s| {
+                            if prior.report.role == role && role == mode {
+                                s.snapshot.duplicates += 1;
+                            } else {
+                                s.snapshot.stale += 1;
+                            }
+                        });
+                        // 別roleで拒否しても、生きた同tupleのdetach ackを捏造しない。
+                        continue;
+                    }
+                    if role != mode
+                        || (role == RenderMode::Windows
+                            && !logical.contains(&(key.session, key.window)))
+                    {
+                        update(state, |s| {
+                            s.snapshot.stale += 1;
+                            ack(s, key)
+                        });
                         continue;
                     }
                     if active.len() >= limits::VISIBLE_PANELS
@@ -365,6 +517,7 @@ fn owner(state: &State) {
                                     key,
                                     frames: 0,
                                     content_frame: None,
+                                    role,
                                     gpu: gpu.info(),
                                 },
                                 gpu,
@@ -397,11 +550,25 @@ fn owner(state: &State) {
                     // full tupleのみack。遅い旧世代detachは現targetへ触れない。
                     update(state, |s| ack(s, key));
                 }
+                Message::Forget(session, window) => {
+                    if let Some(device) = device.as_mut()
+                        && let Err(error) = busy(state, || device.forget(session, window))
+                    {
+                        update(state, |s| s.snapshot.error = Some(error));
+                    }
+                }
             }
         }
         if visible && Instant::now() >= next {
             let mut lost = Vec::new();
             for (index, target) in active.iter_mut().enumerate() {
+                if target.report.role != mode
+                    || (mode == RenderMode::Windows
+                        && !logical
+                            .contains(&(target.report.key.session, target.report.key.window)))
+                {
+                    continue;
+                }
                 let image = state
                     .0
                     .lock()
@@ -413,6 +580,9 @@ fn owner(state: &State) {
                             && image.snapshot.window == target.report.key.window
                     })
                     .cloned();
+                if mode == RenderMode::Windows && image.is_none() {
+                    continue;
+                }
                 match busy(state, || {
                     target.gpu.frame(
                         device.as_mut().unwrap(),
@@ -501,6 +671,102 @@ mod tests {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(2));
         }
+    }
+    #[test]
+    fn window_mode_rejects_diagnostic_role_and_retired_generations_after_unmap() {
+        let renderer = Controller::start().unwrap();
+        renderer.set_visible(true);
+        let diagnostic = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        renderer.attach(diagnostic, PlatformWindow::default(), 64, 64);
+        wait(|| {
+            renderer
+                .snapshot()
+                .targets
+                .first()
+                .is_some_and(|target| target.frames > 0)
+        });
+        renderer.use_windows();
+        assert_eq!(
+            renderer.attach(diagnostic, PlatformWindow::default(), 64, 64),
+            Status::NotReady
+        );
+        assert_eq!(
+            renderer.windows(diagnostic.session, &[diagnostic.window]),
+            Status::Accepted
+        );
+        let next = TargetKey::from_raw(1, 1, 1, 2).unwrap();
+        let (image, probes) = fixtures::make(0, 2, next, 64, 64).unwrap();
+        renderer.submit(image, probes);
+        assert_eq!(
+            renderer.attach_window(diagnostic, PlatformWindow::default(), 64, 64),
+            Status::Stale
+        );
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            renderer.snapshot().targets[0].content_frame,
+            None,
+            "診断targetへ製品画像を流さない"
+        );
+        renderer.detach(diagnostic);
+        wait(|| renderer.snapshot().targets.is_empty());
+        renderer.attach_window(next, PlatformWindow::default(), 64, 64);
+        wait(|| {
+            renderer
+                .snapshot()
+                .targets
+                .first()
+                .is_some_and(|target| target.content_frame == Some(FrameSeq::new(2).unwrap()))
+        });
+        assert_eq!(renderer.snapshot().targets[0].role, RenderMode::Windows);
+        renderer.detach(next);
+        wait(|| renderer.snapshot().targets.is_empty());
+        renderer.forget_window(next.session, next.window);
+        let remap = TargetKey::from_raw(1, 1, 1, 3).unwrap();
+        let (image, probes) = fixtures::make(0, 3, remap, 64, 64).unwrap();
+        renderer.submit(image, probes);
+        let stale = renderer.snapshot().stale;
+        renderer.attach_window(next, PlatformWindow::default(), 64, 64);
+        wait(|| renderer.snapshot().stale > stale);
+        assert!(renderer.snapshot().targets.is_empty());
+        renderer.attach_window(remap, PlatformWindow::default(), 64, 64);
+        wait(|| {
+            renderer
+                .snapshot()
+                .targets
+                .first()
+                .is_some_and(|target| target.content_frame == Some(FrameSeq::new(3).unwrap()))
+        });
+        renderer.request_stop();
+        wait(|| renderer.is_finished());
+    }
+    #[test]
+    fn retired_logical_windows_do_not_exhaust_eight_entry_history_across_twenty_sessions() {
+        let renderer = Controller::start().unwrap();
+        renderer.use_windows();
+        renderer.set_visible(true);
+        for session in 1..=20 {
+            let key = TargetKey::from_raw(session, 1, 1, 1).unwrap();
+            assert_eq!(
+                renderer.windows(key.session, &[key.window]),
+                Status::Accepted
+            );
+            let (image, probes) = fixtures::make(0, 1, key, 64, 64).unwrap();
+            renderer.submit(image, probes);
+            renderer.attach_window(key, PlatformWindow::default(), 64, 64);
+            wait(|| {
+                renderer
+                    .snapshot()
+                    .targets
+                    .first()
+                    .is_some_and(|target| target.key == key && target.frames > 0)
+            });
+            renderer.detach(key);
+            wait(|| renderer.snapshot().targets.is_empty());
+            renderer.forget_window(key.session, key.window);
+            assert_eq!(renderer.windows(key.session, &[]), Status::Accepted);
+        }
+        renderer.request_stop();
+        wait(|| renderer.is_finished());
     }
     #[test]
     fn coalesces_owned_snapshots_before_attach_rejects_old_frames_and_releases_at_stop() {

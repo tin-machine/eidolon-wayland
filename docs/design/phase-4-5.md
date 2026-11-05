@@ -20,7 +20,8 @@ gate: host画像変換test、Questで既知snapshot→四隅/文字代替pattern
 [D01の実装・検証記録](../owned-image-render-checks.md)では、Android公開名libEGL.soへの固定patchと
 外部EGLContext/NativeWindow adapterを使う。公式minimal exampleと同じFlipped180をwindow framebufferの出力に適用し、
 ImageReader上の実GPUでtransform/scale/alpha/clipとSurface再生成を検査した。
-synthetic visibilityによるnative scopeであり、SDKパネル/HMDはD02以降へ残す。
+fixture自体はsynthetic visibilityによるnative scopeである。
+通常SDKパネルへの接続・停止後UI復帰は[D02のBuild63検証](../foot-render-checks.md)で成功し、HMD視認は最終段階に残す。
 
 <a id="d02"></a>
 ## D02 — foot一枚の表示PoC

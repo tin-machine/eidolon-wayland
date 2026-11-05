@@ -46,6 +46,7 @@ class ForwardedTests(unittest.TestCase):
     def test_missing_hash_wrong_uid_reused_ids_or_unverified_receipt_never_pass(self):
         args=self.fixture();self.assertTrue(forwarded_shm_result(*args))
         for path,value in [
+            (['cycles',0,'app','state'],'running'),
             (['cycles',0,'app','verified_hashes'],99),(['cycles',0,'app','local','child_uid'],4343),
             (['cycles',0,'transport','app_forward','tools','fixture','sha256'],'d'*64),
             (['cycles',1,'app','windows',0,'window'],'1'),(['cycles',1,'app','non_uniform'],False),

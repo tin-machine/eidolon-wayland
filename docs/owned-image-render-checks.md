@@ -6,6 +6,10 @@ consumerはAndroid ImageReaderで、SDK Activity/Sceneは開かない。
 `synthetic_visibility=true`、`scope=native-instrumentation`、`normal_ui_returned=false`を保存する。
 HMDの可読性・SDKパネル上の位置・passthrough・物理入力はD02以降へ残す。
 
+Build62の回帰`20261105T130513-6baf276b`で全36stage+四色patternが成功した。
+通常SDKパネルでの実foot描画・世代再生成・停止後復帰も[D02](foot-render-checks.md)で成功し、
+D01をdoneとした。HMD視認と物理入力の未確認は継続する。
+
 ## 所有権と座標
 
 `native/render/src/egl.rs`がAndroidの公開`libEGL.so`でES3 contextを作り、

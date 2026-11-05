@@ -163,7 +163,7 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_DebugNativeBridge_nativ
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeAttachSurface<'a>(
-    mut env: EnvUnowned<'a>,
+    env: EnvUnowned<'a>,
     _: JClass<'a>,
     handle: jlong,
     session: jlong,
@@ -173,6 +173,45 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeAtta
     surface: JObject<'a>,
     width: jint,
     height: jint,
+) -> jint {
+    attach_surface_impl(
+        env, handle, session, window, scene, generation, surface, width, height, false,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeAttachWindowSurface<
+    'a,
+>(
+    env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    handle: jlong,
+    session: jlong,
+    window: jlong,
+    scene: jlong,
+    generation: jlong,
+    surface: JObject<'a>,
+    width: jint,
+    height: jint,
+) -> jint {
+    attach_surface_impl(
+        env, handle, session, window, scene, generation, surface, width, height, true,
+    )
+}
+
+// 二つのflat JNI ABIで同じ検査・参照取得・ErrorPolicyを共有する。
+#[allow(clippy::too_many_arguments)]
+fn attach_surface_impl<'a>(
+    mut env: EnvUnowned<'a>,
+    handle: jlong,
+    session: jlong,
+    window: jlong,
+    scene: jlong,
+    generation: jlong,
+    surface: JObject<'a>,
+    width: jint,
+    height: jint,
+    window_mode: bool,
 ) -> jint {
     env.with_env(|env| -> jni::errors::Result<i32> {
         use eidolon_model::surface::{TargetKey, validate_dimensions};
@@ -197,7 +236,11 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeAtta
         };
         Ok(global()
             .guarded(handle, |runtime| {
-                runtime.attach_surface(key, native, width, height)
+                if window_mode {
+                    runtime.attach_window_surface(key, native, width, height)
+                } else {
+                    runtime.attach_surface(key, native, width, height)
+                }
             })
             .unwrap_or_else(|s| s) as i32)
     })
