@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -38,6 +39,19 @@ def python_tests(directory):
     print(json.dumps({"python": str(directory.relative_to(ROOT)), "run": result.testsRun - len(result.skipped), "skipped": len(result.skipped)}))
 
 
+def renderer_static_link():
+    output = subprocess.check_output(["cargo", "test", "--locked", "-p", "eidolon-render", "--no-run", "--message-format=json"], cwd=ROOT, text=True)
+    artifacts = [json.loads(line) for line in output.splitlines()]
+    executable = next(item["executable"] for item in artifacts
+                      if item.get("reason") == "compiler-artifact" and item["target"]["name"] == "eidolon_render"
+                      and item["profile"]["test"] and item.get("executable"))
+    elf = subprocess.check_output(["readelf", "-d", executable], text=True)
+    needed = re.findall(r"\(NEEDED\).*\[([^]]+)\]", elf)
+    if any("xkbcommon" in library for library in needed):
+        raise RuntimeError("render testがsystem libxkbcommonへ動的依存しています")
+    print(json.dumps({"suite": "render-static-link", "result": "pass", "needed": needed}))
+
+
 try:
     if args.suite == "all":
         run([os.environ.get("EIDOLON_TEST_SSHD", "/usr/sbin/sshd"), "-V"])
@@ -52,8 +66,9 @@ try:
         metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--no-deps", "--format-version=1"], cwd=ROOT, text=True))
         members = [p["name"] for p in metadata["packages"] if p["id"] in metadata["workspace_members"]]
         check_members(members, [p for group in SUITES.values() for p in group])
-    if args.suite in {"lifecycle", "compositor"}:
+    if args.suite in {"render", "lifecycle", "compositor"}:
         run(["python3", "scripts/build-native-deps", "--target", "host"])
+    if args.suite in {"lifecycle", "compositor"}:
         run(["python3", "scripts/build-waypipe", "--target", "host"])
         run(["cargo", "build", "--locked", "-p", "eidolon-shm-fixture", "--bin", "eidolon-shm-fixture"])
     for name, packages in SUITES.items():
@@ -73,6 +88,8 @@ try:
                 command.append("compositor::")
             count += rust_test_count(run(command))
         print(json.dumps({"suite": name, "result": "pass", "tests": count}))
+        if name == "render":
+            renderer_static_link()
     if args.suite == "all":
         python_tests(ROOT / "scripts/tests")
         launcher = ROOT / "scripts/termux/tests"

@@ -36,7 +36,7 @@ readbackだけをSmithay frameの`with_context`で行い、GL stateを変更し�
 
 ```bash
 scripts/check-host --suite all
-scripts/build-android 55
+scripts/build-android 57
 # EIDOLON_APKは上のscriptが保存したAPKの絶対path。
 adb -s "$EIDOLON_QUEST_SERIAL" install -r "$EIDOLON_APK"
 scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" \
@@ -105,3 +105,20 @@ hostでは1000枚のsubmitをattach前に最新1枚へまとめ、古いArcが�
 
 raw logsは設定された作業rootの`eidolon-phase5-implementation/d01-*`、
 `d01-builds/`、`checks/<run>/`に保存する。公開記録に端末識別子・室内画像・terminal本文を含めない。
+
+## CIで見つかったrender単体のリンク指定漏れ
+
+`e3c069a`のActions run `41957422021`はAndroidに成功したが、hostのrender単体testで
+`unable to find library -lxkbcommon`となった。coreだけが固定archiveを指定し、
+render単体はローカル導入済みのsystem libraryでリンクできていたため、ローカルの全testでは見えなかった。
+
+renderのbuild scriptでも既存coreのmarker/入力SHA/archive SHA検査を共有し、同じstatic archiveを指定した。
+新しいapt packageを追加する対応は行わない。`check-host --suite render`でも依存を準備し、
+生成したtest ELFのNEEDEDにsystem libxkbcommonが無いことを毎回検査する。
+依存lockはrenderのbuild-depsだけを追加し、再生成時に動いた無関係なwinnow版は元へ戻した。
+
+Build57でhost69件・render単体とELF検査、debug/release assemble/lint/package、実APK Python38件が成功した。
+QuestのGPU case `20261105T120215-586ebc51`とSSH→footの`20261105T120222-63d1e158`も成功した。
+APK SHA256は`58ad668bfae50b969ad1d4e61ba2b4366f0086be2873d93ef883e1ecdd1b5f18`、source digestは
+`05da4ae37a6d90776a68295653e2b2b85e77e425816bc4917c9eedce68cdc9c2`。
+これは`e3c069a`からのdirty buildで、通常UI/HMDの合格は追加していない。
