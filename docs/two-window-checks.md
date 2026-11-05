@@ -84,7 +84,7 @@ PCの負例では、片側更新不足、三枚同時選択、修飾キー残留
 終了後の別auditでも固定fixture・foot・footclient・waypipe processが残っていないことを確認し、既存shell/sshdのidentityは維持されていた。
 
 Guardianのトラッキング確認画面が前面にあるため、通常SDKの二枚描画・総layer数・HMD可読性は未受入れ。
-現時点の`two-windows`コマンドはinstrumentation専用で、通常SDK用の同名自動caseは未実装。
+Build84時点の`two-windows`コマンドはinstrumentation専用だった。
 製品UIの追加・表示枠切替・個別closeは実装済みだが、このheadless検査からSDK表示の成功へ読み替えない。
 
 ## layer数の取得を準備
@@ -98,3 +98,43 @@ Meta公式の[logcat stats定義](https://developers.meta.com/vr/documentation/s
 今回のread-only調査では、dumpsysのOVRMetricsService/OculusWindowManagerは出力がなかった。
 logcatには`LCnt=4`があったが、送信元はcom.oculus.vrshellで、Eidolonの二枚の計測値ではなかった。
 通常SDKがFOCUSEDとなった状態で改めて採取する必要がある。
+
+## 通常SDKの片側Surface喪失・表示切替検査
+
+受入条件を再監査し、I06の短い二枚表示だけでは、SDK Entity別の喪失/切替/個別closeの証拠が不足すると判断した。
+Build92で通常版の`two-windows`を接続した。検査専用nonceの保存先を使い、終了時は製品設定へ戻す。
+同じSSH sessionを維持して次を検査する。
+
+1. 二枚のSDK quadでpose/physical sizeのgeometry照合とray→keyを確認し、layer測定用に2.2秒保持する。
+2. 片側の実SDK Entityを再生成し、新Entityの割当てを一時保留する。他方のSDK ray→keyと同じSurface世代のframe進行を確認する。
+3. 保留を解き、片側だけ新しいSurface世代へ戻ること、旧targetのpose commandがSTALEになることを確認する。
+4. 三枚目を非表示の論理windowとして保持し、Shiftを押した状態で表示枠を切り替える。押下解除と新しい表示先へのSDK ray→keyを確認する。
+5. 三枚目を個別closeし、他方の更新を確認する。元の二枚へ戻し、実Activity再生成・新sceneへの再適用と保存復元を検査する。
+
+保留はdebug版だけで使用する。releaseのhookは常にfalseで、通常の割当てを保留しない。
+検査の終了・例外でも保留を解除する。実SDKのEntity/Surface callbackを使い、visibilityやpose適用ackを合成しない。
+入力イベントは固定の合成イベントであり、物理controller/keyboard成功とは区別する。
+
+```bash
+scripts/quest-check --serial "$QUEST_SERIAL" --case two-windows --timeout 300
+```
+
+PC側は10stageのfull target・同一session・片側だけの世代変化・他方の入力/描画・第三window・押下解除・closeを要求する。
+旧世代再利用、他方のframe停止、押下残留などを拒否する負例と、既存layoutのscope検査が成功した。
+Build92のdebug/lint/packageは成功。通常SDKの実行結果はGuardianの追跡復帰後に記録し、現在は未実行。
+geometry検査が通ってもLCntが`not_observed`なら、layer計測の受入れは保留する。
+
+Build92ではdebug/release・lint・package、実APKのPython60件が成功した。
+Questの既存native検査も、二枚73秒 `20261105T222514-09d535f0`、resize `20261105T222634-207e0d05`、
+配置保存 `20261105T222647-497d4139`、US/JIS wire `20261105T222705-1ae7e6dd`で成功した。
+検査用processの残留はなく、既存Termux bash/sshdを維持した。
+
+その後のreviewで、SDK側がpose commandの完了待ち`pending`を即座にSTALE失敗と判定し得ることを発見した。
+まだSDK実行前のsource reviewであり、Quest上でその失敗が発生したという記録ではない。
+完了前は次tickを待つ形へ直し、同定のためBuild93を作成した。
+
+Build93のdebug/release・lint・package、実APKのPython60件が成功した。
+APK SHA256は`77b36df3b01f9f1dc702f25e4112b89c276b06a63e9fbd0ecf069f2538e54bce`。
+source digestは`31ceeffebf0a78f97310b6f12c4bbc934d8f0692a6c5df4c3b74d5fcfbd4b4dd`。
+同版のnative配置保存とUS/JIS wire回帰も成功し、停止後の検査用processは残っていない。
+通常SDKの片側喪失/切替/closeとlayer数は引き続き未受入れで、ここまでの成功とは分けて扱う。

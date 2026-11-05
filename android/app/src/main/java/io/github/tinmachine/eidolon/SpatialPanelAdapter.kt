@@ -92,7 +92,11 @@ class SpatialPanelAdapter {
         event("shutdown")
     }
     fun recreate(): Boolean {
-        val current = primary() ?: return false
+        return recreateBinding(primary())
+    }
+    fun recreateWindow(window: String): Boolean = recreateBinding(bindings.values.firstOrNull {it.role=="windows" && !it.retire && it.key.getString("window")==window})
+    private fun recreateBinding(binding: Binding?): Boolean {
+        val current = binding ?: return false
         if (current.retire) return false
         current.retire = true; current.destroy = true
         event("recreate", current.entity.id)
@@ -289,6 +293,7 @@ class SpatialPanelAdapter {
             if (windows && bindings.values.none { it.role == "diagnostic" }) {
                 for (plan in desired) {
                     if (bindings.size >= 2) break
+                    if (BuildHooks.holdPanelCreation(plan.getJSONObject("target").getString("window"))) continue
                     if (bindings.values.none { sameKey(it.key,plan.getJSONObject("target")) }) create(handle,plan)
                 }
             } else if (!windows && bindings.isEmpty()) create(handle)

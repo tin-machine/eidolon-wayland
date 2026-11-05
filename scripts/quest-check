@@ -15,7 +15,7 @@ import zipfile
 
 from native_build import ROOT, identity
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
-from quest_checks import popup_clipboard_result, compositor_layer_stats, layout_sdk_result, layout_native_result, two_windows_result, resize_result, pointer_result, pointer_wire_result, keyboard_result, keyboard_wire_result, runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result, native_deps_result, shm_result, wayland_state_result, waypipe_result, forwarded_shm_result, render_result, foot_result, foot_sdk_result, ray_result
+from quest_checks import popup_clipboard_result, compositor_layer_stats, two_windows_sdk_result, layout_sdk_result, layout_native_result, two_windows_result, resize_result, pointer_result, pointer_wire_result, keyboard_result, keyboard_wire_result, runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result, native_deps_result, shm_result, wayland_state_result, waypipe_result, forwarded_shm_result, render_result, foot_result, foot_sdk_result, ray_result
 
 CASES = ("resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup",
          "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm", "render", "foot", "ray", "keyboard",
@@ -29,7 +29,7 @@ parser.add_argument("--instrumentation", action="store_true", help="Activityを�
 args = parser.parse_args()
 if args.instrumentation and args.case not in {"popup-clipboard", "layout", "two-windows", "resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "foot", "render", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm"}:
     parser.error("instrumentationはfoot/render/forward/remote-cleanup/native-deps/shm/shm-truncate/wayland-state/waypipe/forwarded-shmだけです")
-if args.case in {"two-windows", "resize-native"} and not args.instrumentation:
+if args.case == "resize-native" and not args.instrumentation:
     parser.error("resize-nativeには--instrumentationを指定してください")
 if args.case == "render" and not args.instrumentation:
     parser.error("renderの通常UI検査は未実装です。--instrumentationを指定してください")
@@ -69,7 +69,7 @@ try:
     uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", PACKAGE))
     termux_uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux") if args.case in {"layout", "two-windows", "resize-native", "resize", "pointer", "keyboard", "ssh", "ssh-product", "forward", "remote-cleanup", "forwarded-shm", "foot"} else None
     logfile = (run / "app.log").open("w")
-    stream = device.start_log(uid, logfile, log_format="epoch" if args.case=="layout" and not args.instrumentation else "threadtime")
+    stream = device.start_log(uid, logfile, log_format="epoch" if args.case in {"layout","two-windows"} and not args.instrumentation else "threadtime")
     if args.instrumentation:
         instrument_log = (run / "instrumentation.log").open("w")
         instrument = subprocess.Popen(["adb", "-s", args.serial, "shell", "am", "instrument", "-w", "-r", "-e", "case", args.case, "-e", "nonce", nonce, PACKAGE + "/.NativeCheckInstrumentation"], stdout=instrument_log, stderr=subprocess.STDOUT)
@@ -119,7 +119,8 @@ try:
             judge = layout_native_result if args.instrumentation else layout_sdk_result
             accepted = judge(snapshot, nonce, expected, uid, termux_uid, json.loads((run / "native-package.json").read_text()))
         elif args.case == "two-windows":
-            accepted = two_windows_result(snapshot, nonce, expected, uid, termux_uid, json.loads((run / "native-package.json").read_text()))
+            judge = two_windows_result if args.instrumentation else two_windows_sdk_result
+            accepted = judge(snapshot, nonce, expected, uid, termux_uid, json.loads((run / "native-package.json").read_text()))
         elif args.case == "resize-native":
             accepted = foot_result(snapshot, nonce, expected, uid, termux_uid, json.loads((run / "native-package.json").read_text()), case="resize-native")
         elif args.case == "foot":
@@ -171,7 +172,7 @@ try:
         result["cycles"] = len(snapshot["check"]["cycles"]) if args.case != "helper" else 10
     if args.case == "runtime":
         result["panic_converted"] = True
-    if args.case=="layout" and not args.instrumentation:
+    if args.case in {"layout","two-windows"} and not args.instrumentation:
         result["compositor_layers"]=compositor_layer_stats(snapshot["check"], (run / "app.log").read_text(), uid)
     exit_code = 0
 except Exception as error:

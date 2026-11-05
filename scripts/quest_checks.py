@@ -1655,11 +1655,11 @@ def layout_native_result(snapshot, nonce, expected, apk_uid, termux_uid, package
     return instrumentation_result(snapshot,proof,apk_uid)
 
 
-def layout_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
+def layout_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package, *, case="layout"):
     if snapshot.get('schema')!=1 or snapshot.get('build_info')!=expected:
         return False
     p=snapshot.get('check',{})
-    if p.get('case')!='layout' or p.get('nonce')!=nonce:
+    if p.get('case')!=case or p.get('nonce')!=nonce:
         return False
     if p.get('result')=='fail':
         raise ValueError('SDK配置検査失敗: '+p.get('stage','unknown'))
@@ -1730,6 +1730,74 @@ def layout_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
             or len(render.get('targets',[]))!=1 or render['targets'][0].get('frames',0)<3 or render['targets'][0].get('role')!='diagnostic'
             or not int(p.get('new_handle','0'))>int(p.get('last_handle','0'))>=int(p.get('fixture_handle','0'))>int(p.get('original_handle','0'))>0):
         raise ValueError('検査用設定とownerを回収して通常UIへ復帰していません')
+    return True
+
+
+def two_windows_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
+    if not layout_sdk_result(snapshot,nonce,expected,apk_uid,termux_uid,package,case='two-windows'):
+        return False
+    p=snapshot['check'];rows=p.get('two_window_cycles',[])
+    wanted=['pair','first_lost','loss_input','first_restored','third_hidden','shift_held','switched','third_input','third_closed','pair_restored']
+    if ([r.get('stage') for r in rows]!=wanted or p.get('surface_loss_trigger')!='sdk-entity-recreate'
+            or any(p.get(k) is not True for k in ['source_hold_released','old_surface_target_rejected','shift_held_before_switch'])):
+        raise ValueError('SDK二枚のSurface喪失・切替・個別closeの証明が不足しています')
+    def target_map(s):
+        return {t.get('key',{}).get('window'):t for t in s.get('render',{}).get('targets',[])}
+    initial=rows[0]['runtime'];old=target_map(initial);ids=list(old)
+    if len(ids)!=2:
+        raise ValueError('SDK二枚の初期targetが不正です')
+    lost=target_map(rows[1].get('runtime',{}));remaining=list(lost)
+    if len(remaining)!=1 or remaining[0] not in ids:
+        raise ValueError('片側だけのSDK Surface喪失を確認できません')
+    second=remaining[0];first=next(w for w in ids if w!=second)
+    hidden=rows[4].get('runtime',{}).get('app',{}).get('windows',[])
+    third_ids=[w.get('window') for w in hidden if w.get('window') not in ids]
+    if len(third_ids)!=1 or not re.fullmatch('[1-9][0-9]*',str(third_ids[0])):
+        raise ValueError('三枚目の論理windowが不正です')
+    third=third_ids[0];session=initial['app']['session'];scene=initial['scene']
+    for i,row in enumerate(rows):
+        s=row.get('runtime',{});a=s.get('app',{});t=s.get('transport',{});r=s.get('render',{});m=target_map(s);adapter=row.get('adapter',{})
+        expected_ids={second} if i in (1,2) else ({first,third} if i in (6,7) else {first,second})
+        if i==8:expected_ids=set(m)
+        expected_windows={first,second,third} if 4<=i<=7 else {first,second}
+        if (s.get('state')!='Ready' or s.get('scene')!=scene or s.get('activity_visible') is not True or s.get('xr_state')!='FOCUSED'
+                or a.get('session')!=session or a.get('mode')!='foot' or a.get('error') is not None or a.get('callback_clock')!='target-driven'
+                or {w.get('window') for w in a.get('windows',[])}!=expected_windows or any(w.get('life')!='Mapped' for w in a.get('windows',[]))
+                or a.get('local',{}).get('uid')!=apk_uid or a.get('local',{}).get('child_uid')!=apk_uid
+                or a.get('local',{}).get('executable_sha256')!=package['dependencies']['waypipe']['sha256']
+                or t.get('state')!='Ready' or t.get('session')!=session or t.get('app_forward',{}).get('state')!='running' or t.get('app_forward',{}).get('uid')!=termux_uid
+                or r.get('mode')!='windows' or r.get('error') is not None or set(m)!=expected_ids or not 1<=len(m)<=2
+                or adapter.get('bindings')!=len(m) or adapter.get('listeners')!=len(m)
+                or (i==8 and (first not in m or not set(m)<={first,second}))):
+            raise ValueError('SDK二枚の独立target・同一接続・window一覧・資源が不正です')
+        for window,target in m.items():
+            key=target.get('key',{});w=next((w for w in a['windows'] if w.get('window')==window),{})
+            placement=next((w.get('placement',{}) for w in s.get('workspace',{}).get('windows',[]) if w.get('window')==window),{})
+            ack=placement.get('applied_pose') or {};plan=next((v for v in s.get('panels',[]) if v.get('target')==key),{})
+            if (key.get('session')!=session or key.get('scene')!=scene or target.get('frames',0)<3 or target.get('content_frame')!=w.get('frame')
+                    or plan.get('action')!='create' or plan.get('applied') is not True or ack.get('target')!=key or ack.get('pose_command')!=placement.get('pose_command')
+                    or w.get('sizing',{}).get('applied_physical_size_m')!=w.get('sizing',{}).get('physical_size_m')):
+                raise ValueError('SDK二枚の実geometry適用・描画証明が不正です')
+        inputs=a.get('input',{})
+        if i in (1,2):
+            if m[second]['key']!=old[second]['key']:
+                raise ValueError('片側の喪失で他方のSurface世代が変わっています')
+        if i==2 and (m[second]['frames']<=old[second]['frames'] or inputs.get('focus_window')!=second
+                or inputs.get('delivered',0)<rows[1]['runtime']['app']['input']['delivered']+4 or inputs.get('pressed')!=0):
+            raise ValueError('片側喪失中の他方への入力・更新がありません')
+        if i==3 and (int(m[first]['key']['generation'])<=int(old[first]['key']['generation']) or m[second]['key']!=old[second]['key']):
+            raise ValueError('片側だけの新Surface世代を確認できません')
+        if i==5 and (inputs.get('pressed')!=1 or inputs.get('focus_window')!=second):
+            raise ValueError('表示切替前の修飾キー保持がありません')
+        if i in (6,7,8,9) and inputs.get('pressed')!=0:
+            raise ValueError('表示切替・close後に押下が残っています')
+        if i==7 and (inputs.get('focus_window')!=third or inputs.get('delivered',0)<rows[6]['runtime']['app']['input']['delivered']+4):
+            raise ValueError('表示切替後のSDK ray→key入力がありません')
+        if i==8 and m[first]['frames']<=target_map(rows[3]['runtime'])[first]['frames']:
+            raise ValueError('他windowのclose中に残ったpanelが更新されていません')
+    recreated=target_map(p['cycles'][3]['runtime']);last=target_map(rows[-1]['runtime'])
+    if any(int(recreated[w]['key']['generation'])<=int(last[w]['key']['generation']) for w in (first,second)):
+        raise ValueError('二枚操作後のActivity再生成が旧Surface世代を再利用しています')
     return True
 
 

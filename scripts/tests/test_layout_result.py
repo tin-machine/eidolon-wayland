@@ -50,7 +50,7 @@ class LayoutTests(unittest.TestCase):
                 target[path[-1]]=value
                 with self.subTest(path=path),self.assertRaises(ValueError):judge(bad)
 
-    def test_sdk_scope_requires_actual_pose_ack_two_panels_recreated_scene_and_product_restore(self):
+    def sdk_fixture(self):
         f=self.fixture();p=f['check'];pose=dict(position_m=[.2,1.5,1.75],rotation_xyzw=[0,math.sin(math.pi/24),0,math.cos(math.pi/24)])
         p.update(consumer='SDK',uid=4242,pid=44,synthetic_visibility=False,synthetic_pose_ack=False,synthetic_scene=False,sdk_pose_verified=True,
             physical_input_verified=False,hmd_verified=False,text_verified=False,background_optical_verified=False,synthetic_stale_callback=True,activity_recreated=True,source_destroyed=True,product_settings_untouched=True,
@@ -71,6 +71,10 @@ class LayoutTests(unittest.TestCase):
             rows.append(row)
         p['cycles']=rows;p['product_restored']=dict(state='Ready',activity_visible=True,xr_state='FOCUSED',transport=dict(state='Idle',pending_cleanup=[]),render=dict(mode='diagnostic',targets=[dict(role='diagnostic',frames=3)]))
         package=dict(dependencies=dict(waypipe=dict(sha256='0'*64),keymaps=dict(jis=dict(sha256='1'*64))))
+        return f,package
+
+    def test_sdk_scope_requires_actual_pose_ack_two_panels_recreated_scene_and_product_restore(self):
+        f,package=self.sdk_fixture()
         def judge(value):return layout_sdk_result(value,'a'*32,dict(profile='debug'),4242,4343,package)
         self.assertTrue(judge(f))
         for path,value in [(['synthetic_visibility'],True),(['synthetic_pose_ack'],True),(['activity_recreated'],False),

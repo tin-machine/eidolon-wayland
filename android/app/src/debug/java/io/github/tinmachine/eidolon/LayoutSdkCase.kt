@@ -19,21 +19,22 @@ import org.json.JSONObject
 /** 通常Host/SDKで配置・二枚・実Activity再生成を検査し、終了後は製品設定へ戻す。 */
 object LayoutSdkCase {
     private var active:Check?=null
-    fun start(nonce:String,context:Context,adapter:SpatialPanelAdapter,scene:()->Scene,recreate:()->Unit,complete:()->Unit) {
-        check(active==null);Check(nonce,context,adapter,scene,recreate,complete).also {active=it;it.start()}
+    fun start(nonce:String,context:Context,adapter:SpatialPanelAdapter,scene:()->Scene,recreate:()->Unit,name:String="layout",complete:()->Unit) {
+        check(active==null);Check(nonce,context,adapter,scene,recreate,name,complete).also {active=it;it.start()}
     }
     fun sceneReady(adapter:SpatialPanelAdapter,scene:()->Scene,recreate:()->Unit) {
         active?.let {it.adapter=adapter;it.scene=scene;it.recreate=recreate}
     }
-    private class Check(val nonce:String,val context:Context,var adapter:SpatialPanelAdapter,var scene:()->Scene,var recreate:()->Unit,val complete:()->Unit):Runnable {
+    private class Check(val nonce:String,val context:Context,var adapter:SpatialPanelAdapter,var scene:()->Scene,var recreate:()->Unit,val name:String,val complete:()->Unit):Runnable {
         val ui=Handler(Looper.getMainLooper());val rows=JSONArray()
-        val result=JSONObject().put("case","layout").put("nonce",nonce).put("result","running").put("consumer","SDK")
+        val result=JSONObject().put("case",name).put("nonce",nonce).put("result","running").put("consumer","SDK")
             .put("uid",Process.myUid()).put("pid",Process.myPid()).put("text_verified",false).put("synthetic_scene",false).put("synthetic_visibility",false).put("synthetic_input",true).put("synthetic_pose_ack",false)
             .put("sdk_pose_verified",true).put("physical_input_verified",false).put("hmd_verified",false).put("background_optical_verified",false)
         var stage="ready";var deadline=SystemClock.elapsedRealtime()+60000
         var originalHandle=0L;var fixtureHandle=0L;var restartHandle=0L;var lastHandle=0L
         var firstSession="";var initialScene=0L;var first="";var second="";var keyTarget=JSONObject();var keys=0L
         var source:Entity?=null;var originalDigest="";var statsUntil=0L;var statsStarted=0L
+        val pairRows=JSONArray();var third="";var firstKey=JSONObject();var secondKey=JSONObject();var secondFrames=0L;var stalePoseRequest:String?=null
         fun start() {NativeSessionHost.publishCheck(result);ui.post(this)}
         fun settingsDigest():String {
             val file=File(context.noBackupFilesDir,"workspace/layout.json")
@@ -47,11 +48,11 @@ object LayoutSdkCase {
         fun workspaceWindow(s:JSONObject,window:String)=items(s.getJSONObject("workspace").getJSONArray("windows")).first {it.getString("window")==window}
         fun key(s:JSONObject,window:String)=items(s.getJSONArray("panels")).first {it.getString("action")=="create" && it.getJSONObject("target").getString("window")==window}.getJSONObject("target")
         fun same(a:JSONObject,b:JSONObject)=listOf("session","window","scene","generation").all {a.getString(it)==b.getString(it)}
-        fun ready(s:JSONObject,count:Int):Boolean {
+        fun ready(s:JSONObject,count:Int,windowCount:Int=count):Boolean {
             val app=s.optJSONObject("app") ?: return false
             if(app.optString("state")!="running" || !app.isNull("error") || app.optString("mode")!="foot") return false
-            val targets=items(s.getJSONObject("render").getJSONArray("targets"));val plans=items(s.getJSONArray("panels"));val ws=s.getJSONObject("workspace")
-            if(windows(s).size!=count || targets.size!=count || plans.size!=count || adapter.metrics().getInt("bindings")!=count || adapter.metrics().getInt("listeners")!=count) return false
+            val targets=items(s.getJSONObject("render").getJSONArray("targets"));val plans=items(s.getJSONArray("panels")).filterNot {BuildHooks.holdPanelCreation(it.getJSONObject("target").getString("window"))};val ws=s.getJSONObject("workspace")
+            if(windows(s).size!=windowCount || targets.size!=count || plans.size!=count || adapter.metrics().getInt("bindings")!=count || adapter.metrics().getInt("listeners")!=count) return false
             return targets.all {t ->
                 val plan=plans.firstOrNull {same(it.getJSONObject("target"),t.getJSONObject("key"))}
                 val window=windows(s).firstOrNull {it.getString("window")==t.getJSONObject("key").getString("window")}
@@ -63,6 +64,12 @@ object LayoutSdkCase {
         fun record(label:String,s:JSONObject) {
             rows.put(JSONObject().put("stage",label).put("runtime",s).put("adapter",adapter.metrics()));result.put("cycles",rows);NativeSessionHost.publishCheck(result)
         }
+        fun pairRecord(label:String,s:JSONObject) {
+            pairRows.put(JSONObject().put("stage",label).put("runtime",s).put("adapter",adapter.metrics()));result.put("two_window_cycles",pairRows);NativeSessionHost.publishCheck(result)
+        }
+        fun choice(s:JSONObject,window:String)=NativeSessionHost.WindowChoice(s.getJSONObject("app").getString("session"),s.getString("scene"),window,null)
+        fun frameCount(s:JSONObject,window:String)=items(s.getJSONObject("render").getJSONArray("targets")).first {it.getJSONObject("key").getString("window")==window}.getLong("frames")
+        fun recreateActivity(s:JSONObject) {initialScene=s.getString("scene").toLong();cleanupSource();stage="recreated";deadline=SystemClock.elapsedRealtime()+60000;recreate()}
         fun cleanupSource() {
             source?.let {scene().onNoIntersectionInput(it,0,0);scene().resolveInput();it.destroy()};source=null;result.put("source_destroyed",true)
         }
@@ -89,6 +96,7 @@ object LayoutSdkCase {
             return input.optString("focus_window")==keyTarget.optString("window") && !input.isNull("focus_token") && NativeSessionHost.keyboardFocusMatches(keyTarget,input.getString("focus_token"))
         }
         fun beginProductRestore() {
+            BuildHooks.holdPanel(null)
             cleanupSource();lastHandle=NativeSessionHost.currentHandle();stage="product";deadline=SystemClock.elapsedRealtime()+30000
             NativeSessionHost.withStoppedRuntime({ BuildHooks.preferencesFixture=null },{})
         }
@@ -132,8 +140,51 @@ object LayoutSdkCase {
                             else if(statsUntil==0L) {statsStarted=System.currentTimeMillis();statsUntil=SystemClock.elapsedRealtime()+2200}
                             else if(SystemClock.elapsedRealtime()>=statsUntil && ready(s,2)) {
                                 result.put("layer_window",JSONObject().put("start_wall_ms",statsStarted).put("end_wall_ms",System.currentTimeMillis()).put("scene",s.getString("scene")))
-                                record("two",s);initialScene=s.getString("scene").toLong();cleanupSource();stage="recreated";deadline=SystemClock.elapsedRealtime()+60000;recreate()
+                                record("two",s)
+                                if(name=="two-windows") {
+                                    pairRecord("pair",s);firstKey=JSONObject(key(s,first).toString());secondKey=JSONObject(key(s,second).toString());secondFrames=frameCount(s,second)
+                                    BuildHooks.holdPanel(first);check(adapter.recreateWindow(first));result.put("surface_loss_trigger","sdk-entity-recreate");stage="pair_lost";deadline=SystemClock.elapsedRealtime()+60000
+                                } else recreateActivity(s)
                             }
+                        }
+                        "pair_lost" -> if(focused && ready(s,1,2) && adapter.windowEntity(first)==null && same(key(s,second),secondKey)) {
+                            pairRecord("first_lost",s);click(s,second);stage="pair_loss_keys"
+                        }
+                        "pair_loss_keys" -> if(focused && focusReady(s)) {typeKey();stage="pair_loss_typed"}
+                        "pair_loss_typed" -> if(focused && ready(s,1,2) && s.getJSONObject("app").getJSONObject("input").getLong("delivered")>=keys+4 && frameCount(s,second)>secondFrames) {
+                            pairRecord("loss_input",s);BuildHooks.holdPanel(null);stage="pair_restored"
+                        }
+                        "pair_restored" -> if(focused && ready(s,2) && key(s,first).getString("generation").toLong()>firstKey.getString("generation").toLong()) {
+                            check(same(key(s,second),secondKey));pairRecord("first_restored",s)
+                            stalePoseRequest=NativeSessionHost.submitPose(firstKey,workspaceWindow(s,first).getJSONObject("placement").getJSONObject("pose"),current);check(stalePoseRequest!=null);stage="pair_stale"
+                        }
+                        "pair_stale" -> stalePoseRequest?.let {request -> NativeSessionHost.poseCompletion(request)?.let {status ->
+                            if(status!="pending") {
+                                check(status=="STALE");NativeSessionHost.forgetPose(request);stalePoseRequest=null;result.put("old_surface_target_rejected",true);NativeSessionHost.openTerminal();stage="pair_third"
+                            }
+                        } }
+                        "pair_third" -> if(focused && ready(s,2,3)) {
+                            third=windows(s).first {it.getString("window")!=first && it.getString("window")!=second}.getString("window")
+                            check(adapter.windowEntity(third)==null);pairRecord("third_hidden",s);click(s,second);stage="pair_shift"
+                        }
+                        "pair_shift" -> if(focused && focusReady(s)) {
+                            val now=SystemClock.uptimeMillis();check(NativeSessionHost.sendPhysicalKey(KeyEvent(now,now,KeyEvent.ACTION_DOWN,KeyEvent.KEYCODE_SHIFT_LEFT,0,0,Int.MAX_VALUE-13,42,0,InputDevice.SOURCE_KEYBOARD)));stage="pair_shift_held"
+                        }
+                        "pair_shift_held" -> if(focused && s.getJSONObject("app").getJSONObject("input").getInt("pressed")==1) {
+                            pairRecord("shift_held",s);result.put("shift_held_before_switch",true);NativeSessionHost.showWindow(choice(s,third),1);stage="pair_switched"
+                        }
+                        "pair_switched" -> if(focused && ready(s,2,3) && adapter.windowEntity(third)!=null && adapter.windowEntity(second)==null && s.getJSONObject("app").getJSONObject("input").getInt("pressed")==0) {
+                            pairRecord("switched",s);click(s,third);stage="pair_third_keys"
+                        }
+                        "pair_third_keys" -> if(focused && focusReady(s)) {typeKey();stage="pair_third_typed"}
+                        "pair_third_typed" -> if(focused && ready(s,2,3) && s.getJSONObject("app").getJSONObject("input").getLong("delivered")>=keys+4) {
+                            pairRecord("third_input",s);NativeSessionHost.closeWindow(choice(s,third));stage="pair_closed"
+                        }
+                        "pair_closed" -> if(focused && s.getJSONObject("render").getJSONArray("targets").length() in 1..2 && ready(s,s.getJSONObject("render").getJSONArray("targets").length(),2) && windows(s).none {it.getString("window")==third} && adapter.windowEntity(third)==null && items(s.getJSONObject("render").getJSONArray("targets")).none {it.getJSONObject("key").getString("window")==third}) {
+                            pairRecord("third_closed",s);NativeSessionHost.showWindow(choice(s,second),1);stage="pair_final"
+                        }
+                        "pair_final" -> if(focused && ready(s,2) && adapter.windowEntity(first)!=null && adapter.windowEntity(second)!=null) {
+                            pairRecord("pair_restored",s);result.put("source_hold_released",true);recreateActivity(s)
                         }
                         "recreated" -> if(current==fixtureHandle && focused && s.getString("scene").toLong()>initialScene && ready(s,2)) {
                             check(s.getJSONObject("app").getString("session")==firstSession)
@@ -159,6 +210,7 @@ object LayoutSdkCase {
                 }
                 ui.postDelayed(this,32)
             } catch(failure:Exception) {
+                BuildHooks.holdPanel(null);stalePoseRequest?.let {NativeSessionHost.forgetPose(it)}
                 result.put("result","fail").put("stage",stage).put("failure_class",failure.javaClass.simpleName).put("failure_site",failure.stackTrace.firstOrNull()?.toString())
                 val copy=result.toString();BuildHooks.preferencesFixture=null
                 runCatching {cleanupSource()};NativeSessionHost.withStoppedRuntime({it.publishCheck(JSONObject(copy))},{active=null;complete()})
