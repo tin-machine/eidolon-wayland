@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
 import androidx.compose.runtime.mutableStateOf
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -29,6 +30,9 @@ object NativeSessionHost {
     private var identity: CredentialStore.Identity? = null
     private var profiles = JSONArray()
     private val connection = AtomicLong(0)
+    private data class KeyboardFocus(val runtime: Long, val epoch: Long, val target: String)
+    @Volatile private var keyboardFocus: KeyboardFocus? = null
+    val keyboardSummary = mutableStateOf("操作パネルへ入力")
     private var lastWrite = 0L
     private var state = "Starting"
     private var sshState = "未接続"
@@ -63,8 +67,8 @@ object NativeSessionHost {
         send("scene_ready", "scene", scene.toString())
         return scene
     }
-    fun setXrState(value: String) { xrState.set(value); send("set_xr_state", "state", value) }
-    fun setActivityVisible(value: Boolean) { activityVisible.set(value); send("set_activity_state", "visible", value) }
+    fun setXrState(value: String) { if (value != "FOCUSED") keyboardFocus = null; xrState.set(value); send("set_xr_state", "state", value) }
+    fun setActivityVisible(value: Boolean) { if (!value) keyboardFocus = null; activityVisible.set(value); send("set_activity_state", "visible", value) }
     fun connect() { send("connect", "profile_id", "termux-local") }
     fun openTerminal() { worker.execute { safely {
         if (handle == 0L || terminalOpen != null) return@safely
@@ -91,6 +95,7 @@ object NativeSessionHost {
     } } }
     fun requestSnapshot() { worker.execute { safely { publish() } } }
     fun currentHandle(): Long = handle
+    fun keyboardFocused(): Boolean = keyboardFocus != null
     fun publishCheck(value: JSONObject) { val copy = value.toString(); worker.execute { safely { store?.publishCheck(JSONObject(copy)) } } }
     fun publishAdapter(value: JSONObject) { val copy = value.toString(); worker.execute { safely { store?.publishAdapter(JSONObject(copy)) } } }
     fun detachSurface(target: JSONObject, runtime: Long = handle): Int {
@@ -102,8 +107,35 @@ object NativeSessionHost {
             .put("type", if (success) "adapter_applied" else "adapter_failed")
             .put("command_seq", plan.getString("command_seq")).put("target", plan.getJSONObject("target"))
             .put("action", plan.getString("action")).toString())
-    fun resetInput(): Int = NativeBridge.nativeCommand(handle, JSONObject().put("schema", 1)
-        .put("request_id", requests.incrementAndGet().toString()).put("type", "reset_input").toString())
+    fun resetInput(): Int {
+        keyboardFocus = null
+        if (handle == 0L) return NativeBridge.NOT_READY
+        return NativeBridge.nativeCommand(handle, JSONObject().put("schema", 1)
+            .put("request_id", requests.incrementAndGet().toString()).put("type", "reset_input").toString())
+    }
+    fun focusTerminal() { worker.execute { safely {
+        if (handle == 0L) return@safely
+        val runtime = snapshot().getJSONObject("runtime")
+        val plans = runtime.getJSONArray("panels")
+        val plan = (0 until plans.length()).map { plans.getJSONObject(it) }
+            .firstOrNull { it.getString("action") == "create" && it.getBoolean("applied") && it.isNull("error") } ?: return@safely
+        NativeBridge.nativeCommand(handle, JSONObject().put("schema", 1).put("type", "focus_window")
+            .put("request_id", requests.incrementAndGet().toString()).put("target", plan.getJSONObject("target"))
+            .put("input_epoch", runtime.getLong("input_resets")).toString())
+    } } }
+    /** 入口の物理device判定はPhysicalKeyboard。ここは短いnative enqueueだけ。 */
+    fun sendPhysicalKey(event: KeyEvent): Boolean {
+        val focus = keyboardFocus ?: return false
+        if (focus.runtime != handle || !activityVisible.get() || xrState.get() != "FOCUSED") return false
+        val key = JSONObject().put("device", event.deviceId).put("scan_code", event.scanCode).put("key_code", event.keyCode)
+            .put("action", if (event.action == KeyEvent.ACTION_DOWN) "pressed" else "released").put("repeat", event.repeatCount)
+            .put("meta", event.metaState).put("time_ms", event.eventTime and 0xffffffffL)
+        val code = NativeBridge.nativeCommand(focus.runtime, JSONObject().put("schema", 1).put("type", "key")
+            .put("request_id", requests.incrementAndGet().toString()).put("target", JSONObject(focus.target))
+            .put("input_epoch", focus.epoch).put("key", key).toString())
+        if (code !in setOf(NativeBridge.ACCEPTED, NativeBridge.INVALID_ARGUMENT)) resetInput()
+        return code != NativeBridge.INVALID_ARGUMENT
+    }
 
     private fun send(type: String, key: String, value: Any) {
         safely {
@@ -132,6 +164,7 @@ object NativeSessionHost {
         .put("installation", checkNotNull(identity).installation).put("profiles", profiles).toString()
     private fun stopRuntime() {
         if (handle == 0L) return
+        keyboardFocus = null
         val old = handle
         val started = SystemClock.elapsedRealtime()
         check(NativeBridge.nativeRequestStop(old) == NativeBridge.ACCEPTED)
@@ -170,6 +203,7 @@ object NativeSessionHost {
         for (index in 0 until values.length()) {
             val event = values.getJSONObject(index)
             if (event.optString("type") == "command_complete") {
+                BuildHooks.commandComplete(event.getString("request_id"), event.getString("code"))
                 terminalOpen?.let { operation ->
                     val request = event.getString("request_id")
                     if (request == operation.connectRequest || request == operation.startRequest) {
@@ -186,6 +220,19 @@ object NativeSessionHost {
             }
         }
         val snapshot = snapshot()
+        val runtime = snapshot.getJSONObject("runtime")
+        val focusedWindow = runtime.optJSONObject("app")?.optJSONObject("input")?.optString("focus_window")
+        val plans = runtime.getJSONArray("panels")
+        val focused = (0 until plans.length()).map { plans.getJSONObject(it) }.firstOrNull {
+            it.optString("action") == "create" && it.optBoolean("applied") && it.isNull("error") &&
+                it.getJSONObject("target").getString("window") == focusedWindow &&
+                it.getJSONObject("target").optString("session") == runtime.optJSONObject("app")?.optString("session")
+        }
+        keyboardFocus = if (runtime.getString("state") == "Ready" && runtime.getBoolean("activity_visible") &&
+            runtime.getString("xr_state") == "FOCUSED" && focused != null)
+            KeyboardFocus(handle, runtime.getLong("input_resets"), focused.getJSONObject("target").toString()) else null
+        val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else "ターミナルへ入力"
+        ui.post { keyboardSummary.value = keyboardLabel }
         val transport = snapshot.getJSONObject("runtime").getJSONObject("transport")
         connection.set(transport.optString("session").toLongOrNull() ?: 0)
         terminalOpen?.let { operation ->

@@ -5,5 +5,6 @@ import com.meta.spatial.runtime.Scene
 
 /** releaseはADB診断のintentを実行しない。 */
 object BuildHooks {
+    fun commandComplete(request: String, code: String) = Unit
     fun accept(intent: Intent?, adapter: SpatialPanelAdapter, scene: () -> Scene) = Unit
 }

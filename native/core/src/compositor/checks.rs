@@ -307,11 +307,22 @@ pub fn run_scenario(
 ) -> serde_json::Value {
     use eidolon_model::commands::CompositorScenario as S;
     use eidolon_shm_fixture::state::Scenario as F;
+    if matches!(scenario, S::KeyboardUs | S::KeyboardJis) {
+        let layout = if matches!(scenario, S::KeyboardUs) {
+            eidolon_model::keyboard::KeyboardLayout::Us
+        } else {
+            eidolon_model::keyboard::KeyboardLayout::Jis
+        };
+        let mut report = serde_json::to_value(super::input_checks::run(layout, stop)).unwrap();
+        report["nonce"] = nonce.into();
+        return report;
+    }
     enum Probe {
         Shm(Mode),
         State(F),
     }
     let probe = match scenario {
+        S::KeyboardUs | S::KeyboardJis => unreachable!(),
         S::Lifecycle => Probe::State(F::Lifecycle),
         S::Transforms => Probe::State(F::Transforms),
         S::FrameGates => Probe::State(F::FrameGates),

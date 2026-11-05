@@ -49,6 +49,14 @@
       {
         "file": "native/patches/smithay/0002-android-egl-library.patch",
         "sha256": "d78136012ad94871891d67ad37d09f42d348433359e9dff0793c1fa3856ed17d"
+      },
+      {
+        "file": "native/patches/smithay/0003-compiled-keymap-constructor.patch",
+        "sha256": "fe672404765db6a7a36246638a686a303125bf019c0122b664ffaac3a3b511ff"
+      },
+      {
+        "file": "native/patches/smithay/0004-keymap-fd-nul-android.patch",
+        "sha256": "7d5b35c4242707479695109d766c8f09c474e37e1909bc0cbf364e6e275ea7ae"
       }
     ]
   },

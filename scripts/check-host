@@ -13,7 +13,7 @@ from host_checks import check_members, rust_test_count
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {"model": ["eidolon-model"], "render": ["eidolon-render"], "lifecycle": ["eidolon-core", "eidolon-android", "eidolon-helper-fixture"],
-          "transport": ["eidolon-transport"], "compositor": ["eidolon-core", "eidolon-shm-fixture"], "input": ["eidolon-model"]}
+          "transport": ["eidolon-transport"], "compositor": ["eidolon-core", "eidolon-shm-fixture"], "input": ["eidolon-model", "eidolon-core"]}
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--suite", required=True, choices=[*SUITES, "all"])
 args = parser.parse_args()
@@ -66,7 +66,7 @@ try:
         metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--no-deps", "--format-version=1"], cwd=ROOT, text=True))
         members = [p["name"] for p in metadata["packages"] if p["id"] in metadata["workspace_members"]]
         check_members(members, [p for group in SUITES.values() for p in group])
-    if args.suite in {"render", "lifecycle", "compositor"}:
+    if args.suite in {"render", "lifecycle", "compositor", "input"}:
         run(["python3", "scripts/build-native-deps", "--target", "host"])
     if args.suite in {"lifecycle", "compositor"}:
         run(["python3", "scripts/build-waypipe", "--target", "host"])
@@ -78,7 +78,7 @@ try:
             print(json.dumps({"suite": name, "result": "not_run", "reason": "未実装"}, ensure_ascii=False))
             continue
         if args.suite == "all" and name == "input":
-            print(json.dumps({"suite": name, "result": "included", "in": "model"}))
+            print(json.dumps({"suite": name, "result": "included", "in": ["model", "lifecycle"]}))
             continue
         count = 0
         for package in packages:
@@ -90,7 +90,12 @@ try:
             if name == "compositor" and package == "eidolon-core":
                 command.append("compositor::")
             if name == "input":
-                command.append("input::")
+                if package == "eidolon-model":
+                    count += rust_test_count(run(command + ["keyboard::"]))
+                    command.append("input::")
+                else:
+                    count += rust_test_count(run(command + ["compositor::input_checks::"]))
+                    command.append("compositor::protocol::input::")
             count += rust_test_count(run(command))
         if count < 1:
             raise RuntimeError("実行testが0件のsuiteを成功にしません")

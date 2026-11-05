@@ -103,11 +103,14 @@ impl Cacheable for BufferUse {
     }
 }
 
+#[path = "input.rs"]
+mod input;
 #[path = "positioner.rs"]
 mod positioner;
 /// 所有済みsnapshot以外はprotocol ownerから持ち出さない。
 #[path = "snapshot.rs"]
 mod snapshot;
+pub use input::InputReport;
 pub use snapshot::WindowReport;
 
 pub struct ProtocolState {
@@ -116,6 +119,7 @@ pub struct ProtocolState {
     shm: ShmState,
     seats: SeatState<Self>,
     _seat: Seat<Self>,
+    input: input::InputState,
     data_device: DataDeviceState,
     output: Output,
     _globals: Vec<GlobalId>,
@@ -196,6 +200,7 @@ impl ProtocolState {
             shm,
             seats,
             _seat: seat,
+            input: Default::default(),
             data_device,
             output,
             _globals: globals,
@@ -252,6 +257,7 @@ impl ProtocolState {
 
     /// dispatch後に呼ぶ。未commitの別surfaceも同bufferを保持していればreleaseを遅らせる。
     pub fn finish_dispatch(&mut self, dh: &DisplayHandle) {
+        self.refresh_input_focus();
         self.pool_leases.retain(|_, lease| lease.strong_count() > 0);
         let mut attached = HashSet::new();
         for surface in &self.surfaces {

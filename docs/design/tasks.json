@@ -1000,16 +1000,17 @@
     {
       "id": "I02",
       "title": "物理keyboard・keymap",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "I01",
         "W01"
       ],
       "spec": "docs/design/phase-4-5.md#i02",
       "files": [
-        "native/model/src/input.rs",
-        "native/core/src/compositor/protocol.rs",
-        "android/app/src/main/java/io/github/tinmachine/eidolon/InputAdapter.kt",
+        "native/model/src/keyboard.rs",
+        "native/core/src/compositor/input.rs",
+        "native/core/src/compositor/input_checks.rs",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/PhysicalKeyboard.kt",
         "android/app/src/main/assets/keymaps/"
       ],
       "steps": [

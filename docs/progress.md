@@ -22,6 +22,7 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | D01 | done | owned画像→Smithay/Android EGLの実GPU readbackと、通常SDK上のfoot描画・UI復帰に成功 |
 | D02 | in_progress | 実footの通常SDKパネル描画・世代再生成・Stop後UI復帰に成功。HMD視認と物理入力は未受入 |
 | I01 | in_progress | 共通Viewport・surface候補変換と、SDK四隅/中央のUV校正が成功。実コントローラーとWayland入力配送は後続 |
+| I02 | in_progress | 同梱US/JIS seat・evdev・focus/reset・Android物理入口を実装。Questでwire両layoutと通常Hostの固定合成key→実footセッション/解除/再入力/UI復帰が成功。Bluetooth物理操作は最終待ち |
 | D02〜I07 | planned | 実footのSDK描画と製品入力・複数windowを依存順に実装 |
 
 ## B01/B02: ビルドと実機の再現
@@ -495,3 +496,18 @@ W05検査がcompositor側完了を待たない競合と、W01 auditがSDKの新�
 Rust75test/Clippy/fmt、Python実APK40test、launcher16test、debug/release/lint/packageが成功。
 次はI01のSDK ray/共通座標変換から入力・focus・二枚のwindowへ進む。
 Phase5/I07 goalは継続し、HMD/実入力の確認は最終段階にまとめる。
+
+## I02 — keyboardと押下解除（Build69）
+
+Android物理keyの入口、evdev正規化、同梱compiled US/JISのseat、
+window focus、XDG Activated、device別押下追跡、urgent reset/epochを実装した。
+Questでは独立したWayland clientが実際のkeymap FD/evdev/modifiers/repeat/enter/leaveを受信し、
+両layoutと資源回収が成功した。通常SDKの実footセッションでも、
+固定合成入力のrepeat重複抑止、Shift保持中のreset、古epoch拒否、再フォーカス後の入力が成功した。
+旧runtimeの破棄197msと通常UI復帰も確認した。
+
+検査によりSmithayのlegacy keymap FDのNUL不足を検出し、
+Androidの一般一時directoryに依存しない匿名FD経路と合わせて固定patchへ反映した。
+Build67で生じたStopとframe送信の競合も修正し、68のfoot回帰が成功した。
+[失敗・切り分け・検査範囲・再現command](keyboard-checks.md)を記録した。
+Rust85test/Clippy/fmtが成功。物理Bluetooth/文字視認は未受入として残し、I03以降へ進む。

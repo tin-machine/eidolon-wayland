@@ -25,6 +25,7 @@ pub struct Report {
     pub nonce: String,
     pub mode: Option<AppMode>,
     pub callback_clock: &'static str,
+    pub input: crate::compositor::protocol::InputReport,
     pub ready: bool,
     pub local: ClientReport,
     pub accepted: u32,
@@ -75,6 +76,7 @@ impl Session {
         nonce: &str,
         mode: AppMode,
         virtual_clock: bool,
+        keyboard_layout: eidolon_model::keyboard::KeyboardLayout,
     ) -> Result<Self, &'static str> {
         if virtual_clock && !cfg!(debug_assertions) {
             return Err("NOT_READY");
@@ -86,7 +88,10 @@ impl Session {
             .set_nonblocking(true)
             .map_err(|_| "LOCAL_SOCKET_FAILED")?;
         let display = Display::<ProtocolState>::new().map_err(|_| "DISPLAY_CREATE")?;
-        let protocol = ProtocolState::new(&display.handle(), session);
+        let mut protocol = ProtocolState::new(&display.handle(), session);
+        if !virtual_clock {
+            protocol.configure_keyboard(keyboard_layout)?;
+        }
         let local = LocalClient::start(executable, &directory.path)?;
         Ok(Self {
             report: Report {
@@ -129,9 +134,33 @@ impl Session {
     pub fn virtual_clock(&self) -> bool {
         self.virtual_clock
     }
+    pub fn focus_window(&mut self, window: WindowId) -> Result<(), &'static str> {
+        if self.closing {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .focus_window(window)
+    }
+    pub fn key(
+        &mut self,
+        window: WindowId,
+        key: eidolon_model::keyboard::KeyPacket,
+    ) -> Result<(), &'static str> {
+        if self.closing {
+            return Err("STALE");
+        }
+        self.protocol.as_mut().ok_or("NOT_READY")?.key(window, key)
+    }
+    pub fn reset_input(&mut self) {
+        if let Some(protocol) = self.protocol.as_mut() {
+            protocol.reset_input();
+        }
+    }
     /// normal modeだけが実際のpresented snapshotに応じてclientを進める。
     pub fn render_tick(&mut self, gl: &eidolon_render::Controller, now: Duration) {
-        if self.virtual_clock {
+        if self.virtual_clock || gl.is_stopping() {
             return;
         }
         let session = self.session();
@@ -167,14 +196,18 @@ impl Session {
             if window.life != WindowLife::Mapped {
                 continue;
             }
-            if let Some(snapshot) = state.latest_snapshot(window.window)
-                && !matches!(
-                    gl.submit(snapshot, vec![]),
+            if let Some(snapshot) = state.latest_snapshot(window.window) {
+                let code = gl.submit(snapshot, vec![]);
+                if !matches!(
+                    code,
                     eidolon_model::state::Status::Accepted | eidolon_model::state::Status::Stale
-                )
-            {
-                self.fail("RENDER_BUDGET");
-                return;
+                ) {
+                    // request_stopは任意threadから来る。正常な停止との競合だけを除外する。
+                    if code != eidolon_model::state::Status::NotReady || !gl.is_stopping() {
+                        self.fail("RENDER_BUDGET");
+                    }
+                    return;
+                }
             }
         }
         let render = gl.snapshot();
@@ -265,6 +298,7 @@ impl Session {
         }
         self.closing |= close;
         if self.closing {
+            self.reset_input();
             self.report.state = "closing";
             self.report.ready = false;
             if remote_gone {
@@ -340,6 +374,7 @@ impl Session {
             self.fail(error);
             return;
         }
+        self.report.input = Default::default();
         self.report.state = "stopped";
     }
     fn dispatch(&mut self) -> Result<(), &'static str> {
@@ -432,6 +467,7 @@ impl Session {
             return;
         };
         self.report.windows = state.windows();
+        self.report.input = state.input_report();
         self.report.clients = 0;
         self.report.objects = 0;
         let backend = display.handle().backend_handle();
@@ -528,6 +564,7 @@ mod tests {
             "1122334455667788",
             AppMode::Pattern,
             true,
+            Default::default(),
         )
         .unwrap();
         let cancel = Arc::new(AtomicBool::new(false));

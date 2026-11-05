@@ -1,5 +1,14 @@
 # Smithay 0.7.0の固定patch
 
+`0003-compiled-keymap-constructor.patch`は同梱compiled XKBから直接seatを作るAPIを追加する。
+system rulesからの初期化を挟まず、contextのdefault includeを無効にする。
+既存RMLVO APIは維持し、tracingへkeymap本文を出さない。
+
+`0004-keymap-fd-nul-android.patch`は旧client向けのkeymap FDにも末尾NULを含める。
+Androidではclientごとのunsealed memfdコピーを使い、`/tmp`やprocess環境変数へ依存しない。
+新client向けのsealed FDと非Androidの一時file経路は維持する。
+[検出したwire失敗と再現](../../../docs/keyboard-checks.md)を参照する。
+
 `0002-android-egl-library.patch`はAndroidだけEGLの公開library名`libEGL.so`を使う。
 その他のtargetでは上流の`libEGL.so.1`を維持する。EGL function/extensionの動作は変えない。
 外部で初期化したAndroid EGLDisplay/ContextをSmithayの`from_raw`へ渡し、

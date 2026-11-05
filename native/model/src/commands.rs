@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct RuntimeConfig {
     pub schema: u32,
     #[serde(default)]
+    pub keyboard_layout: crate::keyboard::KeyboardLayout,
+    #[serde(default)]
     pub paths: Option<RuntimePaths>,
     #[serde(default)]
     pub installation: Option<String>,
@@ -20,6 +22,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             schema: 1,
+            keyboard_layout: Default::default(),
             paths: None,
             installation: None,
             profiles: Vec::new(),
@@ -138,6 +141,8 @@ pub enum CleanupScenario {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompositorScenario {
+    KeyboardUs,
+    KeyboardJis,
     Lifecycle,
     Transforms,
     FrameGates,
@@ -164,6 +169,19 @@ pub enum CompositorScenario {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    FocusWindow {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        input_epoch: u64,
+    },
+    Key {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        input_epoch: u64,
+        key: crate::keyboard::KeyPacket,
+    },
     AdapterApplied {
         schema: u32,
         request_id: CommandSeq,
@@ -277,7 +295,9 @@ impl Command {
         }
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
-            Self::AdapterApplied { schema, .. }
+            Self::FocusWindow { schema, .. }
+            | Self::Key { schema, .. }
+            | Self::AdapterApplied { schema, .. }
             | Self::AdapterFailed { schema, .. }
             | Self::SceneReady { schema, .. }
             | Self::RenderProbe { schema, .. }
@@ -330,11 +350,18 @@ impl Command {
         {
             return Err(Status::InvalidArgument);
         }
+        if let Self::Key { key, .. } = &command
+            && key.code().is_none()
+        {
+            return Err(Status::InvalidArgument);
+        }
         Ok(command)
     }
     pub fn request_id(&self) -> CommandSeq {
         match *self {
-            Self::AdapterApplied { request_id, .. }
+            Self::FocusWindow { request_id, .. }
+            | Self::Key { request_id, .. }
+            | Self::AdapterApplied { request_id, .. }
             | Self::AdapterFailed { request_id, .. }
             | Self::SceneReady { request_id, .. }
             | Self::RenderProbe { request_id, .. }
@@ -359,6 +386,8 @@ impl Command {
             self,
             Self::ResetInput { .. }
                 | Self::Disconnect { .. }
+                | Self::SurfaceLost { .. }
+                | Self::SceneReady { .. }
                 | Self::SetActivityState { visible: false, .. }
                 | Self::SetXrState {
                     state: XrState::Idle | XrState::Visible,

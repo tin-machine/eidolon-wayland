@@ -28,6 +28,7 @@ use wayland_client::{
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
+pub mod keyboard;
 pub mod state;
 
 pub const WIDTH: i32 = 32;
@@ -71,6 +72,7 @@ pub struct Report {
 
 #[derive(Default)]
 struct State {
+    keyboard: Option<keyboard::Report>,
     compositor: Option<wl_compositor::WlCompositor>,
     shell: Option<xdg_wm_base::XdgWmBase>,
     subcompositor: Option<wl_subcompositor::WlSubcompositor>,

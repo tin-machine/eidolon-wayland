@@ -169,6 +169,7 @@ impl Runtime {
                                     &nonce,
                                     mode,
                                     virtual_clock,
+                                    config.keyboard_layout,
                                 )?);
                                 if !virtual_clock {
                                     gl.use_windows();
@@ -400,6 +401,9 @@ impl Runtime {
                         state.snapshot.panels = state.panels.snapshot();
                         if resetting.swap(false, Ordering::AcqRel) {
                             state.snapshot.input_resets += 1;
+                            if let Some(current) = app.as_mut() {
+                                current.reset_input();
+                            }
                         }
                         if state.snapshot.state == RuntimeState::Failed {
                             io.request_stop();
@@ -412,6 +416,61 @@ impl Runtime {
                             let app_busy =
                                 pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
                             let code = match &command {
+                                Command::FocusWindow {
+                                    target,
+                                    input_epoch,
+                                    ..
+                                }
+                                | Command::Key {
+                                    target,
+                                    input_epoch,
+                                    ..
+                                } => {
+                                    let current = app
+                                        .as_mut()
+                                        .filter(|a| a.session() == target.session && !a.closed());
+                                    let live = state.panels.snapshot().iter().any(|p| {
+                                        p.target == *target
+                                            && p.action
+                                                == eidolon_model::commands::PanelAction::Create
+                                            && p.applied
+                                            && p.error.is_none()
+                                    }) && gl
+                                        .snapshot()
+                                        .targets
+                                        .iter()
+                                        .any(|t| t.key == *target && t.frames > 0);
+                                    if *input_epoch != state.snapshot.input_resets
+                                        || state.snapshot.scene != Some(target.scene)
+                                        || !live
+                                    {
+                                        Status::Stale
+                                    } else if !state.render_visibility.iter().all(|v| *v)
+                                        || !state.snapshot.activity_visible
+                                        || state.snapshot.xr_state != XrState::Focused
+                                    {
+                                        Status::NotReady
+                                    } else if let Some(current) = current {
+                                        let result = match &command {
+                                            Command::FocusWindow { .. } => {
+                                                current.focus_window(target.window)
+                                            }
+                                            Command::Key { key, .. } => {
+                                                current.key(target.window, *key)
+                                            }
+                                            _ => unreachable!(),
+                                        };
+                                        match result {
+                                            Ok(()) => Status::Accepted,
+                                            Err("STALE") => Status::Stale,
+                                            Err("INVALID_ARGUMENT") => Status::InvalidArgument,
+                                            Err("RESOURCE_LIMIT") => Status::Busy,
+                                            Err(_) => Status::NotReady,
+                                        }
+                                    } else {
+                                        Status::Stale
+                                    }
+                                }
                                 Command::AdapterApplied {
                                     command_seq,
                                     target,
@@ -916,6 +975,10 @@ impl Runtime {
             return Status::NotReady;
         }
         if state.commands.len() == limits::CORE_COMMANDS {
+            if matches!(command, Command::Key { .. } | Command::FocusWindow { .. }) {
+                self.reset.store(true, Ordering::Release);
+                self.worker.thread().unpark();
+            }
             return Status::Busy;
         }
         match &command {
@@ -1109,6 +1172,70 @@ mod tests {
             request_id: CommandSeq::new(id).unwrap(),
             scene: SceneEpoch::new(id).unwrap(),
         }
+    }
+    #[test]
+    fn full_key_queue_requests_urgent_reset_without_enqueuing_the_lost_key() {
+        use eidolon_model::{
+            ids::{SessionId, SurfaceGeneration, WindowId},
+            keyboard::{KeyAction, KeyPacket},
+            surface::TargetKey,
+        };
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let runtime = Runtime::start_with_hook(RuntimeConfig::default(), move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        runtime.poll(64).unwrap();
+        for id in 1..=limits::CORE_COMMANDS {
+            assert_eq!(
+                runtime.command(Command::SetActivityState {
+                    schema: 1,
+                    request_id: CommandSeq::new(id as i64).unwrap(),
+                    visible: true
+                }),
+                Status::Accepted
+            );
+        }
+        let target = TargetKey {
+            session: SessionId::new(1).unwrap(),
+            window: WindowId::new(1).unwrap(),
+            scene: SceneEpoch::new(1).unwrap(),
+            generation: SurfaceGeneration::new(1).unwrap(),
+        };
+        assert_eq!(
+            runtime.command(Command::Key {
+                schema: 1,
+                request_id: CommandSeq::new(999).unwrap(),
+                target,
+                input_epoch: 0,
+                key: KeyPacket {
+                    device: 7,
+                    scan_code: 42,
+                    key_code: 59,
+                    action: KeyAction::Released,
+                    repeat: 0,
+                    meta: 0,
+                    time_ms: 1
+                }
+            }),
+            Status::Busy
+        );
+        assert!(runtime.reset.load(Ordering::Acquire));
+        assert_eq!(
+            runtime.snapshot().commands_accepted,
+            limits::CORE_COMMANDS as u64
+        );
+        runtime.request_stop();
+        release_tx.send(()).unwrap();
+        wait(&runtime, Runtime::can_destroy);
+        assert_eq!(runtime.snapshot().commands_processed, 0);
+        assert_eq!(
+            runtime.snapshot().commands_cancelled,
+            limits::CORE_COMMANDS as u64
+        );
     }
     #[test]
     fn native_dependency_command_uses_owned_worker_and_stops_after_reclaim() {

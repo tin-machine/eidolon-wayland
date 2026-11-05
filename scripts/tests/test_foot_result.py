@@ -20,7 +20,8 @@ class FootTests(unittest.TestCase):
                            registered=True, tools=dict(foot=dict(version='1.28.0')))
             return dict(state='Ready', app=dict(session='1', nonce=token, mode='foot_fixture', callback_clock='target-driven',
                         ready=True, error=None, pool_rejections=0, local=local, callbacks=callbacks, non_uniform=True,
-                        windows=[dict(window='1', life='Mapped', frame=str(callbacks))]),
+                        windows=[dict(window='1', life='Mapped', frame=str(callbacks))],
+                        input=dict(keyboard=True, layout='us', include_paths=0, keymap_sha256='1'*64)),
                         transport=dict(state='Ready', session='1', credential_requests=1, app_forward=forward),
                         render=dict(mode='windows', error=None, latest_images=1, targets=[], contexts=1, paused=paused,
                                     composition=dict(updates=5, textures=1)))
@@ -35,7 +36,7 @@ class FootTests(unittest.TestCase):
                 pixels=dict(distinct_images=count, non_uniform_images=count, sample_step=4, hashes=[f'{i:064x}' for i in range(count)])))
         after = dict(state='Stopped', app=dict(state='stopped', directory_cleaned=True, error=None,
             clients=0, objects=0, surfaces=0, pool_bytes=0, pixel_bytes=0, pool_count=0,
-            local=dict(workers=0, owned_groups=0, waited=True)),
+            local=dict(workers=0, owned_groups=0, waited=True), input=dict(keyboard=False)),
             transport=dict(workers=0, tokio_threads=0, owned_connections=0, pending_cleanup=[],
                 app_forward=dict(state='stopped', error=None, remote_cleaned=True, forward_cancelled=True, pending_cleanup=[],
                     remote=dict(finished=dict(reason='Stop', cleaned=True, group_alive=False, pipes_closed=True)))),
@@ -50,7 +51,7 @@ class FootTests(unittest.TestCase):
         return dict(schema=1, build_info=dict(profile='debug'), check=result)
 
     def test_fake_present_virtual_clock_stale_surface_unapplied_sdk_and_leaks_are_rejected(self):
-        package = dict(dependencies=dict(waypipe=dict(sha256='0'*64)))
+        package = dict(dependencies=dict(waypipe=dict(sha256='0'*64), keymaps=dict(us=dict(sha256='1'*64))))
         def judge(snapshot):
             return foot_result(snapshot, 'a'*32, dict(profile='debug'), 4242, 4343, package)
         fixture = self.fixture()
@@ -60,6 +61,7 @@ class FootTests(unittest.TestCase):
                 (['before_target','app','callbacks'],1),
                 (['cycles',0,'runtime','app','callback_clock'],'virtual'),
                 (['cycles',0,'runtime','app','local','child_uid'],4343),
+                (['cycles',0,'runtime','app','input','include_paths'],1),
                 (['cycles',0,'runtime','render','targets',0,'content_frame'],'5'),
                 (['cycles',1,'target_generation'],'1'),
                 (['cycles',0,'runtime','panels',0,'applied'],False),
@@ -91,7 +93,7 @@ class FootTests(unittest.TestCase):
         result['restored'] = dict(state='Ready', activity_visible=True, xr_state='FOCUSED',
             transport=dict(state='Idle', pending_cleanup=[]),
             render=dict(mode='diagnostic', targets=[dict(role='diagnostic', readback=True, frames=3)]))
-        package = dict(dependencies=dict(waypipe=dict(sha256='0'*64)))
+        package = dict(dependencies=dict(waypipe=dict(sha256='0'*64), keymaps=dict(us=dict(sha256='1'*64))))
         def judge(value):
             return foot_sdk_result(value, 'a'*32, dict(profile='debug'), 4242, 4343, package)
         self.assertTrue(judge(fixture))

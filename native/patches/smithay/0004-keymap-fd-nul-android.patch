@@ -1,0 +1,40 @@
+--- a/src/input/keyboard/keymap_file.rs
++++ b/src/input/keyboard/keymap_file.rs
+@@ -67,20 +67,30 @@
+     where
+         F: FnOnce(BorrowedFd<'_>, usize),
+     {
+-        use std::{io::Write, path::PathBuf};
++        use std::io::Write;
+ 
+         if let Some(file) = supports_sealed.then_some(self.sealed.as_ref()).flatten() {
+             cb(file.as_fd(), file.size());
+         } else {
+-            let dir = std::env::var_os("XDG_RUNTIME_DIR")
+-                .map(PathBuf::from)
+-                .unwrap_or_else(std::env::temp_dir);
+-
+-            let mut file = tempfile::tempfile_in(dir)?;
++            // Android has no process-wide /tmp or XDG_RUNTIME_DIR. Give each legacy
++            // client a writable anonymous copy without changing global environment.
++            #[cfg(target_os = "android")]
++            let mut file = std::fs::File::from(rustix::fs::memfd_create(
++                c"smithay-keymap",
++                rustix::fs::MemfdFlags::CLOEXEC,
++            )?);
++            #[cfg(not(target_os = "android"))]
++            let mut file = {
++                let dir = std::env::var_os("XDG_RUNTIME_DIR")
++                    .map(std::path::PathBuf::from)
++                    .unwrap_or_else(std::env::temp_dir);
++                tempfile::tempfile_in(dir)?
++            };
+             file.write_all(self.keymap.as_bytes())?;
++            file.write_all(&[0])?;
+             file.flush()?;
+ 
+-            cb(file.as_fd(), self.keymap.len());
++            cb(file.as_fd(), self.keymap.len() + 1);
+         }
+         Ok(())
+     }

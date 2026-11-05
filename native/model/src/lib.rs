@@ -3,6 +3,7 @@ pub mod build_info;
 pub mod commands;
 pub mod ids;
 pub mod input;
+pub mod keyboard;
 pub mod layout;
 pub mod limits;
 pub mod pixels;

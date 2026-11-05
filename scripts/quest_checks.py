@@ -5,6 +5,131 @@ import hashlib
 import math
 
 
+def _prepared_keyboard(app, package, layout='us'):
+    expected = package.get('dependencies', {}).get('keymaps', {}).get(layout, {}).get('sha256')
+    report = app.get('input', {})
+    return (isinstance(expected, str) and re.fullmatch(r'[0-9a-f]{64}', expected) is not None
+            and report.get('keyboard') is True and report.get('layout') == layout
+            and report.get('include_paths') == 0 and report.get('keymap_sha256') == expected)
+
+
+def keyboard_wire_result(snapshot, nonce, expected, uid, package, *, instrumentation=False):
+    if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
+        return False
+    result = snapshot.get('check', {})
+    if result.get('case') != 'keyboard-wire' or result.get('nonce') != nonce:
+        return False
+    if result.get('result') == 'fail':
+        raise ValueError('keyboard wire検査が失敗しました')
+    if result.get('result') != 'pass':
+        return False
+    rows = result.get('cycles', [])
+    if len(rows) != 2 or result.get('cleanup_failed'):
+        raise ValueError('US/JISのwire検査と回収が必要です')
+    keys = [[42,1,123],[3,1,123],[3,0,123],[42,0,123],[30,1,123],[30,0,123],
+            [29,1,123],[42,1,123],[30,1,123],[29,0,0],[30,0,0],[42,0,0]]
+    for index, (row, layout) in enumerate(zip(rows, ['us','jis'])):
+        report = row.get('report', {})
+        keyboard, client = report.get('keyboard', {}), report.get('client', {})
+        order, modifiers = client.get('order', []), client.get('modifiers', [])
+        wire_hash = keyboard.get('wire_keymap_sha256')
+        if (row.get('cycle') != index+1 or row.get('scenario') != 'keyboard_'+layout
+                or report.get('nonce') != hashlib.sha256(f'{nonce}:{index}'.encode()).hexdigest()[:16]
+                or report.get('state') != 'pass' or report.get('error') is not None or report.get('uid') != uid
+                or report.get('fixture_revision') != 'eidolon-keyboard-wire-fixture-v1' or report.get('layout') != layout
+                or report.get('synthetic_input') is not True or report.get('physical_input_verified') is not False
+                or report.get('checkpoints') != 5 or report.get('shifted_two') != ord('@' if layout=='us' else '"')
+                or not _prepared_keyboard(dict(input=keyboard), package, layout)
+                or keyboard.get('focus_window') is not None or keyboard.get('pressed') != 0
+                or keyboard.get('delivered') != 12 or keyboard.get('resets') != 2
+                or not isinstance(wire_hash, str) or not re.fullmatch('[0-9a-f]{64}',wire_hash)
+                or client.get('keymap_format') != 1 or client.get('keymap_sha256') != wire_hash
+                or type(client.get('keymap_bytes')) is not int or not 1000 < client['keymap_bytes'] < 1024*1024
+                or client.get('repeat') != [25,600] or client.get('enters') != [[],[]] or client.get('leaves') != 2
+                or client.get('keys') != keys or client.get('error') is not None
+                or not modifiers or modifiers[-1] != [0,0,0,0] or not any(m[0] != 0 for m in modifiers)
+                or 'leave' not in order or order[:order.index('leave')].count('key') != 12
+                or order.count('keymap') != 1 or order.count('enter') != 2 or order.count('leave') != 2
+                or order.index('keymap') > order.index('enter')
+                or any(report.get(k) != 0 for k in ['clients_after','objects_after','surfaces_after','windows_after',
+                    'pixel_bytes_after','pool_bytes_after','fixture_fds_after','fixture_maps_after'])):
+            raise ValueError('keymap FD/evdev/modifiers/repeat/reset/owner回収の証拠が不正です')
+    after = result.get('after_stop', {})
+    if (after.get('state') != 'Stopped' or any(after.get(k) != 0 for k in ['compositor_workers','dependency_workers','helper_workers'])
+            or after.get('render',{}).get('workers') != 0 or after.get('transport',{}).get('workers') != 0
+            or after.get('transport',{}).get('owned_connections') != 0
+            or type(result.get('accept_ms')) is not int or not 0 <= result['accept_ms'] < 100
+            or type(result.get('stop_ms')) is not int or not 0 <= result['stop_ms'] < 10000
+            or not re.fullmatch('[1-9][0-9]*', str(result.get('last_handle','')))):
+        raise ValueError('keyboard検査runtimeの停止が不正です')
+    if instrumentation:
+        return instrumentation_result(snapshot, result, uid)
+    current = snapshot.get('runtime', {})
+    runtime = current.get('runtime', {})
+    return (current.get('code') == 0 and current.get('registry') == dict(runtimes=1,workers=1)
+            and str(current.get('handle','')).isdecimal() and int(current['handle']) > int(result['last_handle'])
+            and runtime.get('state') == 'Ready' and runtime.get('activity_visible') is True
+            and runtime.get('xr_state') in {'VISIBLE','FOCUSED'} and runtime.get('transport',{}).get('state') == 'Idle')
+
+
+def keyboard_result(snapshot, nonce, expected, uid, termux_uid, package):
+    if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
+        return False
+    result = snapshot.get('check', {})
+    if result.get('case') != 'keyboard' or result.get('nonce') != nonce:
+        return False
+    if result.get('result') == 'fail':
+        raise ValueError('製品keyboard検査失敗: '+result.get('stage','unknown'))
+    if result.get('result') != 'pass':
+        return False
+    if (result.get('consumer') != 'SDK' or result.get('synthetic_input') is not True or result.get('synthetic_visibility') is not False
+            or result.get('product_host_path') is not True
+            or any(result.get(k) is not False for k in ['physical_input_verified','physical_entry_verified','text_verified'])):
+        raise ValueError('合成keyの範囲と物理入力の未検証を区別してください')
+    target = result.get('target', {})
+    if (any(not isinstance(target.get(k),str) or not re.fullmatch('[1-9][0-9]*',target[k]) for k in ['session','window','scene','generation'])
+            or type(uid) is not int or type(termux_uid) is not int or uid==termux_uid):
+        raise ValueError('入力先tuple/UIDが不正です')
+    rows = result.get('cycles', [])
+    stages = ['before','focused','typed','held','reset','late','refocused','final']
+    if len(rows) != len(stages) or [r.get('stage') for r in rows] != stages:
+        raise ValueError('入力/解除/古epoch/再入力の記録がありません')
+    base = rows[1].get('runtime',{}).get('app',{}).get('input',{}).get('delivered')
+    epoch = rows[1].get('runtime',{}).get('input_resets')
+    if type(base) is not int or type(epoch) is not int:
+        raise ValueError('入力counter/epochが不正です')
+    for index, row in enumerate(rows):
+        state = row.get('runtime', {})
+        app, transport, render = (state.get(k,{}) for k in ['app','transport','render'])
+        keyboard = app.get('input', {})
+        panels = render.get('targets', [])
+        forward = transport.get('app_forward', {})
+        expected_focus = None if index in [0,4,5] else target['window']
+        if (state.get('state') != 'Ready' or state.get('activity_visible') is not True or state.get('xr_state') != 'FOCUSED'
+                or state.get('scene') != target['scene'] or app.get('session') != target['session'] or app.get('mode') != 'foot'
+                or app.get('callback_clock') != 'target-driven' or app.get('error') is not None or not _prepared_keyboard(app,package)
+                or app.get('local',{}).get('uid') != uid or app.get('local',{}).get('executable_sha256') != package.get('dependencies',{}).get('waypipe',{}).get('sha256')
+                or transport.get('session') != target['session'] or transport.get('state') != 'Ready' or transport.get('credential_requests') != 1
+                or forward.get('uid') != termux_uid or forward.get('mode') != 'foot' or forward.get('state') != 'running' or forward.get('error') is not None
+                or len(panels) != 1 or panels[0].get('key') != target or panels[0].get('role') != 'windows' or panels[0].get('frames',0) < 3
+                or keyboard.get('focus_window') != expected_focus or keyboard.get('pressed') != (2 if index==3 else 0)
+                or keyboard.get('delivered') != base+[0,0,4,6,8,8,8,10][index]
+                or type(state.get('input_resets')) is not int or (state['input_resets'] != epoch if index<4 else state['input_resets'] <= epoch)):
+            raise ValueError('製品Host/foot/SDKとkey/resetの結果が不正です')
+    if rows[2]['runtime']['app'].get('copies',0) <= rows[1]['runtime']['app'].get('copies',0):
+        raise ValueError('入力中の実footフレーム更新がありません')
+    stop, restored = result.get('stop', {}), result.get('restored', {})
+    panels = restored.get('render',{}).get('targets',[])
+    if (stop.get('old_runtime_destroyed') is not True or type(stop.get('stop_ms')) is not int or not 0 <= stop['stop_ms'] < 10000
+            or not str(result.get('old_handle','')).isdecimal() or not str(result.get('new_handle','')).isdecimal()
+            or int(result['new_handle']) <= int(result['old_handle'])
+            or restored.get('state') != 'Ready' or restored.get('activity_visible') is not True or restored.get('xr_state') != 'FOCUSED'
+            or restored.get('transport',{}).get('state') != 'Idle' or restored.get('transport',{}).get('pending_cleanup') != []
+            or len(panels) != 1 or panels[0].get('role') != 'diagnostic' or panels[0].get('frames',0) < 3):
+        raise ValueError('入力中の停止/通常UI復帰が不正です')
+    return True
+
+
 def ray_result(snapshot, nonce, expected):
     if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
         return False
@@ -104,7 +229,7 @@ def foot_sdk_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
         if (state.get('state') != 'Ready' or state.get('activity_visible') is not True or state.get('xr_state') not in {'VISIBLE','FOCUSED'}
                 or state.get('scene') != key['scene'] or app.get('session') != key['session'] or app.get('mode') != 'foot'
                 or app.get('callback_clock') != 'target-driven' or app.get('error') is not None or app.get('non_uniform') is not True
-                or app.get('callbacks',0) < 1 or app.get('copies',0) < 1 or app.get('pool_rejections') != 0
+                or app.get('callbacks',0) < 1 or app.get('copies',0) < 1 or app.get('pool_rejections') != 0 or not _prepared_keyboard(app, package)
                 or local.get('uid') != apk_uid or local.get('child_uid') != apk_uid or local.get('executable_sha256') != waypipe_hash
                 or transport.get('state') != 'Ready' or transport.get('session') != key['session'] or transport.get('credential_requests') != 1
                 or forward.get('mode') != 'foot' or forward.get('state') != 'running' or forward.get('uid') != termux_uid or forward.get('error') is not None
@@ -162,7 +287,7 @@ def foot_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
         local, forward = app.get('local', {}), transport.get('app_forward', {})
         if (state.get('state') != 'Ready' or app.get('session') != session or app.get('nonce') != token
                 or app.get('mode') != 'foot_fixture' or app.get('callback_clock') != 'target-driven'
-                or app.get('ready') is not True or app.get('error') is not None or app.get('pool_rejections') != 0
+                or app.get('ready') is not True or app.get('error') is not None or app.get('pool_rejections') != 0 or not _prepared_keyboard(app, package)
                 or local.get('uid') != apk_uid or local.get('child_uid') != apk_uid or local.get('executable_sha256') != waypipe_hash
                 or local.get('workers') != 1 or local.get('owned_groups') != 1 or local.get('error') is not None
                 or transport.get('state') != 'Ready' or transport.get('session') != session or transport.get('credential_requests') != 1
@@ -225,7 +350,8 @@ def foot_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
     forward, local = transport.get('app_forward', {}), app.get('local', {})
     finished = forward.get('remote', {}).get('finished', {})
     if (after.get('state') != 'Stopped' or app.get('state') != 'stopped' or app.get('directory_cleaned') is not True
-            or app.get('error') is not None or any(app.get(key) != 0 for key in ('clients','objects','surfaces','pool_bytes','pixel_bytes','pool_count'))
+            or app.get('error') is not None or app.get('input', {}).get('keyboard') is not False
+            or any(app.get(key) != 0 for key in ('clients','objects','surfaces','pool_bytes','pixel_bytes','pool_count'))
             or local.get('workers') != 0 or local.get('owned_groups') != 0 or local.get('waited') is not True
             or forward.get('state') != 'stopped' or forward.get('error') is not None or forward.get('remote_cleaned') is not True
             or forward.get('forward_cancelled') is not True or finished.get('reason') != 'Stop' or finished.get('cleaned') is not True

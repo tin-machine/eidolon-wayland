@@ -133,6 +133,8 @@ def inspect(apk):
             raise ValueError("profileとSHM fixtureの同梱が不一致です")
         if (b"eidolon-wayland-state-v1" in data) != (info["profile"] == "debug"):
             raise ValueError("profileとWayland state fixtureの同梱が不一致です")
+        if (b"eidolon-keyboard-wire-fixture-v1" in data) != (info["profile"] == "debug"):
+            raise ValueError("profileとkeyboard wire fixtureの同梱が不一致です")
         if (b"eidolon-render-fixture-code-v1" in data) != (info["profile"] == "debug"):
             raise ValueError("profileとrender fixtureの同梱が不一致です")
         helper_path = f"lib/{ABI}/libeidolon_probe_bin.so"
@@ -159,7 +161,7 @@ def inspect(apk):
                 raise ValueError("helper fixtureの実API/NDK noteが不一致です")
         debug_symbol = "Java_io_github_tinmachine_eidolon_DebugNativeBridge_" in output
         dex = b"".join(archive.read(name) for name in names if re.fullmatch(r"classes\d*\.dex", name))
-        debug_classes = [b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;", b"Lio/github/tinmachine/eidolon/CredentialCase;", b"Lio/github/tinmachine/eidolon/SshCase;", b"Lio/github/tinmachine/eidolon/ProductSshCase;", b"Lio/github/tinmachine/eidolon/ForwardCase;", b"Lio/github/tinmachine/eidolon/RemoteCleanupCase;", b"Lio/github/tinmachine/eidolon/NativeCheckInstrumentation;", b"Lio/github/tinmachine/eidolon/NativeDepsCase;", b"Lio/github/tinmachine/eidolon/CompositorCase;"]
+        debug_classes = [b"Lio/github/tinmachine/eidolon/KeyboardCase;", b"Lio/github/tinmachine/eidolon/DebugCommandActivity;", b"Lio/github/tinmachine/eidolon/DebugNativeBridge;", b"Lio/github/tinmachine/eidolon/CredentialCase;", b"Lio/github/tinmachine/eidolon/SshCase;", b"Lio/github/tinmachine/eidolon/ProductSshCase;", b"Lio/github/tinmachine/eidolon/ForwardCase;", b"Lio/github/tinmachine/eidolon/RemoteCleanupCase;", b"Lio/github/tinmachine/eidolon/NativeCheckInstrumentation;", b"Lio/github/tinmachine/eidolon/NativeDepsCase;", b"Lio/github/tinmachine/eidolon/CompositorCase;"]
         debug_classes.append(b"Lio/github/tinmachine/eidolon/WaypipeCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ForwardedShmCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/RenderCase;")

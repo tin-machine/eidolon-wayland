@@ -1,0 +1,95 @@
+--- a/src/input/keyboard/mod.rs
++++ b/src/input/keyboard/mod.rs
+@@ -237,16 +237,36 @@
+ // same thread
+ unsafe impl<D: SeatHandler> Send for KbdInternal<D> {}
+ 
++enum KeymapSource<'a> {
++    Names(XkbConfig<'a>),
++    Compiled(String),
++}
++
+ impl<D: SeatHandler + 'static> KbdInternal<D> {
+-    fn new(xkb_config: XkbConfig<'_>, repeat_rate: i32, repeat_delay: i32) -> Result<KbdInternal<D>, ()> {
++    fn new(source: KeymapSource<'_>, repeat_rate: i32, repeat_delay: i32) -> Result<KbdInternal<D>, ()> {
+         // we create a new context for each keyboard because libxkbcommon is actually NOT threadsafe
+         // so confining it inside the KbdInternal allows us to use Rusts mutability rules to make
+         // sure nothing goes wrong.
+         //
+         // FIXME: This is an issue with the xkbcommon-rs crate that does not reflect this
+         // non-threadsafety properly.
+-        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+-        let keymap = xkb_config.compile_keymap(&context)?;
++        let (context, keymap) = match source {
++            KeymapSource::Names(config) => {
++                let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
++                let keymap = config.compile_keymap(&context)?;
++                (context, keymap)
++            }
++            KeymapSource::Compiled(text) => {
++                let context = xkb::Context::new(xkb::CONTEXT_NO_DEFAULT_INCLUDES);
++                let keymap = xkb::Keymap::new_from_string(
++                    &context,
++                    text,
++                    xkb::KEYMAP_FORMAT_TEXT_V1,
++                    xkb::KEYMAP_COMPILE_NO_FLAGS,
++                ).ok_or(())?;
++                (context, keymap)
++            }
++        };
+         let state = xkb::State::new(&keymap);
+         let led_mapping = LedMapping::from_keymap(&keymap);
+         let led_state = LedState::from_state(&state, &led_mapping);
+@@ -666,11 +686,19 @@
+ impl<D: SeatHandler + 'static> KeyboardHandle<D> {
+     /// Create a keyboard handler from a set of RMLVO rules
+     pub(crate) fn new(xkb_config: XkbConfig<'_>, repeat_delay: i32, repeat_rate: i32) -> Result<Self, Error> {
++        Self::new_with_source(KeymapSource::Names(xkb_config), repeat_delay, repeat_rate)
++    }
++
++    pub(crate) fn new_from_string(keymap: String, repeat_delay: i32, repeat_rate: i32) -> Result<Self, Error> {
++        Self::new_with_source(KeymapSource::Compiled(keymap), repeat_delay, repeat_rate)
++    }
++
++    fn new_with_source(source: KeymapSource<'_>, repeat_delay: i32, repeat_rate: i32) -> Result<Self, Error> {
+         let span = info_span!("input_keyboard");
+         let _guard = span.enter();
+ 
+         info!("Initializing a xkbcommon handler with keymap query");
+-        let internal = KbdInternal::new(xkb_config, repeat_rate, repeat_delay).map_err(|_| {
++        let internal = KbdInternal::new(source, repeat_rate, repeat_delay).map_err(|_| {
+             debug!("Loading keymap failed");
+             Error::BadKeymap
+         })?;
+--- a/src/input/mod.rs
++++ b/src/input/mod.rs
+@@ -579,6 +579,29 @@
+         Ok(keyboard)
+     }
+ 
++    /// Add a keyboard from a standalone XKB text keymap.
++    ///
++    /// The context has no default include paths; RMLVO rules and system files are not needed.
++    #[instrument(parent = &self.arc.span, skip(self, keymap))]
++    pub fn add_keyboard_from_string(
++        &mut self,
++        keymap: String,
++        repeat_delay: i32,
++        repeat_rate: i32,
++    ) -> Result<KeyboardHandle<D>, KeyboardError> {
++        let mut inner = self.arc.inner.lock().unwrap();
++        let keyboard = self::keyboard::KeyboardHandle::new_from_string(keymap, repeat_delay, repeat_rate)?;
++        if inner.keyboard.is_some() {
++            inner.keyboard = None;
++            #[cfg(feature = "wayland_frontend")]
++            inner.send_all_caps();
++        }
++        inner.keyboard = Some(keyboard.clone());
++        #[cfg(feature = "wayland_frontend")]
++        inner.send_all_caps();
++        Ok(keyboard)
++    }
++
+     /// Access the keyboard of this seat if any
+     pub fn get_keyboard(&self) -> Option<KeyboardHandle<D>> {
+         self.arc.inner.lock().unwrap().keyboard.clone()

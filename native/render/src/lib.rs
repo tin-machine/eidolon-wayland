@@ -376,6 +376,9 @@ impl Controller {
         self.state.0.lock().unwrap_or_else(|e| e.into_inner()).stop = true;
         self.state.1.notify_one();
     }
+    pub fn is_stopping(&self) -> bool {
+        self.state.0.lock().unwrap_or_else(|e| e.into_inner()).stop
+    }
     pub fn snapshot(&self) -> Snapshot {
         let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
         if state

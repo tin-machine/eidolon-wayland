@@ -7,7 +7,7 @@
 
 | component | 使用箇所 | license本文 |
 | --- | --- | --- |
-| Smithay 0.7.0 | Wayland protocol/SHMとGlesRenderer。[SHM計上・Android EGL loaderの固定patch](native/patches/smithay/README.md)を適用 | [MIT](native/licenses/smithay-0.7.0-LICENSE) |
+| Smithay 0.7.0 | Wayland protocol/SHMとGlesRenderer。[SHM計上・Android EGL loader・compiled keymap初期化・NUL/Android keymap FDの固定patch](native/patches/smithay/README.md)を適用 | [MIT](native/licenses/smithay-0.7.0-LICENSE) |
 | libxkbcommon 1.8.1 | static libraryと自己完結keymapのparse | [上流のlicense集](native/licenses/xkbcommon-1.8.1-LICENSE) |
 | xkeyboard-config 2.48 | US/JIS keymap生成元data | [COPYING](native/licenses/xkeyboard-config-2.48-COPYING) |
 | Waypipe 0.11.3 C版 | APK同梱のPIE helper。[Android用librt patch](native/patches/waypipe/0001-android-libc-realtime.patch)を適用 | [MIT](native/licenses/waypipe-0.11.3-LICENSE.MIT) |

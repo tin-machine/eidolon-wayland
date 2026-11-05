@@ -28,6 +28,8 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 
 ## Docs
 
+- [キーボードの検証記録](docs/keyboard-checks.md) — US/JISの実wire・通常Hostの固定入力・押下解除・失敗の切り分けと未確認範囲
+
 - [残フェーズの詳細設計・Solへの引継ぎ](docs/design/README.md) — 31タスクの依存順、共通契約、検証条件、一次資料
 
 - [Phase 0の再現手順](docs/phase-0-reproduction.md) — 現在のbuild、Wi-Fi ADB、XR smoke、Termux SSH、復旧

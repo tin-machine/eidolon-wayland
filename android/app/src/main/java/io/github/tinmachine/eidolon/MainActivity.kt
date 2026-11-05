@@ -4,6 +4,7 @@ import android.os.Build
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ import com.meta.spatial.vr.VRFeature
 class MainActivity : AppSystemActivity() {
     private var panel: Entity? = null
     private val nativePanels by lazy { SpatialPanelAdapter() }
+    private val keyboard by lazy { PhysicalKeyboard(this) }
 
     override fun registerFeatures(): List<SpatialFeature> =
         listOf(VRFeature(this), ComposeFeature())
@@ -98,6 +100,9 @@ class MainActivity : AppSystemActivity() {
                                 Text(NativeSessionHost.credentialSummary.value, color = Color.White)
                                 Text("SSH: ${NativeSessionHost.connectionSummary.value}", color = Color.White)
                                 Button(onClick = { NativeSessionHost.openTerminal() }) { Text("ターミナルを開く") }
+                                Text(NativeSessionHost.keyboardSummary.value, color = Color.White)
+                                Button(onClick = { NativeSessionHost.focusTerminal() }) { Text("ターミナルへキー入力") }
+                                Button(onClick = { NativeSessionHost.resetInput() }) { Text("操作パネルへ戻る") }
                                 Button(onClick = { NativeSessionHost.disconnect() }) { Text("接続を閉じる") }
                                 Text("Spatial SDK 0.15.0 · Android API ${Build.VERSION.SDK_INT}", color = Color.White)
                                 Button(onClick = {
@@ -127,14 +132,23 @@ class MainActivity : AppSystemActivity() {
 
     override fun onResume() {
         super.onResume()
+        keyboard.resume()
         NativeSessionHost.setActivityVisible(true)
         Log.i(TAG, "activity_resumed version=${BuildConfig.VERSION_CODE}")
     }
 
     override fun onPause() {
+        keyboard.pause()
         NativeSessionHost.setActivityVisible(false)
         Log.i(TAG, "activity_paused version=${BuildConfig.VERSION_CODE}")
         super.onPause()
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean = keyboard.dispatch(event) || super.dispatchKeyEvent(event)
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) NativeSessionHost.resetInput()
     }
 
     override fun onSessionStateChanged(state: SessionState) {
