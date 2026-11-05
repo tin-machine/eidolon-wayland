@@ -94,6 +94,11 @@ archive SHA-256: `2d4093903d444fda39c9b7db0a0b826f450a64d4302a03c9c9e3dbe480e8bb
 
 APK buildは`build_c=true, build_rs=false, with_dmabuf=disabled, with_video=disabled, with_vaapi=disabled, with_lz4=enabled, with_zstd=enabled`を起点にする。libwayland/liblz4/zstd/spawn互換の実依存もdeps.lockへ固定する。Termux prefixへのpatchをAPKへそのまま使わず、socket/runtime pathは明示引数・環境へ移す。`libandroid-spawn`が必要かはtarget側link/execで確かめる。
 
+[W04の実装調査](../waypipe-build-checks.md)では、C版のlibwayland/scanner依存はsecurity-contextだけだった。
+今回は`with_secctx=disabled`を追加し、その拡張をcompositorで広告しない。liblz4 1.10.0/Zstd 1.5.7をstatic linkし、
+API34のlibcのspawnを使う。必須librt探索だけをAndroid用の固定patchで外す。APK側clientの実行・停止を実機で検査し、
+remote側の版/features照合と実転送はW05で行う。
+
 出力は`libwaypipe_bin.so`としてH01と同じ方式で同梱する。TermuxのELFをcopyしない。`--version`、features、SHA、DT_NEEDED、licenseをartifactへ保存する。依存soが必要ならnativeLibraryDirで解決し、Termuxのprivate library pathへ依存させない。
 
 APK側argv/環境の契約（実装はAPK内のRust std::process::Command、下は説明用）:

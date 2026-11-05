@@ -57,7 +57,7 @@ android {
     packaging { resources.excludes += "META-INF/LICENSE" }
     packaging { jniLibs.useLegacyPackaging = true }
     // APK検査で照合するhashを保持する。debug/releaseで同じcopyを使用しない。
-    packaging { jniLibs.keepDebugSymbols += setOf("**/libeidolon_native.so", "**/libeidolon_probe_bin.so") }
+    packaging { jniLibs.keepDebugSymbols += setOf("**/libeidolon_native.so", "**/libeidolon_probe_bin.so", "**/libwaypipe_bin.so") }
     listOf("debug", "release").forEach { profile ->
         sourceSets[profile].jniLibs.srcDir(layout.buildDirectory.dir("generated/jniLibs/$profile"))
         buildTypes.getByName(profile).buildConfigField("String", "NATIVE_BUILD_INFO_JSON", JsonOutput.toJson(nativeTasks.getValue(profile).third.get()))

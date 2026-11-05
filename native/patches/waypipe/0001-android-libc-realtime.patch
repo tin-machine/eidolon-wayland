@@ -1,0 +1,16 @@
+--- a/waypipe-c/meson.build
++++ b/waypipe-c/meson.build
+@@ -56,7 +56,12 @@
+     has_dmabuf = false
+ endif
+ pthreads = dependency('threads')
+-rt = cc.find_library('rt')
++# Android API 34 provides memfd/timers in libc and has no separate librt.
++if host_machine.system() == 'android'
++    rt = declare_dependency()
++else
++    rt = cc.find_library('rt')
++endif
+ # XXX dtrace -G (Solaris, FreeBSD, NetBSD) isn't supported yet
+ is_linux = host_machine.system() == 'linux'
+ is_darwin = host_machine.system() == 'darwin'

@@ -179,6 +179,11 @@ pub enum Command {
         request_id: CommandSeq,
         target: crate::surface::TargetKey,
     },
+    WaypipeProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        nonce: String,
+    },
     HelperProbe {
         schema: u32,
         request_id: CommandSeq,
@@ -219,6 +224,7 @@ impl Command {
             | Self::Connect { schema, .. }
             | Self::Disconnect { schema, .. }
             | Self::SurfaceLost { schema, .. }
+            | Self::WaypipeProbe { schema, .. }
             | Self::HelperProbe { schema, .. }
             | Self::SetXrState { schema, .. }
             | Self::SetActivityState { schema, .. }
@@ -232,7 +238,8 @@ impl Command {
         {
             return Err(Status::InvalidArgument);
         }
-        if let Self::HelperProbe { nonce, .. }
+        if let Self::WaypipeProbe { nonce, .. }
+        | Self::HelperProbe { nonce, .. }
         | Self::ForwardProbe { nonce, .. }
         | Self::RemoteCleanupProbe { nonce, .. }
         | Self::NativeDepsProbe { nonce, .. }
@@ -256,6 +263,7 @@ impl Command {
             | Self::Connect { request_id, .. }
             | Self::Disconnect { request_id, .. }
             | Self::SurfaceLost { request_id, .. }
+            | Self::WaypipeProbe { request_id, .. }
             | Self::HelperProbe { request_id, .. }
             | Self::SetXrState { request_id, .. }
             | Self::SetActivityState { request_id, .. }

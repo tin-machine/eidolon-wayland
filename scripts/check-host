@@ -44,6 +44,7 @@ try:
         run(["python3", "scripts/check-design"])
         run(["python3", "scripts/check-build-tools"])
         run(["python3", "scripts/build-native-deps", "--target", "host"])
+        run(["python3", "scripts/build-waypipe", "--target", "host"])
         run(["python3", "scripts/check-native-deps"])
         run(["cargo", "fmt", "--all", "--check"])
         run(["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"])
@@ -52,6 +53,7 @@ try:
         check_members(members, [p for group in SUITES.values() for p in group])
     if args.suite in {"lifecycle", "compositor"}:
         run(["python3", "scripts/build-native-deps", "--target", "host"])
+        run(["python3", "scripts/build-waypipe", "--target", "host"])
     for name, packages in SUITES.items():
         if args.suite not in {"all", name}:
             continue

@@ -25,6 +25,7 @@ if not (ndk / "source.properties").is_file():
 env["ANDROID_NDK_HOME"] = str(ndk)
 subprocess.run(["python3", str(ROOT / "scripts/build-native-deps"), "--target", "android"], cwd=ROOT, check=True)
 subprocess.run(["python3", str(ROOT / "scripts/check-native-deps")], cwd=ROOT, check=True)
+subprocess.run(["python3", str(ROOT / "scripts/build-waypipe"), "--target", "android"], cwd=ROOT, check=True)
 env["EIDOLON_BUILD_INFO_JSON"] = canonical(info)
 # workspace版を往復すると、Cargoが別fingerprintに対応する同名cdylibをfreshと
 # 判定する場合がある。同名出力を異なるpackage版で共有しない。
@@ -45,6 +46,14 @@ library.parent.mkdir(parents=True, exist_ok=True)
 # 正しい内容を必ず採用するため、検査済み成果物を自分で無条件copyする。
 shutil.copyfile(source_library, library)
 files = {library.name: hashlib.sha256(library.read_bytes()).hexdigest()}
+waypipe = json.loads((ROOT / "native/generated/waypipe-android.json").read_text())
+waypipe_source = Path(waypipe["executable"])
+if hashlib.sha256(waypipe_source.read_bytes()).hexdigest() != waypipe["sha256"]:
+    raise SystemExit("Waypipe出力hashが不一致です")
+waypipe_target = args.output / ABI / "libwaypipe_bin.so"
+shutil.copyfile(waypipe_source, waypipe_target)
+waypipe_target.chmod(0o755)
+files[waypipe_target.name] = waypipe["sha256"]
 if args.profile == "debug":
     helper = Path(env["CARGO_TARGET_DIR"]) / TARGET / "debug/eidolon-probe-bin"
     target = args.output / ABI / "libeidolon_probe_bin.so"
@@ -59,8 +68,12 @@ static = json.loads((ROOT / "native/generated/xkbcommon-android.json").read_text
 metadata["dependencies"] = {"lock_sha256": hashlib.sha256(dependency_lock.read_bytes()).hexdigest(),
                             "xkbcommon_static_sha256": static["sha256"], "smithay": locked["smithay"],
                             "keymaps": locked["xkeyboard-config"]["keymaps"]}
+metadata["dependencies"]["waypipe"] = {
+    "source": {name: locked[name] for name in ("waypipe", "lz4", "zstd")},
+    "sha256": waypipe["sha256"], "libraries": waypipe["libraries"], "needed": waypipe["needed"],
+    "inputs": waypipe["inputs"], "trees": waypipe["trees"]}
 licenses = {}
-for component in ("libxkbcommon", "xkeyboard-config", "smithay"):
+for component in ("libxkbcommon", "xkeyboard-config", "smithay", "waypipe", "lz4", "zstd"):
     name = locked[component]["license_file"]
     source = ROOT / "native" / name
     target = args.assets / name

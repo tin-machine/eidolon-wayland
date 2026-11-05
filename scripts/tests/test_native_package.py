@@ -25,12 +25,16 @@ class PackageTests(unittest.TestCase):
             apk = Path(folder) / "fixture.apk"
             with zipfile.ZipFile(os.environ["EIDOLON_TEST_APK"]) as source, zipfile.ZipFile(apk, "w") as out:
                 for item in source.infolist():
+                    if item.filename == "lib/arm64-v8a/libwaypipe_bin.so" and variant == "waypipe-absent":
+                        continue
                     data = source.read(item)
                     if item.filename == lib and variant == "corrupt":
                         data += b"corrupt fixture"
                     if item.filename == "assets/native-build.json" and variant == "api":
                         data = data.replace(b'"api": 34', b'"api": 35')
                     if item.filename == "assets/keymaps/jis.xkb" and variant == "keymap":
+                        data += b"invalid fixture"
+                    if item.filename == "lib/arm64-v8a/libwaypipe_bin.so" and variant == "waypipe-corrupt":
                         data += b"invalid fixture"
                     # writestrはZipInfoを更新するので、元archiveのlookupを壊さない。
                     out.writestr(copy.copy(item), data)
@@ -52,3 +56,9 @@ class PackageTests(unittest.TestCase):
 
     def test_corrupt_keymap_is_rejected(self):
         self.reject("keymap", "keymap hash")
+
+    def test_corrupt_waypipe_is_rejected(self):
+        self.reject("waypipe-corrupt", "Waypipe.*hash")
+
+    def test_absent_waypipe_is_rejected(self):
+        self.reject("waypipe-absent", "Waypipe.*数")

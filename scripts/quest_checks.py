@@ -145,6 +145,70 @@ def shm_result(snapshot, nonce, expected, uid, case, *, instrumentation=False):
             and state.get("compositor_workers") == 0 and state.get("transport", {}).get("state") == "Idle")
 
 
+def waypipe_result(snapshot, nonce, expected, uid, dependency, *, instrumentation=False):
+    if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
+        return False
+    result = snapshot.get("check", {})
+    if result.get("case") != "waypipe" or result.get("nonce") != nonce:
+        return False
+    if result.get("result") == "fail":
+        raise ValueError("端末Waypipe caseが失敗しました")
+    if result.get("result") != "pass":
+        return False
+    cycles = result.get("cycles", [])
+    if len(cycles) != 3 or result.get("cleanup_failed"):
+        raise ValueError("Waypipeの回数・回収が不正です")
+
+    def proof(report, index, cancelled):
+        value = report.get("waypipe", {})
+        if (report.get("uid") != uid or report.get("version") != "waypipe 0.11.3" or report.get("error") is not None
+                or report.get("cancelled") is not cancelled or report.get("directory_removed") is not True
+                or report.get("owned_children") != 0 or value.get("owned_groups") != 0
+                or value.get("clients_after") != 0 or value.get("objects_after") != 0 or value.get("socket_cleaned") is not True
+                or value.get("nonce") != hashlib.sha256(f"{nonce}:{index}".encode()).hexdigest()[:16]
+                or value.get("executable_sha256") != dependency.get("sha256")
+                or value.get("child_uid") != uid or not isinstance(value.get("child_context"), str)
+                or not 1 <= len(value["child_context"]) <= 1024
+                or value.get("features") != ["lz4", "zstd"] or value.get("unavailable") != ["dmabuf", "video", "vaapi"]
+                or type(value.get("stop_ms")) is not int or not 0 <= value["stop_ms"] < 5000):
+            raise ValueError("Waypipeの版・実ELF hash・UID・停止・資源回収が不正です")
+        if cancelled:
+            if type(value.get("waited")) is not int or not 1 <= value["waited"] <= 3:
+                raise ValueError("停止中Waypipeのwait証拠がありません")
+        elif (report.get("cycles") != 3 or value.get("waited") != 3
+                or type(value.get("compositor_connections")) is not int or value["compositor_connections"] < 3
+                or value.get("transfer_connections") != 3):
+            raise ValueError("Waypipeのclient起動・socket実接続・wait証拠がありません")
+    fds = []
+    for index, row in enumerate(cycles):
+        if row.get("cycle") != index + 1 or type(row.get("fds")) is not int or row["fds"] <= 0:
+            raise ValueError("Waypipeのcycle/FD記録が不正です")
+        proof(row.get("report", {}), index, False)
+        fds.append(row["fds"])
+    if max(fds) - min(fds) > 2:
+        raise ValueError("WaypipeのFDが継続増加しています")
+    after = result.get("after_stop", {})
+    proof(after.get("helper", {}), 3, True)
+    if (after.get("state") != "Stopped" or any(after.get(field) != 0 for field in ("helper_workers", "dependency_workers", "compositor_workers"))
+            or after.get("render", {}).get("workers") != 0 or after.get("transport", {}).get("workers") != 0
+            or type(result.get("accept_ms")) is not int or not 0 <= result["accept_ms"] < 100
+            or type(result.get("stop_ms")) is not int or not 0 <= result["stop_ms"] < 10000):
+        raise ValueError("Waypipe実行中のruntime停止が不正です")
+    last = result.get("last_handle", "")
+    if not isinstance(last, str) or not re.fullmatch(r"[1-9][0-9]*", last):
+        raise ValueError("Waypipeのhandleが不正です")
+    if instrumentation:
+        return instrumentation_result(snapshot, result, uid)
+    current = snapshot.get("runtime", {})
+    handle = current.get("handle", "")
+    runtime = current.get("runtime", {})
+    return (current.get("code") == 0 and isinstance(handle, str) and handle.isdecimal()
+            and int(last) < int(handle) <= 2**63 - 1 and current.get("registry") == {"runtimes": 1, "workers": 1}
+            and runtime.get("state") == "Ready" and runtime.get("activity_visible") is True
+            and runtime.get("xr_state") in {"VISIBLE", "FOCUSED"} and runtime.get("helper_workers") == 0
+            and runtime.get("transport", {}).get("state") == "Idle")
+
+
 def native_deps_result(snapshot, nonce, expected, uid, dependencies, *, instrumentation=False):
     if snapshot.get("schema") != 1 or snapshot.get("build_info") != expected:
         return False

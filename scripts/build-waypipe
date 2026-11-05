@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""固定C版Waypipeと圧縮libraryをhost/API34 arm64へbuildする。"""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+
+from waypipe_build import ROOT, digest, prepare
+
+
+def run(argv, env):
+    subprocess.run(list(map(str, argv)), env=env, check=True)
+
+
+def cmake_bool(value):
+    return "ON" if value else "OFF"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", choices=["host", "android", "all"], default="all")
+    args = parser.parse_args()
+    os.umask(0o077)
+    cache = ROOT / "native/.cache/waypipe"
+    cache.mkdir(parents=True, exist_ok=True)
+    with (cache / "build.lock").open("a") as guard:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        lock = json.loads((ROOT / "native/deps.lock.json").read_text())
+        sources, trees = {}, {}
+        for name in ("waypipe", "lz4", "zstd"):
+            sources[name], trees[name] = prepare(name, lock[name], cache)
+        env = os.environ.copy()
+        for key in list(env):
+            if key in {"CC", "CXX", "AR", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "PKG_CONFIG", "CMAKE_PREFIX_PATH"} or key.startswith("PKG_CONFIG_"):
+                del env[key]
+        version = lock["waypipe"]["meson"]
+        meson_path = cache / ("meson-" + version)
+        if not (meson_path / "mesonbuild").is_dir():
+            run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "--target", meson_path, "meson==" + version], env)
+        env.update(PYTHONPATH=str(meson_path), PYTHONDONTWRITEBYTECODE="1")
+        meson = [sys.executable, "-m", "mesonbuild.mesonmain"]
+        if subprocess.check_output(meson + ["--version"], env=env, text=True).strip() != version:
+            raise RuntimeError("Meson version mismatch")
+        names = ("native/deps.lock.json", "scripts/build-waypipe", "scripts/waypipe_build.py")
+        inputs = {name: digest(ROOT / name) for name in names}
+        stamp = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:16]
+        targets = ["host", "android"] if args.target == "all" else [args.target]
+        for target in targets:
+            output = ROOT / "native/build/waypipe" / stamp / target
+            output.mkdir(parents=True, exist_ok=True)
+            install = output / "install"
+            target_env = env.copy()
+            common = ["-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON", "-DCMAKE_INSTALL_PREFIX=" + str(install), "-DCMAKE_INSTALL_LIBDIR=lib"]
+            cflags = shlex.join(["-ffile-prefix-map=" + str(sources[name]) + "=/eidolon/" + name for name in sources])
+            common += ["-DCMAKE_C_FLAGS=" + cflags]
+            cross = []
+            if target == "android":
+                ndk = Path(env.get("ANDROID_HOME", "/opt/android-sdk")) / "ndk" / lock["waypipe"]["ndk"]
+                binary = ndk / "toolchains/llvm/prebuilt/linux-x86_64/bin"
+                compiler = binary / "aarch64-linux-android34-clang"
+                if not compiler.is_file():
+                    raise RuntimeError("固定Android compilerがありません")
+                common += ["-DCMAKE_TOOLCHAIN_FILE=" + str(ndk / "build/cmake/android.toolchain.cmake"), "-DANDROID_ABI=arm64-v8a", "-DANDROID_PLATFORM=android-34", "-DANDROID_STL=none"]
+                cross_file = output / "cross.ini"
+                cross_file.write_text("[binaries]\nc = '" + str(compiler) + "'\nar = '" + str(binary / "llvm-ar") + "'\nstrip = '" + str(binary / "llvm-strip") + "'\npkg-config = 'pkg-config'\n[host_machine]\nsystem = 'android'\ncpu_family = 'aarch64'\ncpu = 'armv8'\nendian = 'little'\n[properties]\nneeds_exe_wrapper = true\n")
+                cross = ["--cross-file", cross_file]
+            # targetのpkg-config検索先を専用installだけへ制限し、host/Termuxを混入させない。
+            target_env.update(PKG_CONFIG_PATH="", PKG_CONFIG_LIBDIR=str(install / "lib/pkgconfig"), PKG_CONFIG_SYSROOT_DIR="", CFLAGS=cflags)
+            libraries = {}
+            for name in ("lz4", "zstd"):
+                build = output / name
+                options = ["-D" + key + "=" + cmake_bool(value) for key, value in lock[name]["cmake_options"].items()]
+                run(["cmake", "-S", sources[name] / "build/cmake", "-B", build, *common, *options], target_env)
+                run(["cmake", "--build", build, "--parallel", "4"], target_env)
+                run(["cmake", "--install", build], target_env)
+                library = install / ("lib/liblz4.a" if name == "lz4" else "lib/libzstd.a")
+                libraries[name] = {"sha256": digest(library)}
+            build = output / "waypipe"
+            options = ["-D" + key + "=" + str(value).lower() for key, value in lock["waypipe"]["options"].items()]
+            if not (build / "build.ninja").exists():
+                run(meson + ["setup", build, sources["waypipe"], "--prefix", install, *cross, *options], target_env)
+            run(meson + ["compile", "-C", build, "-j", "4", "waypipe-c"], target_env)
+            executable = output / "libwaypipe_bin.so"
+            shutil.copyfile(build / "waypipe-c/waypipe-c", executable)
+            executable.chmod(0o755)
+            result = {"schema": 1, "target": target, "inputs": inputs, "trees": trees, "executable": str(executable), "sha256": digest(executable), "libraries": libraries,
+                      "version": lock["waypipe"]["version"], "features": lock["waypipe"]["features"], "unavailable": lock["waypipe"]["unavailable"]}
+            if target == "host":
+                result["version_output"] = subprocess.check_output([executable, "--version"], env=target_env, text=True)
+                lines = result["version_output"].splitlines()
+                if lines != ["waypipe " + result["version"], "features: " + " ".join(result["features"]), "unavailable: " + " ".join(result["unavailable"])]:
+                    raise RuntimeError("Waypipe version/features mismatch")
+            else:
+                header = subprocess.check_output([binary / "llvm-readelf", "-h", "-d", "-l", "--wide", executable], text=True)
+                if not re.search(r"Machine:\s+AArch64", header) or "/system/bin/linker64" not in header or not re.search(r"Type:\s+DYN", header):
+                    raise RuntimeError("Waypipe must be Android AArch64 PIE")
+                needed = re.findall(r"\(NEEDED\).*\[([^]]+)\]", header)
+                if set(needed) - {"libc.so", "libm.so", "libdl.so"}:
+                    raise RuntimeError("Waypipe host/private ELF dependency")
+                result["needed"] = needed
+                (output / "elf.txt").write_text(header)
+            marker = ROOT / ("native/generated/waypipe-" + target + ".json")
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            temporary = marker.with_suffix(".tmp")
+            temporary.write_text(json.dumps(result, indent=2) + "\n")
+            temporary.replace(marker)
+            (output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+            print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

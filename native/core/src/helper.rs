@@ -32,15 +32,17 @@ pub struct Report {
     pub cancelled: bool,
     pub exit_code: Option<i32>,
     pub exec_errno: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waypipe: Option<crate::waypipe::Proof>,
 }
 
-struct RuntimeDirectory {
-    path: PathBuf,
+pub(crate) struct RuntimeDirectory {
+    pub(crate) path: PathBuf,
     inode: u64,
     device: u64,
 }
 impl RuntimeDirectory {
-    fn create(files: &Path, nonce: &str) -> Result<Self, Error> {
+    pub(crate) fn create(files: &Path, nonce: &str) -> Result<Self, Error> {
         if nonce.len() != 16
             || !nonce
                 .bytes()
@@ -77,7 +79,7 @@ impl RuntimeDirectory {
             device: meta.dev(),
         })
     }
-    fn cleanup(&self) -> Result<(), Error> {
+    pub(crate) fn cleanup(&self) -> Result<(), Error> {
         let meta = fs::symlink_metadata(&self.path).map_err(|_| "CLEANUP_FAILED")?;
         if !meta.is_dir()
             || meta.file_type().is_symlink()

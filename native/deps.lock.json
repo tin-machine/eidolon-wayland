@@ -73,5 +73,83 @@
       "non-latin-layouts-list": false
     },
     "keymap_format": "XKB_KEYMAP_FORMAT_TEXT_V1"
+  },
+  "waypipe": {
+    "version": "0.11.3",
+    "source": "https://gitlab.freedesktop.org/mstoeckl/waypipe/-/archive/v0.11.3/waypipe-v0.11.3.tar.bz2",
+    "sha256": "2d4093903d444fda39c9b7db0a0b826f450a64d4302a03c9c9e3dbe480e8bb03",
+    "license": "MIT",
+    "license_source": "LICENSE.MIT",
+    "license_file": "licenses/waypipe-0.11.3-LICENSE.MIT",
+    "patches": [
+      {
+        "file": "native/patches/waypipe/0001-android-libc-realtime.patch",
+        "sha256": "a4b8d3de3f6e07785fb3d438949b3e45f18da2c3c7987d93830a9131aaa52f0b"
+      }
+    ],
+    "meson": "1.7.2",
+    "options": {
+      "build_c": true,
+      "build_rs": false,
+      "buildtype": "release",
+      "default_library": "static",
+      "b_staticpic": true,
+      "man-pages": "disabled",
+      "tests": false,
+      "werror": false,
+      "with_dmabuf": "disabled",
+      "with_video": "disabled",
+      "with_vaapi": "disabled",
+      "with_lz4": "enabled",
+      "with_zstd": "enabled",
+      "with_secctx": "disabled",
+      "with_systemtap": false,
+      "with_gbm": "disabled"
+    },
+    "features": [
+      "lz4",
+      "zstd"
+    ],
+    "unavailable": [
+      "dmabuf",
+      "video",
+      "vaapi"
+    ],
+    "output": "libwaypipe_bin.so",
+    "ndk": "27.3.13750724",
+    "api": 34,
+    "abi": "arm64-v8a"
+  },
+  "lz4": {
+    "version": "1.10.0",
+    "source": "https://codeload.github.com/lz4/lz4/tar.gz/refs/tags/v1.10.0",
+    "sha256": "537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b",
+    "license": "BSD-2-Clause",
+    "license_source": "lib/LICENSE",
+    "license_file": "licenses/lz4-1.10.0-LICENSE",
+    "patches": [],
+    "cmake_options": {
+      "BUILD_SHARED_LIBS": false,
+      "BUILD_STATIC_LIBS": true,
+      "LZ4_BUILD_CLI": false,
+      "LZ4_BUILD_LEGACY_LZ4C": false
+    }
+  },
+  "zstd": {
+    "version": "1.5.7",
+    "source": "https://codeload.github.com/facebook/zstd/tar.gz/refs/tags/v1.5.7",
+    "sha256": "37d7284556b20954e56e1ca85b80226768902e2edabd3b649e9e72c0c9012ee3",
+    "license": "BSD-3-Clause",
+    "license_source": "LICENSE",
+    "license_file": "licenses/zstd-1.5.7-LICENSE",
+    "patches": [],
+    "cmake_options": {
+      "ZSTD_BUILD_SHARED": false,
+      "ZSTD_BUILD_STATIC": true,
+      "ZSTD_BUILD_PROGRAMS": false,
+      "ZSTD_BUILD_TESTS": false,
+      "ZSTD_MULTITHREAD_SUPPORT": false,
+      "ZSTD_LEGACY_SUPPORT": false
+    }
   }
 }

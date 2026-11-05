@@ -34,7 +34,7 @@ jobs:
       - name: 専用SSH fixture用serverを導入
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-server ninja-build bison perl patch
+          sudo apt-get install -y openssh-server ninja-build bison perl patch cmake pkg-config
       - name: host suiteを検証
         run: scripts/check-host --suite all
 
@@ -64,7 +64,7 @@ jobs:
       - name: native依存のbuild toolを導入
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build bison patch
+          sudo apt-get install -y ninja-build bison patch cmake pkg-config
       - name: Android SDK・NDK固定版を導入
         run: |
           python3 - <<'PY'

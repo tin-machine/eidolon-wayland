@@ -418,3 +418,24 @@ Rust借用のcompile失敗、positioner Dispatch未登録、独自cache時のrol
 [再現手順・run/hash・試行錯誤](wayland-window-state-checks.md)へまとめた。
 W03は通常UI復帰とSDKパネルへの接続が未受入のためin_progressを維持する。
 次はW04のAPK向けWaypipe build/起動へ進む。Phase5/I07全体のgoalは継続する。
+
+
+## W04: APK向けWaypipeの固定build・起動停止（native検証済み）
+
+Waypipe 0.11.3 C版、LZ4 1.10.0/Zstd 1.5.7をchecksum付きsourceからbuildし、
+`libwaypipe_bin.so`をAPKのnativeLibraryDirへ同梱した。WaypipeのDT_NEEDEDはlibc.soだけ。
+最初はAndroidにないlibrtを要求して失敗したため、Androidだけlibcを使う最小patchを固定した。
+security-contextを無効にし、そのためだけのlibwayland/scanner依存も外した。
+API34ではNDK libcのspawnを使い、TermuxのELF/private prefixはcopyしない。
+
+Build46のQuest case `20261105T093854-0e4e328b`は3probe×3回の起動停止と実行中取消でpass。
+実子processのUIDをAPKと照合し、compositor接続・転送socket接続・waitを各3回/probe確認した。
+各停止最大5ms、FD70一定、実行中Stopの受付0ms・全回収14ms、残client/object/group/socketは0。
+新runtimeの生成・停止・registry0も成功した。これは画像転送の合格ではない。
+window-state10・shm9・独立truncate・native依存10・forward・remote7故障の回帰も同sourceで全pass。
+実lease失効60341ms。全scopeはnative-instrumentation、通常UI復帰は未確認。
+
+host Rust65/Python28/launcher12、source cache改変拒否1、実APK Python34、debug/release build/lint/packageが成功。
+[再現手順・固定依存・hash・失敗と修正](waypipe-build-checks.md)へ集約した。
+W04は共通の通常UI復帰確認を残すためin_progress。Termux側のWaypipe/foot/fontconfigは未導入であり、
+次のW05で導入版を確認してSHMを実転送する。Phase5/I07のgoalは継続する。

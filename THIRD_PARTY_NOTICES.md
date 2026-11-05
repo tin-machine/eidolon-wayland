@@ -10,6 +10,13 @@
 | Smithay 0.7.0 | Wayland protocol/SHM。[計上補助patch](native/patches/smithay/README.md)を適用 | [MIT](native/licenses/smithay-0.7.0-LICENSE) |
 | libxkbcommon 1.8.1 | static libraryと自己完結keymapのparse | [上流のlicense集](native/licenses/xkbcommon-1.8.1-LICENSE) |
 | xkeyboard-config 2.48 | US/JIS keymap生成元data | [COPYING](native/licenses/xkeyboard-config-2.48-COPYING) |
+| Waypipe 0.11.3 C版 | APK同梱のPIE helper。[Android用librt patch](native/patches/waypipe/0001-android-libc-realtime.patch)を適用 | [MIT](native/licenses/waypipe-0.11.3-LICENSE.MIT) |
+| LZ4 1.10.0 library | Waypipeへstatic link。CLIはbuildしない | [BSD-2-Clause](native/licenses/lz4-1.10.0-LICENSE) |
+| Zstandard 1.5.7 library | Waypipeへstatic link。CLIはbuildしない | [BSD-3-Clauseを選択](native/licenses/zstd-1.5.7-LICENSE) |
+
+Waypipeは同じarchive内のC版（MIT）だけを使用し、Rust版はbuildしない。
+security-contextを無効にしているためlibwayland/scannerはlinkしない。
+Android API34のlibcを使い、Termuxのprefix/ELFやlibandroid-spawnをAPKへcopyしない。
 
 debug専用のSHM clientはwayland-client 0.31.14（MIT）を使う。
 その他のRust依存は`Cargo.lock`へ固定する。全依存を対象とする配布notice監査はPhase6の受入項目。

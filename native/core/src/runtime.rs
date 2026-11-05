@@ -407,7 +407,10 @@ impl Runtime {
                                     code
                                 }
                                 Command::SurfaceLost { target, .. } => gl.detach(*target),
-                                Command::HelperProbe {
+                                Command::WaypipeProbe {
+                                    nonce, request_id, ..
+                                }
+                                | Command::HelperProbe {
                                     nonce, request_id, ..
                                 } => {
                                     if helper.is_some() {
@@ -415,6 +418,8 @@ impl Runtime {
                                     } else if let Some(paths) =
                                         config.paths.clone().filter(|_| cfg!(debug_assertions))
                                     {
+                                        let waypipe =
+                                            matches!(command, Command::WaypipeProbe { .. });
                                         let (progress, stop, nonce) = (
                                             progress_state.clone(),
                                             stopping.clone(),
@@ -423,6 +428,24 @@ impl Runtime {
                                         match thread::Builder::new()
                                             .name("eidolon-helper".into())
                                             .spawn(move || {
+                                                if waypipe {
+                                                    return crate::waypipe::probe(
+                                                        &std::path::Path::new(
+                                                            &paths.native_library_dir,
+                                                        )
+                                                        .join("libwaypipe_bin.so"),
+                                                        std::path::Path::new(&paths.files_dir),
+                                                        &nonce,
+                                                        stop,
+                                                        |report| {
+                                                            progress
+                                                                .lock()
+                                                                .unwrap_or_else(|e| e.into_inner())
+                                                                .snapshot
+                                                                .helper = Some(report.clone());
+                                                        },
+                                                    );
+                                                }
                                                 let executable =
                                                     std::path::Path::new(&paths.native_library_dir)
                                                         .join("libeidolon_probe_bin.so");
