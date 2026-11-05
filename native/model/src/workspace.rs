@@ -142,12 +142,18 @@ impl SavedPlacement {
                 .is_none_or(|size| crate::resize::logical_size(size.width, size.height).is_ok())
     }
 }
+fn default_observation() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Preferences {
     pub schema: u32,
     pub background: Background,
     pub keyboard_layout: KeyboardLayout,
+    #[serde(default = "default_observation")]
+    pub workload_observation: bool,
     pub placements: Vec<SavedPlacement>,
 }
 impl Default for Preferences {
@@ -156,6 +162,7 @@ impl Default for Preferences {
             schema: 1,
             background: Background::Passthrough,
             keyboard_layout: KeyboardLayout::Us,
+            workload_observation: true,
             placements: vec![],
         }
     }
@@ -252,6 +259,19 @@ mod tests {
             logical_size: Some(LogicalSize::new(800, 600).unwrap()),
         }
     }
+    #[test]
+    fn observation_setting_migrates_old_records_and_roundtrips_disabled() {
+        let mut value: Preferences = serde_json::from_str(
+            r#"{"schema":1,"background":"passthrough","keyboard_layout":"us","placements":[]}"#,
+        )
+        .unwrap();
+        assert!(value.workload_observation);
+        value.workload_observation = false;
+        let restored: Preferences =
+            serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(!restored.workload_observation && restored.valid());
+    }
+
     #[test]
     fn settings_bound_schema_values_duplicates_and_never_persist_runtime_ids() {
         let mut p = Preferences::default();

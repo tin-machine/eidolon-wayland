@@ -32,6 +32,7 @@ pub struct Report {
     pub import_token: Option<String>,
     pub applied_revision: u64,
     pub error: Option<String>,
+    pub fallback_reason: Option<String>,
     pub storage: crate::theme_store::Report,
     pub workers: usize,
 }
@@ -136,6 +137,7 @@ impl Controller {
         if selection == ThemeSelection::Imported && self.value.imported.is_none() {
             return self.fail("THEME_IMPORT_MISSING");
         }
+        self.report.fallback_reason = None;
         self.report.requested = selection;
         self.report.loading = true;
         let mut pending = Pending {
@@ -172,6 +174,17 @@ impl Controller {
         }
         self.pending = Some(pending);
         Status::Accepted
+    }
+    /// 確認済みの装飾panel作成失敗だけでOffへ退避する。import元は保持する。
+    pub fn fallback(&mut self, render: &eidolon_render::Controller, reason: &str) -> Status {
+        if self.report.requested == ThemeSelection::Off && self.report.loading {
+            return Status::Accepted;
+        }
+        let status = self.select(ThemeSelection::Off, self.value.reduced_motion, render);
+        if status == Status::Accepted {
+            self.report.fallback_reason = Some(reason.chars().take(128).collect());
+        }
+        status
     }
     pub fn begin_import(&mut self, token: &str, render: &eidolon_render::Controller) -> Status {
         if self.stopping || self.store.root.is_none() {
@@ -396,8 +409,17 @@ mod tests {
         assert!(controller.report.error.is_some());
         assert_eq!(controller.report.selection, ThemeSelection::Imported);
         assert_eq!(controller.report.applied_revision, applied);
-        controller.select(ThemeSelection::Off, true, &render);
+        controller.select(ThemeSelection::Imported, true, &render);
         settle(&mut controller, &render);
+        assert_eq!(
+            controller.fallback(&render, "SDK_DECORATION_FAILED"),
+            Status::Accepted
+        );
+        settle(&mut controller, &render);
+        assert_eq!(
+            controller.report.fallback_reason.as_deref(),
+            Some("SDK_DECORATION_FAILED")
+        );
         assert!(render.snapshot().theme_id.is_none());
         assert!(controller.report.imported_available);
         controller.stop();

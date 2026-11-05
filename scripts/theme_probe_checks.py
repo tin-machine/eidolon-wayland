@@ -104,3 +104,89 @@ def theme_surface_result(snapshot, nonce, expected):
                         or any(type(v) is not int or not 0 <= v <= 255 or abs(v-w)>1 for v,w in zip(rgba,expected_rgba))):
                     raise ValueError("theme probe producer RGBA mismatch")
     return True
+
+
+def theme_performance(rows):
+    """累積計数の差分から求める。SDK/GPU timer/通常運用CPUの測定へ昇格しない。"""
+    if [row.get("mode") for row in rows] != ["off", "reduced", "animated", "animated_metrics"]:
+        raise ValueError("theme performance modes missing")
+    reports=[]
+    for row in rows:
+        elapsed=row.get("elapsed_ms",0)
+        if not 5900<=elapsed<=15000 or not 0<=row.get("process_cpu_ms",-1)<=elapsed*16:
+            raise ValueError("theme performance interval invalid")
+        mode=row['mode']; before=row.get('before',{}); after=row.get('after',{})
+        first={t['key']['window']:t for t in before.get('render',{}).get('targets',[])}
+        last={t['key']['window']:t for t in after.get('render',{}).get('targets',[])}
+        if len(first)!=2 or first.keys()!=last.keys():raise ValueError('theme performance needs two targets')
+        theme=after.get('theme',{});render=after.get('render',{})
+        if (after.get('state')!='Ready' or render.get('error') is not None or theme.get('error') is not None
+                or theme.get('loading') is not False or theme.get('selection')!=('off' if mode=='off' else 'builtin')
+                or theme.get('reduced_motion') is not (mode=='reduced')
+                or render.get('theme_id')!=(None if mode=='off' else 'cyan-orbit')
+                or (render.get('composition',{}).get('decoration_texture_bytes',0)==0) is not (mode=='off')):
+            raise ValueError('theme performance setting/texture mismatch')
+        targets=[]
+        for window,start in first.items():
+            end=last[window]
+            if end['key']!=start['key']:raise ValueError('target generation changed inside measurement')
+            n=end['frames']-start['frames'];dec=end['decoration_frames']-start['decoration_frames']
+            a,b=start.get('frame_timing',{}),end.get('frame_timing',{})
+            bins=[y-x for x,y in zip(a.get('histogram_ms',[]),b.get('histogram_ms',[]))]
+            total=b.get('total_us',0)-a.get('total_us',0)
+            if (n<0 or len(bins)!=32 or any(x<0 for x in bins) or sum(bins)!=n
+                    or b.get('samples',0)-a.get('samples',0)!=n or total<0
+                    or (mode=='off' and dec!=0) or (mode!='off' and dec!=n)
+                    or (mode in {'animated','animated_metrics'} and n<10)):
+                raise ValueError('theme performance counters invalid')
+            def quantile(p):
+                seen=0
+                for i,count in enumerate(bins):
+                    seen+=count
+                    if n and seen>=n*p:return i+1 if i<31 else 'over_31'
+                return None
+            targets.append(dict(window=window,frames=n,fps=n*1000/elapsed,draw_mean_ms=total/1000/n if n else None,
+                                draw_p50_upper_ms=quantile(.5),draw_p95_upper_ms=quantile(.95),draw_p99_upper_ms=quantile(.99),
+                                content_changed=start.get('content_frame')!=end.get('content_frame')))
+        workloads=after.get('app',{}).get('workloads',[])
+        observing=mode=='animated_metrics'
+        if after.get('workspace',{}).get('workload_observation') is not observing:
+            raise ValueError('theme performance observation setting mismatch')
+        if not observing:
+            remote=after.get('transport',{}).get('app_forward',{}).get('remote',{}).get('workload',{})
+            if remote.get('capability')!='unavailable' or remote.get('scan_seconds')!=0:
+                raise ValueError('disabled observer still scans or publishes measurements')
+        if (len(workloads)!=2 or {w.get('window') for w in workloads}!=set(last)
+                or len({w.get('terminal_id') for w in workloads})!=2
+                or any((observing and (w.get('state')!='registered' or w.get('display',{}).get('coverage')!='complete'
+                           or w.get('display',{}).get('stale') is not False or w.get('display',{}).get('scope')!='shell_tree'
+                           or w.get('display',{}).get('rss_bytes',0)<=0))
+                       or (not observing and w.get('display',{}).get('stale') is not True) for w in workloads)):
+            raise ValueError('theme performance workload association incomplete')
+        reports.append(dict(mode=mode,elapsed_ms=elapsed,process_cpu_cores=row['process_cpu_ms']/elapsed,
+                            targets=targets,native_heap_after=row.get('native_heap_after')))
+    return reports
+
+
+def theme_windows_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
+    from quest_checks import two_windows_result
+    if not two_windows_result(snapshot,nonce,expected,apk_uid,termux_uid,package,themed=True):return False
+    result=snapshot['check']
+    measurement=result.get('instrumentation',{})
+    if any(measurement.get(key) is not True for key in ('measurement_cpu_awake','measurement_lock_held_until_end','measurement_lock_released')):
+        raise ValueError('theme performance CPU wake lock scope/release is unverified')
+    if result.get('cleanup_failed') or result.get('after_stop',{}).get('theme',{}).get('workers')!=0:
+        raise ValueError('theme windows worker cleanup failed')
+    theme_performance(result.get('performance',[]))
+    fallback=result.get('fallback',{})
+    if (result.get('synthetic_adapter_failure') is not True or fallback.get('state')!='Ready'
+            or fallback.get('theme',{}).get('selection')!='off'
+            or fallback.get('theme',{}).get('fallback_reason')!='SDK_DECORATION_FAILED'
+            or fallback.get('render',{}).get('theme_id') is not None
+            or fallback.get('render',{}).get('composition',{}).get('decoration_texture_bytes')!=0
+            or len(fallback.get('render',{}).get('targets',[]))!=2
+            or fallback.get('app',{}).get('session')!=result.get('session')
+            or fallback.get('app',{}).get('error') is not None
+            or any(p.get('decoration') is not None for p in fallback.get('panels',[]))):
+        raise ValueError('decoration fallback did not preserve two windows/session')
+    return True

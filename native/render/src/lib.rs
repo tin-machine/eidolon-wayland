@@ -63,6 +63,26 @@ pub struct GpuInfo {
     pub readback: bool,
     pub max_swap_us: u64,
 }
+/// 成功したdraw+swapのwall time。GPU timerではなく、待ち時間を含む。累積差分で区間を測る。
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct FrameTiming {
+    pub samples: u64,
+    pub total_us: u64,
+    pub max_us: u64,
+    // 0..=1000us, 1001..=2000us, ... 31001us以上のoverflow bin。
+    pub histogram_ms: [u64; 32],
+}
+impl FrameTiming {
+    fn record(&mut self, duration: Duration) {
+        let us = duration.as_micros().min(u64::MAX as u128) as u64;
+        self.samples = self.samples.saturating_add(1);
+        self.total_us = self.total_us.saturating_add(us);
+        self.max_us = self.max_us.max(us);
+        let bin = us.saturating_sub(1).checked_div(1000).unwrap_or(0).min(31) as usize;
+        self.histogram_ms[bin] = self.histogram_ms[bin].saturating_add(1);
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct TargetReport {
     pub key: TargetKey,
@@ -72,6 +92,7 @@ pub struct TargetReport {
     pub canvas: Option<theme_state::Canvas>,
     pub content_size: Option<eidolon_model::window::LogicalSize>,
     pub decoration_frames: u64,
+    pub frame_timing: FrameTiming,
     #[serde(flatten)]
     pub gpu: GpuInfo,
 }
@@ -667,6 +688,7 @@ fn owner(state: &State) {
                                     canvas: None,
                                     content_size: None,
                                     decoration_frames: 0,
+                                    frame_timing: FrameTiming::default(),
                                     gpu: gpu.info(),
                                 },
                                 gpu,
@@ -864,6 +886,7 @@ fn owner(state: &State) {
                     .as_ref()
                     .zip(theme.as_ref())
                     .map(|(d, t)| d.composition(t));
+                let frame_started = Instant::now();
                 match busy(state, || {
                     target.gpu.frame(
                         device.as_mut().unwrap(),
@@ -877,6 +900,7 @@ fn owner(state: &State) {
                     )
                 }) {
                     Ok(()) => {
+                        target.report.frame_timing.record(frame_started.elapsed());
                         target.needs_redraw = false;
                         target.report.canvas = drawing.as_ref().map(|d| d.canvas.clone());
                         target.report.content_size =

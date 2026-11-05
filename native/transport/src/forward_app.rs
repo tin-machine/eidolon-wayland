@@ -37,6 +37,7 @@ pub(crate) struct Request<'a> {
     pub uid: u32,
     pub journal: &'a mut journal::Journal,
     pub binding: &'a str,
+    pub observation: tokio::sync::watch::Receiver<bool>,
     pub terminal_requests: tokio::sync::mpsc::Receiver<eidolon_model::ids::CommandSeq>,
 }
 
@@ -56,6 +57,7 @@ pub(crate) async fn run<H: client::Handler>(
         journal,
         binding,
         mut terminal_requests,
+        mut observation,
     } = request;
     let started = std::time::Instant::now();
     let mut report = Report {
@@ -123,11 +125,22 @@ pub(crate) async fn run<H: client::Handler>(
         report.state = "forwarded";
         publish(&report);
         remote.start_app(mode.as_str(), session).await?;
+        let mut observation_open = matches!(mode, AppMode::Foot | AppMode::FootFixture);
+        if observation_open {
+            let enabled = *observation.borrow_and_update();
+            remote.observe_workload(enabled).await?;
+        }
         let mut requests_open = true;
         while remote.report.phase != "finished" {
             tokio::select! {
                 biased;
                 value = remote.next() => { report.remote = Some(value?); }
+                changed = observation.changed(), if observation_open => {
+                    if changed.is_ok() {
+                        let enabled = *observation.borrow_and_update();
+                        remote.observe_workload(enabled).await?;
+                    } else { observation_open = false; }
+                }
                 request = terminal_requests.recv(), if requests_open && remote.report.phase == "running" && remote.report.terminal_count > 0 && remote.report.terminal_pending.is_none() => {
                     if let Some(request) = request { remote.open_terminal(request).await?; report.remote=Some(remote.report.clone()); }
                     else { requests_open=false; }

@@ -239,3 +239,39 @@ APK window内のtmux attach/detach切替、通常テーマでのbusy/meter表示
 
 参考: [proc_pid_stat](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html)、
 [tmux公式Formats](https://github.com/tmux/tmux/wiki/Formats)。
+
+
+## 観測の停止とnative性能比較
+
+通常UIの「負荷の計測を停止/再開」はworkspace設定として保存する。古い設定fileでは有効を既定とする。
+`set_workload_observation`はboolだけを受け、認証済みの同じsessionへ`observe_workload_v1`を送る。
+停止中はcollectorの/proc全走査とtmux照会を止め、登録socketを保持してunavailableを報告する。
+同じcollector/SSH streamのepochは維持し、再開でCPU差分の基準を更新する。停止前の計測結果は新しい設定世代へ公開しない。
+観測の停止・再開はterminal、shell、tmux server/paneへのsignal送信権限を持たない。
+
+`theme-windows --instrumentation`は実foot二枚の装飾・片側Surface喪失・resize・第三window切替・入力解除・個別closeを検査する。
+固定出力の終了後、観測を止めて装飾なし/静止リング/三重回転を各6秒、再開後に三重回転＋実metricsを6秒測る。
+resizeではclientの新logical寸法を確定してから新targetを接続する。これはSDK adapterの旧世代拒否を省略するものではない。
+測定中はImageReaderを排出し続け、画像hashの計算を止める。製品settingsは使わず、この検査のruntimeだけで切り替える。
+このcaseに限り、debug manifestのWAKE_LOCKでCPU休止を最大5分防ぎ、finallyで解放する。
+獲得・終了直前の保持・解放を証明へ記録する。XR focusや装着検知を偽装するものではない。
+通常のsleep/復帰はこのlockを持たない製品経路で別に測る。releaseに権限が残らないこともAPK検査する。
+
+各targetの`frame_timing`は成功したdraw+swapの累積件数/時間と32binのhistogram。
+1ms刻みでp50/p95/p99の上限を報告し、31msを超えるbinは`over_31`、描画0回は未定義とする。
+GPU待ちを含むwall timeであり、GPU timestamp queryでもHMD present latencyでもない。
+区間CPUはAPK process全体で、consumer/probeの残る負荷を含む。
+装飾なしは通常canvas、静止/回転は同じ拡張canvasを使うため、最初の差にはcanvas拡大分も含まれる。
+HMD/通常SDKの性能予算はこの測定だけで合格にしない。
+
+```sh
+python3 -B scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case theme-windows --instrumentation --timeout 210
+git archive --format=zip -o "$EIDOLON_THEME_ZIP" HEAD:native/theme/assets/cyan-orbit
+adb -s "$EIDOLON_QUEST_SERIAL" push "$EIDOLON_THEME_ZIP" /sdcard/Download/eidolon-cyan-orbit.zip
+```
+
+ZIPのコピー後、アプリの「テーマZIPを読み込む」からDownloadのfileを選択する。コピーだけでは選択themeは変わらない。
+
+装飾panelの作成失敗は、最新のtarget/command_seqに一致するAdapterFailedだけを処理する。
+装飾なしへ戻し、旧targetの回収後に通常panelを作り直す。適用済みimport元と接続は維持する。
+未知の全体描画障害をテーマ起因と断定しない。合成AdapterFailedのnative検査と、実SDK失敗の発生記録は区別する。

@@ -137,6 +137,7 @@ impl Runtime {
                 if config.preferences_dir.is_none() {
                     workspace.set_keyboard_layout(config.keyboard_layout);
                 }
+                io.set_workload_observation(workspace.workload_observation());
                 let mut workspace_storage = workspace.detach_storage();
                 let mut last_workspace_save = Instant::now();
                 {
@@ -320,6 +321,11 @@ impl Runtime {
                             if current.snapshot().error.is_some() && !close {
                                 io.disconnect(current.session());
                             }
+                            let observation = state
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .workspace
+                                .workload_observation();
                             let snapshot = current.snapshot();
                             for workload in &snapshot.workloads {
                                 gl.set_semantic_state(
@@ -328,8 +334,8 @@ impl Runtime {
                                     eidolon_render::theme_state::SemanticState {
                                         focused: snapshot.input.focus_window
                                             == Some(workload.window),
-                                        busy: workload.display.busy,
-                                        cpu_cores: (!workload.display.stale)
+                                        busy: observation && workload.display.busy,
+                                        cpu_cores: (observation && !workload.display.stale)
                                             .then_some(workload.display.smoothed_cores)
                                             .flatten(),
                                         workload_identity: workload.identity.clone(),
@@ -596,6 +602,11 @@ impl Runtime {
                                     } else {
                                         Status::Stale
                                     }
+                                }
+                                Command::SetWorkloadObservation { enabled, .. } => {
+                                    state.workspace.set_workload_observation(*enabled);
+                                    io.set_workload_observation(*enabled);
+                                    Status::Accepted
                                 }
                                 Command::SetKeyboardLayout { layout, .. } => {
                                     let changed = app
@@ -904,12 +915,22 @@ impl Runtime {
                                     } else if success && !ready {
                                         Status::NotReady
                                     } else {
-                                        state.panels.acknowledge(
+                                        let decorated_failure = !success
+                                            && *action
+                                                == eidolon_model::commands::PanelAction::Create
+                                            && state.panels.snapshot().iter().any(|p| {
+                                                p.target == *target && p.decoration.is_some()
+                                            });
+                                        let status = state.panels.acknowledge(
                                             *command_seq,
                                             *target,
                                             *action,
                                             success,
-                                        )
+                                        );
+                                        if decorated_failure && status == Status::Accepted {
+                                            themes.fallback(&gl, "SDK_DECORATION_FAILED");
+                                        }
+                                        status
                                     }
                                 }
                                 Command::RenderProbe {

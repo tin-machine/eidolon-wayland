@@ -1489,11 +1489,11 @@ def product_ssh_result(snapshot, nonce, expected, termux_uid):
             and state.get("transport", {}).get("owned_connections") == 0 and len(state.get("render", {}).get("targets", [])) == 1)
 
 
-def two_windows_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
+def two_windows_result(snapshot, nonce, expected, apk_uid, termux_uid, package, *, themed=False):
     if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected:
         return False
     proof = snapshot.get('check', {})
-    if proof.get('case') != 'two-windows' or proof.get('nonce') != nonce:
+    if proof.get('case') != ('theme-windows' if themed else 'two-windows') or proof.get('nonce') != nonce:
         return False
     if proof.get('result') == 'fail':
         raise ValueError('二枚の実foot検査失敗: ' + proof.get('stage', 'unknown'))
@@ -1535,12 +1535,28 @@ def two_windows_result(snapshot, nonce, expected, apk_uid, termux_uid, package):
         for target in targets:
             key=target.get('key',{}); window=key.get('window'); pixels=row.get('pixels',{}).get(window,{})
             plan=next((p for p in runtime.get('panels',[]) if p.get('target')==key),{})
+            layout=plan.get('decoration') or {}
+            canvas=layout.get('canvas', {}) if themed else dict(width=1024,height=768)
             if (key.get('session')!=session or key.get('scene')!='1' or target.get('role')!='windows' or target.get('frames',0)<3
-                    or target.get('content_frame')!=windows[window].get('frame') or target.get('width')!=1024 or target.get('height')!=768
+                    or target.get('content_frame')!=windows[window].get('frame') or target.get('width')!=canvas.get('width') or target.get('height')!=canvas.get('height')
                     or plan.get('action')!='create' or plan.get('applied') is not True or plan.get('error') is not None or plan.get('slot') not in (0,1)
                     or pixels.get('non_uniform_images',0)<1 or pixels.get('distinct_images',0)<3 or pixels.get('sample_step')!=4
                     or len(set(pixels.get('hashes',[])))!=pixels.get('distinct_images')):
                 raise ValueError('二枚の世代・SDK適用ack・実pixel/present証明が不正です')
+            if themed:
+                logical_size=windows[window].get('logical_size')
+                size=max(1280, min(2048,max(logical_size['width'],logical_size['height']+32)))
+                expected_origin=[(size-logical_size['width'])//2,(size-logical_size['height'])//2]
+                timing=target.get('frame_timing',{})
+                if (layout.get('content')!=logical_size or canvas!=dict(width=size,height=size)
+                        or layout.get('content_origin')!=expected_origin or target.get('content_size')!=logical_size
+                        or target.get('decoration_frames',0)<3 or render.get('theme_id')!='cyan-orbit'
+                        or runtime.get('theme',{}).get('selection')!='builtin'
+                        or runtime.get('theme',{}).get('loading') is not False
+                        or runtime.get('theme',{}).get('error') is not None
+                        or timing.get('samples')!=target.get('frames')
+                        or sum(timing.get('histogram_ms',[]))!=timing.get('samples')):
+                    raise ValueError('装飾付きcontent/canvas/実drawの証明が不正です')
         if index==1:
             input_state=app.get('input',{})
             if (row['pixels'][second]['distinct_images']<previous_second_images+5 or input_state.get('focus_window')!=second

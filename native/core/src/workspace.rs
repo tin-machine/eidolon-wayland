@@ -38,6 +38,7 @@ pub struct Report {
     pub background_command: Option<CommandSeq>,
     pub applied_background: Option<AppliedBackground>,
     pub keyboard_layout: KeyboardLayout,
+    pub workload_observation: bool,
     pub storage: preferences::Report,
     pub pending_save: bool,
     pub windows: Vec<WindowPlacement>,
@@ -74,6 +75,7 @@ impl Controller {
             background_command: self.background_command,
             applied_background: self.applied_background.clone(),
             keyboard_layout: self.store.value.keyboard_layout,
+            workload_observation: self.store.value.workload_observation,
             storage: self.store.report.clone(),
             pending_save: self.pending_save,
             windows: self.windows.clone(),
@@ -97,6 +99,15 @@ impl Controller {
     }
     pub fn storage_result(&mut self, report: preferences::Report) {
         self.store.report = report;
+    }
+    pub fn workload_observation(&self) -> bool {
+        self.store.value.workload_observation
+    }
+    pub fn set_workload_observation(&mut self, enabled: bool) {
+        if self.store.value.workload_observation != enabled {
+            self.store.value.workload_observation = enabled;
+            self.pending_save = true;
+        }
     }
     pub fn keyboard_layout(&self) -> KeyboardLayout {
         self.store.value.keyboard_layout

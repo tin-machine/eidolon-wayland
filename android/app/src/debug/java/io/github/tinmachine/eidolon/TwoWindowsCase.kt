@@ -14,14 +14,15 @@ import org.json.JSONObject
 /** 二つの実foot windowを独立ImageReaderへ表示する。SDK layer/HMD/物理入力は別受入れ。 */
 object TwoWindowsCase {
     private data class Consumer(val plan:JSONObject,val reader:ImageReader,val pixels:FootCase.Pixels) {
+        val sampling=java.util.concurrent.atomic.AtomicBoolean(true)
         val target:JSONObject get()=plan.getJSONObject("target")
         val window:String get()=target.getString("window")
     }
-    fun run(nonce:String,context:Context,configuration:String,store:DiagnosticsStore) {
-        val result=JSONObject().put("case","two-windows").put("nonce",nonce).put("result","running")
+    fun run(nonce:String,context:Context,configuration:String,store:DiagnosticsStore,themed:Boolean=false) {
+        val result=JSONObject().put("case",if(themed) "theme-windows" else "two-windows").put("nonce",nonce).put("result","running")
             .put("consumer","ImageReader").put("synthetic_visibility",true).put("synthetic_input",true)
             .put("physical_input_verified",false).put("text_verified",false).put("sdk_layers_verified",false)
-        val rows=JSONArray();val consumers=linkedMapOf<String,Consumer>()
+        val rows=JSONArray();val performance=JSONArray();val consumers=linkedMapOf<String,Consumer>()
         val thread=HandlerThread("eidolon-two-consumers").apply { start() };val handler=Handler(thread.looper)
         var handle=0L;var stage="create";var request=0L
         fun command(type:String)=JSONObject().put("schema",1).put("type",type).put("request_id",(++request).toString())
@@ -38,7 +39,7 @@ object TwoWindowsCase {
             waitFor {
                 val events=JSONObject(NativeBridge.nativePoll(handle,64)).getJSONArray("events")
                 var done=false
-                for(i in 0 until events.length()) { val e=events.getJSONObject(i);if(e.optString("type")=="command_complete" && e.optString("request_id")==packet.getString("request_id")) { check(e.getString("code")==expected);done=true } }
+                for(i in 0 until events.length()) { val e=events.getJSONObject(i);if(e.optString("type")=="command_complete" && e.optString("request_id")==packet.getString("request_id")) { check(e.getString("code")==expected) { "${packet.getString("type")}: ${e.getString("code")} expected $expected" };done=true } }
                 done
             }
         }
@@ -48,17 +49,27 @@ object TwoWindowsCase {
         fun presented(runtime:JSONObject,c:Consumer):Boolean {
             val w=windows(runtime).firstOrNull { it.getString("window")==c.window } ?: return false
             val targets=runtime.getJSONObject("render").getJSONArray("targets")
-            return (0 until targets.length()).any { i -> val t=targets.getJSONObject(i);same(t.getJSONObject("key"),c.target) && t.getLong("frames")>=3 && t.optString("content_frame")==w.getString("frame") }
+            return (0 until targets.length()).any { i -> val t=targets.getJSONObject(i);same(t.getJSONObject("key"),c.target) && t.getLong("frames")>=1 && t.optString("content_frame")==w.getString("frame") }
         }
-        fun attach(window:String):Consumer {
+        fun attach(window:String,minimumImages:Int=3):Consumer {
             var plan=JSONObject()
             waitFor { plan=plans(state()).firstOrNull { it.getString("action")=="create" && it.getJSONObject("target").getString("window")==window } ?: JSONObject();plan.has("target") }
-            val pixels=FootCase.Pixels();val reader=ImageReader.newInstance(1024,768,PixelFormat.RGBA_8888,3)
+            val canvas=plan.optJSONObject("decoration")?.getJSONObject("canvas")
+            val width=canvas?.getInt("width") ?: 1024;val height=canvas?.getInt("height") ?: 768
+            val pixels=FootCase.Pixels();val reader=ImageReader.newInstance(width,height,PixelFormat.RGBA_8888,3)
             val consumer=Consumer(plan,reader,pixels);consumers[window]=consumer
-            reader.setOnImageAvailableListener({ source -> source.acquireLatestImage()?.use { pixels.add(it) } },handler)
+            reader.setOnImageAvailableListener({ source -> source.acquireLatestImage()?.use { if(consumer.sampling.get()) pixels.add(it) } },handler)
             val key=consumer.target
-            check(NativeBridge.nativeAttachWindowSurface(handle,key.getString("session").toLong(),window.toLong(),key.getString("scene").toLong(),key.getString("generation").toLong(),reader.surface,1024,768)==NativeBridge.ACCEPTED)
-            waitFor { presented(state(),consumer) && pixels.summary().getInt("distinct_images")>=3 }
+            waitFor {
+                // 製品adapterと同様、map直後のrender snapshot到着・queue受付を待つ。
+                // 旧世代へ勝手に切り替えず、同じcreateがまだ有効な時だけ再試行する。
+                check(plans(state()).any { same(it.getJSONObject("target"),key) && it.getString("action")=="create" && it.isNull("error") }) { "ATTACH_PLAN_RETIRED" }
+                val code=NativeBridge.nativeAttachWindowSurface(handle,key.getString("session").toLong(),window.toLong(),key.getString("scene").toLong(),key.getString("generation").toLong(),reader.surface,width,height)
+                check(code in setOf(NativeBridge.ACCEPTED,NativeBridge.STALE,NativeBridge.BUSY,NativeBridge.NOT_READY)) { "ATTACH_CODE_$code" }
+                if(code!=NativeBridge.ACCEPTED) result.put("attach_retries",result.optInt("attach_retries")+1)
+                code==NativeBridge.ACCEPTED
+            }
+            waitFor { presented(state(),consumer) && pixels.summary().getInt("distinct_images")>=minimumImages }
             send(command("adapter_applied").put("target",key).put("command_seq",plan.getString("command_seq")).put("action","create"))
             waitFor { plans(state()).any { same(it.getJSONObject("target"),key) && it.optBoolean("applied") } }
             return consumer
@@ -91,11 +102,31 @@ object TwoWindowsCase {
             val packet=JSONObject().put("device",Int.MAX_VALUE-11).put("action",action).put("scan_code",scan).put("key_code",code).put("repeat",0).put("meta",0).put("time_ms",SystemClock.uptimeMillis() and 0xffffffffL)
             send(command("key").put("target",consumer.target).put("input_epoch",runtime.getLong("input_resets")).put("focus_token",input.getString("focus_token")).put("key",packet))
         }
+        fun selectTheme(selection:String,reduced:Boolean) {
+            send(command("set_theme").put("selection",selection).put("reduced_motion",reduced))
+            waitFor { val t=state().getJSONObject("theme");t.getString("selection")==selection && !t.getBoolean("loading") }
+            check(state().getJSONObject("theme").isNull("error"))
+        }
+        fun performanceSample(label:String) {
+            consumers.values.forEach { it.sampling.set(false) } // consumerはdrainを続けるがhashのCPU負荷を測定へ加えない。
+            Thread.sleep(500) // setting/Surface再生成の一時的なdrawを区間から外す。
+            val before=state();val start=SystemClock.elapsedRealtime();val cpu=android.os.Process.getElapsedCpuTime()
+            val memory=android.os.Debug.getNativeHeapAllocatedSize()
+            Thread.sleep(6000)
+            val elapsed=SystemClock.elapsedRealtime()-start;val cpuMs=android.os.Process.getElapsedCpuTime()-cpu
+            val after=state()
+            performance.put(JSONObject().put("mode",label).put("elapsed_ms",elapsed).put("process_cpu_ms",cpuMs)
+                .put("native_heap_before",memory).put("native_heap_after",android.os.Debug.getNativeHeapAllocatedSize())
+                .put("before",before).put("after",after))
+            result.put("performance",performance).put("performance_scope","ImageReader native draw+swap; process CPU includes probe overhead")
+            store.publishCheck(result)
+        }
         try {
             store.publishCheck(result)
             handle=NativeBridge.nativeCreate(configuration);check(handle>0)
             waitFor { JSONObject(NativeBridge.nativeSnapshot(handle)).getJSONObject("runtime").getString("state")=="Ready" }
             send(command("set_activity_state").put("visible",true));send(command("set_xr_state").put("state","FOCUSED"));send(command("scene_ready").put("scene","1"))
+            if(themed) selectTheme("builtin",false)
             stage="connect"
             check(NativeBridge.nativeCommand(handle,command("connect").put("profile_id","termux-local").toString())==NativeBridge.ACCEPTED)
             val credentials=CredentialStore(context);var credentialRequests=0
@@ -121,11 +152,17 @@ object TwoWindowsCase {
             record("two")
             stage="one-surface-missing"
             send(command("resize_logical").put("target",first.target).put("width",1280).put("height",720))
+            if(themed) waitFor {
+                windows(state()).first { it.getString("window")==firstWindow }.getJSONObject("logical_size").let {
+                    it.getInt("width")==1280 && it.getInt("height")==720
+                }
+            }
             retire(first)
             val before=second.pixels.summary().getInt("distinct_images")
             click(second);key(second,"pressed",30,KeyEvent.KEYCODE_A);key(second,"released",30,KeyEvent.KEYCODE_A)
             waitFor { second.pixels.summary().getInt("distinct_images")>=before+5 }
             record("one_surface_missing")
+            stage="reattach-resized"
             first=attach(firstWindow)
             waitFor { windows(state()).first { it.getString("window")==firstWindow }.getJSONObject("resize").getString("phase")=="applied" }
             record("resized")
@@ -154,6 +191,44 @@ object TwoWindowsCase {
             waitFor(80000) { state();SystemClock.elapsedRealtime()-runningStarted>=73000 }
             result.put("running_observed_ms",SystemClock.elapsedRealtime()-runningStarted)
             record("long_running")
+            if(themed) {
+                stage="observation-disabled"
+                send(command("set_workload_observation").put("enabled",false))
+                waitFor {
+                    val remote=state().getJSONObject("transport").getJSONObject("app_forward").getJSONObject("remote")
+                    remote.optJSONObject("workload")?.optString("capability")=="unavailable"
+                }
+                stage="performance-off"
+                selectTheme("off",false)
+                val windowsToRestore=consumers.keys.toList()
+                consumers.values.toList().forEach { retire(it) }
+                windowsToRestore.forEach { attach(it,1) }
+                performanceSample("off")
+                stage="performance-reduced"
+                selectTheme("builtin",true)
+                consumers.values.toList().forEach { retire(it) }
+                windowsToRestore.forEach { attach(it,1) }
+                performanceSample("reduced")
+                stage="performance-animated"
+                selectTheme("builtin",false)
+                performanceSample("animated")
+                stage="observation-resumed"
+                send(command("set_workload_observation").put("enabled",true))
+                waitFor {
+                    val w=state().getJSONObject("app").getJSONArray("workloads")
+                    w.length()==2 && (0 until w.length()).all {
+                        val d=w.getJSONObject(it).getJSONObject("display");!d.getBoolean("stale") && d.getString("coverage")=="complete"
+                    }
+                }
+                performanceSample("animated_metrics")
+                stage="decoration-fallback"
+                val failed=consumers.values.first()
+                send(command("adapter_failed").put("target",failed.target).put("command_seq",failed.plan.getString("command_seq")).put("action","create"))
+                waitFor { val theme=state().getJSONObject("theme");theme.getString("selection")=="off" && !theme.getBoolean("loading") }
+                consumers.values.toList().forEach { retire(it) }
+                windowsToRestore.forEach { attach(it,1) }
+                result.put("synthetic_adapter_failure",true).put("fallback",state())
+            }
             stage="stop"
             val started=SystemClock.elapsedRealtime();check(NativeBridge.nativeRequestStop(handle)==NativeBridge.ACCEPTED)
             val accepted=SystemClock.elapsedRealtime()-started;check(accepted<100)
@@ -164,7 +239,7 @@ object TwoWindowsCase {
             result.put("after_stop",after).put("last_handle",handle.toString()).put("accept_ms",accepted).put("stop_ms",SystemClock.elapsedRealtime()-started).put("result","pass")
             handle=0
         } catch(failure:Exception) {
-            result.put("result","fail").put("stage",stage).put("failure_class",failure.javaClass.simpleName).put("failure_site",failure.stackTrace.firstOrNull()?.toString())
+            result.put("result","fail").put("stage",stage).put("failure_class",failure.javaClass.simpleName).put("failure_site",failure.stackTrace.firstOrNull()?.toString()).put("failure_message",failure.message?.take(200))
             if(handle>0) result.put("snapshot",JSONObject(NativeBridge.nativeSnapshot(handle)))
         } finally {
             if(handle>0) { NativeBridge.nativeRequestStop(handle);try { waitFor { NativeBridge.nativeDestroy(handle)!=NativeBridge.BUSY } } catch(_:Exception) { result.put("cleanup_failed",true) } }

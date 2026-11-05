@@ -33,6 +33,7 @@ object NativeSessionHost {
     private val editing = AtomicBoolean(false)
     private val poseCompletions = ConcurrentHashMap<String,String>()
     val layoutEditing = mutableStateOf(false)
+    val workloadObservation = mutableStateOf(true)
     val workspaceSummary = mutableStateOf("配置設定を確認中")
     data class ThemeUi(val selection: String = "off", val reduced: Boolean = false, val imported: Boolean = false,
         val loading: Boolean = false, val message: String = "装飾なし")
@@ -236,6 +237,9 @@ object NativeSessionHost {
         command.put("schema", 1).put("request_id", request)
         val code = NativeBridge.nativeCommand(handle, command.toString())
         if (code == NativeBridge.ACCEPTED) themeRequests[request] = done else done("REJECTED")
+    }
+    fun setWorkloadObservation(enabled: Boolean) {
+        worker.execute { safely { themeCommand(JSONObject().put("type","set_workload_observation").put("enabled",enabled)) } }
     }
     fun setTheme(selection: String, reduced: Boolean = themeUi.value.reduced) {
         if (selection !in setOf("off", "builtin", "imported")) return
@@ -496,11 +500,14 @@ object NativeSessionHost {
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else "ターミナルへ入力"
         ui.post { keyboardSummary.value = keyboardLabel }
         val workspace=runtime.getJSONObject("workspace");val storage=workspace.getJSONObject("storage")
+        val observing=workspace.getBoolean("workload_observation")
+        ui.post { workloadObservation.value=observing }
         runtime.optJSONObject("theme")?.let { theme ->
             val label = when (theme.getString("selection")) { "builtin" -> "Cyan Orbit"; "imported" -> "読み込んだテーマ"; else -> "装飾なし" }
             val loading = theme.getBoolean("loading")
             val message = themeImportMessage ?: when {
                 !theme.isNull("error") -> "テーマを適用できませんでした。現在の表示を維持しています。"
+                !theme.isNull("fallback_reason") -> "装飾を表示できなかったため、装飾なしに戻しました"
                 loading -> "テーマを読み込み中…"
                 !theme.getJSONObject("storage").isNull("error") -> "$label · 設定を保存できませんでした"
                 theme.getJSONObject("storage").getBoolean("pending") -> "$label · 保存中"

@@ -17,7 +17,7 @@ class NativeCheckInstrumentation : Instrumentation() {
         super.onCreate(arguments)
         name = arguments?.getString("case") ?: ""
         nonce = arguments?.getString("nonce") ?: ""
-        if (name !in setOf("theme-runtime", "popup-clipboard", "layout", "two-windows", "resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "foot", "render", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
+        if (name !in setOf("theme-windows", "theme-runtime", "popup-clipboard", "layout", "two-windows", "resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "foot", "render", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
             arguments?.keySet()?.any { it != "case" && it != "nonce" } == true) {
             finish(Activity.RESULT_CANCELED, Bundle().apply { putString("result", "invalid_argument") })
             return
@@ -32,7 +32,14 @@ class NativeCheckInstrumentation : Instrumentation() {
         var current = 0L
         var result = JSONObject().put("case", name).put("nonce", nonce).put("result", "running")
         var code = Activity.RESULT_CANCELED
+        var measurementLock: android.os.PowerManager.WakeLock? = null
         try {
+            if (name == "theme-windows") {
+                val power = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+                measurementLock = power.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "eidolon:theme-measurement")
+                measurementLock.acquire(300000L)
+                proof.put("measurement_cpu_awake", measurementLock.isHeld)
+            }
             check(NativeBridge.status.ready)
             val credentials = CredentialStore(context)
             val identity = credentials.ensureIdentity()
@@ -41,6 +48,7 @@ class NativeCheckInstrumentation : Instrumentation() {
             val configuration = JSONObject().put("schema", 1).put("installation", identity.installation).put("profiles", profiles)
                 .put("paths", JSONObject().put("native_library_dir", context.applicationInfo.nativeLibraryDir).put("files_dir", context.filesDir.absolutePath)).toString()
             when (name) {
+                "theme-windows" -> TwoWindowsCase.run(nonce, context, configuration, store, themed=true)
                 "theme-runtime" -> ThemeRuntimeCase.run(nonce, context, store)
                 "layout" -> LayoutNativeCase.run(nonce, context, configuration, store)
                 "two-windows" -> TwoWindowsCase.run(nonce, context, configuration, store)
@@ -82,6 +90,11 @@ class NativeCheckInstrumentation : Instrumentation() {
             if (current > 0) {
                 NativeBridge.nativeRequestStop(current)
                 try { waitFor { NativeBridge.nativeDestroy(current) != NativeBridge.BUSY } } catch (_: Exception) { proof.put("cleanup_failed", true) }
+            }
+            measurementLock?.let { lock ->
+                proof.put("measurement_lock_held_until_end", lock.isHeld)
+                if (lock.isHeld) lock.release()
+                proof.put("measurement_lock_released", !lock.isHeld)
             }
             result.put("instrumentation", proof)
             store.publishCheck(result)

@@ -425,6 +425,12 @@ impl Launcher {
         self.deadline = Instant::now() + Duration::from_secs(70);
         Ok(())
     }
+    pub async fn observe_workload(&mut self, enabled: bool) -> Result<(), &'static str> {
+        let session = self.terminal_session.ok_or("NOT_READY")?;
+        self.send_frame(serde_json::json!({"type":"observe_workload_v1","schema":1,
+            "nonce":self.nonce,"session":session,"enabled":enabled}))
+            .await
+    }
     pub async fn open_terminal(&mut self, request: CommandSeq) -> Result<(), &'static str> {
         if self.report.phase != "running"
             || self.stopping.is_some()
@@ -914,6 +920,19 @@ mod tests {
         let receipt = serde_json::json!({"type":"terminal_opened","schema":1,"nonce":owner.nonce,"uid":owner.uid,
             "request_id":null,"success":true,"ordinal":1,"terminal_id":"1"});
         assert!(owner.frame(&serde_json::to_vec(&receipt).unwrap()).is_err());
+        let mut paused = value.clone();
+        paused["sequence"] = serde_json::json!("2");
+        paused["sampled_monotonic_ms"] = serde_json::json!(2000);
+        paused["capability"] = serde_json::json!("unavailable");
+        paused["interval_seconds"] = serde_json::Value::Null;
+        paused["scan_seconds"] = serde_json::json!(0);
+        paused["registrations"] = serde_json::json!([]);
+        paused["workloads"] = serde_json::json!([]);
+        owner.frame(&serde_json::to_vec(&paused).unwrap()).unwrap();
+        let mut resumed = value.clone();
+        resumed["sequence"] = serde_json::json!("3");
+        resumed["sampled_monotonic_ms"] = serde_json::json!(3000);
+        owner.frame(&serde_json::to_vec(&resumed).unwrap()).unwrap();
         assert!(owner.report.child.is_none());
         owner.request_stop().await.unwrap();
         assert!(!owner.finish().await.unwrap().cleanup_pending);

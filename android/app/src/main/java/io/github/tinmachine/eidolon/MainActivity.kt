@@ -120,6 +120,10 @@ class MainActivity : AppSystemActivity() {
                                     }
                                 }
                                 Text(NativeSessionHost.workspaceSummary.value,color=Color.White)
+                                val observing = NativeSessionHost.workloadObservation.value
+                                Button(onClick={NativeSessionHost.setWorkloadObservation(!observing)}) {
+                                    Text(if(observing) "負荷の計測を停止" else "負荷の計測を再開")
+                                }
                                 val theme = NativeSessionHost.themeUi.value
                                 Text(theme.message, color=Color.White)
                                 Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {

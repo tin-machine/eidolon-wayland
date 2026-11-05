@@ -44,6 +44,7 @@ class WorkloadTests(unittest.TestCase):
                 elif value['type']=='terminal_opened':
                     self.assertEqual(set(value),{'type','schema','nonce','uid','request_id','success','ordinal'})
                     self.assertTrue(value['success'])
+                    send('observe_workload_v1',schema=1,session='17',enabled=value['ordinal']!=1)
                     if value['ordinal']==1:send('open_terminal_v1',schema=1,session='17',terminal_id='2',request_id='100')
                     else:send('stop')
             def factory(mode,nonce):
@@ -59,6 +60,35 @@ class WorkloadTests(unittest.TestCase):
                 self.assertTrue(any(v['type']=='workload_v1' and v['session']=='17' for v in events))
             finally:
                 os.close(read);os.close(write)
+
+    def test_disabled_observer_stops_scans_and_resumes_with_fresh_baseline(self):
+        with tempfile.TemporaryDirectory(prefix='eidolon-observer-') as name:
+            def sample(observer, predicate):
+                deadline=time.monotonic()+4
+                while time.monotonic()<deadline:
+                    value=observer.take()
+                    if value and predicate(value):return value
+                    time.sleep(.01)
+                self.fail('observer sample timeout')
+            with patch.object(launcher,'scan_processes',return_value=({},False,0.001)) as scan:
+                observer=launcher.WorkloadObserver(Path(name),'e'*16,'1')
+                try:
+                    first=sample(observer,lambda v:v['capability']=='available')
+                    observer.set_enabled(False)
+                    off=sample(observer,lambda v:v['capability']=='unavailable')
+                    count=scan.call_count
+                    again=sample(observer,lambda v:v['capability']=='unavailable')
+                    self.assertEqual(scan.call_count,count)
+                    self.assertEqual(again['scan_seconds'],0)
+                    self.assertEqual(first['epoch'],off['epoch'])
+                    observer.set_enabled(True)
+                    resumed=sample(observer,lambda v:v['capability']=='available')
+                    self.assertEqual(resumed['epoch'],off['epoch'])
+                    self.assertIsNone(resumed['interval_seconds'])
+                    self.assertGreater(int(resumed['sequence']),int(off['sequence']))
+                    self.assertGreater(scan.call_count,count)
+                finally:observer.close()
+                self.assertFalse(observer.thread.is_alive())
 
     def test_nonblocking_output_coalesces_metrics_and_preserves_control_json(self):
         read, write = os.pipe()

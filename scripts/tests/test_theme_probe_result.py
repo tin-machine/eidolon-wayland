@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 import unittest
 sys.path.insert(0,str(Path(__file__).parents[1]))
-from theme_probe_checks import theme_surface_result, theme_runtime_result
+from theme_probe_checks import theme_surface_result, theme_runtime_result, theme_performance
 
 
 def fixture():
@@ -67,3 +67,35 @@ class ThemeProbeTests(unittest.TestCase):
             s=fixture();s['check']['cycles'][0][key]=value;variants.append(s)
         for s in variants:
             with self.assertRaises(ValueError):theme_surface_result(s,'n',{})
+
+
+class ThemePerformanceTests(unittest.TestCase):
+    def test_interval_deltas_and_incomplete_or_stale_proofs(self):
+        rows=[]
+        for mode in ('off','reduced','animated','animated_metrics'):
+            targets=[]
+            for window in ('1','2'):
+                targets.append(dict(key=dict(window=window,generation='1'),frames=10,decoration_frames=0 if mode=='off' else 10,
+                    content_frame='5',frame_timing=dict(samples=10,total_us=20000,histogram_ms=[0,10]+[0]*30)))
+            before=dict(state='Ready',render=dict(targets=targets))
+            after=copy.deepcopy(before)
+            after['theme']=dict(selection='off' if mode=='off' else 'builtin',reduced_motion=mode=='reduced',loading=False,error=None)
+            after['render'].update(theme_id=None if mode=='off' else 'cyan-orbit',composition=dict(decoration_texture_bytes=0 if mode=='off' else 100))
+            after['workspace']=dict(workload_observation=mode=='animated_metrics')
+            after['transport']=dict(app_forward=dict(remote=dict(workload=dict(capability='unavailable',scan_seconds=0))))
+            after['app']=dict(workloads=[dict(window=w,terminal_id=w,state='registered',display=dict(coverage='complete',stale=mode!='animated_metrics',scope='shell_tree',rss_bytes=1000)) for w in ('1','2')])
+            for t in after['render']['targets']:
+                t['frames']+=20;t['decoration_frames']+=0 if mode=='off' else 20
+                t['frame_timing']=dict(samples=30,total_us=60000,histogram_ms=[0,30]+[0]*30)
+            rows.append(dict(mode=mode,elapsed_ms=6000,process_cpu_ms=300,before=before,after=after))
+        reports=theme_performance(rows)
+        self.assertEqual(reports[2]['targets'][0]['draw_p95_upper_ms'],2)
+        self.assertAlmostEqual(reports[0]['process_cpu_cores'],.05)
+        variants=[]
+        r=copy.deepcopy(rows);r[0]['after']['render']['targets'][0]['frame_timing']['histogram_ms'][1]+=1;variants.append(r)
+        r=copy.deepcopy(rows);r[0]['after']['render']['targets'][0]['key']['generation']='2';variants.append(r)
+        r=copy.deepcopy(rows);r[3]['after']['app']['workloads'][0]['display']['stale']=True;variants.append(r)
+        r=copy.deepcopy(rows);r[2]['process_cpu_ms']=-1;variants.append(r)
+        r=copy.deepcopy(rows);r[0]['after']['render']['composition']['decoration_texture_bytes']=100;variants.append(r)
+        for r in variants:
+            with self.assertRaises(ValueError):theme_performance(r)

@@ -266,11 +266,23 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
             Ok(client) => report.client = Some(client),
             Err(error) => report.client_error = Some(error),
         }
-        for _ in 0..10 {
+        // SmithayはSHMのunmap/closeを専用threadへ送る。回数ではなく実回収を待つ。
+        let cleanup_deadline = Instant::now() + Duration::from_secs(3);
+        loop {
             display
                 .dispatch_clients(&mut state)
                 .map_err(|_| "DISPATCH")?;
             state.finish_dispatch(&display.handle());
+            if object_counts(&display) == (0, 0)
+                && state.pool_usage().bytes == 0
+                && fixture_resources()? == (0, 0)
+            {
+                break;
+            }
+            if Instant::now() >= cleanup_deadline {
+                break; // 下の通常の資源検査で残留量とRESOURCE_LEAKを報告する。
+            }
+            thread::sleep(Duration::from_millis(1));
         }
         (report.clients_after, report.objects_after) = object_counts(&display);
         report.surfaces_after = state.surface_count();

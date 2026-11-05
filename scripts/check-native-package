@@ -197,6 +197,8 @@ def inspect(apk):
         raise ValueError("profileとdebug manifest入口が不一致です")
     if ("NativeCheckInstrumentation" in manifest) != (info["profile"] == "debug"):
         raise ValueError("profileとinstrumentation manifest入口が不一致です")
+    if info["profile"] == "release" and "android.permission.WAKE_LOCK" in manifest:
+        raise ValueError("releaseに性能検査用WAKE_LOCK権限が混入しています")
     return {**metadata, "needed": required, "debug_entry": info["profile"] == "debug", "status": "pass"}
 
 

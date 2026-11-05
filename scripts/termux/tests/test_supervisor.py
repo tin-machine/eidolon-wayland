@@ -96,7 +96,9 @@ class SupervisorTests(unittest.TestCase):
             result, _ = self.run_case("import time;time.sleep(30)", "prepare_eof")
             self.assertEqual(result["reason"], "EOF")
             self.assertIsNone(result["child"])
-            result, _ = self.run_case("import time;time.sleep(30)", "eof")
+            # 150msの試験用graceでは並行build時のscheduler遅延をkill経路と誤認する。
+            # 非協調childの短grace検査は別case。ここは製品と同じ3秒で通常EOF回収を検査する。
+            result, _ = self.run_case("import time;time.sleep(30)", "eof", grace=3.0)
             self.assertEqual(result["reason"], "EOF")
             self.assertEqual(result["exit_signal"], signal.SIGTERM)
             self.assertTrue(result["term_sent"])

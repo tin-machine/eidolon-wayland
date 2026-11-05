@@ -652,3 +652,42 @@ Build105のSDK probeはActivity非表示・XR IDLEでready期限となり、enti
 
 再現入口と現在の制限は[theme-animation.md](design/theme-animation.md)。
 厳密なsource/APK hashと失敗を含むrawログは作業rootのeidolon-theme-reviewに保存する。
+
+## Build107〜110: 負荷計測の切替・装飾二窓・自動復旧
+
+負荷計測の停止/再開を通常UIと保存設定へ追加した。停止時は/proc全走査とtmux照会を止める。
+PTY登録と同じSSH接続を保持し、再開時のCPU差分だけを取り直す。観測対象のshell/tmuxへsignalを送らない。
+同じcreate要求への装飾panel作成失敗が確認できた場合、装飾を無効化して通常canvasへ戻す。
+import元を保持し、切り戻した理由をUIへ表示する。旧世代の通知は復旧の引き金にしない。
+
+再現用`theme-windows --instrumentation`は実foot二枚と装飾の独立更新・resize・三枚目への切替・close、
+73秒の継続、四条件の性能比較、合成したadapter失敗からの復旧、Stop/資源回収を検査する。
+draw+swapの時間分布はCPU側のwall timeであり、HMDのpresent latencyやGPU timestamp測定ではない。
+
+試行錯誤と修正:
+
+- Build107はresizeの確定前にfixtureが旧寸法のSurfaceを再作成し、後から退役した世代のackが拒否された。
+  検査をlogical寸法の確定→旧Surface回収→新Surface接続の順にした。製品側の旧世代拒否は維持する。
+- Build108の初回はpackage検査のstderrに出たCargo lock待ちがJSONへ混入。標準出力と標準エラーの保存先を分けた。
+- Build108の再試行は装飾二窓の七段階/73秒を通過後、観測停止時にprotocol拒否。
+  collectorのepochを停止/再開のたびに変えたことが原因だった。同じSSH streamのepochを維持し、内部の設定世代とCPU基準だけを更新した。
+  受信側のsession/nonce/epoch検査を緩めず、同じ接続でunavailable→再開を検証する回帰を加えた。
+- Build109はSurface接続の一回目が不受理で検査が停止。正確な戻り値は未記録だったため原因を断定しない。
+  製品adapterと同様、同じcreateが有効な間だけSTALE/BUSY/NOT_READYを期限付きで再試行し、未知statusと退役したplanは拒否する。
+- host popup fixtureは非同期のSHM解放を固定10回dispatchで待っていた。資源条件を満たすまで最大3秒待つ方式へ修正。
+  launcherの正常終了fixtureも製品と同じ3秒graceへ揃え、SIGTERMを無視する故障fixtureの短い期限は維持した。
+
+失敗したrunも削除せず、source/APK識別子とともに作業rootの`theme-validation107.json`以降へ記録する。
+
+Build110はdebug/release assemble・lint・package・ZIP JUnit2件、実APK PC66件が成功。
+実機の保存結果では七段階/73秒、観測停止・再開、四条件、合成adapter失敗→Off/通常二窓、Stop185msと再生成後の回収まで完走した。
+ただし静止リングの測定区間が31,864msへ延び、ADB読出しとforce-stopがtimeoutしたため、**host総合判定は失敗**。
+後から回収した端末のpassだけで昇格しない。他の区間は約6秒、静止二条件は新規draw0回、回転二条件は両窓とも244〜253回、
+回転中の装飾texture uploadは増えていなかった。これらは参考観測であり、揃った性能比較やHMD性能の合格ではない。
+
+休止を切り分けるBuild111では、性能caseだけに最大5分のCPU wake lockとfinally解放を追加。
+releaseの権限検査を加え、元の失敗とcleanup失敗を両方保存するようPC runnerも修正した。
+一時装着通知によるSDK再検査も準備したが、最初の電源状態取得がtimeoutし、装着通知とcase起動には到達しなかった。
+Guardian/永続設定は変更していない。SDK透過・ray・HMD受入れは未判定を維持する。
+Build111のdebug/release assemble・lint・APK検査、ZIP JUnit2件、実APK PC66件は成功。
+releaseにWAKE_LOCK権限がないことも確認した。端末との再接続後に配備・性能比較・SDK検査を再開する。

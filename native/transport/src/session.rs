@@ -133,6 +133,7 @@ struct Signals {
     notify: Notify,
     stop: AtomicBool,
     tokio_workers: AtomicUsize,
+    observation: tokio::sync::watch::Sender<bool>,
 }
 impl Signals {
     fn update(&self, action: impl FnOnce(&mut Shared)) {
@@ -193,6 +194,7 @@ impl Controller {
             notify: Notify::new(),
             stop: AtomicBool::new(false),
             tokio_workers: AtomicUsize::new(0),
+            observation: tokio::sync::watch::channel(true).0,
         });
         let owned = signals.clone();
         let worker = thread::Builder::new()
@@ -395,6 +397,16 @@ impl Controller {
         s.app = Some((local_socket.into(), nonce.into(), mode));
         self.signals.notify.notify_one();
         Status::Accepted
+    }
+    pub fn set_workload_observation(&self, enabled: bool) {
+        self.signals.observation.send_if_modified(|current| {
+            if *current == enabled {
+                false
+            } else {
+                *current = enabled;
+                true
+            }
+        });
     }
     pub fn open_terminal(&self, session: SessionId, request: CommandSeq) -> Status {
         let s = self
@@ -826,6 +838,7 @@ async fn connection(
                     journal,
                     binding: &binding,
                     terminal_requests,
+                    observation: signals.observation.subscribe(),
                 },
                 &connect.cancel,
                 |r| {

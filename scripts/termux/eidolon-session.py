@@ -346,6 +346,7 @@ class WorkloadObserver:
         self.lock, self.stopped = threading.Lock(), threading.Event()
         self.allowed, self.registered, self.latest = set(), {}, None
         self.pending_deadlines = {}
+        self.enabled, self.setting_generation = True, 0
         self.last_terminal = 0
         self.sockets = {TERMUX_PREFIX / 'tmp' / f'tmux-{os.getuid()}' / 'default'}
         self.sequence = 0
@@ -370,6 +371,15 @@ class WorkloadObserver:
             if len(self.allowed) < WORKLOAD_TERMINALS:
                 self.allowed.add(terminal)
                 self.pending_deadlines[terminal] = time.monotonic() + 6
+
+    def set_enabled(self, enabled):
+        if type(enabled) is not bool:
+            raise ValueError('CONTROL_INVALID')
+        with self.lock:
+            if self.enabled != enabled:
+                self.enabled = enabled
+                self.setting_generation += 1
+                self.latest = None
 
     def take(self):
         with self.lock:
@@ -485,10 +495,22 @@ class WorkloadObserver:
             observe_process(os.getpid())
         except (OSError, ValueError):
             boot, counter = None, None
+        generation = 0
         while not self.stopped.is_set():
             started = time.monotonic()
+            with self.lock:
+                enabled, current_generation = self.enabled, self.setting_generation
+            if current_generation != generation:
+                generation = current_generation
+                # 同じcollector/SSH streamのepochは固定。pauseでは差分基準だけを更新する。
+                counter = WorkloadDelta() if boot is not None else None
             try:
-                body = self.sample(boot, counter) if counter is not None else dict(boot=None, capability='unavailable', interval_seconds=None, scan_seconds=0, registrations=[], workloads=[])
+                if not enabled:
+                    # socket/登録を維持し、/procの全走査とtmux照会を止める。
+                    self.receive(boot)
+                    body = dict(boot=boot, capability='unavailable', interval_seconds=None, scan_seconds=0, registrations=[], workloads=[])
+                else:
+                    body = self.sample(boot, counter) if counter is not None else dict(boot=None, capability='unavailable', interval_seconds=None, scan_seconds=0, registrations=[], workloads=[])
             except (OSError, ValueError, UnicodeError):
                 body = dict(boot=boot, capability='unavailable', interval_seconds=None, scan_seconds=0, registrations=[], workloads=[])
             self.sequence += 1
@@ -497,7 +519,8 @@ class WorkloadObserver:
             if len(json.dumps(value, separators=(',', ':')).encode()) > WORKLOAD_BYTES:
                 value.update(capability='unavailable', interval_seconds=None, registrations=[], workloads=[])
             with self.lock:
-                self.latest = value
+                if generation == self.setting_generation:
+                    self.latest = value
             self.stopped.wait(max(0, 1 - (time.monotonic() - started)))
 
 
@@ -1130,7 +1153,8 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                         shapes = {'start': {'type', 'nonce', 'mode'}, 'inspect_tools': {'type', 'nonce', 'mode'},
                                   'open_terminal': {'type', 'nonce', 'request_id'},
                                   'start_terminal_v1': {'type', 'nonce', 'mode', 'schema', 'session', 'terminal_id'},
-                                  'open_terminal_v1': {'type', 'nonce', 'request_id', 'schema', 'session', 'terminal_id'}}
+                                  'open_terminal_v1': {'type', 'nonce', 'request_id', 'schema', 'session', 'terminal_id'},
+                                  'observe_workload_v1': {'type','nonce','schema','session','enabled'}}
                         expected = shapes.get(kind, {'type', 'nonce'})
                         if len(line) > 1024 or set(value) != expected or value["nonce"] != nonce:
                             raise ValueError("CONTROL_INVALID")
@@ -1138,6 +1162,11 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                             last_heartbeat = time.monotonic()
                         elif kind == "stop":
                             stop("Stop")
+                        elif kind == 'observe_workload_v1':
+                            if (type(value['schema']) is not int or value['schema'] != 1 or terminal_session is None
+                                    or value['session'] != terminal_session or type(value['enabled']) is not bool):
+                                raise ValueError('CONTROL_INVALID')
+                            if observer is not None: observer.set_enabled(value['enabled'])
                         elif kind in {'open_terminal', 'open_terminal_v1'} and terminals is not None and terminals.count > 0:
                             request = value['request_id']
                             if not isinstance(request,str) or not re.fullmatch(r'[1-9][0-9]{0,18}',request) or int(request)>9223372036854775807:
