@@ -21,7 +21,6 @@ use smithay::{
             wl_compositor::WlCompositor,
             wl_data_device::{self, WlDataDevice},
             wl_data_device_manager::WlDataDeviceManager,
-            wl_data_source::WlDataSource,
             wl_output::WlOutput,
             wl_seat::WlSeat,
             wl_shm::{self, WlShm},
@@ -42,7 +41,7 @@ use smithay::{
             SelectionHandler,
             data_device::{
                 ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, DataDeviceUserData,
-                DataSourceUserData, ServerDndGrabHandler,
+                ServerDndGrabHandler,
             },
         },
         shell::xdg::{
@@ -103,10 +102,14 @@ impl Cacheable for BufferUse {
     }
 }
 
+#[path = "clipboard.rs"]
+mod clipboard;
 #[path = "input.rs"]
 mod input;
 #[path = "pointer.rs"]
 mod pointer;
+#[path = "popup.rs"]
+mod popup;
 #[path = "positioner.rs"]
 mod positioner;
 /// 所有済みsnapshot以外はprotocol ownerから持ち出さない。
@@ -118,6 +121,7 @@ pub use pointer::PointerReport;
 pub use snapshot::WindowReport;
 
 pub struct ProtocolState {
+    display_handle: DisplayHandle,
     compositor: CompositorState,
     shell: XdgShellState,
     shm: ShmState,
@@ -131,6 +135,8 @@ pub struct ProtocolState {
     toplevels: HashMap<ObjectId, snapshot::WindowRecord>,
     popups: Vec<PopupSurface>,
     dismissed_popups: HashSet<ObjectId>,
+    popup_grabs: Vec<ObjectId>,
+    popup_focused: Option<WlSurface>,
     session: SessionId,
     next_window: Option<WindowId>,
     next_surface: Option<SurfaceId>,
@@ -143,6 +149,7 @@ pub struct ProtocolState {
     release_queue: HashMap<ObjectId, WlBuffer>,
     buffer_uses: HashMap<ObjectId, Weak<()>>,
     data_devices: HashMap<ObjectId, WlDataDevice>,
+    clipboard: clipboard::Clipboard,
     pub counters: Counters,
 }
 
@@ -199,6 +206,7 @@ impl ProtocolState {
             data_device.global(),
         ];
         Self {
+            display_handle: dh.clone(),
             compositor,
             shell,
             shm,
@@ -212,6 +220,8 @@ impl ProtocolState {
             toplevels: HashMap::new(),
             popups: vec![],
             dismissed_popups: HashSet::new(),
+            popup_grabs: vec![],
+            popup_focused: None,
             session,
             next_window: WindowId::new(1).ok(),
             next_surface: SurfaceId::new(1).ok(),
@@ -224,6 +234,7 @@ impl ProtocolState {
             release_queue: HashMap::new(),
             buffer_uses: HashMap::new(),
             data_devices: HashMap::new(),
+            clipboard: Default::default(),
             counters: Counters::default(),
         }
     }
@@ -262,6 +273,8 @@ impl ProtocolState {
     /// dispatch後に呼ぶ。未commitの別surfaceも同bufferを保持していればreleaseを遅らせる。
     pub fn finish_dispatch(&mut self, dh: &DisplayHandle) {
         self.refresh_input_focus();
+        self.refresh_popup_focus();
+        self.clipboard_tick(dh);
         self.pool_leases.retain(|_, lease| lease.strong_count() > 0);
         let mut attached = HashSet::new();
         for surface in &self.surfaces {
@@ -307,7 +320,7 @@ impl ProtocolState {
                 if !self.data_devices.contains_key(&id)
                     && let Ok(device) = WlDataDevice::from_id(dh, id.clone())
                 {
-                    device.selection(None);
+                    self.advertise_clipboard(dh, &device);
                     self.data_devices.insert(id, device);
                 }
             }
@@ -516,7 +529,9 @@ impl XdgShellHandler for ProtocolState {
             self.popups.push(popup);
         }
     }
-    fn grab(&mut self, _: PopupSurface, _: WlSeat, _: Serial) {}
+    fn grab(&mut self, popup: PopupSurface, seat: WlSeat, serial: Serial) {
+        self.grab_popup(popup, seat, serial);
+    }
     fn reposition_request(&mut self, _: PopupSurface, _: PositionerState, _: u32) {}
     fn ack_configure(&mut self, surface: WlSurface, configure: Configure) {
         self.counters.acks += 1;
@@ -568,7 +583,10 @@ impl SeatHandler for ProtocolState {
     fn seat_state(&mut self) -> &mut SeatState<Self> {
         &mut self.seats
     }
-    fn focus_changed(&mut self, _: &Seat<Self>, _: Option<&WlSurface>) {}
+    fn focus_changed(&mut self, _: &Seat<Self>, focus: Option<&WlSurface>) {
+        self.clipboard_new_focus(focus);
+        self.clipboard_focus(&self.display_handle.clone());
+    }
     fn cursor_image(&mut self, _: &Seat<Self>, _: CursorImageStatus) {}
 }
 impl ShmHandler for ProtocolState {
@@ -706,9 +724,28 @@ impl Dispatch<WlDataDevice, DataDeviceUserData> for ProtocolState {
         init: &mut DataInit<'_, Self>,
     ) {
         match request {
-            // seat入力とclipboardを分ける。I07まではselection/dragを明示的に取消す。
-            wl_data_device::Request::SetSelection { source, .. }
-            | wl_data_device::Request::StartDrag { source, .. } => {
+            wl_data_device::Request::SetSelection { source, serial } => {
+                let valid = state.valid_input_serial(serial, client, false)
+                    && source.as_ref().is_none_or(|s| {
+                        s.is_alive()
+                            && s.client().is_some_and(|c| c.id() == client.id())
+                            && smithay::wayland::selection::data_device::with_source_metadata(
+                                s,
+                                |m| !m.mime_types.is_empty(),
+                            )
+                            .unwrap_or(false)
+                    });
+                if valid {
+                    state.set_clipboard(dh, source);
+                } else {
+                    if let Some(source) = source {
+                        source.cancelled();
+                        state.counters.cancellations += 1;
+                    }
+                    device.selection(None);
+                }
+            }
+            wl_data_device::Request::StartDrag { source, .. } => {
                 if let Some(source) = source {
                     source.cancelled();
                     state.counters.cancellations += 1;
@@ -742,4 +779,3 @@ delegate_global_dispatch!(ProtocolState: [WlShm: ()] => ShmState);
 delegate_dispatch!(ProtocolState: [WlBuffer: ShmBufferUserData] => ShmState);
 delegate_global_dispatch!(ProtocolState: [WlDataDeviceManager: ()] => DataDeviceState);
 delegate_dispatch!(ProtocolState: [WlDataDeviceManager: ()] => DataDeviceState);
-delegate_dispatch!(ProtocolState: [WlDataSource: DataSourceUserData] => DataDeviceState);

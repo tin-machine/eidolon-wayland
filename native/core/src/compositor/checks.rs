@@ -307,6 +307,15 @@ pub fn run_scenario(
 ) -> serde_json::Value {
     use eidolon_model::commands::CompositorScenario as S;
     use eidolon_shm_fixture::state::Scenario as F;
+    if matches!(scenario, S::Popup | S::Clipboard) {
+        let mut report = if scenario == S::Popup {
+            serde_json::to_value(super::popup_checks::run(stop)).unwrap()
+        } else {
+            serde_json::to_value(super::clipboard_checks::run(stop)).unwrap()
+        };
+        report["nonce"] = nonce.into();
+        return report;
+    }
     if matches!(scenario, S::Pointer) {
         let mut report = serde_json::to_value(super::pointer_checks::run(stop)).unwrap();
         report["nonce"] = nonce.into();
@@ -328,7 +337,7 @@ pub fn run_scenario(
     }
     let probe = match scenario {
         S::LogicalResize => Probe::State(F::LogicalResize),
-        S::Pointer | S::KeyboardUs | S::KeyboardJis => unreachable!(),
+        S::Pointer | S::KeyboardUs | S::KeyboardJis | S::Popup | S::Clipboard => unreachable!(),
         S::Lifecycle => Probe::State(F::Lifecycle),
         S::Transforms => Probe::State(F::Transforms),
         S::FrameGates => Probe::State(F::FrameGates),

@@ -297,7 +297,7 @@ impl ProtocolState {
     /// 最初のattach前と、unmap後の再attach前に最新の有効なconfigure ACKを要求する。
     pub(super) fn prepare_role_commit(&mut self, surface: &WlSurface) -> bool {
         if self.dismissed_popups.contains(&surface.id()) {
-            surface.post_error(wl_surface::Error::InvalidSize, "popup dismissed");
+            // popup_doneと交差したin-flight commitは再表示せず破棄する。
             return false;
         }
         let new_buffer = with_states(surface, |states| {
@@ -415,7 +415,7 @@ impl ProtocolState {
         self.dismiss_popup_tree(surface);
     }
 
-    fn dismiss_popup_tree(&mut self, surface: &WlSurface) {
+    pub(super) fn dismiss_popup_tree(&mut self, surface: &WlSurface) {
         let dismissed = self
             .popups
             .iter()

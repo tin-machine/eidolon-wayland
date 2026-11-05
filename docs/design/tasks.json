@@ -1186,7 +1186,7 @@
     {
       "id": "I07",
       "title": "popup・限定clipboard",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "I06"
       ],

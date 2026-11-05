@@ -17,7 +17,7 @@ class NativeCheckInstrumentation : Instrumentation() {
         super.onCreate(arguments)
         name = arguments?.getString("case") ?: ""
         nonce = arguments?.getString("nonce") ?: ""
-        if (name !in setOf("layout", "two-windows", "resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "foot", "render", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
+        if (name !in setOf("popup-clipboard", "layout", "two-windows", "resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "foot", "render", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm") || !nonce.matches(Regex("[0-9a-f]{32}")) ||
             arguments?.keySet()?.any { it != "case" && it != "nonce" } == true) {
             finish(Activity.RESULT_CANCELED, Bundle().apply { putString("result", "invalid_argument") })
             return
@@ -51,7 +51,7 @@ class NativeCheckInstrumentation : Instrumentation() {
                 "remote-cleanup" -> RemoteCleanupCase.run(nonce, context, configuration, store)
                 "waypipe" -> WaypipeCase.run(nonce, configuration, store)
                 "native-deps" -> NativeDepsCase.run(nonce, configuration, store)
-                "resize-wire", "pointer-wire", "keyboard-wire", "shm", "shm-truncate", "wayland-state" -> CompositorCase.run(name, nonce, configuration, store)
+                "popup-clipboard", "resize-wire", "pointer-wire", "keyboard-wire", "shm", "shm-truncate", "wayland-state" -> CompositorCase.run(name, nonce, configuration, store)
             }
             result = JSONObject(File(context.noBackupFilesDir, "diagnostics/latest.json").readText()).getJSONObject("check")
             check(result.getString("nonce") == nonce && result.getString("result") == "pass")

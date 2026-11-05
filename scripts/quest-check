@@ -15,7 +15,7 @@ import zipfile
 
 from native_build import ROOT, identity
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
-from quest_checks import compositor_layer_stats, layout_sdk_result, layout_native_result, two_windows_result, resize_result, pointer_result, pointer_wire_result, keyboard_result, keyboard_wire_result, runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result, native_deps_result, shm_result, wayland_state_result, waypipe_result, forwarded_shm_result, render_result, foot_result, foot_sdk_result, ray_result
+from quest_checks import popup_clipboard_result, compositor_layer_stats, layout_sdk_result, layout_native_result, two_windows_result, resize_result, pointer_result, pointer_wire_result, keyboard_result, keyboard_wire_result, runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result, native_deps_result, shm_result, wayland_state_result, waypipe_result, forwarded_shm_result, render_result, foot_result, foot_sdk_result, ray_result
 
 CASES = ("resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup",
          "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm", "render", "foot", "ray", "keyboard",
@@ -27,13 +27,13 @@ parser.add_argument("--timeout", type=int, default=120)
 parser.add_argument("--artifact-root", type=Path)
 parser.add_argument("--instrumentation", action="store_true", help="Activityを起動しないnative検査。UI復帰は別に検査する")
 args = parser.parse_args()
-if args.instrumentation and args.case not in {"layout", "two-windows", "resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "foot", "render", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm"}:
+if args.instrumentation and args.case not in {"popup-clipboard", "layout", "two-windows", "resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "foot", "render", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm"}:
     parser.error("instrumentationはfoot/render/forward/remote-cleanup/native-deps/shm/shm-truncate/wayland-state/waypipe/forwarded-shmだけです")
 if args.case in {"two-windows", "resize-native"} and not args.instrumentation:
     parser.error("resize-nativeには--instrumentationを指定してください")
 if args.case == "render" and not args.instrumentation:
     parser.error("renderの通常UI検査は未実装です。--instrumentationを指定してください")
-if args.case not in {"layout", "two-windows", "resize-native", "resize", "resize-wire", "pointer", "pointer-wire", "keyboard", "keyboard-wire", "ray", "foot", "render", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm"}:
+if args.case not in {"popup-clipboard", "layout", "two-windows", "resize-native", "resize", "resize-wire", "pointer", "pointer-wire", "keyboard", "keyboard-wire", "ray", "foot", "render", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup", "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm"}:
     parser.error("このcaseは未実装です")
 if not 1 <= args.timeout <= 7200:
     parser.error("timeoutは1〜7200秒です")
@@ -111,6 +111,8 @@ try:
             accepted = pointer_wire_result(snapshot, nonce, expected, uid, json.loads((run / "native-package.json").read_text()), instrumentation=args.instrumentation)
         elif args.case == "keyboard-wire":
             accepted = keyboard_wire_result(snapshot, nonce, expected, uid, json.loads((run / "native-package.json").read_text()), instrumentation=args.instrumentation)
+        elif args.case == "popup-clipboard":
+            accepted = popup_clipboard_result(snapshot, nonce, expected, uid, instrumentation=args.instrumentation)
         elif args.case == "ray":
             accepted = ray_result(snapshot, nonce, expected)
         elif args.case == "layout":

@@ -5,6 +5,60 @@ import hashlib
 import math
 
 
+def popup_clipboard_result(snapshot, nonce, expected, uid, *, instrumentation=False):
+    if snapshot.get('schema')!=1 or snapshot.get('build_info')!=expected:
+        return False
+    result=snapshot.get('check',{})
+    if result.get('case')!='popup-clipboard' or result.get('nonce')!=nonce:
+        return False
+    if result.get('result')=='fail':
+        raise ValueError('popup/clipboard検査が失敗しました')
+    if result.get('result')!='pass':
+        return False
+    rows=result.get('cycles',[])
+    if len(rows)!=2 or result.get('cleanup_failed'):
+        raise ValueError('popup/clipboardの回数・回収が不正です')
+    cleanup=['clients_after','objects_after','surfaces_after','windows_after','pixel_bytes_after','pool_bytes_after','fixture_fds_after','fixture_maps_after']
+    for i,scenario in enumerate(['popup','clipboard']):
+        row=rows[i];report=row.get('report',{});client=report.get('client',{})
+        if (row.get('cycle')!=i+1 or row.get('scenario')!=scenario or report.get('state')!='pass'
+                or report.get('uid')!=uid or type(uid) is not int or report.get('error') is not None or report.get('client_error') is not None
+                or report.get('fixture_revision')!=f'eidolon-{scenario}-wire-fixture-v1'
+                or report.get('nonce')!=hashlib.sha256(f'{nonce}:{i}'.encode()).hexdigest()[:16]
+                or report.get('synthetic_input') is not True or report.get('physical_input_verified') is not False
+                or any(type(report.get(k)) is not int or report[k]!=0 for k in cleanup)):
+            raise ValueError('popup/clipboardの版・UID・scope・資源回収が不正です')
+        if scenario=='popup':
+            flags=['denied_serial','denied_parent','popup_keyboard','nested_keyboard','outside_dismissed','other_window_focused','parent_destroyed']
+            if (set(client)!=set(flags+['popup_done','popup_keys']) or any(client.get(k) is not True for k in flags)
+                    or client.get('popup_done')!=5 or client.get('popup_keys')!=2
+                    or any(report.get(k) is not True for k in ['clipped','nested_clipped','outside_consumed'])):
+                raise ValueError('popupのclip・grab・focus・終了の証明が不正です')
+        else:
+            flags=['copied','at_limit','rejected_serial','rejected_focus','stale_offer','invalid_utf8','oversized','stalled','stalled_receiver','cancelled','owner_lost','mime_filtered']
+            clip=report.get('input',{}).get('clipboard',{})
+            if (set(client)!=set(flags) or any(client.get(k) is not True for k in flags)
+                    or clip.get('selection') is not False or clip.get('active')!=0 or clip.get('completed')!=2
+                    or any(clip.get(k)!=1 for k in ['oversized','invalid_utf8']) or clip.get('timed_out')!=2
+                    or type(clip.get('cancelled')) is not int or clip['cancelled']<1
+                    or type(report.get('elapsed_ms')) is not int or not 10000<=report['elapsed_ms']<35000):
+                raise ValueError('clipboardの上限・UTF-8・期限・取消の証明が不正です')
+    after=result.get('after_stop',{})
+    if (after.get('state')!='Stopped' or any(after.get(k)!=0 for k in ['compositor_workers','dependency_workers','helper_workers'])
+            or after.get('render',{}).get('workers')!=0 or after.get('transport',{}).get('workers')!=0
+            or type(result.get('accept_ms')) is not int or not 0<=result['accept_ms']<100
+            or type(result.get('stop_ms')) is not int or not 0<=result['stop_ms']<10000
+            or not re.fullmatch('[1-9][0-9]*',str(result.get('last_handle','')))):
+        raise ValueError('popup/clipboard runtimeの停止が不正です')
+    if instrumentation:
+        return instrumentation_result(snapshot,result,uid)
+    current=snapshot.get('runtime',{});runtime=current.get('runtime',{})
+    return (current.get('code')==0 and current.get('registry')==dict(runtimes=1,workers=1)
+            and str(current.get('handle','')).isdecimal() and int(current['handle'])>int(result['last_handle'])
+            and runtime.get('state')=='Ready' and runtime.get('activity_visible') is True and runtime.get('xr_state')=='FOCUSED'
+            and runtime.get('transport',{}).get('state')=='Idle')
+
+
 def _prepared_keyboard(app, package, layout='us'):
     expected = package.get('dependencies', {}).get('keymaps', {}).get(layout, {}).get('sha256')
     report = app.get('input', {})

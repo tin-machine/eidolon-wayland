@@ -206,7 +206,7 @@ impl ProtocolState {
             }
             return Ok(());
         }
-        let hit = if let Some(capture) = captured {
+        let mut hit = if let Some(capture) = captured {
             let (surface, geometry) = self.grab_geometry(capture).ok_or("STALE")?;
             let mut location = self.input.pointer.location;
             // SDKが別面のHitInfoを旧receiverへ渡した場合はuv=Noneで最後の有効座標を保つ。
@@ -229,6 +229,17 @@ impl ProtocolState {
         } else {
             self.pointer_hit(window, packet.source, packet.uv, width, height)
         };
+        if captured.is_none()
+            && !self.popup_grabs.is_empty()
+            && hit.as_ref().is_none_or(|h| !self.popup_allows(&h.surface))
+        {
+            if matches!(packet.event,PointerEvent::Buttons {changed,state} if changed&state!=0) {
+                self.dismiss_popup_grab(true);
+                self.reset_pointer();
+                return Ok(());
+            }
+            hit = None;
+        }
         self.pointer_motion(&pointer, hit.as_ref(), packet.time_ms);
         match packet.event {
             PointerEvent::Buttons { changed, state } => {
@@ -253,10 +264,16 @@ impl ProtocolState {
                     if delta.pressed && delta.button == PointerButton::Primary {
                         self.focus_keyboard(delta.target.window)?;
                     }
+                    let serial = SERIAL_COUNTER.next_serial();
+                    if delta.pressed
+                        && let Some(hit) = &hit
+                    {
+                        self.input_serial(serial.into(), hit.surface.clone(), true);
+                    }
                     pointer.button(
                         self,
                         &ButtonEvent {
-                            serial: SERIAL_COUNTER.next_serial(),
+                            serial,
                             time: packet.time_ms,
                             button: delta.button.evdev(),
                             state: if delta.pressed {

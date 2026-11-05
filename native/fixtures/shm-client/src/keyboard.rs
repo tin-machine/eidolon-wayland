@@ -173,7 +173,12 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
                 report.repeat = Some((rate, delay));
                 report.order.push("repeat");
             }
-            wl_keyboard::Event::Enter { keys, surface, .. } => {
+            wl_keyboard::Event::Enter {
+                keys,
+                surface,
+                serial,
+            } => {
+                state.input_serial = serial;
                 report.enter_surfaces.push(surface.id().protocol_id());
                 if keys.len() % 4 != 0 {
                     report.error = Some("ENTER_KEYS");
@@ -191,9 +196,14 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
                 report.order.push("leave");
             }
             wl_keyboard::Event::Key {
-                key, state, time, ..
+                serial,
+                key,
+                state: key_state,
+                time,
+                ..
             } => {
-                let state = match state {
+                state.input_serial = serial;
+                let state = match key_state {
                     WEnum::Value(s) => s as u32,
                     WEnum::Unknown(s) => s,
                 };

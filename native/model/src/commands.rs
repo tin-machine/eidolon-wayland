@@ -151,6 +151,8 @@ pub enum CleanupScenario {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompositorScenario {
+    Popup,
+    Clipboard,
     LogicalResize,
     Pointer,
     KeyboardUs,

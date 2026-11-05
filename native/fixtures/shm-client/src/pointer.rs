@@ -275,16 +275,20 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                 position: [surface_x, surface_y],
             },
             wl_pointer::Event::Button {
+                serial,
                 button,
                 state: WEnum::Value(button_state),
                 time,
                 ..
-            } => Event::Button {
-                surface: state.pointer_current,
-                code: button,
-                state: button_state as u32,
-                time,
-            },
+            } => {
+                state.pointer_serial = serial;
+                Event::Button {
+                    surface: state.pointer_current,
+                    code: button,
+                    state: button_state as u32,
+                    time,
+                }
+            }
             wl_pointer::Event::Axis {
                 axis: WEnum::Value(axis),
                 value,

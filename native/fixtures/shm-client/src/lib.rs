@@ -28,8 +28,10 @@ use wayland_client::{
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
+pub mod clipboard;
 pub mod keyboard;
 pub mod pointer;
+pub mod popup;
 pub mod state;
 
 pub const WIDTH: i32 = 32;
@@ -73,6 +75,9 @@ pub struct Report {
 
 #[derive(Default)]
 struct State {
+    clipboard: Option<clipboard::ClientData>,
+    input_serial: u32,
+    pointer_serial: u32,
     keyboard: Option<keyboard::Report>,
     pointer: Option<pointer::Report>,
     pointer_labels: std::collections::HashMap<wayland_client::backend::ObjectId, &'static str>,
@@ -513,8 +518,14 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_data_source::Event::Cancelled = event {
-            state.report.cancellations += 1;
+        match event {
+            wl_data_source::Event::Cancelled => state.report.cancellations += 1,
+            wl_data_source::Event::Send { fd, .. } => {
+                if let Some(data) = &mut state.clipboard {
+                    data.send(fd);
+                }
+            }
+            _ => (),
         }
     }
 }
@@ -529,8 +540,12 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for State {
     ) {
         if let wl_data_device::Event::Selection { id } = event {
             state.report.empty_selection = id.is_none();
+            if let Some(data) = &mut state.clipboard {
+                data.selection = id;
+            }
         }
     }
+    wayland_client::event_created_child!(State, wl_data_device::WlDataDevice, [0 => (wayland_client::protocol::wl_data_offer::WlDataOffer, ())]);
 }
 delegate_noop!(State: ignore wl_compositor::WlCompositor);
 delegate_noop!(State: ignore wl_subcompositor::WlSubcompositor);

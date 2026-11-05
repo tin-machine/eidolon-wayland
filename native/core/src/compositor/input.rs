@@ -11,11 +11,13 @@ use smithay::{
     backend::input::KeyState,
     input::keyboard::{FilterResult, Keycode},
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
+    reexports::wayland_server::Resource,
     utils::SERIAL_COUNTER,
 };
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct InputReport {
+    pub clipboard: super::clipboard::ClipboardReport,
     pub pointer: super::pointer::PointerReport,
     pub keyboard: bool,
     pub layout: Option<KeyboardLayout>,
@@ -23,6 +25,7 @@ pub struct InputReport {
     pub wire_keymap_sha256: Option<String>,
     pub include_paths: Option<usize>,
     pub focus_window: Option<WindowId>,
+    pub focus_surface: Option<eidolon_model::ids::SurfaceId>,
     pub focus_token: Option<CommandSeq>,
     pub pressed: usize,
     pub delivered: u64,
@@ -128,6 +131,12 @@ impl ProtocolState {
     }
     pub fn input_report(&self) -> InputReport {
         let mut report = self.input.report.clone();
+        report.clipboard = self.clipboard_report();
+        report.focus_surface = self
+            ._seat
+            .get_keyboard()
+            .and_then(|k| k.current_focus())
+            .and_then(|s| self.surface_meta.get(&s.id()).map(|m| m.id));
         report.pressed = self.input.keys.pressed_count();
         report.pointer = self.pointer_report();
         report
@@ -146,19 +155,34 @@ impl ProtocolState {
         })
     }
     pub fn focus_window(&mut self, window: WindowId) -> Result<(), &'static str> {
+        if !self.popup_grabs.is_empty() && self.popup_keyboard_surface(window).is_none() {
+            self.dismiss_popup_grab(false);
+        }
         self.focus_keyboard(window)?;
         self.reset_pointer();
         Ok(())
     }
     pub(super) fn focus_keyboard(&mut self, window: WindowId) -> Result<(), &'static str> {
+        if let Some(surface) = self.popup_keyboard_surface(window) {
+            return self.focus_keyboard_surface(window, surface);
+        }
         let surface = self
             .toplevels
             .values()
             .find(|w| w.id == window && w.life == WindowLife::Mapped)
             .map(|w| w.surface.wl_surface().clone())
             .ok_or("STALE")?;
+        self.focus_keyboard_surface(window, surface)
+    }
+    pub(super) fn focus_keyboard_surface(
+        &mut self,
+        window: WindowId,
+        surface: super::WlSurface,
+    ) -> Result<(), &'static str> {
         let keyboard = self._seat.get_keyboard().ok_or("NOT_READY")?;
-        if self.input.report.focus_window == Some(window) {
+        if self.input.report.focus_window == Some(window)
+            && keyboard.current_focus() == Some(surface.clone())
+        {
             return Ok(());
         }
         let next = self.input.next_focus.checked_add(1).ok_or("ID_EXHAUSTED")?;
@@ -169,7 +193,9 @@ impl ProtocolState {
         self.input.next_focus = next;
         self.input.report.focus_token = Some(token);
         self.set_activated(Some(window));
-        keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());
+        let serial = SERIAL_COUNTER.next_serial();
+        keyboard.set_focus(self, Some(surface.clone()), serial);
+        self.input_serial(serial.into(), surface, false);
         Ok(())
     }
     fn set_activated(&mut self, window: Option<WindowId>) {
@@ -225,6 +251,10 @@ impl ProtocolState {
             return Err("STALE");
         }
         let code = key.code().ok_or("INVALID_ARGUMENT")?;
+        if code.raw() == 1 && key.action == KeyAction::Pressed && !self.popup_grabs.is_empty() {
+            self.dismiss_popup_grab(true);
+            return Ok(());
+        }
         let action = match self
             .input
             .keys
@@ -238,6 +268,10 @@ impl ProtocolState {
         };
         if let Some(action) = action {
             let keyboard = self._seat.get_keyboard().ok_or("NOT_READY")?;
+            let serial = SERIAL_COUNTER.next_serial();
+            if let Some(surface) = keyboard.current_focus() {
+                self.input_serial(serial.into(), surface, false);
+            }
             keyboard.input::<(), _>(
                 self,
                 Keycode::new(code.xkb()),
@@ -245,7 +279,7 @@ impl ProtocolState {
                     KeyAction::Pressed => KeyState::Pressed,
                     KeyAction::Released => KeyState::Released,
                 },
-                SERIAL_COUNTER.next_serial(),
+                serial,
                 key.time_ms,
                 |_, _, _| FilterResult::Forward,
             );
@@ -256,6 +290,7 @@ impl ProtocolState {
     }
     /// urgent lane/焦点喪失から呼ぶ。keyup→modifiers→leaveをownerで送ってから忘れる。
     pub fn reset_input(&mut self) {
+        self.dismiss_popup_grab(false);
         self.reset_pointer();
         self.reset_keyboard();
     }
@@ -280,6 +315,9 @@ impl ProtocolState {
                 self.input.report.delivered += 1;
             }
             keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+            // Smithay 0.7はNoneへの変更ではfocus_changedを呼ばない。
+            self.clipboard_new_focus(None);
+            self.clipboard_focus(&self.display_handle.clone());
         }
         self.set_activated(None);
         self.input.report.resets += 1;

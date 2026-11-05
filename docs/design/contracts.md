@@ -176,6 +176,18 @@ external fun nativeProvideCredential(
 - popup/subsurfaceのoffset、window geometry、letterboxを一つの変換関数へ集約し、描画とhit testで同じ変換値を使う。
 - 物理拡大はpanelサイズのみ。logical resizeはconfigure/ack/新commit、producer buffer寸法は別操作。ackだけで新しい画像寸法に切り替えない。
 
+## popupとclipboard
+
+popupは親panelへ合成し、親rectangleでclipする。hit testも同じclipを使う。
+明示grabはseat・pointer press serial・親focus・親子順を確認し、window IDは親のままkeyboard surfaceを切り替える。
+外側の最初の押下はpopupの解除として消費する。親破棄・入力reset・Escでも解除する。
+
+clipboardは同じWayland Display/session内のUTF-8 textに限定する。
+selection設定にはkeyboard focusと入力serial、receiveにはfocus/selection世代を要求する。
+1 MiB、転送全体5秒、同時4本、offer64個を上限とし、EOFとUTF-8検査後に受信側pipe/socketへ渡す。
+途中の失敗ではFDを閉じ、上限超過の送信側は期限まで上限付きでdrainする。
+本文をdiagnostics/logへ含めず、所有client消失・取消・focus変更・session終了で転送を回収する。
+
 ## lifecycleとerror
 
 Runtime: `Starting → Ready → Stopping → Stopped`、回復不能なら`Failed`。

@@ -27,7 +27,7 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | I04 | in_progress | logical request/configure/ack/画像commitとtimeout・client調整を分離。host実client11checkpoint、Build82で実footのresize応答待ち中Surface喪失→再生成→入力・停止が成功。SDK physical寸法計測と通常SDK resizeはトラッキング復帰後、HMDは最終待ち。詳細はresize-checks.md |
 | I05 | in_progress | 表示2/論理8、SDK Entity別binding、foot serverでの追加・個別close、表示切替時の入力解除を実装。Build84でnative実描画・切替・個別close・回収と73秒以上の継続が成功。通常SDK二枚/layer実測は残件。詳細はtwo-window-checks.md |
 | I06 | in_progress | 配置/背景/USJIS保存、編集UIとSDK grabを実装。Build89で実footの保存/再生成/破損復旧・USJIS wireが成功。hostでrename前のwriter実中断も検証。旧Activity通知をScene世代で拒否。通常SDKのgeometry・実Activity再生成はトラッキング復帰後、HMD/物理操作は最終待ち。詳細はworkspace-checks.md |
-| I07 | planned | popup/限定clipboardを依存順に実装 |
+| I07 | in_progress | 親内popupのgrab/serial・keyboard focus・外側クリック消費、session内UTF-8 clipboardの1 MiB/5秒制限を実装。Build91のQuestで実clientのclip/focus/親破棄、コピー/上限/不正UTF8/送受信timeout/取消/転送中の所有者消失が成功。通常SDK/UI復帰・HMD/物理操作は最終待ち。詳細はpopup-clipboard-checks.md |
 
 ## B01/B02: ビルドと実機の再現
 

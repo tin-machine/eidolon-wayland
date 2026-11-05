@@ -2,9 +2,13 @@
 #[cfg(any(test, feature = "debug-fixtures"))]
 pub mod checks;
 #[cfg(any(test, feature = "debug-fixtures"))]
+pub mod clipboard_checks;
+#[cfg(any(test, feature = "debug-fixtures"))]
 pub mod input_checks;
 #[cfg(any(test, feature = "debug-fixtures"))]
 pub mod pointer_checks;
+#[cfg(any(test, feature = "debug-fixtures"))]
+pub mod popup_checks;
 #[cfg(any(test, feature = "debug-fixtures"))]
 pub mod state_checks;
 #[cfg(test)]
