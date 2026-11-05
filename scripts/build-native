@@ -9,6 +9,7 @@ import subprocess
 import shutil
 
 from native_build import ABI, API, NDK, ROOT, TARGET, canonical, identity
+import theme_licenses
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--version", type=int, required=True)
@@ -87,6 +88,7 @@ for component in ("libxkbcommon", "xkeyboard-config", "smithay", "waypipe", "lz4
     shutil.copyfile(source, target)
     licenses[name] = hashlib.sha256(source.read_bytes()).hexdigest()
 metadata["dependencies"]["licenses"] = licenses
+metadata["dependencies"]["theme"] = theme_licenses.write(args.assets)
 args.assets.mkdir(parents=True, exist_ok=True)
 (args.assets / "native-build.json").write_text(json.dumps(metadata, indent=2) + "\n")
 print(canonical(metadata))

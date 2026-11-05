@@ -2,12 +2,14 @@
 #[cfg(target_os = "android")]
 mod android;
 pub mod compositor;
+pub mod decoration;
 #[cfg(target_os = "android")]
 pub mod egl;
 #[cfg(any(test, feature = "debug-fixtures"))]
 pub mod fixtures;
 #[cfg(not(target_os = "android"))]
 mod host;
+pub mod theme_state;
 #[cfg(target_os = "android")]
 use android as platform;
 use eidolon_model::{
@@ -67,6 +69,8 @@ pub struct TargetReport {
     pub frames: u64,
     pub content_frame: Option<FrameSeq>,
     pub role: RenderMode,
+    pub canvas: Option<theme_state::Canvas>,
+    pub decoration_frames: u64,
     #[serde(flatten)]
     pub gpu: GpuInfo,
 }
@@ -86,6 +90,9 @@ pub struct Snapshot {
     pub contexts: usize,
     pub latest_images: usize,
     pub composition: compositor::Report,
+    pub theme_revision: u64,
+    pub theme_id: Option<String>,
+    pub theme_error: Option<&'static str>,
     pub error: Option<&'static str>,
 }
 enum Message {
@@ -108,6 +115,10 @@ struct Shared {
     latest: Vec<Arc<Submission>>,
     mode: RenderMode,
     logical: Vec<(SessionId, WindowId)>,
+    theme: Option<Arc<eidolon_theme::raster::CompiledTheme>>,
+    theme_revision: u64,
+    reduced_motion: bool,
+    semantic: Vec<((SessionId, WindowId), theme_state::SemanticState)>,
 }
 struct Submission {
     snapshot: Arc<WindowSnapshot>,
@@ -117,6 +128,7 @@ type State = Arc<(Mutex<Shared>, Condvar)>;
 pub struct Controller {
     state: State,
     worker: JoinHandle<()>,
+    pixels: eidolon_model::pixels::PixelBudget,
 }
 
 /// 世代の履歴はwindow数で制限する。古いdetachは新世代を選択できない。
@@ -154,10 +166,17 @@ impl Generations {
 struct Active {
     report: TargetReport,
     gpu: platform::Target,
+    needs_redraw: bool,
 }
 
 impl Controller {
     pub fn start() -> std::io::Result<Self> {
+        Self::start_with_budget(Default::default())
+    }
+    pub fn pixel_budget(&self) -> eidolon_model::pixels::PixelBudget {
+        self.pixels.clone()
+    }
+    pub fn start_with_budget(pixels: eidolon_model::pixels::PixelBudget) -> std::io::Result<Self> {
         let state = Arc::new((
             Mutex::new(Shared {
                 queue: VecDeque::new(),
@@ -172,6 +191,10 @@ impl Controller {
                 latest: vec![],
                 mode: RenderMode::Diagnostic,
                 logical: vec![],
+                theme: None,
+                theme_revision: 0,
+                reduced_motion: false,
+                semantic: vec![],
             }),
             Condvar::new(),
         ));
@@ -189,13 +212,19 @@ impl Controller {
                 state.snapshot.targets.clear();
                 state.latest.clear();
                 state.logical.clear();
+                state.theme = None;
+                state.semantic.clear();
                 state.snapshot.latest_images = 0;
                 state.snapshot.contexts = 0;
                 state.snapshot.composition = Default::default();
                 state.snapshot.workers = 0;
                 state.busy_since = None;
             })?;
-        Ok(Self { state, worker })
+        Ok(Self {
+            state,
+            worker,
+            pixels,
+        })
     }
     fn enqueue(&self, message: Message) -> Status {
         let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -364,6 +393,56 @@ impl Controller {
         self.state.1.notify_one();
         code
     }
+    /// CPU loaderの最新結果だけを渡す。upload成功後にownerがadoptする。
+    /// themeはruntimeの共通PixelBudgetでcompileし、Surfaceサイズ変更はSDK adapterが同期する。
+    pub fn set_theme(
+        &self,
+        theme: Option<Arc<eidolon_theme::raster::CompiledTheme>>,
+        reduced_motion: bool,
+    ) -> Status {
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.stop {
+            return Status::NotReady;
+        }
+        let Some(next) = state.theme_revision.checked_add(1) else {
+            return Status::Failed;
+        };
+        state.theme = theme;
+        state.theme_revision = next;
+        state.reduced_motion = reduced_motion;
+        self.state.1.notify_one();
+        Status::Accepted
+    }
+    pub fn set_semantic_state(
+        &self,
+        session: SessionId,
+        window: WindowId,
+        semantic: theme_state::SemanticState,
+    ) -> Status {
+        if !semantic.valid() {
+            return Status::InvalidArgument;
+        }
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.stop {
+            return Status::NotReady;
+        }
+        if !state.logical.contains(&(session, window)) {
+            return Status::Stale;
+        }
+        if let Some((_, value)) = state
+            .semantic
+            .iter_mut()
+            .find(|(key, _)| *key == (session, window))
+        {
+            *value = semantic;
+        } else if state.semantic.len() < limits::TOPLEVELS {
+            state.semantic.push(((session, window), semantic));
+        } else {
+            return Status::Busy;
+        }
+        self.state.1.notify_one();
+        Status::Accepted
+    }
     pub fn set_visible(&self, visible: bool) {
         self.state
             .0
@@ -428,8 +507,24 @@ fn owner(state: &State) {
     let mut generations = Generations::default();
     let mut next = Instant::now();
     let mut owner_mode = RenderMode::Diagnostic;
+    let mut was_visible = false;
+    let clock = Instant::now();
+    let mut players = theme_state::Players::default();
+    let mut theme: Option<Arc<eidolon_theme::raster::CompiledTheme>> = None;
+    let mut theme_revision = 0;
+    let mut reduced_motion = false;
     loop {
-        let (message, visible, stop, mode, logical) = {
+        let (
+            message,
+            visible,
+            stop,
+            mode,
+            logical,
+            requested_theme,
+            requested_revision,
+            requested_reduced,
+            semantic,
+        ) = {
             let mut shared = state.0.lock().unwrap_or_else(|e| e.into_inner());
             if !shared.stop
                 && shared.queue.is_empty()
@@ -452,11 +547,21 @@ fn owner(state: &State) {
                 shared.stop,
                 shared.mode,
                 shared.logical.clone(),
+                shared.theme.clone(),
+                shared.theme_revision,
+                shared.reduced_motion,
+                shared.semantic.clone(),
             )
         };
         if stop {
             break;
         }
+        if visible && !was_visible {
+            for target in &mut active {
+                target.needs_redraw = true;
+            }
+        }
+        was_visible = visible;
         if owner_mode != mode {
             if let Some(device) = device.as_mut() {
                 let _ = busy(state, || device.clear());
@@ -468,6 +573,9 @@ fn owner(state: &State) {
             generations
                 .latest
                 .retain(|key| logical.contains(&(key.session, key.window)));
+            update(state, |s| {
+                s.semantic.retain(|(key, _)| logical.contains(key))
+            });
         }
         if let Some(message) = message {
             match message {
@@ -521,9 +629,12 @@ fn owner(state: &State) {
                                     frames: 0,
                                     content_frame: None,
                                     role,
+                                    canvas: None,
+                                    decoration_frames: 0,
                                     gpu: gpu.info(),
                                 },
                                 gpu,
+                                needs_redraw: true,
                             });
                             update(state, |s| {
                                 s.snapshot.attaches += 1;
@@ -562,9 +673,62 @@ fn owner(state: &State) {
                 }
             }
         }
-        if visible && Instant::now() >= next {
-            let mut lost = Vec::new();
+        players.retain(&logical);
+        let mut theme_context_lost = false;
+        if requested_revision != theme_revision && (requested_theme.is_none() || device.is_some()) {
+            let result = device
+                .as_mut()
+                .map(|d| busy(state, || d.prepare_theme(requested_theme.as_deref())))
+                .unwrap_or(Ok(()));
+            // この要求の失敗では旧themeを維持する。再要求またはcontext再生成時だけ再試行。
+            if result == Err("EGL_CONTEXT_LOST") {
+                for target in &mut active {
+                    target.needs_redraw = true;
+                }
+                theme_context_lost = true;
+            } else {
+                theme_revision = requested_revision;
+                if result.is_ok() {
+                    theme = requested_theme;
+                    reduced_motion = requested_reduced;
+                    if theme.is_none() {
+                        players.clear();
+                    }
+                    for target in &mut active {
+                        target.needs_redraw = true;
+                    }
+                }
+                update(state, |s| {
+                    s.snapshot.theme_error = result.err();
+                    if result.is_ok() {
+                        s.snapshot.theme_revision = theme_revision;
+                        s.snapshot.theme_id = theme.as_ref().map(|t| t.manifest.id.clone());
+                    }
+                });
+            }
+        }
+        let visible_windows: Vec<_> = active
+            .iter()
+            .filter(|a| {
+                visible
+                    && a.report.role == RenderMode::Windows
+                    && logical.contains(&(a.report.key.session, a.report.key.window))
+            })
+            .map(|a| (a.report.key.session, a.report.key.window))
+            .collect();
+        if let Err(error) = players.visibility(clock.elapsed(), &visible_windows) {
+            update(state, |s| s.snapshot.theme_error = Some(error));
+        }
+        if (visible && Instant::now() >= next) || theme_context_lost {
+            let mut lost = if theme_context_lost {
+                vec![(0, "EGL_CONTEXT_LOST")]
+            } else {
+                Vec::new()
+            };
             for (index, target) in active.iter_mut().enumerate() {
+                if theme_context_lost {
+                    break;
+                }
                 if target.report.role != mode
                     || (mode == RenderMode::Windows
                         && !logical
@@ -586,6 +750,44 @@ fn owner(state: &State) {
                 if mode == RenderMode::Windows && image.is_none() {
                     continue;
                 }
+                let drawing = if let (Some(theme), Some(image)) = (&theme, &image) {
+                    let key = (target.report.key.session, target.report.key.window);
+                    let semantic = semantic
+                        .iter()
+                        .find(|(k, _)| *k == key)
+                        .map(|(_, s)| s.clone())
+                        .unwrap_or_default();
+                    match players.draw(
+                        key,
+                        theme,
+                        clock.elapsed(),
+                        image.snapshot.logical_size,
+                        reduced_motion,
+                        &semantic,
+                    ) {
+                        Ok(drawing) => Some(drawing),
+                        Err(error) => {
+                            update(state, |s| s.snapshot.theme_error = Some(error));
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                // 装飾の時計はapp由来FrameSeqを増やさず、最終frame/停止も独立して反映する。
+                if mode == RenderMode::Windows
+                    && !target.needs_redraw
+                    && drawing
+                        .as_ref()
+                        .is_none_or(|d| !d.frame.active && !d.frame.changed)
+                    && target.report.content_frame == image.as_ref().map(|i| i.snapshot.frame_seq)
+                {
+                    continue;
+                }
+                let decoration = drawing
+                    .as_ref()
+                    .zip(theme.as_ref())
+                    .map(|(d, t)| d.composition(t));
                 match busy(state, || {
                     target.gpu.frame(
                         device.as_mut().unwrap(),
@@ -595,9 +797,13 @@ fn owner(state: &State) {
                             .as_ref()
                             .map(|image| image.probes.as_slice())
                             .unwrap_or(&[]),
+                        decoration.as_ref(),
                     )
                 }) {
                     Ok(()) => {
+                        target.needs_redraw = false;
+                        target.report.canvas = drawing.as_ref().map(|d| d.canvas.clone());
+                        target.report.decoration_frames += u64::from(drawing.is_some());
                         target.report.frames += 1;
                         target.report.content_frame =
                             image.as_ref().map(|image| image.snapshot.frame_seq);
@@ -624,6 +830,7 @@ fn owner(state: &State) {
                     device = platform::Device::new().ok();
                 });
                 for (index, target) in active.iter_mut().enumerate() {
+                    target.needs_redraw = true;
                     update(state, |s| s.snapshot.context_rebuilds += 1);
                     if device
                         .as_mut()
@@ -668,6 +875,147 @@ fn owner(state: &State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn static_window_stops_presenting_and_redraws_on_resume_new_image_and_rebuild() {
+        use std::sync::atomic::Ordering;
+        let renderer = Controller::start().unwrap();
+        renderer.use_windows();
+        renderer.set_visible(true);
+        let key = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        renderer.windows(key.session, &[key.window]);
+        let control = Arc::new(platform::TestControl::default());
+        let (image, probes) = fixtures::make(0, 1, key, 64, 64).unwrap();
+        renderer.submit(image, probes);
+        renderer.attach_window(
+            key,
+            PlatformWindow {
+                control: Some(control.clone()),
+            },
+            64,
+            64,
+        );
+        wait(|| {
+            renderer
+                .snapshot()
+                .targets
+                .first()
+                .is_some_and(|t| t.frames == 1)
+        });
+        thread::sleep(FRAME * 4);
+        assert_eq!(renderer.snapshot().targets[0].frames, 1);
+        renderer.set_visible(false);
+        // ownerがpauseを観測してからresumeする。
+        thread::sleep(FRAME * 2);
+        renderer.set_visible(true);
+        wait(|| renderer.snapshot().targets[0].frames == 2);
+        assert_eq!(
+            renderer.snapshot().targets[0].content_frame,
+            Some(FrameSeq::new(1).unwrap())
+        );
+        // 次の実画像更新でcontext lossを起こし、更新画像を同じseqで描き直す。
+        control.fault.store(2, Ordering::Release);
+        let (image, probes) = fixtures::make(0, 2, key, 64, 64).unwrap();
+        renderer.submit(image, probes);
+        wait(|| {
+            renderer.snapshot().context_rebuilds == 1
+                && renderer.snapshot().targets[0].content_frame == Some(FrameSeq::new(2).unwrap())
+        });
+        let frames = renderer.snapshot().targets[0].frames;
+        thread::sleep(FRAME * 4);
+        assert_eq!(renderer.snapshot().targets[0].frames, frames);
+        renderer.detach(key);
+        wait(|| renderer.snapshot().targets.is_empty());
+        let replacement = TargetKey::from_raw(1, 1, 1, 2).unwrap();
+        renderer.attach_window(replacement, PlatformWindow::default(), 64, 64);
+        wait(|| {
+            renderer
+                .snapshot()
+                .targets
+                .first()
+                .is_some_and(|t| t.content_frame == Some(FrameSeq::new(2).unwrap()))
+        });
+        renderer.request_stop();
+        wait(|| renderer.is_finished());
+    }
+    #[test]
+    fn decoration_ticks_two_static_windows_without_content_sequence_and_reduced_motion_stops() {
+        let renderer = Controller::start().unwrap();
+        let theme = Arc::new(
+            eidolon_theme::raster::compile(
+                &eidolon_theme::cyan_orbit(),
+                &Default::default(),
+                &renderer.pixel_budget(),
+                &Default::default(),
+            )
+            .unwrap(),
+        );
+        renderer.use_windows();
+        let key = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        let other = TargetKey::from_raw(1, 2, 1, 1).unwrap();
+        renderer.windows(key.session, &[key.window, other.window]);
+        renderer.set_theme(Some(theme.clone()), false);
+        for key in [key, other] {
+            let (image, probes) = fixtures::make(16, 1, key, 64, 64).unwrap();
+            renderer.submit(image, probes);
+            renderer.attach_window(key, PlatformWindow::default(), 64, 64);
+        }
+        renderer.set_visible(true);
+        wait(|| {
+            let snapshot = renderer.snapshot();
+            snapshot.targets.len() == 2 && snapshot.targets.iter().all(|t| t.decoration_frames >= 3)
+        });
+        assert!(
+            renderer
+                .snapshot()
+                .targets
+                .iter()
+                .all(|t| t.content_frame == Some(FrameSeq::new(1).unwrap()) && t.canvas.is_some())
+        );
+        let before = renderer
+            .snapshot()
+            .targets
+            .iter()
+            .map(|t| t.frames)
+            .collect::<Vec<_>>();
+        renderer.set_theme(Some(theme.clone()), true);
+        wait(|| {
+            let s = renderer.snapshot();
+            s.theme_revision == 2
+                && s.targets
+                    .iter()
+                    .zip(&before)
+                    .all(|(t, old)| t.frames > *old)
+        });
+        let stable = renderer
+            .snapshot()
+            .targets
+            .iter()
+            .map(|t| t.frames)
+            .collect::<Vec<_>>();
+        thread::sleep(FRAME * 4);
+        assert_eq!(
+            renderer
+                .snapshot()
+                .targets
+                .iter()
+                .map(|t| t.frames)
+                .collect::<Vec<_>>(),
+            stable
+        );
+        renderer.set_theme(None, false);
+        wait(|| {
+            renderer.snapshot().theme_revision == 3
+                && renderer
+                    .snapshot()
+                    .targets
+                    .iter()
+                    .all(|t| t.canvas.is_none())
+        });
+        renderer.request_stop();
+        wait(|| renderer.is_finished());
+        drop(theme);
+        assert_eq!(renderer.pixel_budget().used_bytes(), 0);
+    }
     fn wait(test: impl Fn() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(3);
         while !test() {

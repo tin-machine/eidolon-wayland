@@ -1,0 +1,244 @@
+//! Render ownerのwindow単位時計。SDK Surface/GL contextの世代から独立する。
+use crate::decoration::{Composition, Rect};
+use eidolon_model::{
+    ids::{SessionId, WindowId},
+    window::LogicalSize,
+};
+use eidolon_theme::{
+    manifest::Slot,
+    player::{Frame, Player},
+    raster::CompiledTheme,
+};
+use serde::Serialize;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
+
+#[derive(Clone, Default)]
+pub struct SemanticState {
+    pub focused: bool,
+    pub busy: bool,
+    pub cpu_cores: Option<f64>,
+}
+impl SemanticState {
+    pub fn valid(&self) -> bool {
+        self.cpu_cores.is_none_or(|v| v.is_finite() && v >= 0.)
+    }
+    fn classes(&self) -> BTreeSet<String> {
+        [("focused", self.focused), ("busy", self.busy)]
+            .into_iter()
+            .filter(|(_, yes)| *yes)
+            .map(|(name, _)| name.into())
+            .collect()
+    }
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct Canvas {
+    pub size: LogicalSize,
+    pub content_origin: [u32; 2],
+}
+impl Canvas {
+    pub fn for_content(content: LogicalSize) -> Result<Self, &'static str> {
+        // 正方形外周。大きいappではリングの規定sizeを維持し、文字をresizeしない。
+        let side = content
+            .width
+            .max(
+                content
+                    .height
+                    .checked_add(32)
+                    .ok_or("THEME_LAYOUT_INVALID")?,
+            )
+            .max(1280);
+        let size = LogicalSize::new(side, side).map_err(|_| "THEME_LAYOUT_INVALID")?;
+        Ok(Self {
+            size,
+            content_origin: [(side - content.width) / 2, (side - content.height) / 2],
+        })
+    }
+    fn slots(&self, content: LogicalSize) -> BTreeMap<Slot, Rect> {
+        let [x, y] = self.content_origin.map(|v| v as f32);
+        let [w, h] = [content.width as f32, content.height as f32];
+        BTreeMap::from([
+            (
+                Slot::WindowBackdrop,
+                Rect {
+                    origin: [0., 0.],
+                    size: [self.size.width as f32, self.size.height as f32],
+                },
+            ),
+            (
+                Slot::WindowFrame,
+                Rect {
+                    origin: [x, y],
+                    size: [w, h],
+                },
+            ),
+            (
+                Slot::TitlebarEnd,
+                Rect {
+                    origin: [x + w - 24., y - 24.],
+                    size: [24., 24.],
+                },
+            ),
+            (
+                Slot::TitlebarBottom,
+                Rect {
+                    origin: [x, y - 3.],
+                    size: [w, 3.],
+                },
+            ),
+        ])
+    }
+}
+pub struct Drawing {
+    pub canvas: Canvas,
+    pub frame: Frame,
+    slots: BTreeMap<Slot, Rect>,
+}
+impl Drawing {
+    pub fn composition<'a>(&'a self, theme: &'a CompiledTheme) -> Composition<'a> {
+        Composition {
+            theme,
+            frame: &self.frame,
+            canvas: self.canvas.size,
+            content_origin: self.canvas.content_origin,
+            slots: &self.slots,
+        }
+    }
+}
+struct Window {
+    player: Player,
+    visible: bool,
+}
+#[derive(Default)]
+pub struct Players {
+    windows: BTreeMap<(SessionId, WindowId), Window>,
+}
+impl Players {
+    pub fn retain(&mut self, logical: &[(SessionId, WindowId)]) {
+        self.windows.retain(|key, _| logical.contains(key));
+    }
+    pub fn clear(&mut self) {
+        self.windows.clear();
+    }
+    pub fn visibility(
+        &mut self,
+        now: Duration,
+        visible: &[(SessionId, WindowId)],
+    ) -> Result<(), &'static str> {
+        for (key, window) in &mut self.windows {
+            let next = visible.contains(key);
+            if next != window.visible {
+                window
+                    .player
+                    .set_visible(now, next)
+                    .map_err(|_| "THEME_CLOCK_INVALID")?;
+                window.visible = next;
+            }
+        }
+        Ok(())
+    }
+    pub fn draw(
+        &mut self,
+        key: (SessionId, WindowId),
+        theme: &Arc<CompiledTheme>,
+        now: Duration,
+        content: LogicalSize,
+        reduced: bool,
+        state: &SemanticState,
+    ) -> Result<Drawing, &'static str> {
+        let window = self.windows.entry(key).or_insert_with(|| Window {
+            player: Player::new(now),
+            visible: true,
+        });
+        let frame = window
+            .player
+            .evaluate(theme, now, true, reduced, &state.classes(), state.cpu_cores)
+            .map_err(|_| "THEME_EVALUATION_FAILED")?;
+        let canvas = Canvas::for_content(content)?;
+        let slots = canvas.slots(content);
+        Ok(Drawing {
+            canvas,
+            frame,
+            slots,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eidolon_theme::{
+        raster,
+        style::{Property, Transform, Value},
+    };
+    #[test]
+    fn window_clocks_survive_surface_absence_and_resize_without_sharing_phase() {
+        let theme = Arc::new(
+            raster::compile(
+                &eidolon_theme::cyan_orbit(),
+                &BTreeMap::new(),
+                &Default::default(),
+                &Default::default(),
+            )
+            .unwrap(),
+        );
+        let mut players = Players::default();
+        let key = (SessionId::new(1).unwrap(), WindowId::new(1).unwrap());
+        let other = (key.0, WindowId::new(2).unwrap());
+        let size = LogicalSize::new(1024, 768).unwrap();
+        let state = SemanticState::default();
+        let sec = Duration::from_secs;
+        let angle = |d: Drawing| d.frame.parts["ring-outer"][&Property::Transform].clone();
+        players
+            .draw(key, &theme, sec(0), size, false, &state)
+            .unwrap();
+        players
+            .draw(other, &theme, sec(2), size, false, &state)
+            .unwrap();
+        assert_eq!(
+            angle(
+                players
+                    .draw(key, &theme, sec(3), size, false, &state)
+                    .unwrap()
+            ),
+            Value::Transform(vec![Transform::Rotate(90.)])
+        );
+        assert_eq!(
+            angle(
+                players
+                    .draw(other, &theme, sec(3), size, false, &state)
+                    .unwrap()
+            ),
+            Value::Transform(vec![Transform::Rotate(30.)])
+        );
+        players.visibility(sec(3), &[other]).unwrap(); // old Surface gone; logical window remains
+        players.visibility(sec(100), &[key, other]).unwrap();
+        let resized = players
+            .draw(
+                key,
+                &theme,
+                sec(100),
+                LogicalSize::new(800, 600).unwrap(),
+                false,
+                &state,
+            )
+            .unwrap();
+        assert_eq!(resized.canvas.content_origin, [240, 340]);
+        assert_eq!(
+            angle(resized),
+            Value::Transform(vec![Transform::Rotate(90.)])
+        );
+        players.retain(&[other]); // true logical unmap resets only this clock
+        assert_eq!(
+            angle(
+                players
+                    .draw(key, &theme, sec(101), size, false, &state)
+                    .unwrap()
+            ),
+            Value::Transform(vec![Transform::Rotate(0.)])
+        );
+    }
+}

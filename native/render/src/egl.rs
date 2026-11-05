@@ -172,9 +172,17 @@ impl Device {
         surface: &mut EGLSurface,
         snapshot: &WindowSnapshot,
         probes: &[Probe],
+        decoration: Option<&crate::decoration::Composition<'_>>,
     ) -> Result<u64, &'static str> {
-        self.compositor.paint(surface, snapshot, probes)?;
+        self.compositor
+            .paint_decorated(surface, snapshot, probes, decoration)?;
         Ok(self.compositor.report().max_swap_us)
+    }
+    pub fn prepare_theme(
+        &mut self,
+        theme: Option<&eidolon_theme::raster::CompiledTheme>,
+    ) -> Result<(), &'static str> {
+        self.compositor.prepare_theme(theme)
     }
     pub fn report(&self) -> Report {
         self.compositor.report()

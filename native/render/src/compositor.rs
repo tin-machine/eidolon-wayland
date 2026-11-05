@@ -1,4 +1,5 @@
 //! GL owner専用の画像合成。入力はimmutableなowned pixelと検査済みgeometryだけ。
+use crate::decoration::{Composition, Decorations, Draw};
 use eidolon_model::{
     ids::{ContentSeq, SessionId, SurfaceId, WindowId},
     limits,
@@ -80,6 +81,9 @@ pub struct Probe {
 pub struct Report {
     pub uploads: u64,
     pub updates: u64,
+    pub decoration_uploads: u64,
+    pub decoration_texture_bytes: usize,
+    pub decoration_presents: u64,
     pub textures: usize,
     pub texture_bytes: usize,
     pub readback_samples: u64,
@@ -98,6 +102,7 @@ struct Cached {
 pub struct Compositor {
     // texture Dropの通知をrendererより先に送る。
     cache: HashMap<ImageKey, Cached>,
+    decorations: Option<Decorations>,
     renderer: GlesRenderer,
     report: Report,
 }
@@ -117,6 +122,7 @@ impl Compositor {
             .map_err(|_| "EGL_INIT_FAILED")?;
         Ok(Self {
             cache: HashMap::new(),
+            decorations: None,
             renderer,
             report: Report::default(),
         })
@@ -138,6 +144,8 @@ impl Compositor {
     }
     pub fn clear(&mut self) -> Result<(), Error> {
         self.cache.clear();
+        self.decorations = None;
+        self.report.decoration_texture_bytes = 0;
         self.refresh();
         self.renderer
             .cleanup_texture_cache()
@@ -147,15 +155,145 @@ impl Compositor {
         self.report.textures = self.cache.len();
         self.report.texture_bytes = self.cache.values().map(|v| v.bytes).sum();
     }
+    pub fn prepare_theme(
+        &mut self,
+        theme: Option<&eidolon_theme::raster::CompiledTheme>,
+    ) -> Result<(), Error> {
+        if let Some(theme) = theme {
+            if self.decorations.is_none() {
+                self.decorations = Some(Decorations::new(&mut self.renderer).map_err(gpu_error)?);
+                self.report.decoration_uploads += 1;
+            }
+            let decorations = self.decorations.as_mut().unwrap();
+            let before = decorations.uploads();
+            let result = decorations.prepare_with_limit(
+                &mut self.renderer,
+                theme,
+                limits::PIXEL_BYTES.saturating_sub(self.report.texture_bytes),
+            );
+            self.report.decoration_uploads += decorations.uploads() - before;
+            self.report.decoration_texture_bytes = decorations.texture_bytes();
+            result
+        } else {
+            self.decorations = None;
+            self.report.decoration_texture_bytes = 0;
+            self.renderer.cleanup_texture_cache().map_err(gpu_error)
+        }
+    }
+    fn decoration_pass(
+        &mut self,
+        surface: &mut EGLSurface,
+        draws: &[Draw],
+        clear: bool,
+        probes: &[Probe],
+    ) -> Result<(), Error> {
+        self.renderer
+            .upscale_filter(TextureFilter::Linear)
+            .map_err(gpu_error)?;
+        self.renderer
+            .downscale_filter(TextureFilter::Linear)
+            .map_err(gpu_error)?;
+        let result = (|| {
+            let size = surface.get_size().ok_or("SURFACE_LOST")?;
+            let mut target = self.renderer.bind(surface).map_err(gpu_error)?;
+            let mut frame = self
+                .renderer
+                .render(&mut target, size, Transform::Flipped180)
+                .map_err(gpu_error)?;
+            if clear {
+                frame
+                    .clear([0., 0., 0., 0.].into(), &[Rectangle::from_size(size)])
+                    .map_err(gpu_error)?;
+            }
+            self.decorations
+                .as_ref()
+                .ok_or("THEME_TEXTURE_MISSING")?
+                .draw(&mut frame, draws)?;
+            let (matched, error) = frame
+                .with_context(|gl| {
+                    let matched = probes.iter().all(|probe| {
+                        if probe.x < 0 || probe.y < 0 || probe.x >= size.w || probe.y >= size.h {
+                            return false;
+                        }
+                        let mut actual = [0u8; 4];
+                        unsafe {
+                            gl.ReadPixels(
+                                probe.x,
+                                size.h - 1 - probe.y,
+                                1,
+                                1,
+                                0x1908,
+                                0x1401,
+                                actual.as_mut_ptr().cast(),
+                            );
+                        }
+                        actual
+                            .iter()
+                            .zip(probe.rgba)
+                            .all(|(a, b)| a.abs_diff(b) <= 1)
+                    });
+                    (matched, unsafe { gl.GetError() })
+                })
+                .map_err(gpu_error)?;
+            let sync = frame.finish().map_err(gpu_error)?;
+            drop(target);
+            self.renderer.wait(&sync).map_err(gpu_error)?;
+            super::check_gl_error(error)?;
+            if !matched {
+                return Err("COMPOSITE_MISMATCH");
+            }
+            self.report.readback_samples += probes.len() as u64;
+            Ok(())
+        })();
+        // エラー経路でも次のapp passにLinearを漏らさない。
+        let up = self
+            .renderer
+            .upscale_filter(TextureFilter::Nearest)
+            .map_err(gpu_error);
+        let down = self
+            .renderer
+            .downscale_filter(TextureFilter::Nearest)
+            .map_err(gpu_error);
+        if up == Err("EGL_CONTEXT_LOST") || down == Err("EGL_CONTEXT_LOST") {
+            return Err("EGL_CONTEXT_LOST");
+        }
+        result.and(up).and(down)
+    }
     pub fn paint(
         &mut self,
         surface: &mut EGLSurface,
         snapshot: &WindowSnapshot,
         probes: &[Probe],
     ) -> Result<(), Error> {
+        self.paint_decorated(surface, snapshot, probes, None)
+    }
+
+    pub fn paint_decorated(
+        &mut self,
+        surface: &mut EGLSurface,
+        snapshot: &WindowSnapshot,
+        probes: &[Probe],
+        decoration: Option<&Composition<'_>>,
+    ) -> Result<(), Error> {
         let size = surface.get_size().ok_or("SURFACE_LOST")?;
-        let viewport =
-            Viewport::new(snapshot.logical_size, size.w, size.h).map_err(|_| "INVALID_ARGUMENT")?;
+        let layout = decoration
+            .map(|d| d.viewport(snapshot.logical_size, [size.w, size.h]))
+            .transpose()?;
+        let viewport = match layout {
+            Some(layout) => layout.content_viewport(),
+            None => Viewport::new(snapshot.logical_size, size.w, size.h)
+                .map_err(|_| "INVALID_ARGUMENT")?,
+        };
+        let (back, front) = if let Some(decoration) = decoration {
+            self.prepare_theme(Some(decoration.theme))?;
+            (
+                decoration.draws(layout.unwrap(), true)?,
+                decoration.draws(layout.unwrap(), false)?,
+            )
+        } else {
+            self.prepare_theme(None)?;
+            (vec![], vec![])
+        };
         if snapshot.layers.len() > limits::SURFACES {
             return Err("INVALID_ARGUMENT");
         }
@@ -213,6 +351,7 @@ impl Compositor {
                         .report
                         .texture_bytes
                         .checked_add(layer.pixels.pixels().len())
+                        .and_then(|n| n.checked_add(self.report.decoration_texture_bytes))
                         .is_none_or(|n| n > limits::PIXEL_BYTES)
                     {
                         return Err("RENDER_BUDGET");
@@ -251,6 +390,15 @@ impl Compositor {
             ));
         }
         self.refresh();
+        if decoration.is_some() {
+            self.decoration_pass(surface, &back, true, &[])?;
+        }
+        self.renderer
+            .upscale_filter(TextureFilter::Nearest)
+            .map_err(gpu_error)?;
+        self.renderer
+            .downscale_filter(TextureFilter::Nearest)
+            .map_err(gpu_error)?;
         self.report.stage = "bind";
         let mut target = self
             .renderer
@@ -264,9 +412,30 @@ impl Compositor {
             .render(&mut target, size, Transform::Flipped180)
             .map_err(|error| record_gpu(&mut self.report, error))?;
         self.report.stage = "clear";
-        frame
-            .clear([0., 0., 0., 1.].into(), &[Rectangle::from_size(size)])
-            .map_err(|error| record_gpu(&mut self.report, error))?;
+        if decoration.is_none() {
+            frame
+                .clear([0., 0., 0., 1.].into(), &[Rectangle::from_size(size)])
+                .map_err(|error| record_gpu(&mut self.report, error))?;
+        } else {
+            // 透明なapp pixelの下にも既存の黒背景を維持し、外周だけを透過する。
+            let rect = viewport_rect(
+                &viewport,
+                LogicalRect::new(
+                    0,
+                    0,
+                    snapshot.logical_size.width,
+                    snapshot.logical_size.height,
+                )
+                .map_err(|_| "INVALID_ARGUMENT")?,
+            );
+            frame
+                .draw_solid(
+                    rect,
+                    &[Rectangle::from_size(rect.size)],
+                    [0., 0., 0., 1.].into(),
+                )
+                .map_err(|error| record_gpu(&mut self.report, error))?;
+        }
         self.report.stage = "draw";
         for (texture, dst, damage, size, transform) in images {
             use eidolon_model::window::BufferTransform as B;
@@ -292,6 +461,12 @@ impl Compositor {
             )
             .map_err(|error| record_gpu(&mut self.report, error))?;
         }
+        let final_probes = probes;
+        let probes = if decoration.is_some() {
+            &[][..]
+        } else {
+            probes
+        };
         // 読取りだけをGL frame内で行い、Smithayのstateを変更しない。
         self.report.stage = "readback";
         let (matched, error) = frame
@@ -330,6 +505,10 @@ impl Compositor {
         self.renderer
             .wait(&sync)
             .map_err(|error| record_gpu(&mut self.report, error))?;
+        if decoration.is_some() {
+            self.decoration_pass(surface, &front, false, final_probes)?;
+            self.report.decoration_presents += 1;
+        }
         self.report.stage = "bind_for_swap";
         // SAFETY: surface/contextとも同じGL ownerで保持し、別threadではcurrentにしない。
         unsafe {

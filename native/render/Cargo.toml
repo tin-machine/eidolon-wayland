@@ -6,6 +6,8 @@ rust-version.workspace = true
 
 [dependencies]
 eidolon-model.workspace = true
+eidolon-theme.workspace = true
+cgmath = "=0.18.0"
 serde.workspace = true
 smithay = { version = "=0.7.0", default-features = false, features = ["renderer_gl"] }
 
@@ -19,3 +21,7 @@ khronos-egl = { version = "=6.0.0", features = ["dynamic"] }
 [build-dependencies]
 serde_json.workspace = true
 sha2 = "0.11"
+
+[dev-dependencies]
+khronos-egl = { version = "=6.0.0", features = ["dynamic"] }
+serde_json.workspace = true

@@ -36,6 +36,8 @@ class PackageTests(unittest.TestCase):
                         data += b"invalid fixture"
                     if item.filename == "lib/arm64-v8a/libwaypipe_bin.so" and variant == "waypipe-corrupt":
                         data += b"invalid fixture"
+                    if item.filename.startswith("assets/licenses/theme/") and variant == "theme-license":
+                        data += b"invalid fixture"
                     # writestrはZipInfoを更新するので、元archiveのlookupを壊さない。
                     out.writestr(copy.copy(item), data)
                 if variant == "duplicate":
@@ -62,3 +64,6 @@ class PackageTests(unittest.TestCase):
 
     def test_absent_waypipe_is_rejected(self):
         self.reject("waypipe-absent", "Waypipe.*数")
+
+    def test_corrupt_theme_license_is_rejected(self):
+        self.reject("theme-license", "theme license asset hash")

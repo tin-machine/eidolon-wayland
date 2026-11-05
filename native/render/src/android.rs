@@ -50,10 +50,11 @@ impl Target {
         frame: u64,
         snapshot: Option<&WindowSnapshot>,
         probes: &[Probe],
+        decoration: Option<&crate::decoration::Composition<'_>>,
     ) -> Result<(), &'static str> {
         let surface = self.surface.as_mut().ok_or("SURFACE_LOST")?;
         let elapsed = if let Some(snapshot) = snapshot {
-            device.paint(surface, snapshot, probes)?
+            device.paint(surface, snapshot, probes, decoration)?
         } else {
             device.pattern(surface, frame, !self.info.readback)?
         };

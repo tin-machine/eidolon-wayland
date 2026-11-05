@@ -7,9 +7,9 @@
 
 | 段階 | 成果物 | 現在の状態 / 未完了条件 |
 | --- | --- | --- |
-| TH00 | GL任意角度・alpha、SDK透過・余白のray、canvas/content契約 | 共通座標変換を実装。GL readbackとSDK経路選定は未完了 |
-| TH01 | TOML/CSS compiler、SVG cache、独立時計、focus transition、busy pulse、CPU meter、reload | `native/theme`でcompiler・再生状態・builtin三重リングを実装。製品との接続、世代付き非同期reloadは未完了 |
-| TH02 | 静止foot背後の三重リング、二枚、resize/再生成/入力 | 未実装。12秒時計回り・18秒反時計回り・8秒時計回り、透明余白越しに背後panelを操作できること |
+| TH00 | GL任意角度・alpha、SDK透過・余白のray、canvas/content契約 | 共通座標変換とhost実GPU readbackを実装・検証。SDK透過/余白rayは未完了 |
+| TH01 | TOML/CSS compiler、SVG cache、独立時計、focus transition、busy pulse、CPU meter、reload | compiler・再生状態・builtin三重リング・世代付き単一workerを実装。Render ownerへ接続するAPIを追加。runtime command/importへの接続は未完了 |
+| TH02 | 静止foot背後の三重リング、二枚、resize/再生成/入力 | Render ownerの二窓独立tick、resize/Surface再生成時の時計、3pass合成をhost検証。SDK透過・余白ray・入力/物理寸法の製品接続は未完了 |
 | TH03 | TerminalId、PTY登録、collector、CPU/RSS | 未実装。共有foot serverの二端末を混同せず、欠測・PID再利用・boot変更を区別すること |
 | TH04 | tmuxのsession/pane対応、共有scope、再接続 | 未実装。登録したsocketのみ観測し、観測PIDをcleanup対象へ追加しないこと |
 | TH05 | import/設定/無効化、性能比較、製品受入れ | 未実装。ユーザーがコード変更なしでtheme交換でき、自動検査とHMD/物理操作が成立すること |
@@ -43,7 +43,8 @@ API確認は実機成立の証拠ではない。
 `ContentViewport`はcanvas、app logical、target pixel、content原点を区別する。
 1024×768 content、1280×1280 canvas、原点[128,256]なら、appの1.2×0.9mを維持したcanvasは1.5×1.5m。
 theme無効時は従来のletterboxと同じ逆変換になる。余白はapp入力へ変換しない。
-この変換はまだ製品render/inputへ接続していないため、実際のray click-throughは未確認。
+この変換を装飾付きrenderへ接続した。input/SDKへの接続と実際のray click-throughは未確認。
+`Controller::set_theme`はnative統合用で、通常UIからのテーマ有効化はまだ提供していない。
 
 `native/theme`の入口は`Bundle::new`→`raster::compile`→`Player::evaluate`。
 loaderはimmutableな相対path/byte列を受け、Android storageやGLを直接操作しない。
@@ -62,7 +63,7 @@ collector/workloadの対応変更時は`clear_metrics`で他作業のhold-last�
 | SVG拒否 | DTD/entity、外部resource、image/text/font/style/script/animation/filter/mask、group opacity等の中間layer生成。色はprimitiveのfill/strokeとCSS tintで指定 |
 | raster | 各辺2048px、装飾32MiBを旧/新themeの同時保持込みで制限。既存128MiB pixel予算にも計上 |
 | alpha | resvg→共通budgetのallocationへ直接描画。premultiplied RGBA、余白RGBA=[0,0,0,0] |
-| cache | 同一素材hash/寸法をcompile内で共有。GPU cacheはcontext generationを加えて後続実装 |
+| cache | 同一素材hash/寸法をcompile内で共有。GPU cacheはGL ownerのcontextに所有させる。context再生成で全textureを再生成 |
 | lifecycle | visibilityの変更時だけ時計をpause/resume。無限clip終了/無効化後の最終frameを`changed`で伝える |
 | reduced motion | base styleへ即時反映、transitionを止める。解除時はclipを新しく開始する |
 
@@ -73,19 +74,39 @@ SVG subsetを広げる場合は中間bufferの予算とresource resolverを先�
 
 固定した直接依存はresvg 0.49.0（Apache-2.0 OR MIT、text/raster-images既定featureなし）、
 cssparser 0.38.0（MPL-2.0）、toml 0.9.8、roxmltree 0.21.1（ともにMIT OR Apache-2.0）。
-transitiveのusvg/tiny-skiaもCargo.lockへ固定した。APKへの組込み時にlicense/依存一覧とrelease境界を更新する。
+transitiveのusvg/tiny-skiaもCargo.lockへ固定した。`scripts/theme_licenses.py`はtheme/行列変換の依存閉包から、
+Cargo.lockと一致する配布archiveのlicense原本とsource URL/hashをAPKへ収録する。
+既存のnative dependency検査に加えて、APK内のテーマlicense改変/欠落も拒否する。
+この一覧はテーマ関係の範囲であり、Phase 6の配布全体の受入れ完了ではない。
 cssparser 0.38.0はParserが1 lifetimeでParserInputを使わないAPIだったため、実crate sourceへ合わせた。
 古いAPI想定によるcompile失敗は作業ログに保存している。
 
+## 描画・reloadの検証済み部分
+
+- `Loader`はCPU worker一つ、実行中一件、待機最新一件、完成最新一件。新しい要求/無効化で世代を進める。
+  古いcompileの結果を公開せず、不正bundleのcompile失敗でも呼出側の現在themeを保持する。
+  `take_ready`後のGPU準備/adoption直前には`is_current`を再確認する。UIからworkerをjoinしない。
+- Render ownerはwindowごとの時計を保持する。Surface不在・非表示では時計を止め、同じlogical windowの再生成/resizeで位相を維持する。
+  themeのGPU準備が成功してから適用する。装飾だけの描画でFrameSeq/ContentSeqやWayland callbackを作らない。
+- 動く装飾/transition、変化後の最終frame、新しいapp画像、target再生成を再描画条件にする。
+  動きを抑える設定やtheme無効化後、静止画像のswapを停止する。ownerの定期wake自体は現時点で残る。
+- 描画はLinearの装飾背景→Nearestのapp/popup→Linearの前景。透明外周、既存app内の黒背景、popupのclip/alphaを維持する。
+  各passをfinish/waitする正しさ優先の実装で、Quest性能は未測定。
+- CPU画像はruntimeの共通PixelBudgetをsessionとtheme loaderで共有するための経路を追加した。
+  GPUは旧/新装飾32MiBに加え、app textureと合わせた128MiBを検査する。
+- `cargo run --locked -p eidolon-render --example theme-gl-probe`でhostの実EGL/GLESを使う。
+  RTX 3060/NVIDIA OpenGL ES 3.2上で、45度の方向/中心、透過余白、半透明SVG/tintを15点、
+  3pass合成・Nearest境界・popup clip・前景を21点読み戻した。再描画時の再uploadなし、無効化時の復元と解放も確認。
+  hostbackendのthread testと、この実GPU検証は別であり、いずれもQuest SDK/HMD確認の代替ではない。
+
 ## 次の統合と受入れ
 
-1. 45度のGL描画とalphaの小fixture、SDK透過Surfaceと二枚の余白rayを実装する。
-2. compiler workerを一つ、pending要求をlatest一つに限定し、ThemeLoadGenerationで古い結果を破棄する。
-   GPU upload成功後だけテーマを交換し、不正themeや準備失敗なら直前のthemeを維持する。
-3. Render ownerへ装飾snapshotと時計を接続する。装飾tickでFrameSeq/ContentSeqやWayland frame callbackを捏造しない。
-   CPU raster・GPU upload・decor present・app content frameを別counterにする。
-4. TerminalId/PTy登録とcollectorを実装し、1HzのCPU/RSS・coverage・stale、tmux adapterを接続する。
-5. import/設定/切り戻し、二枚・popup・resize・保存・接続/終了の回帰、性能比較を終え、HMD確認を一度に依頼する。
+1. SDK透過Surfaceと二枚の余白rayをprobeし、入力/物理寸法/Surface世代の契約を製品へ接続する。
+2. `Loader`とRender ownerのAPIをruntime command/importへ接続し、GPU準備中に要求が更新される競合も検査する。
+   不正themeでは旧themeを維持し、旧canvas世代の入力を拒否する。
+3. TerminalId/PTy登録とcollectorを実装し、1HzのCPU/RSS・coverage・stale、tmux adapterを接続する。
+4. import/設定/切り戻し、二枚・popup・resize・保存・接続/終了の回帰、性能比較を終え、HMD確認を一度に依頼する。
 
-hostの再現入口は`python3 -B scripts/check-host --suite theme`。全suiteにもtheme crateを登録した。
-hostの「三重リング」は角度/再生状態と実SVG rasterの検証であり、Questにリングを表示したという意味ではない。
+hostの再現入口は`python3 -B scripts/check-host --suite theme`、`--suite render`、実GPUの上記example。
+全suiteにもtheme crateを登録した。hostの「三重リング」は角度/再生状態と実SVG rasterの検証を含むが、
+Questにリングを表示したという意味ではない。

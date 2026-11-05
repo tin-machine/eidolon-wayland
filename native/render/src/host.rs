@@ -16,6 +16,12 @@ impl Device {
     ) -> Result<(), &'static str> {
         Ok(())
     }
+    pub fn prepare_theme(
+        &mut self,
+        _: Option<&eidolon_theme::raster::CompiledTheme>,
+    ) -> Result<(), &'static str> {
+        Ok(())
+    }
     pub fn report(&self) -> super::compositor::Report {
         Default::default()
     }
@@ -67,6 +73,7 @@ impl Target {
         _: u64,
         _: Option<&eidolon_model::window::WindowSnapshot>,
         _: &[super::compositor::Probe],
+        _: Option<&crate::decoration::Composition<'_>>,
     ) -> Result<(), &'static str> {
         #[cfg(test)]
         if let Some(control) = &self.control {

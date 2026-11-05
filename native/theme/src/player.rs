@@ -72,6 +72,14 @@ impl Player {
             part.values.remove(&Property::Value);
         }
     }
+    /// visibility通知はmetrics/stateを更新せずclockだけを変更する。
+    pub fn set_visible(
+        &mut self,
+        now: Duration,
+        visible: bool,
+    ) -> Result<(), crate::timeline::ClockError> {
+        self.clock.set_running(now, visible)
+    }
     pub fn new(now: Duration) -> Self {
         Self {
             clock: Timeline::new(now, true),

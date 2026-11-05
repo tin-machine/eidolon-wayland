@@ -51,6 +51,21 @@ impl ContentViewport {
         })
     }
 
+    pub fn canvas_viewport(&self) -> Viewport {
+        self.canvas
+    }
+
+    /// 既存app/popup描画が使う座標系。canvas外周と独立してcontentのscaleを保つ。
+    pub fn content_viewport(&self) -> Viewport {
+        Viewport {
+            logical: self.content,
+            origin: std::array::from_fn(|i| {
+                self.canvas.origin[i] + f64::from(self.offset[i]) * self.canvas.scale
+            }),
+            ..self.canvas
+        }
+    }
+
     /// 透明余白をNoneにする。SDKが背後panelへrayを配送する保証とは別の契約。
     pub fn logical_at(&self, pixel: [f64; 2]) -> Option<[f64; 2]> {
         let [x, y] = self.canvas.logical_at(pixel[0], pixel[1])?;

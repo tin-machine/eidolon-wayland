@@ -165,6 +165,13 @@ fn cap<I: Resource + 'static>(dh: &DisplayHandle, old: GlobalId, version: u32) -
 
 impl ProtocolState {
     pub fn new(dh: &DisplayHandle, session: SessionId) -> Self {
+        Self::new_with_budget(dh, session, PixelBudget::default())
+    }
+    pub fn new_with_budget(
+        dh: &DisplayHandle,
+        session: SessionId,
+        pixel_budget: PixelBudget,
+    ) -> Self {
         let compositor = CompositorState::new::<Self>(dh);
         let shell = XdgShellState::new::<Self>(dh);
         let shm = ShmState::new::<Self>(dh, []);
@@ -228,7 +235,7 @@ impl ProtocolState {
             next_content: ContentSeq::new(1).ok(),
             surface_meta: HashMap::new(),
             pixels: HashMap::new(),
-            pixel_budget: PixelBudget::default(),
+            pixel_budget,
             pools: PoolBudget::default(),
             pool_leases: HashMap::new(),
             release_queue: HashMap::new(),

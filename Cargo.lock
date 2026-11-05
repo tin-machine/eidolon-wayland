@@ -722,7 +722,9 @@ dependencies = [
 name = "eidolon-render"
 version = "0.1.0"
 dependencies = [
+ "cgmath",
  "eidolon-model",
+ "eidolon-theme",
  "khronos-egl",
  "ndk",
  "serde",

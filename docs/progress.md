@@ -583,3 +583,18 @@ builtinの三重リングは12/18/8秒・逆方向を持ち、focus/負荷通知
 PC55件・launcher20件を実行した。PCの実APKを要する6件はこのtheme checkoutでは未実行で、Build101の61件成功とは別に扱う。
 GLES/SDK/通常UIへの接続とQuest上のリング表示はまだ未実装・未確認。
 後続のTH00〜TH05は[追加設計と残件](design/theme-animation.md)に記録する。Phase 5全体の完了判定は変更しない。
+
+
+## TH00/TH01/TH02: hostの装飾合成・時計・reload worker
+
+2026-11-06。`native/render`へ任意角度のpremultiplied装飾を追加。背景/app/前景の3passで
+装飾Linearと端末Nearestを分け、透明外周・popup clip・無効化後の通常表示を実GPUで検証した。
+Render ownerのwindow別時計はSurface寿命と分離し、二枚の静止appで装飾だけを更新する。
+動きを抑える設定/無効化では静止画像のpresentを止め、appのFrameSeqは変更しない。
+`native/theme::loader`は単一worker/最新要求/世代検査でreloadを準備する。
+詳細と未接続部分は[テーマ設計](design/theme-animation.md)。SDK alpha/ray、runtime import/設定、
+負荷collectorとHMD受入れは未完了。テーマは既定OFFで、通常UIからはまだ有効化できない。
+
+Build102のdebug assemble/lint/APK検査成功。host全suiteはRust130件、PC55件（APKが必要な7件は別実行）、
+launcher20件。Build102を使ったPC62件は全成功し、テーマlicense改変の拒否を含む。
+実GPUは15+21点のreadback成功。QuestはWi-Fi ADB接続不可で未配備、release/実機受入れはこの結果に含めない。

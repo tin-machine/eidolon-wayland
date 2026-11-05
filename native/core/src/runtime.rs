@@ -210,8 +210,11 @@ impl Runtime {
                                         .join("libwaypipe_bin.so"),
                                     &nonce,
                                     mode,
-                                    virtual_clock,
-                                    keyboard_layout,
+                                    crate::session::Options {
+                                        virtual_clock,
+                                        keyboard_layout,
+                                        pixels: gl.pixel_budget(),
+                                    },
                                 )?);
                                 if !virtual_clock {
                                     gl.use_windows();

@@ -70,6 +70,11 @@ pub struct Session {
     published: Vec<WindowId>,
     started: Instant,
 }
+pub struct Options {
+    pub virtual_clock: bool,
+    pub keyboard_layout: eidolon_model::keyboard::KeyboardLayout,
+    pub pixels: eidolon_model::pixels::PixelBudget,
+}
 impl Session {
     pub fn start(
         session: SessionId,
@@ -77,9 +82,13 @@ impl Session {
         executable: &Path,
         nonce: &str,
         mode: AppMode,
-        virtual_clock: bool,
-        keyboard_layout: eidolon_model::keyboard::KeyboardLayout,
+        options: Options,
     ) -> Result<Self, &'static str> {
+        let Options {
+            virtual_clock,
+            keyboard_layout,
+            pixels,
+        } = options;
         if virtual_clock && !cfg!(debug_assertions) {
             return Err("NOT_READY");
         }
@@ -90,7 +99,7 @@ impl Session {
             .set_nonblocking(true)
             .map_err(|_| "LOCAL_SOCKET_FAILED")?;
         let display = Display::<ProtocolState>::new().map_err(|_| "DISPLAY_CREATE")?;
-        let mut protocol = ProtocolState::new(&display.handle(), session);
+        let mut protocol = ProtocolState::new_with_budget(&display.handle(), session, pixels);
         if !virtual_clock {
             protocol.configure_keyboard(keyboard_layout)?;
         }
@@ -692,8 +701,11 @@ mod tests {
             &executable,
             "1122334455667788",
             AppMode::Pattern,
-            true,
-            Default::default(),
+            Options {
+                virtual_clock: true,
+                keyboard_layout: Default::default(),
+                pixels: Default::default(),
+            },
         )
         .unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
