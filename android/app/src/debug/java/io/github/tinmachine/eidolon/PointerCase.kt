@@ -20,10 +20,10 @@ import kotlin.math.abs
 
 /** 専用sourceの合成入力を通常SDK listener→Host→Waypipe→footへ通す。 */
 object PointerCase {
-    fun start(nonce: String, adapter: SpatialPanelAdapter, scene: () -> Scene, complete: () -> Unit) {
+    fun start(nonce: String, adapter: SpatialPanelAdapter, scene: () -> Scene, complete: (JSONObject) -> Unit) {
         Check(nonce, adapter, scene, complete).start()
     }
-    private class Check(val nonce: String, val adapter: SpatialPanelAdapter, val scene: () -> Scene, val complete: () -> Unit) : Runnable {
+    private class Check(val nonce: String, val adapter: SpatialPanelAdapter, val scene: () -> Scene, val complete: (JSONObject) -> Unit) : Runnable {
         val ui = Handler(Looper.getMainLooper())
         val result = JSONObject().put("case", "pointer").put("nonce", nonce).put("result", "running")
             .put("consumer", "SDK").put("synthetic_input", true).put("synthetic_menu", true)
@@ -185,7 +185,7 @@ object PointerCase {
                             check(transport.getString("state")=="Idle" && transport.getJSONArray("pending_cleanup").length()==0)
                             result.put("old_handle",handle.toString()).put("new_handle",current.toString()).put("target",target)
                                 .put("stop",JSONObject(checkNotNull(stopped.get()))).put("restored",state).put("result","pass")
-                            NativeSessionHost.publishCheck(result); complete(); return
+                            complete(result); return
                         }
                     }
                 }
@@ -195,7 +195,7 @@ object PointerCase {
                     .put("failure_site",failure.stackTrace.firstOrNull()?.toString()).put("snapshot",JSONObject(NativeBridge.nativeSnapshot(NativeSessionHost.currentHandle())))
                 try { cleanup() } catch(_: Exception) { result.put("cleanup_failed",true) }
                 val copy=result.toString()
-                NativeSessionHost.withStoppedRuntime({ store -> store.publishCheck(JSONObject(copy)) },complete)
+                NativeSessionHost.withStoppedRuntime({ store -> store.publishCheck(JSONObject(copy)) },{complete(result)})
             }
         }
     }

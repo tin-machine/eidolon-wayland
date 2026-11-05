@@ -108,7 +108,7 @@ display IDは起動ごとに変わるため、23を固定した自動化には�
 5. ユーザーが境界設定を完了し、4色のパネルが見えると確認した。黄色線の動きは個別の回答を得ていないため、確認済みに含めない。
 6. `20261104T230222-399b1db8` でhelper 10回、パネル再生成10回、detach 10回、停止timeout 0回を確認した。rendererはAdreno 740、四隅のRGBAが期待値に一致した。これは短い再生成試験であり、FD・メモリーの長時間安定性の合格ではない。
 
-Guardian無効化や境界の自動承認は行わない。実際の周囲に合わせる設定は装着者が行う。
+当時はGuardian無効化や境界の自動承認を行わず、実際の周囲に合わせる設定を装着者へ依頼した。
 runnerは `am start -W` の無期限に近い待ちに依存せず、起動要求とnonce付きreadinessの期限付き確認を分ける。
 
 ## ビルド中に判明した点
@@ -147,3 +147,19 @@ Smithayは0.7.0、featureはwayland_frontend/desktopのみ。libxkbcommon 1.8.1�
 source hash・license・Meson flagsは [deps.lock.json](../probes/native-deps/deps.lock.json)、構築入口は [build-probe-xkbcommon](../scripts/build-probe-xkbcommon)。
 最小Display、wl_shm global、自己完結した一文字keymapをAPK内で初期化する。
 SHM buffer読み込み・pool truncate時のSIGBUS/ART共存・Smithay GlesRenderer adapterは未実施で、W02/W03/R02の後続gateに残す。
+
+## 2026-11-05の追跡復帰と次回のBoundary対応
+
+装着後に案内が解消し、通常SDKのsurface・pattern・surface-cycle・layout検査が実行できた。
+ユーザーからは作業を継続し、**次にBoundaryが検証を妨げた場合だけ**一時停止を試す許可を得た。
+この許可前の記録を、現在の一律禁止条件として扱わない。
+
+[Meta公式CLI手順](https://developers.meta.com/vr/essentials/metavr-devices-and-apps/)では、
+`metavr device boundary`が状態照会、`--disable`/`--enable`が切替で、対象は`-d`で指定する。
+`--status`の有無は実際の`--help`で確認する。調査時の環境では`metavr`はPATHになく、まだ導入・切替を行っていない。
+
+再発時は前面ActivityとXR状態、元の境界状態を記録し、対象端末だけを一時停止して同じ検査を再試行する。
+終了後に元の状態へ戻して照会する。代替候補の`debug.oculus.guardian_pause`も変更前後を記録する。
+このOSでの代替propertyの有効性は未検証で、事前照会値は空だった。
+passthroughに影響した場合はその条件を結果へ併記し、他の実装・検証を継続する。
+境界を一時停止した成功を、通常境界でのpassthroughやHMD視認の証明へ読み替えない。

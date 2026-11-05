@@ -123,5 +123,21 @@ source digestは`5e06b46227d2ddc36dd5f998ca972bf98bdc9cbb778c69c11ec0ef36dc5f353
 debug/release・lint・packageと実APKのPython58件が成功した。
 検査用foot/Waypipe/producerは残らず、既存Termux bash/sshdは維持できた。
 
-通常SDK検査はGuardianDialogActivityが前面のため`not_run`を維持する。
+Build89の記録時点では通常SDK検査はGuardianDialogActivityが前面のため`not_run`だった。
 native検査はImageReaderと合成Scene/pose ackを使い、通常SDK表示・grab・実Activity再生成の成功には数えない。
+
+## 追跡復帰後の通常SDK結果
+
+装着後に追跡が復帰し、Build93の通常layout `20261105T225627-ed282f6b`が成功した。
+実SDK quadのpose/寸法、ray→固定key、二枚、実Activity再生成と新Sceneへの適用、
+旧Activityの遅い通知の拒否、runtime停止・保存復元、製品設定不変と通常UI復帰を確認した。
+Build94でもnonce `9ba9f28dd6fb398ca3fc550079e089ac`で再確認した。
+背景API適用は確認済みだが、HMDでの背景切替・grab操作と物理入力は未受入れ。
+
+Build97では、前回のapp終了で残ったjournalがある状態から、通常の「ターミナルを開く」経路で再接続した。
+旧実行のreceiptを新SSH接続で照合し、`verified=true`・`reason=EOF`・owner/child不在を確認してからfootを開始できた。
+以前はpending記録があるだけで接続まで拒否し、既存auditへ到達できなかった。
+journalを消したり、保存PIDへsignalを送ったりせずに復旧した結果である。
+
+Build99の通常layout `20261105T235226-94c7d967`は、実Activity再生成・新Scene適用・保存復元・製品設定不変まで連続suite内で成功した。
+背景API適用とHMDでの実際の背景表示は、引き続き別の確認項目である。

@@ -15,7 +15,7 @@ import zipfile
 
 from native_build import ROOT, identity
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
-from quest_checks import popup_clipboard_result, compositor_layer_stats, two_windows_sdk_result, layout_sdk_result, layout_native_result, two_windows_result, resize_result, pointer_result, pointer_wire_result, keyboard_result, keyboard_wire_result, runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result, native_deps_result, shm_result, wayland_state_result, waypipe_result, forwarded_shm_result, render_result, foot_result, foot_sdk_result, ray_result
+from quest_checks import sdk_environment_result, popup_clipboard_result, compositor_layer_stats, two_windows_sdk_result, layout_sdk_result, layout_native_result, two_windows_result, resize_result, pointer_result, pointer_wire_result, keyboard_result, keyboard_wire_result, runtime_result, helper_result, surface_result, credentials_result, ssh_result, product_ssh_result, forward_result, remote_cleanup_result, native_deps_result, shm_result, wayland_state_result, waypipe_result, forwarded_shm_result, render_result, foot_result, foot_sdk_result, ray_result
 
 CASES = ("resize-native", "resize-wire", "pointer-wire", "keyboard-wire", "runtime", "helper", "surface", "pattern", "surface-cycle", "credentials", "ssh", "ssh-product", "forward", "remote-cleanup",
          "native-deps", "shm", "shm-truncate", "wayland-state", "waypipe", "forwarded-shm", "render", "foot", "ray", "keyboard",
@@ -83,6 +83,8 @@ try:
             output = (run / "instrumentation.log").read_text()
             instrument_failed = instrument.returncode != 0 or not re.search(r"^INSTRUMENTATION_CODE: -1\s*$", output, re.M)
         logs = (run / "app.log").read_text()
+        if re.search(r'EidolonSurface.*(?:adapter_failure_|sdk_dispose_failure_|shutdown_pose_failure_)', logs):
+            raise RuntimeError("SDK adapterのlifecycle例外を検出しました")
         if "FATAL EXCEPTION" in logs or "Fatal signal" in logs:
             raise RuntimeError("対象プロセスで致命的エラーが発生しました")
         try:
@@ -99,6 +101,8 @@ try:
         if instrument_failed:
             # 終了codeが失敗でも最終snapshotを保存し、直前のrunning結果を残さない。
             raise RuntimeError("instrumentationが成功codeを返しませんでした")
+        if args.case in {"resize","pointer","keyboard","ray","foot"} and not args.instrumentation:
+            sdk_environment_result(snapshot, nonce, expected, args.case)
         if args.case in {"surface", "pattern", "surface-cycle"}:
             accepted = surface_result(snapshot, nonce, expected, args.case)
         elif args.case == "resize":

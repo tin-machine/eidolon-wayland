@@ -34,9 +34,11 @@ class TwoWindowsSdkTests(unittest.TestCase):
         def judge(value):return two_windows_sdk_result(value,'a'*32,dict(profile='debug'),4242,4343,package)
         self.assertTrue(judge(f))
         for path,value in [(['source_hold_released'],False),(['old_surface_target_rejected'],False),
+                (['two_window_cycles',4,'runtime','app','windows',2,'life'],'AwaitingInitialCommit'),
                 (['two_window_cycles',1,'adapter','bindings'],2),(['two_window_cycles',1,'runtime','render','targets',0,'key','generation'],'2'),
                 (['two_window_cycles',2,'runtime','render','targets',0,'frames'],100),(['two_window_cycles',2,'runtime','app','input','delivered'],8),
                 (['two_window_cycles',3,'runtime','render','targets',0,'key','generation'],'1'),(['two_window_cycles',5,'runtime','app','input','pressed'],0),
+                (['two_window_cycles',5,'runtime','render','targets',1,'content_frame'],'0'),
                 (['two_window_cycles',6,'runtime','app','input','pressed'],1),(['two_window_cycles',7,'runtime','app','input','focus_window'],'2'),
                 (['two_window_cycles',8,'runtime','render','targets',0,'frames'],100),(['cycles',3,'runtime','render','targets',0,'key','generation'],'2')]:
             broken=copy.deepcopy(f);target=broken['check']

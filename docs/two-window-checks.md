@@ -137,4 +137,25 @@ Build93のdebug/release・lint・package、実APKのPython60件が成功した�
 APK SHA256は`77b36df3b01f9f1dc702f25e4112b89c276b06a63e9fbd0ecf069f2538e54bce`。
 source digestは`31ceeffebf0a78f97310b6f12c4bbc934d8f0692a6c5df4c3b74d5fcfbd4b4dd`。
 同版のnative配置保存とUS/JIS wire回帰も成功し、停止後の検査用processは残っていない。
-通常SDKの片側喪失/切替/closeとlayer数は引き続き未受入れで、ここまでの成功とは分けて扱う。
+Build93作成時点では通常SDKの片側喪失/切替/closeとlayer数は未受入れで、ここまでの成功とは分けて扱った。
+
+## 追跡復帰後の通常SDK結果と待機条件の修正
+
+装着による追跡復帰後、Build93のlayout `20261105T225627-ed282f6b`が通常SDKで成功した。
+二枚を保持した時間窓・APK UID/PIDが一致する`LCnt`は5〜6で、layer数も観測できた。
+これはアプリの総layer数であり、Linux windowの数そのものではない。
+
+続くtwo-windows `20261105T225642-37ff3bc1`は端末が成功を報告したが、PCが拒否した。
+`third_hidden`で三枚目の存在だけを待ち、まだ`AwaitingInitialCommit`の時点で記録していたためだった。
+後続stageでMappedになった事実を使って、この失敗を成功へ変更しない。
+SDK側で全windowのMappedを待つよう修正し、PCにも初回commit前を拒否する負例を追加した。
+Build94のnonce `3b058a643ed2f2ff17a7b357e7829702`では10追加stageと5基本stageが端末・PCとも成功した。
+物理controller/keyboardとHMDの受入れは別に残る。
+
+Build97の連続suiteでは実Activity再生成まで成功し、旧Sceneのadapter例外も出なくなった。
+ただしPCは`shift_held`のwindow 2で、新しいwindow frameにSDK content frameが追いついていない記録を拒否した。
+このstageだけは押下数を待ち、他stageと同じgeometry/描画readyを待っていなかった。
+Shift保持の確認と二枚のreadyを両方待つ修正を追加し、PC基準は維持する。
+
+Build99の通常two-windows `20261105T235243-e7ab9a89`は全10追加stage・5基本stageがPCを含め成功した。
+同じ連続suiteのlayoutも成功し、両caseの二枚時間窓でアプリ由来LCnt 5〜6を観測した。

@@ -2,17 +2,17 @@
 
 ゴールはPhase 5（I07）まで。2026-11-04のユーザー指定により、HMD視認と物理入力の受入れは最終段階にまとめる。実装・host検証・ADBによる自動試験を先に進める。手動検証を含むcheck全体は、手動部分が残る間`not_run`とし、自動部分の成功を別に記録する。後続実装は自動部分の成立を根拠に進め、taskの`done`判定は省略しない。
 
-基準source commit: `5692f54bcea0fdff8849260eb5e19b1c5125ac35`。
+各検証のsource commit・source digest・APK SHA256はartifactと下記のBuild別記録を基準とする。
 raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-phase5-implementation/`配下。公開する記録に端末識別子・室内画像・秘密鍵は含めない。
 
 | Task | 状態 | 検証と残件 |
 | --- | --- | --- |
 | B01 | done | Rust 1.95.0固定、model/android workspace、ID/上限、決定的build info、JNI 0.22.4。Rust test 3件・fmt・clippy成功。JNIの実機確認はB02へ分離 |
-| B02 | in_progress | assemble/lint・APK/ELF検査成功。Quest Build 3→4のnative/Kotlin版一致、scene/panel、XR FOCUSEDを自動確認。Rust版変更→復元→APK版変更の4 buildがすべて成功。HMD視認はnot_run |
+| B02 | in_progress | 最新Build99のRust/Kotlin/APK版・ELF検査と通常SDK稼働が成功。HMD視認は最終確認待ち |
 | B03 | done | runtime/JNI/診断と固定caseを実装。ホスト11件・Python10件・debug/release検査、Quest Build 8の10cyclesと停止後late panic・製品復帰に成功 |
 | C01 | done | 9c83853のGitHub Actionsでhost・Android・report全成功。Actions許可、context範囲、SDK manager PATHの切り分けを記録 |
 | H01 | done | 製品runtimeの専用I/O workerからAPK内PIEを実行。host・Questで10echo/明示終了/回収、起動中stop、releaseへのfixture不在を確認 |
-| R01〜R03 | in_progress | 製品SDK Surface/Rust EGL/世代・停止を実装。host・Questの自動部分成功。HMD、実Menu/sleep、UV、外部frameの検査を保留 |
+| R01〜R03 | in_progress | Build99の通常SDK surface10回・pattern・surface-cycle20回が連続成功。HMD色/方向・物理Menu/sleepは最終確認待ち |
 | T01 | done | APK専用Ed25519・Keystore AES-GCM・pin・公開情報pairing。Build21の実機保護検査、pairing冪等性、debug/release検査成功 |
 | T02 | done | APK→Termux認証/exec、pin/別鍵/取消、stderr/timeout/exit、製品Host+GL同時動作とlive停止・復帰を検証 |
 | T03 | done | 1byte/64KiB/8MiB×4、hash/EOF/上限/取消、host反復・Quest3回、配布物hashと所有socket回収 |
@@ -20,14 +20,14 @@ raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-pha
 | W01〜W04 | done | native依存・SHM・window model・APK向けWaypipeを実機検証済み。Build62で通常SDKとの共存・UI復帰も成功 |
 | W05 | done | SSH経由の100frame/hash・実foot受信・Stop回収と通常SDK/UI復帰がBuild62で成功 |
 | D01 | done | owned画像→Smithay/Android EGLの実GPU readbackと、通常SDK上のfoot描画・UI復帰に成功 |
-| D02 | in_progress | 実footの通常SDKパネル描画・世代再生成・Stop後UI復帰に成功。HMD視認と物理入力は未受入 |
-| I01 | in_progress | 共通Viewport・surface候補変換と、SDK四隅/中央のUV校正が成功。実コントローラーとWayland入力配送は後続 |
-| I02 | in_progress | 同梱US/JIS seat・evdev・focus/reset・Android物理入口を実装。Questでwire両layoutと通常Hostの固定合成key→実footセッション/解除/再入力/UI復帰が成功。Bluetooth物理操作は最終待ち |
-| I03 | in_progress | Core region/capture/axis・SDK adapter・focus token・接続取消を実装。Build74で通常SDKの合成pointer操作12stage、wire、key/foot/ray回帰が成功。物理controller/OS Menuの最終確認は残件。詳細はpointer-checks.md |
-| I04 | in_progress | logical request/configure/ack/画像commitとtimeout・client調整を分離。host実client11checkpoint、Build82で実footのresize応答待ち中Surface喪失→再生成→入力・停止が成功。SDK physical寸法計測と通常SDK resizeはトラッキング復帰後、HMDは最終待ち。詳細はresize-checks.md |
-| I05 | in_progress | 表示2/論理8、SDK Entity別binding、追加・個別close・表示切替時の入力解除を実装。Build92でnative二枚73秒・resize回帰、Build93で保存/入力回帰が成功。通常SDKの片側喪失・第三window・切替・closeを同名caseへ追加し、geometry/layer実測は追跡復帰後に検証する。詳細はtwo-window-checks.md |
-| I06 | in_progress | 配置/背景/USJIS保存、編集UIとSDK grabを実装。Build89で実footの保存/再生成/破損復旧・USJIS wireが成功。hostでrename前のwriter実中断も検証。旧Activity通知をScene世代で拒否。通常SDKのgeometry・実Activity再生成はトラッキング復帰後、HMD/物理操作は最終待ち。詳細はworkspace-checks.md |
-| I07 | in_progress | 親内popupのgrab/serial・keyboard focus・外側クリック消費、session内UTF-8 clipboardの1 MiB/5秒制限を実装。Build91のQuestで実clientのclip/focus/親破棄、コピー/上限/不正UTF8/送受信timeout/取消/転送中の所有者消失が成功。通常SDK/UI復帰・HMD/物理操作は最終待ち。詳細はpopup-clipboard-checks.md |
+| D02 | in_progress | Build99の実foot通常SDK描画・Surface再生成・停止後UI復帰が成功。HMD可読性と物理操作は最終確認待ち |
+| I01 | in_progress | Build99で実quad四隅/中央のUV・交点・固定ray入力と回収が成功。診断quadのUI重なりを解消。物理controller確認は残件 |
+| I02 | in_progress | Build99の通常SDK固定key/focus/解除、既存USJIS wire検査が成功。物理キー・記号・repeatとshell/tmux/Neovimは最終確認待ち |
+| I03 | in_progress | Build99の通常SDK pointer操作・focus・解除・UI復帰が成功。実controllerのclick/drag/scrollとOS Menuは最終確認待ち |
+| I04 | in_progress | Build99の通常SDK logical resize・実画像・SDKメートル計測・拡大後入力が成功。設定隔離と入力後の描画待ちを追加。HMD操作は最終確認待ち |
+| I05 | in_progress | Build99でSDK二枚の片側喪失・他方入力/描画・新世代・第三window・表示切替/解除・close・実Activity再生成が連続成功。LCnt観測済み。HMD/物理は残件 |
+| I06 | in_progress | Build99で実SDK pose/寸法・背景API・USJIS・実Activity再生成・保存復元・製品設定不変が成功。旧Scene寿命と再接続auditを修正。背景の光学確認/grabは残件 |
+| I07 | in_progress | Build99の通常SDK共存・popup/限定UTF8 clipboard・通常UI復帰が成功。Coreの5秒FD制限とWaypipe中継の制限を区別。Phase 5共通の手動確認は残件 |
 
 ## B01/B02: ビルドと実機の再現
 
@@ -515,3 +515,33 @@ Androidの一般一時directoryに依存しない匿名FD経路と合わせて�
 Build67で生じたStopとframe送信の競合も修正し、68のfoot回帰が成功した。
 [失敗・切り分け・検査範囲・再現command](keyboard-checks.md)を記録した。
 Rust85test/Clippy/fmtが成功。物理Bluetooth/文字視認は未受入として残し、I03以降へ進む。
+
+## 通常SDKの連続受入検査（Build99）
+
+装着による追跡復帰後、下記11ケースが同じAPKで連続成功した。各caseのnonce付き正本receiptをPCが照合し、通常UI復帰まで確認した。
+
+| case | 検証artifact |
+| --- | --- |
+| surface | `20261105T235159-42baff94` |
+| pattern | `20261105T235209-143b0d8b` |
+| surface-cycle | `20261105T235216-622eaf48` |
+| layout | `20261105T235226-94c7d967` |
+| two-windows | `20261105T235243-e7ab9a89` |
+| resize | `20261105T235302-e853dce0` |
+| pointer | `20261105T235314-2fbaa7b4` |
+| keyboard | `20261105T235326-a60b10c0` |
+| foot | `20261105T235335-2977520f` |
+| ray | `20261105T235342-53a00470` |
+| popup-clipboard | `20261105T235349-b985d67a` |
+
+APK SHA256: `b50a5adffd2faebfcbda7831de276fc428bd9d7dc17fb77e84068b7189a136ec`。
+source digest: `0a2c4030cdafae239ac703a991b0c7a96d0f63e758c13da507cd00f44dd6ea4c`。
+二枚時間窓のアプリ由来LCntはlayout/two-windowsとも観測済み。SDKの実geometryと画像・入力・世代の独立性を確認し、物理操作とは区別する。
+debug/release・lint・package、実APKのPython61件が成功した。Rustは前回成功の108件からsource変更なし。
+終了後に検証用foot/Waypipe/producerが残らないこと、元のTermux bash/sshdを維持したことを確認した。
+設定隔離を使うcaseは、製品設定digest不変と新しい製品runtimeへの復帰もPCで照合した。
+
+自動検証で見つけた早期stage記録、旧SceneのEntity寿命、pending journal時の再接続、診断quadとUIの重なり、中央rayの条件は各検査文書へ記録した。失敗した旧runを成功へ書き換えていない。
+Boundary回避は今回使っていない。次回実際に妨げた時にだけ試す条件と、変更・復元の記録方針は[事前検証記録](native-preflight-20261104.md#2026-11-05の追跡復帰と次回のboundary対応)を参照。
+
+**Phase 5全体はまだ未完了**。残りは[最終実機確認](phase5-manual-acceptance.md)のHMD視認・物理keyboard/controller・Menu/sleep・背景/grabである。task/check全体の状態は、その回答を受けて更新する。

@@ -114,3 +114,24 @@ APK SHA256は`57b313995aef7b435c88d68f9b7bef01041ae7522e08c214ff041b4feb8f2d82`�
 source digestは`4e906e5f0a56bf78b6765447652d2616872d84ef57dd3bcfa5e94dd5d364d6d5`。
 Build82のdebug/release・lint・packageと実APKのPython54testも成功した。
 SDKのphysical寸法計測と通常SDK resize、物理操作を含む最終受入れは残件で、I04完了とはしない。
+
+## 通常SDKで判明した描画待ちと設定保存の問題
+
+追跡復帰後のBuild94 `20261105T230528-a4d847a6`は端末側が成功を報告したが、PCが拒否した。
+入力後のwindow frameは8、SDK側content frameは6で、新しい画像の受領から描画までを待っていなかった。
+float比較の誤差ではなく、検証caseの早期記録が原因だった。
+初回表示・クリック・文字入力後も新しい画像の描画を待ち、PCの描画条件は維持した。
+入力後だけ画像が古い負例も追加した。この失敗記録を後から合格へ読み替えない。
+
+併せて、resizeが製品の配置設定を保存し、次の固定寸法テストへ影響し得ることが分かった。
+resize/pointer/keyboard/foot/rayをnonce別の設定へ隔離し、終了時は製品runtimeへ戻す。
+停止時の設定flush後に元ファイルのdigestを採り、検証後も不変であることと、
+新しい製品runtimeのFOCUSED・診断パネル3frame・remote回収完了を確認してから結果を公開する。
+既存の製品設定を削除して検査を通す方式にはしない。
+
+Build97の通常resize `20261105T233922-858fea09`は、修正後の描画待ち・SDK ray・入力・設定隔離・製品UI復帰まで成功した。
+同版のpointer `20261105T233929-31f4903e`、keyboard `20261105T233936-b48ff363`、
+foot `20261105T233943-122c24ab`も通常SDKで成功した。
+これらの合成操作を物理入力の受入れには数えない。
+
+Build99の通常resize `20261105T235302-e853dce0`でも、描画待ち・SDK geometry・入力・製品設定不変・通常UI復帰が成功した。

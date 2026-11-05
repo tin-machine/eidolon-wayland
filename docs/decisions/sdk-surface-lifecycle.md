@@ -8,7 +8,7 @@ Activityごとに一つの`VideoSurfacePanelRegistration`を持つ。`SpatialPan
 
 callbackの元thread IDを記録してMain Looperへ配送する。Entityと全tuple `(session, window, scene, generation)`を照合する。未知Entity・旧bindingの通知は捨て、作成中の保留は一件・5秒上限。公開APIにないSurface破棄callback・registration解除を仮定しない。
 
-JNIだけが`ANativeWindow`の追加参照を取得し、enqueue拒否時は回収する。Java local ref/JNI envを保存せず、SDK所有Java Surfaceへ`release()`しない。自前破棄の順序は以下。
+JNIだけが`ANativeWindow`の追加参照を取得し、enqueue拒否時は回収する。Java local ref/JNI envを保存せず、SDK所有Java Surfaceへ`release()`しない。同じSDK Scene内で行う自前破棄の順序は以下。
 
 1. 全tuple付き`surface_lost`をenqueue。
 2. GL ownerが描画停止→current解除→自分のEGLSurface/context→追加NativeWindow参照を回収。
@@ -55,3 +55,28 @@ scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case helper
 runnerは導入APK/current source digest/build_info/case/nonce/frame/回収条件/MainActivity復帰を照合する。過去の成功やswap成功をHMD視認と混同しない。
 
 最終Build17でも全5ケースがpass。queue満杯の非表示pauseとGL_CONTEXT_LOST分類のhost検査を含む。FD287〜288、20再生成のheap45,450,392→46,601,672 bytes。描画中製品runtimeの停止・回収8ms。Build17のsource/APK hashとrun名は[進捗](../progress.md)を参照する。
+
+## 連続Activity再生成で見つかったSDK所有物の寿命
+
+Build95の通常layoutの直後にtwo-windowsを実行すると、後者の実Activity再生成で停止した。
+`20261105T232228-ee330bb6`のlogでは、旧SceneのpollがSDK DataModel失効後にEntity.destroyを繰り返し、
+`DataModel.nativeDeleteEntity: Invalid pointer`とadapter例外が発生していた。
+再生成時にはEGLのalready-connected/BAD_ALLOCも記録された。
+単独のBuild94 two-windowsは成功していたため、連続実行の結果を独立に残す。
+
+nativeのdetach ACKまでSDK Entityを保持する順序は、Scene自体の終了をまたげない。
+Build96では`onSpatialShutdown`内でlistener/input/Entityを一度だけ破棄し、SDK DataModelが有効な間に返す。
+それに先立ちnative detachをenqueueする。ACK待ちではSDK objectへ触れず、
+native ownerが自分のEGLと追加ANativeWindow参照を回収するまでbinding情報だけを保持する。
+SDKが所有するJava Surfaceはreleaseしない。Main LooperでGLの完了待ちは行わない。
+同じScene内の通常Surface再生成は、引き続きdetach ACK後にEntityを破棄する。
+旧adapterのmetricsで新Sceneの観測値を上書きしないようにもした。
+
+CLIはSDK adapter例外を検出した時点で失敗を保存し、通常UI復帰の成功扱いや長いtimeoutまでの見逃しを防ぐ。
+修正後はlayout→two-windowsを含む同じ連続SDK suiteで確認する。
+
+Build97ではlayout→two-windowsの両方で実Activity再生成と製品UI復帰まで進み、旧Sceneの例外は出なかった。
+two-windowsのPC描画待ちの不足は別件として記録した。
+また、配置UIを左へ移した後の診断パネルは、左端が手前のUIと重なる位置に残っていた。
+通常ray検査で期待するEntityと異なる交差を検出したため、Build98では診断パネルを正面x=0へ移した。
+実Linux windowの位置を動かしたり、重なったhitを合格にしたりせず、SDK/PC双方の既知geometryを合わせた。

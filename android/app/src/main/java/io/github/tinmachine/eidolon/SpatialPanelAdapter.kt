@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Activity単位のSDK所有者。Java Surfaceをreleaseせず、native detach ack後にEntityを破棄する。 */
+/** Activity単位のSDK所有者。Scene終了時はSDK所有物を返し、native参照の回収を別に待つ。 */
 class SpatialPanelAdapter {
     private val ui = Handler(Looper.getMainLooper())
     private var scene = 0L
@@ -49,7 +49,7 @@ class SpatialPanelAdapter {
         var poseSentAt: Long = 0,
         var physicalRequested: String? = null, var physicalAcked: String? = null,
         var attached: Boolean = false, var retire: Boolean = false, var destroy: Boolean = false,
-        var hidden: Boolean = false,
+        var hidden: Boolean = false, var sdkDisposed: Boolean = false,
         var detachSent: Boolean = false, var replacement: Surface? = null)
 
     val registration = VideoSurfacePanelRegistration(R.id.native_panel,
@@ -75,20 +75,29 @@ class SpatialPanelAdapter {
         ui.post(poll)
     }
     fun close() {
+        if(closed) return
+        closed = true
         bindings.values.forEach { current ->
-            if(current.role=="windows") {
+            runCatching { if(current.role=="windows") {
                 if(current.wasGrabbed || current.editing && current.entity.getComponent<Grabbable>().isGrabbed) {
                     val finalPose=PanelPoseCodec.fromSdk(getAbsoluteTransform(current.entity))
                     current.poseRequest?.let {NativeSessionHost.forgetPose(it)}
                     current.poseRequest=finalPose?.let {NativeSessionHost.submitPose(current.key,it,current.handle)}
                 }
                 cancelGrab(current);current.entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
+            } }.onFailure {event("shutdown_pose_failure_${it.javaClass.simpleName}",current.entity.id)}
+            current.retire=true;current.destroy=true;current.hidden=true
+            if(current.attached && !current.detachSent) {
+                val code=NativeSessionHost.detachSurface(current.key,current.handle)
+                current.detachSent=code==NativeBridge.ACCEPTED
+                event("detach_$code",current.entity.id)
             }
+            // SDKのDataModelはsuper.onSpatialShutdown後に失効する。Entity IDは新Sceneで再利用され得る。
+            // ANativeWindow参照の回収を待つpollから、失効したSDK objectへアクセスしない。
+            disposeSdk(current)
         }
-        closed = true
         runtimeScene = null
         pendingSurfaces.clear(); pendingObjects.clear()
-        bindings.values.forEach { it.retire = true; it.destroy = true }
         event("shutdown")
     }
     fun recreate(): Boolean {
@@ -143,7 +152,7 @@ class SpatialPanelAdapter {
         creating = true
         attempting = plan
         try {
-            val position = if (plan == null) Vector3(-0.8f, 1.4f, 1.6f) else Vector3(plan.optInt("slot",0)*1.3f, 1.4f, 1.5f)
+            val position = if (plan == null) Vector3(0f, 1.4f, 1.6f) else Vector3(plan.optInt("slot",0)*1.3f, 1.4f, 1.5f)
             val entity = Entity.create(listOf(Panel(R.id.native_panel), Transform(Pose(position))))
             if(plan!=null) entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
             val current = if (plan == null) Binding(entity, handle, key()) else
@@ -201,13 +210,22 @@ class SpatialPanelAdapter {
         current.grabSources.values.toList().forEach { (source,state) -> sdk?.onNoIntersectionInput(source,state,0) }
         sdk?.resolveInput();current.grabSources.clear()
     }
-    private fun destroy(current: Binding) {
-        cancelGrab(current)
+    private fun disposeSdk(current: Binding) {
+        if(current.sdkDisposed) return
+        current.sdkDisposed=true
+        fun dispose(action:()->Unit) {runCatching(action).onFailure {event("sdk_dispose_failure_${it.javaClass.simpleName}",current.entity.id)}}
+        dispose {cancelGrab(current)}
         current.poseRequest?.let {NativeSessionHost.forgetPose(it)}
-        current.input?.close(); current.input = null
-        current.listener?.let { current.sceneObject?.removeInputListener(it); listeners--; event("listener_removed", current.entity.id) }
+        dispose {current.input?.close()}; current.input = null
+        current.listener?.let { token ->
+            dispose {current.sceneObject?.removeInputListener(token)}
+            listeners--; event("listener_removed",current.entity.id)
+        }
         current.listener = null; current.sceneObject = null; current.surface = null; current.replacement = null
-        current.entity.destroy(); destroyed++; event("entity_destroyed", current.entity.id)
+        dispose {current.entity.destroy()}; destroyed++; event("entity_destroyed", current.entity.id)
+    }
+    private fun destroy(current: Binding) {
+        disposeSdk(current)
         bindings.remove(current.entity.id)
         current.destroyCommand?.let { NativeSessionHost.ackPanel(it, current.handle) }
     }
@@ -298,7 +316,7 @@ class SpatialPanelAdapter {
                 }
             } else if (!windows && bindings.isEmpty()) create(handle)
         }
-        if (now - lastPublish >= 1000) { NativeSessionHost.publishAdapter(metrics()); lastPublish = now }
+        if (now - lastPublish >= 1000 && scene==NativeSessionHost.currentSceneEpoch()) { NativeSessionHost.publishAdapter(metrics()); lastPublish = now }
     }
     private fun applyBackground(handle: Long, runtime: JSONObject) {
         val workspace=runtime.getJSONObject("workspace");val sdk=runtimeScene ?: return

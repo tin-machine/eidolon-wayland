@@ -130,7 +130,11 @@ object NativeSessionHost {
             } else terminalError="追加できません（$code）"
             return@safely
         }
-        if (transport.getJSONArray("pending_cleanup").length() != 0) { terminalError = "前回の終了を確認してください"; return@safely }
+        // Idle等で残るjournalは、新しいSSH接続のauditで照合する。
+        // 未確認entryの存在だけで接続を拒むと、正常終了済みのreceiptも確認できなくなる。
+        if (transport.getJSONArray("pending_cleanup").length()!=0 && transport.getString("state")=="Ready") {
+            terminalError="前回の終了を確認してください";return@safely
+        }
         val bytes = ByteArray(8).also { java.security.SecureRandom().nextBytes(it) }
         val operation = TerminalOpen(bytes.joinToString("") { "%02x".format(it.toInt() and 255) }, transport.optString("session"))
         terminalError = null

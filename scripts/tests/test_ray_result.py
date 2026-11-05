@@ -16,9 +16,9 @@ class RayTests(unittest.TestCase):
         rows,events=[],[]
         for label,u,v in points:
             uv=[u,1-v]
-            world=[-.8+(u-.5)*1.2,1.4+(.5-v)*.9,1.6]
-            rows.append(dict(label=label,uv=uv,world=world,hit_point=list(world),ray_start=[0,1.4,.2],
-                ray_end=[world[0]*2.3/1.4,1.4+(world[1]-1.4)*2.3/1.4,2.5],entity='4503599627370514'))
+            world=[(u-.5)*1.2,1.4+(.5-v)*.9,1.6]
+            rows.append(dict(label=label,uv=uv,world=world,hit_point=list(world),ray_start=[.3,1.7,.2],
+                ray_end=[.3+(world[0]-.3)*2.3/1.4,1.7+(world[1]-1.7)*2.3/1.4,2.5],entity='4503599627370514'))
             for down in [True,False]:
                 events.append(dict(event='input',target=copy.deepcopy(key),source='4503599627370515',uv=uv,
                     changed=['trigger_right'],state=['trigger_right'] if down else [],callback_thread=100,delivery_thread=100))

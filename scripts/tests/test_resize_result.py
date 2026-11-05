@@ -41,6 +41,9 @@ class ResizeSdkTests(unittest.TestCase):
         for i,field,value in [(3,'configures',5),(5,'copies',5)]:
             bad=copy.deepcopy(snapshot);bad['check']['cycles'][i]['runtime']['app'][field]=value
             with self.subTest(field=field),self.assertRaises(ValueError):resize_result(bad,'a'*32,{},4242,4343,package)
+        bad=copy.deepcopy(snapshot)
+        bad['check']['cycles'][5]['runtime']['render']['targets'][0]['content_frame']='4'
+        with self.assertRaises(ValueError):resize_result(bad,'a'*32,{},4242,4343,package)
         snapshot['check']['cycles'][1]['runtime']['render']['targets'][0]['content_frame']='1'
         with self.assertRaises(ValueError):resize_result(snapshot,'a'*32,{},4242,4343,package)
 

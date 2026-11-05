@@ -113,3 +113,9 @@ reportを照合すると、直接接続はcompleted 2・timeout 2、中継時は
 通常コピー/1 MiB境界/超過/不正UTF-8/送信停止/古offer/所有者消失/取消を照合し、
 client/object/surface/window/画像/pool/active transferを回収してから成功codeを返す。
 子processのstderrと実binary SHA256、全reportは設定済み作業rootの専用runへ保存する。
+
+## 追跡復帰後の通常SDK結果
+
+Build99 `20261105T235349-b985d67a`で、実clientのpopup/clipboard固定検査二回と、通常SDKとの共存・検査後の製品UI復帰が成功した。
+11ケースの連続suiteの最後に実行し、検証用processが残っていないことも確認した。
+これはGUIアプリ全般のpopup互換性や、物理copy/paste操作の成功を主張するものではない。

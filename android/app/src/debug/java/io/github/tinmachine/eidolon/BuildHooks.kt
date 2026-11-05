@@ -41,11 +41,15 @@ object BuildHooks {
         consumedNonces.addLast(nonce)
         running = true
         if (name in setOf("layout","two-windows")) LayoutSdkCase.start(nonce,context,adapter,scene,recreate,name) {running=false}
-        else if (name == "resize") ResizeCase.start(nonce,adapter,scene) { running=false }
-        else if (name == "pointer") PointerCase.start(nonce, adapter, scene) { running = false }
-        else if (name == "keyboard") KeyboardCase.start(nonce, adapter) { running = false }
-        else if (name == "ray") RayCase.start(nonce, adapter, scene) { running = false }
-        else if (name == "foot") FootSdkCase.start(nonce, adapter) { running = false }
+        else if(name in setOf("resize","pointer","keyboard","ray","foot")) SdkCaseEnvironment.start(name,nonce,context,{ done ->
+            when(name) {
+                "resize" -> ResizeCase.start(nonce,adapter,scene,done)
+                "pointer" -> PointerCase.start(nonce,adapter,scene,done)
+                "keyboard" -> KeyboardCase.start(nonce,adapter,done)
+                "ray" -> RayCase.start(nonce,adapter,scene,done)
+                "foot" -> FootSdkCase.start(nonce,adapter,done)
+            }
+        }) {running=false}
         else if (name == "ssh-product") ProductSshCase.start(nonce) { running = false }
         else Case(name, nonce, adapter).start()
     }

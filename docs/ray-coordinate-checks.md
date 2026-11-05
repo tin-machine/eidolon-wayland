@@ -28,7 +28,7 @@ layoutを含む全modelは14test。`--suite all`ではinputをmodelの内訳と�
 世代変更で古いcaptureを破棄し、遅延handoffもcaptureの同一性を照合する。
 通常の入力は記録しない。debug検査が作成した専用source Entityだけを限定採取する。
 ButtonBitsのSDK定数からsymbolicなchanged/stateを作り、magic numberを使わない。
-現時点ではWayland配送を接続していないため、listenerは入力を消費しない。
+I01実装時点ではWayland配送を接続せずlistenerは入力を消費しなかった。現在の製品配送はI03で接続済み。
 
 `RayCase`は診断quadの四隅(.01/.99)と中央(.5/.5)に対して実SDKの
 `Scene.lineSegmentIntersect`を呼び、Entity、UV、`HitInfo.point`、segmentの始点/終点を保存する。
@@ -92,3 +92,19 @@ scripts/quest-check --serial QUEST_SERIAL --case ray
 通常UI/SDKの診断quadが対象で、`--instrumentation`は使わない。
 caseとnonceだけを受け取り、任意ray座標や入力本文をADB intentから受け付けない。
 生ログ・snapshot・再開メモは作業rootの`eidolon-phase5-implementation/`に保存する。
+
+## 配置UI追加後の連続回帰
+
+Build97のray検査は、操作UIを左へ移した後も診断quadがx=-0.8に残り、
+手前のUIと左端が重なる配置で別Entityへの交差を検出した。
+Build98で診断quadをx=0へ移すと四隅の交差は成功したが、
+中央は始点もx=0/y=1.4のため垂直segmentになり、再びnullでtimeoutした
+（`20261105T234800-12b2ea1c`、`perpendicular_center_hit=false`）。
+既存の斜めsegment方式を使う際、パネル移動後も中央が斜めになるよう始点の補正が必要だった。
+
+Build99では始点を(0.3,1.7,0.2)へ置き、同じ既知world交点を通る終点を計算する。
+四隅・中央の五点を残し、PCも始点/終点/交点/UV/Entityを照合する。
+垂直segmentの結果は別に保存し、SDK内部の原因は断定しない。
+
+Build99 `20261105T235342-53a00470`は四隅と中央の実交差・UV・world point・press/up・stop・回収・通常UI復帰が成功した。
+中央を省略せず、PCの座標許容幅も維持した。物理controllerでの操作は最終確認待ち。

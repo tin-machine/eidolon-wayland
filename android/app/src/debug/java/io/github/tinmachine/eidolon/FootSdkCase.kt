@@ -9,8 +9,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 /** 通常Host/SDK可視性だけを使う。ImageReader・synthetic visibilityの結果で代用しない。 */
 object FootSdkCase {
-    fun start(nonce: String, adapter: SpatialPanelAdapter, complete: () -> Unit) { Check(nonce, adapter, complete).start() }
-    private class Check(val nonce: String, val adapter: SpatialPanelAdapter, val complete: () -> Unit) : Runnable {
+    fun start(nonce: String, adapter: SpatialPanelAdapter, complete: (JSONObject) -> Unit) { Check(nonce, adapter, complete).start() }
+    private class Check(val nonce: String, val adapter: SpatialPanelAdapter, val complete: (JSONObject) -> Unit) : Runnable {
         val ui = Handler(Looper.getMainLooper())
         val result = JSONObject().put("case", "foot").put("nonce", nonce).put("result", "running")
             .put("consumer", "SDK").put("synthetic_visibility", false).put("product_host_path", true).put("hmd_verified", false)
@@ -79,7 +79,7 @@ object FootSdkCase {
                             check(target.getBoolean("readback"))
                             result.put("old_handle", handle.toString()).put("new_handle", current.toString())
                                 .put("stop", JSONObject(checkNotNull(stop.get()))).put("restored", runtime).put("result", "pass")
-                            NativeSessionHost.publishCheck(result); complete(); return
+                            complete(result); return
                         }
                     }
                 }
@@ -90,7 +90,7 @@ object FootSdkCase {
                 val current = NativeSessionHost.currentHandle()
                 if (current > 0) result.put("snapshot", JSONObject(NativeBridge.nativeSnapshot(current)))
                 val copy = result.toString()
-                NativeSessionHost.withStoppedRuntime({ store -> store.publishCheck(JSONObject(copy)) }, complete)
+                NativeSessionHost.withStoppedRuntime({ store -> store.publishCheck(JSONObject(copy)) }, {complete(result)})
             }
         }
     }

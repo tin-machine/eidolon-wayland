@@ -13,8 +13,8 @@ import java.util.concurrent.atomic.AtomicReference
 object KeyboardCase {
     private val lateCompletion = AtomicReference<String?>(null)
     fun commandComplete(request: String, code: String) { if (request=="9000001") lateCompletion.set(code) }
-    fun start(nonce: String, adapter: SpatialPanelAdapter, complete: () -> Unit) { lateCompletion.set(null); Check(nonce, adapter, complete).start() }
-    private class Check(val nonce: String, val adapter: SpatialPanelAdapter, val complete: () -> Unit) : Runnable {
+    fun start(nonce: String, adapter: SpatialPanelAdapter, complete: (JSONObject) -> Unit) { lateCompletion.set(null); Check(nonce, adapter, complete).start() }
+    private class Check(val nonce: String, val adapter: SpatialPanelAdapter, val complete: (JSONObject) -> Unit) : Runnable {
         val ui = Handler(Looper.getMainLooper())
         val result = JSONObject().put("case", "keyboard").put("nonce", nonce).put("result", "running")
             .put("consumer", "SDK").put("synthetic_input", true).put("synthetic_visibility", false)
@@ -115,7 +115,7 @@ object KeyboardCase {
                             check(state.getJSONObject("transport").getJSONArray("pending_cleanup").length()==0)
                             result.put("old_handle",handle.toString()).put("new_handle",current.toString()).put("target",target)
                                 .put("stop",JSONObject(checkNotNull(stop.get()))).put("restored",state).put("result","pass")
-                            NativeSessionHost.publishCheck(result); complete(); return
+                            complete(result); return
                         }
                     }
                 }
@@ -124,7 +124,7 @@ object KeyboardCase {
                 result.put("result","fail").put("stage",stage).put("failure_class",failure.javaClass.simpleName)
                     .put("failure_site",failure.stackTrace.firstOrNull()?.toString()).put("snapshot",JSONObject(NativeBridge.nativeSnapshot(NativeSessionHost.currentHandle())))
                 val copy=result.toString()
-                NativeSessionHost.withStoppedRuntime({ store -> store.publishCheck(JSONObject(copy)) },complete)
+                NativeSessionHost.withStoppedRuntime({ store -> store.publishCheck(JSONObject(copy)) },{complete(result)})
             }
         }
     }

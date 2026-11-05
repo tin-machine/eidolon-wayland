@@ -16,8 +16,8 @@ import kotlin.math.abs
 
 /** 通常Hostのlogical resize/SDK physical sizeと、その後の固定入力を検査する。 */
 object ResizeCase {
-    fun start(nonce:String,adapter:SpatialPanelAdapter,scene:()->Scene,complete:()->Unit) { Check(nonce,adapter,scene,complete).start() }
-    private class Check(val nonce:String,val adapter:SpatialPanelAdapter,val scene:()->Scene,val complete:()->Unit):Runnable {
+    fun start(nonce:String,adapter:SpatialPanelAdapter,scene:()->Scene,complete:(JSONObject)->Unit) { Check(nonce,adapter,scene,complete).start() }
+    private class Check(val nonce:String,val adapter:SpatialPanelAdapter,val scene:()->Scene,val complete:(JSONObject)->Unit):Runnable {
         val ui=Handler(Looper.getMainLooper())
         val result=JSONObject().put("case","resize").put("nonce",nonce).put("result","running").put("consumer","SDK")
             .put("product_host_path",true).put("synthetic_input",true).put("synthetic_visibility",false)
@@ -45,13 +45,14 @@ object ResizeCase {
                     val windows=app?.optJSONArray("windows"); val window=if(windows?.length()==1) windows.getJSONObject(0) else null
                     val resize=window?.optJSONObject("resize"); val sizing=window?.optJSONObject("sizing")
                     val targets=state.getJSONObject("render").getJSONArray("targets");val rendered=if(targets.length()==1) targets.getJSONObject(0) else null
+                    fun renderedLatest():Boolean = rendered?.optString("content_frame")?.toLongOrNull()?.let { it>=checkNotNull(window).getString("frame").toLong() }==true
                     fun applied(w:Int,h:Int):Boolean = resize?.optString("phase")=="applied" && resize.getJSONObject("committed_size").getInt("width")==w && resize.getJSONObject("committed_size").getInt("height")==h &&
                         rendered?.optString("content_frame")?.toLongOrNull()?.let { it>=checkNotNull(window).getString("frame").toLong() }==true
                     when(stage) {
                         "ready" -> if(state.getString("state")=="Ready" && focused) {
                             check(state.getJSONObject("transport").getString("state")=="Idle");handle=current;NativeSessionHost.openTerminal();stage="display"
                         }
-                        "display" -> if(focused && rendered?.optString("role")=="windows" && rendered.getLong("frames")>=3 && sizing?.optJSONObject("applied_physical_size_m")!=null) {
+                        "display" -> if(focused && rendered?.optString("role")=="windows" && rendered.getLong("frames")>=3 && sizing?.optJSONObject("applied_physical_size_m")!=null && renderedLatest()) {
                             target=checkNotNull(adapter.currentKey());check(NativeSessionHost.inputTarget(target.toString())!=null)
                             record("before",state);NativeSessionHost.resizeTerminal(800,500);stage="small"
                         }
@@ -77,12 +78,12 @@ object ResizeCase {
                             scene().onInput(hit,checkNotNull(source),ButtonBits.ButtonTriggerR,ButtonBits.ButtonTriggerR)
                             scene().onInput(hit,checkNotNull(source),ButtonBits.ButtonTriggerR,0);stage="clicked"
                         }
-                        "clicked" -> if(focused && NativeSessionHost.keyboardFocused() && app?.getJSONObject("input")?.getJSONObject("pointer")?.getLong("buttons")==buttons+2) {
+                        "clicked" -> if(focused && renderedLatest() && NativeSessionHost.keyboardFocused() && app?.getJSONObject("input")?.getJSONObject("pointer")?.getLong("buttons")==buttons+2) {
                             record("clicked",state);keys=app.getJSONObject("input").getLong("delivered");copies=app.getLong("copies")
                             key(KeyEvent.ACTION_DOWN,KeyEvent.KEYCODE_A,30);key(KeyEvent.ACTION_UP,KeyEvent.KEYCODE_A,30)
                             key(KeyEvent.ACTION_DOWN,KeyEvent.KEYCODE_DEL,14);key(KeyEvent.ACTION_UP,KeyEvent.KEYCODE_DEL,14);stage="typed"
                         }
-                        "typed" -> if(focused && app?.getJSONObject("input")?.getLong("delivered")==keys+4 && app.getLong("copies")>copies) {
+                        "typed" -> if(focused && renderedLatest() && app?.getJSONObject("input")?.getLong("delivered")==keys+4 && app.getLong("copies")>copies) {
                             check(app.getJSONObject("input").getInt("pressed")==0);record("typed",state);cleanup();stage="restore";deadline=SystemClock.elapsedRealtime()+20000
                             val started=SystemClock.elapsedRealtime();val copy=result.toString()
                             NativeSessionHost.withStoppedRuntime({ store ->
@@ -95,7 +96,7 @@ object ResizeCase {
                             check(state.getJSONObject("transport").getString("state")=="Idle" && state.getJSONObject("transport").getJSONArray("pending_cleanup").length()==0)
                             result.put("target",target).put("old_handle",handle.toString()).put("new_handle",current.toString()).put("restored",state)
                                 .put("stop",JSONObject(checkNotNull(stop.get()))).put("result","pass")
-                            NativeSessionHost.publishCheck(result);complete();return
+                            complete(result);return
                         }
                     }
                 }
@@ -104,7 +105,7 @@ object ResizeCase {
                 result.put("result","fail").put("stage",stage).put("failure_class",failure.javaClass.simpleName)
                     .put("failure_site",failure.stackTrace.firstOrNull()?.toString()).put("snapshot",JSONObject(NativeBridge.nativeSnapshot(NativeSessionHost.currentHandle())))
                 try { cleanup() } catch(_:Exception) { result.put("cleanup_failed",true) }
-                val copy=result.toString();NativeSessionHost.withStoppedRuntime({store->store.publishCheck(JSONObject(copy))},complete)
+                val copy=result.toString();NativeSessionHost.withStoppedRuntime({store->store.publishCheck(JSONObject(copy))},{complete(result)})
             }
         }
     }

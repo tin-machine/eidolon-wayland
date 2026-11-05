@@ -200,6 +200,28 @@ def keyboard_result(snapshot, nonce, expected, uid, termux_uid, package):
     return True
 
 
+def sdk_environment_result(snapshot, nonce, expected, case):
+    """固定SDK caseは設定隔離と本番runtime復帰まで証明してから受理する。"""
+    if snapshot.get('schema') != 1 or snapshot.get('build_info') != expected: return False
+    proof = snapshot.get('check', {})
+    if proof.get('case') != case or proof.get('nonce') != nonce: return False
+    if proof.get('result') == 'fail': raise ValueError('SDK検査または製品設定の復帰に失敗しました')
+    if proof.get('result') != 'pass': return False
+    env = proof.get('preferences_environment', {})
+    fields = ['original_handle', 'fixture_handle', 'last_handle', 'product_handle']
+    if (any(not isinstance(env.get(k), str) or not re.fullmatch('[1-9][0-9]*', env[k]) or int(env[k]) > 2**63-1 for k in fields)
+            or not int(env['original_handle']) < int(env['fixture_handle']) <= int(env['last_handle']) < int(env['product_handle'])):
+        raise ValueError('SDK検査の設定隔離runtime世代が不正です')
+    state = proof.get('product_restored', {})
+    panels = state.get('render', {}).get('targets', [])
+    if (proof.get('product_settings_untouched') is not True or state.get('state') != 'Ready'
+            or state.get('activity_visible') is not True or state.get('xr_state') != 'FOCUSED'
+            or state.get('transport', {}).get('state') != 'Idle' or state.get('transport', {}).get('pending_cleanup') != []
+            or len(panels) != 1 or panels[0].get('role') != 'diagnostic' or panels[0].get('frames', 0) < 3):
+        raise ValueError('SDK検査後の製品設定・通常UI復帰が不正です')
+    return True
+
+
 def resize_result(snapshot, nonce, expected, uid, termux_uid, package):
     if snapshot.get('schema')!=1 or snapshot.get('build_info')!=expected: return False
     result=snapshot.get('check',{})
@@ -450,9 +472,9 @@ def ray_result(snapshot, nonce, expected):
         hit, start, end = (row.get(k,[]) for k in ('hit_point','ray_start','ray_end'))
         if (row.get('label') != label or len(uv) != 2 or len(world) != 3
                 or not near(uv[0],u) or not near(uv[1],v if origin=='top_left' else 1-v)
-                or not near(world[0],-.8+(u-.5)*1.2,1e-4) or not near(world[1],1.4+(.5-v)*.9,1e-4) or not near(world[2],1.6,1e-4)
+                or not near(world[0],(u-.5)*1.2,1e-4) or not near(world[1],1.4+(.5-v)*.9,1e-4) or not near(world[2],1.6,1e-4)
                 or len(hit) != 3 or any(not near(hit[axis],world[axis],1e-4) for axis in range(3))
-                or len(start) != 3 or any(not near(start[axis],[0,1.4,.2][axis],1e-4) for axis in range(3))
+                or len(start) != 3 or any(not near(start[axis],[.3,1.7,.2][axis],1e-4) for axis in range(3))
                 or len(end) != 3 or not near(end[2],2.5,1e-4)
                 or any(not near(start[axis]+(end[axis]-start[axis])*(1.6-.2)/(2.5-.2),world[axis],1e-4) for axis in range(2))
                 or not isinstance(row.get('entity'),str) or not re.fullmatch(r'[1-9][0-9]*',row['entity'])

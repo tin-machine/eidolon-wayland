@@ -52,7 +52,7 @@ object LayoutSdkCase {
             val app=s.optJSONObject("app") ?: return false
             if(app.optString("state")!="running" || !app.isNull("error") || app.optString("mode")!="foot") return false
             val targets=items(s.getJSONObject("render").getJSONArray("targets"));val plans=items(s.getJSONArray("panels")).filterNot {BuildHooks.holdPanelCreation(it.getJSONObject("target").getString("window"))};val ws=s.getJSONObject("workspace")
-            if(windows(s).size!=windowCount || targets.size!=count || plans.size!=count || adapter.metrics().getInt("bindings")!=count || adapter.metrics().getInt("listeners")!=count) return false
+            if(windows(s).size!=windowCount || windows(s).any {it.optString("life")!="Mapped"} || targets.size!=count || plans.size!=count || adapter.metrics().getInt("bindings")!=count || adapter.metrics().getInt("listeners")!=count) return false
             return targets.all {t ->
                 val plan=plans.firstOrNull {same(it.getJSONObject("target"),t.getJSONObject("key"))}
                 val window=windows(s).firstOrNull {it.getString("window")==t.getJSONObject("key").getString("window")}
@@ -170,7 +170,7 @@ object LayoutSdkCase {
                         "pair_shift" -> if(focused && focusReady(s)) {
                             val now=SystemClock.uptimeMillis();check(NativeSessionHost.sendPhysicalKey(KeyEvent(now,now,KeyEvent.ACTION_DOWN,KeyEvent.KEYCODE_SHIFT_LEFT,0,0,Int.MAX_VALUE-13,42,0,InputDevice.SOURCE_KEYBOARD)));stage="pair_shift_held"
                         }
-                        "pair_shift_held" -> if(focused && s.getJSONObject("app").getJSONObject("input").getInt("pressed")==1) {
+                        "pair_shift_held" -> if(focused && ready(s,2,3) && s.getJSONObject("app").getJSONObject("input").getInt("pressed")==1) {
                             pairRecord("shift_held",s);result.put("shift_held_before_switch",true);NativeSessionHost.showWindow(choice(s,third),1);stage="pair_switched"
                         }
                         "pair_switched" -> if(focused && ready(s,2,3) && adapter.windowEntity(third)!=null && adapter.windowEntity(second)==null && s.getJSONObject("app").getJSONObject("input").getInt("pressed")==0) {

@@ -15,10 +15,10 @@ import kotlin.math.abs
 
 /** 実SDKのquad交差とlistenerを合成ray/専用source Entityで検査する。物理操作の代用とはしない。 */
 object RayCase {
-    fun start(nonce: String, adapter: SpatialPanelAdapter, scene: () -> Scene, complete: () -> Unit) {
+    fun start(nonce: String, adapter: SpatialPanelAdapter, scene: () -> Scene, complete: (JSONObject) -> Unit) {
         Check(nonce,adapter,scene,complete).start()
     }
-    private class Check(val nonce:String,val adapter:SpatialPanelAdapter,val scene:()->Scene,val complete:()->Unit) : Runnable {
+    private class Check(val nonce:String,val adapter:SpatialPanelAdapter,val scene:()->Scene,val complete:(JSONObject)->Unit) : Runnable {
         val ui=Handler(Looper.getMainLooper())
         val result=JSONObject().put("case","ray").put("nonce",nonce).put("result","running")
             .put("synthetic_input",true).put("synthetic_visibility",false).put("physical_input_verified",false)
@@ -60,13 +60,13 @@ object RayCase {
                                 stage="inputs"
                             } else {
                                 val (label,u,v)=points[rows.length()]
-                                val x=(-0.8+(u-0.5)*1.2).toFloat()
+                                val x=((u-0.5)*1.2).toFloat()
                                 val y=(1.4+(0.5-v)*0.9).toFloat()
                                 if (label=="center") result.put("perpendicular_center_hit",scene().lineSegmentIntersect(Vector3(x,y,0.2f),Vector3(x,y,2.5f))!=null)
                                 // 既知のpanel上の同じ点を、視点側からの斜めのsegmentで狙う。
                                 val factor=(2.5f-0.2f)/(1.6f-0.2f)
-                                val from=Vector3(0f,1.4f,0.2f)
-                                val to=Vector3(x*factor,1.4f+(y-1.4f)*factor,2.5f)
+                                val from=Vector3(.3f,1.7f,0.2f)
+                                val to=Vector3(.3f+(x-.3f)*factor,1.7f+(y-1.7f)*factor,2.5f)
                                 val hit=scene().lineSegmentIntersect(from,to)
                                 if (hit==null) { ui.postDelayed(this,32); return }
                                 val hitEntity=checkNotNull(hit.entity)
@@ -119,7 +119,7 @@ object RayCase {
                             val renderedKey=target.getJSONObject("key")
                             check(listOf("session","window","scene","generation").all { renderedKey.getString(it)==checkNotNull(key).getString(it) })
                             result.put("after",snapshot).put("result","pass")
-                            NativeSessionHost.publishCheck(result); complete(); return
+                            complete(result); return
                         }
                     }
                 }
@@ -130,7 +130,7 @@ object RayCase {
                 val current=NativeSessionHost.currentHandle()
                 if(current>0) result.put("snapshot",JSONObject(NativeBridge.nativeSnapshot(current)))
                 try { cleanup() } catch(_:Exception) { result.put("cleanup_failed",true) }
-                NativeSessionHost.publishCheck(result); complete()
+                complete(result)
             }
         }
         private fun cleanup() {
