@@ -47,7 +47,7 @@ object LifecycleSdkCase {
                 .put("forward_active",transport.getJSONObject("forward").getInt("active"))
                 .put("app_forward",transport.optJSONObject("app_forward")?.let {pick(it,"uid","remote_cleaned","forward_cancelled","pending_cleanup","nonce")})
             return pick(s,"state","helper_workers","dependency_workers","compositor_workers","shutdown")
-                .put("app",compactApp).put("transport",compactTransport).put("render",pick(render,"mode","workers","contexts","latest_images","error")
+                .put("app",compactApp).put("transport",compactTransport).put("render",pick(render,"mode","workers","owner_tid","executor","contexts","latest_images","error")
                     .put("targets",JSONArray(items(render.getJSONArray("targets")).map {pick(it,"key","role","frames","content_frame")})))
         }
         fun resources(s:JSONObject):JSONObject = nativeResources(s)
@@ -56,6 +56,7 @@ object LifecycleSdkCase {
                     .put("bindings",adapter.metrics().getInt("bindings")).put("listeners",adapter.metrics().getInt("listeners"))
                     .put("decoration_entities",adapter.metrics().getInt("decoration_entities")))
                 .put("fds",File("/proc/self/fd").list()?.size ?: -1)
+                .put("gpu_fds",GpuFdProbe.snapshot().getJSONArray("gpu"))
         fun open(next:String) {
             NativeSessionHost.openTerminal();NativeSessionHost.openTerminal()
             stage=next;deadline=SystemClock.elapsedRealtime()+60000

@@ -727,6 +727,7 @@ dependencies = [
  "eidolon-model",
  "eidolon-theme",
  "khronos-egl",
+ "libc",
  "ndk",
  "serde",
  "serde_json",

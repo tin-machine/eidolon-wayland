@@ -95,6 +95,7 @@ impl Target {
                 1 => return Err("SURFACE_LOST"),
                 2 => return Err("EGL_CONTEXT_LOST"),
                 3 => return Err("COMPOSITE_MISMATCH"),
+                4 => panic!("injected GPU owner panic"),
                 _ => (),
             }
         }

@@ -11,6 +11,9 @@ from lifecycle_checks import stop_result
 class LifecycleResultTests(unittest.TestCase):
     def fixture(self):
         sha = 'b'*64
+        def executor(active, completed=1):
+            return dict(tid=88, threads=1, active_jobs=active, completed_jobs=completed, failed=False)
+        gpu = [dict(tid=88, fd=30, alive=True)]
         def live(handle, session):
             key = dict(session=str(session), window='1', scene='1', generation='1')
             return dict(state='Ready', handle=str(handle), session=str(session),
@@ -18,7 +21,8 @@ class LifecycleResultTests(unittest.TestCase):
                     local=dict(uid=4242, child_uid=4242, owned_groups=1, executable_sha256=sha),
                     windows=[dict(window='1', frame='9', life='Mapped')]),
                 transport=dict(state='Ready', session=str(session), owned_connections=1, app_forward=dict(uid=4343)),
-                render=dict(targets=[dict(key=key, role='windows', frames=3, content_frame='9')]),
+                fds=200, gpu_fds=gpu,
+                render=dict(owner_tid=88, executor=executor(1), targets=[dict(key=key, role='windows', frames=3, content_frame='9')]),
                 adapter=dict(bindings=1, listeners=1), shutdown=dict(sdk_bindings=1))
         def stopped(handle, session, full):
             return dict(state='Stopped' if full else 'Ready', handle=str(handle), session=str(session),
@@ -29,7 +33,8 @@ class LifecycleResultTests(unittest.TestCase):
                 transport=dict(state='Stopped' if full else 'Disconnected', session=str(session), error=None,
                     owned_connections=0, forward_active=0, tokio_threads=0, workers=0 if full else 1,
                     pending_cleanup=[], app_forward=dict(uid=4343, remote_cleaned=True, forward_cancelled=True, pending_cleanup=[])),
-                render=dict(targets=[], workers=0 if full else 1, contexts=0, latest_images=0),
+                fds=200, gpu_fds=gpu,
+                render=dict(owner_tid=88, executor=executor(0 if full else 1, handle), targets=[], workers=0 if full else 1, contexts=0, latest_images=0),
                 adapter=dict(bindings=0, listeners=0, decoration_entities=0),
                 shutdown=dict(requested=full, complete=full, timed_out=False, pending_owners=[], sdk_bindings=0,
                     deadline_ms=10000, elapsed_ms=20))
@@ -39,8 +44,8 @@ class LifecycleResultTests(unittest.TestCase):
             rows.append(dict(cycle=i+1, before_disconnect=live(handle, session), before_stop=live(handle, session+1),
                 after_disconnect=stopped(handle, session, False), disconnect_ms=20, old_handle_rejected=True,
                 stop=dict(handle=str(handle), accept_ms=1, stop_ms=20, runtime=stopped(handle, session+1, True)),
-                after_restart=dict(state='Ready', handle=str(handle+1), transport=dict(state='Idle', pending_cleanup=[]),
-                    render=dict(targets=[dict(role='diagnostic', frames=3)]), adapter=dict(bindings=1, listeners=1))))
+                after_restart=dict(state='Ready', handle=str(handle+1), transport=dict(state='Idle', pending_cleanup=[]), fds=200, gpu_fds=gpu,
+                    render=dict(owner_tid=88, executor=executor(1), targets=[dict(role='diagnostic', frames=3)]), adapter=dict(bindings=1, listeners=1))))
         proof=dict(case='stop', nonce='a'*32, result='pass', uid=4242, pid=1234, consumer='SDK',
             synthetic_visibility=False, physical_input_verified=False, hmd_verified=False,
             product_settings_untouched=True, cycles=rows,
@@ -69,6 +74,13 @@ class LifecycleResultTests(unittest.TestCase):
             (['cycles', 0, 'stop', 'runtime', 'render', 'contexts'], 1),
             (['cycles', 0, 'old_handle_rejected'], False),
             (['cycles', 0, 'after_restart', 'handle'], '2'),
+            (['cycles', 0, 'after_restart', 'render', 'owner_tid'], 99),
+            (['cycles', 0, 'stop', 'runtime', 'render', 'executor', 'active_jobs'], 1),
+            (['cycles', 0, 'stop', 'runtime', 'render', 'executor', 'threads'], 2),
+            (['cycles', 1, 'stop', 'runtime', 'render', 'executor', 'completed_jobs'], 2),
+            (['cycles', 0, 'after_disconnect', 'gpu_fds'], [dict(tid=88, fd=30, alive=False)]),
+            (['cycles', 0, 'after_disconnect', 'gpu_fds'], None),
+            (['cycles', 19, 'after_disconnect', 'fds'], 218),
         ]
         for path, value in paths:
             bad=copy.deepcopy(valid); target=bad['check']

@@ -76,6 +76,9 @@ def stop_result(snapshot, nonce, expected, uid, termux_uid, package):
     require(len(rows) == 20, '停止反復は20回必要です')
     previous_session = 0
     previous_handle = identifier(proof['preferences_environment']['fixture_handle'])
+    owner_tid = None
+    completed_jobs = None
+    disconnected_fds = []
     for i, row in enumerate(rows):
         require(row.get('cycle') == i+1 and row.get('old_handle_rejected') is True, '反復/旧handle拒否が不正です')
         before, reopened = row.get('before_disconnect', {}), row.get('before_stop', {})
@@ -113,5 +116,30 @@ def stop_result(snapshot, nonce, expected, uid, termux_uid, package):
                 and restored.get('adapter', {}).get('bindings') == 1 and restored['adapter'].get('listeners') == 1,
                 '新しい通常SDK表示を確認できません')
         previous_handle = next_handle
+        for state, active in [(before, 1), (reopened, 1), (disconnected, 1), (stopped, 0), (restored, 1)]:
+            render = state.get('render', {})
+            executor = render.get('executor') or {}
+            tid = render.get('owner_tid')
+            require(number(tid, 1) and executor.get('tid') == tid and executor.get('threads') == 1
+                    and executor.get('active_jobs') == active and executor.get('failed') is False,
+                    'GL executorの寿命・leaseが未確認です')
+            if owner_tid is None:
+                owner_tid = tid
+            require(tid == owner_tid, '停止/再起動でGL threadを作り直しています')
+        jobs = stopped['render']['executor'].get('completed_jobs')
+        require(number(jobs, 1) and (completed_jobs is None or jobs == completed_jobs + 1),
+                'GL jobの回収が反復と一致しません')
+        completed_jobs = jobs
+        for state in [before, reopened, disconnected, restored]:
+            gpu = state.get('gpu_fds')
+            require(isinstance(gpu, list) and all(number(x.get('fd')) and number(x.get('tid'), 1)
+                    and type(x.get('alive')) is bool for x in gpu), 'GPU FDの内訳が未採取です')
+            own = [x for x in gpu if x['tid'] == owner_tid]
+            require(len(own) <= 1 and all(x['alive'] for x in own), '再利用GL threadのGPU FDが不正です')
+        require(number(disconnected.get('fds'), 1), '切断後FDが未採取です')
+        disconnected_fds.append(disconnected['fds'])
+    # 初回2回のSDK/driver初期化を分け、以降18回の同じ切断状態で比較する。
+    # 2時間soak/L04の代替ではなく、今回の反復増加を拒否する短い回帰検査。
+    require(max(disconnected_fds[2:]) - min(disconnected_fds[2:]) <= 2, 'warmup後も切断後FDが増減し続けています')
     require(identifier(proof['preferences_environment']['last_handle']) == previous_handle, '最後のruntime世代が不一致です')
     return True

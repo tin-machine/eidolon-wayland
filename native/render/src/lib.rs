@@ -5,6 +5,7 @@ pub mod compositor;
 pub mod decoration;
 #[cfg(target_os = "android")]
 pub mod egl;
+mod executor;
 #[cfg(any(test, feature = "debug-fixtures"))]
 pub mod fixtures;
 #[cfg(not(target_os = "android"))]
@@ -99,7 +100,10 @@ pub struct TargetReport {
 #[derive(Clone, Default, Debug, Serialize)]
 pub struct Snapshot {
     pub mode: RenderMode,
+    /// runtimeのGL所有job数。process共用threadはexecutorへ別記する。
     pub workers: usize,
+    pub owner_tid: i32,
+    pub executor: Option<executor::Report>,
     pub targets: Vec<TargetReport>,
     pub detached: VecDeque<TargetKey>,
     pub queued: usize,
@@ -155,8 +159,28 @@ struct Submission {
 type State = Arc<(Mutex<Shared>, Condvar)>;
 pub struct Controller {
     state: State,
-    worker: JoinHandle<()>,
+    worker: Worker,
     pixels: eidolon_model::pixels::PixelBudget,
+}
+
+enum Worker {
+    Dedicated(JoinHandle<()>),
+    Reusable {
+        executor: Arc<executor::Executor>,
+        finished: Arc<std::sync::atomic::AtomicBool>,
+    },
+}
+
+fn thread_id() -> i32 {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // SAFETY: gettidは引数/所有権を持たない現在threadの識別だけ。
+    unsafe {
+        libc::gettid()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        0
+    }
 }
 
 /// 世代の履歴はwindow数で制限する。古いdetachは新世代を選択できない。
@@ -205,6 +229,16 @@ impl Controller {
         self.pixels.clone()
     }
     pub fn start_with_budget(pixels: eidolon_model::pixels::PixelBudget) -> std::io::Result<Self> {
+        #[cfg(target_os = "android")]
+        let executor = Some(executor::Executor::global()?);
+        #[cfg(not(target_os = "android"))]
+        let executor = None;
+        Self::start_on(pixels, executor)
+    }
+    fn start_on(
+        pixels: eidolon_model::pixels::PixelBudget,
+        executor: Option<Arc<executor::Executor>>,
+    ) -> std::io::Result<Self> {
         let state = Arc::new((
             Mutex::new(Shared {
                 queue: VecDeque::new(),
@@ -230,29 +264,17 @@ impl Controller {
             }),
             Condvar::new(),
         ));
-        let owned = state.clone();
-        let worker = thread::Builder::new()
-            .name("eidolon-gl".into())
-            .spawn(move || {
-                let result =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner(&owned)));
-                let mut state = owned.0.lock().unwrap_or_else(|e| e.into_inner());
-                if result.is_err() {
-                    state.snapshot.error = Some("JNI_FAILURE");
-                }
-                state.queue.clear(); // queued ANativeWindowの追加参照もここで回収。
-                state.snapshot.targets.clear();
-                state.latest.clear();
-                state.logical.clear();
-                state.theme = None;
-                state.accepted_theme = None;
-                state.semantic.clear();
-                state.snapshot.latest_images = 0;
-                state.snapshot.contexts = 0;
-                state.snapshot.composition = Default::default();
-                state.snapshot.workers = 0;
-                state.busy_since = None;
-            })?;
+        let worker = if let Some(executor) = executor {
+            let finished = executor.submit(state.clone())?;
+            Worker::Reusable { executor, finished }
+        } else {
+            let owned = state.clone();
+            Worker::Dedicated(thread::Builder::new().name("eidolon-gl".into()).spawn(
+                move || {
+                    run_owner(&owned);
+                },
+            )?)
+        };
         Ok(Self {
             state,
             worker,
@@ -526,11 +548,41 @@ impl Controller {
         let mut result = state.snapshot.clone();
         result.queued = state.queue.len();
         result.paused = !state.visible;
+        if let Worker::Reusable { executor, .. } = &self.worker {
+            result.executor = Some(executor.snapshot());
+        }
         result
     }
     pub fn is_finished(&self) -> bool {
-        self.worker.is_finished()
+        match &self.worker {
+            Worker::Dedicated(worker) => worker.is_finished(),
+            Worker::Reusable { finished, .. } => {
+                finished.load(std::sync::atomic::Ordering::Acquire)
+            }
+        }
     }
+}
+
+fn run_owner(owned: &State) -> bool {
+    update(owned, |state| state.snapshot.owner_tid = thread_id());
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner(owned)));
+    let mut state = owned.0.lock().unwrap_or_else(|e| e.into_inner());
+    if result.is_err() {
+        state.snapshot.error = Some("JNI_FAILURE");
+    }
+    state.queue.clear(); // queued ANativeWindowの追加参照もここで回収。
+    state.snapshot.targets.clear();
+    state.latest.clear();
+    state.logical.clear();
+    state.theme = None;
+    state.accepted_theme = None;
+    state.semantic.clear();
+    state.snapshot.latest_images = 0;
+    state.snapshot.contexts = 0;
+    state.snapshot.composition = Default::default();
+    state.snapshot.workers = 0;
+    state.busy_since = None;
+    result.is_ok() && state.snapshot.error != Some("RENDER_STALLED")
 }
 impl Drop for Controller {
     fn drop(&mut self) {
@@ -977,6 +1029,122 @@ fn owner(state: &State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reused_executor_releases_each_runtime_before_lending_the_same_thread() {
+        let executor = Arc::new(executor::Executor::new().unwrap());
+        let mut tid = None;
+        for cycle in 1..=12 {
+            let renderer =
+                Controller::start_on(Default::default(), Some(executor.clone())).unwrap();
+            let state = Arc::downgrade(&renderer.state);
+            renderer.set_visible(true);
+            let key = TargetKey::from_raw(1, cycle, 1, 1).unwrap();
+            assert_eq!(
+                renderer.attach(key, PlatformWindow::default(), 64, 64),
+                Status::Accepted
+            );
+            wait(|| {
+                renderer
+                    .snapshot()
+                    .targets
+                    .first()
+                    .is_some_and(|t| t.frames >= 1)
+            });
+            let id = renderer.snapshot().owner_tid;
+            assert!(id > 0);
+            assert_eq!(*tid.get_or_insert(id), id);
+            renderer.request_stop();
+            wait(|| renderer.is_finished());
+            let stopped = renderer.snapshot();
+            assert_eq!(
+                (
+                    stopped.workers,
+                    stopped.contexts,
+                    stopped.latest_images,
+                    stopped.queued
+                ),
+                (0, 0, 0, 0)
+            );
+            assert!(stopped.targets.is_empty());
+            assert_eq!(stopped.executor.as_ref().unwrap().active_jobs, 0);
+            assert_eq!(
+                stopped.executor.as_ref().unwrap().completed_jobs,
+                cycle as u64
+            );
+            assert_eq!(
+                renderer.attach(key, PlatformWindow::default(), 64, 64),
+                Status::NotReady
+            );
+            drop(renderer);
+            assert!(
+                state.upgrade().is_none(),
+                "idle executor must not retain an old runtime"
+            );
+        }
+        let report = executor.snapshot();
+        assert_eq!((report.threads, report.active_jobs), (1, 0));
+        assert!(!report.failed);
+    }
+
+    #[test]
+    fn busy_executor_cannot_create_a_replacement_or_finish_before_gpu_cleanup() {
+        use std::sync::atomic::Ordering;
+        let executor = Arc::new(executor::Executor::new().unwrap());
+        let renderer = Controller::start_on(Default::default(), Some(executor.clone())).unwrap();
+        let hook = Arc::new(platform::TestControl::default());
+        hook.blocked.store(true, Ordering::Release);
+        renderer.set_visible(true);
+        renderer.attach(
+            TargetKey::from_raw(1, 1, 1, 1).unwrap(),
+            PlatformWindow {
+                control: Some(hook.clone()),
+            },
+            64,
+            64,
+        );
+        wait(|| hook.entered.load(Ordering::Acquire));
+        renderer.request_stop();
+        assert!(!renderer.is_finished());
+        let error = Controller::start_on(Default::default(), Some(executor.clone()))
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert_eq!(
+            (executor.snapshot().threads, executor.snapshot().active_jobs),
+            (1, 1)
+        );
+        hook.blocked.store(false, Ordering::Release);
+        wait(|| renderer.is_finished());
+        let next = Controller::start_on(Default::default(), Some(executor)).unwrap();
+        wait(|| next.snapshot().owner_tid > 0);
+        assert_eq!(next.snapshot().owner_tid, renderer.snapshot().owner_tid);
+        next.request_stop();
+        wait(|| next.is_finished());
+    }
+
+    #[test]
+    fn panicked_executor_is_poisoned_instead_of_spawning_another_thread() {
+        use std::sync::atomic::Ordering;
+        let executor = Arc::new(executor::Executor::new().unwrap());
+        let renderer = Controller::start_on(Default::default(), Some(executor.clone())).unwrap();
+        let hook = Arc::new(platform::TestControl::default());
+        hook.fault.store(4, Ordering::Release);
+        renderer.set_visible(true);
+        renderer.attach(
+            TargetKey::from_raw(1, 1, 1, 1).unwrap(),
+            PlatformWindow {
+                control: Some(hook),
+            },
+            64,
+            64,
+        );
+        wait(|| renderer.is_finished());
+        assert_eq!(renderer.snapshot().error, Some("JNI_FAILURE"));
+        assert!(executor.snapshot().failed);
+        assert!(Controller::start_on(Default::default(), Some(executor.clone())).is_err());
+        assert_eq!(executor.snapshot().completed_jobs, 1);
+    }
+
     #[test]
     fn theme_upload_is_cancelled_without_blocking_commands_or_resurrecting_old_candidate() {
         use std::sync::atomic::Ordering;
