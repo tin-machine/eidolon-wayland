@@ -156,7 +156,8 @@ class ResultTests(unittest.TestCase):
     def test_credentials_gate_needs_all_protections_and_no_secret_in_diagnostics(self):
         flags = ("idempotent", "public_only", "file_mode_0600", "aes_nonexportable", "known_pin", "unknown_pin_rejected",
                  "mismatch_pin_rejected", "unsolicited_credential_rejected", "tamper_rejected", "key_loss_rejected",
-                 "no_silent_regeneration", "production_unchanged", "save_loss_rejected")
+                 "no_silent_regeneration", "production_unchanged", "save_loss_rejected", "profile_roundtrip", "profile_mode_0600",
+                 "unconfirmed_pin_preserved", "stale_form_rejected", "explicit_pin_change", "production_profile_unchanged")
         info = {"profile": "debug"}
         snapshot = {"schema": 1, "build_info": info, "check": {"case": "credentials", "nonce": "new", "result": "pass", "stopped_handle": "1", **dict.fromkeys(flags, True)},
                     "runtime": {"handle": "2", "runtime": {"state": "Ready", "activity_visible": True, "xr_state": "FOCUSED", "render": {"workers": 1}}}}

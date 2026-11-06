@@ -108,6 +108,7 @@ class MainActivity : AppSystemActivity() {
                                 Text("Runtime: ${NativeSessionHost.summary.value}", color = Color.White)
                                 Text(NativeSessionHost.credentialSummary.value, color = Color.White)
                                 Text("SSH: ${NativeSessionHost.connectionSummary.value}", color = Color.White)
+                                ConnectionSettings()
                                 Button(onClick = { NativeSessionHost.openTerminal() }) { Text("ターミナルを開く") }
                                 for (window in NativeSessionHost.windowChoices.value) {
                                     Text("ウィンドウ ${window.window} · ${window.slot?.let { "表示枠 ${it+1}" } ?: "一覧に保持"}",color=Color.White)

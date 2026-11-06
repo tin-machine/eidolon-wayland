@@ -280,6 +280,36 @@ pub fn run(layout: KeyboardLayout, stop: Arc<AtomicBool>) -> Report {
 mod tests {
     use super::*;
     #[test]
+    fn disconnected_clients_release_keymap_files_across_sessions() {
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let keymaps = || {
+            std::fs::read_dir("/proc/self/fd")
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter_map(|entry| std::fs::read_link(entry.path()).ok())
+                .filter(|path| path.to_string_lossy().contains("memfd:smithay-keymap"))
+                .count()
+        };
+        let baseline = keymaps();
+        {
+            let display = Display::<ProtocolState>::new().unwrap();
+            let mut state = ProtocolState::new(&display.handle(), SessionId::new(1).unwrap());
+            state.configure_keyboard(KeyboardLayout::Us).unwrap();
+            drop(display);
+            drop(state);
+            assert_eq!(keymaps(), baseline, "client受入前のkeymap FDが残っています");
+        }
+        for _ in 0..3 {
+            let report = run(KeyboardLayout::Us, Arc::new(AtomicBool::new(false)));
+            assert_eq!(report.state, "pass", "{report:#?}");
+            assert_eq!(
+                keymaps(),
+                baseline,
+                "切断したsessionのkeymap FDが残っています"
+            );
+        }
+    }
+    #[test]
     fn real_client_receives_us_jis_keymap_evdev_modifiers_repeat_and_release_before_leave() {
         let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
         for layout in [KeyboardLayout::Us, KeyboardLayout::Jis] {

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# 署名鍵は作成・保存しない。配布前に所有者のkeystoreで署名するunsigned APKを出力する。
+set -euo pipefail
+umask 077
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+version_code=${1:?versionCodeを指定してください}
+[[ "$version_code" =~ ^[1-9][0-9]*$ && $# == 1 ]] || { echo '正のversionCodeを一つ指定してください' >&2; exit 2; }
+if [[ -z ${EIDOLON_ARTIFACT_ROOT:-} ]]; then
+  work_config="$HOME/.config/homecluster-agents/codex-work-root"
+  if [[ -f "$work_config" ]]; then
+    IFS= read -r work_root < "$work_config"
+  else
+    work_root="$HOME/.local/state/homecluster-agents/codex-work"
+  fi
+  [[ "$work_root" = /* ]] || { echo '作業rootには絶対pathが必要です' >&2; exit 2; }
+  EIDOLON_ARTIFACT_ROOT="$work_root/eidolon-release/builds"
+fi
+[[ "$EIDOLON_ARTIFACT_ROOT" = /* ]] || { echo 'artifact rootには絶対pathが必要です' >&2; exit 2; }
+run_dir="$EIDOLON_ARTIFACT_ROOT/$(date +%Y%m%dT%H%M%S)-$$"
+mkdir -p -- "$run_dir"
+export JAVA_HOME=${JAVA_HOME:-$(dirname -- "$(dirname -- "$(readlink -f -- "$(command -v javac)")")")}
+export ANDROID_HOME=${ANDROID_HOME:-/opt/android-sdk}
+printf 'Artifacts: %s\n' "$run_dir"
+{
+  date -Iseconds
+  git -C "$repo_root" rev-parse HEAD
+  git -C "$repo_root" status --short
+  "$JAVA_HOME/bin/java" -version
+  printf 'versionCode=%s\nprofile=release\nsigned=false\n' "$version_code"
+} > "$run_dir/environment.txt" 2>&1
+cd "$repo_root/android"
+python3 "$repo_root/scripts/check-build-tools" | tee "$run_dir/build-tools.log"
+./gradlew --no-daemon --console=plain -PeidolonVersionCode="$version_code" \
+  :app:assembleRelease :app:lintRelease :app:testReleaseUnitTest 2>&1 | tee "$run_dir/build.log"
+cp app/build/outputs/apk/release/app-release-unsigned.apk "$run_dir/eidolon-release-unsigned.apk"
+python3 "$repo_root/scripts/check-native-package" --apk "$run_dir/eidolon-release-unsigned.apk" | tee "$run_dir/native-package.json"
+sha256sum "$run_dir/eidolon-release-unsigned.apk" | tee "$run_dir/apk.sha256"
+python3 - "$repo_root" "$run_dir" <<'PY'
+from pathlib import Path
+import hashlib
+import sys
+import zipfile
+source, output = map(Path, sys.argv[1:])
+bundle = output / 'eidolon-termux-tools.zip'
+with zipfile.ZipFile(bundle, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+    for name in ['scripts/pairing.py', 'scripts/termux/eidolon-pair', 'scripts/termux/eidolon-session.py', 'docs/usage.md']:
+        archive.write(source / name, name)
+(output / 'termux-tools.sha256').write_text(hashlib.sha256(bundle.read_bytes()).hexdigest() + '  ' + bundle.name + '\n')
+PY
+printf 'Unsigned APK: %s\n' "$run_dir/eidolon-release-unsigned.apk"

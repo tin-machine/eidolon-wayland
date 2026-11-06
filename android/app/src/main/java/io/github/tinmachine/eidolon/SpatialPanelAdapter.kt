@@ -47,6 +47,7 @@ class SpatialPanelAdapter {
     private var backgroundApi: JSONObject? = null
     private val trace = ArrayDeque<JSONObject>()
     private data class Binding(val entity: Entity, val handle: Long, var key: JSONObject,
+        val ownerKey: JSONObject = JSONObject(key.toString()),
         val role: String = "diagnostic", val commandSeq: String? = null, var destroyCommand: JSONObject? = null,
         var surface: Surface? = null, var sceneObject: SceneObject? = null, var listener: Long? = null,
         val decoration: JSONObject? = null, var visual: Entity? = null,
@@ -59,7 +60,7 @@ class SpatialPanelAdapter {
         var poseSentAt: Long = 0,
         var physicalRequested: String? = null, var physicalAcked: String? = null,
         var attached: Boolean = false, var retire: Boolean = false, var destroy: Boolean = false,
-        var hidden: Boolean = false, var sdkDisposed: Boolean = false,
+        var hidden: Boolean = false, var sdkDisposed: Boolean = false, var disposalFailed: Boolean = false,
         var detachSent: Boolean = false, var replacement: Surface? = null)
 
     val registration = VideoSurfacePanelRegistration(R.id.native_panel,
@@ -193,14 +194,19 @@ class SpatialPanelAdapter {
     private fun create(handle: Long, plan: JSONObject? = null) {
         creating = true
         attempting = plan
+        val ownerKey = if(plan==null) key() else JSONObject(plan.getJSONObject("target").toString())
+        if(NativeSessionHost.sdkBinding(ownerKey,handle,true)!=NativeBridge.ACCEPTED) { creating=false;return }
+        var entity: Entity? = null
         try {
             val position = if (plan == null) Vector3(0f, 1.4f, 1.6f) else Vector3(plan.optInt("slot",0)*1.3f, 1.4f, 1.5f)
             val decoration = plan?.optJSONObject("decoration")
-            val entity = if (decoration == null) Entity.create(listOf(Panel(R.id.native_panel), Transform(Pose(position))))
+            val createdEntity = if (decoration == null) Entity.create(listOf(Panel(R.id.native_panel), Transform(Pose(position))))
                 else Entity.create(listOf(Mesh(android.net.Uri.parse(ThemeHitMesh.URI), ThemeHitMesh.COLLISION), Transform(Pose(position))))
+            entity = createdEntity
+            val entity = createdEntity
             if(plan!=null) entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
-            val current = if (plan == null) Binding(entity, handle, key()) else
-                Binding(entity, handle, JSONObject(plan.getJSONObject("target").toString()), "windows", plan.getString("command_seq"), decoration=decoration)
+            val current = if (plan == null) Binding(entity, handle, ownerKey) else
+                Binding(entity, handle, ownerKey, role="windows", commandSeq=plan.getString("command_seq"), decoration=decoration)
             bindings[entity.id] = current; created++; event("entity_created", entity.id)
             if (decoration != null) {
                 val content = decoration.getJSONObject("content"); val canvas = decoration.getJSONObject("canvas")
@@ -225,6 +231,15 @@ class SpatialPanelAdapter {
             }
             pendingObjects.remove(entity.id)?.let { objectReady(entity.id,it) }
             pendingSurfaces.remove(entity.id)?.let { surfaceReady(entity.id,it) }
+        } catch (failure: Exception) {
+            val current=entity?.let {bindings[it.id]}
+            if(current!=null) {current.retire=true;current.destroy=true}
+            else {
+                // create途中に失敗しても、実Entityを破棄できたときだけ所有記録を返す。
+                entity?.destroy()
+                NativeSessionHost.sdkBinding(ownerKey,handle,false)
+            }
+            throw failure
         } finally { creating = false }
     }
     private fun surfaceReady(entity: Long, surface: Surface) {
@@ -280,7 +295,7 @@ class SpatialPanelAdapter {
     private fun disposeSdk(current: Binding) {
         if(current.sdkDisposed) return
         current.sdkDisposed=true
-        fun dispose(action:()->Unit) {runCatching(action).onFailure {event("sdk_dispose_failure_${it.javaClass.simpleName}",current.entity.id)}}
+        fun dispose(action:()->Unit) {runCatching(action).onFailure {current.disposalFailed=true;event("sdk_dispose_failure_${it.javaClass.simpleName}",current.entity.id)}}
         dispose {cancelGrab(current)}
         current.poseRequest?.let {NativeSessionHost.forgetPose(it)}
         dispose {current.input?.close()}; current.input = null
@@ -294,6 +309,9 @@ class SpatialPanelAdapter {
     }
     private fun destroy(current: Binding) {
         disposeSdk(current)
+        if(current.disposalFailed) return
+        val code=NativeSessionHost.sdkBinding(current.ownerKey,current.handle,false)
+        if(code!=NativeBridge.ACCEPTED && code!=NativeBridge.STALE) return
         bindings.remove(current.entity.id)
         current.destroyCommand?.let { NativeSessionHost.ackPanel(it, current.handle) }
     }
@@ -318,7 +336,7 @@ class SpatialPanelAdapter {
         val desired = plans.filter { it.getString("action") == "create" && it.isNull("error") && it.getJSONObject("target").optString("scene") == scene.toString() }
         for (current in bindings.values.toList()) {
             val plan = plans.firstOrNull { sameKey(it.getJSONObject("target"), current.key) }
-            if (current.role == "diagnostic" && windows || current.handle != handle ||
+            if (host?.optString("state") in setOf("Stopping","Stopped","Failed") || current.role == "diagnostic" && windows || current.handle != handle ||
                 current.role == "windows" && (plan == null || plan.getString("action") == "destroy" || !plan.isNull("error"))) {
                 current.retire = true; current.destroy = true
             }
@@ -338,7 +356,14 @@ class SpatialPanelAdapter {
                 }
                 val detached = render.getJSONArray("detached")
                 val acknowledged = (0 until detached.length()).any { sameKey(detached.getJSONObject(it), current.key) }
-                if (current.attached && acknowledged) {
+                val shutdown=snapshot.getJSONObject("runtime").getJSONObject("shutdown")
+                val pending=shutdown.getJSONArray("pending_owners")
+                // owner全体の終了では個別detachのqueueを処理しない。thread終了のackと
+                // 全native参照の回収を照合した場合も、SDK側を解放できる。単なる空targetでは不十分。
+                val ownerReleased=shutdown.getBoolean("requested") &&
+                    (0 until pending.length()).none {pending.getString(it)=="render"} &&
+                    render.getInt("workers")==0 && render.getInt("contexts")==0 && render.getJSONArray("targets").length()==0
+                if (current.attached && (acknowledged || ownerReleased)) {
                     current.attached = false; event("surface_detached", current.entity.id)
                     if (!current.retire) { current.retire = true; current.destroy = true }
                 }

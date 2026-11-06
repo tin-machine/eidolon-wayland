@@ -1228,7 +1228,7 @@
     {
       "id": "L01",
       "title": "停止順序・deadline・資源回収",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "I04",
         "T04",
@@ -1240,7 +1240,10 @@
         "native/core/src/session.rs",
         "native/transport/src/session.rs",
         "native/render/src/surface.rs",
-        "android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt"
+        "android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt",
+        "native/core/src/shutdown.rs",
+        "android/app/src/debug/java/io/github/tinmachine/eidolon/LifecycleSdkCase.kt",
+        "scripts/lifecycle_checks.py"
       ],
       "steps": [
         "所有関係とdeadline付き停止を統合する",
@@ -1268,7 +1271,7 @@
     {
       "id": "L02",
       "title": "障害復旧・新session",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "L01"
       ],
@@ -1277,7 +1280,8 @@
         "native/core/src/session.rs",
         "native/transport/src/session.rs",
         "android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt",
-        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt"
+        "android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt",
+        "native/transport/src/session/tests.rs"
       ],
       "steps": [
         "障害行列を原因別状態へ写像する",
@@ -1303,7 +1307,7 @@
     {
       "id": "L03",
       "title": "給電・sleep・reboot手順",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "L02"
       ],
@@ -1311,7 +1315,10 @@
       "files": [
         "scripts/quest-check",
         "docs/progress.md",
-        "docs/phase-0-reproduction.md"
+        "docs/phase-0-reproduction.md",
+        "scripts/quest-observe",
+        "scripts/observation.py",
+        "docs/usage.md"
       ],
       "steps": [
         "Menu/sleep/Activity/rebootを別caseとして記録する",
@@ -1335,7 +1342,7 @@
     {
       "id": "L04",
       "title": "二枚耐久・100回再接続",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "L03",
         "I07"
@@ -1345,7 +1352,9 @@
         "scripts/quest-check",
         "native/fixtures/",
         "docs/progress.md",
-        "docs/benchmarks.md"
+        "docs/benchmarks.md",
+        "scripts/quest-observe",
+        "scripts/observation.py"
       ],
       "steps": [
         "二枚2時間と静止/scroll/fixture負荷を分ける",
@@ -1371,7 +1380,7 @@
     {
       "id": "C02",
       "title": "release・公開鍵pairing・利用手順",
-      "status": "planned",
+      "status": "in_progress",
       "depends_on": [
         "L04",
         "C01"
@@ -1385,7 +1394,9 @@
         "android/app/build.gradle.kts",
         "android/app/src/main/AndroidManifest.xml",
         "THIRD_PARTY_NOTICES.md",
-        "docs/usage.md"
+        "docs/usage.md",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/ConnectionProfile.kt",
+        "android/app/src/main/java/io/github/tinmachine/eidolon/ConnectionSettings.kt"
       ],
       "steps": [
         "debug入口/fixtureを除いたreleaseを生成する",

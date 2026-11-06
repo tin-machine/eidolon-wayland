@@ -61,7 +61,7 @@ class CredentialStore(context: Context,
     fun provide(handle: Long, session: Long, request: Long): Int = withPrivateKey {
         NativeBridge.nativeProvideCredential(handle, session, request, it)
     }
-    fun profile(identity: Identity): JSONObject? = guarded {
+    @Synchronized fun profile(identity: Identity): JSONObject? = guarded {
         val file = File(directory, "profile.json")
         if (!file.exists()) return@guarded null
         if (!file.isFile || file.length() !in 1..16384) throw Failure("CONFIG_INVALID")
@@ -69,6 +69,15 @@ class CredentialStore(context: Context,
         if (value.keys().asSequence().toSet() != setOf("schema", "profile_id", "installation", "username", "host_key") ||
             value.get("schema") != 1 || value.getString("profile_id") != "termux-local" ||
             value.getString("installation") != identity.installation) throw Failure("CONFIG_INVALID")
+        ConnectionProfile.parse(value.getString("username"),value.getString("host_key"))
+        value
+    }
+    @Synchronized fun saveProfile(identity: Identity, username: String, hostKey: String, expected: String, confirmed: Boolean): JSONObject = guarded {
+        val previous=profile(identity)?.let {ConnectionProfile.parse(it.getString("username"),it.getString("host_key"))}
+        val next=ConnectionProfile.replacement(previous,expected,username,hostKey,confirmed)
+        val value=JSONObject().put("schema",1).put("profile_id","termux-local").put("installation",identity.installation)
+            .put("username",next.username).put("host_key",next.hostKey)
+        atomicWrite(File(directory,"profile.json"),value.toString().toByteArray(Charsets.UTF_8))
         value
     }
     private fun publish(identity: Identity): Identity {

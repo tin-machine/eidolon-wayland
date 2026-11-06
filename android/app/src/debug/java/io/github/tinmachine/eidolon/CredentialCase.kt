@@ -25,6 +25,8 @@ object CredentialCase {
             val first = production.ensureIdentity()
             val productionFile = File(context.noBackupFilesDir, "credentials/identity.json")
             val productionBefore = productionFile.readBytes()
+            val productionProfile=File(context.noBackupFilesDir,"credentials/profile.json")
+            val profileBefore=productionProfile.takeIf {it.exists()}?.readBytes()
             val second = production.ensureIdentity()
             check(first.publicKey == second.publicKey && first.installation == second.installation)
             check(productionBefore.contentEquals(productionFile.readBytes()))
@@ -42,6 +44,27 @@ object CredentialCase {
             stage = "pin"
             val otherPrivate = NativeBridge.nativeGenerateIdentity()
             val otherPublic = try { NativeBridge.nativePublicKey(otherPrivate) } finally { otherPrivate.fill(0) }
+            stage = "profile_save"
+            val profileFile=File(fixtureDirectory,"profile.json")
+            check(fixture.profile(identity)==null)
+            fun rejected(action:()->Unit):Boolean = try {action();false} catch(_:CredentialStore.Failure) {true}
+            check(rejected {fixture.saveProfile(identity,"fixture",identity.publicKey,"",false)})
+            check(!profileFile.exists())
+            val saved=fixture.saveProfile(identity,"fixture",identity.publicKey,"",true)
+            check(fixture.profile(identity).toString()==saved.toString())
+            result.put("profile_roundtrip",true)
+            check(Files.getPosixFilePermissions(profileFile.toPath())==setOf(PosixFilePermission.OWNER_READ,PosixFilePermission.OWNER_WRITE))
+            result.put("profile_mode_0600",true)
+            val before=profileFile.readBytes()
+            val old=ConnectionProfile.parse("fixture",identity.publicKey)
+            check(rejected {fixture.saveProfile(identity,"fixture",otherPublic,old.token,false)})
+            check(profileFile.readBytes().contentEquals(before));result.put("unconfirmed_pin_preserved",true)
+            check(rejected {fixture.saveProfile(identity,"fixture",otherPublic,"",true)})
+            check(profileFile.readBytes().contentEquals(before));result.put("stale_form_rejected",true)
+            fixture.saveProfile(identity,"fixture",otherPublic,old.token,true)
+            check(fixture.profile(identity)?.getString("host_key")==ConnectionProfile.canonicalKey(otherPublic))
+            result.put("explicit_pin_change",true)
+            stage = "pin"
             check(DebugNativeBridge.nativeVerifyPin(identity.publicKey, identity.publicKey) == "ACCEPTED")
             check(DebugNativeBridge.nativeVerifyPin(null, identity.publicKey) == "HOST_KEY_UNKNOWN")
             check(DebugNativeBridge.nativeVerifyPin(otherPublic, identity.publicKey) == "HOST_KEY_MISMATCH")
@@ -83,6 +106,8 @@ object CredentialCase {
             try { fixture.ensureIdentity() } catch (failure: CredentialStore.Failure) { lost = failure.code == "KEY_LOST" }
             check(lost && !keys.containsAlias(alias)); result.put("key_loss_rejected", true).put("no_silent_regeneration", true)
             check(productionBefore.contentEquals(productionFile.readBytes()) && production.ensureIdentity().publicKey == first.publicKey)
+            check(if(profileBefore==null) !productionProfile.exists() else profileBefore.contentEquals(productionProfile.readBytes()))
+            result.put("production_profile_unchanged",true)
             result.put("production_unchanged", true).put("result", "pass")
         } catch (failure: Exception) {
             result.put("result", "fail").put("stage", stage).put("failure_class", failure.javaClass.simpleName)

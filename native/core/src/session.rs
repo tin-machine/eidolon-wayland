@@ -678,7 +678,9 @@ impl Drop for Session {
 }
 fn named_memfds() -> Result<(usize, usize), &'static str> {
     fn owned(text: &str) -> bool {
-        text.contains("memfd:waypipe") || text.contains("memfd:eidolon-shm-fixture")
+        text.contains("memfd:waypipe")
+            || text.contains("memfd:eidolon-shm-fixture")
+            || text.contains("memfd:smithay-keymap")
     }
     let fds = fs::read_dir("/proc/self/fd")
         .map_err(|_| "PROC_FD")?

@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Termux内でAPK公開鍵を追加し、照合用の公開host keyを返す。秘密鍵は読まない。"""
+import argparse
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from pairing import PairError, canonical_key, update_authorized
+
+
+def fingerprint(key):
+    wire = base64.b64decode(canonical_key(key).split()[1], validate=True)
+    return 'SHA256:' + base64.b64encode(hashlib.sha256(wire).digest()).decode().rstrip('=')
+
+
+def pair(public_key, username, host_file, authorized):
+    # 先に全入力を検証。host公開情報が欠けた状態でauthorized_keysだけを書き換えない。
+    public = canonical_key(public_key)
+    if not re.fullmatch(r'[A-Za-z0-9_]{1,64}', username):
+        raise PairError('USERNAME_INVALID')
+    if host_file.is_symlink() or not host_file.is_file() or not 1 <= host_file.stat().st_size <= 4096:
+        raise PairError('HOST_PUBLIC_KEY_UNAVAILABLE')
+    host = canonical_key(host_file.read_text())
+    changed = update_authorized(authorized, public)
+    return dict(schema=1, username=username, host_key=host, host_fingerprint=fingerprint(host),
+                apk_fingerprint=fingerprint(public), changed=changed, existing_entries_preserved=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('public_key', help='Eidolonの接続設定でコピーしたssh-ed25519公開鍵。引用符で囲む')
+    args = parser.parse_args()
+    os.umask(0o077)
+    prefix = Path('/data/data/com.termux/files/usr')
+    home = Path('/data/data/com.termux/files/home')
+    try:
+        if os.environ.get('PREFIX') != str(prefix) or os.getuid() == 0 or home.stat().st_uid != os.getuid():
+            raise PairError('TERMUX_REQUIRED')
+        result = pair(args.public_key, pwd.getpwuid(os.getuid()).pw_name,
+                      prefix / 'etc/ssh/ssh_host_ed25519_key.pub', home / '.ssh/authorized_keys')
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    except (PairError, OSError, UnicodeError):
+        print('公開鍵を登録できませんでした。Termux内でsshdを起動し、公開鍵と.sshの所有権・権限を確認してください。', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

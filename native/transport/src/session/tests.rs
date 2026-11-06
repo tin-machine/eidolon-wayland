@@ -7,6 +7,7 @@ use tokio::net::TcpListener;
 
 #[derive(Clone, Copy)]
 enum Mode {
+    Quiet,
     Flood,
     Hang,
     Exit,
@@ -199,6 +200,67 @@ async fn stop(controller: &Controller) {
 }
 fn request(n: i64) -> CommandSeq {
     CommandSeq::new(n).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn twenty_peer_disconnects_reclaim_workers_and_require_explicit_pinned_reconnect() {
+    let (address, profile, key, fixture, server) = fixture(Mode::Quiet).await;
+    let pin = profile.host_key.clone();
+    let controller = Controller::start_on(address, Deadlines::default()).unwrap();
+    let mut previous = None;
+    for cycle in 1..=21 {
+        let request = request(cycle);
+        assert_eq!(
+            controller.connect(profile.clone(), request),
+            Status::Accepted
+        );
+        assert_eq!(controller.connect(profile.clone(), request), Status::Busy);
+        wait(&controller, |s| s.state == State::AwaitingCredential).await;
+        let session = controller.snapshot().session.unwrap();
+        if let Some(old) = previous {
+            assert!(session > old);
+            assert_eq!(controller.provide(old, request, key.clone()), Status::Stale);
+            assert_eq!(controller.disconnect(old), Status::Stale);
+        }
+        assert_eq!(
+            controller.provide(session, request, key.clone()),
+            Status::Accepted
+        );
+        wait(&controller, |s| s.state == State::Ready).await;
+        assert_eq!(controller.snapshot().owned_connections, 1);
+        assert_eq!(profile.host_key, pin);
+        if cycle == 21 {
+            assert_eq!(controller.disconnect(session), Status::Accepted);
+            wait(&controller, |s| s.state == State::Disconnected).await;
+        } else {
+            // 試験用SSH接続のpeerだけを切断。通常sshdや同UIDの他processへ信号を送らない。
+            let peer = fixture.handle.lock().unwrap().clone().unwrap();
+            peer.disconnect(
+                russh::Disconnect::ByApplication,
+                "fixture disconnect".into(),
+                "en".into(),
+            )
+            .await
+            .unwrap();
+            wait(&controller, |s| s.state == State::Failed).await;
+            assert_eq!(controller.snapshot().error, Some("REMOTE_EXIT"));
+        }
+        let stopped = controller.snapshot();
+        assert_eq!(stopped.owned_connections, 0);
+        assert_eq!(stopped.tokio_threads, 0);
+        assert_eq!(stopped.forward.active, 0);
+        assert_eq!(stopped.workers, 1);
+        assert!(stopped.pending_cleanup.is_empty());
+        let execs = fixture.execs.load(Ordering::Acquire);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(controller.snapshot().session, Some(session));
+        assert_eq!(controller.snapshot().state, stopped.state);
+        assert_eq!(fixture.execs.load(Ordering::Acquire), execs); // 自動再試行なし。
+        previous = Some(session);
+    }
+    assert_eq!(fixture.passwords.load(Ordering::Acquire), 0);
+    stop(&controller).await;
+    server.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

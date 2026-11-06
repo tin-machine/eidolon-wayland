@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Questの動作を変更せずL03/L04の時系列を採取する。wake・sleep無効化・接続開始は行わない。"""
+import argparse
+import datetime
+import json
+import os
+from pathlib import Path
+import re
+import time
+
+from observation import battery, compact, proc_stat, pss_kib, summarize
+from quest_device import PACKAGE, QuestDevice, work_root
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--serial', required=True)
+    parser.add_argument('--scenario', choices=['power-lifecycle', 'soak'], required=True)
+    parser.add_argument('--duration', type=int, help='秒。既定は給電1800、soak7200。短縮は採取器のsmoke用')
+    parser.add_argument('--interval', type=int, default=60)
+    parser.add_argument('--condition', required=True, help='充電器・ケーブル・表示条件のメモ。private artifactだけに保存')
+    parser.add_argument('--artifact-root', type=Path)
+    args = parser.parse_args()
+    duration = args.duration if args.duration is not None else (1800 if args.scenario == 'power-lifecycle' else 7200)
+    if not 1 <= duration <= 18000 or not 1 <= args.interval <= 60 or len(args.condition) > 2048:
+        parser.error('durationは1〜18000秒、intervalは1〜60秒、conditionは2048文字以内です')
+    os.umask(0o077)
+    root = args.artifact_root or work_root() / 'eidolon-phase6-implementation/observations'
+    if not root.is_absolute(): parser.error('artifact-rootは絶対pathにしてください')
+    run = root / (datetime.datetime.now().strftime('%Y%m%dT%H%M%S') + '-' + str(os.getpid()))
+    run.mkdir(parents=True, mode=0o700)
+    device = QuestDevice(args.serial, run)
+    samples, metadata, failure = [], {}, None
+    try:
+        metadata = dict(device.validate(), scenario=args.scenario, condition=args.condition,
+                        duration=duration, interval=args.interval, started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
+        metadata['os_build'] = device.adb('shell','getprop','ro.build.display.id').strip()
+        try: metadata['clock_ticks_per_second'] = int(device.adb('shell','getconf','CLK_TCK').strip())
+        except Exception: metadata['clock_ticks_per_second'] = None
+        (run/'environment.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2)+'\n')
+        start, next_sample = time.monotonic(), 0.0
+        with (run/'samples.jsonl').open('w') as output:
+            while True:
+                time.sleep(max(0, start+next_sample-time.monotonic()))
+                sample = dict(elapsed_seconds=round(time.monotonic()-start,3), errors=[])
+                def read(name, *argv):
+                    try: return device.adb(*argv, timeout=5)
+                    except Exception:
+                        sample['errors'].append(name)
+                        return None
+                state = read('adb_unavailable','get-state')
+                if state is not None and state.strip() == 'device':
+                    raw = read('battery_unavailable','shell','dumpsys','battery')
+                    if raw is not None:
+                        sample['battery'] = battery(raw)
+                        if any(sample['battery'].get(k) is None for k in ['status','level','scale','temperature']):
+                            sample['errors'].append('battery_incomplete')
+                    pid = read('process_unavailable','shell','pidof',PACKAGE)
+                    if pid is not None and re.fullmatch(r'[1-9][0-9]*\s*',pid):
+                        pid = pid.strip(); sample['pid'] = int(pid)
+                        raw = read('memory_unavailable','shell','dumpsys','meminfo',pid)
+                        if raw is not None:
+                            sample['pss_kib'] = pss_kib(raw)
+                            if sample['pss_kib'] is None: sample['errors'].append('pss_unavailable')
+                        raw = read('fd_unavailable','shell','run-as',PACKAGE,'ls','/proc/'+pid+'/fd')
+                        if raw is not None:
+                            values = raw.split()
+                            if values and all(v.isdecimal() for v in values): sample['fds'] = len(values)
+                            else: sample['errors'].append('fd_invalid')
+                        raw = read('cpu_unavailable','shell','run-as',PACKAGE,'cat','/proc/'+pid+'/stat')
+                        if raw is not None:
+                            try: sample['process'] = proc_stat(raw)
+                            except (ValueError,IndexError): sample['errors'].append('cpu_invalid')
+                        raw = read('diagnostics_unavailable','shell','run-as',PACKAGE,'cat','no_backup/diagnostics/latest.json')
+                        if raw is not None:
+                            try:
+                                snapshot = json.loads(raw)
+                                if snapshot.get('process_id') != int(pid): raise ValueError('stale_process')
+                                sample['snapshot'] = compact(snapshot)
+                            except (ValueError,KeyError,TypeError): sample['errors'].append('diagnostics_invalid_or_stale')
+                    else: sample['errors'].append('process_not_running_or_ambiguous')
+                else: sample['errors'].append('adb_unavailable')
+                if samples and sample.get('process') and samples[-1].get('process'):
+                    previous=samples[-1]; hz=metadata.get('clock_ticks_per_second')
+                    same=sample.get('pid')==previous.get('pid') and sample['process']['start_ticks']==previous['process']['start_ticks']
+                    delta=sample['elapsed_seconds']-previous['elapsed_seconds']
+                    ticks=sample['process']['cpu_ticks']-previous['process']['cpu_ticks']
+                    if same and hz and delta>0 and ticks>=0: sample['cpu_percent_one_core']=round(ticks/hz/delta*100,2)
+                samples.append(sample)
+                output.write(json.dumps(sample,ensure_ascii=False)+'\n'); output.flush()
+                if sample['elapsed_seconds'] >= duration: break
+                next_sample=min(duration,next_sample+args.interval)
+                if next_sample < time.monotonic()-start: next_sample=min(duration,time.monotonic()-start)
+    except KeyboardInterrupt:
+        failure='interrupted'
+    except Exception as error:
+        failure=type(error).__name__
+    result=summarize(samples,duration,args.interval,args.scenario)
+    result.update(status='collected' if samples and failure is None else 'incomplete', failure=failure)
+    (run/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n')
+    print(json.dumps(dict(status=result['status'],acceptance=result['acceptance'],samples=len(samples),artifact=str(run)),ensure_ascii=False))
+    return 0 if result['status']=='collected' else 1
+
+
+if __name__=='__main__': raise SystemExit(main())

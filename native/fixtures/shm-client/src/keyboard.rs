@@ -68,6 +68,12 @@ pub fn run(
     connection.display().get_registry(&qh, ());
     sync(&connection, &mut queue, &mut state, &stop, deadline)?;
     let keyboard = state.seat.as_ref().ok_or("NO_SEAT")?.get_keyboard(&qh, ());
+    // foot同様にdata deviceも持つ。終了時にreleaseを送らず切断する経路の回収を検査する。
+    let _device = state.manager.as_ref().ok_or("NO_MANAGER")?.get_data_device(
+        state.seat.as_ref().ok_or("NO_SEAT")?,
+        &qh,
+        (),
+    );
     let surface = state
         .compositor
         .as_ref()

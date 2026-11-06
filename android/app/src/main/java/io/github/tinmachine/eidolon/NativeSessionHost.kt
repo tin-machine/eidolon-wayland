@@ -32,6 +32,8 @@ object NativeSessionHost {
     private var lastFocusedWindow: String? = null
     private val editing = AtomicBoolean(false)
     private val poseCompletions = ConcurrentHashMap<String,String>()
+    private val lastStop = AtomicReference<String?>(null)
+    fun stopReceipt(): JSONObject? = lastStop.get()?.let { JSONObject(it) }
     val layoutEditing = mutableStateOf(false)
     val workloadObservation = mutableStateOf(true)
     val workspaceSummary = mutableStateOf("配置設定を確認中")
@@ -73,6 +75,38 @@ object NativeSessionHost {
     val summary = mutableStateOf("Starting")
     val credentialSummary = mutableStateOf("鍵を確認中")
     val connectionSummary = mutableStateOf("未接続")
+    data class ConnectionUi(val publicKey:String="",val username:String="",val hostKey:String="",val savedToken:String="",
+        val canSave:Boolean=false,val message:String="設定を読み込み中")
+    val connectionUi=mutableStateOf(ConnectionUi())
+    private var connectionEditable=false
+
+    private fun refreshConnection(message:String) {
+        val profile=profiles.optJSONObject(0)?.let {ConnectionProfile.parse(it.getString("username"),it.getString("host_key"))}
+        val publicKey=identity?.publicKey ?: ""
+        val editable=connectionEditable
+        ui.post {connectionUi.value=ConnectionUi(publicKey,profile?.username ?: "",profile?.hostKey ?: "",profile?.token ?: "",editable,message)}
+    }
+    private fun canChangeConnection(runtime:JSONObject):Boolean {
+        val transport=runtime.getJSONObject("transport")
+        return runtime.getString("state")=="Ready" && !connectPending && pendingDisconnect==null && terminalOpen==null &&
+            transport.getString("state") in setOf("Idle","Disconnected","Failed") && transport.getInt("owned_connections")==0 &&
+            transport.getJSONArray("pending_cleanup").length()==0 && (runtime.optJSONObject("app")?.optString("state") ?: "stopped")=="stopped"
+    }
+    fun saveConnection(username:String,hostKey:String,expected:String,confirmed:Boolean) {
+        worker.execute {
+            try {
+                check(handle!=0L && canChangeConnection(snapshot().getJSONObject("runtime"))) {"CONNECTION_BUSY"}
+                val previous=profiles.optJSONObject(0)?.let {ConnectionProfile.parse(it.getString("username"),it.getString("host_key"))}
+                ConnectionProfile.replacement(previous,expected,username,hostKey,confirmed)
+                stopRuntime() // SDKの回収を完了してからpinを変更。停止失敗なら保存しない。
+                val saved=checkNotNull(credentials).saveProfile(checkNotNull(identity),username,hostKey,expected,confirmed)
+                profiles=JSONArray().put(saved)
+                refreshConnection("保存しました。Termuxでsshdを起動し「ターミナルを開く」を押してください。")
+            } catch(_:Exception) {
+                refreshConnection("保存できませんでした。切断状態と公開鍵を確認し、設定を開き直してください。")
+            } finally {safely {if(handle==0L) startRuntime()}}
+        }
+    }
 
     init { worker.scheduleAtFixedRate({ safely { tick() } }, 0, 16, TimeUnit.MILLISECONDS) }
 
@@ -87,6 +121,7 @@ object NativeSessionHost {
                 identity = checkNotNull(credentials).ensureIdentity()
                 profiles = JSONArray()
                 checkNotNull(credentials).profile(checkNotNull(identity))?.let { profiles.put(it) }
+                refreshConnection(if(profiles.length()==0) "初回は公開鍵のペアリングを行ってください。" else "保存済みの接続設定を読み込みました。")
                 ui.post { credentialSummary.value = "APK専用鍵を暗号化して保存済み" }
                 startRuntime()
             }
@@ -388,6 +423,9 @@ object NativeSessionHost {
     }
     fun runtimeConfigJson(): String = BuildHooks.runtimeConfiguration(JSONObject().put("schema", 1).put("paths", checkNotNull(paths))
         .put("installation", checkNotNull(identity).installation).put("profiles", profiles).put("preferences_dir",checkNotNull(preferencesDir)).toString())
+    fun sdkBinding(target: JSONObject, runtime: Long, owned: Boolean): Int = NativeBridge.nativeCommand(runtime,
+        JSONObject().put("schema",1).put("type",if(owned) "register_sdk_binding" else "release_sdk_binding")
+            .put("request_id",requests.incrementAndGet().toString()).put("target",target).toString())
     private fun stopRuntime() {
         if (handle == 0L) return
         keyboardFocus = null
@@ -395,17 +433,30 @@ object NativeSessionHost {
         val old = handle
         themeImportToken = null; themeRequests.clear(); themeImportMessage = null
         val started = SystemClock.elapsedRealtime()
+        lastStop.set(null)
         check(NativeBridge.nativeRequestStop(old) == NativeBridge.ACCEPTED)
-        val deadline = SystemClock.elapsedRealtime() + 5000
+        val accepted = SystemClock.elapsedRealtime() - started
+        val deadline = started + 10000
         while (true) {
-            val code = NativeBridge.nativeDestroy(old)
-            if (code == NativeBridge.ACCEPTED) break
-            check(code == NativeBridge.BUSY && SystemClock.elapsedRealtime() < deadline) { "RUNTIME_STOP_TIMEOUT" }
+            val stopped = JSONObject(NativeBridge.nativeSnapshot(old))
+            val done = stopped.getJSONObject("runtime").getJSONObject("shutdown").getBoolean("complete")
+            val code = if(done) NativeBridge.nativeDestroy(old) else NativeBridge.BUSY
+            if (code == NativeBridge.ACCEPTED) {
+                lastStop.set(JSONObject().put("handle",old.toString()).put("accept_ms",accepted)
+                    .put("stop_ms",SystemClock.elapsedRealtime()-started).put("snapshot",stopped).toString())
+                break
+            }
+            if (code != NativeBridge.BUSY || SystemClock.elapsedRealtime() >= deadline) {
+                // 回収できなかったownerを残したまま新runtimeへ置き換えない。
+                store?.publishRuntime(JSONObject(NativeBridge.nativeSnapshot(old)))
+                ui.post { summary.value = "停止を確認できません。アプリを再起動してください" }
+                error("RUNTIME_STOP_TIMEOUT")
+            }
             Thread.sleep(2)
         }
         handle = 0
         poseCompletions.clear();selectedWindow=null;lastFocusedWindow=null;editing.set(false);ui.post { layoutEditing.value=false }
-        terminalOpen = null; terminalError = null
+        terminalOpen = null; terminalAdding = null; terminalError = null
         lastConnectRequest = null; pendingDisconnect = null; connectPending = false
         Log.i(TAG, "runtime_stopped handle=$old duration_ms=${SystemClock.elapsedRealtime() - started}")
     }
@@ -559,6 +610,11 @@ object NativeSessionHost {
             }
         }
         val phase = when (val value = transport.getString("state")) {
+            "Idle", "Disconnected" -> "未接続"
+            "Connecting", "AwaitingCredential", "Authenticating" -> "接続中（切断ボタンで取消）"
+            "Ready" -> "接続済み"
+            "Failed" -> "接続が終了しました"
+            "Disconnecting" -> "終了を確認中"
             "Recovering" -> "前回の終了を確認中"
             "CleanupPending" -> "前回の終了を確認できません"
             else -> value
@@ -569,10 +625,20 @@ object NativeSessionHost {
             (0 until plans.length()).map { plans.getJSONObject(it) }.firstOrNull { !it.isNull("error") }?.getString("error")
         }
         val error = terminalError ?: panelError ?: appError
+        val connectionError=when(transport.optString("error")) {
+            "HOST_KEY_UNKNOWN" -> "初回の接続設定が必要です"
+            "HOST_KEY_MISMATCH" -> "Termuxのホスト鍵が保存済みの鍵と違います。接続設定で指紋を照合してください"
+            "AUTH_FAILED" -> "公開鍵認証に失敗しました。TermuxへAPK公開鍵を登録してください"
+            "AUTH_TIMEOUT", "SSH_CONNECT_FAILED", "CONNECT_TIMEOUT" -> "Termuxでsshdを起動し、ターミナルを開き直してください"
+            "REMOTE_EXIT", "SSH_IO_FAILED" -> "接続先が終了しました。Termuxを確認し、ターミナルを開き直してください"
+            else -> transport.optString("error").takeUnless {it.isEmpty() || it=="null"}
+        }
         val ssh = phase + (if (pending > 0) " · 未確認の回収 ${pending}件" else "") +
-            (if (transport.isNull("error")) "" else " · ${transport.getString("error")}") + (error?.let { " · $it" } ?: "")
+            (connectionError?.let {" · $it"} ?: "") + (error?.let { " · $it" } ?: "")
         if (ssh != sshState) { sshState = ssh; ui.post { connectionSummary.value = ssh } }
         val next = snapshot.getJSONObject("runtime").getString("state")
+        val editable=canChangeConnection(snapshot.getJSONObject("runtime"))
+        if(editable!=connectionEditable) {connectionEditable=editable;ui.post {connectionUi.value=connectionUi.value.copy(canSave=editable)}}
         val now = SystemClock.elapsedRealtime()
         if (next != state) {
             state = next

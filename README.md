@@ -2,23 +2,25 @@
 
 > Linuxに肉体を残し、その姿だけを異界へ投影する。
 
-**Status: XR/SSH基盤とWayland protocol・SHM・window modelをQuest APK内で検証済み（2026-11-05）。実footの通常SDKパネルへの描画・再生成・停止後UI復帰まで自動検証に成功。HMD視認と物理入力は未確認。**
+**Status（2026-11-06）: 二枚のfoot、入力・配置・背景・Rustテーマを実装し、通常SDKの回帰検査まで成功。HMDで文字・部屋の表示とUSキーボードの主要操作を確認済み。残りの物理確認を保持し、停止・復旧・初期設定と長時間測定を先行開発中。**
 
 Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndroidアプリにWayland compositorを組み込み、**同じQuestのTermuxへlocalhost SSHで接続**し、**Waypipe**で転送した既存Waylandアプリを**Meta Spatial SDKの独立したXRパネル**として表示することを目指します。
 
-現在の開発目標はPhase 5まで進め、Termux上のfoot等を独立した2枚のパネルとして表示し、物理キーボード・コントローラー入力、focus、resize、配置保存、popup・限定clipboardを使えるようにすることです。Linux PC、WiVRn、root化を必須としない設計です。Wayland serverのnative部分はAPK UIDで検証済みで、Waypipe経由の100frame/hashとfoot受信も検証でき、SDK描画と製品入力は後続タスクです。
+Termux上のfootを独立した二枚のパネルへ表示し、キー・ray入力、focus、resize、配置保存、popup・session内clipboardを扱います。Linux PC、WiVRn、root化を通常利用の必須条件にしない設計です。受入範囲は[進捗](docs/progress.md)と[物理確認の記録](docs/phase5-manual-acceptance.md)を分けて管理しています。
+
+**起動方法:** Questのライブラリ→「提供元不明 / Unknown Sources」→**Eidolon**。Build124以前は**Eidolon Phase 0**です。再起動後は先にTermuxのSSHサービスを起動します。[利用・初回ペアリング・再起動後の手順](docs/usage.md)を参照してください。
 
 **現実の部屋を背景にするMR表示**には、Meta Spatial SDKの通常のpassthroughを利用します。OSがカメラ映像とXRパネルを合成し、Eidolonがカメラ画素を取得する必要はありません。今回、最小Composeパネルと背景の同時表示をユーザーがHMD内で確認しました。SDK SurfaceへのRust描画も自動検査を進めています。[背景方式の補足](docs/phase-1-passthrough-background.md)と[最新の受入範囲](docs/progress.md)を参照してください。
 
 **実装方針:** KotlinはMeta Spatial SDK / Android adapter、RustはJNI・描画・SSH・Wayland compositor・ウィンドウ管理モデルを担当します。Waypipeは既存実装を再利用し、自作C++は必要性が確認された小さなshimに限定します。これは調査に基づく方針で、実装済みという意味ではありません。
 
-**現在できること:** `scripts/build-android 57`でRust runtime/helperを含むAPKをビルド・lint・静的検査できます。QuestではEGLパネル、専用鍵によるSSH、StreamLocal echo・障害回収、Smithay/native依存、SHM、window寿命・変換・popup、Waypipeの起動停止、SSH経由の100frame/hashとfoot受信、owned画像のtransform/alpha/clipとGL readbackをAPK UIDで検証しています。`scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case native-deps --instrumentation`等はActivityを開かずAPK UIDで検査し、UI復帰と区別して結果を保存します。JDK 25・compileSdk 36・target API 34・Spatial SDK 0.15.0を採用しています。HMD・実入力は最終段階の確認に残しています。[再現手順](docs/phase-0-reproduction.md)、[製品実装の進捗・失敗記録](docs/progress.md)、[native依存の固定build](docs/native-dependencies-build.md)、[window stateの実機検証](docs/wayland-window-state-checks.md)、[APK向けWaypipe](docs/waypipe-build-checks.md)、[SSH経由の画像とfoot受信](docs/waypipe-forwarded-shm-checks.md)、[owned画像のGPU描画](docs/owned-image-render-checks.md)を参照してください。
+**ビルドと検査:** `scripts/build-android VERSION_CODE`でdebug、`scripts/build-release VERSION_CODE`でunsigned releaseを生成します。versionCodeには端末の導入版以上の正整数を指定してください。JDK 25・compileSdk 36・target API 34・Spatial SDK 0.15.0を採用しています。`scripts/check-host --suite all`がホスト検査、`scripts/quest-check`が固定caseのQuest検査です。native instrumentation・通常SDK・HMD物理確認は別の結果として保存します。詳細は[利用手順](docs/usage.md)、[進捗・失敗記録](docs/progress.md)を参照してください。
 
-**残フェーズの実装設計:** [Sol向け引継ぎ](docs/design/README.md)に31タスク、44検証、ファイル・API・状態遷移・失敗時の判断を整理しました。B01/B03/C01/H01等は受入済みです。T04/W01〜W05/D01はnative検証が成立し、通常UI/HMDの確認を残しています。SDKへの画像描画と製品入力は後続タスクです。[進捗と試行記録](docs/progress.md)を参照してください。
+**実装設計:** [詳細設計](docs/design/README.md)と[tasks.json](docs/design/tasks.json)にAPI・状態遷移・検証条件を記録しています。Phase 5の通常SDK回帰とテーマの自動検査を終え、残る手動項目を保持したままPhase 6の独立実装を進めています。
 
 **本格実装前の小さな検証:** 独立debug APKでAPK UIDのhelper実行、Rust→SDK Surfaceの4色表示と再生成を実機確認しました。[検証・スリープ設定・ADB撮影と入力の記録](docs/native-preflight-20261104.md)に、手順、失敗、確認範囲を残しています。
 
-**次の到達点:** [foot描画検査](docs/foot-render-checks.md)を基に、ray/キーボード入力・focus・複数windowへ進み、HMD確認を最終段階にまとめます。
+**次の到達点:** [Phase 6](docs/design/phase-6.md)の停止・障害復旧・初回設定・長時間動作の検査を進めます。テーマの光学的な見え方と残りの物理操作は最後に確認します。
 
 **開発時の接続（2026-11-04実測）:** USBで初回デバッグ承認と端末照合を済ませ、USB-Cを給電器へ回した状態でWi-Fi経由のAPK導入・更新・起動・ログ・Android画像取得とTermux SSHに成功しました。ADBの切断・再接続後もSSHを復旧できました。USB経由のAPK導入、長時間の残量維持、sleep／Quest再起動後の自動復旧は未検証です。
 
@@ -27,6 +29,8 @@ Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndro
 **ローカル環境レビュー:** 既存SDK／NDK、JDK 25、有線LANの複数経路を[実測](docs/phase-0-development-environment.md#30-既存環境の確認結果2026-11-04)し、Quest API 34と新しいビルド用APIを区別しました。SSH手順、SHMの安全な読取り、描画待ちの影響、表示PoCと操作MVPの判定も修正しています。
 
 ## Docs
+
+- [利用・起動・初回ペアリング](docs/usage.md) — ADBなしの公開鍵設定、Termux起動、release、長時間測定
 
 - [キーボードの検証記録](docs/keyboard-checks.md) — US/JISの実wire・通常Hostの固定入力・押下解除・失敗の切り分けと未確認範囲
 

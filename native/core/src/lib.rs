@@ -5,6 +5,7 @@ pub mod panels;
 pub mod preferences;
 pub mod runtime;
 pub mod session;
+pub mod shutdown;
 pub mod theme;
 mod theme_store;
 pub mod waypipe;

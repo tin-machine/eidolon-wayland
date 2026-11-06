@@ -16,6 +16,8 @@ use std::{
 };
 
 struct Shared {
+    shutdown: crate::shutdown::Watch,
+    sdk_bindings: Vec<eidolon_model::surface::TargetKey>,
     panels: crate::panels::Controller,
     workspace: crate::workspace::Controller,
     credentials: eidolon_transport::credentials::CredentialSlot,
@@ -89,6 +91,8 @@ impl Runtime {
         let render = Arc::new(eidolon_render::Controller::start()?);
         let gl = render.clone();
         let shared = Arc::new(Mutex::new(Shared {
+            shutdown: Default::default(),
+            sdk_bindings: vec![],
             panels: Default::default(),
             workspace: crate::workspace::Controller::load(None),
             credentials: Default::default(),
@@ -476,6 +480,11 @@ impl Runtime {
                                 && gl.is_finished()
                                 && io.is_finished()
                                 && themes.finished()
+                                && state
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .sdk_bindings
+                                    .is_empty()
                             {
                                 break;
                             }
@@ -1273,6 +1282,10 @@ impl Runtime {
                                     Status::Accepted
                                 }
                                 Command::ResetInput { .. } => Status::Accepted,
+                                Command::RegisterSdkBinding { .. }
+                                | Command::ReleaseSdkBinding { .. } => unreachable!(
+                                    "SDK ownership is handled before the command queue"
+                                ),
                             };
                             state.snapshot.commands_processed += 1;
                             if !asynchronous {
@@ -1359,6 +1372,16 @@ impl Runtime {
                     }
                     thread::park_timeout(Duration::from_millis(5));
                 }
+                // SDKはUI thread上でnative detachを観測してEntity/listenerを回収する。
+                // 遅いackやscene終了中でも、実所有物が残る限りStoppedを出さない。
+                while !state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .sdk_bindings
+                    .is_empty()
+                {
+                    thread::park_timeout(Duration::from_millis(5));
+                }
                 let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                 state.snapshot.state = RuntimeState::Stopping;
                 state.snapshot.xr_state = XrState::Idle;
@@ -1367,6 +1390,7 @@ impl Runtime {
                 state.snapshot.commands_cancelled += state.commands.len() as u64;
                 state.commands.clear();
                 state.snapshot.state = RuntimeState::Stopped;
+                state.shutdown.finish(Instant::now());
                 state.snapshot.theme.workers = 0;
                 state.snapshot.theme.loading = false;
                 state.snapshot.panels.clear();
@@ -1393,6 +1417,39 @@ impl Runtime {
             self.worker.thread().unpark();
         }
         let mut state = self.lock();
+        // 所有権の記帳はqueueの満杯や停止中にも左右されない。releaseは全tupleを照合し、
+        // 古いscene/重複ackで別Entityの所有記録を消さない。通常の操作commandは従来どおりqueueへ。
+        if let Command::RegisterSdkBinding { target, .. }
+        | Command::ReleaseSdkBinding { target, .. } = &command
+        {
+            let code = if matches!(command, Command::ReleaseSdkBinding { .. }) {
+                if let Some(index) = state.sdk_bindings.iter().position(|key| key == target) {
+                    state.sdk_bindings.remove(index);
+                    Status::Accepted
+                } else {
+                    Status::Stale
+                }
+            } else if state.snapshot.state != RuntimeState::Ready
+                || self.stop.load(Ordering::Acquire)
+            {
+                Status::NotReady
+            } else if state.snapshot.scene != Some(target.scene) {
+                Status::Stale
+            } else if state.sdk_bindings.contains(target) {
+                Status::Accepted
+            } else if state.sdk_bindings.len() == 8 {
+                Status::Busy
+            } else {
+                state.sdk_bindings.push(*target);
+                Status::Accepted
+            };
+            if code == Status::Accepted {
+                state.snapshot.commands_accepted += 1;
+                state.snapshot.commands_processed += 1;
+                self.worker.thread().unpark();
+            }
+            return code;
+        }
         // BUSYでも非表示の安全効果を先に適用。可視方向は受付成功時だけ更新する。
         match &command {
             Command::SetActivityState { visible: false, .. } => {
@@ -1439,9 +1496,10 @@ impl Runtime {
         Status::Accepted
     }
     pub fn request_stop(&self) -> Status {
-        self.stop.store(true, Ordering::Release);
         {
             let mut state = self.lock();
+            state.shutdown.start(Instant::now());
+            self.stop.store(true, Ordering::Release);
             if state.snapshot.state != RuntimeState::Stopped {
                 state.snapshot.state = RuntimeState::Stopping;
             }
@@ -1454,7 +1512,46 @@ impl Runtime {
     }
     pub fn snapshot(&self) -> Snapshot {
         let state = self.lock();
+        let mut pending = vec![];
+        if self.stop.load(Ordering::Acquire) {
+            if !self.worker.is_finished() {
+                pending.push("core");
+            }
+            if !self.transport.is_finished() {
+                pending.push("transport");
+            }
+            if !self.render.is_finished() {
+                pending.push("render");
+            }
+            if state.snapshot.helper_workers != 0 {
+                pending.push("helper");
+            }
+            if state.snapshot.dependency_workers != 0 {
+                pending.push("dependencies");
+            }
+            if state.snapshot.compositor_workers != 0 {
+                pending.push("compositor");
+            }
+            if !self.worker.is_finished()
+                && state
+                    .snapshot
+                    .app
+                    .as_ref()
+                    .is_some_and(|app| app.state != "stopped" && !app.directory_cleaned)
+            {
+                pending.push("app");
+            }
+            if state.snapshot.theme.workers != 0 {
+                pending.push("theme");
+            }
+            if !state.sdk_bindings.is_empty() {
+                pending.push("sdk");
+            }
+        }
         Snapshot {
+            shutdown: state
+                .shutdown
+                .report(Instant::now(), pending, state.sdk_bindings.len()),
             transport: self.transport.snapshot(),
             render: self.render.snapshot(),
             commands_pending: state.commands.len(),
@@ -1615,6 +1712,67 @@ mod tests {
             request_id: CommandSeq::new(id).unwrap(),
             scene: SceneEpoch::new(id).unwrap(),
         }
+    }
+    #[test]
+    fn sdk_release_bypasses_full_queue_but_old_or_duplicate_ack_cannot_finish_stop() {
+        use eidolon_model::surface::TargetKey;
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let runtime = Runtime::start_with_hook(RuntimeConfig::default(), move || {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        runtime.lock().snapshot.scene = Some(SceneEpoch::new(1).unwrap());
+        let first = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        let second = TargetKey::from_raw(1, 2, 1, 2).unwrap();
+        let command = |target, owned| {
+            if owned {
+                Command::RegisterSdkBinding {
+                    schema: 1,
+                    request_id: CommandSeq::new(1).unwrap(),
+                    target,
+                }
+            } else {
+                Command::ReleaseSdkBinding {
+                    schema: 1,
+                    request_id: CommandSeq::new(1).unwrap(),
+                    target,
+                }
+            }
+        };
+        for target in [first, second, second] {
+            assert_eq!(runtime.command(command(target, true)), Status::Accepted);
+        }
+        assert_eq!(runtime.snapshot().shutdown.sdk_bindings, 2);
+        for _ in 0..limits::CORE_COMMANDS {
+            assert_eq!(runtime.command(scene(1)), Status::Accepted);
+        }
+        assert_eq!(runtime.command(scene(1)), Status::Busy);
+        assert_eq!(runtime.command(command(second, false)), Status::Accepted);
+        assert_eq!(runtime.command(command(second, false)), Status::Stale);
+        // 外部ownerが返らない場合を仮想時刻で検査し、実時間10秒は待たない。
+        runtime
+            .lock()
+            .shutdown
+            .start(Instant::now() - Duration::from_secs(11));
+        runtime.request_stop();
+        runtime.request_stop();
+        assert_eq!(runtime.command(command(second, true)), Status::NotReady);
+        let old = TargetKey::from_raw(1, 1, 2, 1).unwrap();
+        assert_eq!(runtime.command(command(old, false)), Status::Stale);
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.shutdown.sdk_bindings, 1);
+        assert!(snapshot.shutdown.timed_out && !snapshot.shutdown.complete);
+        assert!(snapshot.shutdown.pending_owners.contains(&"sdk"));
+        release_tx.send(()).unwrap();
+        assert!(!runtime.can_destroy());
+        assert_eq!(runtime.command(command(first, false)), Status::Accepted);
+        wait(&runtime, Runtime::can_destroy);
+        let stopped = runtime.snapshot().shutdown;
+        assert!(stopped.complete && stopped.timed_out);
+        assert!(stopped.pending_owners.is_empty());
     }
     #[test]
     fn full_key_queue_requests_urgent_reset_without_enqueuing_the_lost_key() {

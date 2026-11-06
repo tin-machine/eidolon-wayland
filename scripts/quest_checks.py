@@ -1241,7 +1241,8 @@ def credentials_result(snapshot, nonce, expected):
         return False
     required = ("idempotent", "public_only", "file_mode_0600", "aes_nonexportable", "known_pin", "unknown_pin_rejected",
                 "mismatch_pin_rejected", "unsolicited_credential_rejected", "tamper_rejected", "key_loss_rejected",
-                "no_silent_regeneration", "production_unchanged", "save_loss_rejected")
+                "no_silent_regeneration", "production_unchanged", "save_loss_rejected", "profile_roundtrip", "profile_mode_0600",
+                "unconfirmed_pin_preserved", "stale_form_rejected", "explicit_pin_change", "production_profile_unchanged")
     if not all(result.get(key) is True for key in required) or result.get("cleanup_failed"):
         raise ValueError("credential保護・pin拒否・回収結果が不正です")
     if "BEGIN OPENSSH PRIVATE KEY" in json.dumps(snapshot):

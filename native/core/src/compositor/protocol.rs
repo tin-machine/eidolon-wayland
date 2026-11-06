@@ -20,7 +20,7 @@ use smithay::{
             wl_buffer::WlBuffer,
             wl_compositor::WlCompositor,
             wl_data_device::{self, WlDataDevice},
-            wl_data_device_manager::WlDataDeviceManager,
+            wl_data_device_manager::{self, WlDataDeviceManager},
             wl_output::WlOutput,
             wl_seat::WlSeat,
             wl_shm::{self, WlShm},
@@ -40,8 +40,7 @@ use smithay::{
         selection::{
             SelectionHandler,
             data_device::{
-                ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, DataDeviceUserData,
-                ServerDndGrabHandler,
+                ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
             },
         },
         shell::xdg::{
@@ -313,25 +312,6 @@ impl ProtocolState {
         self.buffer_uses
             .retain(|id, token| token.strong_count() > 0 || self.release_queue.contains_key(id));
         self.data_devices.retain(|_, device| device.is_alive());
-        let backend = dh.backend_handle();
-        let mut clients = vec![];
-        backend.with_all_clients(|client| clients.push(client));
-        for client in clients {
-            let mut ids = vec![];
-            let _ = backend.with_all_objects_for(client, |id| {
-                if id.interface().name == "wl_data_device" {
-                    ids.push(id);
-                }
-            });
-            for id in ids {
-                if !self.data_devices.contains_key(&id)
-                    && let Ok(device) = WlDataDevice::from_id(dh, id.clone())
-                {
-                    self.advertise_clipboard(dh, &device);
-                    self.data_devices.insert(id, device);
-                }
-            }
-        }
     }
 
     /// visible/presentが確認できたsurfaceだけに呼ぶ。protocol fixtureは明示的な仮想clockを使う。
@@ -720,15 +700,17 @@ impl Dispatch<WlShmPool, ShmPoolUserData> for ProtocolState {
     }
 }
 
-impl Dispatch<WlDataDevice, DataDeviceUserData> for ProtocolState {
+// DataDeviceStateのsource作成delegateが要求するuserdata型にも対応するが、
+// 製品deviceは下のmanagerからunit userdataで生成し、Seatとの強参照循環を作らない。
+impl<U: Send + Sync + 'static> Dispatch<WlDataDevice, U> for ProtocolState {
     fn request(
         state: &mut Self,
         client: &Client,
         device: &WlDataDevice,
         request: wl_data_device::Request,
-        data: &DataDeviceUserData,
+        _: &U,
         dh: &DisplayHandle,
-        init: &mut DataInit<'_, Self>,
+        _: &mut DataInit<'_, Self>,
     ) {
         match request {
             wl_data_device::Request::SetSelection { source, serial } => {
@@ -759,11 +741,41 @@ impl Dispatch<WlDataDevice, DataDeviceUserData> for ProtocolState {
                 }
                 device.selection(None);
             }
-            request => {
-                <DataDeviceState as Dispatch<WlDataDevice, DataDeviceUserData, Self>>::request(
-                    state, client, device, request, data, dh, init,
-                )
+            wl_data_device::Request::Release => {
+                state.data_devices.remove(&device.id());
             }
+            _ => unreachable!(),
+        }
+    }
+    fn destroyed(state: &mut Self, _: ClientId, device: &WlDataDevice, _: &U) {
+        state.data_devices.remove(&device.id());
+    }
+}
+
+impl Dispatch<WlDataDeviceManager, ()> for ProtocolState {
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        manager: &WlDataDeviceManager,
+        request: wl_data_device_manager::Request,
+        data: &(),
+        dh: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        if let wl_data_device_manager::Request::GetDataDevice { id, seat } = request {
+            if !state._seat.owns(&seat) {
+                init.post_error(id, 0u32, "unmanaged seat");
+                return;
+            }
+            // selectionは製品側で実装済み。Smithay 0.7のSeatDataに二重登録すると
+            // releaseなしの切断でdevice→seat→deviceが残り、keymap FDも回収されない。
+            let device = init.init(id, ());
+            state.advertise_clipboard(dh, &device);
+            state.data_devices.insert(device.id(), device);
+        } else {
+            <DataDeviceState as Dispatch<WlDataDeviceManager, (), Self>>::request(
+                state, client, manager, request, data, dh, init,
+            );
         }
     }
 }
@@ -785,4 +797,3 @@ delegate_seat!(ProtocolState);
 delegate_global_dispatch!(ProtocolState: [WlShm: ()] => ShmState);
 delegate_dispatch!(ProtocolState: [WlBuffer: ShmBufferUserData] => ShmState);
 delegate_global_dispatch!(ProtocolState: [WlDataDeviceManager: ()] => DataDeviceState);
-delegate_dispatch!(ProtocolState: [WlDataDeviceManager: ()] => DataDeviceState);

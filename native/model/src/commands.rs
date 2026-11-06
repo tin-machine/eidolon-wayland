@@ -192,6 +192,16 @@ pub enum CompositorScenario {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    RegisterSdkBinding {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+    },
+    ReleaseSdkBinding {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+    },
     SetWorkloadObservation {
         schema: u32,
         request_id: CommandSeq,
@@ -427,7 +437,9 @@ impl Command {
         }
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
-            Self::SetWorkloadObservation { schema, .. }
+            Self::RegisterSdkBinding { schema, .. }
+            | Self::ReleaseSdkBinding { schema, .. }
+            | Self::SetWorkloadObservation { schema, .. }
             | Self::SetTheme { schema, .. }
             | Self::BeginThemeImport { schema, .. }
             | Self::ApplyThemeImport { schema, .. }
@@ -539,7 +551,9 @@ impl Command {
     }
     pub fn request_id(&self) -> CommandSeq {
         match *self {
-            Self::SetWorkloadObservation { request_id, .. }
+            Self::RegisterSdkBinding { request_id, .. }
+            | Self::ReleaseSdkBinding { request_id, .. }
+            | Self::SetWorkloadObservation { request_id, .. }
             | Self::SetTheme { request_id, .. }
             | Self::BeginThemeImport { request_id, .. }
             | Self::ApplyThemeImport { request_id, .. }

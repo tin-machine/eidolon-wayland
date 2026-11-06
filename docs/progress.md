@@ -797,3 +797,61 @@ Build123では`theme-surface`両mode、四条件性能比較を含む`theme-sdk`
 後二つはそれぞれ5＋10段階、製品設定hash不変、通常UI復帰まで確認した。
 debug/release assemble・lint・package、JUnit2件、実APK PC68件も成功。APK123をQuestへ導入済み。
 一時装着通知は最後にprox_farで戻し、永続設定・Guardianは変更していない。
+
+## 停止・接続設定・観測基盤（Build124〜128）
+
+Phase 5/TH05のHMD確認を最後に残し、Phase 6の独立部分を先行実装した。
+L01/L02/C02とL03/L04の測定基盤は実装済みの範囲があるが、各taskは`in_progress`を維持する。
+
+- 停止: SDK Entity/listenerを正しい世代で記帳し、native/SDKの回収後にだけ停止完了とする。
+  10秒timeout時は未回収ownerを残し、新runtimeを追加しない。古い/重複ack、queue飽和、遅いackをhostで検査。
+- 接続障害: host専用SSH peerを20回終了させ、所有thread/forward回収、明示再接続、旧SessionId拒否、pin維持を確認。
+  Questの障害行列・物理Menu/sleep/rebootの受入れとは区別する。
+- 初回設定: 公開鍵コピー、username/host key入力、指紋確認、保存前停止、古いformの上書き拒否を追加。
+  Termuxの`eidolon-pair`は既存authorized_keysを保持する。表示名は`Eidolon`。
+- 配布: `build-release`でunsigned APKと同buildのTermux toolsを作る。署名・release実機受入れは残る。
+- 観測: `quest-observe`でbattery/温度/PSS/FD/CPUと資源counterを記録する。欠測・更新停止・process変更を識別し、
+  採取完了を長時間試験の合格にしない。使い方は[起動・接続手順](usage.md)を参照。
+
+### 失敗から修正まで
+
+Build125の通常SDK停止は、GL終了後もSDKが個別detach ackを待つためtimeoutした。
+描画threadの終了とnative参照ゼロの両方を確認した場合にもSDKを解放するよう修正し、Build126でstop20が成功した。
+ただし切断後FDは293→351へ増加。keyboard単独のfixtureでは再現せず、data deviceを作ってreleaseなしで切断すると
+keymap FDが0→1となった。独自clipboardとSmithay 0.7のdevice登録の二重管理による強参照循環を修正した。
+同じhost fixtureとBuild128の全停止反復で、対象memfd FD/mapがゼロへ戻ることを確認した。
+
+### Build128の検査結果
+
+| 検査 | 結果 |
+| --- | --- |
+| Rust全suite / fmt / clippy | 156件成功、警告なし |
+| 実APK指定PC検査 / Termux launcher | 73件 / 33件成功、skipなし |
+| debug・release assemble / lint / package | 成功。JUnit各4件成功 |
+| 通常SDK stop20 | 成功。受付最大3ms、全停止191ms、切断336ms |
+| FD追加採取付きstop20 | 成功。受付最大3ms、全停止196ms、切断349ms |
+| 実Keystore credentials | 保存・0600・pin確認/旧form拒否・製品設定不変が成功 |
+| theme-sdk / two-windows / popup-clipboard | 成功（最後はinstrumentation） |
+| 観測器60秒smoke（Build126） | 13/13採取、同process・診断更新を確認。長時間受入れではない |
+
+Build128のsource digestは`1af62ad95dbe59bb6c121de0588ffad7eca8ff0fa0c6527ed38b026f9aa15fa6`。
+debug APKのSHA256は`0766d7114ecde896082a8b8dcaf583db1ce06c53852a43c51013c08e07c89ba4`、
+unsigned releaseは`295b88341b1f776efd02982c1c51ab9e090b7866624242da55468bace4751f20`。
+Build128をQuestへ導入済み。通常のGuardian案内で可視性が得られず、事前承認された一時pauseで実SDK検査を行った。
+各runのfinallyで元値（空）とprox_farへ復帰。HMD/パススルーの光学的受入れは含まない。
+
+### 残る資源増加
+
+キーマップ修正後も切断後の全FDは294→312、別runでは293→313へ増えた。
+1秒間隔の内訳採取で、`/sys/devices/virtual/kgsl/kgsl/thread/<tid>/active_time`が増えることを確認。
+反復後には44個中41個が終了済みthreadのものだった。30秒待機後も全FDは約318で維持された。
+このpath文字列とGPU計測symbolは同梱`libMetaSpatialSDK.so`にあるためSDK内部計測を疑うが、呼出し元stackは未確定。
+製品側は既にGL owner上でcontext破棄と`eglReleaseThread`を実行している。
+他ownerのFDを強制closeせず、SDK側の切り分けとL04のFD基準達成を残件とする。
+
+再現ログは設定済み作業rootの`eidolon-phase6-implementation/`に保持。
+通常SDKのrunは`20261106T094817-cb089347`、認証は`20261106T094926-d6e8ef3f`、
+テーマは`20261106T094933-9583da3e`、二窓は`20261106T095025-e05d445f`、
+clipboardは`20261106T095041-e3d66753`、FD再採取は`20261106T095403-546d4a7e`。
+残りはSDK計測FDの調査、Questの障害行列、実時間の給電/soak、署名release検査、最後のHMD/物理操作。
+キーボード検証の中断とFキー免除は維持する。
