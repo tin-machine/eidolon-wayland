@@ -1146,6 +1146,37 @@ mod tests {
     }
 
     #[test]
+    fn stalled_executor_remains_failed_even_if_the_gpu_eventually_returns() {
+        use std::sync::atomic::Ordering;
+        let executor = Arc::new(executor::Executor::new().unwrap());
+        let renderer = Controller::start_on(Default::default(), Some(executor.clone())).unwrap();
+        let hook = Arc::new(platform::TestControl::default());
+        hook.blocked.store(true, Ordering::Release);
+        renderer.set_visible(true);
+        renderer.attach(
+            TargetKey::from_raw(1, 1, 1, 1).unwrap(),
+            PlatformWindow {
+                control: Some(hook.clone()),
+            },
+            64,
+            64,
+        );
+        wait(|| hook.entered.load(Ordering::Acquire));
+        // 実GPU待ちの経過時刻だけを進め、snapshotによる製品のstall判定を通す。
+        renderer.state.0.lock().unwrap().busy_since =
+            Some(Instant::now() - STALL - Duration::from_millis(1));
+        assert_eq!(renderer.snapshot().error, Some("RENDER_STALLED"));
+        assert!(!renderer.is_finished());
+        assert!(Controller::start_on(Default::default(), Some(executor.clone())).is_err());
+        hook.blocked.store(false, Ordering::Release);
+        wait(|| renderer.is_finished());
+        assert_eq!(renderer.snapshot().contexts, 0);
+        assert!(executor.snapshot().failed);
+        assert!(Controller::start_on(Default::default(), Some(executor.clone())).is_err());
+        assert_eq!(executor.snapshot().completed_jobs, 1);
+    }
+
+    #[test]
     fn theme_upload_is_cancelled_without_blocking_commands_or_resurrecting_old_candidate() {
         use std::sync::atomic::Ordering;
         let renderer = Controller::start().unwrap();

@@ -23,6 +23,7 @@ object LifecycleSdkCase {
         var started=0L
         var current=JSONObject()
         var beforeSession=0L
+        var disconnectedAt=0L
         fun start() {NativeSessionHost.publishCheck(result);ui.post(this)}
         fun items(a:JSONArray)=(0 until a.length()).map {a.getJSONObject(it)}
         fun visible(s:JSONObject)=s.getString("state")=="Ready" && s.getBoolean("activity_visible") && s.getString("xr_state")=="FOCUSED"
@@ -50,13 +51,16 @@ object LifecycleSdkCase {
                 .put("app",compactApp).put("transport",compactTransport).put("render",pick(render,"mode","workers","owner_tid","executor","contexts","latest_images","error")
                     .put("targets",JSONArray(items(render.getJSONArray("targets")).map {pick(it,"key","role","frames","content_frame")})))
         }
-        fun resources(s:JSONObject):JSONObject = nativeResources(s)
+        fun resources(s:JSONObject):JSONObject {
+            val fds=GpuFdProbe.snapshot()
+            return nativeResources(s)
                 .put("handle",handle.toString()).put("session",s.getJSONObject("transport").optString("session"))
                 .put("adapter",JSONObject()
                     .put("bindings",adapter.metrics().getInt("bindings")).put("listeners",adapter.metrics().getInt("listeners"))
                     .put("decoration_entities",adapter.metrics().getInt("decoration_entities")))
-                .put("fds",File("/proc/self/fd").list()?.size ?: -1)
-                .put("gpu_fds",GpuFdProbe.snapshot().getJSONArray("gpu"))
+                .put("fds",fds.getInt("fds")).put("fd_kinds",fds.getJSONObject("fd_kinds"))
+                .put("gpu_fds",fds.getJSONArray("gpu"))
+        }
         fun open(next:String) {
             NativeSessionHost.openTerminal();NativeSessionHost.openTerminal()
             stage=next;deadline=SystemClock.elapsedRealtime()+60000
@@ -86,7 +90,20 @@ object LifecycleSdkCase {
                             s.getJSONArray("panels").length()==0 && metrics.getInt("bindings")==0 && metrics.getInt("listeners")==0) {
                             check(t.getJSONArray("pending_cleanup").length()==0)
                             check(t.getJSONObject("app_forward").getBoolean("remote_cleaned"))
-                            current.put("disconnect_ms",SystemClock.elapsedRealtime()-started).put("after_disconnect",resources(s))
+                            disconnectedAt=SystemClock.elapsedRealtime()
+                            current.put("disconnect_ms",disconnectedAt-started).put("after_disconnect_immediate",resources(s))
+                            stage="disconnect_settle"
+                        }
+                    }
+                    "disconnect_settle" -> {
+                        // SDKの非同期解放を一律1秒待つ。最小FDになる瞬間を選ばない。
+                        val t=s.getJSONObject("transport")
+                        check(visible(s) && t.getString("state")=="Disconnected" && t.getInt("owned_connections")==0 &&
+                            s.getJSONObject("app").getString("state")=="stopped" && s.getJSONArray("panels").length()==0 &&
+                            s.getJSONObject("render").getJSONArray("targets").length()==0 && adapter.metrics().getInt("bindings")==0)
+                        val waited=SystemClock.elapsedRealtime()-disconnectedAt
+                        if(waited>=1000) {
+                            current.put("disconnect_settle_ms",waited).put("after_disconnect",resources(s))
                             open("reopened")
                         }
                     }

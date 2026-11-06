@@ -88,6 +88,7 @@ def stop_result(snapshot, nonce, expected, uid, termux_uid, package):
         require(previous_session < first < second, 'SessionIdを再利用しています')
         previous_session = second
         disconnected = row.get('after_disconnect', {})
+        require(number(row.get('disconnect_settle_ms'), 1000, 10000), '切断後の固定待機が未確認です')
         require(disconnected.get('state') == 'Ready' and disconnected.get('session') == str(first)
                 and disconnected.get('handle') == before.get('handle') and number(row.get('disconnect_ms'), 0, 10000),
                 '切断がruntimeまで破棄したか、期限/世代が不正です')
@@ -137,6 +138,9 @@ def stop_result(snapshot, nonce, expected, uid, termux_uid, package):
             own = [x for x in gpu if x['tid'] == owner_tid]
             require(len(own) <= 1 and all(x['alive'] for x in own), '再利用GL threadのGPU FDが不正です')
         require(number(disconnected.get('fds'), 1), '切断後FDが未採取です')
+        kinds = disconnected.get('fd_kinds')
+        require(isinstance(kinds, dict) and kinds and all(number(v) for v in kinds.values())
+                and sum(kinds.values()) == disconnected['fds'], 'FD分類が総数と一致しません')
         disconnected_fds.append(disconnected['fds'])
     # 初回2回のSDK/driver初期化を分け、以降18回の同じ切断状態で比較する。
     # 2時間soak/L04の代替ではなく、今回の反復増加を拒否する短い回帰検査。

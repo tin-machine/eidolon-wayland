@@ -22,14 +22,27 @@ object GpuFdProbe {
         val entries = checkNotNull(File("/proc/self/fd").list())
         val live = checkNotNull(File("/proc/self/task").list()).map { it.toInt() }.toSet()
         val gpu = JSONArray()
+        val kinds = mutableMapOf<String, Int>()
+        fun count(kind: String) { kinds[kind] = (kinds[kind] ?: 0) + 1 }
         for (fd in entries) {
             val path = try { Os.readlink("/proc/self/fd/$fd") }
-            catch (error: ErrnoException) { if (error.errno == OsConstants.ENOENT) continue else throw error }
-            val tid = gpuPath.matchEntire(path)?.groupValues?.get(1)?.toInt() ?: continue
-            gpu.put(JSONObject().put("fd", fd.toInt()).put("tid", tid).put("alive", tid in live))
+            catch (error: ErrnoException) { if (error.errno == OsConstants.ENOENT) { count("unresolved"); continue } else throw error }
+            val tid = gpuPath.matchEntire(path)?.groupValues?.get(1)?.toInt()
+            count(when {
+                tid != null -> "gpu_active_time"
+                path.startsWith("socket:") -> "socket"
+                path.startsWith("pipe:") -> "pipe"
+                path.startsWith("anon_inode:") -> path // kernelの資源種別だけ。file path/入力は保存しない。
+                path.contains("memfd:smithay-keymap") -> "keymap_memfd"
+                path.contains("memfd:") -> "memfd"
+                path.startsWith("/dev/") -> "device"
+                else -> "file"
+            })
+            if (tid != null) gpu.put(JSONObject().put("fd", fd.toInt()).put("tid", tid).put("alive", tid in live))
         }
         val maps = File("/proc/self/maps").readText()
         return JSONObject().put("elapsed_ms", SystemClock.elapsedRealtime()).put("fds", entries.size)
+            .put("fd_kinds", JSONObject(kinds.toMap()))
             .put("gpu", gpu).put("sdk_loaded", maps.contains("/libMetaSpatialSDK.so"))
             .put("product_native_loaded", maps.contains("/libeidolon_native.so"))
     }

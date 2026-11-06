@@ -7,7 +7,7 @@
 
 変更: `native/core/src/session.rs`、`runtime.rs`、`native/transport/src/session.rs`、`native/render/src/surface.rs`、`NativeSessionHost.kt`。
 
-`disconnect`は製品sessionだけを終了し、runtime/診断UIを残す。`nativeRequestStop`はsession終了後にthreadとregistryまで回収する。どちらも冪等で、受理直後に`Stopping`をsnapshotへ反映する。停止要求の受付からの目標は100 ms、通常の全回収は10秒以内とする。
+`disconnect`は製品sessionだけを終了し、runtime/診断UIを残す。`nativeRequestStop`はsession終了後にruntime所有job/threadとregistryまで回収する。どちらも冪等で、受理直後に`Stopping`をsnapshotへ反映する。停止要求の受付からの目標は100 ms、通常の全回収は10秒以内とする。
 
 | 順 | 担当・処理 | deadlineと失敗時 |
 | --- | --- | --- |
@@ -17,11 +17,25 @@
 | 4 | GL ownerが描画を止め、texture→EGLSurface→NativeWindow参照の順に解放 | 2秒で応答監視。同期GLを別threadから強制解放しない |
 | 5 | Kotlinがdetach済みtargetのlistenerとEntityを破棄し、適用ack | 2秒。既にscene消滅なら旧epochへのcommandを無害化してack |
 | 6 | transportが残channelとSSHを閉じ、coreがowned socket/runtime directoryを回収 | 同一nonceの所有記録・path検査を通ったものだけ削除 |
-| 7 | runtime停止時のみownerをjoin、停止snapshotを保存、registry回収可能にする | UIでjoinしない。全体10秒超で未回収資源を記録 |
+| 7 | runtime停止時のみ専用ownerをjoin、共用GL executorのjob回収ackを確認、停止snapshotを保存、registry回収可能にする | UIでjoinしない。全体10秒超で未回収資源を記録 |
 
 手順2〜4は所有関係を保って並行に進められる。正常な`Stopped`は全ownerの完了ack後だけ発行する。SSH断でremoteへ到達できない場合は、launcherのEOF/60秒leaseで回収を待つ。到達できないremote状態を「回収済み」と書かない。次回接続時に自分のnonceとlease記録を照合する。
 
 GLが戻らない場合は`RENDER_STALLED`とし、そのruntimeを再利用しない。操作UIは状況を表示し、アプリ再起動での回復を案内する。stop timeoutを握り潰して新GL threadを繰り返し作る実装は禁止。R03/I05で再現した時点で設計gateへ戻す。
+
+AndroidではSDK 0.15.0の[TID別GPU計測FD保持](../gpu-fd-investigation.md)を避けるため、process内にGL executorを1本だけ保持する。
+同時に貸し出すjobは1件で、runtime停止時はtexture・context・Surface・NativeWindow・queue・画像・theme・runtime参照をすべて返す。
+返却完了後にだけ`render.is_finished`を真にする。idleはchannel待機で、GL資源を保持せずtimerで起床しない。
+`render.workers`はruntimeのGL job数、`render.executor`はprocess共用threadの実数・active_jobs・completed_jobs・TID・故障状態を記録する。
+通常停止時はworkers=0/active_jobs=0/threads=1。再生成後も同じTIDを使い、process終了時にthreadも終了する。
+これは全threadゼロを装う例外ではなく、SDK/UIと同様にprocess寿命の資源を明示して管理する設計変更である。
+panicやstall後はGLが遅れて戻ってもexecutorを故障状態に固定し、自動で代替threadを作らない。
+hostの通常backendは専用threadを維持し、共用経路は独立executorを渡すテストで再利用・参照回収・busy・故障を検査する。
+
+短いstop20回帰では、同一GL TIDとjob回収を全20回で検査し、初期化の2回後から18回の同じ切断状態でFD幅2以下を要求する。
+FDは所有資源の回収を確認してから一律1秒待ち、切断状態が維持されている時点で総数と種類別の内訳を採取する。
+切断直後の値・本来の切断所要時間・初回分もログへ残し、最小FDの瞬間を選んだり待機時間を停止時間から差し引いたりしない。
+この短い検査をL04の2時間・100回再接続の代替にはしない。
 
 fake adapterで各ackを欠落・遅延・重複・順序逆転させる。Questでは一枚表示→正常切断を20回実施し、所有リソース数が基準へ戻ることを確認する。
 

@@ -1,5 +1,26 @@
 # 製品実装の進捗
 
+## 最新のFD対策検証（2026-11-07、Build133）
+
+AndroidのGL threadをprocess内で1本再利用し、runtime停止時にはjobの全資源と参照を返す方式へ変更した。
+SDK 0.15.0のTID別GPU計測cacheを直接変更するものではない。停止契約は[Phase 6設計](design/phase-6.md#l01)、
+失敗を含む切り分けは[GPU FD調査](gpu-fd-investigation.md)に記録した。
+
+- 通常SDKのstop20回はpass。同一GL TID・GPU計測FD33個を維持。初期化2回後の全FDは304〜306で幅2以下。
+- 切断後1秒の固定待機を設け、即時値も保持。変動はsync_fileの58〜60だけで、他のFD分類は一定だった。
+- 二窓表示とテーマの通常SDK回帰は各5cycles pass。popup/clipboardはnative instrumentationの2cycles pass。
+- Rust160件、Termux33件、実APK指定Python77件が成功。fmt/clippy、debug/release assemble・lint・JUnit・APK検査も成功。
+- Build132の即時測定は幅3でfailed。Termux未起動・古いPIDの診断・Wi-Fi ADB途絶も、復旧手順とともに記録した。
+
+debug APK SHA256は`82aaea01870719451c96d9744b31f848ef766844266e8a8923d196515a4e8c2f`、
+sourceはlocal checkpoint `ae16af0` + dirty、digestは`702662e47df96c1fb92ab6c86740b7d1bc9783591cc948e4f893dd386d6307b5`。
+artifactは設定済みwork rootの`eidolon-gpu-fd-mitigation-20261106/`。
+stop runは`20261107T000754-518b7dfd`、二窓`20261107T001000-ec566702`、
+テーマ`20261107T001022-bdf62b76`、popup/clipboard`20261107T001115-c41a2b71`。
+今回の短い回帰はL04の長時間受入れ、signed release実測、HMD視認・物理操作の代わりにはしない。
+
+## 既存タスクと受入れ範囲
+
 ゴールはPhase 5（I07）まで。2026-11-04のユーザー指定により、HMD視認と物理入力の受入れは最終段階にまとめる。実装・host検証・ADBによる自動試験を先に進める。手動検証を含むcheck全体は、手動部分が残る間`not_run`とし、自動部分の成功を別に記録する。後続実装は自動部分の成立を根拠に進め、taskの`done`判定は省略しない。
 
 各検証のsource commit・source digest・APK SHA256はartifactと下記のBuild別記録を基準とする。

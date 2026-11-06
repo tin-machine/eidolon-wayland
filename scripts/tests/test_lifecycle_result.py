@@ -21,7 +21,7 @@ class LifecycleResultTests(unittest.TestCase):
                     local=dict(uid=4242, child_uid=4242, owned_groups=1, executable_sha256=sha),
                     windows=[dict(window='1', frame='9', life='Mapped')]),
                 transport=dict(state='Ready', session=str(session), owned_connections=1, app_forward=dict(uid=4343)),
-                fds=200, gpu_fds=gpu,
+                fds=200, gpu_fds=gpu, fd_kinds=dict(file=198, gpu_active_time=1, unresolved=1),
                 render=dict(owner_tid=88, executor=executor(1), targets=[dict(key=key, role='windows', frames=3, content_frame='9')]),
                 adapter=dict(bindings=1, listeners=1), shutdown=dict(sdk_bindings=1))
         def stopped(handle, session, full):
@@ -33,7 +33,7 @@ class LifecycleResultTests(unittest.TestCase):
                 transport=dict(state='Stopped' if full else 'Disconnected', session=str(session), error=None,
                     owned_connections=0, forward_active=0, tokio_threads=0, workers=0 if full else 1,
                     pending_cleanup=[], app_forward=dict(uid=4343, remote_cleaned=True, forward_cancelled=True, pending_cleanup=[])),
-                fds=200, gpu_fds=gpu,
+                fds=200, gpu_fds=gpu, fd_kinds=dict(file=198, gpu_active_time=1, unresolved=1),
                 render=dict(owner_tid=88, executor=executor(0 if full else 1, handle), targets=[], workers=0 if full else 1, contexts=0, latest_images=0),
                 adapter=dict(bindings=0, listeners=0, decoration_entities=0),
                 shutdown=dict(requested=full, complete=full, timed_out=False, pending_owners=[], sdk_bindings=0,
@@ -42,7 +42,7 @@ class LifecycleResultTests(unittest.TestCase):
         for i in range(20):
             handle=i+2; session=2*i+1
             rows.append(dict(cycle=i+1, before_disconnect=live(handle, session), before_stop=live(handle, session+1),
-                after_disconnect=stopped(handle, session, False), disconnect_ms=20, old_handle_rejected=True,
+                after_disconnect=stopped(handle, session, False), disconnect_ms=20, disconnect_settle_ms=1000, old_handle_rejected=True,
                 stop=dict(handle=str(handle), accept_ms=1, stop_ms=20, runtime=stopped(handle, session+1, True)),
                 after_restart=dict(state='Ready', handle=str(handle+1), transport=dict(state='Idle', pending_cleanup=[]), fds=200, gpu_fds=gpu,
                     render=dict(owner_tid=88, executor=executor(1), targets=[dict(role='diagnostic', frames=3)]), adapter=dict(bindings=1, listeners=1))))
@@ -81,12 +81,21 @@ class LifecycleResultTests(unittest.TestCase):
             (['cycles', 0, 'after_disconnect', 'gpu_fds'], [dict(tid=88, fd=30, alive=False)]),
             (['cycles', 0, 'after_disconnect', 'gpu_fds'], None),
             (['cycles', 19, 'after_disconnect', 'fds'], 218),
+            (['cycles', 0, 'disconnect_settle_ms'], 999),
+            (['cycles', 0, 'after_disconnect', 'fd_kinds'], {}),
         ]
         for path, value in paths:
             bad=copy.deepcopy(valid); target=bad['check']
             for key in path[:-1]: target=target[key]
             target[path[-1]]=value
             with self.subTest(path=path), self.assertRaises(ValueError): judge(bad)
+        # 分類合計は正しくても、切断後FDの反復増加を拒否する。
+        growing=copy.deepcopy(valid)
+        for i, row in enumerate(growing['check']['cycles']):
+            row['after_disconnect']['fds'] += i
+            row['after_disconnect']['fd_kinds']['file'] += i
+        with self.assertRaisesRegex(ValueError, 'warmup後'):
+            judge(growing)
         valid['check']['result']='running'
         self.assertFalse(judge(valid))
 
