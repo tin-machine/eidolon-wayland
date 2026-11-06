@@ -7,9 +7,12 @@
     <instrumentation android:name=".GpuFdInstrumentation"
         android:targetPackage="io.github.tinmachine.eidolon" android:functionalTest="true" />
     <application>
-        <activity android:name=".GpuFdSdkActivity" android:exported="true" android:excludeFromRecents="true"
+        <activity android:name=".GpuFdSdkActivity" android:exported="true" android:excludeFromRecents="true" android:launchMode="singleTask"
             android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode">
-            <intent-filter><category android:name="com.oculus.intent.category.VR" /></intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="com.oculus.intent.category.VR" />
+            </intent-filter>
         </activity>
         <activity android:name=".DebugCommandActivity" android:exported="true"
             android:excludeFromRecents="true" android:theme="@android:style/Theme.NoDisplay" />

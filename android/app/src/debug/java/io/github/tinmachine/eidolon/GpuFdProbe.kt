@@ -93,8 +93,9 @@ object GpuFdProbe {
         try {
             check(visible()) { "SDK_NOT_FOCUSED" }
             val baseline = snapshot()
+            result.put("baseline", baseline)
             check(baseline.getBoolean("sdk_loaded") == sdk && !baseline.getBoolean("product_native_loaded"))
-            result.put("baseline", baseline); checkpoint("empty_threads")
+            checkpoint("empty_threads")
             val empty = JSONArray()
             repeat(3) { worker { empty.put(JSONObject().put("tid", Process.myTid())); Thread.sleep(HOLD_MS) } }
             result.put("empty_threads", empty).put("after_empty", snapshot()); checkpoint("fresh_threads")

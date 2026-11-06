@@ -844,7 +844,8 @@ Build128をQuestへ導入済み。通常のGuardian案内で可視性が得ら�
 
 キーマップ修正後も切断後の全FDは294→312、別runでは293→313へ増えた。
 1秒間隔の内訳採取で、`/sys/devices/virtual/kgsl/kgsl/thread/<tid>/active_time`が増えることを確認。
-反復後には44個中41個が終了済みthreadのものだった。30秒待機後も全FDは約318で維持された。
+反復後には44個中41個のTIDが当該processのtask一覧になかった。30秒待機後も全FDは約318で維持された。
+当初の「終了済みthread」という分類は、別processのTIDを区別していなかったため訂正する。
 このpath文字列とGPU計測symbolは同梱`libMetaSpatialSDK.so`にあるためSDK内部計測を疑うが、呼出し元stackは未確定。
 製品側は既にGL owner上でcontext破棄と`eglReleaseThread`を実行している。
 他ownerのFDを強制closeせず、SDK側の切り分けとL04のFD基準達成を残件とする。
@@ -865,5 +866,20 @@ SDK 0.15.0のGPU計測にはTIDごとのfile cacheがあり、終了したthread
 
 Build130のdebug/release assemble・lint・JUnit・同梱/入口検査、実APK指定PC76件が成功。
 新しい比較入口はdebugだけに含まれる。接続中の製品を停止しないpreflightもhostで確認した。
-Wi-Fi ADBが途中でofflineとなり、対象接続とPC側serverの再起動でも戻らないため、APK導入・二条件比較は未実施。
+この時点ではWi-Fi ADBがofflineとなり、対象接続とPC側serverの再起動でも直ちには戻らず、二条件比較は未実施だった。
 SDKのFDを外からcloseする処置、releaseの変更、L04受入れ完了は行っていない。
+
+## GPU計測FDの独立再現（Build131）
+
+接続復帰後、collectorの空JSON読取待ちと検証用ActivityのMAIN/VR・singleTask宣言を修正した。
+Guardian前面による可視性失敗を記録した後、許可済み一時pauseで二条件とも完走した。
+SDKなしでは作成TIDのGPU計測FDが0、SDKありでは別GL thread 10本で10個、同じthreadの10反復で1個残った。
+各threadはjoin済み、EGL解放成功、30秒待機後の結果。空threadは両条件で0だった。
+製品native/SSH/Waylandを使わずSDK条件だけで再現した。詳細と限界は[調査記録](gpu-fd-investigation.md)。
+
+Build131のdebug/release build・lint・JUnit・同梱検査、実APK指定PC77件は成功。比較入口はreleaseに含まれない。
+debug APK SHA256は`e678cbef5b52875d75c3c0f840ba05476697a3e20fd5fd459d4c38f6927ca9d5`、
+source digestは`58933ec71f291e130e70ab41a7e154160bf6d8a4ee079c6023b659825e4f442f`。
+実測は設定済み作業rootの`eidolon-sdk-gpu-fd-20261106/checks/20261106T110132-7f8141df/`に保存。
+Guardianを元値へ戻し、通常UI Ready・SSH Idle・Termux sshd稼働を確認した。
+原因切り分けは完了したが、SDK cacheの修正、release実測、全FD基準達成と長時間受入れは残る。

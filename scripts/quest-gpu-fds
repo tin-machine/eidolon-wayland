@@ -29,6 +29,8 @@ result = dict(status='running', acceptance='not_run', modes=[])
 guardian = None
 instrument = None
 instrument_log = None
+app_log = None
+log_stream = None
 prox = False
 started = False
 try:
@@ -45,6 +47,8 @@ try:
     if args.pause_boundary:
         guardian = device.adb('shell', 'getprop', 'debug.oculus.guardian_pause').strip()
         device.adb('shell', 'setprop', 'debug.oculus.guardian_pause', '1')
+    app_log = (run / 'app.log').open('w')
+    log_stream = device.start_log(uid, app_log)
     prox = True
     device.adb('shell', 'am', 'broadcast', '-a', 'com.oculus.vrpowermanager.prox_close')
     device.adb('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP')
@@ -58,7 +62,8 @@ try:
             instrument = subprocess.Popen(['adb', '-s', args.serial, 'shell', 'am', 'instrument', '-w', '-r',
                 '-e', 'nonce', nonce, PACKAGE + '/.GpuFdInstrumentation'], stdout=instrument_log, stderr=subprocess.STDOUT)
         else:
-            (run / 'sdk-launch.log').write_text(device.adb('shell', 'am', 'start', '-W', '-n',
+            (run / 'sdk-launch.log').write_text(device.adb('shell', 'am', 'start', '-a', 'android.intent.action.MAIN',
+                '-c', 'com.oculus.intent.category.VR', '-n',
                 PACKAGE + '/.GpuFdSdkActivity', '--es', 'nonce', nonce))
         deadline = time.monotonic() + 180
         last_stage = None
@@ -66,10 +71,10 @@ try:
             if time.monotonic() > deadline: raise RuntimeError(mode + ' probe timeout')
             try:
                 raw = device.adb('exec-out', 'run-as', PACKAGE, 'cat', 'no_backup/gpu-fd-probe/' + nonce + '.json')
-            except RuntimeError:
+                proof = json.loads(raw)
+            except (RuntimeError, json.JSONDecodeError):
                 if instrument is not None and instrument.poll() is not None: raise
                 time.sleep(1); continue
-            proof = json.loads(raw)
             (run / (mode + '.json')).write_text(json.dumps(proof, indent=2) + '\n')
             if proof.get('stage') != last_stage:
                 last_stage = proof.get('stage'); print(mode + ': ' + str(last_stage), flush=True)
@@ -107,6 +112,8 @@ finally:
         try: instrument.wait(timeout=10)
         except subprocess.TimeoutExpired: instrument.terminate(); instrument.wait(timeout=5)
     if instrument_log is not None: instrument_log.close()
+    if log_stream is not None: log_stream.terminate(); log_stream.wait(timeout=5)
+    if app_log is not None: app_log.close()
     result['cleanup'] = cleanup
     (run / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print('artifacts: ' + str(run), flush=True)

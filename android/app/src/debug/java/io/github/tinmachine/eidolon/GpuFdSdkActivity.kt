@@ -2,6 +2,7 @@ package io.github.tinmachine.eidolon
 
 import android.os.Bundle
 import android.os.PowerManager
+import android.util.Log
 import com.meta.spatial.core.SpatialFeature
 import com.meta.spatial.runtime.SessionState
 import com.meta.spatial.toolkit.AppSystemActivity
@@ -18,13 +19,15 @@ class GpuFdSdkActivity : AppSystemActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         nonce = intent?.getStringExtra("nonce") ?: ""
+        Log.i("EidolonGpuProbe", "created keys=${intent.extras?.keySet()}")
         if (!nonce.matches(Regex("[0-9a-f]{32}")) || intent.extras?.keySet() != setOf("nonce")) finish()
     }
-    override fun onStart() { super.onStart(); visible = true; maybeStart() }
-    override fun onStop() { visible = false; super.onStop() }
-    override fun onSceneReady() { super.onSceneReady(); ready = true; maybeStart() }
+    override fun onStart() { super.onStart(); visible = true; Log.i("EidolonGpuProbe", "visible"); maybeStart() }
+    override fun onStop() { visible = false; Log.i("EidolonGpuProbe", "hidden"); super.onStop() }
+    override fun onSceneReady() { super.onSceneReady(); ready = true; Log.i("EidolonGpuProbe", "scene_ready"); maybeStart() }
     override fun onSessionStateChanged(state: SessionState) {
-        super.onSessionStateChanged(state); focused = state == SessionState.FOCUSED; maybeStart()
+        super.onSessionStateChanged(state); focused = state == SessionState.FOCUSED
+        Log.i("EidolonGpuProbe", "xr=$state"); maybeStart()
     }
     private fun maybeStart() {
         if (started || !ready || !focused || !visible || !nonce.matches(Regex("[0-9a-f]{32}"))) return

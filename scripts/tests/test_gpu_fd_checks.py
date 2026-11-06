@@ -71,5 +71,34 @@ class GpuFdChecksTests(unittest.TestCase):
             self.assertEqual(result['cleanup'],[])
         self.assertEqual(len(calls),3)
 
+    def test_transient_empty_adb_read_waits_for_nonce_report(self):
+        owner=self
+        class Device:
+            def __init__(self, serial, run): self.mode='platform';self.reads=0
+            def validate(self): return dict(model='Quest 3',api=34)
+            def start_log(self, *args, **kwargs):
+                return mock.Mock()
+            def adb(self, *command, **kwargs):
+                if command[:3] == ('shell','pm','list'): return 'package:io.github.tinmachine.eidolon uid:100\n'
+                if command[0] == 'shell' and command[1].startswith('pidof'): return ''
+                if any('GpuFdSdkActivity' in x for x in command): self.mode='sdk';self.reads=0
+                if command[:2] == ('exec-out','run-as'):
+                    self.reads+=1
+                    return '' if self.reads==1 else json.dumps(owner.fixture(self.mode))
+                return ''
+        class Instrument:
+            def __init__(self, *args, **kwargs):
+                kwargs['stdout'].write('INSTRUMENTATION_CODE: -1\n');kwargs['stdout'].flush()
+            def poll(self): return None
+            def wait(self, **kwargs): return 0
+        with tempfile.TemporaryDirectory() as tmp, mock.patch('quest_device.QuestDevice',Device), \
+                mock.patch('subprocess.Popen',Instrument), mock.patch('secrets.token_hex',lambda n:'a'*(n*2)), \
+                mock.patch('native_build.identity',return_value={'source_digest':'digest'}), \
+                mock.patch('time.sleep'), mock.patch.object(sys,'argv',['quest-gpu-fds','--serial','fixture','--artifact-root',tmp]):
+            runpy.run_path(str(Path(__file__).resolve().parents[1]/'quest-gpu-fds'),run_name='__main__')
+            result=json.loads(next(Path(tmp).glob('*/result.json')).read_text())
+            self.assertEqual(result['status'],'observed')
+            self.assertEqual(len(result['modes']),2)
+
 
 if __name__ == '__main__': unittest.main()
