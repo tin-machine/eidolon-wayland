@@ -180,6 +180,9 @@ def inspect(apk):
         debug_classes.append(b"Lio/github/tinmachine/eidolon/TwoWindowsCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/LayoutNativeCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/LayoutSdkCase;")
+        debug_classes.extend([b"Lio/github/tinmachine/eidolon/GpuFdProbe;",
+                              b"Lio/github/tinmachine/eidolon/GpuFdInstrumentation;",
+                              b"Lio/github/tinmachine/eidolon/GpuFdSdkActivity;"])
         debug_dex = any(name in dex for name in debug_classes)
         if info["profile"] == "release" and (debug_symbol or debug_dex):
             raise ValueError("releaseにdebug JNI/classが混入しています")
@@ -197,6 +200,9 @@ def inspect(apk):
         raise ValueError("profileとdebug manifest入口が不一致です")
     if ("NativeCheckInstrumentation" in manifest) != (info["profile"] == "debug"):
         raise ValueError("profileとinstrumentation manifest入口が不一致です")
+    for entry in ("GpuFdInstrumentation", "GpuFdSdkActivity"):
+        if (entry in manifest) != (info["profile"] == "debug"):
+            raise ValueError("profileとGPU FD比較入口が不一致です")
     if info["profile"] == "release" and "android.permission.WAKE_LOCK" in manifest:
         raise ValueError("releaseに性能検査用WAKE_LOCK権限が混入しています")
     return {**metadata, "needed": required, "debug_entry": info["profile"] == "debug", "status": "pass"}

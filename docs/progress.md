@@ -855,3 +855,15 @@ Build128をQuestへ導入済み。通常のGuardian案内で可視性が得ら�
 clipboardは`20261106T095041-e3d66753`、FD再採取は`20261106T095403-546d4a7e`。
 残りはSDK計測FDの調査、Questの障害行列、実時間の給電/soak、署名release検査、最後のHMD/物理操作。
 キーボード検証の中断とFキー免除は維持する。
+
+## GPU計測FDを製品処理から分離する準備（Build130）
+
+SDK 0.15.0のGPU計測にはTIDごとのfile cacheがあり、終了したthreadは計測loopから除外される一方、
+既存cacheからの消滅TIDの回収が見当たらなかった。これは前回観測を説明する有力な原因だが、実機での因果確認は別に必要。
+[独立比較](gpu-fd-investigation.md)として、SDKなしinstrumentationとSDKだけの空Sceneへ、同じEGL Pbuffer処理を追加した。
+製品native/SSH/Waylandをloadせず、空thread・別GL thread・同一GL thread再利用を比較し、30秒後の作成TIDのFDを数える。
+
+Build130のdebug/release assemble・lint・JUnit・同梱/入口検査、実APK指定PC76件が成功。
+新しい比較入口はdebugだけに含まれる。接続中の製品を停止しないpreflightもhostで確認した。
+Wi-Fi ADBが途中でofflineとなり、対象接続とPC側serverの再起動でも戻らないため、APK導入・二条件比較は未実施。
+SDKのFDを外からcloseする処置、releaseの変更、L04受入れ完了は行っていない。
