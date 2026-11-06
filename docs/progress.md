@@ -19,6 +19,12 @@ stop runは`20261107T000754-518b7dfd`、二窓`20261107T001000-ec566702`、
 テーマ`20261107T001022-bdf62b76`、popup/clipboard`20261107T001115-c41a2b71`。
 今回の短い回帰はL04の長時間受入れ、signed release実測、HMD視認・物理操作の代わりにはしない。
 
+初回CI `42240859040`は通常host suite成功後、独立したWaypipe clipboard検査でlock不整合を検出した。
+GL threadのTID取得に追加したlibcを製品のCargo.lockへ反映した一方、
+`scripts/fixtures/clipboard-waypipe/Cargo.lock`の同じpath依存の更新を漏らしていた。
+ローカルでも同じ`--locked --offline`失敗を再現し、既存libcへの依存1行だけを更新した。
+PC検証では`check-host --suite all`に加えてCIの別stepである`check-waypipe-clipboard`も実行する必要がある。
+
 ## 既存タスクと受入れ範囲
 
 ゴールはPhase 5（I07）まで。2026-11-04のユーザー指定により、HMD視認と物理入力の受入れは最終段階にまとめる。実装・host検証・ADBによる自動試験を先に進める。手動検証を含むcheck全体は、手動部分が残る間`not_run`とし、自動部分の成功を別に記録する。後続実装は自動部分の成立を根拠に進め、taskの`done`判定は省略しない。
