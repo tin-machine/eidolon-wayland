@@ -62,6 +62,9 @@ pub struct Lease {
     origin: Origin,
 }
 impl Lease {
+    pub fn runtime(self) -> RuntimeHandle {
+        self.runtime
+    }
     pub fn position(self) -> Position {
         self.position
     }
