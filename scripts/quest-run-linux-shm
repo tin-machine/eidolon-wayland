@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""正規staging済みLinux固定SHMを実行し、native/SDK復帰を区別して記録する。"""
+import argparse
+import datetime
+import json
+import os
+from pathlib import Path
+import re
+import time
+
+from gui_probe_sdk import digest_sources
+from linux_shm_checks import CASES, MAX_SNAPSHOT, cleaned, inspect, need, outcome
+from quest_device import PACKAGE, QuestDevice, package_uid, work_root
+
+CLEANUP_SECONDS = 45
+
+
+def installed(device):
+    uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", PACKAGE, timeout=10))
+    need(device.adb("shell", "run-as", PACKAGE, "id", "-u", timeout=10).strip() == str(uid), "APK_UID_MISMATCH")
+    text = device.adb("shell", "dumpsys", "package", PACKAGE, timeout=10)
+    versions = re.findall(r"^\s*versionCode=([1-9][0-9]*)\b", text, re.M)
+    need(len(versions) == 1 and 1 <= int(versions[0]) <= 2_100_000_000, "APK_VERSION_UNAVAILABLE")
+    pid = device.adb("shell", "pidof", PACKAGE, timeout=10).strip()
+    need(re.fullmatch(r"[1-9][0-9]*", pid) is not None, "APK_PROCESS_UNAVAILABLE")
+    return dict(uid=uid, version=int(versions[0]), pid=int(pid))
+
+
+def dispatch(device, case, nonce, *, stop=False):
+    need(case in CASES and type(nonce) is str and re.fullmatch(r"[0-9a-f]{32}", nonce), "INVALID_FIXED_REQUEST")
+    name = "linux-shm-sdk-stop" if stop and case == "sdk" else "linux-shm-probe-stop" if stop else CASES[case]
+    component = ".DebugCommandActivity" if case == "sdk" else ".LinuxSshProbeReceiver"
+    operation = "start" if case == "sdk" else "broadcast"
+    # ADBへの可変値は検査済みnonceのみ。profile/host/path/JSON/argvは受け取らない。
+    device.adb("shell", "am", operation, "-n", PACKAGE + "/" + component,
+               "--es", "case", name, "--es", "nonce", nonce, timeout=10)
+
+
+def execute(device, case, nonce, timeout, record, *, clock=time.monotonic, sleep=time.sleep, digest_fn=digest_sources):
+    result = dict(schema=1, operator="eidolon-linux-shm-v1", case=case, nonce=nonce, status="failed",
+                  launch_attempted=False, stop_attempted=False, cleanup_confirmed=False,
+                  native_restoration="not_verified", sdk_restoration="not_verified", hmd="not_verified", physical_input="not_verified")
+    binding, digest, previous, sequence = None, None, None, 0
+
+    def read():
+        nonlocal sequence
+        need(device.adb("shell", "pidof", PACKAGE, timeout=5).strip() == str(binding["pid"]), "APK_PROCESS_CHANGED")
+        raw = device.adb("exec-out", "run-as", PACKAGE, "head", "-c", str(MAX_SNAPSHOT + 1),
+                         "no_backup/diagnostics/latest.json", timeout=5)
+        value = inspect(raw, case=case, nonce=nonce, digest=digest, **binding)
+        need(int(value["sequence"]) >= sequence, "SNAPSHOT_SEQUENCE_REGRESSED")
+        sequence = int(value["sequence"])
+        record(value)
+        return value
+
+    def mark_cleanup(value):
+        confirmed = cleaned(value, case, previous)
+        result["cleanup_confirmed"] = confirmed
+        if confirmed:
+            result["native_restoration"] = "confirmed"
+            result["sdk_restoration"] = "confirmed" if case == "sdk" else "not_checked"
+            result["configuration_preserved"] = value["check"].get("product_settings_untouched" if case == "sdk" else "termux_configuration_unchanged") is True
+        return confirmed
+
+    try:
+        result["device"] = device.validate()
+        binding, digest = installed(device), digest_fn()
+        result["binding"] = dict(**binding, source_digest=digest)
+        before = read()
+        need(before["handle"] is not None, "INITIAL_RUNTIME_UNAVAILABLE")
+        need(before["check"] is None, "NONCE_ALREADY_OBSERVED")
+        previous = before["handle"]
+        initial_sequence = sequence
+        # Even a timed-out am call may already have delivered its intent; retain cancellation duty.
+        result["launch_attempted"] = True
+        dispatch(device, case, nonce)
+        deadline = clock() + timeout
+        while clock() < deadline:
+            value = read()
+            if int(value["sequence"]) > initial_sequence:
+                status = outcome(value, case, previous)
+                if status is not None:
+                    result["case_result"] = status
+                    if mark_cleanup(value):
+                        need(installed(device) == binding and digest_fn() == digest, "FINAL_BUILD_BINDING_CHANGED")
+                        result["status"] = status
+                        return result
+                    break  # Failed owner needs same-nonce stop; success requires confirmed restoration above.
+            sleep(.25)
+        else:
+            result["status"] = "timeout"
+            result["failure_code"] = "CASE_TIMEOUT"
+    except (Exception, KeyboardInterrupt) as error:
+        result["failure_class"] = type(error).__name__
+        if isinstance(error, ValueError) and re.fullmatch(r"[A-Z_]{3,64}", str(error)):
+            result["failure_code"] = str(error)
+        elif isinstance(error, KeyboardInterrupt):
+            result["failure_code"] = "OPERATOR_INTERRUPTED"
+
+    if result["launch_attempted"]:
+        result["cleanup_confirmed"] = False
+        result.pop("configuration_preserved", None)
+        result["native_restoration"] = result["sdk_restoration"] = "not_verified"
+        result["stop_attempted"] = True
+        try:
+            dispatch(device, case, nonce, stop=True)
+            result["stop_command_returned"] = True
+        except (Exception, KeyboardInterrupt):
+            # Transport failure is not proof that stop was not delivered. Observe for a bounded interval.
+            result["stop_command_returned"] = False
+        deadline = clock() + CLEANUP_SECONDS
+        while clock() < deadline:
+            try:
+                value = read()
+                if value["check"] is not None and value["check"]["result"] not in {"running", "restoring", "cleanup_unconfirmed"} and mark_cleanup(value):
+                    need(installed(device) == binding and digest_fn() == digest, "FINAL_BUILD_BINDING_CHANGED")
+                    result["cleanup_case_result"] = value["check"]["result"]
+                    # A late pass after timeout/cancel never upgrades the original operation to pass.
+                    return result
+            except (Exception, KeyboardInterrupt) as error:
+                result["cleanup_confirmed"] = False
+                result.pop("configuration_preserved", None)
+                result["native_restoration"] = result["sdk_restoration"] = "not_verified"
+                result["cleanup_observation_failure"] = str(error) if isinstance(error, ValueError) and re.fullmatch(r"[A-Z_]{3,64}", str(error)) else type(error).__name__
+            sleep(.25)
+        result["operation_status"] = result["status"]
+        result["status"] = "cleanup_unconfirmed"
+        result["cleanup_confirmed"] = False
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--case", required=True, choices=tuple(CASES))
+    parser.add_argument("--serial", required=True)
+    parser.add_argument("--nonce", required=True, help="32桁小文字hex。recoverは元の失敗と同じnonce")
+    parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--timeout", type=int, default=130, help="case待機秒数（1..180）。別に最大45秒の回収待機")
+    args = parser.parse_args()
+    if not re.fullmatch(r"[0-9a-f]{32}", args.nonce) or not 1 <= args.timeout <= 180:
+        parser.error("nonceは32桁小文字hex、timeoutは1..180秒です")
+    os.umask(0o077)
+    root = args.artifact_root or work_root() / "eidolon-linux-shm-runs"
+    if not root.is_absolute():
+        parser.error("artifact rootは絶対pathです")
+    run = root / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f") + "-" + args.case + "-" + args.nonce[:8])
+    run.mkdir(mode=0o700, parents=True)
+    def record(value):
+        (run / "metadata.json").write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    result = execute(QuestDevice(args.serial, run), args.case, args.nonce, args.timeout, record)
+    (run / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    print(json.dumps({**result, "artifact": str(run)}, ensure_ascii=False))
+    return {"pass": 0, "not_required": 3, "timeout": 124, "cleanup_unconfirmed": 125}.get(result["status"], 1)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
