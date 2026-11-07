@@ -82,6 +82,28 @@ pub struct Report {
     pub blocked_session: Option<SessionId>,
     pub error: Option<&'static str>,
 }
+impl Report {
+    pub fn input_allowed(&self, target: TargetKey) -> bool {
+        if self.blocked_session == Some(target.session) {
+            return false;
+        }
+        if let Some(window) = self
+            .groups
+            .iter()
+            .flat_map(|group| group.windows.iter())
+            .find(|window| {
+                window.presentation.target.session == target.session
+                    && window.presentation.target.window == target.window
+            })
+        {
+            return window.presentation.target == target && window.presentation.input_allowed;
+        }
+        self.groups.is_empty()
+            || !self.candidates.iter().any(|candidate| {
+                candidate.session == target.session && candidate.window == target.window
+            })
+    }
+}
 #[derive(Clone)]
 struct Record {
     id: CommandSeq,
@@ -220,25 +242,7 @@ impl Controller {
             .collect()
     }
     pub fn input_allowed(&self, target: TargetKey) -> bool {
-        if self.report.blocked_session == Some(target.session) {
-            return false;
-        }
-        if let Some(window) = self
-            .report
-            .groups
-            .iter()
-            .flat_map(|group| group.windows.iter())
-            .find(|window| {
-                window.presentation.target.session == target.session
-                    && window.presentation.target.window == target.window
-            })
-        {
-            return window.presentation.target == target && window.presentation.input_allowed;
-        }
-        self.report.groups.is_empty()
-            || !self.report.candidates.iter().any(|candidate| {
-                candidate.session == target.session && candidate.window == target.window
-            })
+        self.report.input_allowed(target)
     }
     pub fn blocks_geometry(&self, target: TargetKey) -> bool {
         if self.failed

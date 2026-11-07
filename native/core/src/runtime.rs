@@ -38,6 +38,15 @@ impl Shared {
         self.credentials.clear();
         self.credential_scope = None;
     }
+    fn refresh_app_report(&mut self, current: &crate::session::Session) {
+        let mut snapshot = current.snapshot();
+        if !self.workspace.workload_observation() {
+            for workload in &mut snapshot.workloads {
+                workload.display.io = eidolon_model::workload::IoDisplay::stopped();
+            }
+        }
+        self.snapshot.app = Some(snapshot);
+    }
     fn refresh_ime(&mut self, app: Option<&crate::session::Session>) {
         self.ime_ui = if self.snapshot.state == RuntimeState::Ready
             && self.snapshot.activity_visible
@@ -51,6 +60,7 @@ impl Shared {
                             && panel.target.window == ime.target.window
                             && Some(panel.target.scene) == self.snapshot.scene
                             && panel.applied
+                            && self.snapshot.window_groups.input_allowed(panel.target)
                             && panel.error.is_none()
                             && panel.action == eidolon_model::commands::PanelAction::Create
                     })
@@ -77,6 +87,49 @@ impl Shared {
             self.fail("RESOURCE_LIMIT");
         } else {
             self.events.push_back(event);
+        }
+    }
+}
+
+/// 配置はcore workerだけが更新する。SDK所有/Board/保存workspaceの寿命は変えない。
+struct WindowGroups {
+    owner: crate::window_group_owner::Controller,
+    hidden: Vec<eidolon_model::surface::TargetKey>,
+}
+impl WindowGroups {
+    fn new(runtime: eidolon_model::ids::RuntimeHandle) -> Self {
+        Self {
+            owner: crate::window_group_owner::Controller::new(runtime),
+            hidden: vec![],
+        }
+    }
+    fn sync(
+        &mut self,
+        state: &mut Shared,
+        render: &eidolon_render::Controller,
+        transport: &eidolon_transport::session::Controller,
+        now: Duration,
+        reset: &AtomicBool,
+    ) {
+        let draw = render.snapshot();
+        let ssh = transport.snapshot();
+        let _ = self.owner.observe(crate::window_group_owner::World {
+            snapshot: &state.snapshot,
+            transport: &ssh,
+            render: &draw,
+            now,
+        });
+        let hidden = self.owner.hidden_targets();
+        if hidden != self.hidden {
+            if render.set_hidden_targets(&hidden) == Status::Accepted {
+                self.hidden = hidden;
+            } else if !render.is_stopping() {
+                state.fail("GROUP_RENDER_FAILED");
+            }
+        }
+        state.snapshot.window_groups = self.owner.snapshot();
+        if self.owner.take_input_reset() {
+            reset.store(true, Ordering::Release);
         }
     }
 }
@@ -211,6 +264,7 @@ impl Runtime {
                 let mut app: Option<crate::session::Session> = None;
                 let mut app_linux = false;
                 let mut slots = crate::window_slots::Controller::new(runtime_handle);
+                let mut groups = WindowGroups::new(runtime_handle);
                 let mut slot_refused = Vec::new();
                 // server ACKだけで枠の予約を解かない。新windowがmapするまで追加を直列化する。
                 let mut opening_window: Option<(
@@ -723,11 +777,13 @@ impl Runtime {
                         }
                         state.snapshot.panels = state.panels.snapshot();
                         state.snapshot.workspace = state.workspace.snapshot();
+                        groups.sync(&mut state,&gl,&io,clock.elapsed(),&resetting);
                         if resetting.swap(false, Ordering::AcqRel) {
                             state.ime_ui = None;
                             state.snapshot.input_resets += 1;
                             if let Some(current) = app.as_mut() {
                                 current.reset_input();
+                                state.refresh_app_report(current);
                             }
                         }
                         if state.snapshot.state == RuntimeState::Failed {
@@ -784,7 +840,8 @@ impl Runtime {
                                         || transaction.target.window != target.window
                                     {
                                         Status::Stale
-                                    } else if !state.render_visibility.iter().all(|v| *v)
+                                    } else if !groups.owner.input_allowed(*target)
+                                        || !state.render_visibility.iter().all(|v| *v)
                                         || !state.snapshot.activity_visible
                                         || state.snapshot.xr_state != XrState::Focused
                                     {
@@ -1008,6 +1065,20 @@ impl Runtime {
                                     }
                                 }
 
+                                Command::WindowGroup {request_id,target,controls_revision,expected_group,expected_revision,action,..} => {
+                                    let render=gl.snapshot();let transport=io.snapshot();
+                                    groups.owner.start(crate::window_group_owner::Ticket {
+                                        request:*request_id,target:*target,controls_revision:*controls_revision,
+                                        expected_group:*expected_group,expected_revision:*expected_revision,action:*action,
+                                    },crate::window_group_owner::World {snapshot:&state.snapshot,transport:&transport,render:&render,now:clock.elapsed()})
+                                }
+                                Command::WindowGroupApplied {target,group,revision,pose,physical_size,content_frame,..} => {
+                                    let render=gl.snapshot();let transport=io.snapshot();
+                                    groups.owner.applied(crate::window_group_owner::GeometryAck {
+                                        group:*group,revision:*revision,target:*target,pose:*pose,
+                                        physical_size:*physical_size,content_frame:*content_frame,
+                                    },crate::window_group_owner::World {snapshot:&state.snapshot,transport:&transport,render:&render,now:clock.elapsed()})
+                                }
                                 Command::SetPose { target, .. }
                                 | Command::SetPoseControl { target, .. }
                                 | Command::PoseApplied { target, .. }
@@ -1040,6 +1111,10 @@ impl Runtime {
                                                 && state.render_visibility.iter().all(|v| *v);
                                     if !live || !controls_current {
                                         Status::Stale
+                                    } else if groups.owner.blocks_geometry(*target) && matches!(&command,
+                                        Command::SetPose {..} | Command::SetPoseControl {..} | Command::ResizeLogical {..}
+                                        | Command::SetPhysicalSize {..} | Command::SetPhysicalSizeControl {..}) {
+                                        Status::Busy
                                     } else if !controls_ready {
                                         Status::NotReady
                                     } else if let Some(current) = app
@@ -1170,7 +1245,8 @@ impl Runtime {
                                         || !live
                                     {
                                         Status::Stale
-                                    } else if !state.render_visibility.iter().all(|v| *v)
+                                    } else if !groups.owner.input_allowed(*target)
+                                        || !state.render_visibility.iter().all(|v| *v)
                                         || !state.snapshot.activity_visible
                                         || state.snapshot.xr_state != XrState::Focused
                                     {
@@ -1690,6 +1766,11 @@ impl Runtime {
                                     "SDK ownership is handled before the command queue"
                                 ),
                             };
+                            if pending_app.is_none() && let Some(current)=app.as_ref() {
+                                state.refresh_app_report(current);
+                            }
+                            state.snapshot.workspace=state.workspace.snapshot();
+                            groups.sync(&mut state,&gl,&io,clock.elapsed(),&resetting);
                             state.snapshot.commands_processed += 1;
                             // ACKをUIへ公開する前にlast_sequence等も同じowner順序で更新する。
                             state.refresh_ime(app.as_ref());
@@ -1800,6 +1881,7 @@ impl Runtime {
                 state.snapshot.theme.workers = 0;
                 state.snapshot.theme.loading = false;
                 state.snapshot.panels.clear();
+                state.snapshot.window_groups=Default::default();
                 state.clear_credentials();
                 state.terminal.push_back(Event::Stopped);
             })?;
@@ -2303,6 +2385,47 @@ mod tests {
         assert_eq!(runtime.snapshot().state, RuntimeState::Stopping);
         release_tx.send(()).unwrap();
         wait(&runtime, |r| r.snapshot().state == RuntimeState::Stopped);
+    }
+    #[test]
+    fn group_command_without_verified_foot_never_owns_or_changes_normal_workspace() {
+        use eidolon_model::{
+            ids::{CommandSeq, SceneEpoch, SessionId, SurfaceGeneration, WindowId},
+            surface::TargetKey,
+        };
+        let runtime = Runtime::start(RuntimeConfig::default()).unwrap();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
+        let before = runtime.snapshot().input_resets;
+        let target = TargetKey {
+            session: SessionId::new(2).unwrap(),
+            window: WindowId::new(3).unwrap(),
+            scene: SceneEpoch::new(4).unwrap(),
+            generation: SurfaceGeneration::new(5).unwrap(),
+        };
+        assert_eq!(
+            runtime.command(Command::WindowGroup {
+                schema: 1,
+                request_id: CommandSeq::new(50).unwrap(),
+                target,
+                controls_revision: 0,
+                expected_group: None,
+                expected_revision: None,
+                action: eidolon_model::window_groups::Action::Collapse
+            }),
+            Status::Accepted
+        );
+        wait(&runtime, |r| r.snapshot().commands_processed >= 1);
+        let snapshot = runtime.snapshot();
+        assert!(snapshot.input_resets > before);
+        assert!(
+            snapshot.window_groups.groups.is_empty()
+                && snapshot.window_groups.candidates.is_empty()
+        );
+        assert!(snapshot.workspace.windows.is_empty());
+        assert!(snapshot.window_groups.input_allowed(target));
+        assert!(runtime.poll(32).unwrap().iter().any(|event|matches!(event,Event::CommandComplete{request_id,code:Status::NotReady} if request_id.get()==50)));
+        runtime.request_stop();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Stopped);
+        assert!(runtime.snapshot().window_groups.groups.is_empty());
     }
     fn scene(id: i64) -> Command {
         Command::SceneReady {

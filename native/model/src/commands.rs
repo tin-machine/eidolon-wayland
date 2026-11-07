@@ -328,6 +328,25 @@ pub enum Command {
         pose: crate::workspace::PanelPose,
         controls_revision: u64,
     },
+    WindowGroup {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        controls_revision: u64,
+        expected_group: Option<CommandSeq>,
+        expected_revision: Option<CommandSeq>,
+        action: crate::window_groups::Action,
+    },
+    WindowGroupApplied {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        group: CommandSeq,
+        revision: CommandSeq,
+        pose: crate::workspace::PanelPose,
+        physical_size: crate::resize::PhysicalSize,
+        content_frame: crate::ids::FrameSeq,
+    },
     PoseApplied {
         schema: u32,
         request_id: CommandSeq,
@@ -623,6 +642,8 @@ impl Command {
             | Self::CancelThemeImport { schema, .. }
             | Self::SetPose { schema, .. }
             | Self::SetPoseControl { schema, .. }
+            | Self::WindowGroup { schema, .. }
+            | Self::WindowGroupApplied { schema, .. }
             | Self::PoseApplied { schema, .. }
             | Self::SetBackground { schema, .. }
             | Self::BackgroundApplied { schema, .. }
@@ -744,9 +765,24 @@ impl Command {
             }
             Self::SetPose { pose, .. }
             | Self::SetPoseControl { pose, .. }
+            | Self::WindowGroupApplied { pose, .. }
             | Self::PoseApplied { pose, .. }
                 if !pose.valid() =>
             {
+                return Err(Status::InvalidArgument);
+            }
+            Self::WindowGroup {
+                expected_group,
+                expected_revision,
+                action,
+                ..
+            } if expected_group.is_some() != expected_revision.is_some()
+                || expected_group.is_none()
+                    && *action != crate::window_groups::Action::Collapse =>
+            {
+                return Err(Status::InvalidArgument);
+            }
+            Self::WindowGroupApplied { physical_size, .. } if !physical_size.valid() => {
                 return Err(Status::InvalidArgument);
             }
             Self::ShowWindow { slot, .. } if *slot >= crate::limits::VISIBLE_PANELS => {
@@ -784,6 +820,8 @@ impl Command {
             | Self::CancelThemeImport { request_id, .. }
             | Self::SetPose { request_id, .. }
             | Self::SetPoseControl { request_id, .. }
+            | Self::WindowGroup { request_id, .. }
+            | Self::WindowGroupApplied { request_id, .. }
             | Self::PoseApplied { request_id, .. }
             | Self::SetBackground { request_id, .. }
             | Self::BackgroundApplied { request_id, .. }
@@ -838,6 +876,7 @@ impl Command {
                 | Self::SetImeBackend { .. }
                 | Self::SetPose { .. }
                 | Self::SetPoseControl { .. }
+                | Self::WindowGroup { .. }
                 | Self::SetPhysicalSizeControl { .. }
                 | Self::SetKeyboardLayout { .. }
                 | Self::ShowWindow { .. }
@@ -858,6 +897,58 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn group_wire_keeps_new_instance_and_geometry_ack_fences_distinct() {
+        let action = serde_json::json!({"schema":1,"type":"window_group","request_id":"10",
+            "target":{"session":"2","window":"3","scene":"4","generation":"5"},"controls_revision":0,
+            "expected_group":null,"expected_revision":null,"action":"collapse"});
+        assert!(
+            Command::parse(&action.to_string())
+                .unwrap()
+                .needs_input_reset()
+        );
+        for (field, value) in [
+            ("expected_group", serde_json::json!("8")),
+            ("expected_revision", serde_json::json!("2")),
+            ("action", serde_json::json!("expand")),
+            ("action", serde_json::json!("next_front")),
+            ("action", serde_json::json!("script")),
+        ] {
+            let mut changed = action.clone();
+            changed[field] = value;
+            assert!(Command::parse(&changed.to_string()).is_err());
+        }
+        let mut current = action.clone();
+        current["expected_group"] = serde_json::json!("8");
+        current["expected_revision"] = serde_json::json!("2");
+        current["action"] = serde_json::json!("expand");
+        assert!(Command::parse(&current.to_string()).is_ok());
+        let ack = serde_json::json!({"schema":1,"type":"window_group_applied","request_id":"11","target":action["target"],
+            "group":"8","revision":"2","pose":{"position_m":[0.,2.,1.5],"rotation_xyzw":[0.,0.,0.,1.]},
+            "physical_size":{"width_m":1.2,"height_m":0.9},"content_frame":"12"});
+        assert!(
+            !Command::parse(&ack.to_string())
+                .unwrap()
+                .needs_input_reset()
+        );
+        for (field, value) in [
+            ("group", serde_json::json!("0")),
+            ("revision", serde_json::json!(2)),
+            ("content_frame", serde_json::json!("0")),
+            (
+                "physical_size",
+                serde_json::json!({"width_m":5.,"height_m":0.9}),
+            ),
+            (
+                "pose",
+                serde_json::json!({"position_m":[0.,20.,1.5],"rotation_xyzw":[0.,0.,0.,1.]}),
+            ),
+        ] {
+            let mut changed = ack.clone();
+            changed[field] = value;
+            assert!(Command::parse(&changed.to_string()).is_err());
+        }
+    }
     #[test]
     fn window_control_close_requires_full_positive_sdk_target_and_urgent_reset() {
         let source = r#"{"schema":1,"request_id":"1","type":"close_window_target","controls_revision":0,"target":{"session":"2","window":"3","scene":"4","generation":"5"}}"#;

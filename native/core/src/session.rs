@@ -434,6 +434,7 @@ impl Session {
                         && target.key.session == session
                         && target.key.window == window.window
                         && target.content_frame == window.frame
+                        && !target.presentation_paused
                         && target.frames > 0
                 });
             state.frame_callbacks(
