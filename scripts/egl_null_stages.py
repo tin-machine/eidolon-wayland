@@ -19,7 +19,7 @@ import egl_surfaceless_probe as egl
 from ptrace_capability_probe import Ptrace,PtraceError,decode_regsets
 
 UID=egl.UID
-OPERATOR="eidolon-egl-null-stages-v2-mode-classification"
+OPERATOR="eidolon-egl-null-stages-v3-kopper-variant"
 LOADING_PROFILE="existing-egl-query-display-no-preload"
 NAME="libgallium-26.2.6.so"
 DRI_TYPES=("dri3","kopper","swrast","kms_swrast")
@@ -281,8 +281,9 @@ def prior_failure_matches(api,code):
             not api["initialize"]["returned"] and api["initialize"]["error"]["value"]==0x3001 and code==1)
 
 
-def observe(command,environment,control_fd,checker,probe_id,image,*,timeout=egl.TIMEOUT,grace=2.0,backend=None,architecture=None):
+def observe(command,environment,control_fd,checker,probe_id,image,*,timeout=egl.TIMEOUT,grace=2.0,backend=None,architecture=None,variant="baseline"):
     """差替えはlocalhost fixtureだけ。terminal statusはWNOWAITで保持する。"""
+    require(variant in egl.VARIANTS,"REQUEST_INVALID")
     backend=backend or Backend();selector=selectors.DefaultSelector();blocking=os.get_blocking(control_fd)
     try:
         os.set_blocking(control_fd,False)
@@ -403,6 +404,7 @@ def observe(command,environment,control_fd,checker,probe_id,image,*,timeout=egl.
         events["loaded_libraries"]["result"]["status"]=="verified" and events["runtime"]["unchanged"] and summary["complete"]
     internal=trace.report()
     return dict(status="diagnosed" if api_ok and internal["status"]=="observed" else "unsupported" if api_ok else "failed",
+        variant=variant,
         loading_profile=LOADING_PROFILE,prior_initialize_failure_matches=prior_failure_matches(api,child.returncode),
         api_observation="diagnosed" if api_ok else "failed",api=api,loaded_libraries=events.get("loaded_libraries",{}).get("result"),
         egl_cleanup=events.get("egl_cleanup",{}).get("result"),runtime_unchanged=events.get("runtime",{}).get("unchanged"),
@@ -423,13 +425,14 @@ def remote_main():
             if byte==b"\n":break
         require(raw.endswith(b"\n") and len(raw)<=128,"REQUEST_INVALID")
         value=json.loads(raw,object_pairs_hook=unique_object)
-        require(type(value) is dict and set(value)=={"probe_id"} and type(value["probe_id"]) is str and re.fullmatch(r"[0-9a-f]{32}",value["probe_id"]),"REQUEST_INVALID")
+        require(type(value) is dict and set(value)=={"probe_id","variant"} and type(value["probe_id"]) is str and
+                re.fullmatch(r"[0-9a-f]{32}",value["probe_id"]) and value["variant"] in egl.VARIANTS,"REQUEST_INVALID")
         require(type(CHILD_SOURCE) is str and CHILD_SOURCE,"CHILD_SOURCE_MISSING")
         home=termux_home(sys.executable);before=egl.validate_runtime(home);directory=egl.private_run(home,value["probe_id"])
         for number in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP):previous[number]=signal.signal(number,lambda *_:interrupted.__setitem__("value",True))
         def checker():require(not interrupted["value"] and egl.validate_runtime(home)==before,"RUNTIME_LIBRARY_CHANGED")
-        result=observe([sys.executable,"-c",child_bootstrap(CHILD_SOURCE)],egl.fixed_environment(home,directory),0,checker,value["probe_id"],
-                       lambda backend,pid:verified_image(home,before,pid,backend))
+        result=observe([sys.executable,"-c",child_bootstrap(CHILD_SOURCE)],egl.fixed_environment(home,directory,value["variant"]),0,checker,value["probe_id"],
+                       lambda backend,pid:verified_image(home,before,pid,backend),variant=value["variant"])
         try:checker()
         except (OSError,ValueError):result.update(status="failed",runtime_unchanged=False,error="RUNTIME_LIBRARY_CHANGED")
         result.update(schema=1,operator=OPERATOR,probe_id=value["probe_id"],uid=UID,libraries=dict(egl.LIBRARIES),

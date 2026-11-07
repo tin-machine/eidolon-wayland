@@ -238,7 +238,7 @@ class HybridBackend(n.Backend):
 
 def completed_report():
     b,t=ready_trace();t.prepare();b.gpr=gpr(nonnull=False);t.trap();events={e['phase']:e for e in api_events()}
-    return dict(status='diagnosed',loading_profile=n.LOADING_PROFILE,prior_initialize_failure_matches=True,api_observation='diagnosed',
+    return dict(status='diagnosed',variant='baseline',loading_profile=n.LOADING_PROFILE,prior_initialize_failure_matches=True,api_observation='diagnosed',
         api=events['api']['result'],loaded_libraries=events['loaded_libraries']['result'],egl_cleanup=events['egl_cleanup']['result'],runtime_unchanged=True,
         child_blocked=None,internal=t.report(),child_pid=71,child_group=71,child_returncode=1,termination='natural',term_sent=False,term_forwarded=False,kill_sent=False,
         timed_out=False,cancel_reason=None,error=None,reaped=True,group_reclaimed=True,pipes_drained=True,cleanup_confirmed=True,output_bytes=dict(stdout=3000,stderr=0),
@@ -247,6 +247,22 @@ def completed_report():
 
 
 class HostCliTests(unittest.TestCase):
+    def test_variant_replay_is_rejected_and_original_error_is_retained(self):
+        value=completed_report();value['variant']='kopper-disabled'
+        with self.assertRaises(InstallError):cli.validated_result(value,NONCE)
+        self.assertEqual(cli.validated_result(value,NONCE,'kopper-disabled')['api']['initialize']['error']['value'],12289)
+    def test_remote_variant_selects_shared_single_env_and_records_typed_value(self):
+        with tempfile.TemporaryDirectory(prefix='null-variant-') as td:
+            directory=Path(td);home=directory/'home';home.mkdir();wire=iter(canonical(dict(probe_id=NONCE,variant='kopper-disabled'))+b'\n');calls=[]
+            def read(fd,size):return bytes([next(wire)])
+            def observe(command,env,*args,**kwargs):
+                calls.append((env,kwargs['variant']));value=completed_report();value['variant']=kwargs['variant'];return value
+            with patch.object(n.os,'read',side_effect=read),patch.object(n,'termux_home',return_value=home),patch.object(n.egl,'validate_runtime',return_value={}), \
+                 patch.object(n.egl,'private_run',return_value=directory),patch.object(n,'CHILD_SOURCE','pass'),patch.object(n,'observe',side_effect=observe),contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(n.remote_main(),0)
+            self.assertEqual(calls,[(egl.fixed_environment(home,directory,'kopper-disabled'),'kopper-disabled')])
+            result=json.loads((directory/'report.json').read_text());self.assertEqual(result['variant'],'kopper-disabled')
+            self.assertEqual(result['api']['initialize']['error']['value'],12289);self.assertEqual(result['child_returncode'],1)
     def run_host(self,td,source,hashes=None):
         class Device:
             def __init__(self,*_):pass
@@ -254,7 +270,7 @@ class HostCliTests(unittest.TestCase):
             def adb(self,*_):return 'package:com.termux uid:10158\n'
         original=subprocess.Popen
         def spawn(*_,**kwargs):return original([sys.executable,'-c',source],**kwargs)
-        with patch.object(cli.argparse.ArgumentParser,'parse_args',return_value=argparse.Namespace(serial='fixture',artifact_root=Path(td))), \
+        with patch.object(cli.argparse.ArgumentParser,'parse_args',return_value=argparse.Namespace(serial='fixture',artifact_root=Path(td),variant='baseline')), \
              patch.object(cli,'QuestDevice',Device),patch.object(cli.secrets,'token_hex',return_value=NONCE),patch.object(cli,'remote_source',return_value='fixed source'), \
              patch.object(cli,'source_hashes',side_effect=hashes or [{'fixed':'a'}]*3),patch.object(cli.subprocess,'Popen',side_effect=spawn),contextlib.redirect_stdout(io.StringIO()):
             code=cli.main()

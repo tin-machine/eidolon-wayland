@@ -127,3 +127,8 @@ variantはrequest/host/remote結果へ固定名で記録し、応答の一致を
 
 初期化の一回対照を先に行い、同じ条件を内部mode/3 NULL段階へ接続する。
 その後にSDLの既存load/context/renderer段階へ進む。正常結果を仮定して次段を合格にしない。
+
+2026-11-08の固定一回対照では、initialize=true/EGL1.5/`EGL_SUCCESS`、子はcode0で自然終了した。
+terminate、runtime不変、reap/group/pipe回収も成立し、同じ4library/vendor pinとloaded identityを維持した。
+Kopper無効で公開EGL初期化が成立した一方、baselineのKopper/12289/終了1は記録を保持する。
+この時点ではcontext作成、SDL描画、GUI、入力、HMDをまだ受け入れていない。

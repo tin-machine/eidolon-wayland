@@ -106,6 +106,27 @@ v2は同じ最初のhitに`mode_observation`だけを追加する。保存内容
 元のmode gate・3stageの扱い・EGL初回結果・回収は維持する。
 source/operator/profileを更新して新runで一回だけ識別し、複数call追跡やSINGLESTEPへは広げない。
 
+## v3: 公開EGLと同じKopper無効対照を接続する
+
+v2の実観測は`dri_type=kopper`、`type_is_swrast=false`、`fd_is_minus_one=true`だった。
+元12289/終了1と全回収は維持した。
+[Termuxの共通EGL Zink既定patchと一項対照](egl-surfaceless-probe-20261108.md)に基づき、
+公開API対照の後で同じ`LIBGL_KOPPER_DISABLE=1`だけを追加できる。
+
+```sh
+scripts/quest-probe-egl-null-stages --serial "$EIDOLON_QUEST_SERIAL" \
+  --variant kopper-disabled --artifact-root "$EIDOLON_TASK_ROOT/egl-null-kopper-disabled"
+```
+
+`eidolon-egl-null-stages-v3-kopper-variant`はbaseline（既定）とkopper-disabledの固定2種類だけを受け取り、
+request/host/remoteのvariant一致を検査する。mode gate、固定lib/命令/3slot、元API結果と回収は維持する。
+追加call、SINGLESTEP、preload、library更新へは広げない。SWRASTへ変わるか、3戻り値がどうなるかは
+新しい一回の実機結果で判断する。初期化が成功したら`prior_initialize_failure_matches=false`と元成功結果を残す。
+描画やSDL rendererの合格にはしない。
+
+bootstrap上限は49KiBを維持し、installerの固定5定義だけを元ASTから同梱する形へ整理した。
+元source全体のhash guardとprefix→HOME導出は保持し、fixtureで依存closureも確認する。
+
 一次資料: [Mesa26.2.6 dri_util.c](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/gallium/frontends/dri/dri_util.c)、
 [Linux v6.6 arm64 ptrace](https://github.com/torvalds/linux/blob/v6.6/arch/arm64/kernel/ptrace.c)、
 [arm64 hardware control](https://github.com/torvalds/linux/blob/v6.6/arch/arm64/include/asm/hw_breakpoint.h)、
