@@ -87,7 +87,7 @@ class WindowMoveCapture(val identity:WindowMoveIdentity,sourcePose:WindowMotionP
 /** A badge describes this window's delivery gate, without copying text or candidate content. */
 enum class WindowMode(val label:String) {
     CLEANUP("操作終了待ち"), MENU_WAIT("操作準備中"), MENU("窓の操作"), RESIZING("サイズ確認中"), RETURNING("入力復帰待ち"), PREPARING("準備中"), PAUSED("入力停止"), EDITING("配置編集"), MOVING("移動中"), PLACING("配置を確認中"),
-    IME("IME入力の検証中"), IME_WAIT("IME終了待ち"), PANEL("設定欄へ入力"), NO_KEYBOARD("キーボード未検出"), SELECT("入力先を選択"), RAW("キー入力先");
+    IME("IME入力"), IME_WAIT("IME終了待ち"), PANEL("設定欄へ入力"), NO_KEYBOARD("キーボード未検出"), SELECT("入力先を選択"), RAW("キー入力先");
     companion object {
         fun from(targetReady:Boolean,visible:Boolean,editing:Boolean,move:WindowMoveCapture.Phase?,globalReason:String,focused:Boolean,size:WindowSizeCapture.Phase?=null):WindowMode=when {
             !visible -> PAUSED
