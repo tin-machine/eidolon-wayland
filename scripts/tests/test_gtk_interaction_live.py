@@ -168,6 +168,29 @@ class OwnedNaturalTests(unittest.TestCase):
         finally:os.close(read_fd);os.close(write_fd)
 
 
+def raw_resources(runtime, retired=False):
+    runtime.setdefault("scene","3")
+    keys=[dict(t["key"]) for t in runtime["render"]["targets"]]
+    n=len(keys)
+    adapter=dict(scene="3",created=n,destroyed=0,bindings=n,listeners=n,decoration_entities=n,
+        window_controls=dict(entity_owners=n*6,listener_owners=n*2),
+        window_mode_badges={name:n for name in ("entity_owners","object_owners","mesh_owners","material_owners","texture_owners","pixel_slots_in_use")},targets=[],retired=[])
+    adapter["window_mode_badges"]["cleanup_pending_owners"]=0
+    for key in keys:
+        number=int(key["window"])*100
+        adapter["targets"].append(dict(target=key,entity=str(number),visual_entity=str(number+1),listener_owned=True,input_owned=True,
+            retiring=False,sdk_disposed=False,disposal_failed=False,move={},
+            controls=dict(failures=0,buttons=[dict(entity=str(number+2)),dict(entity=str(number+3))]),
+            mode_badge=dict(entity=str(number+4),object_ready=True,failures=0)))
+    if retired:
+        for window in ("5","6"):
+            adapter["retired"].append(dict(runtime="9",target=dict(session="2",window=window,scene="3",generation="4"),entity=str(int(window)*100),
+                sdk_disposed=True,sdk_binding_released=True,disposal_failed=False))
+    runtime.update(panels=[dict(target=key,action="create",applied=True,error=None) for key in keys],shutdown=dict(sdk_bindings=n),
+        window_slots=dict(occupied=n,cleanup_required=False,unassigned=[],entries=[dict(lease=dict(runtime="9",session="2",token=k["window"],position="center"),state=dict(phase="bound",window=k["window"])) for k in keys]))
+    return adapter
+
+
 def sdk(main=True,dialog=False,retired=False,size=None,phase="idle"):
     rows=[dict(window="1",role="baseline",logical_size=dict(width=1024,height=768),resize_phase="idle")]
     targets=[dict(key=dict(session="2",window="1",scene="3",generation="4"),frames=4,content_frame="1")]
@@ -177,26 +200,53 @@ def sdk(main=True,dialog=False,retired=False,size=None,phase="idle"):
     if dialog:
         rows.append(dict(window="6",role="dialog",logical_size=dict(width=320,height=180),resize_phase="idle"))
         targets.append(dict(key=dict(session="2",window="6",scene="3",generation="4"),frames=1,content_frame="1"))
-    return dict(sequence="1",windows=rows,targets=targets,epoch=1,focused_window="5",pressed=0,pointer_pressed=0,delivered=4,pointer_buttons=4)
+    runtime=dict(render=dict(targets=targets));adapter=raw_resources(runtime,retired)
+    resource=proof.resources(dict(runtime=dict(handle="9",runtime=runtime),adapter=adapter))
+    return dict(sequence="1",windows=rows,targets=targets,resources=resource,epoch=1,focused_window="5",pressed=0,pointer_pressed=0,delivered=4,pointer_buttons=4)
 
 
 class EvidenceTests(unittest.TestCase):
     def test_input_requires_client_counter_android_completion_retirement_and_foot(self):
-        samples=[sdk(),sdk(retired=True)];android=dict(result="completed")
+        samples=[sdk(main=False),sdk(),sdk(retired=True)];android=dict(result="completed")
         self.assertEqual(proof.summarize(samples,{"1"},"input",[client()],android)["status"],"observed")
-        self.assertEqual(proof.summarize(samples[:1],{"1"},"input",[client()],android)["status"],"not_verified")
+        self.assertEqual(proof.summarize(samples[:-1],{"1"},"input",[client()],android)["status"],"not_verified")
         bad=copy.deepcopy(samples);bad[-1]["windows"]=[]
         self.assertFalse(proof.summarize(bad,{"1"},"input",[client()],android)["baseline_preserved"])
         self.assertEqual(proof.summarize(samples,{"1"},"input",[client()],None)["status"],"not_verified")
-        bad=copy.deepcopy(samples);bad[0]["targets"]=[t for t in bad[0]["targets"] if t["key"]["window"]!="1"]
+        bad=copy.deepcopy(samples);bad[1]["targets"]=[t for t in bad[1]["targets"] if t["key"]["window"]!="1"]
         self.assertFalse(proof.summarize(bad,{"1"},"input",[client()],android)["baseline_preserved"])
     def test_missing_third_target_or_wrong_resize_cannot_pass(self):
-        samples=[sdk(),sdk(retired=True)]
+        samples=[sdk(main=False),sdk(),sdk(retired=True)]
         self.assertEqual(proof.summarize(samples,{"1"},"dialog",[client("dialog")],dict(result="completed"))["status"],"not_verified")
-        self.assertEqual(proof.summarize([sdk(dialog=True),*samples],{"1"},"dialog",[client("dialog")],dict(result="completed"))["status"],"observed")
+        self.assertEqual(proof.summarize([sdk(main=False),sdk(dialog=True),*samples[1:]],{"1"},"dialog",[client("dialog")],dict(result="completed"))["status"],"observed")
         self.assertFalse(proof.summarize(samples,{"1"},"resize",[client("resize")],dict(result="completed"))["sdk_resize_gate"])
-        sizes=[sdk(size=dict(width=800,height=500),phase="applied"),sdk(phase="applied"),sdk(retired=True)]
+        sizes=[sdk(main=False),sdk(size=dict(width=800,height=500),phase="applied"),sdk(phase="applied"),sdk(retired=True)]
         self.assertEqual(proof.summarize(sizes,{"1"},"resize",[client("resize")],dict(result="completed"))["status"],"observed")
+    def test_missing_mapped_and_render_targets_cannot_hide_sdk_board_or_mode_leaks(self):
+        samples=[sdk(main=False),sdk(),sdk(retired=True)]
+        self.assertTrue(proof.summarize(samples,{"1"},"input",[client()],dict(result="completed"))["all_retired"])
+        mutations=[lambda r:r["retired"].clear(),lambda r:r.update(sdk_bindings=2),
+            lambda r:r["owners"].update(mode_texture_owners=2),lambda r:r["owners"].update(control_listeners=3),
+            lambda r:r["board"].update(cleanup_required=True),lambda r:r["board"]["entries"].append(dict(runtime="9",session="2",window="5",phase="retiring")),
+            lambda r:r["targets"][0].update(entity="101"),lambda r:r["targets"][0].update(mode_entity="999"),
+            lambda r:r["retired"][0].update(disposal_failed=True),lambda r:r["retired"][0]["key"].update(generation="8"),
+            lambda r:r["retired"][0].update(runtime="10"),lambda r:r["targets"][0].update(listener_owned=False)]
+        for mutation in mutations:
+            bad=copy.deepcopy(samples);mutation(bad[-1]["resources"])
+            self.assertFalse(proof.summarize(bad,{"1"},"input",[client()],dict(result="completed"))["all_retired"])
+    def test_preexisting_leaks_cannot_be_subtracted_as_baseline_resources(self):
+        samples=[sdk(main=False),sdk(),sdk(retired=True)]
+        for row in (samples[0],samples[-1]):row["resources"]["owners"]["mode_texture_owners"]+=1
+        self.assertFalse(proof.summarize(samples,{"1"},"input",[client()],dict(result="completed"))["all_retired"])
+        value=sdk(main=False);value["resources"]["board"]["entries"][0]["runtime"]="10"
+        self.assertFalse(proof.baseline_resources(value["resources"],{"1"},[t["key"] for t in value["targets"]]))
+    def test_resource_capture_selects_only_ownership_metadata_not_trace_or_input_body(self):
+        runtime=dict(render=dict(targets=sdk()["targets"]));adapter=raw_resources(runtime)
+        adapter["trace"]=[dict(body="PRIVATE")];adapter["targets"][0]["decoration"]="PRIVATE"
+        captured=proof.resources(dict(runtime=dict(handle="9",runtime=runtime),adapter=adapter))
+        self.assertNotIn("PRIVATE",json.dumps(captured))
+        del adapter["targets"][0]["listener_owned"]
+        with self.assertRaises(KeyError):proof.resources(dict(runtime=dict(handle="9",runtime=runtime),adapter=adapter))
     def test_click_geometry_is_fixed_and_never_guessed_when_outside_entry(self):
         row=client(phase="ready");self.assertTrue(proof.ready(sdk(),row,"input"))
         row["entry_rect"]=[24,100,592,56]
@@ -249,7 +299,8 @@ class HostJobTests(unittest.TestCase):
                 runtime=dict(scene="3",app=dict(session="2",windows=windows,input=dict(focus_window="5" if main else None,pressed=0,
                              delivered=4 if phase!="before" else 0,pointer=dict(pressed=0,buttons=4 if phase!="before" else 0))),
                              input_resets=1,render=dict(targets=targets))
-                result=dict(sequence="1" if phase=="before" else "2" if phase=="operations" else "3",runtime=dict(runtime=runtime))
+                adapter=raw_resources(runtime,retired)
+                result=dict(sequence="1" if phase=="before" else "2" if phase=="operations" else "3",runtime=dict(handle="9",runtime=runtime),adapter=adapter)
                 if phase!="before":
                     stages=proof.STAGES["input"] if retired else proof.STAGES["input"][:-1]
                     result["check"]=dict(case="gtk-input",nonce=NONCE,result="completed" if retired else "running",phase="COMPLETE" if retired else "OPERATIONS_COMPLETE",reason=None,

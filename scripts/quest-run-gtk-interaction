@@ -16,7 +16,7 @@ import zlib
 
 from gui_probe_sdk import digest_sources
 from gtk_interaction_run import CASES, OPERATOR, completed
-from gtk_interaction_evidence import android_receipt, current_frame, ready, receipt_binding, sample, summarize
+from gtk_interaction_evidence import baseline_resources, android_receipt, current_frame, ready, receipt_binding, sample, summarize
 from native_build import ROOT
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
 from sdl_lease_capture import CaptureError, MAX_SNAPSHOT, binding_key, canonical, decode, hexadecimal, need, select_snapshot
@@ -87,6 +87,8 @@ def main():
         baseline={w["window"] for w in initial["runtime"]["runtime"]["app"]["windows"] if w["life"]=="Mapped"}
         need(len(baseline)==1,"ONE_BASELINE_WINDOW_REQUIRED")
         initial_sample=sample(initial,nonce,baseline)
+        result["sdk_samples"].append(initial_sample)
+        need(baseline_resources(initial_sample["resources"],baseline,[t["key"] for t in initial_sample["targets"]]),"GTK_BASELINE_RESOURCE_NOT_READY")
         need(baseline<={t["key"]["window"] for t in initial_sample["targets"] if t["frames"]>=1 and t["content_frame"] is not None},"GTK_BASELINE_TARGET_NOT_READY")
         prior=initial.get("check",{});need(prior.get("result") not in {"running"},"OTHER_DEBUG_CASE_RUNNING")
         result["binding"]=binding
@@ -153,7 +155,8 @@ def main():
             fresh=current_frame(latest,"main") if latest else None
             if not cancelled and finished is None and started_android and not closed_android and latest_android and latest_android["phase"]=="OPERATIONS_COMPLETE" and completed(last_row,args.case) and fresh is not None and (args.case!="input" or fresh>initial_content):
                 broadcast("gtk-close");closed_android=True
-            if ended is not None and time.monotonic()-ended>=2:break
+            if ended is not None and latest_android and latest_android["result"]=="completed" and summarize(result["sdk_samples"],baseline,args.case,result["fixture_reports"],latest_android)["all_retired"]:break
+            if ended is not None and time.monotonic()-ended>=8:break
             if child.poll() is not None and not selector.get_map() and ended is None:break
         if ended is None:control_cancel()
         close_input();child.wait(timeout=6)

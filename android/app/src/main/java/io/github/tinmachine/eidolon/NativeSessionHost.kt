@@ -73,7 +73,8 @@ object NativeSessionHost {
     private val latestMetrics = AtomicReference(DeviceMetricsSnapshot())
     fun setKeyboardCount(value: Int?) { keyboardCount.set(value) }
     fun publishDeviceMetrics(value: DeviceMetricsSnapshot) { latestMetrics.set(value);deviceMetrics.value=value }
-    private val inputIntents=AtomicLong(0)
+    private val inputIntents=InputIntentSerial()
+    private val adapterSnapshot=AtomicReference<String?>(null)
     private data class PendingInputFocus(val target: String, val runtime: Long, val ticket: Long, val deadline: Long,
         var resetRequest: String? = null, var resetCompleted: Boolean = false, var focusRequest: String? = null,
         val waitForIme: Boolean = false, val controlsRevision: Long? = null)
@@ -369,7 +370,7 @@ object NativeSessionHost {
         resetInput()
         return WindowControlTicket(runtime,target.toString(),inputIntents.get(),revision)
     }
-    fun windowControl(ticket: WindowControlTicket, action: String) { worker.execute { safely {
+    fun windowControl(ticket: WindowControlTicket, action: String) { worker.execute { inputIntents.serial { safely {
         if(action !in setOf("focus","close") || handle!=ticket.runtime || inputIntents.get()!=ticket.intent || editing.get() ||
             !activityVisible.get() || xrState.get()!="FOCUSED") return@safely
         val target=JSONObject(ticket.target)
@@ -388,7 +389,7 @@ object NativeSessionHost {
                 .put("request_id",request).put("target",target).put("controls_revision",ticket.revision).toString())
             BuildHooks.windowControlRequested(action,ticket.runtime,ticket.target,ticket.revision,request,code)
         }
-    } } }
+    } } } }
     data class WindowMoveTicket(val control:WindowControlTicket,val source:Long)
     private val windowMove=AtomicReference<WindowMoveTicket?>(null)
     fun beginWindowMove(target:JSONObject,runtime:Long,revision:Long,source:Long):WindowMoveTicket? {
@@ -422,7 +423,8 @@ object NativeSessionHost {
         return focus.runtime==handle && focus.token==token && targetIdentity(JSONObject(focus.target))==targetIdentity(target)
     }
     fun publishCheck(value: JSONObject) { val copy = value.toString(); worker.execute { safely { store?.publishCheck(JSONObject(copy)) } } }
-    fun publishAdapter(value: JSONObject) { val copy = value.toString(); worker.execute { safely { store?.publishAdapter(JSONObject(copy)) } } }
+    fun publishAdapter(value: JSONObject) { val copy = value.toString(); adapterSnapshot.set(copy); worker.execute { safely { store?.publishAdapter(JSONObject(copy)) } } }
+    fun debugAdapterSnapshot():JSONObject? = if(BuildConfig.DEBUG) adapterSnapshot.get()?.let {JSONObject(it)} else null
     fun detachSurface(target: JSONObject, runtime: Long = handle): Int {
         return NativeBridge.nativeCommand(runtime, JSONObject().put("schema", 1).put("request_id", requests.incrementAndGet().toString())
             .put("type", "surface_lost").put("target", target).toString())
@@ -432,9 +434,11 @@ object NativeSessionHost {
             .put("type", if (success) "adapter_applied" else "adapter_failed")
             .put("command_seq", plan.getString("command_seq")).put("target", plan.getJSONObject("target"))
             .put("action", plan.getString("action")).toString())
-    fun resetInput(): Int {
+    fun resetInput(): Int = inputIntents.serial { resetInputLocked() }
+    fun resetInputForRetiringTarget(target:JSONObject):Int = inputIntents.serial { resetInputLocked(targetIdentity(target)) }
+    private fun resetInputLocked(retiring:String?=null): Int {
         invalidateImeConnection()
-        inputIntents.incrementAndGet()
+        if(retiring==null) inputIntents.incrementAndGet() else inputIntents.retiring(retiring)
         if (BuildConfig.DEBUG) Log.i(TAG,"input_reset intent=${inputIntents.get()}")
         keyboardFocus = null
         inputTargets = emptyMap()
@@ -457,7 +461,7 @@ object NativeSessionHost {
     fun setLayoutEditing(value: Boolean) {
         editing.set(value); resetInput(); ui.post { layoutEditing.value=value }
     }
-    fun finishLayoutEditing() { worker.execute { safely {
+    fun finishLayoutEditing() { worker.execute { inputIntents.serial { safely {
         if(handle==0L) return@safely
         val runtime=snapshot().getJSONObject("runtime")
         val target=focusTarget(runtime,requireApplied=false)
@@ -467,7 +471,7 @@ object NativeSessionHost {
         pendingInputFocus=target?.let { PendingInputFocus(it.toString(),handle,ticket,SystemClock.elapsedRealtime()+2000) }
         if (BuildConfig.DEBUG) Log.i(TAG,"focus_begin editing target=${target?.let {targetIdentity(it)}} ticket=$ticket")
         if(target==null) resetInput()
-    } } }
+    } } } }
     fun selectWindow(choice: WindowChoice) { worker.execute { safely {
         selectedWindow=choice.session to choice.window; resetInput()
     } } }
@@ -572,7 +576,10 @@ object NativeSessionHost {
             .put("request_id",requests.incrementAndGet().toString()).put("target",target)
             .put("size_command",command ?: JSONObject.NULL).put("size",size).toString())
     /** SDK callbackではimmutableなtargetと小DTOだけをenqueueする。座標をログへ出さない。 */
-    fun sendPointer(target: InputTarget, source: Long, uv: List<Double>?, event: JSONObject): Boolean {
+    fun sendPointer(target: InputTarget, source: Long, uv: List<Double>?, event: JSONObject): Boolean = inputIntents.serial {
+        sendPointerLocked(target,source,uv,event)
+    }
+    private fun sendPointerLocked(target: InputTarget, source: Long, uv: List<Double>?, event: JSONObject): Boolean {
         if (source<=0 || windowMoveSourceOwned(source) || inputTarget(target.target)!=target) return false
         if(event.optString("type")=="buttons" && event.optInt("state") and 1 != 0) {
             inputIntents.incrementAndGet();releasePanelTextFocus()
@@ -585,6 +592,46 @@ object NativeSessionHost {
         if (code !in setOf(NativeBridge.ACCEPTED,NativeBridge.INVALID_ARGUMENT)) resetInput()
         return code!=NativeBridge.INVALID_ARGUMENT
     }
+    class DebugInputTrial internal constructor(internal val ticket:InputIntentSerial.Trial,val runtime:Long,val epoch:Long) {
+        internal val targets=mutableSetOf<String>()
+    }
+    fun debugCaptureInput(target:InputTarget):DebugInputTrial? = inputIntents.serial {
+        if(!BuildConfig.DEBUG || !debugImeCanRequestFocus() || inputTarget(target.target)!=target) null
+        else DebugInputTrial(inputIntents.capture(),target.runtime,target.epoch).also {it.targets.add(target.identity)}
+    }
+    fun debugInputCurrent(trial:DebugInputTrial):Boolean = inputIntents.serial {
+        val valid=BuildConfig.DEBUG && handle==trial.runtime && debugImeCanRequestFocus()
+        if(!valid) inputIntents.invalidate()
+        valid && inputIntents.current(trial.ticket)
+    }
+    fun debugInputDispatch(trial:DebugInputTrial,target:InputTarget,focusToken:String?=null,pointerDown:Boolean=false,enqueue:()->Int):Boolean = inputIntents.serial {
+        val result=inputIntents.dispatch(trial.ticket,{
+            debugInputCurrent(trial) && target.runtime==trial.runtime && target.epoch==trial.epoch && inputTarget(target.target)==target &&
+                (focusToken==null || keyboardFocus?.let {it.runtime==trial.runtime && it.epoch==trial.epoch && targetIdentity(JSONObject(it.target))==target.identity && it.token==focusToken}==true)
+        }) {
+            trial.targets.add(target.identity)
+            if(pointerDown) {inputIntents.ownedIncrement(trial.ticket);releasePanelTextFocus()}
+            enqueue()
+        }
+        if(result!=NativeBridge.ACCEPTED) inputIntents.invalidate()
+        result==NativeBridge.ACCEPTED
+    }
+    fun debugSealInput(trial:DebugInputTrial):Boolean=inputIntents.serial {debugInputCurrent(trial) && inputIntents.seal(trial.ticket)}
+    fun debugExpectRetirement(trial:DebugInputTrial,target:JSONObject):Boolean=inputIntents.serial {
+        debugInputCurrent(trial) && targetIdentity(target) in trial.targets && inputIntents.expectRetirement(trial.ticket,targetIdentity(target))
+    }
+    fun debugCloseInputTarget(trial:DebugInputTrial,target:JSONObject,enqueue:()->Int):Boolean=inputIntents.serial {
+        if(!debugInputCurrent(trial) || !inputIntents.isSealed(trial.ticket) || targetIdentity(target) !in trial.targets) false
+        else {
+            inputIntents.expectRetirement(trial.ticket,targetIdentity(target))
+            (enqueue()==NativeBridge.ACCEPTED).also {if(!it) inputIntents.invalidate()}
+        }
+    }
+    fun debugFinishInput(trial:DebugInputTrial):Boolean=inputIntents.serial {
+        val valid=debugInputCurrent(trial) && inputIntents.isSealed(trial.ticket)
+        inputIntents.release(trial.ticket);valid
+    }
+    fun debugReleaseInput(trial:DebugInputTrial)=inputIntents.release(trial.ticket)
     private fun focusTarget(runtime: JSONObject, choice: WindowChoice? = null, requireApplied: Boolean = true): JSONObject? {
         val plans=runtime.getJSONArray("panels")
         val live=(0 until plans.length()).map {plans.getJSONObject(it)}
@@ -598,7 +645,7 @@ object NativeSessionHost {
         return live.singleOrNull()
     }
     data class DebugImeFocusReceipt(val runtime: Long, val target: ImeSdkTarget, val ticket: Long, val beforeEpoch: Long, val beforeToken: String?)
-    fun focusTerminal(choice: WindowChoice? = null, requested: ((DebugImeFocusReceipt) -> Unit)? = null) { worker.execute { safely {
+    fun focusTerminal(choice: WindowChoice? = null, requested: ((DebugImeFocusReceipt) -> Unit)? = null) { worker.execute { inputIntents.serial { safely {
         pendingInputFocus=null
         if (handle == 0L) return@safely
         if(editing.get()) return@safely
@@ -613,7 +660,7 @@ object NativeSessionHost {
             requested(DebugImeFocusReceipt(handle,it,ticket,runtime.getLong("input_resets"),runtime.optJSONObject("app")?.optJSONObject("input")?.optString("focus_token")))
         }
         if (BuildConfig.DEBUG) Log.i(TAG,"focus_begin explicit target=${targetIdentity(target)} ticket=${inputIntents.get()}")
-    } } }
+    } } } }
     /** Explicit debug-only endpoint. Normal UI never calls this or enables the Android backend. */
     fun debugCreateImeEditor(context: Context, preImeKey: (KeyEvent) -> Boolean = { false },
         windowFocusChanged: (Boolean) -> Unit = {}): ImeEditorView? {
@@ -865,7 +912,11 @@ object NativeSessionHost {
     }
 
     /** 入口の物理device判定はPhysicalKeyboard。ここは短いnative enqueueだけ。 */
-    fun sendPhysicalKey(event: KeyEvent): Boolean {
+    fun sendPhysicalKey(event: KeyEvent): Boolean = inputIntents.serial {
+        inputIntents.invalidate() // 外部キーはcounterの従来仕様を変えずdebug trialを失効させる。
+        sendPhysicalKeyLocked(event)
+    }
+    private fun sendPhysicalKeyLocked(event: KeyEvent): Boolean {
         if (imeRawBlocked.get()) return false // Android IME owns physical ingress until reset/disable ACKs.
         if(BuildHooks.imeProbeActive()) {BuildHooks.imeProbePhysicalKey();return false}
         val focus = keyboardFocus ?: return false
@@ -1063,6 +1114,7 @@ object NativeSessionHost {
         val snapshot = snapshot()
         val runtime = snapshot.getJSONObject("runtime")
         pumpCatalog(runtime)
+        inputIntents.serial {
         pendingInputFocus?.let { request ->
             val target=JSONObject(request.target)
             val plans=runtime.getJSONArray("panels")
@@ -1107,6 +1159,7 @@ object NativeSessionHost {
                     }
                 }
             }
+        }
         }
         val focusedWindow = runtime.optJSONObject("app")?.optJSONObject("input")?.optString("focus_window")?.takeIf { it.toLongOrNull()!=null }
         if(focusedWindow!=null && (focusedWindow!=lastFocusedWindow || selectedWindow?.first!=runtime.getJSONObject("app").getString("session"))) selectedWindow=runtime.getJSONObject("app").getString("session") to focusedWindow

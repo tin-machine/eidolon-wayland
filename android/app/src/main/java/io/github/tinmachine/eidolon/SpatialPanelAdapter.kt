@@ -46,6 +46,7 @@ class SpatialPanelAdapter {
     private var backgroundStamp: String? = null
     private var backgroundApi: JSONObject? = null
     private val trace = ArrayDeque<JSONObject>()
+    private val retired = ArrayDeque<JSONObject>()
     private data class Binding(val entity: Entity, val handle: Long, var key: JSONObject,
         val ownerKey: JSONObject = JSONObject(key.toString()),
         val role: String = "diagnostic", val commandSeq: String? = null, var destroyCommand: JSONObject? = null,
@@ -179,9 +180,12 @@ class SpatialPanelAdapter {
         .put("background_api", backgroundApi?.let { JSONObject(it.toString()) })
         .put("decoration_entities", visuals.size).put("window_controls",WindowControls.resources()).put("window_mode_badges",WindowModeBadge.resources())
         .put("targets", JSONArray(bindings.values.map { JSONObject().put("entity",it.entity.id.toString()).put("target",JSONObject(it.key.toString())).put("role",it.role)
+            .put("retiring",it.retire).put("sdk_disposed",it.sdkDisposed).put("disposal_failed",it.disposalFailed)
+            .put("listener_owned",it.listener!=null).put("input_owned",it.input!=null)
             .put("decoration",it.decoration).put("visual_entity",it.visual?.id?.toString()).put("controls",it.controls?.metadata()).put("move",it.move?.metadata()).put("mode_badge",it.modeBadge?.metadata())
             .put("visual_collision",if(!it.sdkDisposed) it.visual?.getComponent<Panel>()?.hittable?.name else null)
             .put("input_collision",if(!it.sdkDisposed && it.decoration!=null) it.entity.getComponent<Hittable>().hittable.name else null) }))
+        .put("retired",JSONArray(retired.toList()))
         .put("trace", JSONArray(trace.toList()))
 
     private fun event(name: String, entity: Long = 0, tid: Int = Process.myTid()) {
@@ -295,13 +299,20 @@ class SpatialPanelAdapter {
         current.grabSources.values.toList().forEach { (source,state) -> sdk?.onNoIntersectionInput(source,state,0) }
         sdk?.resolveInput();current.grabSources.clear()
     }
+    private fun closeControls(current:Binding) {
+        current.controls?.let {controls ->
+            controls.close()
+            // close自体が捕捉したSDK失敗も、成功receiptから取り除く。
+            if(controls.metadata().optLong("failures")!=0L) current.disposalFailed=true
+        };current.controls=null
+    }
     private fun disposeSdk(current: Binding) {
         if(current.sdkDisposed) return
         current.sdkDisposed=true
         fun dispose(action:()->Unit) {runCatching(action).onFailure {current.disposalFailed=true;event("sdk_dispose_failure_${it.javaClass.simpleName}",current.entity.id)}}
         dispose {current.move?.close()};current.move=null
         dispose {current.modeBadge?.close()};current.modeBadge=null
-        dispose {current.controls?.close()};current.controls=null
+        dispose {closeControls(current)}
         dispose {cancelGrab(current)}
         current.poseRequest?.let {NativeSessionHost.forgetPose(it)}
         dispose {current.input?.close()}; current.input = null
@@ -319,6 +330,9 @@ class SpatialPanelAdapter {
         val code=NativeSessionHost.sdkBinding(current.ownerKey,current.handle,false)
         if(code!=NativeBridge.ACCEPTED && code!=NativeBridge.STALE) return
         bindings.remove(current.entity.id)
+        if(retired.size==32) retired.removeFirst()
+        retired.addLast(JSONObject().put("runtime",current.handle.toString()).put("target",JSONObject(current.ownerKey.toString()))
+            .put("entity",current.entity.id.toString()).put("sdk_binding_released",true).put("sdk_disposed",true).put("disposal_failed",false))
         current.destroyCommand?.let { NativeSessionHost.ackPanel(it, current.handle) }
     }
     private fun sameKey(a: JSONObject, b: JSONObject): Boolean = listOf("session", "window", "scene", "generation").all { a.optString(it) == b.optString(it) }
@@ -379,14 +393,14 @@ class SpatialPanelAdapter {
                 }
                 if (current.retire) {
                     current.move?.close();current.move=null;current.modeBadge?.close();current.modeBadge=null
-                    current.controls?.close();current.controls=null
+                    closeControls(current)
                     if (current.role == "windows" && !current.hidden) {
                         cancelGrab(current);current.entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
                         current.entity.setComponent(Visible(false)); current.hidden = true
                         // IgnoreVisibleの入力面も、native Surface解放待ちに入る前に無効化する。
                         current.entity.setComponent(Hittable(MeshCollision.NoCollision))
                         current.visual?.setComponent(Visible(false))
-                        NativeSessionHost.resetInput()
+                        NativeSessionHost.resetInputForRetiringTarget(current.ownerKey)
                         event("window_hidden", current.entity.id)
                     }
                     if (current.attached && !current.detachSent) {

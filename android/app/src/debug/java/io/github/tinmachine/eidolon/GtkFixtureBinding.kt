@@ -12,7 +12,7 @@ internal object GtkFixtureBinding {
         check(it.matches(Regex("[1-9][0-9]{0,18}")) && it.toLongOrNull()!=null) {"GTK_ID_INVALID"}
     } ?: error("GTK_ID_INVALID")
     fun target(value:JSONObject):Target {
-        check(value.keySet()==setOf("session","window","scene","generation")) {"GTK_TARGET_INVALID"}
+        check(value.keys().asSequence().toSet()==setOf("session","window","scene","generation")) {"GTK_TARGET_INVALID"}
         return Target(id(value,"session"),id(value,"window"),id(value,"scene"),id(value,"generation"))
     }
     fun owner(runtime:JSONObject,handle:Long):Owner {
@@ -49,6 +49,26 @@ internal object GtkFixtureBinding {
         val producer=(0 until windows.length()).map {windows.getJSONObject(it)}.singleOrNull {it.optString("window")==window}
             ?.optString("frame")?.toLongOrNull() ?: return null
         return candidate.takeIf {matching.singleOrNull()?.let {it.getLong("frames")>0 && it.optString("content_frame").toLongOrNull()?.let {n->n>0 && n>=producer}==true}==true}
+    }
+    /** Mapped消滅のほか、native panel/BoardとSDK所有物の成功回収receiptを照合する。 */
+    fun retired(runtime:JSONObject,adapter:JSONObject?,owner:Owner,owned:Set<Target>,foot:Set<String>):Boolean {
+        if(adapter==null || adapter.optString("scene")!=owner.scene || owned.isEmpty()) return false
+        val windows=owned.map {it.window}.toSet()
+        fun rows(a:org.json.JSONArray)=(0 until a.length()).map {a.getJSONObject(it)}
+        if(rows(runtime.getJSONArray("panels")).any {it.getJSONObject("target").optString("window") in windows}) return false
+        if(rows(runtime.getJSONObject("render").getJSONArray("targets")).any {it.getJSONObject("key").optString("window") in windows}) return false
+        val targets=rows(adapter.getJSONArray("targets"))
+        if(targets.size!=foot.size || targets.any {it.getJSONObject("target").optString("window") !in foot ||
+            it.optBoolean("retiring") || it.optBoolean("sdk_disposed") || it.optBoolean("disposal_failed") || !it.optBoolean("listener_owned")}) return false
+        val receipts=rows(adapter.optJSONArray("retired") ?: return false)
+        if(!owned.all {key->receipts.any {it.optString("runtime")==owner.handle.toString() && target(it.getJSONObject("target"))==key &&
+            it.optBoolean("sdk_disposed") && it.optBoolean("sdk_binding_released") && !it.optBoolean("disposal_failed")}}) return false
+        if(runtime.getJSONObject("shutdown").getInt("sdk_bindings")!=foot.size) return false
+        val board=runtime.optJSONObject("window_slots") ?: return false
+        val entries=rows(board.getJSONArray("entries"))
+        return !board.getBoolean("cleanup_required") && board.getInt("occupied")==foot.size && entries.size==foot.size &&
+            entries.all {val state=it.getJSONObject("state");state.optString("phase")=="bound" && state.optString("window") in foot} &&
+            board.getJSONArray("unassigned").length()==0
     }
     fun window(runtime:JSONObject,appId:String):JSONObject? {
         val rows=runtime.getJSONObject("app").getJSONArray("windows")

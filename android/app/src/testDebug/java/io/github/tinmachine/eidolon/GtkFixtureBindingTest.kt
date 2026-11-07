@@ -59,4 +59,31 @@ class GtkFixtureBindingTest {
         value.getJSONObject("render").getJSONArray("targets").getJSONObject(0).put("content_frame","2")
         assertNotNull(GtkFixtureBinding.targetFor(value,"5"))
     }
+    private fun retirement():Pair<JSONObject,JSONObject> {
+        val runtime=state();val key=target().put("window","1")
+        runtime.put("panels",JSONArray().put(JSONObject().put("target",key)))
+        runtime.getJSONObject("render").put("targets",JSONArray().put(JSONObject().put("key",key)))
+        runtime.put("shutdown",JSONObject().put("sdk_bindings",1))
+        runtime.put("window_slots",JSONObject().put("occupied",1).put("cleanup_required",false).put("unassigned",JSONArray())
+            .put("entries",JSONArray().put(JSONObject().put("state",JSONObject().put("phase","bound").put("window","1")))))
+        val adapter=JSONObject().put("scene","3").put("targets",JSONArray().put(JSONObject().put("target",key).put("listener_owned",true)))
+            .put("retired",JSONArray().put(JSONObject().put("runtime","9").put("target",target()).put("sdk_disposed",true).put("sdk_binding_released",true).put("disposal_failed",false)))
+        return runtime to adapter
+    }
+    @Test fun retirementRequiresFullTargetReceiptNativePanelAndBoardRelease() {
+        val owner=GtkFixtureBinding.owner(state(),9);val owned=setOf(GtkFixtureBinding.target(target()));val foot=setOf("1")
+        val (runtime,adapter)=retirement();assertTrue(GtkFixtureBinding.retired(runtime,adapter,owner,owned,foot))
+        val changes=listOf<(JSONObject,JSONObject)->Unit>(
+            {r,_->r.getJSONObject("shutdown").put("sdk_bindings",2)},
+            {r,_->r.getJSONObject("window_slots").put("cleanup_required",true)},
+            {r,_->r.getJSONObject("window_slots").getJSONArray("entries").getJSONObject(0).getJSONObject("state").put("phase","retiring")},
+            {r,_->r.getJSONArray("panels").put(JSONObject().put("target",target()))},
+            {_,a->a.getJSONArray("retired").getJSONObject(0).getJSONObject("target").put("generation","8")},
+            {_,a->a.getJSONArray("retired").getJSONObject(0).put("disposal_failed",true)},
+            {_,a->a.getJSONArray("retired").getJSONObject(0).put("runtime","10")},
+            {_,a->a.getJSONArray("targets").getJSONObject(0).put("listener_owned",false)},
+            {_,a->a.getJSONArray("targets").getJSONObject(0).put("disposal_failed",true)})
+        for(change in changes) {val (r,a)=retirement();change(r,a);assertFalse(GtkFixtureBinding.retired(r,a,owner,owned,foot))}
+    }
+
 }

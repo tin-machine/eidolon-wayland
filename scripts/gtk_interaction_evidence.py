@@ -6,6 +6,92 @@ STAGES = {"input": ["captured", "focused", "typed", "clicked", "retired"],
           "resize": ["captured", "large", "returned", "retired"]}
 
 
+def key(value):
+    need(type(value) is dict and set(value)=={"session","window","scene","generation"} and all(decimal(v) for v in value.values()),"GTK_RESOURCE_TARGET")
+    return dict(value)
+
+
+def resources(value):
+    """本文/traceは選ばず、full targetと実所有counterだけを残す。旧schemaは合格させない。"""
+    runtime=value["runtime"]["runtime"];adapter=value["adapter"];handle=value["runtime"]["handle"]
+    need(decimal(handle) and decimal(adapter["scene"]) and adapter["scene"]==runtime["scene"],"GTK_RESOURCE_SCENE")
+    def counter(value):
+        need(type(value) is int and 0<=value<=2**63-1,"GTK_RESOURCE_COUNTER");return value
+    def flag(value):
+        need(type(value) is bool,"GTK_RESOURCE_FLAG");return value
+    targets=[]
+    for row in adapter["targets"]:
+        need(decimal(row["entity"]),"GTK_RESOURCE_ENTITY")
+        controls=row.get("controls");mode=row.get("mode_badge")
+        buttons=[] if controls is None else [b["entity"] for b in controls["buttons"]]
+        need(all(decimal(v) for v in buttons) and len(set(buttons))==len(buttons),"GTK_RESOURCE_ENTITY")
+        visual=row.get("visual_entity");mode_entity=None if mode is None else mode["entity"]
+        need(all(v is None or decimal(v) for v in (visual,mode_entity)),"GTK_RESOURCE_ENTITY")
+        targets.append(dict(key=key(row["target"]),entity=row["entity"],visual_entity=visual,
+            listener_owned=flag(row["listener_owned"]),input_owned=flag(row["input_owned"]),
+            retiring=flag(row["retiring"]),sdk_disposed=flag(row["sdk_disposed"]),disposal_failed=flag(row["disposal_failed"]),
+            control_entities=sorted(buttons),control_failures=0 if controls is None else counter(controls["failures"]),
+            move_owned=row.get("move") is not None,mode_entity=mode_entity,
+            mode_ready=False if mode is None else flag(mode["object_ready"]),mode_failures=0 if mode is None else counter(mode["failures"])))
+    need(len(targets)==counter(adapter["bindings"]),"GTK_RESOURCE_BINDING_COUNT")
+    modes=adapter["window_mode_badges"];controls=adapter["window_controls"]
+    owners=dict(panel_entities=counter(adapter["created"])-counter(adapter["destroyed"]),listeners=counter(adapter["listeners"]),
+        decorations=counter(adapter["decoration_entities"]),control_entities=counter(controls["entity_owners"]),control_listeners=counter(controls["listener_owners"]))
+    need(owners["panel_entities"]>=0,"GTK_RESOURCE_COUNTER")
+    owners.update({"mode_"+name:counter(modes[name]) for name in
+        ("entity_owners","object_owners","mesh_owners","material_owners","texture_owners","cleanup_pending_owners","pixel_slots_in_use")})
+    retired=[]
+    for row in adapter["retired"]:
+        need(decimal(row["runtime"]) and decimal(row["entity"]),"GTK_RESOURCE_RECEIPT")
+        retired.append(dict(runtime=row["runtime"],key=key(row["target"]),entity=row["entity"],
+            sdk_disposed=flag(row["sdk_disposed"]),sdk_binding_released=flag(row["sdk_binding_released"]),disposal_failed=flag(row["disposal_failed"])))
+    need(len(retired)<=32,"GTK_RESOURCE_RECEIPT")
+    panels=[]
+    for row in runtime["panels"]:
+        need(row["action"] in {"create","destroy"},"GTK_RESOURCE_PANEL")
+        panels.append(dict(key=key(row["target"]),action=row["action"],applied=flag(row["applied"]),error=row["error"] is not None))
+    board=runtime["window_slots"];entries=[]
+    for row in board["entries"]:
+        lease=row["lease"];state=row["state"];window=state.get("window")
+        need(decimal(str(lease["runtime"])) and decimal(str(lease["session"])) and decimal(str(lease["token"])) and lease["position"] in {"center","right","left","up","down","upper_left","upper_right","lower_left","lower_right"} and (window is None or decimal(str(window))) and
+             state["phase"] in {"reserved","bound","retiring"},"GTK_RESOURCE_BOARD")
+        entries.append(dict(runtime=str(lease["runtime"]),session=str(lease["session"]),token=str(lease["token"]),position=lease["position"],window=None if window is None else str(window),phase=state["phase"]))
+    need(counter(board["occupied"])==len(entries) and all(decimal(str(v)) for v in board["unassigned"]),"GTK_RESOURCE_BOARD")
+    return dict(handle=handle,scene=adapter["scene"],targets=targets,retired=retired,owners=owners,panels=panels,
+        sdk_bindings=counter(runtime["shutdown"]["sdk_bindings"]),board=dict(entries=entries,cleanup_required=flag(board["cleanup_required"]),unassigned=list(map(str,board["unassigned"]))))
+
+
+def baseline_resources(resource, baseline, native_keys):
+    targets=resource["targets"];owners=resource["owners"];board=resource["board"]
+    if [t["key"] for t in targets]!=native_keys or {t["key"]["window"] for t in targets}!=baseline:return False
+    if len(resource["panels"])!=len(baseline) or any(p["key"] not in native_keys or p["action"]!="create" or not p["applied"] or p["error"] for p in resource["panels"]):return False
+    if any(e["runtime"]!=resource["handle"] or not any(k["session"]==e["session"] and k["window"]==e["window"] for k in native_keys) for e in board["entries"]):return False
+    if resource["sdk_bindings"]!=len(baseline) or board["cleanup_required"] or board["unassigned"]:return False
+    if len(board["entries"])!=len(baseline) or {e["window"] for e in board["entries"] if e["phase"]=="bound"}!=baseline:return False
+    if any(t["retiring"] or t["sdk_disposed"] or t["disposal_failed"] or t["control_failures"] or t["mode_failures"] or not t["listener_owned"] or not t["input_owned"] or t["mode_entity"] is not None and not t["mode_ready"] for t in targets):return False
+    mode_count=sum(t["mode_entity"] is not None for t in targets);buttons=sum(len(t["control_entities"]) for t in targets)
+    expected=dict(panel_entities=len(targets),listeners=len(targets),decorations=sum(t["visual_entity"] is not None for t in targets),control_entities=buttons*3,control_listeners=buttons)
+    expected.update({"mode_"+n:mode_count for n in ("entity_owners","object_owners","mesh_owners","material_owners","texture_owners","pixel_slots_in_use")})
+    expected["mode_cleanup_pending_owners"]=0
+    return owners==expected
+
+
+def resource_retirement(samples, baseline, owned):
+    if not samples or not owned:return False
+    before=samples[0].get("resources");after=samples[-1].get("resources")
+    if not before or not after:return False
+    # 最初の採取はspawn前。footのfull key/Entity/listener/control/mode ownerも同一で残ること。
+    base_targets=before["targets"]
+    native_keys=[t["key"] for t in samples[0]["targets"] if t["key"]["window"] in baseline]
+    if not baseline_resources(before,baseline,native_keys):return False
+    if after["targets"]!=base_targets or after["owners"]!=before["owners"] or after["sdk_bindings"]!=len(baseline):return False
+    if after["panels"]!=before["panels"] or after["board"]!=before["board"]:return False
+    if after["board"]["cleanup_required"] or after["board"]["unassigned"] or {e["window"] for e in after["board"]["entries"] if e["phase"]=="bound"}!=baseline:return False
+    if any(t["retiring"] or t["sdk_disposed"] or t["disposal_failed"] or t["control_failures"] or t["mode_failures"] or not t["listener_owned"] for t in base_targets):return False
+    return all(any(r["key"]==k and r["sdk_disposed"] and r["sdk_binding_released"] and not r["disposal_failed"]
+                   and r["runtime"]==after["handle"] for r in after["retired"]) for k in owned)
+
+
 def sample(value, nonce, baseline):
     runtime = value["runtime"]["runtime"];app = runtime["app"]
     expected = app_ids(nonce)
@@ -33,7 +119,7 @@ def sample(value, nonce, baseline):
     need((input.get("focus_window") is None or decimal(input["focus_window"])) and
          all(type(n) is int and 0 <= n <= 2**63-1 for n in
              (runtime["input_resets"], input["pressed"], input["pointer"]["pressed"], input["delivered"], input["pointer"]["buttons"])), "GTK_INPUT_SCHEMA")
-    return dict(sequence=value["sequence"], windows=windows, targets=targets, epoch=runtime["input_resets"],
+    return dict(sequence=value["sequence"], windows=windows, targets=targets, resources=resources(value),epoch=runtime["input_resets"],
                 focused_window=input.get("focus_window"), pressed=input["pressed"], pointer_pressed=input["pointer"]["pressed"],
                 delivered=input["delivered"], pointer_buttons=input["pointer"]["buttons"])
 
@@ -103,11 +189,17 @@ def receipt_binding(row, binding, scene, baseline, observed_main, observed_dialo
 
 def summarize(samples, baseline, case, fixture, android):
     main, dialog, first = set(), set(), set()
+    owned=[]
+    base_resources=samples[0].get("resources") if samples else None
     preserved, sizes = True, []
     for sample in samples:
         mapped = {w["window"] for w in sample["windows"]}
         rendered = {t["key"]["window"] for t in sample["targets"] if t["frames"]>=1 and t["content_frame"] is not None}
         preserved &= baseline <= mapped and baseline <= rendered and not any(w["role"] == "other" for w in sample["windows"])
+        if base_resources:
+            resources=sample.get("resources",{})
+            baseline_targets=[t for t in resources.get("targets",[]) if t["key"]["window"] in baseline]
+            preserved &= baseline_targets==base_resources["targets"]
         main.update(w["window"] for w in sample["windows"] if w["role"] == "main")
         dialog.update(w["window"] for w in sample["windows"] if w["role"] == "dialog")
         for w in sample["windows"]:
@@ -116,7 +208,10 @@ def summarize(samples, baseline, case, fixture, android):
             if target["frames"] >= 1 and target["content_frame"] is not None: first.add(target["key"]["window"])
     last = samples[-1] if samples else dict(windows=[], targets=[], pressed=-1, pointer_pressed=-1)
     live = {w["window"] for w in last["windows"]} | {t["key"]["window"] for t in last["targets"]}
-    retired = bool(main) and not (main | dialog) & live
+    for sample in samples:
+        for row in [*sample.get("resources",{}).get("targets",[]),*sample["targets"]]:
+            if row["key"]["window"] in main|dialog and row["key"] not in owned:owned.append(row["key"])
+    retired = bool(main) and not (main | dialog) & live and resource_retirement(samples,baseline,owned)
     last_report = fixture[-1] if fixture else None
     c_gate = bool(last_report and last_report["phase"] == "final" and last_report["reason"] == "completed" and completed(last_report, case))
     resize = case != "resize" or any(s == dict(width=800, height=500) for s in sizes) and any(s == dict(width=640, height=360) for s in sizes)
