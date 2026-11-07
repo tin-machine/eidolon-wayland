@@ -30,7 +30,7 @@ Sは既存素材・UIの局所変更、Mは複数層の接続や起動・回収�
 | 6 / NX06 | 外側CPU・中央RSSの速度連動（第5節） | M | NX01の素材を使用。既存計測値から停止・再開・欠測を実装し、Disk I/O待ちにしない |
 | 7 / NX07 | Termux必要時起動（第1節） | M | 製品UIDのprobe→固定helper→起動UI。権限不足・取消・起動失敗も扱う |
 | 8 / NX08 | 最小ランチャー: 左下の既存foot起動（第9節） | M | NX03の起動処理を再利用。設定file・任意file・GUIアイコンの完成とは分ける |
-| 保留 / NX09 | TermuxのFcitx5と日本語エンジンを使う入口（第12節） | M〜L・要probe | ユーザー指定で実装を一旦スキップ。再開時は既存package再利用→不足分のTermux向けbuild→Wayland連携、保存/終了/tmux/nvim/focusを確認 |
+| 保留 / NX09 | Android IME先行probeと共通text-input基盤（第12節） | M〜L・要probe | 実装の保留を継続。再開時は[新計画](android-ime-wayland-plan-20261107.md)に従いSpatial標準入力欄→独自InputConnection→実footを検証。案A固有の不成立ならTermux Fcitx5へ進む |
 | 10 / NX10 | ランチャーカタログ・設定file・一時file指定（第9節） | M〜L | NX08から拡張。構造化したpath/argv、取消・連打・回収を先に確認。GUI登録はNX11後 |
 | 11 / NX11 | SDL/SHM probe→Doom + Freedoom（第2〜4節） | M〜L・不確実 | 現行二枚でfootから開始可。NX07/10の完成を必須にせず、表示方式の不成立を大移植で埋めない |
 | 12 / NX12 | 窓別の移動・close・テーマ指定ボタン（第6・11節） | M〜L | まず二枚。入力状態の窓横表示、窓別の入力停止と復帰、サイズ・正面復帰を段階的に接続 |
@@ -720,12 +720,13 @@ NX12以降は二枚で異なる状態、移動中の窓と非対象窓、装飾O
 
 ## 12. かな漢字変換を使える最小の日本語入力
 
-ユーザーの要件は「かな漢字変換ができればよい」。詳細は[日本語入力計画](japanese-input-plan-20261107.md)に記す。
+実装は保留中。再開時の方式選定・検証順は[Android IME先行の新計画](android-ime-wayland-plan-20261107.md)を正本とする。
+ユーザーは複数Linuxアプリで使うcompositorのtext-input-v3対応と、Android側IMEを先に検証する方式を選択した。
 現行のUS/JIS keymap、UTF-8 clipboard、日本語の表示と、IMEでの入力成功は別である。
-旧NX05のttyskkは専用PTYで検証済みだが、ユーザーはSKK独自の操作を避け、Termux側のFcitx利用を希望した。
-NX09ではFcitx5＋Mozcを第一候補に、既存packageとTermux向け追加buildを優先する。
-必要なWayland IME連携はこの段階で追加する。AndroidのソフトウェアIME統合とは別の経路である。
-一般GUIへの対応は各アプリで個別確認し、独立する他の計画項目はIMEの移植待ちにしない。
+NX09は小さなSpatialパネルで日本語変換・実USキーボード・候補UIを確認し、独自InputConnectionと実footへ進む。
+案A固有の制約で成立しない場合に案BのTermux Fcitx5＋日本語エンジンを検証する。共通protocolの不具合や実機確認待ちを案A失敗にしない。
+[従来計画](japanese-input-plan-20261107.md)のFcitx調査と旧ttyskkのprobe記録は保持し、SKKを通常方式へ戻さない。
+一般GUIへの対応はNX15で各アプリを個別確認し、独立する他の計画項目はIMEの成立待ちにしない。
 
 ## 記録と保留事項
 
@@ -738,7 +739,8 @@ NX09ではFcitx5＋Mozcを第一候補に、既存packageとTermux向け追加bu
 音・マウス・ゲームパッド、GTK/Qtの具体的な対象、X11/GPU対応は先行検証後に相談する。
 ユーザーへの追加質問を待つ必要がある項目と、実装者が小規模検証で決められる項目を区別する。
 **2026-11-07にユーザーが本計画全体の実装・検証継続を承認した。**
-依存関係と小規模probeを守り、実装可能な独立項目を進める。ユーザーの装着・物理操作確認は最後にまとめる。
+依存関係と小規模probeを守り、実装可能な独立項目を進める。ユーザーの装着・物理操作確認は原則最後にまとめる。
+ただしNX09のAndroid IME方式選定に必要なHMD/物理確認は、新計画の先行ゲートとして実施する。
 
 ## 調査元
 

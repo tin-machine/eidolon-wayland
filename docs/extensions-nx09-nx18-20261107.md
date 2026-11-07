@@ -6,6 +6,10 @@ NX01〜NX18を対象とするゴールを再設定した。開始基準は`4ea69
 実装・PC/Questの自動検証を先に進め、ユーザーによる装着・物理操作は最後にまとめる。
 文書の更新や一部テストの成功だけで計画全体を完了にしない。
 
+**日本語入力の実装は保留し、再開時の方針を[Android IME先行の新計画](android-ime-wayland-plan-20261107.md)へ更新した。**
+再開後は案Aの小さなSpatial入力probeを先行し、固有の制約で成立しなければ案BのTermux Fcitx5へ進む。
+方式選定に必要なHMD/物理確認は先行ゲートとする。以下のFcitx/ttyskk調査は履歴として保持し、新方式の検証は未着手。
+
 ## 引き継ぐ証拠と未完了条件
 
 NX01〜08の実装・失敗・自動検証は[前回記録](extensions-nx01-nx08-20261107.md)。
@@ -24,7 +28,7 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 | NX06 | CPU/RSS独立回転、自動検証済み | 中央回転はユーザー採用。停止/欠測・多窓回帰を維持 |
 | NX07 | 固定helper、権限/取消等の自動検証済み | 再起動後を含む実利用の起動・復帰を継続確認 |
 | NX08 | 左下footボタン、ADB起動成功 | ユーザーへ「>_ ターミナル」と案内済み。NX10へ拡張 |
-| NX09 | ユーザー指定で一旦保留 | Fcitx再利用の調査結果を保持。保留は完了ではなく、NX10以降を先行 |
+| NX09 | ユーザー指定で一旦保留 | NX10以降を先行。再開時はAndroid IMEのSpatial probe→共通text-input-v3→実foot、案A固有の不成立ならTermux Fcitx5。新方式は未検証 |
 | NX10 | カタログ・照会契約を実装中 | TOML読込・構造化argv・固定helper照会から開始。UI/登録保存/実foot起動・取消と回収は後続 |
 | NX11 | 未着手 | SDL/SHM小probe、成立後Doom/Freedoomの個別実測 |
 | NX12 | 未着手 | 二枚で窓別移動/close/状態、テーマ指定操作部、サイズ/正面復帰 |
@@ -46,7 +50,8 @@ tmux/nvim・PTY/終了・focus切替を順に確認する。ランチャー統�
 ### ユーザー指定によるFcitx優先への変更
 
 調査中にユーザーがSKKの操作体系を避け、Termux内のFcitxパッケージ再利用を希望した。
-現在の方針と成立条件は[日本語入力計画の更新](japanese-input-plan-20261107.md#更新-termuxのfcitx5を使う2026-11-07)を正とする。
+当時の方針と成立条件は[日本語入力計画の更新](japanese-input-plan-20261107.md#更新-termuxのfcitx5を使う2026-11-07)に記録した。
+現行の順序は[Android IME先行の新計画](android-ime-wayland-plan-20261107.md)に従い、この調査を案Bで再利用する。
 Termux公式fcitx5は存在するがWayland無効。Mozcのrecipeも同revisionにないため、そのままの導入だけでは足りない。
 APKへのエンジン同梱へ直行せず、Termux側の有効化・追加packageと、EidolonのIME protocol接続を分けて検証する。
 

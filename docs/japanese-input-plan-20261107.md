@@ -2,7 +2,9 @@
 
 作成日: 2026-11-07。当初の調査基準: `40692ec` / Build133。
 **現在はユーザー指定により日本語変換の実装を一旦保留し、NX10のランチャー拡張を先行する。**
-再開時はTermux側のFcitx5と日本語エンジンを再利用する方式を優先する。
+**再開時の方式選定・実装順は[Android IME先行の新計画](android-ime-wayland-plan-20261107.md)を正本とする。**
+今回のユーザー指定は、案AのSpatial入力probeを先に行い、案A固有の制約で不成立なら案BのTermux Fcitx5へ進む方針。
+本書のFcitx調査は案Bの根拠、後半のttyskk設計は旧probeの履歴として保持する。
 保留を実装完了として扱わず、以下の調査結果・既存設定を保持する。
 SKK独自の操作を通常の日本語入力として要求しない。以下のttyskkの成功は旧方式のprobe記録として保持する。
 [実装記録](extensions-nx01-nx08-20261107.md)の固定版ttyskkはAndroidへビルド・導入し、
@@ -13,8 +15,9 @@ HMD/物理キーボードとfoot内の見え方は最終確認に残す。
 
 ## 更新: TermuxのFcitx5を使う（2026-11-07）
 
+この節はAndroid IME先行へ更新する前の調査記録。現行では[新計画の案B](android-ime-wayland-plan-20261107.md#6-案bへ移る場合)として使う。
 ユーザーはSKKの操作体系を避け、Termux内のFcitxパッケージを再利用したいと希望した。
-第一候補はFcitx5＋Mozc。Fcitx5は入力の枠組みであり、かな漢字変換には日本語エンジンが別途必要になる。
+案Bの第一候補はFcitx5＋Mozc。Fcitx5は入力の枠組みであり、かな漢字変換には日本語エンジンが別途必要になる。
 変換エンジンはTermux側のprocess/packageとして動かし、EidolonにはWaylandの入力・候補表示の接続を追加する。
 既存packageで足りない場合も、Termux向けの追加packageやWaylandを有効にした再ビルドを先に検証する。
 直ちにMozcをAPKへ組み込む設計へ切り替えない。
@@ -53,6 +56,8 @@ Termux移植の成立性を確認しつつ、独立するNX10以降の実装を�
 
 ## 現状と最初の到達点
 
+以下は旧NX05/端末内入力方式の計画を残した履歴。現行NX09の到達点・受入れは[新計画](android-ime-wayland-plan-20261107.md)に従う。
+
 現行は物理KeyEventをWaylandのkeycode/keymap/modifierへ送る経路であり、JIS設定はキー配置の切替である。
 APK側にAndroid IMEの未確定文字・確定文字をfootへ渡すInputConnection連携はなく、
 compositorにWayland text-input/input-methodの公開globalもない。
@@ -78,7 +83,7 @@ Termuxのfootが`+ime`でビルドされていることや、日本語fallback f
 計画時点では両者とも現Questへの導入成功・Bionic互換性・ユーザー受入れは未確認だった。
 NX05のttyskkの導入と専用PTYでの成立は上記の実装記録を参照する。ユーザー受入れはまだ別条件。配布package・依存・license・辞書を先に調べる。
 SKKは変換の区切りを利用者が指定する操作方式なので、一般的なローマ字連文節変換と同じとは説明しない。
-旧NX05のprobeはttyskkで進めた。継続採用は取りやめ、現在のNX09は上記のFcitx5優先方針に従う。
+旧NX05のprobeはttyskkで進めた。継続採用は取りやめ、現在のNX09は[Android IME先行の新計画](android-ime-wayland-plan-20261107.md)に従う。
 
 NX05は一つの端末・一つの変換方式で可否と追加費用を判定する区切り。
 大きなTermux移植やGUI用IME基盤が必要ならここで見積りを改訂し、ほかの小さい拡張を先へ進める。
