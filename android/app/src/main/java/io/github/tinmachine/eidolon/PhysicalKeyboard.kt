@@ -11,7 +11,7 @@ import android.view.KeyEvent
 class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean = { false }) : InputManager.InputDeviceListener {
     private val manager = context.getSystemService(InputManager::class.java)
     private var active=false
-    private val consumed = mutableSetOf<Pair<Int, Int>>()
+    private val consumed = mutableMapOf<Pair<Int, Int>, Long>()
     private val imeShortcut = ImeShortcut()
     fun resume() {
         if(active) return
@@ -24,7 +24,7 @@ class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean 
         KeyboardIngress.received(source)
         if (event.action !in setOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) {KeyboardIngress.outcome("unsupported_action");return false}
         val identity = event.deviceId to (if (event.scanCode != 0) event.scanCode else -event.keyCode)
-        val previouslyConsumed = consumed.contains(identity)
+        val previouslyConsumed = consumed[identity] == event.downTime
         val device = event.device
         val physical = event.deviceId >= 0 && device != null && !device.isVirtual && event.isFromSource(InputDevice.SOURCE_KEYBOARD)
         val shortcut = ImeShortcut.Event(
@@ -43,7 +43,7 @@ class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean 
         // pause/device切替後でも受理済みpressのtailを先に消費し、新targetへkeyupを送らない。
         if (imeShortcut.dispatch(shortcut, onImeToggle)) {
             if(active && physical) KeyboardIngress.physical()
-            if(event.action == KeyEvent.ACTION_UP) consumed.remove(identity)
+            if(event.action == KeyEvent.ACTION_UP && consumed[identity] == event.downTime) consumed.remove(identity)
             if(event.isCanceled) {imeShortcut.reset();NativeSessionHost.resetInput()}
             KeyboardIngress.outcome("ime_shortcut")
             return true
@@ -58,11 +58,11 @@ class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean 
             KeyboardIngress.outcome("not_physical_keyboard");return false
         }
         KeyboardIngress.physical()
-        if (event.isCanceled) { KeyboardIngress.outcome("cancelled");consumed.remove(identity);imeShortcut.reset(); NativeSessionHost.resetInput(); return previouslyConsumed }
+        if (event.isCanceled) { KeyboardIngress.outcome("cancelled");if(consumed[identity] == event.downTime) consumed.remove(identity);imeShortcut.reset(); NativeSessionHost.resetInput(); return previouslyConsumed }
         val sent = NativeSessionHost.sendPhysicalKey(event)
         KeyboardIngress.outcome(if(sent) "enqueued" else "input_gate_closed")
-        if (sent && event.action == KeyEvent.ACTION_DOWN) consumed.add(identity)
-        if (event.action == KeyEvent.ACTION_UP) consumed.remove(identity)
+        if (sent && event.action == KeyEvent.ACTION_DOWN) consumed[identity] = event.downTime
+        if (event.action == KeyEvent.ACTION_UP && consumed[identity] == event.downTime) consumed.remove(identity)
         // 焦点喪失でreset済みのkey upもComposeへ漏らさない。
         return sent || previouslyConsumed
     }
@@ -78,7 +78,7 @@ class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean 
         imeShortcut.reset()
         if(!active) return
         refreshDevices()
-        consumed.removeAll { it.first == deviceId }
+        consumed.keys.removeAll { it.first == deviceId }
         NativeSessionHost.resetInput()
     }
 }

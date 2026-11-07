@@ -24,6 +24,8 @@ class ImeShortcut {
     private val controls = mutableMapOf<Int, MutableMap<Key, Long>>()
     private val spaces = mutableMapOf<Int, Long>()
     private val owned = mutableSetOf<Press>()
+    private val completed = linkedSetOf<Press>()
+    private var retiredThrough = -1L
 
     /** 焦点/epoch/pauseで再armを要求する。受理済みpressの遅いupは引き続き消費する。 */
     fun reset() { controls.clear(); spaces.clear() }
@@ -38,13 +40,22 @@ class ImeShortcut {
         val press = Press(event.device, event.key, event.downTime)
         if (event.cancelled) deviceChanged(event.device)
         if (event.system) reset()
+        if (event.action == Action.UP && press in completed) return true
         if (press in owned) {
             if (event.action == Action.UP) {
                 owned.remove(press)
+                completed.add(press)
+                while (completed.size > 128) {
+                    val retired = completed.first(); completed.remove(retired)
+                    retiredThrough = maxOf(retiredThrough, retired.downTime)
+                }
                 release(event)
             }
             return true
         }
+        // Every accepted toggle urgently reset native keys. Even an evicted old tail must
+        // not release a newer press; Android downTime uses one monotonic clock for devices.
+        if (event.key in setOf(Key.CTRL_LEFT, Key.CTRL_RIGHT, Key.SPACE) && event.downTime <= retiredThrough) return true
         if (!event.active || !event.physical || event.device < 0 || event.system || event.cancelled) return false
         if (event.action == Action.UP) {
             release(event)
@@ -59,6 +70,7 @@ class ImeShortcut {
         spaces[event.device] = event.downTime
         val held = controls[event.device].orEmpty().toMap()
         if (held.isEmpty() || !event.ctrl || event.shift || event.alt || event.meta) return false
+        if ((owned + press + held.map { (key, downTime) -> Press(event.device, key, downTime) }).size > 128) return false
         if (!onToggle()) return false
         // callbackが同期的にresetしても、このpressの所有権は失わない。
         owned.add(press)

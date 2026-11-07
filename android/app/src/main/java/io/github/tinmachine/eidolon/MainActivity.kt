@@ -40,7 +40,7 @@ class MainActivity : AppSystemActivity() {
     private var sceneEpoch=0L
     private fun ownsScene(): Boolean = !isDestroyed && (sceneEpoch==0L || sceneEpoch==NativeSessionHost.currentSceneEpoch())
     private val nativePanels by lazy { SpatialPanelAdapter() }
-    private val keyboard by lazy { PhysicalKeyboard(this) }
+    private val keyboard by lazy { PhysicalKeyboard(this) { BuildHooks.imeTerminalToggle() } }
     private var themePickerToken: String? = null
 
     override fun registerFeatures(): List<SpatialFeature> =
@@ -184,23 +184,33 @@ class MainActivity : AppSystemActivity() {
 
     override fun onPause() {
         deviceMetrics.stop()
-        val current=ownsScene();keyboard.pause(resetInput=current)
+        val current=ownsScene()
+        if(current) BuildHooks.imeTerminalPaused()
+        keyboard.pause(resetInput=current)
         if(current) NativeSessionHost.setActivityVisible(false,sceneEpoch.takeIf {it>0})
         Log.i(TAG, "activity_paused version=${BuildConfig.VERSION_CODE}")
         super.onPause()
     }
 
+    fun dispatchImePanelKey(event: KeyEvent, source: String): Boolean = ownsScene() && keyboard.dispatch(event,source)
+    fun resetImeShortcut() { keyboard.resetShortcutState() }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean = (ownsScene() && keyboard.dispatch(event)) || super.dispatchKeyEvent(event)
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus && ownsScene()) NativeSessionHost.resetInput()
+        if (!hasFocus && ownsScene() && !BuildHooks.imeTerminalDeferFocusLoss()) {
+            keyboard.resetShortcutState()
+            BuildHooks.imeTerminalExternalLoss()
+            NativeSessionHost.resetInput()
+        }
     }
 
     override fun onSessionStateChanged(state: SessionState) {
         super.onSessionStateChanged(state)
         if(!ownsScene()) return
         Log.i(TAG, "xr_state=$state version=${BuildConfig.VERSION_CODE}")
+        if(state != SessionState.FOCUSED) { keyboard.resetShortcutState();BuildHooks.imeTerminalExternalLoss() }
         NativeSessionHost.setXrState(when (state) {
             SessionState.FOCUSED -> "FOCUSED"
             SessionState.VISIBLE -> "VISIBLE"

@@ -173,4 +173,31 @@ class ImeShortcutTest {
         assertTrue(state.dispatch(up(space)) { fail("up cannot toggle"); false })
         assertTrue(state.dispatch(up(left)) { fail("up cannot toggle"); false })
     }
+    @Test fun completedTailsCannotReleaseANewerPressAcrossTwoIngressStages() {
+        val f=Fixture();f.send(left);f.send(space)
+        assertTrue(f.send(up(space)));assertTrue(f.send(up(left)))
+        val next=left.copy(downTime=40);f.send(next)
+        assertTrue(f.send(up(left))) // 遅いpost-IMEの旧UP。新Ctrlの所有を消さない。
+        assertTrue(f.send(space.copy(downTime=50)))
+        assertEquals(2,f.toggles)
+    }
+    @Test fun evictedCompletedTailsRemainSuppressedByRetirementFloor() {
+        val f=Fixture()
+        for(i in 0..140) {
+            val ctrl=left.copy(downTime=100L+i*10)
+            val sp=space.copy(downTime=101L+i*10)
+            f.send(ctrl);assertTrue(f.send(sp));assertTrue(f.send(up(sp)));assertTrue(f.send(up(ctrl)))
+        }
+        val next=left.copy(downTime=2000);f.send(next)
+        assertTrue(f.send(up(left.copy(downTime=100))))
+        assertTrue(f.send(space.copy(downTime=2001)))
+        assertEquals(142,f.toggles)
+    }
+    @Test fun acceptedOwnedLimitDoesNotEvictAnUnreleasedTail() {
+        val f=Fixture()
+        for(i in 0..80) { f.send(left.copy(downTime=100L+i*10));f.send(space.copy(downTime=101L+i*10)) }
+        assertTrue(f.toggles<=64)
+        assertTrue(f.send(up(space.copy(downTime=101))))
+        assertTrue(f.send(up(left.copy(downTime=100))))
+    }
 }

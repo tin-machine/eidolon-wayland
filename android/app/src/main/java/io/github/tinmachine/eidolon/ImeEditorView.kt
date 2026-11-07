@@ -8,6 +8,7 @@ import android.text.InputType
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
@@ -22,6 +23,8 @@ class ImeEditorView(
     onInvalidated: (Long, String) -> Unit = { _, _ -> },
     private val onConnectionOpened: (Long) -> Unit = {},
     private val canEditGeneration: (Long) -> Boolean = { true },
+    private val preImeKey: (KeyEvent) -> Boolean = { false },
+    private val windowFocusChanged: (Boolean) -> Unit = {},
 ) : View(context) {
     private data class HeldKey(val device: Int, val scan: Int, val code: Int)
     private val heldKeys = mutableMapOf<HeldKey, Long>()
@@ -35,6 +38,7 @@ class ImeEditorView(
         textSize = 22f * resources.displayMetrics.scaledDensity
     }
     private var connection: ImeInputConnection? = null
+    private var permanentlyClosed = false
     private val inputMethod get() = context.getSystemService(InputMethodManager::class.java)
 
     init {
@@ -49,8 +53,10 @@ class ImeEditorView(
     }
 
     fun metadata(): ImeEditorMetadata = editor.metadata()
+    fun isPermanentlyClosed(): Boolean = permanentlyClosed
 
     fun resetEditor(restartInput: Boolean = true) {
+        if (permanentlyClosed) return
         editor.reset()
         connection = null
         invalidate()
@@ -58,16 +64,45 @@ class ImeEditorView(
     }
 
     fun closeEditor() {
+        if (permanentlyClosed) return
+        // Retire before any synchronous IMM callback: restartInput must receive null,
+        // and a delayed framework callback must never open another generation.
+        permanentlyClosed = true
         editor.reset("close")
         connection = null
-        inputMethod?.hideSoftInputFromWindow(windowToken, 0)
-        clearFocus()
+        val imm = inputMethod
+        // An IMM service failure must not abort native reset/disable in the owner.
+        // The owner still requires actual IMM release; exceptions never imply success.
+        runCatching { if (isAttachedToWindow && imm?.isActive(this) == true) imm.restartInput(this) }
+        runCatching { imm?.hideSoftInputFromWindow(windowToken, 0) }
+        val container = parent as? ViewGroup
+        val focusability = container?.descendantFocusability
+        try {
+            container?.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+            isFocusable = false
+            isFocusableInTouchMode = false
+            isClickable = false
+            clearFocus()
+            // This is an Android view focus handoff within our existing window, not an
+            // injected pointer or a request to focus another application's window.
+            container?.requestFocus()
+        } finally {
+            if (container != null && focusability != null) container.descendantFocusability = focusability
+        }
         invalidate()
     }
 
-    override fun onCheckIsTextEditor() = true
+    override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean = preImeKey(event) || super.dispatchKeyEventPreIme(event)
 
-    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        windowFocusChanged(hasWindowFocus)
+    }
+
+    override fun onCheckIsTextEditor() = !permanentlyClosed
+
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+        if (permanentlyClosed) return null
         val generation = editor.openConnection()
         onConnectionOpened(generation)
         outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -103,6 +138,7 @@ class ImeEditorView(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (permanentlyClosed) return false
         if (event.action == MotionEvent.ACTION_UP) {
             performClick()
             return true
@@ -111,6 +147,7 @@ class ImeEditorView(
     }
 
     override fun performClick(): Boolean {
+        if (permanentlyClosed) return false
         super.performClick()
         requestFocus()
         inputMethod?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)

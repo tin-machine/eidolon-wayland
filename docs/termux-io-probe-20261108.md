@@ -89,6 +89,21 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 一時領域でread_bytes/write_bytesは0、zombie子のioはACCESS_DENIEDだった。
 そのためstorage側の重複はunknown、結果はpartialとして保持した。
 
-次はTermux実UIDで同じprobeを実行し、live子のアクセスとwait前後を確認する。
+## Quest上のTermux実UIDでの結果
+
+2026-11-08、配布sourceのSHA-256を照合してTermux自身のPythonで同じprobeを実行した。
+自プロセスと生存中の子は取得でき、取得不可は`writer_parent_zombie`だけだった。
+結果は`partial / OBSERVATION_UNAVAILABLE`、専用group/fileの回収は`completed`として保存した。
+
+固定writerの`write_bytes`差分と、writerをwaitした親の`write_bytes`差分は、どちらも1,048,576 bytesだった。
+`wchar`でも正の重なりを確認したため、`character_io`と`storage_io`の二重計上リスクは両方`observed`となった。
+同じ子の終了前counterを保存し、wait後にそのcounterと親のcounterを単純加算する方式は採用できない。
+`read_bytes`差分は0であり、キャッシュされた読み込みを物理disk読出しとして扱わない。
+
+これは当該UID・固定親子での取得可能性とwait境界の証拠で、一般process treeや内側リングの完成ではない。
+source hash、実行UID、全固定counterと取得不可箇所は、作業rootの
+`eidolon-ime-implementation-20261107/nx13-device/`へ保存した。
+
+次はこの結果に基づき、wait済み子の別加算を避け、sampling中のtree変化をpartialにする集計方式を決める。
 thread終了、孫process、tmux共有session、頻繁なPID交代、一般process treeの二重計上除去、
 sampling境界のpartial/stale、collector→wire→ringの配送は残件である。

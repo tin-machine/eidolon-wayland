@@ -1,7 +1,7 @@
 # NX11: SDL software rendererからSHMへ届く経路の小規模検証
 
 調査基準: `2b6a380`。日本語変換NX09はユーザー指定で保留し、NX10と独立してNX11を準備した。
-**ホストの隔離Wayland環境ではSHM描画が成立した。Quest・Eidolon compositor・Doomの成功はまだ未確認。**
+**ホストの隔離Wayland環境ではSHM描画が成立した。QuestではBionic buildとdummy描画まで確認し、Eidolon上のSDL描画・Doomは未確認。**
 
 ## 追加したprobe
 
@@ -54,6 +54,32 @@ Weston起動の最初の試行では、`--backend`へmoduleの絶対pathを渡�
 `--backend=headless`と、[公式のmodule map](https://cgit.freedesktop.org/wayland/weston/tree/libweston/compositor.c)で
 展開先のmoduleを指定すると起動した。これをhost scriptへ反映した。
 
+## 2026-11-08: Quest上の準備とBionic検証
+
+Termuxの同UIDでSDL2 `2.32.10`、opengl `4.5`、Mesa `26.2.6`、libglvnd `1.7.0-1`、
+libdecor `0.2.5`を導入した。追加49件、既存packageの更新・削除は0件、追加容量の見積りは135MBだった。
+最初は古いapt一覧のvulkan-loader-generic `1.4.367`が404となった。
+一覧を更新し、追加・更新・削除を再simulateした後、取得可能な`1.4.368`で導入に成功した。
+全追加packageの版とrepository上のarchive SHA-256を保存した。既存foot/Waypipeは更新していない。
+
+[固定source配備ツール](sdl-probe-install-20261108.md)でC/runner/manifestを新runへ配備した。
+初回はAndroidの標準的な`files`親directoryのmode `0771`を拒否して失敗したため、
+同一app UID/GID・world writeなしの場合だけこの親のgroup writeを許容した。
+usr/bin/home以下の検査と配備先0700/file0600は維持し、端末の親modeを変更していない。
+
+Termux clang `21.1.8`で同C sourceをbuildし、AArch64 ELF（13,736 bytes）を確認した。
+binary SHA-256は`446b3428f45c2f94acf7292677cc33b9590e5e1f3ae6466e45c7152212b26046`。
+dummy driverで3 frames/3 pixel checks、SDL compile/runtimeとも`2.32.10`、自然終了・reap・group回収に成功した。
+これはBionic/SDLの最低限の動作確認で、SHM・Eidolon texture・実入力は`not_run`のまま。
+
+runner自身へのTERM/HUPで別sessionの子・孫が残る問題もPCで再現し修正した。
+取消は独立metadataへ残し、先行clientの失敗・終了codeを保持する。先行した成功も取消後は合格へ昇格させない。
+取消・元失敗保持・非所有processの保護を含む10件が成功した。
+
+記録は作業rootの`eidolon-ime-implementation-20261107/`内の`nx11-device/`、`sdl-install/`、`nx11-runner-evidence/`。
+C/runnerの各SHA-256、配備manifest、compiler argv、package追加前後、404と条件変更を含む。
+次は認証済みの現行footのWayland環境で自然終了を1回試し、二枚目のpanel更新を別途観測する。
+
 ## Termuxへ持ち込む前の確認
 
 Termux公式tree `fbdb3c03610c697322ac608e77cea2b553f49ef3`（recursive tree、truncated=false）で確認した。
@@ -73,7 +99,7 @@ SDL再移植を始める前に、公式SDL2＋Mesa CPU→SHMの組合せを実�
 ## 再現手順
 
 SDL2 headers/libraryとpkg-configを利用できる環境では、同じC sourceを次のようにbuildできる。
-Termuxでこのコマンドを実行した証拠はまだない。
+上記のTermux検証でも同じC sourceとpkg-configのflagsを使用した。
 
 ```bash
 cc -std=c11 -Wall -Wextra -Werror -O2 scripts/fixtures/sdl-wayland-probe.c \

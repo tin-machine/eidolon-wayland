@@ -15,9 +15,13 @@ import org.json.JSONObject
 /** 実際のSDK Surfaceを使う固定case。UIをblockせず段階ごとに待つ。 */
 object BuildHooks {
     fun registerMeshes(activity: com.meta.spatial.toolkit.AppSystemActivity) = ThemeInputCandidates.register(activity)
-    fun additionalPanels() = ThemeSurfaceProbe.registrations() + ImeProbe.registrations()
-    fun sceneClosing() { ImeProbe.sceneClosing(); ThemeSurfaceProbe.sceneClosing() }
-    fun imeProbeActivity(activity: android.app.Activity) = ImeProbe.activity(activity)
+    fun additionalPanels() = ThemeSurfaceProbe.registrations() + ImeProbe.registrations() + ImeTerminalCase.registrations()
+    fun sceneClosing() { ImeTerminalCase.sceneClosing(); ImeProbe.sceneClosing(); ThemeSurfaceProbe.sceneClosing() }
+    fun imeProbeActivity(activity: android.app.Activity) { ImeProbe.activity(activity);ImeTerminalCase.activity(activity) }
+    fun imeTerminalToggle() = ImeTerminalCase.toggle()
+    fun imeTerminalPaused() = ImeTerminalCase.pause()
+    fun imeTerminalExternalLoss() = ImeTerminalCase.externalLoss()
+    fun imeTerminalDeferFocusLoss() = ImeTerminalCase.deferActivityFocusLoss()
     fun imeProbeActive(): Boolean = ImeProbe.isActive()
     fun imeProbePhysicalKey() = ImeProbe.physicalKey()
     private val ui = Handler(Looper.getMainLooper())
@@ -37,6 +41,7 @@ object BuildHooks {
     }
     fun sceneReady(adapter: SpatialPanelAdapter, scene: () -> Scene, recreate: () -> Unit) {
         ImeProbe.sceneReady()
+        ImeTerminalCase.sceneReady()
         LayoutSdkCase.sceneReady(adapter,scene,recreate)
     }
     fun accept(intent: Intent?, adapter: SpatialPanelAdapter, context: Context, scene: () -> Scene, recreate: () -> Unit) {
@@ -60,13 +65,14 @@ object BuildHooks {
             ImeProbe.sdkTap(nonce)
             return
         }
-        if (running || name !in setOf("extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe")) return
+        if (running || name !in setOf("extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe", "ime-terminal")) return
         intent.removeExtra("case"); intent.removeExtra("nonce")
         if(nonce in consumedNonces) return
         if(consumedNonces.size==64) consumedNonces.removeFirst()
         consumedNonces.addLast(nonce)
         running = true
-        if (name == "ime-editor-probe") ImeProbe.start(nonce,context,scene) {running=false}
+        if (name == "ime-terminal") ImeTerminalCase.start(nonce,scene) {running=false}
+        else if (name == "ime-editor-probe") ImeProbe.start(nonce,context,scene) {running=false}
         else if (name == "stop") SdkCaseEnvironment.start(name,nonce,context,{done->LifecycleSdkCase.start(nonce,adapter,done)}) {running=false}
         else if (name == "theme-surface") ThemeSurfaceProbe.start(nonce,scene) {running=false}
         else if (name in setOf("layout","two-windows","theme-sdk")) LayoutSdkCase.start(nonce,context,adapter,scene,recreate,name) {running=false}

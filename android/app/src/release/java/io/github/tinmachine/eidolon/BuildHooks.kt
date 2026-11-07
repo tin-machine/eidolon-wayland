@@ -10,6 +10,10 @@ object BuildHooks {
     fun additionalPanels(): List<com.meta.spatial.toolkit.PanelRegistration> = emptyList()
     fun sceneClosing() = Unit
     fun imeProbeActivity(activity: android.app.Activity) = Unit
+    fun imeTerminalToggle(): Boolean = false
+    fun imeTerminalPaused() = Unit
+    fun imeTerminalExternalLoss() = Unit
+    fun imeTerminalDeferFocusLoss(): Boolean = false
     fun imeProbeActive(): Boolean = false
     fun imeProbePhysicalKey() = Unit
     fun holdPanelCreation(window: String): Boolean = false

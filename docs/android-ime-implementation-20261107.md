@@ -1,8 +1,41 @@
 # 日本語入力の実装・検証記録
 
-2026-11-07。基準`795f184`。[設計](android-ime-wayland-plan-20261107.md)のNX09をユーザー指示で再開した。
+2026-11-07開始、2026-11-08更新。基準`795f184`。[設計](android-ime-wayland-plan-20261107.md)のNX09をユーザー指示で再開した。
 通常の日本語入力の有効化と案A採用は、A1/A2の実キーボード・候補表示の確認を待つ。
 本記録の合成入力を、実IMEのかな漢字変換やHMDの受入れへ読み替えない。
+
+## Build149〜151: IME接続と直接入力への復帰
+
+単一の物理キーボード入口とpre-IME入口にCtrl+Spaceのownerを接続するdebug端末パネルを追加した。
+通常UIの自動有効化は行わず、[明示probe](android-ime-terminal-probe-20261108.md)を開始した間だけ使用する。
+切替前のCtrl解除、変換中のraw排他、終了時のnative reset/disable ACK・Android接続解除・
+元のSDK targetへのfresh epochによるfocus復帰を別々に確認する。
+入力状態表示も接続・終了・復帰待ちを区別し、待機中を通常の入力可能状態に見せない。
+
+| 版 | 観測・変更 |
+| --- | --- |
+| 149 | build/lint/package/JUnit 92件成功。最初は入力先が準備できたが、後続のfocus解除後にtoggleが受理されなかった。app/SSH/SDK targetは正常、native focusだけがnullだった |
+| 150 | 同nonceの明示focus要求を追加。新しい要求とfocus epoch/tokenの観測を照合し、旧metadataで即完了しない。ONは`BOUND`、View/Window focus・IC接続が成立。OFFでnative解除は済んだがIMMが接続を保持し、raw復帰は期限切れとなった |
+| 151 | close後のeditorを永久失効させ、text editor判定false・新IC=null・focus/click不可にする。旧served viewのrestartInputでnullを通知し、非text親へfocusを移す。ON→OFFでAndroid解除と元targetへのraw focus復帰がともに成功 |
+
+Build151のON時は`BOUND`、View/Window focus・IC active・IMM active/acceptingがtrueだった。
+OFF時は`raw_return=COMPLETE`、`android_released=true`、IMM active/accepting=false、raw gate解除、
+editor退役を確認し、最後にprobe停止ACKを取得した。失敗時のgateを緩めて成功扱いにはしていない。
+継続操作はDUMP権限付きdebug receiverへ送り、Activity起動によるpauseを避ける。statusはmetadataの読取りだけである。
+
+Build151のdebug/release双方でbuild・lint・APK検査とJUnit 92件が成功した。
+release DEXにはIME probe/case/receiverのclass descriptorが存在しないことも確認した。
+PC scriptsは140件中133件成功・実APK指定7件skip。通常の物理Ctrl+Space、実かな漢字変換、
+候補視認・文字配送の最終受入れは未完了である。今回のON/OFF要求は固定debug操作から行った。
+
+| 項目 | Build151識別 |
+| --- | --- |
+| debug APK SHA-256 | `1f6a0ba5d29a3362a5d8e7c3a89eee377519df512e01b7b59bd45c8142bdb29e` |
+| source digest | `706fc9884861308733d16a9e8f8a80c1fcf23861f7487707e3a10d7ef700534d` |
+| 基準commit | `37f7c51` + source archive保存済みの未commit変更 |
+| release APK SHA-256 | `9488c0a9b49a6601f69bb733c92537f5151a92b056b61ce466bc11c5e07da2b5` |
+
+個別試行は作業rootの`terminal149/`・`terminal150/`・`terminal151/`、実行scriptとsource archiveは同taskへ保存した。
 
 ## Build146の統合compile
 
