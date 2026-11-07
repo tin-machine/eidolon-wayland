@@ -22,5 +22,7 @@
             android:permission="android.permission.DUMP" />
         <receiver android:name=".ImeTerminalCommandReceiver" android:exported="true"
             android:permission="android.permission.DUMP" />
+        <receiver android:name=".GtkFixtureCommandReceiver" android:exported="true"
+            android:permission="android.permission.DUMP" />
     </application>
 </manifest>

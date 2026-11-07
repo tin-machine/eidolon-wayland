@@ -87,7 +87,8 @@ def fixed_environment(home, directory, captured):
 
 
 def observe_owned(command, environment, control_fd, checker, emit, *, executable_identity=None,
-                  observation_seconds=OBSERVATION_SECONDS, grace_seconds=2.0):
+                  observation_seconds=OBSERVATION_SECONDS, grace_seconds=2.0, natural=False,
+                  stdout_handler=None, trace=None, maximum_stdout=MAX_STDOUT, spawn_handler=None):
     """command/短時間の差替えはlocalhost fixture専用。CLIへ露出しない。"""
     blocking = os.get_blocking(control_fd)
     selector = selectors.DefaultSelector()
@@ -99,7 +100,7 @@ def observe_owned(command, environment, control_fd, checker, emit, *, executable
     except Exception:
         selector.close();os.set_blocking(control_fd, blocking)
         raise
-    trace, output = WaylandTrace(), dict(stdout=0, stderr=0)
+    trace, output = trace if trace is not None else WaylandTrace(), dict(stdout=0, stderr=0)
     started, last_check, stop_at = time.monotonic(), 0.0, None
     stop_reason, cancel_reason, failure = None, None, None
     term_sent = kill_sent = False
@@ -123,19 +124,26 @@ def observe_owned(command, environment, control_fd, checker, emit, *, executable
             if group_live(child.pid): send(signal.SIGTERM)
 
     def read_pipe(key):
+        nonlocal failure, stdout_handler
         data = os.read(key.fd, 65536)
         if not data:
             selector.unregister(key.fd)
         else:
             output[key.data] += len(data)
             if key.data == "stderr": trace.feed(data)
-            if output["stdout"] > MAX_STDOUT or output["stderr"] > TRACE_LIMIT:
+            elif stdout_handler is not None and output["stdout"] <= maximum_stdout:
+                try: stdout_handler(data)
+                except (OSError, ValueError, TypeError, KeyError) as error:
+                    if failure is None: failure=error.reason if isinstance(error,CaptureError) else "GTK_CLIENT_OUTPUT_INVALID"
+                    stdout_handler=None;stop("CLIENT_OUTPUT_INVALID",True)
+            if output["stdout"] > maximum_stdout or output["stderr"] > TRACE_LIMIT:
                 stop("OUTPUT_LIMIT", True)
 
     try:
         for name in ("stdout", "stderr"):
             pipe = getattr(child, name);os.set_blocking(pipe.fileno(), False)
             selector.register(pipe, selectors.EVENT_READ, name)
+        if spawn_handler is not None: spawn_handler(child.pid)
         if executable_identity is not None:
             info = os.stat(f"/proc/{child.pid}/exe")
             need(info.st_uid == os.getuid() and file_identity(info) == executable_identity, "GTK_EXEC_CHANGED")
@@ -143,8 +151,8 @@ def observe_owned(command, environment, control_fd, checker, emit, *, executable
         while True:
             now = time.monotonic()
             exited = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
-            if exited and stop_at is None: stop("EARLY_EXIT", True)
-            if stop_at is None and now - started >= observation_seconds: stop("OBSERVATION_COMPLETE")
+            if exited and stop_at is None: stop("NATURAL_EXIT" if natural else "EARLY_EXIT", not natural)
+            if stop_at is None and now - started >= observation_seconds: stop("OBSERVATION_TIMEOUT" if natural else "OBSERVATION_COMPLETE", natural)
             if now - last_check >= .1 and cancel_reason is None:
                 last_check = now
                 try: checker()
@@ -211,7 +219,7 @@ def observe_owned(command, environment, control_fd, checker, emit, *, executable
                 child_returncode=child.returncode,
                 termination="unreaped" if child.returncode is None else "signal" if child.returncode < 0 else "natural",
                 termination_signal=-child.returncode if child.returncode is not None and child.returncode < 0 else None,
-                term_sent=term_sent, kill_sent=kill_sent, timed_out=failure == "GTK_STOP_TIMEOUT", reaped=reaped, group_reclaimed=reclaimed,
+                term_sent=term_sent, kill_sent=kill_sent, timed_out=failure == "GTK_STOP_TIMEOUT" or stop_reason=="OBSERVATION_TIMEOUT", reaped=reaped, group_reclaimed=reclaimed,
                 pipes_drained=drained, cleanup_confirmed=cleanup, output_bytes=output, error=failure,
                 trace=summary, shm_gate="pass" if shm else "fail")
 
