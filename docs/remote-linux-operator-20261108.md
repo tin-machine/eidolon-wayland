@@ -80,3 +80,15 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_
 
 この追加はoperatorとfixtureのみ。APK、Linux bundle、Quest設定は変更しない。
 実端末の一連の再現はroot担当の後続gateとして記録する。
+
+## Build169での公開CLI実機確認
+
+private手動harnessだけでなく、このCLIの `virtual` と `sdk` を実Questで各一度確認した。
+正規stagingのprofile/pinsは変更せず、既知host key/endpointの隔離sshdを同じ設定で起動した。
+
+- virtual nonce `6cea0e97d6189807c3be0c766e1f232f`: exit0/status pass、native復帰とcleanupを確認。
+- sdk nonce `58c86ddcc7828fee1238299856e0aef8`: exit0/status pass、nativeに加えて同scene SDK診断draw、lease解放まで確認。
+
+元profile/pinsとの照合と専用sshd handleの回収も成功した。
+CLIのsource/UID/version/PID、scope別終端判定が実metadataで動作した結果で、
+任意Linux GUIやHMD視認の成功へ広げない。

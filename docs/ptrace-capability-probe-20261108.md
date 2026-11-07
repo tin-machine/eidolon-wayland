@@ -59,3 +59,12 @@ hostのmock metadataをQuestの能力確認とは扱わない。実機の一回�
 [ptrace UAPI constants](https://github.com/torvalds/linux/blob/v6.6/include/uapi/linux/ptrace.h)、
 [ptrace manual](https://man7.org/linux/man-pages/man2/ptrace.2.html)、
 [waitid/WNOWAIT](https://man7.org/linux/man-pages/man2/waitid.2.html)。
+
+## Questで確認した能力
+
+nonce `6f5010a51fb9119ce7b4199a58b3edd6`、UID10158、AArch64でsupported。
+TRACEME/STOP/EXITKILL/GETREGSET/CONT、意図した自然終了23を確認した。
+GPR272bytes/HW264bytes、hardware slot6/debug arch8、未使用状態。
+TERM/KILLやtimeoutを使わず、子group/pipe/reapの回収は全て成立した。
+register値、ASLR address、任意mapは結果へ保存していない。
+これはGET能力の結果で、hardware slotのSET/hitとEGL内部3点の観測は後続未検証。
