@@ -1,6 +1,34 @@
 # NX18 B2: APK UIDから保存済みLinux profileへの固定SSH probe
 
-NX18aのv2保存契約とB1のtransportを、debug APK専用の固定検査へ接続する。通常のTermux v1 UI・設定保存・接続経路は維持する。Linux GUI、catalog、app起動、forward、helper SHMは今回の完了範囲に含めない。実APKでの受入れは統合APK配備後に記録する。
+NX18aのv2保存契約とB1のtransportを、debug APK専用の固定検査へ接続する。通常のTermux v1 UI・設定保存・接続経路は維持する。Linux GUI、catalog、app起動、forward、helper SHMは今回の完了範囲に含めない。
+
+## Build162の実機結果
+
+2026-11-08、debug APKから隔離したPCのOpenSSHへ接続し、probe
+`bd47144eb280ef9c4bf6ca007e82e56b`がPASSした。
+APK UID10159からLinux UID1000へ認証し、captureに一致する鍵供給、`ProbeReady`、
+固定token/EOF/exit0、disconnect、private scope消去、runtime destroy、
+通常Termux設定・journal不変、別handleの通常runtime Ready/Idleへの復帰を確認した。
+通常Termuxのkeyboard固定caseも8 cycle成功し、通常UIへ復帰した。物理入力の合格ではない。
+
+debug build/lint/package/JUnit140件、release build/lint/package/JUnit134件が成功。
+差の6件はdebug専用I/O admission検査であり、release suiteの失敗や脱落ではない。
+release DEXに本case/store/receiverのclass descriptorが無く、Manifestにもreceiverが無いこと、
+featureなしcoreの実integration testで新APIを拒否することを別々に確認した。
+
+- debug APK SHA-256: `70b3ddcc505c62e08acddca18bcaadc75103f14af25393818368bf5d60e34bfe`
+- release unsigned SHA-256: `7645eb2933d1b7d00c472e6e89fd55002fb97fdc9ea78b2bfd811cfed4163745`
+- source digest: `14f8ad3d1719e60a0addf1f4fd3af2db5f8e4c28db229d32792fb185f34e203d`
+
+検証先は既存sshdとは別の一時port/config/使い捨てhost keyを持つ同PCのserver。
+専用authorized keyはQuestの公開identityだけで、接続元と固定probe commandを制限した。
+既存のsshd/HOME設定は変更せず、端末の秘密鍵を取り出していない。
+probe完了後は生成したserver handleを停止してwaitした。これは別LinuxへのSSH認証・固定execの
+受入れであり、Linux GUI/forward/helper SHMの受入れは引き続き別段階。
+
+最初のoperator試行は、未作成のsaved fileを`adb exec-out`で読む時にhost側exit0だけを見て
+非JSON本文をparseして失敗した。製品probeは始まっていない。
+次はshellの明示不存在分岐をJSON nullとして扱い、上記の実probeへ進んだ。失敗記録も保持した。
 
 ## APIと所有範囲
 

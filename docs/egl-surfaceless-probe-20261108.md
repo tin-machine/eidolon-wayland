@@ -2,6 +2,20 @@
 
 SDLの固定検証は、libc++の整合後も `eglInitialize` の段階で失敗した。Mesa26.2.6 の既知ログは `dri2_screen_failed` で、固定 softpipe 対照も同じ結果だった。ここでは Wayland・SDL を使わず、同じ Mesa の CPU screen 生成経路を一回診断する。描画、SDK、入力、HMD の合格にはしない。
 
+## 実機の診断結果
+
+Build161でprobe `56c51628a7948f75dfa68e32b9da3cf9`を実行した。
+surfaceless拡張あり、core entrypointでdisplay取得成功だったが、初期化はfalse、
+直後のerrorは`EGL_NOT_INITIALIZED`（12289）。続くterminateはtrue/`EGL_SUCCESS`であり、
+初回失敗を上書きしていない。known分類は`dri2_screen_failed`1件、未知2行、計176byte。
+childはcode1で自然終了し、reap/group回収/pipe drainとruntime不変を確認した。
+operatorの`diagnosed`/終了0はこの失敗を最後まで観測できた意味で、描画成功ではない。
+
+Wayland/SDLを使わなくても同じscreen生成失敗が起きたため、Wayland serverだけを原因とは考えにくい。
+次は共通Mesa runtime/DRI config生成を調べる。固定tokenの読取りで実libgalliumに
+softpipe/llvmpipe/swrastの文字列があることは確認したが、driverの完全な動作証明にはしない。
+同条件の再試行で成功を待たず、次の識別情報を追加してから検証する。
+
 ## 根拠
 
 [Mesa26.2.6 dri_util.c](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/gallium/frontends/dri/dri_util.c) の `driCreateNewScreen3` は、構造体確保、`drisw_init_screen` の pipe_screen、DRI config の生成で NULL を返し得る。SWRAST loader の最低版は1なので、Wayland の版2は対象内。

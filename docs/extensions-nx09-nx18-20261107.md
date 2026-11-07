@@ -39,7 +39,7 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 | NX15 | [固定GTK](gtk-first-frame-probe-20261108.md)のSHM/SDK初描画・回収をBuild160で確認 | 入力/dialog/resize、製品起動・Stop、HMD |
 | NX16 | 未着手 | 二→三→六→九枚、指定順配置、資源予算、10枚目制限 |
 | NX17 | 未着手 | 同種窓の集約、500ms展開、前面/取消/reduced motion |
-| NX18 | v2型・旧Termux設定の明示移行APIを追加。通常接続はまだv1 | endpoint別認証・journal、Linux固定SSH/helper SHM probe、ランチャー統合と切断回収 |
+| NX18 | v2接続設定・endpoint別認証を実装し、[Build162の実APK SSH probe](remote-apk-probe-b2-20261108.md)成功。通常接続はv1を維持 | Linux helper SHM/実APK描画、ランチャー統合と切断回収 |
 
 ## NX09の開始調査（当時の保留までの履歴）
 
