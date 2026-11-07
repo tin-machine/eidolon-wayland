@@ -42,6 +42,11 @@ class ConnectionProfileV2CodecTest {
         reject(encoded().replace(installation,"2".repeat(32)).toByteArray())
     }
     @Test fun failedOwnerBlocksNormalAndUnrelatedRestartUntilItsOwnCleanup() {
+        assertTrue(ProbeRuntimeRecovery.registryEmpty(0,0L))
+        for (invalid in listOf(null,1,-1,0.0,"0")) {
+            assertFalse(ProbeRuntimeRecovery.registryEmpty(invalid,0))
+            assertFalse(ProbeRuntimeRecovery.registryEmpty(0,invalid))
+        }
         val guard = ProbeRuntimeRecovery(); val owner = Any(); val unrelated = Any()
         assertTrue(guard.canStartNormal()); guard.retain(owner)
         assertTrue(guard.permits(owner)); assertFalse(guard.permits(null)); assertFalse(guard.permits(unrelated)); assertFalse(guard.canStartNormal())

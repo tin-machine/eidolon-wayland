@@ -32,6 +32,12 @@ class ProbeCredentialCapture(val runtime: Long, private val request: String, pri
 
 /** Host worker所有。回収未確認の別runtimeを残した再作成/別case開始を禁止する。 */
 class ProbeRuntimeRecovery {
+    companion object {
+        fun registryEmpty(runtimes: Any?, workers: Any?): Boolean {
+            fun zero(value: Any?) = when(value) { is Int -> value == 0; is Long -> value == 0L; else -> false }
+            return zero(runtimes) && zero(workers)
+        }
+    }
     private var owner: Any? = null
     fun permits(candidate: Any?): Boolean = owner == null || owner === candidate
     fun canStartNormal(): Boolean = owner == null

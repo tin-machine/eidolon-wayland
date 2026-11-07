@@ -82,7 +82,9 @@ object LinuxSshProbeCase {
                 config.put("debug_probe_profile_v2", ConnectionProfileV2Codec.encode(profile).toString(Charsets.UTF_8))
                 // 設定を保持する通常profileを新runtimeへ渡さない。通常config自体は不変。
                 config.put("profiles", org.json.JSONArray())
-                runtime = NativeBridge.nativeCreate(config.toString()); safeToRestore = false
+                safeToRestore = false
+                runtime = NativeBridge.nativeCreate(config.toString())
+                check(runtime > 0L) { "PROBE_CREATE_FAILED" }
                 capture = ProbeCredentialCapture(runtime, "1", profile)
                 deadline = SystemClock.elapsedRealtime() + 30000
                 waitFor { state().getString("state") == "Ready" }
@@ -141,7 +143,15 @@ object LinuxSshProbeCase {
             }
         }
         private fun cleanupOwner() {
-            if (runtime == 0L) return
+            if (runtime == 0L) {
+                // nativeCreateは失敗時に例外+0。例外伝播や0 fallbackでも実registryを確認する。
+                safeToRestore = try {
+                    val counts = JSONObject(NativeBridge.nativeSnapshot(0)).getJSONObject("registry")
+                    ProbeRuntimeRecovery.registryEmpty(counts.opt("runtimes"), counts.opt("workers"))
+                } catch (_: Exception) { false }
+                result.put("destroyed", safeToRestore).put("create_had_no_owner", safeToRestore)
+                return
+            }
             result.put("probe_runtime", runtime.toString())
             try {
                 NativeBridge.nativeRequestStop(runtime)

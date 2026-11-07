@@ -51,7 +51,7 @@ adb -s "$EIDOLON_QUEST_SERIAL" shell am broadcast \
 - Stop/destroy後に旧handle STALE、registryのruntime/worker 0を確認する。
 - 通常設定/旧journalが不変で、別handleの通常runtimeがReadyかつtransport Idleへ復帰する。
 
-失敗/cancel時にも自分のprobe runtimeをStop/destroyする。10秒で回収できなければ`cleanup_unconfirmed`とし、`canRestart=false`でHostがownerを保持し、通常runtimeの再作成と他の排他case開始を抑止する。active ownerとhandleを保持し、同nonceの明示stopで回収だけを再試行できる。scope/credentialを再送しない。通常UI復帰のboolと実接続のboolは独立して記録する。
+失敗/cancel時にも自分のprobe runtimeをStop/destroyする。10秒で回収できなければ`cleanup_unconfirmed`とし、`canRestart=false`でHostがownerを保持し、通常runtimeの再作成と他の排他case開始を抑止する。active ownerとhandleを保持し、同nonceの明示stopで回収だけを再試行できる。scope/credentialを再送しない。通常UI復帰のboolと実接続のboolは独立して記録する。`nativeCreate`失敗/0返却時もregistryのruntime/workerが厳密に0か確認し、ownerなしの場合は通常runtime復帰を許可する。確認不能/別ownerありなら抑止を保持し、同nonce stopで再照合する。
 
 同時実行は1件、nonce replay履歴は直近64件。結果は固定reason token、UID、bool、handle等のmetadataだけ。private scope envelope、接続設定、鍵、任意remote stdout/stderrは保存しない。これは物理HMD入力やLinux GUIの受入れを示さない。
 
