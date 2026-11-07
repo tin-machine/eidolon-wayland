@@ -176,6 +176,7 @@ def inspect(apk):
         debug_classes.append(b"Lio/github/tinmachine/eidolon/RayCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ThemeSurfaceProbe;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ImeProbe;")
+        debug_classes.append(b"Lio/github/tinmachine/eidolon/ImeTerminalCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ThemeRuntimeCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ThemeProbePainter;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/PointerCase;")
@@ -189,6 +190,8 @@ def inspect(apk):
         debug_dex = any(name in dex for name in debug_classes)
         if info["profile"] == "release" and (debug_symbol or debug_dex):
             raise ValueError("releaseにdebug JNI/classが混入しています")
+        if info["profile"] == "release" and b"closed-editor-fixture" in dex:
+            raise ValueError("releaseにdebug IME fixtureが混入しています")
         if info["profile"] == "release" and any(marker in dex for marker in (b"credential-fixtures", b"eidolon.fixture.")):
             raise ValueError("releaseにcredential fixtureが混入しています")
         if info["profile"] == "debug" and (not debug_symbol or not all(name in dex for name in debug_classes)):

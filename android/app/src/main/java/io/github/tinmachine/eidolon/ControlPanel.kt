@@ -32,6 +32,10 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
                 else -> Unit
             }
         }
+        Button(enabled=TerminalImeController.activeState.value || NativeSessionHost.imeAvailable.value,
+            onClick={TerminalImeController.toggle()}) {
+            Text(if(TerminalImeController.activeState.value) "IME入力を終了 · Ctrl+Space" else "IME入力 · Ctrl+Space")
+        }
         if(NativeSessionHost.termuxHelp.value) Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(onClick=allowTermux) {Text("Termux連携を許可")}
             Button(onClick=openTermux) {Text("Termuxを開く")}

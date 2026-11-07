@@ -63,6 +63,14 @@ object NativeSessionHost {
     private data class KeyboardFocus(val runtime: Long, val epoch: Long, val target: String, val token: String)
     @Volatile private var keyboardFocus: KeyboardFocus? = null
     @Volatile private var imeConnection: ImeSessionConnection? = null // Methods belong to UI; worker only captures this identity.
+    class ImeEditorOwner internal constructor(internal val connection:ImeSessionConnection,internal val ticket:Long,internal val token:String) {
+        val runtime:Long get()=connection.runtime
+        val target:ImeSdkTarget get()=connection.target
+        internal var attached=false
+        internal var view=java.lang.ref.WeakReference<ImeEditorView>(null)
+    }
+    private var imeOwner:ImeEditorOwner?=null
+    val imeAvailable=mutableStateOf(false)
     private val imeRawBlocked = AtomicBoolean(false)
     private var imeCaptureTicket = 0L // UI owner, invalidated by any external input intention.
     private var imeCaptureEpoch = 0L
@@ -966,35 +974,53 @@ object NativeSessionHost {
         }
         if (BuildConfig.DEBUG) Log.i(TAG,"focus_begin explicit target=${targetIdentity(target)} ticket=${inputIntents.get()}")
     } } } }
-    /** Explicit debug-only endpoint. Normal UI never calls this or enables the Android backend. */
-    fun debugCreateImeEditor(context: Context, preImeKey: (KeyEvent) -> Boolean = { false },
-        windowFocusChanged: (Boolean) -> Unit = {}): ImeEditorView? {
+    /** 明示切替で先にraw排他/urgent resetを取得。Panelの生成待ち中も先行Ctrlを残さない。 */
+    fun beginImeOwner():ImeEditorOwner? = inputIntents.serial {
         check(Looper.myLooper() == Looper.getMainLooper())
-        if (!BuildConfig.DEBUG || imeRawBlocked.get()) return null
-        val focus = keyboardFocus ?: return null
-        if (focus.runtime != handle || editing.get() || panelTextInputs.isNotEmpty() || !activityVisible.get() || xrState.get() != "FOCUSED") return null
-        val target = strictImeSdkTarget(JSONObject(focus.target)) ?: return null
-        var editorReference = java.lang.ref.WeakReference<ImeEditorView>(null)
+        if (!imeReady()) return@serial null
+        val focus = keyboardFocus ?: return@serial null
+        val target = strictImeSdkTarget(JSONObject(focus.target)) ?: return@serial null
+        val fresh=runCatching {snapshot().getJSONObject("runtime")}.getOrNull() ?: return@serial null
+        if(fresh.optLong("input_resets",-1)!=focus.epoch || !ImeTerminalEligibility.allows(fresh,target)) return@serial null
+        val actual=fresh.getJSONObject("app").getJSONObject("input")
+        if(actual.optString("focus_window")!=target.window || actual.optString("focus_token")!=focus.token) return@serial null
+        lateinit var owner:ImeEditorOwner
         lateinit var connection: ImeSessionConnection
         connection = ImeSessionConnection(focus.runtime, target, focus.epoch,
             requestId = { requests.incrementAndGet().toString() },
             enqueue = { request, command -> enqueueImeCommand(connection, request, command) },
             clock = SystemClock::elapsedRealtime,
-            onClosed = { editorReference.get()?.closeEditor() })
+            onClosed = { runCatching { owner.view.get()?.closeEditor() } })
+        val ticket=inputIntents.incrementAndGet()
+        owner=ImeEditorOwner(connection,ticket,focus.token)
+        imeOwner=owner
         imeAndroidReleased = {
-            val editor = editorReference.get()
-            editor == null || (!editor.hasFocus() && editor.context.getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.isAcceptingText != true)
+            val editor = owner.view.get()
+            runCatching { editor == null || (!editor.hasFocus() && editor.context.getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.isAcceptingText != true) }.getOrDefault(false)
         }
         imeConnection = connection
         imeRawBlocked.set(true)
-        imeCaptureTicket = inputIntents.incrementAndGet() // Cancel pending automatic focus work, preserving the captured target.
+        imeCaptureTicket = ticket // Cancel pending automatic focus work, preserving the captured target.
         imeCaptureEpoch = focus.epoch
         imeRawReturn = null
-        fun editorAccepts(): Boolean = editorReference.get()?.let { it.hasFocus() && it.hasWindowFocus() } == true
-        val view = ImeEditorView(context,
+        connection.start()
+        updateImeGate(connection)
+        watchImeDeadline(connection)
+        owner
+    }
+    private fun ownsIme(owner:ImeEditorOwner)=imeOwner===owner && imeConnection===owner.connection && owner.runtime==handle
+    /** 同ownerに正しいPresentation Contextを一度だけ付ける。古いViewの到着で新接続を作らない。 */
+    fun attachImeEditor(owner:ImeEditorOwner,context:Context,preImeKey:(KeyEvent)->Boolean={false},
+        windowFocusChanged:(Boolean)->Unit={}):ImeEditorView? = inputIntents.serial {
+        check(Looper.myLooper()==Looper.getMainLooper())
+        val connection=owner.connection
+        if(!ownsIme(owner) || owner.attached || !imeCaptureCurrent() || connection.metadata().phase in setOf(ImeSessionPhase.CLOSING,ImeSessionPhase.CLOSED)) return@serial null
+        owner.attached=true
+        fun editorAccepts():Boolean=ownsIme(owner) && inputIntents.get()==owner.ticket && owner.view.get()?.let {it.hasFocus() && it.hasWindowFocus()}==true
+        val view=try { ImeEditorView(context,
             onTransaction = { editorAccepts() && connection.submit(it) },
             onKeyEvent = { event ->
-                val generation = editorReference.get()?.metadata()?.generation
+                val generation = owner.view.get()?.metadata()?.generation
                 val captured = generation?.let(connection::keyFocus)
                 editorAccepts() && captured != null && sendImeNonTextKey(connection, captured, event)
             },
@@ -1002,35 +1028,39 @@ object NativeSessionHost {
             onInvalidated = { generation, reason ->
                 if (reason == "focus_lost") connection.close() else connection.editorInvalidated(generation)
             },
-            onConnectionOpened = connection::openEditor,
+            onConnectionOpened = {if(ownsIme(owner) && inputIntents.get()==owner.ticket) connection.openEditor(it)},
             canEditGeneration = { editorAccepts() && connection.acceptsEditor(it) }, preImeKey = preImeKey, windowFocusChanged = windowFocusChanged)
-        editorReference = java.lang.ref.WeakReference(view)
-        // Backend enable requests urgent reset immediately: a prior Ctrl down must not
-        // remain held in Linux while Android is still waiting to create its connection.
-        connection.start()
-        updateImeGate(connection)
-        watchImeDeadline(connection)
-        return view
+        } catch(_:Exception) {connection.close();return@serial null}
+        owner.view=java.lang.ref.WeakReference(view)
+        view
+    }
+    fun debugCreateImeEditor(context:Context,preImeKey:(KeyEvent)->Boolean={false},windowFocusChanged:(Boolean)->Unit={}):ImeEditorView? {
+        if(!BuildConfig.DEBUG) return null
+        val owner=beginImeOwner() ?: return null
+        return attachImeEditor(owner,context,preImeKey,windowFocusChanged).also {if(it==null) closeImeOwner(owner,false)}
     }
 
-    fun debugCloseImeEditor(restoreRaw: Boolean = false) {
+    fun closeImeOwner(owner:ImeEditorOwner,restoreRaw:Boolean=false) = inputIntents.serial {
         check(Looper.myLooper() == Looper.getMainLooper())
-        if (!BuildConfig.DEBUG) return
-        val connection = imeConnection ?: return
+        if(!ownsIme(owner)) return@serial
+        val connection = owner.connection
         if (restoreRaw && imeRawReturn == null) {
             lateinit var returning: ImeRawFocusReturn
             returning = ImeRawFocusReturn(connection.runtime, connection.target, imeCaptureTicket, imeCaptureEpoch,
-                keyboardFocus?.token, SystemClock::elapsedRealtime, { requests.incrementAndGet().toString() },
+                owner.token, SystemClock::elapsedRealtime, { requests.incrementAndGet().toString() },
                 { request, epoch -> enqueueImeRawFocus(connection, returning, request, epoch) })
             imeRawReturn = returning
         }
         connection.close()
         updateImeGate(connection)
     }
+    fun debugCloseImeEditor(restoreRaw:Boolean=false) {if(BuildConfig.DEBUG) imeOwner?.let {closeImeOwner(it,restoreRaw)}}
+    fun imeRawReturnStatus():ImeRawReturnMetadata?=imeRawReturn?.metadata()
     fun debugImeRawReturnStatus(): ImeRawReturnMetadata? = if (BuildConfig.DEBUG) imeRawReturn?.metadata() else null
-    fun debugImeReady(): Boolean = BuildConfig.DEBUG && !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && keyboardFocus?.let {
-        it.runtime == handle && !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get() == "FOCUSED"
+    fun imeReady(): Boolean = !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && !BuildHooks.imeProbeActive() && keyboardFocus?.let {
+        it.runtime == handle && !movingTarget(it.target) && !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get() == "FOCUSED"
     } == true
+    fun debugImeReady():Boolean=BuildConfig.DEBUG && imeReady()
     fun debugImeCanRequestFocus(): Boolean = BuildConfig.DEBUG && !debugSdkLease.blocksProduct() && handle!=0L && !imeRawBlocked.get() &&
         !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get()=="FOCUSED"
     fun debugImeFocusObserved(request: DebugImeFocusReceipt): Boolean {
@@ -1040,18 +1070,19 @@ object NativeSessionHost {
     }
     fun debugImeFocusedTarget(): ImeSdkTarget? = if (debugImeReady()) keyboardFocus?.let { strictImeSdkTarget(JSONObject(it.target)) } else null
     /** Only an already captured, still live terminal may own an internal window handoff. */
-    fun debugImeCaptureCurrent(): Boolean {
-        if (!BuildConfig.DEBUG) return false
+    fun imeCaptureCurrent(): Boolean {
         val connection = imeConnection ?: return false
-        return connection.runtime == handle && inputIntents.get() == imeCaptureTicket && activityVisible.get() &&
+        return !debugSdkLease.blocksProduct() && !movingTarget(imeSdkJson(connection.target).toString()) &&
+            connection.runtime == handle && inputIntents.get() == imeCaptureTicket && activityVisible.get() &&
             xrState.get() == "FOCUSED" && !editing.get() && panelTextInputs.isEmpty() &&
             inputTargets.values.any { it.runtime == connection.runtime && strictImeSdkTarget(JSONObject(it.target)) == connection.target }
     }
-    private fun enqueueImeRawFocus(connection: ImeSessionConnection, returning: ImeRawFocusReturn, request: String, epoch: Long): ImeEnqueueResult {
-        if (imeConnection !== connection || imeRawReturn !== returning || !debugImeCaptureCurrent()) return ImeEnqueueResult.UNAVAILABLE
+    fun debugImeCaptureCurrent():Boolean=BuildConfig.DEBUG && imeCaptureCurrent()
+    private fun enqueueImeRawFocus(connection: ImeSessionConnection, returning: ImeRawFocusReturn, request: String, epoch: Long): ImeEnqueueResult = inputIntents.serial {
+        if (imeConnection !== connection || imeRawReturn !== returning || !imeCaptureCurrent()) return@serial ImeEnqueueResult.UNAVAILABLE
         val target = inputTargets.values.firstOrNull { it.runtime == returning.runtime && it.epoch == epoch &&
-            strictImeSdkTarget(JSONObject(it.target)) == returning.target } ?: return ImeEnqueueResult.UNAVAILABLE
-        return imeEnqueueCode(NativeBridge.nativeCommand(returning.runtime, JSONObject().put("schema",1)
+            strictImeSdkTarget(JSONObject(it.target)) == returning.target } ?: return@serial ImeEnqueueResult.UNAVAILABLE
+        imeEnqueueCode(NativeBridge.nativeCommand(returning.runtime, JSONObject().put("schema",1)
             .put("type","focus_window").put("request_id",request).put("target",JSONObject(target.target)).put("input_epoch",epoch).toString()))
     }
     private fun updateImeGate(connection: ImeSessionConnection) {
@@ -1061,7 +1092,7 @@ object NativeSessionHost {
         val blocked = metadata.rawBlocked || !debugImeAndroidReleased() || returning?.blocksRaw() == true
         imeRawBlocked.set(blocked)
         imeInputMessage = when {
-            metadata.phase == ImeSessionPhase.BOUND -> InputStatus("IME_CONNECTED", "IME入力の検証中 · Ctrl+Spaceで直接入力へ")
+            metadata.phase == ImeSessionPhase.BOUND -> InputStatus("IME_CONNECTED", "IME入力 · Ctrl+Spaceで直接入力へ")
             metadata.phase == ImeSessionPhase.CLOSED && blocked -> InputStatus("IME_RECOVERY", "入力停止 · IME終了または直接入力への復帰を確認中")
             metadata.phase == ImeSessionPhase.CLOSING -> InputStatus("IME_CLOSING", "IME終了処理中 · 直接入力は停止中")
             metadata.phase != ImeSessionPhase.CLOSED -> InputStatus("IME_CONNECTING", "IME入力を接続中 · 直接入力は停止中")
@@ -1073,6 +1104,10 @@ object NativeSessionHost {
     fun debugImeStatus(): ImeSessionMetadata? {
         check(Looper.myLooper() == Looper.getMainLooper())
         return if (BuildConfig.DEBUG) imeConnection?.metadata() else null
+    }
+    fun imeStatus(owner:ImeEditorOwner):ImeSessionMetadata? {
+        check(Looper.myLooper()==Looper.getMainLooper())
+        return if(imeOwner===owner) owner.connection.metadata() else null
     }
 
     /** Android focus/IMM exit is a separate observation from native delivery/cleanup ACKs. */
@@ -1128,34 +1163,40 @@ object NativeSessionHost {
         "INVALID_ARGUMENT" -> ImeDeliveryResult.INVALID_ARGUMENT
         else -> ImeDeliveryResult.FAILED
     }
-    private fun enqueueImeCommand(connection: ImeSessionConnection, request: String, command: ImeSessionCommand): ImeEnqueueResult {
+    private fun enqueueImeCommand(connection: ImeSessionConnection, request: String, command: ImeSessionCommand): ImeEnqueueResult = inputIntents.serial {
         check(Looper.myLooper() == Looper.getMainLooper())
-        if (!BuildConfig.DEBUG || imeConnection !== connection || connection.runtime != handle || handle == 0L) return ImeEnqueueResult.UNAVAILABLE
+        if (imeConnection !== connection || connection.runtime != handle || handle == 0L) return@serial ImeEnqueueResult.UNAVAILABLE
+        if(command is ImeSessionCommand.Focus || command is ImeSessionCommand.Transaction || command is ImeSessionCommand.Backend && command.enabled) {
+            val owner=imeOwner ?: return@serial ImeEnqueueResult.UNAVAILABLE
+            if(owner.connection!==connection || inputIntents.get()!=owner.ticket || debugSdkLease.blocksProduct() || movingTarget(imeSdkJson(connection.target).toString()) ||
+                editing.get() || panelTextInputs.isNotEmpty() || !activityVisible.get() || xrState.get()!="FOCUSED") return@serial ImeEnqueueResult.UNAVAILABLE
+        }
         val envelope = JSONObject().put("schema", 1).put("request_id", request)
         when (command) {
             is ImeSessionCommand.Backend -> envelope.put("type", "set_ime_backend").put("session", connection.target.session).put("enabled", command.enabled)
             ImeSessionCommand.Reset -> envelope.put("type", "reset_input")
             is ImeSessionCommand.Focus -> {
                 val target = inputTargets.values.firstOrNull { it.runtime == connection.runtime && it.epoch == command.epoch &&
-                    strictImeSdkTarget(JSONObject(it.target)) == connection.target } ?: return ImeEnqueueResult.UNAVAILABLE
+                    strictImeSdkTarget(JSONObject(it.target)) == connection.target } ?: return@serial ImeEnqueueResult.UNAVAILABLE
                 envelope.put("type", "focus_window").put("target", JSONObject(target.target)).put("input_epoch", command.epoch)
             }
             is ImeSessionCommand.Transaction -> {
-                if (!imeFocusCurrent(connection, command.focus)) return ImeEnqueueResult.UNAVAILABLE
+                if (!imeFocusCurrent(connection, command.focus)) return@serial ImeEnqueueResult.UNAVAILABLE
                 envelope.put("type", "ime").put("target", imeSdkJson(connection.target)).put("transaction", JSONObject(command.payload.toPayloadJson()))
             }
         }
         // This private envelope is consumed synchronously and never retained in diagnostics/ACK maps.
-        return imeEnqueueCode(NativeBridge.nativeCommand(connection.runtime, envelope.toString()))
+        imeEnqueueCode(NativeBridge.nativeCommand(connection.runtime, envelope.toString()))
     }
     private fun imeFocusCurrent(connection: ImeSessionConnection, focus: ImeSessionFocus) =
-        imeConnection === connection && connection.runtime == handle && focus.target == connection.target &&
+        imeConnection === connection && imeOwner?.let {it.connection===connection && it.ticket==inputIntents.get()}==true &&
+            !debugSdkLease.blocksProduct() && !movingTarget(imeSdkJson(connection.target).toString()) && connection.runtime == handle && focus.target == connection.target &&
             imeFocus(keyboardFocus) == focus && !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get() == "FOCUSED"
 
-    private fun sendImeNonTextKey(connection: ImeSessionConnection, focus: ImeSessionFocus, event: KeyEvent): Boolean {
+    private fun sendImeNonTextKey(connection: ImeSessionConnection, focus: ImeSessionFocus, event: KeyEvent): Boolean = inputIntents.serial {
         check(Looper.myLooper() == Looper.getMainLooper())
         if (!imeFocusCurrent(connection, focus) || event.deviceId < 0 || event.isCanceled || event.isSystem ||
-            event.action !in setOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) return false
+            event.action !in setOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) return@serial false
         // Text always comes from InputConnection. Only terminal controls/navigation cross this route.
         val controlLetter = event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed && event.keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z
         val nonText = event.keyCode in setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
@@ -1166,7 +1207,7 @@ object NativeSessionHost {
             KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_ALT_RIGHT)
         // View permits an up only for its previously accepted down; Ctrl may already have lifted.
         val ownedControlUp = event.action == KeyEvent.ACTION_UP && event.keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z
-        if (!nonText && !controlLetter && !ownedControlUp) return false
+        if (!nonText && !controlLetter && !ownedControlUp) return@serial false
         val key = JSONObject().put("device", event.deviceId).put("scan_code", event.scanCode).put("key_code", event.keyCode)
             .put("action", if (event.action == KeyEvent.ACTION_DOWN) "pressed" else "released").put("repeat", event.repeatCount)
             .put("meta", event.metaState).put("time_ms", event.eventTime and 0xffffffffL)
@@ -1174,7 +1215,7 @@ object NativeSessionHost {
             .put("request_id", requests.incrementAndGet().toString()).put("target", imeSdkJson(focus.target))
             .put("input_epoch", focus.epoch).put("focus_token", focus.token).put("key", key).toString())
         if (code != NativeBridge.ACCEPTED) connection.close("key_rejected")
-        return code == NativeBridge.ACCEPTED
+        code == NativeBridge.ACCEPTED
     }
 
     private fun privateImeSnapshot(runtimeHandle: Long): ImeDecodedSnapshot = try {
@@ -1465,7 +1506,7 @@ object NativeSessionHost {
         }
         handle = 0
         val endedIme = imeConnection
-        ui.post { if (imeConnection === endedIme) { endedIme?.close(); imeConnection = null; imeAndroidReleased = null; imeRawReturn = null; imeInputMessage = null; imeRawBlocked.set(false) } }
+        ui.post { if (imeConnection === endedIme) { endedIme?.close(); imeConnection = null; imeOwner = null; imeAndroidReleased = null; imeRawReturn = null; imeInputMessage = null; imeRawBlocked.set(false) } }
         catalogPending=null;launcherUpdate(LauncherUi(path=launcherState.path))
         poseCompletions.clear();selectedWindow=null;lastFocusedWindow=null;editing.set(false);ui.post { layoutEditing.value=false }
         clearTerminalOpen(); terminalAdding = null; terminalError = null
@@ -1653,6 +1694,9 @@ object NativeSessionHost {
         keyboardFocus = if (!debugSdkLease.blocksProduct() && !editing.get() && runtime.getString("state") == "Ready" && runtime.getBoolean("activity_visible") &&
             runtime.getString("xr_state") == "FOCUSED" && focused != null && !movingTarget(focused.getJSONObject("target").toString()))
             KeyboardFocus(handle, runtime.getLong("input_resets"), focused.getJSONObject("target").toString(), runtime.getJSONObject("app").getJSONObject("input").getString("focus_token")) else null
+        val eligibleIme=keyboardFocus?.let {f->strictImeSdkTarget(JSONObject(f.target))?.let {ImeTerminalEligibility.allows(runtime,it)}}==true &&
+            !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && !editing.get() && panelTextInputs.isEmpty() && !BuildHooks.imeProbeActive()
+        ui.post {imeAvailable.value=eligibleIme}
         pumpIme(runtime, imeCompletions)
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else "ターミナルへ入力"
         ui.post { keyboardSummary.value = keyboardLabel }

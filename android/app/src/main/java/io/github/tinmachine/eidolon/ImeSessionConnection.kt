@@ -42,7 +42,7 @@ enum class ImeSessionPhase { IDLE, ENABLING, NEEDS_RESET, RESETTING, NEEDS_FOCUS
 data class ImeSessionMetadata(val phase: ImeSessionPhase, val editorGeneration: Long?, val pendingAcks: Int,
     val enqueued: Long, val applied: Long, val rawBlocked: Boolean, val failure: String?)
 
-/** UI owner for one explicit debug terminal; no payload or surrounding text is retained in ACK maps. */
+/** UI owner for one explicitly selected terminal; no payload or surrounding text is retained in ACK maps. */
 class ImeSessionConnection(
     val runtime: Long,
     val target: ImeSdkTarget,

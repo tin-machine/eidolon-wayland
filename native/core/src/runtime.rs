@@ -745,9 +745,8 @@ impl Runtime {
                                 Command::SetImeBackend {
                                     session, enabled, ..
                                 } => {
-                                    if *enabled && !cfg!(debug_assertions) {
-                                        Status::NotReady
-                                    } else if let Some(current) = app
+                                    // 明示的な通常IME切替。backendは既定無効、target/epoch/activation検査は維持する。
+                                    if let Some(current) = app
                                         .as_mut()
                                         .filter(|a| a.session() == *session && !a.closed())
                                     {

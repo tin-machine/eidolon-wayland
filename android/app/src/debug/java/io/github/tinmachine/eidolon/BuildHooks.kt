@@ -15,13 +15,9 @@ import org.json.JSONObject
 /** 実際のSDK Surfaceを使う固定case。UIをblockせず段階ごとに待つ。 */
 object BuildHooks {
     fun registerMeshes(activity: com.meta.spatial.toolkit.AppSystemActivity) = ThemeInputCandidates.register(activity)
-    fun additionalPanels() = ThemeSurfaceProbe.registrations() + ImeProbe.registrations() + ImeTerminalCase.registrations()
-    fun sceneClosing() { ImeTerminalCase.sceneClosing(); ImeProbe.sceneClosing(); ThemeSurfaceProbe.sceneClosing() }
-    fun imeProbeActivity(activity: android.app.Activity) { ImeProbe.activity(activity);ImeTerminalCase.activity(activity) }
-    fun imeTerminalToggle() = ImeTerminalCase.toggle()
-    fun imeTerminalPaused() = ImeTerminalCase.pause()
-    fun imeTerminalExternalLoss() = ImeTerminalCase.externalLoss()
-    fun imeTerminalDeferFocusLoss() = ImeTerminalCase.deferActivityFocusLoss()
+    fun additionalPanels() = ThemeSurfaceProbe.registrations() + ImeProbe.registrations()
+    fun sceneClosing() { ImeProbe.sceneClosing(); ThemeSurfaceProbe.sceneClosing() }
+    fun imeProbeActivity(activity: android.app.Activity) { ImeProbe.activity(activity) }
     fun imeProbeActive(): Boolean = ImeProbe.isActive()
     fun imeProbePhysicalKey() = ImeProbe.physicalKey()
     private val ui = Handler(Looper.getMainLooper())
@@ -43,7 +39,6 @@ object BuildHooks {
     }
     fun sceneReady(adapter: SpatialPanelAdapter, scene: () -> Scene, recreate: () -> Unit) {
         ImeProbe.sceneReady()
-        ImeTerminalCase.sceneReady()
         LayoutSdkCase.sceneReady(adapter,scene,recreate)
     }
     fun accept(intent: Intent?, adapter: SpatialPanelAdapter, context: Context, scene: () -> Scene, recreate: () -> Unit) {

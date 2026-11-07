@@ -116,6 +116,36 @@ class ImeSessionConnectionTest {
         assertFalse(h.connection.acceptsEditor(1))
     }
 
+    @Test fun explicitOffBeforePanelArrivalCleansUpEveryPreparationStageAndRejectsLateEditor() {
+        for (acknowledged in 0..2) {
+            val h = Harness()
+            h.connection.start()
+            if (acknowledged >= 1) h.ack(0, frame(1, hasClient = false))
+            if (acknowledged >= 2) h.ack(1, frame(2, hasClient = false))
+            h.connection.close()
+            val reset = h.sent.lastIndex - 1
+            val disable = h.sent.lastIndex
+            val count = h.sent.size
+            assertEquals(1, h.closed)
+            assertSame(ImeSessionCommand.Reset, h.sent[reset].second)
+            assertFalse((h.sent[disable].second as ImeSessionCommand.Backend).enabled)
+            h.connection.openEditor(1) // 遅れてSDK View/ICが作られてもownerは復活しない。
+            h.ack(0, frame(3, hasClient = false)) // 準備中だった旧ENABLEの完了。
+            assertEquals(ImeSessionPhase.CLOSING, h.connection.metadata().phase)
+            assertTrue(h.connection.metadata().rawBlocked)
+            h.ack(reset, frame(3, hasClient = false))
+            h.ack(disable, frame(3, hasClient = false))
+            assertEquals(ImeSessionPhase.CLOSED, h.connection.metadata().phase)
+            assertFalse(h.connection.metadata().rawBlocked)
+            h.connection.start(); h.connection.openEditor(2); h.connection.editorInvalidated(1)
+            assertFalse(h.connection.submit(ImeEditTransaction(2, 1, "fixture", null)))
+            assertNull(h.connection.keyFocus(2))
+            assertEquals(count, h.sent.size)
+            assertEquals(0, h.sent.count { it.second is ImeSessionCommand.Focus })
+            assertEquals(0, h.payloads())
+        }
+    }
+
     @Test fun failedPreparationDoesNotOpenRawGateOrStartAnEditor() {
         val h = Harness(); h.rejected = true
         h.connection.start()

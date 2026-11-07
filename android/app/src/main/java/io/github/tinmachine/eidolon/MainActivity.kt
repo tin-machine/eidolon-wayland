@@ -40,7 +40,7 @@ class MainActivity : AppSystemActivity() {
     private var sceneEpoch=0L
     private fun ownsScene(): Boolean = !isDestroyed && (sceneEpoch==0L || sceneEpoch==NativeSessionHost.currentSceneEpoch())
     private val nativePanels by lazy { SpatialPanelAdapter() }
-    private val keyboard by lazy { PhysicalKeyboard(this) { BuildHooks.imeTerminalToggle() } }
+    private val keyboard by lazy { PhysicalKeyboard(this) { TerminalImeController.toggle() } }
     private var themePickerToken: String? = null
 
     override fun registerFeatures(): List<SpatialFeature> =
@@ -58,6 +58,7 @@ class MainActivity : AppSystemActivity() {
         } else {
             Log.e(TAG, "native_failed version=${BuildConfig.VERSION_CODE} error=${native.error}")
         }
+        TerminalImeController.activity(this)
         BuildHooks.imeProbeActivity(this)
         BuildHooks.accept(intent,nativePanels,applicationContext,{scene},{recreate()})
     }
@@ -80,6 +81,7 @@ class MainActivity : AppSystemActivity() {
             ))
         }
         nativePanels.sceneReady(epoch, scene)
+        TerminalImeController.sceneReady {scene}
         BuildHooks.sceneReady(nativePanels,{scene},{recreate()})
         Log.i(TAG, "scene_ready version=${BuildConfig.VERSION_CODE} panel=${panel?.id}")
     }
@@ -125,10 +127,11 @@ class MainActivity : AppSystemActivity() {
                 }
             } },
         ),
-    ) + nativePanels.registration + nativePanels.decorationRegistration + BuildHooks.additionalPanels()
+    ) + nativePanels.registration + nativePanels.decorationRegistration + TerminalImeController.registrations() + BuildHooks.additionalPanels()
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        TerminalImeController.activity(this)
         BuildHooks.imeProbeActivity(this)
         BuildHooks.accept(intent,nativePanels,applicationContext,{scene},{recreate()})
     }
@@ -185,7 +188,7 @@ class MainActivity : AppSystemActivity() {
     override fun onPause() {
         deviceMetrics.stop()
         val current=ownsScene()
-        if(current) BuildHooks.imeTerminalPaused()
+        if(current) TerminalImeController.pause()
         keyboard.pause(resetInput=current)
         if(current) NativeSessionHost.setActivityVisible(false,sceneEpoch.takeIf {it>0})
         Log.i(TAG, "activity_paused version=${BuildConfig.VERSION_CODE}")
@@ -199,9 +202,9 @@ class MainActivity : AppSystemActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus && ownsScene() && !BuildHooks.imeTerminalDeferFocusLoss()) {
+        if (!hasFocus && ownsScene() && !TerminalImeController.deferActivityFocusLoss()) {
             keyboard.resetShortcutState()
-            BuildHooks.imeTerminalExternalLoss()
+            TerminalImeController.externalLoss()
             NativeSessionHost.resetInput()
         }
     }
@@ -210,7 +213,7 @@ class MainActivity : AppSystemActivity() {
         super.onSessionStateChanged(state)
         if(!ownsScene()) return
         Log.i(TAG, "xr_state=$state version=${BuildConfig.VERSION_CODE}")
-        if(state != SessionState.FOCUSED) { keyboard.resetShortcutState();BuildHooks.imeTerminalExternalLoss() }
+        if(state != SessionState.FOCUSED) { keyboard.resetShortcutState();TerminalImeController.externalLoss() }
         NativeSessionHost.setXrState(when (state) {
             SessionState.FOCUSED -> "FOCUSED"
             SessionState.VISIBLE -> "VISIBLE"
@@ -219,6 +222,7 @@ class MainActivity : AppSystemActivity() {
     }
 
     override fun onSpatialShutdown() {
+        TerminalImeController.sceneClosing(this)
         BuildHooks.sceneClosing()
         keyboardPanels.forEach {it.close()};keyboardPanels.clear()
         nativePanels.close()
