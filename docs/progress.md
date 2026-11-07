@@ -1,5 +1,21 @@
 # 製品実装の進捗
 
+## 拡張の統合検証（2026-11-08、Build174）
+
+通常footから明示的にIMEへ切り替える入口を共通controllerへ接続し、debug/releaseのbuild・lint・package検査、
+JVM234/159件が成功した。共通検査経路でIMEのBOUNDと終了後の元targetへの直接入力復帰を確認した。
+通常入口特有の初期owner経路、実かな漢字変換、物理Ctrl+Spaceは後続の受入れに残す。
+
+Linux GTKの文字・削除・buttonと追加dialog、Termux GTKのinput/dialog/800×500→640×360 resizeが成功した。
+全target退役、所有process/journal回収、通常SDK復帰も確認した。
+resizeのPC観測形式誤りと検証wrapperの誤判定も含め、[Build174記録](build-174-integration-20261108.md)に残した。
+
+窓別の移動・サイズ操作と最大9枚はBuild171で自動検証済み。
+Freedoomの固定短demoはBuild172でSHM74commit・SDK更新・自然exit0・資源回収まで成功した。
+通常GUIランチャー接続、グループ化のruntime/SDK/操作入口、別Linuxホストの通常GUI接続を継続中で、
+それらの実装や物理受入れを完了扱いにはしない。
+現在の拡張goalは[NX01〜18計画](next-phase-termux-startup-linux-gui-plan-20261107.md)であり、既存Phase5/6の受入れ条件も保持する。
+
 ## 手動確認後の修正（2026-11-07、Build142）
 
 ユーザーの追加指定でリング線幅を6→30、切れ端を平らにした。中央のRSS回転は上限64MiBへ調整し、
@@ -56,7 +72,7 @@ PC検証では`check-host --suite all`に加えてCIの別stepである`check-wa
 
 ## 既存タスクと受入れ範囲
 
-ゴールはPhase 5（I07）まで。2026-11-04のユーザー指定により、HMD視認と物理入力の受入れは最終段階にまとめる。実装・host検証・ADBによる自動試験を先に進める。手動検証を含むcheck全体は、手動部分が残る間`not_run`とし、自動部分の成功を別に記録する。後続実装は自動部分の成立を根拠に進め、taskの`done`判定は省略しない。
+既存Phase 5（I07）のゴールと、追加されたNX01〜18の拡張goalを区別する。2026-11-04以降のユーザー指定により、HMD視認と物理入力の受入れは最終段階にまとめる。実装・host検証・ADBによる自動試験を先に進める。手動検証を含むcheck全体は、手動部分が残る間`not_run`とし、自動部分の成功を別に記録する。後続実装は自動部分の成立を根拠に進め、taskの`done`判定は省略しない。
 
 各検証のsource commit・source digest・APK SHA256はartifactと下記のBuild別記録を基準とする。
 raw artifactは作業開始時に読み直した`codex-work-root`の`eidolon-phase5-implementation/`と、テーマ導入後の`eidolon-theme-review/`配下。公開する記録に端末識別子・室内画像・秘密鍵は含めない。
