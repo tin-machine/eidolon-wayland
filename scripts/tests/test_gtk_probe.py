@@ -37,6 +37,24 @@ class GtkProbeTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.ready = self.root / 'ready'
 
+    def test_remote_bootstrap_round_trip_and_shell_budget(self):
+        command = cli.remote_command()
+        self.assertLess(len(command[-1].encode()), 49152)
+        calls = []
+        with patch('builtins.exec', calls.append):
+            eval(compile(command[-1], '<bootstrap>', 'exec'))
+        self.assertEqual(calls, [cli.remote_source().encode()])
+
+    def test_early_remote_exit_and_closed_control_preserve_return_code(self):
+        child = subprocess.Popen([sys.executable, '-c', 'raise SystemExit(7)'], stdin=subprocess.PIPE)
+        child.wait(timeout=2)
+        self.assertFalse(cli.request_cancel(child))
+        cli.close_control(child)
+        self.assertTrue(child.stdin.closed)
+        self.assertFalse(cli.request_cancel(child))
+        cli.close_control(child)
+        self.assertEqual(child.returncode, 7)
+
     def command(self, *, trace=TRACE, exit_code=None, ignore_term=False, descendant=False, flood=False):
         source = ('import os,signal,sys,time\nfrom pathlib import Path\n'
                   + ('signal.signal(signal.SIGTERM,signal.SIG_IGN)\n' if ignore_term else '')

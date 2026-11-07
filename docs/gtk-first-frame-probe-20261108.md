@@ -4,6 +4,24 @@
 通常GUIカタログは未解禁のままにし、terminalへの偽装や任意command/path/envは追加しない。
 SDL/ゲームの成否とは別に、Wayland+Cairoの最初の描画を検証する。
 
+## Build160での実機結果
+
+2026-11-08、probe `a28117f89f0370182ef20654b7abb459`で初描画と回収を確認した。
+本体SHM commit22回、format0、非SHM/未知buffer/protocol errorは0。
+同じ観測中にSDKの追加window一つで最初のframe/contentを確認し、停止後は退役した。
+元footは観測を通して存続した。5秒後のTERMで終了codeは-15、KILLは不要で、
+reap/group回収/pipe drainを確認した。自然終了や入力の合格には数えない。
+
+最初の試行はremote event無しでADB childが早期終了し、stdin closeのBrokenPipeと
+取消時のclosed-file例外が元の結果を隠した。read-only bootstrapでも終了code1/14byte stderrを再現した。
+raw stderrは保存せず、原因の文字列は断定していない。
+82,829byteのsourceをstdlibのzlib/base64で28,078byteのbootstrapへ圧縮し、
+閉じたstdinへの取消・closeで元のexitを失わない処理へ変更したところ上記の観測が成立した。
+ADB側の長いservice引数との関係を示唆するが、厳密な上限の同定はしていない。
+
+PCでは圧縮の往復と49,152byteの引数予算、早期終了code7と閉じたpipeの保持を追加し、
+GTK検査16件が成功した。HMD、物理入力、dialog、resize、製品Stopは引き続き未受入れ。
+
 ```bash
 scripts/quest-run-gtk-probe --serial "$EIDOLON_QUEST_SERIAL"
 ```

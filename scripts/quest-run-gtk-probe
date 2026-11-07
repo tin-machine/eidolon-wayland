@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """固定GTK初描画を現行leaseで5秒観測し、同jobでSDK初frameと退役を確認する。"""
 import argparse
+import base64
 import datetime
 import json
 import os
@@ -10,6 +11,7 @@ import selectors
 import shlex
 import subprocess
 import time
+import zlib
 
 from gui_probe_sdk import digest_sources, sdk_slice, summarize_first_frame
 from gtk_probe_run import GTK_SHA256, GTK_UID, GTK_VERSION
@@ -27,6 +29,30 @@ def remote_source():
         source += f"m=types.ModuleType({name!r});exec({(ROOT / path).read_text()!r},m.__dict__);sys.modules[m.__name__]=m\n"
     source += f"exec({(ROOT / 'scripts/gtk_probe_run.py').read_text()!r})\n"
     return source
+
+
+def remote_command():
+    # ADB shell serviceへ巨大なsource引数を渡さない。展開はTermuxのstdlib内だけで行う。
+    payload = base64.b64encode(zlib.compress(remote_source().encode())).decode("ascii")
+    source = f"import base64,zlib;exec(zlib.decompress(base64.b64decode({payload!r})))"
+    need(len(source.encode()) <= 49152, "REMOTE_BOOTSTRAP_LIMIT")
+    return ["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python3", "-c", source]
+
+
+def request_cancel(child):
+    if child is None or child.stdin is None or child.stdin.closed:
+        return False
+    try:
+        child.stdin.write(canonical(dict(type="cancel")) + b"\n");child.stdin.flush()
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def close_control(child):
+    if child.stdin is not None and not child.stdin.closed:
+        try: child.stdin.close()
+        except (OSError, ValueError): pass  # 終了済みchildのEPIPEで元のexit/resultを失わない。
 
 
 def main():
@@ -55,10 +81,7 @@ def main():
     def cancel():
         nonlocal cancel_sent
         if child is not None and not cancel_sent:
-            try:
-                child.stdin.write(canonical(dict(type="cancel")) + b"\n");child.stdin.flush()
-                cancel_sent = True
-            except (OSError, BrokenPipeError): pass
+            cancel_sent = request_cancel(child)
 
     try:
         result["device"] = device.validate()
@@ -73,9 +96,9 @@ def main():
         result["binding"] = binding
         request = dict(binding=binding, probe_id=probe_id)
         (run / "request.json").write_bytes(canonical(request) + b"\n")
-        source = remote_source()
-        result["remote_source_bytes"] = len(source.encode())
-        command = ["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python3", "-c", source]
+        result["remote_source_bytes"] = len(remote_source().encode())
+        command = remote_command()
+        result["remote_bootstrap_bytes"] = len(command[-1].encode())
         child = subprocess.Popen(["adb", "-s", args.serial, "shell", "-T", shlex.join(command)], stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         child.stdin.write(canonical(request) + b"\n");child.stdin.flush()
@@ -125,8 +148,10 @@ def main():
             if finished_at is not None and time.monotonic() - finished_at >= 3: break
             if child.poll() is not None and not selector.get_map() and finished_at is None: break
         if finished_at is None: cancel()
-        child.stdin.close();child.wait(timeout=6)
+        close_control(child);child.wait(timeout=6)
         result.update(remote_returncode=child.returncode, remote_result=finished, stderr_bytes=stderr_bytes)
+        if finished_at is None:
+            result["reason"] = "REMOTE_EXIT_BEFORE_RESULT" if child.returncode is not None else "REMOTE_RESULT_TIMEOUT"
         need(digest_sources() == digest, "SOURCE_CHANGED")
         result["sdk_observation"] = summarize_first_frame(baseline, result["sdk_samples"])
         result["status"] = "observed" if (isinstance(finished, dict) and finished.get("status") == "observed" and
@@ -140,7 +165,7 @@ def main():
     finally:
         if child is not None:
             try:
-                if not child.stdin.closed: child.stdin.close()
+                close_control(child)
                 child.wait(timeout=6)
             except (OSError, subprocess.SubprocessError):
                 result["remote_cleanup_unconfirmed"] = True
