@@ -88,3 +88,64 @@ impl Drop for PoolLease {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compositor::protocol::{ClientState, ProtocolState};
+    use smithay::reexports::wayland_server::Display;
+    use std::os::unix::net::UnixStream;
+
+    fn client(display: &Display<ProtocolState>) -> (ClientId, UnixStream) {
+        let (server, peer) = UnixStream::pair().unwrap();
+        let client = display
+            .handle()
+            .insert_client(server, Arc::new(ClientState::default()))
+            .unwrap();
+        (client.id(), peer)
+    }
+
+    #[test]
+    fn nine_window_pools_fit_but_count_stays_bounded_until_last_reference_drops() {
+        let display = Display::<ProtocolState>::new().unwrap();
+        let (client, _peer) = client(&display);
+        let budget = PoolBudget::default();
+        // Nine observed foot pools are about 3MiB each, below the unchanged 64MiB client cap.
+        let mut leases = (0..9)
+            .map(|_| budget.reserve(client.clone(), 3 * 1024 * 1024).unwrap())
+            .collect::<Vec<_>>();
+        let retained = leases[0].clone();
+        for _ in leases.len()..limits::CLIENT_SHM_POOLS {
+            leases.push(budget.reserve(client.clone(), 1).unwrap());
+        }
+        assert!(budget.reserve(client.clone(), 1).is_err());
+        leases.remove(0);
+        assert!(budget.reserve(client.clone(), 1).is_err());
+        drop(retained);
+        leases.push(budget.reserve(client, 1).unwrap());
+        drop(leases);
+        assert_eq!(budget.usage(), Usage::default());
+    }
+
+    #[test]
+    fn larger_pool_count_never_expands_client_or_global_byte_allowance() {
+        let display = Display::<ProtocolState>::new().unwrap();
+        let (first, _a) = client(&display);
+        let (second, _b) = client(&display);
+        let (third, _c) = client(&display);
+        let budget = PoolBudget::default();
+        let a = budget
+            .reserve(first.clone(), limits::CLIENT_SHM_BYTES)
+            .unwrap();
+        assert!(budget.reserve(first, 1).is_err());
+        assert!(a.grow(limits::CLIENT_SHM_BYTES + 1).is_err());
+        let b = budget.reserve(second, limits::CLIENT_SHM_BYTES).unwrap();
+        assert_eq!(budget.usage().bytes, limits::TOTAL_SHM_BYTES);
+        assert!(budget.reserve(third.clone(), 1).is_err());
+        drop(a);
+        let c = budget.reserve(third, 1).unwrap();
+        assert_eq!(budget.usage().bytes, limits::CLIENT_SHM_BYTES + 1);
+        drop((b, c));
+        assert_eq!(budget.usage(), Usage::default());
+    }
+}

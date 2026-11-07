@@ -79,6 +79,7 @@ pub struct Counters {
     pub maps: u64,
     pub unmaps: u64,
     pub pool_rejections: u64,
+    pub surface_rejections: u64,
     pub last_rejected_pool_bytes: usize,
     pub toplevel_rejections: u64,
     pub client_rejections: u64,
@@ -468,6 +469,7 @@ impl CompositorHandler for ProtocolState {
     }
     fn new_surface(&mut self, surface: &WlSurface) {
         if self.surfaces.len() >= limits::SURFACES {
+            self.counters.surface_rejections += 1;
             surface.post_error(wl_surface::Error::InvalidSize, "surface budget exceeded");
         } else {
             if !self.register_surface(surface) {

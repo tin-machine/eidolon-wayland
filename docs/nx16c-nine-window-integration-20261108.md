@@ -7,8 +7,9 @@
 
 通常toplevel、表示、SDK bindingを最大9にそろえた。client受入とStreamLocalは表示枚数と分け、
 九つの独立描画clientに加えて補助/空接続の余地を含む12の有限予算とした。
-StreamLocalの双方向copy buffer上限は768KiB（12×2×32KiB）。surface64、pixel128MiB、SHM総128MiB、
-同clientのSHM64MiB/pool8件、buffer最大2048²の予算は変更しない。
+StreamLocalの双方向copy buffer上限は768KiB（12×2×32KiB）。pixel128MiB、SHM総128MiB、
+同clientのSHM64MiB、buffer最大2048²のbyte/寸法予算は変更しない。
+後述のBuild168実測を受け、surface件数は64→128、同clientのpool件数は8→16へ調整する。
 
 通常Runtimeのpanelは、BoardのBound leaseを正本として同じslotへ作る。
 予約中、逆順map、Unmapped、窓を閉じて回収待ちの穴を、他の窓で勝手に埋めない。
@@ -43,7 +44,7 @@ SDK Entityは同session/window/slotのworkspace poseが届いてから作り、�
 | 1280² RGBA装飾canvas | 一コピー56.25MiB |
 | source+canvas | 一コピー83.25MiB。旧/新frame同時保持や他のRGBAを含まない |
 | 単一foot clientのSHM | 3MiB bufferを二枚/窓なら54MiB、三枚/窓なら81MiB。64MiB制限を超え得る |
-| SHM pool件数 | 一窓一poolでも九窓は9件となり、同clientの8件制限に達し得る |
+| SHM pool件数 | 固定footは最低一窓一pool。旧8件では九窓不可、件数調整版は16件 |
 | SDK操作部 | 三ボタン81 entity/27 listener、MODE9 object/mesh/material/texture |
 | MODE pixel | GPU要求1.125MiB、CPU固定pool最大2.25MiB。driver実使用量ではない |
 | アプリ周辺entity | 操作部81+MODE9+本文9+装飾visual9=108。主UI/launcherは別 |
@@ -109,3 +110,34 @@ private preferencesの初期値はOffだが、fixtureはbuiltinの選択を送�
 正常配置/SDK/入力targetの成立を確認し、通常設定は不変のまま復帰した。
 診断v3はbuiltin選択→実load/revision採用確認→初回footの順に変更する。
 製品の成立条件やpool予算は緩めていない。次は3/6枚の資源実測から9枚へ進む。
+
+## Build168: 六枚の実測と有限件数の調整
+
+nonce `c4c6e43d6e7bfa12276cf862e8493b6c` でtheme setupが成立し、三枚・六枚の
+panel/pose/SDK draw/controls/MODEが全てreadyとなった。
+
+| 同一foot client | surface数 | pool数 | pool bytes | pixel bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 三窓 | 31 | 3 | 9,117,696 | 22,861,760 |
+| 六窓 | 61 | 6 | 18,235,392 | 32,539,520 |
+
+七枚目の追加中にREMOTE_EXITとなり、pool_rejectionsは0だった。六枚で61surfaceの観測と、
+ProtocolStateが64surfaceで同clientへprotocol errorを送るsource条件が整合する。
+この版にはsurface拒否counterが無いため、旧実行にcounter値があったとは主張しない。
+通常設定へ復帰し、六窓分のSDK ownerは回収できた。九枚の合格ではない。
+
+次版は有限件数だけをsurface128/pool16に調整し、surface拒否counterも保存する。
+footの九窓は約91surface/9poolが必要で、同じ静止寸法のSHMは約27.4MBとなる。
+client SHM64MiB、全SHM128MiB、pixel128MiB、最大buffer寸法、転送buffer、時間上限は維持する。
+十二client全ての小poolが残る場合の件数枠は最大192であり、FD/owner回収を別に確認する。
+検索・overlay・全窓同時resize等の一時ピークは未測定で、任意の最大寸法九枚を保証しない。
+
+hostの実capacity fixtureは九窓と追加の空surfaceで91surfaceを保持し、
+余剰toplevelの拒否、既存client継続、枠再利用、全object/surface/SHM/FD/mapの回収まで検査する。
+pool単体の追加回帰は、九つの約3MiB poolの同時保持、16件を超える拒否、
+最後のArc参照までの計上、64/128MiBのbyte上限不変を確認する。
+
+初回host再検査では、旧PoolLimit fixtureが9poolで拒否を期待して失敗し、
+同じprocess内のfixture lockがpoisonして後続検査へ波及した。
+17poolを保持して超過を要求する固定wireへ更新した後、compositor20件が成功した。
+検査をskipしたり、poisonを無視して成功へ読み替えたりしていない。

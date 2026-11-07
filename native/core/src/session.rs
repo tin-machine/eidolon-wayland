@@ -49,6 +49,7 @@ pub struct Report {
     pub pool_bytes: usize,
     pub pool_count: usize,
     pub pool_rejections: u64,
+    pub surface_rejections: u64,
     pub last_rejected_pool_bytes: Option<usize>,
     pub toplevel_rejections: u64,
     pub rejected_toplevels: usize,
@@ -717,6 +718,10 @@ impl Session {
             .counters
             .pool_rejections
             .saturating_sub(self.base.pool_rejections);
+        self.report.surface_rejections = state
+            .counters
+            .surface_rejections
+            .saturating_sub(self.base.surface_rejections);
         self.report.last_rejected_pool_bytes =
             (self.report.pool_rejections > 0).then_some(state.counters.last_rejected_pool_bytes);
     }

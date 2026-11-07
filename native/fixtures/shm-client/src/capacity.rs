@@ -15,6 +15,11 @@ pub struct Control {
     pub steps: SyncSender<Stage>,
     pub replies: Receiver<()>,
 }
+/// Quest footで観測した一窓あたり10surfaceとglobal1個を実wireで再現する。
+pub const EXTRA_SURFACES_PER_WINDOW: usize = 9;
+pub fn expected_surfaces(capacity: usize) -> usize {
+    capacity * (EXTRA_SURFACES_PER_WINDOW + 1) + 1
+}
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
     pub accepted: usize,
@@ -108,6 +113,11 @@ pub fn run(
         window.map(&mut c, &stop, deadline)?;
         windows.push(window);
     }
+    let qh = c.queue.handle();
+    let retained_surfaces = (0..(capacity * EXTRA_SURFACES_PER_WINDOW + 1))
+        .map(|_| c.state.compositor.as_ref().unwrap().create_surface(&qh, ()))
+        .collect::<Vec<_>>();
+    c.sync(&stop, deadline)?;
     step(&mut c, &control, Stage::Full, &stop, deadline)?;
     let rejected = Window::new(&mut c, "fixture.capacity.rejected");
     // closeと交差したattachはconfigure ACK前でも破棄され、共有clientをprotocol errorにしない。
@@ -150,6 +160,9 @@ pub fn run(
     replacement.destroy();
     for window in windows {
         window.destroy();
+    }
+    for surface in retained_surfaces {
+        surface.destroy();
     }
     let report = Report {
         accepted: capacity,

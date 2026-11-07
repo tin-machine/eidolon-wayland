@@ -117,6 +117,9 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
                         Stage::Full => {
                             if ids.len() != limits::TOPLEVELS
                                 || state.rejected_toplevel_count() != 0
+                                || state.surface_count()
+                                    != fixture::expected_surfaces(limits::TOPLEVELS)
+                                || state.counters.surface_rejections != 0
                             {
                                 return Err("INITIAL_COUNT");
                             }

@@ -221,7 +221,8 @@ pub fn run(stream: UnixStream, mode: Mode, stop: Arc<AtomicBool>) -> Result<Repo
         let _ = shm.create_pool(file.as_fd(), 64 * 1024 * 1024 + 1, &qh, ());
     } else if mode == Mode::PoolLimit {
         let mut buffers = vec![];
-        for _ in 0..9 {
+        // 保持中bufferのleaseで16poolを使い切り、17件目のwire拒否を要求する。
+        for _ in 0..17 {
             let pool = shm.create_pool(file.as_fd(), 4096, &qh, ());
             buffers.push(pool.create_buffer(
                 0,

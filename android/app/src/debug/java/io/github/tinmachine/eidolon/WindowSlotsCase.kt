@@ -88,6 +88,7 @@ object WindowSlotsCase {
                 .put("error", app.opt("error")).put("clients", app.optInt("clients")).put("surfaces", app.optInt("surfaces"))
                 .put("pool_count", app.optInt("pool_count")).put("pool_bytes", app.optLong("pool_bytes")).put("pixel_bytes", app.optLong("pixel_bytes"))
                 .put("pool_rejections", app.optLong("pool_rejections")).put("last_rejected_pool_bytes", app.opt("last_rejected_pool_bytes"))
+                .put("surface_rejections", app.optLong("surface_rejections"))
                 .put("toplevel_rejections", app.optLong("toplevel_rejections")).put("client_rejections", app.optLong("client_rejections"))
                 .put("windows", JSONArray(windows(s).map { JSONObject().put("window", it.getString("window")).put("life", it.getString("life"))
                     .put("app_id", it.opt("app_id")).put("logical_size", it.opt("logical_size")).put("sizing", it.optJSONObject("sizing")) })))
@@ -241,6 +242,7 @@ object WindowSlotsCase {
                 .put("age_ms", if (lastObservedAt > 0) SystemClock.elapsedRealtime() - lastObservedAt else JSONObject.NULL)
                 .put("snapshot_available", result.has("failure_snapshot")))
             if (!result.has("pool_budget_rejection_observed")) result.put("pool_budget_rejection_observed", (lastSnapshot?.optJSONObject("app")?.optLong("pool_rejections") ?: 0L) > 0L)
+            result.put("surface_budget_rejection_observed", (lastSnapshot?.optJSONObject("app")?.optLong("surface_rejections") ?: 0L) > 0L)
             finish()
         }
         override fun run() {
