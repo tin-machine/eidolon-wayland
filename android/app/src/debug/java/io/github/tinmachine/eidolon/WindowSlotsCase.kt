@@ -30,7 +30,7 @@ object WindowSlotsCase {
         val expected = linkedMapOf<String, Int>()
         val leases = linkedMapOf<String, String>()
         val targets = linkedMapOf<String, JSONObject>()
-        val result = JSONObject().put("case", "window-slots").put("fixture_revision", "window-slots-v1").put("nonce", nonce).put("result", "running")
+        val result = JSONObject().put("case", "window-slots").put("fixture_revision", "window-slots-v2").put("nonce", nonce).put("result", "running")
             .put("normal_foot_server", true).put("independent_clients_verified", false).put("physical_input_verified", false).put("hmd_verified", false)
             .put("synthetic_input", true).put("synthetic_visibility", false).put("auto_retry", false).put("checkpoints", rows)
         var handle = 0L
@@ -49,6 +49,10 @@ object WindowSlotsCase {
         var terminalCountBefore = 0
         var keyDelivered = 0L
         var highestReady = 0
+        var lastSnapshot: JSONObject? = null
+        var lastReadiness: JSONObject? = null
+        var lastObservedAt = 0L
+        var lastObservedStage = ""
         fun start() { publish(); ui.post(this) }
         fun publish() {
             result.put("stage", stage).put("request_ids", JSONArray(requests.toList().sortedBy {it.toLong()})).put("enqueue_codes", JSONObject(enqueues.toMap())).put("completions", JSONObject(completions.toMap())).put("owned_runtime", handle.toString()).put("highest_ready_windows", highestReady).put("expected_count", expected.size)
@@ -70,15 +74,16 @@ object WindowSlotsCase {
             val snapshot = JSONObject().put("state", s.optString("state")).put("scene", s.opt("scene")).put("activity_visible", s.optBoolean("activity_visible"))
                 .put("xr_state", s.optString("xr_state")).put("input_resets", s.optLong("input_resets")).put("error", s.opt("error"))
                 .put("window_slots", s.optJSONObject("window_slots")).put("window_launch", s.optJSONObject("window_launch")).put("shutdown", s.optJSONObject("shutdown"))
+                .put("theme", s.optJSONObject("theme")).put("render_theme_id", s.getJSONObject("render").opt("theme_id")).put("render_theme_revision", s.getJSONObject("render").opt("theme_revision"))
                 .put("panels", JSONArray(plans(s).map { JSONObject().put("target", it.getJSONObject("target")).put("slot", it.getInt("slot"))
                     .put("action", it.getString("action")).put("applied", it.getBoolean("applied")).put("error", it.opt("error")) }))
                 .put("render", JSONArray(rendered(s).map { JSONObject().put("key", it.getJSONObject("key")).put("frames", it.getLong("frames"))
                     .put("frame_timing", it.optJSONObject("frame_timing")).put("width", it.optInt("width")).put("height", it.optInt("height")) }))
                 .put("workspace", s.getJSONObject("workspace").getJSONArray("windows"))
-                .put("adapter", JSONObject().put("bindings", metrics.getInt("bindings")).put("pending", metrics.getInt("pending"))
+                .put("adapter", JSONObject().put("scene", metrics.opt("scene")).put("bindings", metrics.getInt("bindings")).put("pending", metrics.getInt("pending"))
                     .put("window_controls", metrics.getJSONObject("window_controls")).put("window_mode_badges", metrics.getJSONObject("window_mode_badges"))
                     .put("targets", JSONArray(sdk().map { JSONObject().put("target", it.getJSONObject("target")).put("mode_badge", it.optJSONObject("mode_badge"))
-                        .put("control_entities", it.optJSONObject("controls")?.optInt("entities")).put("actual_pose", adapter.windowEntity(it.getJSONObject("target").getString("window"))?.let { entity -> PanelPoseCodec.fromSdk(getAbsoluteTransform(entity)) }) })))
+                        .put("controls", it.optJSONObject("controls")).put("actual_pose", adapter.windowEntity(it.getJSONObject("target").getString("window"))?.let { entity -> PanelPoseCodec.fromSdk(getAbsoluteTransform(entity)) }) })))
             if (app != null) snapshot.put("app", JSONObject().put("state", app.optString("state")).put("session", app.optString("session"))
                 .put("error", app.opt("error")).put("clients", app.optInt("clients")).put("surfaces", app.optInt("surfaces"))
                 .put("pool_count", app.optInt("pool_count")).put("pool_bytes", app.optLong("pool_bytes")).put("pixel_bytes", app.optLong("pixel_bytes"))
@@ -105,44 +110,103 @@ object WindowSlotsCase {
             deadline = SystemClock.elapsedRealtime() + 15000
             return id
         }
-        fun ready(s: JSONObject, count: Int): Boolean {
-            if (s.optString("state") != "Ready" || !s.optBoolean("activity_visible") || s.optString("xr_state") != "FOCUSED") return false
-            if (windows(s).size != count || windows(s).any { it.optString("life") != "Mapped" } || expected.size != count) return false
-            val app = s.getJSONObject("app")
-            if (app.getInt("clients") != 1 || s.getJSONObject("render").optString("theme_id") != "cyan-orbit" || s.getJSONObject("theme").optBoolean("loading")) return false
-            check(windows(s).all {it.optString("app_id").startsWith("io.github.tinmachine.eidolon.foot.t-${app.getString("nonce")}-")}) { "UNOWNED_TERMINAL_WINDOW" }
+        /** Evaluate every fixed gate, including gates beyond the first missing SDK object. */
+        fun readiness(s: JSONObject, count: Int): JSONObject {
+            val gates = JSONObject()
+            val gateOrder = mutableListOf<String>()
+            fun gate(name: String, value: Boolean) { gateOrder.add(name); gates.put(name, value) }
+            val w = windows(s); val app = s.optJSONObject("app"); val render = s.getJSONObject("render")
             val slots = s.getJSONObject("window_slots")
-            if (slots.getInt("occupied") != count || slots.getInt("display_limit") != 9 || slots.getBoolean("cleanup_required") || bound(s).size != count) return false
             val p = plans(s); val r = rendered(s); val a = sdk(); val placements = list(s.getJSONObject("workspace").getJSONArray("windows"))
-            if (p.size != count || r.size != count || a.size != count) return false
+            gate("runtime_ready", s.optString("state") == "Ready")
+            gate("runtime_owner", handle == 0L || NativeSessionHost.currentHandle() == handle)
+            gate("scene_owner", scene.isEmpty() || s.optString("scene") == scene)
+            gate("session_owner", session.isEmpty() || app?.optString("session") == session)
+            gate("activity_visible", s.optBoolean("activity_visible"))
+            gate("xr_focused", s.optString("xr_state") == "FOCUSED")
+            gate("window_count", w.size == count)
+            gate("all_mapped", w.size == count && w.all { it.optString("life") == "Mapped" })
+            gate("expected_count", expected.size == count)
+            gate("single_foot_client", app?.optInt("clients", -1) == 1)
+            gate("theme_selected", render.optString("theme_id") == "cyan-orbit")
+            gate("theme_loaded", !s.getJSONObject("theme").optBoolean("loading"))
+            gate("terminal_markers", app != null && w.all { it.optString("app_id").startsWith("io.github.tinmachine.eidolon.foot.t-${app.getString("nonce")}-") })
+            gate("slot_count", slots.optInt("occupied", -1) == count)
+            gate("display_limit", slots.optInt("display_limit", -1) == 9)
+            gate("slot_cleanup_clear", !slots.optBoolean("cleanup_required"))
+            gate("bound_count", bound(s).size == count)
+            gate("panel_count", p.size == count)
+            gate("render_count", r.size == count)
+            gate("sdk_count", a.size == count)
+            val windowGates = JSONArray()
             for ((window, slot) in expected) {
-                val entry = bound(s).singleOrNull { it.getJSONObject("state").getString("window") == window } ?: return false
-                if (entry.getJSONObject("lease").getString("position") != order[slot] || entry.getJSONObject("lease").getString("runtime") != handle.toString()) return false
-                if (leases[window]?.let { it != leaseId(entry) } == true) error("LEASE_CHANGED")
-                val plan = p.singleOrNull { it.getJSONObject("target").optString("window") == window } ?: return false
-                val target = plan.getJSONObject("target")
-                if (target.getString("session") != session || target.getString("scene") != scene || plan.getInt("slot") != slot || plan.getString("action") != "create" || !plan.getBoolean("applied") || !plan.isNull("error")) return false
-                if (targets[window]?.let { !same(it, target) } == true) error("TARGET_CHANGED")
-                if (r.none { same(it.getJSONObject("key"), target) && it.getLong("frames") > 0 }) return false
-                val row = a.singleOrNull { same(it.getJSONObject("target"), target) } ?: return false
-                val controls = row.optJSONObject("controls") ?: return false
-                val badge = row.optJSONObject("mode_badge") ?: return false
-                if (!controls.optBoolean("enabled") || controls.optLong("revision") != s.getJSONObject("render").getLong("theme_revision") || controls.optLong("failures") != 0L || controls.optInt("entities") != 9 || list(controls.optJSONArray("buttons")).let { buttons -> buttons.size != 3 || buttons.any { !it.optBoolean("ready") || !same(it.getJSONObject("target"), target) } } || !badge.optBoolean("object_ready") || badge.optLong("failures") != 0L) return false
-                val placement = placements.singleOrNull { it.optString("session") == session && it.optString("window") == window && it.optInt("slot", -1) == slot }?.getJSONObject("placement") ?: return false
-                val applied = placement.optJSONObject("applied_pose") ?: return false
-                val pose = placement.getJSONObject("pose")
+                val checks = JSONObject()
+                val checkOrder = mutableListOf<String>()
+                fun checkGate(name: String, value: Boolean) { checkOrder.add(name); checks.put(name, value) }
+                val entry = bound(s).singleOrNull { it.getJSONObject("state").getString("window") == window }
+                val lease = entry?.optJSONObject("lease")
+                val plan = p.singleOrNull { it.getJSONObject("target").optString("window") == window }
+                val target = plan?.optJSONObject("target")
+                val row = a.singleOrNull { target != null && same(it.getJSONObject("target"), target) }
+                val controls = row?.optJSONObject("controls"); val badge = row?.optJSONObject("mode_badge")
+                val placement = placements.singleOrNull { it.optString("session") == session && it.optString("window") == window && !it.isNull("slot") && it.optInt("slot", -1) == slot }?.optJSONObject("placement")
+                val applied = placement?.optJSONObject("applied_pose"); val pose = placement?.optJSONObject("pose")
                 val grid = arrayOf(0 to 0, 1 to 0, -1 to 0, 0 to 1, 0 to -1, -1 to 1, 1 to 1, -1 to -1, 1 to -1)[slot]
                 val wanted = JSONObject().put("position_m", JSONArray(listOf(grid.first * 1.8, 2.0 + grid.second * 1.8, 1.5))).put("rotation_xyzw", JSONArray(listOf(0.0, 0.0, 0.0, 1.0)))
-                val entity = adapter.windowEntity(window) ?: return false
-                if (!same(applied.getJSONObject("target"), target) || !PanelPoseCodec.near(pose, wanted, .001) || !PanelPoseCodec.near(applied.getJSONObject("pose"), wanted, .001) || PanelPoseCodec.fromSdk(getAbsoluteTransform(entity))?.let { PanelPoseCodec.near(it, wanted, .001) } != true) return false
-                if (NativeSessionHost.inputTarget(target.toString()) == null) return false
-                leases.putIfAbsent(window, leaseId(entry)); targets.putIfAbsent(window, JSONObject(target.toString()))
+                val entity = adapter.windowEntity(window)
+                val actual = entity?.let { PanelPoseCodec.fromSdk(getAbsoluteTransform(it)) }
+                checkGate("lease_present", entry != null)
+                checkGate("lease_owner_position", lease?.optString("runtime") == handle.toString() && lease.optString("session") == session && lease.optString("position") == order[slot])
+                checkGate("lease_stable", entry != null && (leases[window] == null || leases[window] == leaseId(entry)))
+                checkGate("plan_present", plan != null)
+                checkGate("target_owner_slot", target?.optString("session") == session && target.optString("scene") == scene && plan.optInt("slot", -1) == slot)
+                checkGate("target_stable", target != null && (targets[window] == null || same(checkNotNull(targets[window]), target)))
+                checkGate("panel_create", plan?.optString("action") == "create")
+                checkGate("panel_applied", plan?.optBoolean("applied") == true)
+                checkGate("panel_error_clear", plan != null && plan.isNull("error"))
+                checkGate("native_frames", target != null && r.any { same(it.getJSONObject("key"), target) && it.getLong("frames") > 0 })
+                checkGate("sdk_binding", row != null)
+                checkGate("controls_present", controls != null)
+                checkGate("controls_enabled", controls?.optBoolean("enabled") == true)
+                checkGate("controls_revision", controls?.optLong("revision", -1) == render.getLong("theme_revision"))
+                checkGate("controls_no_failure", controls?.optLong("failures", -1) == 0L)
+                checkGate("control_entities", controls?.optInt("entities", -1) == 9)
+                checkGate("buttons_ready_target", controls != null && target != null && list(controls.optJSONArray("buttons")).let { buttons -> buttons.size == 3 && buttons.all { it.optBoolean("ready") && same(it.getJSONObject("target"), target) } })
+                checkGate("mode_present", badge != null)
+                checkGate("mode_object_ready", badge?.optBoolean("object_ready") == true)
+                checkGate("mode_no_failure", badge?.optLong("failures", -1) == 0L)
+                checkGate("workspace_present", placement != null)
+                checkGate("pose_applied", applied != null)
+                checkGate("applied_target", target != null && applied?.optJSONObject("target")?.let { same(it, target) } == true)
+                checkGate("requested_pose", pose != null && PanelPoseCodec.near(pose, wanted, .001))
+                checkGate("applied_pose", applied?.optJSONObject("pose")?.let { PanelPoseCodec.near(it, wanted, .001) } == true)
+                checkGate("sdk_entity", entity != null)
+                checkGate("sdk_pose", actual != null && PanelPoseCodec.near(actual, wanted, .001))
+                checkGate("input_target", target != null && NativeSessionHost.inputTarget(target.toString()) != null)
+                windowGates.put(JSONObject().put("window", window).put("slot", slot).put("gates", checks)
+                    .put("reason", checkOrder.firstOrNull { !checks.getBoolean(it) } ?: "ready"))
             }
             val controls = adapter.metrics().getJSONObject("window_controls")
             val badges = adapter.metrics().getJSONObject("window_mode_badges")
-            val ready = controls.getLong("entity_owners") == count * 9L && controls.getLong("listener_owners") == count * 3L &&
-                listOf("entity_owners", "object_owners", "mesh_owners", "material_owners", "texture_owners", "pixel_slots_in_use").all { badges.getLong(it) == count.toLong() } && badges.getLong("cleanup_pending_owners") == 0L
-            if(ready) highestReady = maxOf(highestReady,count)
+            gate("control_entity_owners", controls.getLong("entity_owners") == count * 9L)
+            gate("control_listener_owners", controls.getLong("listener_owners") == count * 3L)
+            for (name in listOf("entity_owners", "object_owners", "mesh_owners", "material_owners", "texture_owners", "pixel_slots_in_use")) gate("mode_$name", badges.getLong(name) == count.toLong())
+            gate("mode_cleanup_clear", badges.getLong("cleanup_pending_owners") == 0L)
+            val failure = gateOrder.firstOrNull { !gates.getBoolean(it) } ?: list(windowGates).firstNotNullOfOrNull { row -> row.getString("reason").takeIf { it != "ready" }?.let { "window.$it" } }
+            return JSONObject().put("expected_count", count).put("ready", failure == null).put("reason", failure ?: "ready").put("gates", gates).put("windows", windowGates)
+        }
+        fun ready(s: JSONObject, count: Int): Boolean {
+            val report = readiness(s, count); lastReadiness = report
+            val ready = report.getBoolean("ready")
+            check(report.getJSONObject("gates").getBoolean("terminal_markers")) { "UNOWNED_TERMINAL_WINDOW" }
+            for ((window, _) in expected) {
+                val entry = bound(s).singleOrNull { it.getJSONObject("state").getString("window") == window }
+                if (entry != null && leases[window]?.let { it != leaseId(entry) } == true) error("LEASE_CHANGED")
+                val target = plans(s).singleOrNull { it.getJSONObject("target").optString("window") == window }?.getJSONObject("target")
+                if (target != null && targets[window]?.let { !same(it, target) } == true) error("TARGET_CHANGED")
+                if (ready) { leases.putIfAbsent(window, leaseId(checkNotNull(entry))); targets.putIfAbsent(window, JSONObject(checkNotNull(target).toString())) }
+            }
+            if (ready) highestReady = maxOf(highestReady, count)
             return ready
         }
         fun nextLaunch(s: JSONObject) { pending = submit(s, "open_terminal"); stage = "adding"; publish() }
@@ -170,18 +234,27 @@ object WindowSlotsCase {
                 })
                 result.put("pool_budget_rejection_observed", (s.optJSONObject("app")?.optLong("pool_rejections") ?: 0L)>0L)
             }
+            // Keep the last bounded observation even when the deadline/STALE path had no new snapshot.
+            if (!result.has("failure_snapshot")) lastSnapshot?.let { result.put("failure_snapshot", it) }
+            lastReadiness?.let { result.put("failure_readiness", it) }
+            result.put("failure_observation", JSONObject().put("stage", lastObservedStage).put("elapsed_realtime_ms", lastObservedAt)
+                .put("age_ms", if (lastObservedAt > 0) SystemClock.elapsedRealtime() - lastObservedAt else JSONObject.NULL)
+                .put("snapshot_available", result.has("failure_snapshot")))
+            if (!result.has("pool_budget_rejection_observed")) result.put("pool_budget_rejection_observed", (lastSnapshot?.optJSONObject("app")?.optLong("pool_rejections") ?: 0L) > 0L)
             finish()
         }
         override fun run() {
             if (active !== this) return
             var observed: JSONObject? = null
             try {
-                check(SystemClock.elapsedRealtime() < deadline && SystemClock.elapsedRealtime() < overall) { "WINDOW_SLOTS_TIMEOUT" }
                 val current = NativeSessionHost.currentHandle()
                 if (current > 0) {
                     val envelope = JSONObject(NativeBridge.nativeSnapshot(current)); val s = envelope.optJSONObject("runtime")
-                    if (s == null) { check(stage == "stopped" && envelope.optInt("code") == NativeBridge.STALE); ui.postDelayed(this, 32); return }
+                    if (s == null) { check(SystemClock.elapsedRealtime() < deadline && SystemClock.elapsedRealtime() < overall) { "WINDOW_SLOTS_TIMEOUT" }; check(stage == "stopped" && envelope.optInt("code") == NativeBridge.STALE); ui.postDelayed(this, 32); return }
                     observed = s
+                    lastSnapshot = summary(s); lastObservedAt = SystemClock.elapsedRealtime(); lastObservedStage = stage
+                    lastReadiness = readiness(s, if (stage == "first") 1 else expected.size)
+                    check(SystemClock.elapsedRealtime() < deadline && SystemClock.elapsedRealtime() < overall) { "WINDOW_SLOTS_TIMEOUT" }
                     check(s.optString("state") != "Failed") { "RUNTIME_FAILED" }
                     s.optJSONObject("app")?.let { check(it.isNull("error")) { "APP_FAILED" } }
                     if (handle > 0 && stage != "stopped") {
@@ -268,7 +341,7 @@ object WindowSlotsCase {
                             finish(); return
                         }
                     }
-                }
+                } else check(SystemClock.elapsedRealtime() < deadline && SystemClock.elapsedRealtime() < overall) { "WINDOW_SLOTS_TIMEOUT" }
                 ui.postDelayed(this, 32)
             } catch (failure: Exception) { fail(observed, failure) }
         }

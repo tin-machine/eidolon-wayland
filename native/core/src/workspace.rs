@@ -338,6 +338,37 @@ mod tests {
         }
     }
     #[test]
+    fn initial_nine_poses_precede_sdk_creation_panel_ack_and_pose_ack() {
+        let mut c = Controller::load(None);
+        c.scene(Some(scene()));
+        let windows = (1..=9).map(window).collect::<Vec<_>>();
+        // First map is visible before the panel reconciler has produced its commands.
+        c.sync(session(), &windows, &[]);
+        assert!(c.snapshot().windows.iter().all(|w| w.slot.is_none()));
+        let panels = windows
+            .iter()
+            .enumerate()
+            .map(|(slot, w)| {
+                let mut p = panel(w, slot, slot as i64 + 1);
+                p.applied = false;
+                p
+            })
+            .collect::<Vec<_>>();
+        let restores = c.sync(session(), &windows, &panels);
+        assert_eq!(restores.len(), 9);
+        for (slot, w) in c.snapshot().windows.iter().enumerate() {
+            assert_eq!(w.slot, Some(slot));
+            assert_eq!(w.placement.pose, PanelPose::at_slot(slot));
+            assert!(w.placement.pose.valid());
+            assert!(w.placement.applied_pose.is_none());
+            assert!(w.placement.accepts(panels[slot].target));
+        }
+        // A stale scene must not supply a creation slot, even though its desired pose is retained.
+        c.scene(Some(SceneEpoch::new(2).unwrap()));
+        c.sync(session(), &windows, &panels);
+        assert!(c.snapshot().windows.iter().all(|w| w.slot.is_none()));
+    }
+    #[test]
     fn duplicate_app_keeps_existing_pose_and_stale_target_cannot_move_live_window() {
         let mut c = Controller::load(None);
         c.scene(Some(scene()));
