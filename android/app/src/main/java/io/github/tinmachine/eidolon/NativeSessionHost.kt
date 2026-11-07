@@ -388,6 +388,31 @@ object NativeSessionHost {
             BuildHooks.windowControlRequested(action,ticket.runtime,ticket.target,ticket.revision,request,code)
         }
     } } }
+    data class WindowMoveTicket(val control:WindowControlTicket,val source:Long)
+    private val windowMove=AtomicReference<WindowMoveTicket?>(null)
+    fun beginWindowMove(target:JSONObject,runtime:Long,revision:Long,source:Long):WindowMoveTicket? {
+        check(Looper.myLooper()==Looper.getMainLooper())
+        if(windowMove.get()!=null || source==0L || panelTextInputs.isNotEmpty()) return null
+        val control=beginWindowControl(target,runtime,revision) ?: return null
+        return WindowMoveTicket(control,source).takeIf {windowMove.compareAndSet(null,it)}
+    }
+    fun windowMoveCurrent(ticket:WindowMoveTicket):Boolean=windowMove.get()===ticket && ticket.control.runtime==handle &&
+        ticket.control.intent==inputIntents.get() && activityVisible.get() && xrState.get()=="FOCUSED" && !editing.get() && panelTextInputs.isEmpty()
+    fun windowMoveSourceOwned(source:Long):Boolean=windowMove.get()?.source==source
+    private fun movingTarget(target:String):Boolean=windowMove.get()?.control?.target?.let {targetIdentity(JSONObject(it))==targetIdentity(JSONObject(target))}==true
+    fun finishWindowMove(ticket:WindowMoveTicket,restore:Boolean) {
+        if(!windowMove.compareAndSet(ticket,null)) return
+        if(restore && ticket.control.intent==inputIntents.get()) windowControl(ticket.control,"focus")
+    }
+    fun submitWindowMovePose(ticket:WindowMoveTicket,pose:JSONObject):String? {
+        if(!windowMoveCurrent(ticket) || !PanelPoseCodec.valid(pose) || poseCompletions.size>=16) return null
+        val request=requests.incrementAndGet().toString();poseCompletions[request]="pending"
+        val code=NativeBridge.nativeCommand(ticket.control.runtime,JSONObject().put("schema",1).put("type","set_pose_control")
+            .put("request_id",request).put("target",JSONObject(ticket.control.target)).put("pose",pose).put("controls_revision",ticket.control.revision).toString())
+        BuildHooks.windowControlRequested("move",ticket.control.runtime,ticket.control.target,ticket.control.revision,request,code)
+        if(code!=NativeBridge.ACCEPTED) {poseCompletions.remove(request);return null}
+        return request
+    }
     fun requestSnapshot() { worker.execute { safely { publish() } } }
     fun currentHandle(): Long = handle
     fun keyboardFocused(): Boolean = keyboardFocus != null
@@ -418,7 +443,7 @@ object NativeSessionHost {
     private fun enqueueInputReset(request: String): Int = NativeBridge.nativeCommand(handle,
         JSONObject().put("schema",1).put("request_id",request).put("type","reset_input").toString())
     fun inputTarget(target: String): InputTarget? {
-        if (editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED") return null
+        if (editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || movingTarget(target)) return null
         return inputTargets[targetIdentity(JSONObject(target))]?.takeIf { it.runtime==handle }
     }
     private fun selectedTarget(runtime: JSONObject): JSONObject? {
@@ -547,7 +572,7 @@ object NativeSessionHost {
             .put("size_command",command ?: JSONObject.NULL).put("size",size).toString())
     /** SDK callbackではimmutableなtargetと小DTOだけをenqueueする。座標をログへ出さない。 */
     fun sendPointer(target: InputTarget, source: Long, uv: List<Double>?, event: JSONObject): Boolean {
-        if (source<=0 || inputTarget(target.target)!=target) return false
+        if (source<=0 || windowMoveSourceOwned(source) || inputTarget(target.target)!=target) return false
         if(event.optString("type")=="buttons" && event.optInt("state") and 1 != 0) {
             inputIntents.incrementAndGet();releasePanelTextFocus()
         }
@@ -843,6 +868,7 @@ object NativeSessionHost {
         if (imeRawBlocked.get()) return false // Android IME owns physical ingress until reset/disable ACKs.
         if(BuildHooks.imeProbeActive()) {BuildHooks.imeProbePhysicalKey();return false}
         val focus = keyboardFocus ?: return false
+        if (movingTarget(focus.target)) return false
         if (editing.get() || panelTextInputs.isNotEmpty() || focus.runtime != handle || !activityVisible.get() || xrState.get() != "FOCUSED") return false
         val key = JSONObject().put("device", event.deviceId).put("scan_code", event.scanCode).put("key_code", event.keyCode)
             .put("action", if (event.action == KeyEvent.ACTION_DOWN) "pressed" else "released").put("repeat", event.repeatCount)
@@ -887,6 +913,7 @@ object NativeSessionHost {
         invalidateImeConnection()
         keyboardFocus = null
         inputTargets = emptyMap()
+        windowMove.set(null)
         val old = handle
         themeImportToken = null; themeRequests.clear(); themeImportMessage = null
         val started = SystemClock.elapsedRealtime()
@@ -1061,7 +1088,7 @@ object NativeSessionHost {
         val renderTargets=runtime.getJSONObject("render").getJSONArray("targets")
         inputTargets=if (!editing.get() && runtime.getString("state")=="Ready" && runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED")
             (0 until plans.length()).map { plans.getJSONObject(it) }.filter { plan ->
-                plan.optString("action")=="create" && plan.optBoolean("applied") && plan.isNull("error") &&
+                plan.optString("action")=="create" && plan.optBoolean("applied") && plan.isNull("error") && !movingTarget(plan.getJSONObject("target").toString()) &&
                     (0 until renderTargets.length()).any { index ->
                         val rendered=renderTargets.getJSONObject(index)
                         targetIdentity(rendered.getJSONObject("key"))==targetIdentity(plan.getJSONObject("target")) && rendered.getLong("frames")>0
@@ -1076,7 +1103,7 @@ object NativeSessionHost {
                 it.getJSONObject("target").optString("session") == runtime.optJSONObject("app")?.optString("session")
         }
         keyboardFocus = if (!editing.get() && runtime.getString("state") == "Ready" && runtime.getBoolean("activity_visible") &&
-            runtime.getString("xr_state") == "FOCUSED" && focused != null)
+            runtime.getString("xr_state") == "FOCUSED" && focused != null && !movingTarget(focused.getJSONObject("target").toString()))
             KeyboardFocus(handle, runtime.getLong("input_resets"), focused.getJSONObject("target").toString(), runtime.getJSONObject("app").getJSONObject("input").getString("focus_token")) else null
         pumpIme(runtime, imeCompletions)
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else "ターミナルへ入力"
@@ -1085,7 +1112,11 @@ object NativeSessionHost {
             runtime.getString("state")=="Ready",if(terminalOpen?.startupWaiting==true) "StartingTermux" else runtime.getJSONObject("transport").getString("state"),editing.get(),keyboardCount.get(),
             (runtime.optJSONObject("app")?.optJSONArray("windows")?.length() ?: 0)>0,inputTargets.isNotEmpty(),
             focusedWindow.takeIf {keyboardFocus!=null},panelEditing=panelTextInputs.isNotEmpty(),imeProbe=BuildHooks.imeProbeActive())
-        val status=if(inputConditions.visible && inputConditions.xrFocused) imeInputMessage ?: InputStatus.from(inputConditions) else InputStatus.from(inputConditions)
+        val status=if(inputConditions.visible && inputConditions.xrFocused) {
+            val move=windowMove.get()
+            if(move!=null) InputStatus("WINDOW_MOVING","窓 ${JSONObject(move.control.target).getString("window")} を移動中 · その窓の文字入力を停止")
+            else imeInputMessage ?: InputStatus.from(inputConditions)
+        } else InputStatus.from(inputConditions)
         ui.post {inputStatus.value=status}
         store?.updateInterface(JSONObject().put("input_reason",status.reason).put("input_action",status.action.name)
             .put("editing",editing.get()).put("keyboard_count",keyboardCount.get() ?: JSONObject.NULL)

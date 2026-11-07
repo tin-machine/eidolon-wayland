@@ -868,6 +868,7 @@ impl Runtime {
                                 }
 
                                 Command::SetPose { target, .. }
+                                | Command::SetPoseControl { target, .. }
                                 | Command::PoseApplied { target, .. }
                                 | Command::ResizeLogical { target, .. }
                                 | Command::SetPhysicalSize { target, .. }
@@ -885,14 +886,30 @@ impl Runtime {
                                             .targets
                                             .iter()
                                             .any(|t| t.key == *target && t.frames > 0);
-                                    if !live {
+                                    let controls_current = match &command {
+                                        Command::SetPoseControl {
+                                            controls_revision, ..
+                                        } => gl.snapshot().theme_revision == *controls_revision,
+                                        _ => true,
+                                    };
+                                    let controls_ready =
+                                        !matches!(&command, Command::SetPoseControl { .. })
+                                            || state.snapshot.activity_visible
+                                                && state.snapshot.xr_state == XrState::Focused
+                                                && state.render_visibility.iter().all(|v| *v);
+                                    if !live || !controls_current {
                                         Status::Stale
+                                    } else if !controls_ready {
+                                        Status::NotReady
                                     } else if let Some(current) = app
                                         .as_mut()
                                         .filter(|a| a.session() == target.session && !a.closed())
                                     {
                                         let outcome = match &command {
                                             Command::SetPose {
+                                                request_id, pose, ..
+                                            }
+                                            | Command::SetPoseControl {
                                                 request_id, pose, ..
                                             } => state.workspace.set_pose(
                                                 *target,

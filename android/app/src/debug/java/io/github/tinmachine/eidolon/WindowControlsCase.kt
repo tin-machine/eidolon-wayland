@@ -12,6 +12,8 @@ import com.meta.spatial.runtime.ButtonBits
 import com.meta.spatial.runtime.HitInfo
 import com.meta.spatial.runtime.Scene
 import com.meta.spatial.toolkit.getAbsoluteTransform
+import com.meta.spatial.toolkit.Transform
+import com.meta.spatial.toolkit.Controller
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -21,7 +23,11 @@ object WindowControlsCase {
     @Volatile private var active: Check?=null
     fun start(nonce:String,adapter:SpatialPanelAdapter,scene:()->Scene,complete:(JSONObject)->Unit) {
         check(active==null)
-        Check(nonce,adapter,scene,complete).also {active=it;it.start()}
+        Check(nonce,adapter,scene,complete,"window-controls").also {active=it;it.start()}
+    }
+    fun startMove(nonce:String,adapter:SpatialPanelAdapter,scene:()->Scene,complete:(JSONObject)->Unit) {
+        check(active==null)
+        Check(nonce,adapter,scene,complete,"window-move").also {active=it;it.start()}
     }
     fun commandComplete(request:String,code:String) {active?.let {if(it.requests.containsKey(request) || request in PROBES) it.completions[request]=code}}
     fun requested(action:String,runtime:Long,target:String,revision:Long,request:String,code:Int) {
@@ -30,12 +36,12 @@ object WindowControlsCase {
             .put("request_id",request).put("enqueue_code",code).toString()}
     }
     private val PROBES=setOf("9101201","9101202","9101203")
-    private class Check(val nonce:String,val adapter:SpatialPanelAdapter,val scene:()->Scene,val complete:(JSONObject)->Unit):Runnable {
+    private class Check(val nonce:String,val adapter:SpatialPanelAdapter,val scene:()->Scene,val complete:(JSONObject)->Unit,val name:String):Runnable {
         val ui=Handler(Looper.getMainLooper())
         val requests=ConcurrentHashMap<String,String>()
         val completions=ConcurrentHashMap<String,String>()
         val rows=JSONArray()
-        val result=JSONObject().put("case","window-controls").put("nonce",nonce).put("result","running")
+        val result=JSONObject().put("case",name).put("fixture_revision",if(name=="window-move") "window-move-v1" else "window-controls-v2").put("nonce",nonce).put("result","running")
             .put("consumer","SDK").put("synthetic_input",true).put("synthetic_visibility",false)
             .put("physical_input_verified",false).put("hmd_verified",false).put("text_verified",false)
             .put("dispatch","Scene.onInput").put("raycast","Scene.lineSegmentIntersect")
@@ -50,6 +56,11 @@ object WindowControlsCase {
         var source:Entity?=null
         var oldCloseRay:Pair<Vector3,Vector3>?=null
         var oldCloseEntity=""
+        var modeTextures=0L;var modeUpdates=0L
+        var moveBefore=WindowMotionPose.at()
+        var moveExpected=WindowMotionPose.at()
+        val controllerStart=WindowMotionPose.at(.2,1.0,.1)
+        val controllerEnd=WindowMotionPose(listOf(.35,1.1,.25),listOf(0.0,kotlin.math.sin(Math.PI/24),0.0,kotlin.math.cos(Math.PI/24)))
         fun start() {NativeSessionHost.publishCheck(result);ui.post(this)}
         fun items(a:JSONArray)=(0 until a.length()).map {a.getJSONObject(it)}
         fun windows(s:JSONObject)=s.optJSONObject("app")?.optJSONArray("windows")?.let(::items) ?: emptyList()
@@ -64,9 +75,10 @@ object WindowControlsCase {
             return rendered.size==count && rows.size==count && rows.all {row ->
                 val target=row.getJSONObject("target")
                 val c=row.optJSONObject("controls")
-                c?.optBoolean("enabled")==true && c.optLong("revision")==s.getJSONObject("render").getLong("theme_revision") &&
-                    c.optLong("failures")==0L && c.optInt("entities")==6 &&
-                    items(c.getJSONArray("buttons")).size==2 && items(c.getJSONArray("buttons")).all {it.optBoolean("ready") && same(it.getJSONObject("target"),target)} &&
+                val badge=row.optJSONObject("mode_badge")
+                badge?.optBoolean("object_ready")==true && badge.optLong("failures")==0L && c?.optBoolean("enabled")==true && c.optLong("revision")==s.getJSONObject("render").getLong("theme_revision") &&
+                    c.optLong("failures")==0L && c.optInt("entities")==9 &&
+                    items(c.getJSONArray("buttons")).size==3 && items(c.getJSONArray("buttons")).all {it.optBoolean("ready") && same(it.getJSONObject("target"),target)} &&
                     rendered.any {same(it.getJSONObject("key"),target) && it.getLong("frames")>0} &&
                     NativeSessionHost.inputTarget(target.toString())?.epoch==s.getLong("input_resets")
             }
@@ -115,7 +127,7 @@ object WindowControlsCase {
                 check(body.entity?.id==adapter.windowEntity(window)?.id) {"BODY_CONTROL_COLLISION"}
                 val a=hit(window,"focus");val b=hit(window,"close")
                 val diameter=checkNotNull(WindowControls.parse(s.getJSONObject("render").optJSONObject("window_controls"))).diameter
-                for(action in listOf("focus","close")) {
+                for(action in listOf("move","focus","close")) {
                     val entity=Entity(button(window,action).getString("entity").toLong())
                     val local=p.inverse()*getAbsoluteTransform(entity).t
                     for(axis in 0..1) for((factor,inside) in listOf(.8 to true,1.3 to false)) {
@@ -128,7 +140,10 @@ object WindowControlsCase {
                 val local=p.inverse()*middle
                 val gap=intersect(ray(p,local.x.toDouble(),local.y.toDouble(),local.z.toDouble()))
                 check(gap?.entity?.id?.toString() !in all) {"TRANSPARENT_GAP_CONTROL_COLLISION"}
-                proof.put(JSONObject().put("window",window).put("body_entity",body.entity?.id.toString())
+                val badge=row(window).getJSONObject("mode_badge")
+                val badgeEntity=Entity(badge.getString("entity").toLong());val badgeLocal=p.inverse()*getAbsoluteTransform(badgeEntity).t
+                check(intersect(ray(p,badgeLocal.x.toDouble(),badgeLocal.y.toDouble(),badgeLocal.z.toDouble()))?.entity?.id!=badgeEntity.id) {"MODE_BADGE_INTERCEPTED_INPUT"}
+                proof.put(JSONObject().put("mode_badge_non_hit",true).put("window",window).put("body_entity",body.entity?.id.toString())
                     .put("focus_entity",a.entity?.id.toString()).put("close_entity",b.entity?.id.toString())
                     .put("gap_entity",gap?.entity?.id?.toString() ?: JSONObject.NULL).put("diameter_m",diameter).put("diameter_raycast_verified",true))
             }
@@ -137,7 +152,10 @@ object WindowControlsCase {
             oldCloseRay=ray(p,local.x.toDouble(),local.y.toDouble(),local.z.toDouble());oldCloseEntity=c.id.toString()
             result.put("geometry",proof).put("geometry_observed",true)
             val r=adapter.metrics().getJSONObject("window_controls")
-            check(r.getLong("entity_owners")==12L && r.getLong("listener_owners")==4L)
+            check(r.getLong("entity_owners")==18L && r.getLong("listener_owners")==6L)
+            val badges=adapter.metrics().getJSONObject("window_mode_badges")
+            for(field in listOf("entity_owners","object_owners","mesh_owners","material_owners","texture_owners")) check(badges.getLong(field)==2L)
+            modeTextures=badges.getLong("texture_create_calls");modeUpdates=badges.getLong("texture_updates")
             record("two_ready",s)
         }
         fun dispatch(h:HitInfo,down:Boolean) {
@@ -209,6 +227,50 @@ object WindowControlsCase {
                             check(checkNotNull(input).getInt("pressed")==0 && input.getLong("delivered")==keys+2 && s.getLong("input_resets")>heldEpoch)
                             check(input.getJSONObject("pointer").getLong("buttons")==pointerButtons)
                             record("focus_second_ack_and_key_released",s)
+                            if(name=="window-move") {
+                                heldEpoch=s.getLong("input_resets");moveBefore=checkNotNull(WindowMoveController.motion(pose(second)))
+                                dispatch(hit(second,"move"),true);dispatch(hit(second,"move"),false)
+                                settled=SystemClock.elapsedRealtime()+300;stage="move_source_rejected"
+                            } else {
+                                priorRequests=requests.keys.toSet();dispatch(hit(first,"close"),true)
+                                scene().onNoIntersectionInput(checkNotNull(source),ButtonBits.ButtonTriggerR,0);scene().resolveInput()
+                                settled=SystemClock.elapsedRealtime()+300;stage="cancel"
+                            }
+                        }
+                        "move_source_rejected" -> if(SystemClock.elapsedRealtime()>=settled) {
+                            val move=row(second).getJSONObject("move")
+                            check(move.getLong("started")==0L && move.getLong("rejected")>=1 && move.getString("reason")=="source_pose_unavailable")
+                            check(s.getLong("input_resets")==heldEpoch && focused(s,secondKey))
+                            result.put("missing_source_pose_rejected",true);record("source_pose_rejected",s)
+                            val controller=Controller().apply {buttonState=ButtonBits.ButtonTriggerR;changedButtons=ButtonBits.ButtonTriggerR;isActive=true}
+                            checkNotNull(source).setComponent(Transform(WindowMoveController.sdkPose(controllerStart)))
+                            checkNotNull(source).setComponent(controller)
+                            priorRequests=requests.keys.toSet();dispatch(hit(second,"move"),true);stage="move_captured"
+                        }
+                        "move_captured" -> if(row(second).getJSONObject("move").optString("phase")=="DRAGGING") {
+                            check(NativeSessionHost.inputTarget(secondKey.toString())==null)
+                            moveExpected=controllerEnd*controllerStart.inverse()*moveBefore
+                            checkNotNull(source).setComponent(Transform(WindowMoveController.sdkPose(controllerEnd)))
+                            stage="move_preview"
+                        }
+                        "move_preview" -> if(WindowMoveController.motion(pose(second))?.near(moveExpected,.001)==true) {
+                            val placement=items(s.getJSONObject("workspace").getJSONArray("windows")).first {it.getString("window")==second}.getJSONObject("placement")
+                            check(WindowMoveController.motion(placement.getJSONObject("pose"))?.near(moveBefore)==true) {"PREVIEW_PERSISTED_BEFORE_RELEASE"}
+                            check(row(second).getJSONObject("mode_badge").getString("mode")=="MOVING")
+                            result.put("whole_window_preview",true).put("mode_moving_observed",true);record("move_preview_not_persisted",s)
+                            val controller=checkNotNull(source).getComponent<Controller>();controller.buttonState=0;controller.changedButtons=ButtonBits.ButtonTriggerR
+                            checkNotNull(source).setComponent(controller);dispatch(hit(second,"move"),false);stage="move_applied"
+                        }
+                        "move_applied" -> if(ready(s,2) && row(second).getJSONObject("move").optLong("completed")==1L && requestAccepted("move",secondKey) && focused(s,secondKey)) {
+                            val placement=items(s.getJSONObject("workspace").getJSONArray("windows")).first {it.getString("window")==second}.getJSONObject("placement")
+                            val applied=placement.getJSONObject("applied_pose")
+                            check(WindowMoveController.motion(placement.getJSONObject("pose"))?.near(moveExpected,.001)==true &&
+                                WindowMoveController.motion(applied.getJSONObject("pose"))?.near(moveExpected,.001)==true && same(applied.getJSONObject("target"),secondKey))
+                            check(applied.getString("pose_command")==row(second).getJSONObject("move").getString("request_id"))
+                            check(input?.getJSONObject("pointer")?.getLong("buttons")==pointerButtons)
+                            val badges=adapter.metrics().getJSONObject("window_mode_badges")
+                            check(badges.getLong("texture_create_calls")==modeTextures && badges.getLong("texture_updates")>modeUpdates)
+                            result.put("mode_texture_reused",true).put("move_native_ack_and_geometry_applied",true).put("move_raw_focus_restored",true);record("move_applied_and_refocused",s)
                             priorRequests=requests.keys.toSet();dispatch(hit(first,"close"),true)
                             scene().onNoIntersectionInput(checkNotNull(source),ButtonBits.ButtonTriggerR,0);scene().resolveInput()
                             settled=SystemClock.elapsedRealtime()+300;stage="cancel"
@@ -233,7 +295,8 @@ object WindowControlsCase {
                             check(same(row(second).getJSONObject("target"),secondKey))
                             val hit=intersect(checkNotNull(oldCloseRay));check(hit?.entity?.id?.toString()!=oldCloseEntity)
                             val resources=adapter.metrics().getJSONObject("window_controls")
-                            check(resources.getLong("entity_owners")==6L && resources.getLong("listener_owners")==2L)
+                            check(resources.getLong("entity_owners")==9L && resources.getLong("listener_owners")==3L)
+                            check(adapter.metrics().getJSONObject("window_mode_badges").getLong("entity_owners")==1L)
                             result.put("closed_only_captured_window",true).put("retired_control_no_hit",true)
                             record("close_ack_and_retired_mesh",s);probe("9101203",firstKey,revision);stage="retired_target"
                         }
@@ -258,7 +321,11 @@ object WindowControlsCase {
                             check(JSONObject(NativeBridge.nativeSnapshot(handle)).getInt("code")==NativeBridge.STALE)
                             val resources=adapter.metrics().getJSONObject("window_controls")
                             check(resources.getLong("entity_owners")==0L && resources.getLong("listener_owners")==0L)
-                            result.put("old_runtime_destroyed",true).put("control_owners_zero",true).put("resources_after_stop",resources)
+                            val badges=adapter.metrics().getJSONObject("window_mode_badges")
+                            for(field in listOf("entity_owners","object_owners","mesh_owners","material_owners","texture_owners","pixel_slots_in_use","cleanup_pending_owners")) check(badges.getLong(field)==0L)
+                            check(badges.getInt("pixel_slots_allocated")<=9)
+                            result.put("mode_resources_after_stop",badges)
+                            result.put("old_runtime_destroyed",true).put("control_owners_zero",true).put("mode_badge_owners_zero",true).put("resources_after_stop",resources)
                                 .put("result","pass")
                             finish();return
                         }

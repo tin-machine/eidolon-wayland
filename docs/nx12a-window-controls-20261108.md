@@ -20,6 +20,8 @@ ConcurrentHashMapのkey判定も`containsKey`へ明示した。Build156では操
 2026-11-08。基準revisionは`a688281`。これは[NX12計画](next-phase-termux-startup-linux-gui-plan-20261107.md)の最初の実装区切りで、NX12全体の完了ではない。
 Android/Questでのビルド・描画・ray routingの受入れは統合後に行う。以下のテスト成功はHMDでの操作成功を意味しない。
 
+次の区切りの[丸いmoveハンドルと窓横MODE](nx12b-window-move-mode-20261108.md)は別記録とし、この文書の二ボタン版の受入れを保持する。
+
 ## 利用する入口
 
 通常の方法でターミナルを二枚開く。各窓の本文外、既定では右上に大きな丸いボタンが二つ出る。

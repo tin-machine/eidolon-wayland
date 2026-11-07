@@ -16,7 +16,7 @@ import org.json.JSONObject
 class WindowControls(private val parent: Entity, private val target: String, private val runtime: Long,
     private val sdk: Scene, private val objects: SceneObjectSystem, private val live: ()->Boolean,
     private val layout: WindowControlLayout, private val width: Double, private val height: Double,
-    private val revision: Long) : AutoCloseable {
+    private val revision: Long,private val move:WindowMoveController) : AutoCloseable {
     private val ui=Handler(Looper.getMainLooper())
     private var closed=false
     private var enabled=true
@@ -52,9 +52,9 @@ class WindowControls(private val parent: Entity, private val target: String, pri
                 var icon: Entity?=null
                 var adopted=false
                 try {
-                    face=create(if(position.action=="focus") WindowControlMeshes.FOCUS else WindowControlMeshes.CLOSE,
+                    face=create(when(position.action) {"move"->WindowControlMeshes.MOVE;"focus"->WindowControlMeshes.FOCUS;else->WindowControlMeshes.CLOSE},
                         MeshCollision.NoCollision,-.018f-d*.0125f,Vector3(d*.86f,d*.86f,d*.2375f))
-                    icon=create(if(position.action=="focus") WindowControlMeshes.FOCUS_ICON else WindowControlMeshes.CLOSE_ICON,
+                    icon=create(when(position.action) {"move"->WindowControlMeshes.MOVE_ICON;"focus"->WindowControlMeshes.FOCUS_ICON;else->WindowControlMeshes.CLOSE_ICON},
                         MeshCollision.NoCollision,-.018f-d*.14f,Vector3(d,d,d*.25f))
                     val button=Button(position.action,root,checkNotNull(face),checkNotNull(icon),d);buttons.add(button);adopted=true
                     (objects.getSceneObject(root) ?: objects.replaceOrReuseSceneObjectFuture(root)).whenComplete {obj,error -> ui.post {
@@ -78,8 +78,14 @@ class WindowControls(private val parent: Entity, private val target: String, pri
         override fun onInput(receiver: SceneObject,hitInfo: HitInfo,sourceOfInput: Entity,changed: Int,state: Int,downTime: Long): Boolean {
             if(closed || !enabled || !live() || changed and PRIMARY==0) return false
             val source=sourceOfInput.id;val at=point(hitInfo)
+            if(button.action!="move" && NativeSessionHost.windowMoveSourceOwned(source)) return true
             ui.post {
                 if(closed || !enabled || !live()) return@post
+                if(button.action=="move") {
+                    if(state and PRIMARY!=0) {if(move.begin(sourceOfInput,downTime)) pressed(button,true)}
+                    else {move.release(source,downTime);pressed(button,false)}
+                    return@post
+                }
                 if(state and PRIMARY!=0) {
                     if(button.press.down(source,downTime,"$target:$revision",at)) {
                         button.tickets.remove(source);button.sources.remove(source)
@@ -100,10 +106,17 @@ class WindowControls(private val parent: Entity, private val target: String, pri
         override fun onDragMove(receiver: SceneObject,hitInfo: HitInfo,sourceOfInput: Entity,state: Int) {
             val p=point(hitInfo);ui.post {if(!closed) button.press.move(sourceOfInput.id,p,layout.diameter*.3)}
         }
-        override fun onHoverStop(receiver: SceneObject,sourceOfInput: Entity) {cancel(button,sourceOfInput.id)}
-        override fun stopInput(receiver: SceneObject,sourceOfInput: Entity,downTime: Long) {cancel(button,sourceOfInput.id)}
+        override fun onHoverStop(receiver: SceneObject,sourceOfInput: Entity) {
+            if(button.action=="move") ui.post {move.pointerLost(sourceOfInput.id)} else cancel(button,sourceOfInput.id)
+        }
+        override fun stopInput(receiver: SceneObject,sourceOfInput: Entity,downTime: Long) {
+            if(button.action=="move") ui.post {move.pointerLost(sourceOfInput.id,downTime)} else cancel(button,sourceOfInput.id)
+        }
         override fun onPointerEvent(receiver: SceneObject,hitInfo: HitInfo,type: Int,sourceOfInput: Entity,scrollInfo: Vector2,semanticType: Int) {
-            if(type==PointerEventType.Cancel.id || type==PointerEventType.Unhover.id) cancel(button,sourceOfInput.id)
+            if(button.action=="move") {
+                if(type==PointerEventType.Cancel.id) ui.post {move.cancelSource(sourceOfInput.id,"pointer_cancel")}
+                else if(type==PointerEventType.Unhover.id) ui.post {move.pointerLost(sourceOfInput.id)}
+            } else if(type==PointerEventType.Cancel.id || type==PointerEventType.Unhover.id) cancel(button,sourceOfInput.id)
         }
     }
     private fun cancel(button: Button,source: Long) {ui.post {if(!closed) {

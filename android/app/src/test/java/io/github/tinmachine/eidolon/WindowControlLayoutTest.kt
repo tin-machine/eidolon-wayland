@@ -9,14 +9,14 @@ class WindowControlLayoutTest {
         for(anchor in listOf("top-left","top-right","bottom-left","bottom-right")) for(size in listOf(.25,1.2,3.0)) {
             val spec=WindowControlLayout(anchor)
             val positions=spec.positions(size,size)
-            assertEquals(listOf("focus","close"),positions.map {it.action})
+            assertEquals(listOf("move","focus","close"),positions.map {it.action})
             for(p in positions) {assertTrue(abs(p.y)-p.diameter/2>size/2);assertEquals(.08,p.diameter,0.0)}
-            assertTrue(abs(positions[0].x-positions[1].x)>=spec.diameter+spec.gap-.000001)
+            for((a,b) in positions.zipWithNext()) assertTrue(abs(a.x-b.x)>=spec.diameter+spec.gap-.000001)
         }
     }
     @Test fun anchorAndOffsetAreBodyRelativeWithoutWorldOrCanvasCoordinates() {
-        val a=WindowControlLayout().positions(1.2,.9)[1]
-        val b=WindowControlLayout("bottom-left",.1,.2).positions(1.2,.9)[1]
+        val a=WindowControlLayout().positions(1.2,.9).last()
+        val b=WindowControlLayout("bottom-left",.1,.2).positions(1.2,.9).last()
         assertEquals(.6,a.x,0.00001);assertEquals(-.7,b.x,.00001)
         assertEquals(-a.y-.2,b.y,.00001)
         assertFalse(WindowControlLayout("world").valid());assertFalse(WindowControlLayout(diameter=.01).valid())

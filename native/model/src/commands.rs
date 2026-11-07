@@ -235,6 +235,13 @@ pub enum Command {
         target: crate::surface::TargetKey,
         pose: crate::workspace::PanelPose,
     },
+    SetPoseControl {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        pose: crate::workspace::PanelPose,
+        controls_revision: u64,
+    },
     PoseApplied {
         schema: u32,
         request_id: CommandSeq,
@@ -484,6 +491,7 @@ impl Command {
             | Self::ApplyThemeImport { schema, .. }
             | Self::CancelThemeImport { schema, .. }
             | Self::SetPose { schema, .. }
+            | Self::SetPoseControl { schema, .. }
             | Self::PoseApplied { schema, .. }
             | Self::SetBackground { schema, .. }
             | Self::BackgroundApplied { schema, .. }
@@ -591,7 +599,11 @@ impl Command {
             Self::LaunchTerminal { target, .. } if !target.valid() => {
                 return Err(Status::InvalidArgument);
             }
-            Self::SetPose { pose, .. } | Self::PoseApplied { pose, .. } if !pose.valid() => {
+            Self::SetPose { pose, .. }
+            | Self::SetPoseControl { pose, .. }
+            | Self::PoseApplied { pose, .. }
+                if !pose.valid() =>
+            {
                 return Err(Status::InvalidArgument);
             }
             Self::ShowWindow { slot, .. } if *slot >= crate::limits::VISIBLE_PANELS => {
@@ -620,6 +632,7 @@ impl Command {
             | Self::ApplyThemeImport { request_id, .. }
             | Self::CancelThemeImport { request_id, .. }
             | Self::SetPose { request_id, .. }
+            | Self::SetPoseControl { request_id, .. }
             | Self::PoseApplied { request_id, .. }
             | Self::SetBackground { request_id, .. }
             | Self::BackgroundApplied { request_id, .. }
@@ -666,6 +679,7 @@ impl Command {
             Self::ResetInput { .. }
                 | Self::SetImeBackend { .. }
                 | Self::SetPose { .. }
+                | Self::SetPoseControl { .. }
                 | Self::SetKeyboardLayout { .. }
                 | Self::ShowWindow { .. }
                 | Self::CloseWindow { .. }
@@ -700,6 +714,20 @@ mod tests {
             .unwrap()
             .remove("generation");
         assert!(Command::parse(&value.to_string()).is_err());
+    }
+    #[test]
+    fn window_move_pose_requires_revision_full_target_and_valid_pose() {
+        let source = r#"{"schema":1,"request_id":"1","type":"set_pose_control","controls_revision":2,"target":{"session":"2","window":"3","scene":"4","generation":"5"},"pose":{"position_m":[0,1.4,1.5],"rotation_xyzw":[0,0,0,1]}}"#;
+        assert!(Command::parse(source).unwrap().needs_input_reset());
+        let mut missing: serde_json::Value = serde_json::from_str(source).unwrap();
+        missing.as_object_mut().unwrap().remove("controls_revision");
+        assert!(Command::parse(&missing.to_string()).is_err());
+        let mut old: serde_json::Value = serde_json::from_str(source).unwrap();
+        old["target"]["generation"] = "0".into();
+        assert!(Command::parse(&old.to_string()).is_err());
+        let mut invalid: serde_json::Value = serde_json::from_str(source).unwrap();
+        invalid["pose"]["position_m"][1] = (-1).into();
+        assert!(Command::parse(&invalid.to_string()).is_err());
     }
     #[test]
     fn window_control_focus_uses_the_tracked_reset_epoch_and_theme_revision() {

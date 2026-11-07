@@ -12,25 +12,35 @@ object WindowControlMeshes {
     const val OUTLINE="mesh://eidolon-control-outline"
     const val FOCUS="mesh://eidolon-control-focus"
     const val CLOSE="mesh://eidolon-control-close"
+    const val MOVE="mesh://eidolon-control-move"
+    const val MOVE_ICON="mesh://eidolon-control-move-icon"
     const val FOCUS_ICON="mesh://eidolon-control-focus-icon"
     const val CLOSE_ICON="mesh://eidolon-control-close-icon"
     private fun material(color: Int)=SceneMaterial(SceneTexture(Color.valueOf(Color.WHITE)),AlphaMode.OPAQUE,SceneMaterial.UNLIT_SHADER).apply {
         setAlbedoColor(Color.valueOf(color));setUnlit(true);setSidedness(MaterialSidedness.DOUBLE_SIDED)
     }
     fun register(activity: AppSystemActivity) {
-        for((uri,color) in listOf(OUTLINE to 0xff27354b.toInt(),FOCUS to 0xffb6efd9.toInt(),CLOSE to 0xffffb2d0.toInt()))
+        for((uri,color) in listOf(OUTLINE to 0xff27354b.toInt(),FOCUS to 0xffb6efd9.toInt(),CLOSE to 0xffffb2d0.toInt(),MOVE to 0xffffdf9e.toInt()))
             activity.registerMeshCreator(uri) { _:Entity -> SceneMesh.sphere(.5f,material(color)) }
+        activity.registerMeshCreator(MOVE_ICON) { _:Entity -> icon(false,true) }
         activity.registerMeshCreator(FOCUS_ICON) { _:Entity -> icon(false) }
         activity.registerMeshCreator(CLOSE_ICON) { _:Entity -> icon(true) }
     }
-    private fun icon(close: Boolean): SceneMesh {
+    private fun icon(close: Boolean,move:Boolean=false): SceneMesh {
         val vertices=mutableListOf<Float>();val indices=mutableListOf<Int>()
         fun quad(points: List<Pair<Float,Float>>) {
             val start=vertices.size/3
             for((x,y) in points) vertices.addAll(listOf(x,y,0f))
             indices.addAll(listOf(start,start+1,start+2,start,start+2,start+3))
         }
-        if(close) {
+        if(move) {
+            quad(listOf(-.035f to -.29f,.035f to -.29f,.035f to .29f,-.035f to .29f))
+            quad(listOf(-.29f to -.035f,.29f to -.035f,.29f to .035f,-.29f to .035f))
+            for(sign in listOf(1f,-1f)) {
+                quad(listOf(-.11f to .18f*sign,0f to .32f*sign,.11f to .18f*sign,0f to .21f*sign))
+                quad(listOf(.18f*sign to -.11f,.32f*sign to 0f,.18f*sign to .11f,.21f*sign to 0f))
+            }
+        } else if(close) {
             for(sign in listOf(1f,-1f)) {
                 val x=.19f;val w=.035f
                 quad(listOf((-x-sign*w) to (-sign*x+w),(-x+sign*w) to (-sign*x-w),(x+sign*w) to (sign*x-w),(x-sign*w) to (sign*x+w)))

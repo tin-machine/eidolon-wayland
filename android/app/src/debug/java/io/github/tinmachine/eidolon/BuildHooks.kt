@@ -66,7 +66,7 @@ object BuildHooks {
             ImeProbe.sdkTap(nonce)
             return
         }
-        if (running || name !in setOf("window-controls", "extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe", "ime-terminal")) return
+        if (running || name !in setOf("window-move", "window-controls", "extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe", "ime-terminal")) return
         intent.removeExtra("case"); intent.removeExtra("nonce")
         if(nonce in consumedNonces) return
         if(consumedNonces.size==64) consumedNonces.removeFirst()
@@ -77,8 +77,9 @@ object BuildHooks {
         else if (name == "stop") SdkCaseEnvironment.start(name,nonce,context,{done->LifecycleSdkCase.start(nonce,adapter,done)}) {running=false}
         else if (name == "theme-surface") ThemeSurfaceProbe.start(nonce,scene) {running=false}
         else if (name in setOf("layout","two-windows","theme-sdk")) LayoutSdkCase.start(nonce,context,adapter,scene,recreate,name) {running=false}
-        else if(name in setOf("window-controls","extensions","resize","pointer","keyboard","ray","foot")) SdkCaseEnvironment.start(name,nonce,context,{ done ->
+        else if(name in setOf("window-move","window-controls","extensions","resize","pointer","keyboard","ray","foot")) SdkCaseEnvironment.start(name,nonce,context,{ done ->
             when(name) {
+                "window-move" -> WindowControlsCase.startMove(nonce,adapter,scene,done)
                 "window-controls" -> WindowControlsCase.start(nonce,adapter,scene,done)
                 "extensions" -> ExtensionsSdkCase.start(nonce,done)
                 "resize" -> ResizeCase.start(nonce,adapter,scene,done)
