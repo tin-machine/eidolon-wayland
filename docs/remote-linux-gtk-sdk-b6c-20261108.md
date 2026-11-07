@@ -1,5 +1,16 @@
 # NX18 B6c: 固定Linux GTKのSDK表示と合成入力
 
+Build171の初回inputは `PROBE_INPUT_UNAVAILABLE` で停止した。別nonceのB4 SHM/SDK回帰はともに成功したが、
+GTKは初回SDK draw一回、操作stepなしの段階であり、GUI合成入力は未合格として残す。
+caseは現在のadapterを確認する一方、Hostの入力gateは最大1秒周期のadapter snapshotと最新producer frameの描画を要求する。
+この準備順の差と整合するため、初回だけ有限に待つ修正を進める。記録だけで実際に拒否したpredicateは断定しない。
+待機中も最初のfull target・epoch・入力intent・counterを固定し、外部操作や世代変更を新captureへ取り込まない。
+
+失敗後の通常SDK復帰とlease解放を確認し、同profile/pins/nonceで明示recoverを行った。
+結果はjournal無しの `not_required` で、queried/receipt_verified/remote_cleanup_confirmedはfalseのまま保持した。
+別途、同UID・同nonceのhost receiptはStop/cleaned/pipes_closed、GTK forced stopであり、active stateは残っていなかった。
+通常停止の回収証拠とGTK操作成功を分け、初回失敗を成功へ読み替えない。
+
 [B6b](remote-linux-gtk-transport-b6b-20261108.md)の認証済みSSH/GTK reportを、
 [B5](remote-linux-sdk-shm-b5-20261108.md)の一時SDK runtime leaseへ接続する。
 このcheckpointの入口は `input` と `dialog` の二つ。通常Linux GUI/catalog、任意コマンド、

@@ -33,12 +33,12 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 | NX09 | 共通text-input-v3と[debug端末IME/Ctrl+Space](android-ime-terminal-probe-20261108.md)を実装、実IMM/InputConnectionと直接入力復帰を確認 | 通常利用の入口、かな漢字変換・候補・物理Ctrl+Spaceの最終受入れ。案A固有の不成立ならTermux Fcitx5 |
 | NX10 | カタログUI・保存・稼働中footへの任意起動を接続 | Build143のPC検査。初回任意起動・個別取消・配置保存とQuest実機確認は残件 |
 | NX11 | [Kopper選択の原因](egl-surfaceless-probe-20261108.md)を特定、[Build170のSDL](sdl-probe-live-run-20261108.md)でGL/GLES context、120frame画素・SHM/SDK描画・全窓資源回収が成功 | Doom/Freedoomの描画・起動・回収、物理入力/HMD |
-| NX12 | focus/closeに加え[move/窓横MODE](nx12b-window-move-mode-20261108.md)もBuild161のSDK固定case成功 | サイズ/正面復帰、HMD/物理受入れ |
+| NX12 | focus/close/move/MODEに加え[サイズメニュー](nx12d-window-size-menu-20261108.md)もBuild171の実SDK固定case成功 | 正面復帰、HMD/物理受入れ |
 | NX13 | Build159でI/O値とdrawを照合し、Build163で専用root/子のidentity退役と一時data残存0を外部確認 | thread/共有tmux、多窓、HMD。APK内の回収未検証flagは外部証拠と区別 |
 | NX14 | CPU148、熱/容量152、PSS154、gateway164を製品UID・停止復帰確認 | HMD表示受入れ、追加値。全体CPU/GPUは取得経路ごとに判断 |
 | NX15 | [GTK input/dialog/resize](gtk-interaction-operator-20261108.md)の合成入力・SHM/SDK描画・全退役をBuild170で確認 | 通常GUIの製品起動・Stop、HMD/物理入力/IME |
-| NX16 | Build169で3→6→9枚・指定順/pose・10枚目Busy・hole再利用・全回収が成功。[独立9接続host検査](nx16-independent-clients-wire-20261108.md)も成功 | 既存証拠は共有foot clientのSDK検査と別々の9接続host検査。性能・HMD・後続4ボタン版の多窓回帰 |
-| NX17 | 未着手 | 同種窓の集約、500ms展開、前面/取消/reduced motion |
+| NX16 | Build169と4ボタン版Build171で3→6→9枚・指定順/pose・10枚目Busy・hole再利用・全回収が成功。[独立9接続host検査](nx16-independent-clients-wire-20261108.md)も成功 | 共有foot clientのSDK検査と別々の9接続host検査。性能・HMDは別に確認 |
+| NX17 | [500ms集約モデル](nx17a-window-group-model-20261108.md)と[背面present/時計停止](nx17b-hidden-render-targets-20261108.md)のhost検査成功 | runtime/SDKへの接続、信頼済みgroupの選択UI、前面/取消/reduced motionの実SDK受入れ |
 | NX18 | endpoint別認証、実APK SSHに続きBuild167/169のLinux固定SHM100 frame/SDK描画・通常SDK復帰・lease解放が成功 | 固定Linux GTKと合成操作、通常GUI/ランチャー/接続設定UIの統合、切断回収、別hostでのIME |
 
 ## NX09の開始調査（当時の保留までの履歴）

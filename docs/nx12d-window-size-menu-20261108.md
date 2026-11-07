@@ -92,3 +92,15 @@ Build169の三ボタン九枚PASSは従来の証拠として残し、四ボタ�
 統合後の限定検証は純粋JUnit46件、ResizeState10件、command schema12件、workspace/all-targets clippy、
 実SDKを使うKotlin19sourceの型検査、GTK operator30件が成功した。型検査中のsource hash不変も確認した。
 全Gradle/APK/Quest検証はroot operatorへ渡し、この記録だけでは実機のサイズメニュー/四ボタン九枚を合格にしない。
+
+## Build171の実SDK検証
+
+source `bf533ed` のdebug build/lint/package/単体196件、release build/lint/package/単体148件が成功した。
+`window-size-v1` のnonce `af5a7df77cade7782d22c8ff1bf41280` はPASSで、held key解除、拡大・縮小、
+logical/producer/canvas寸法と他窓の維持、「戻る」、外部focusでの取消、ACK/geometry/input復帰、
+旧target拒否・片側close・残窓キー配送・メニュー/controls/MODE回収と通常設定復元を確認した。
+
+四ボタン版のmove `8709360e79f172cb6407ceea249d2328` と九枠 `062ce8901c9608acb17b44736561547d` もPASSだった。
+九枠では3→6→9枚、10枚目Busy、退役後のhole再利用、残窓入力、stop後のcontrols192 create/destroy・
+listener64 add/remove一致、MODE/menu所有0を確認した。CPU pixel slotの固定再利用cache9枠は割当済みのままで、使用数は0である。
+共有foot client一つの結果であり、9個の独立OS process、HMD視認、物理操作・文字入力の合格へ一般化しない。
