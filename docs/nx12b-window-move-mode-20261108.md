@@ -127,3 +127,24 @@ MODEの実ray非hit、mode変更によるTexture再生成なし、停止後の�
 host確認後にroot filesystemの空きが尽きたため、書込みを止めてsource末尾と検証ログを確認した。
 再生成可能なCargo dev cacheを整理して回復し、APK/source/証拠は保存した。今後host Cargoはincrementalを止め、空き容量を確認して実行する。
 構造preflightは対象repository非対応のためsourceを直接確認し、graphを実機動作の承認には使っていない。
+
+## Build160の離し操作と後続の小修正
+
+Build160の固定caseでは、本文全体の6DoF preview、MODE=MOVING、release前にnative配置を保存しない点まで到達した。
+その直後、UP用の新しいray hitを取り直すfixtureがnullで失敗した。collision側の更新が一frame遅れた可能性はあるが、まだ原因を断定しない。
+wrapperの製品設定復帰は成功した。native確定・入力復帰・最終停止をこの結果で合格にしない。
+
+捕捉済みのdragを離す操作は、新しいhitを必須としないよう修正した。
+固定caseはheldのまま`Scene.onNoIntersectionInput`でrayを外し、captureがDRAGGINGを維持したことを観測した後、
+同じControllerのbuttonをreleasedへ変え、no-intersectionの通常UPを渡す。Tickによるtracked releaseも同じ経路へ進む。
+
+| 観測 | 処理 |
+| --- | --- |
+| hover/stop、active Controller、primary保持中 | 同じcaptureを維持 |
+| hover/stop、active Controller、primary解放済み | 捕捉したsource/downTimeのrelease。fresh owner/target/revision/pose guardは維持 |
+| inactive Controller、Transform/pose不在、owner失効 | 取消 |
+| 明示PointerEvent.Cancel | 保持状態に関係なく取消 |
+
+`move.release_route`と固定caseの`move_release_route`で、SDK UP / off-handle UP / Controller状態によるUPの経路を記録する。
+これはreleaseを観測した経路であり、配置成功を示す値ではない。従来どおりnative ACK→モデル→実SDK geometry→同targetへの入力復帰を別に確認する。
+新しい固定caseの`off_handle_capture_retained`も、HMD/物理コントローラー受入れには読み替えない。

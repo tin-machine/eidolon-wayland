@@ -26,6 +26,7 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
     private var completed=0L
     private var cancelled=0L
     private var started=0L
+    private var releaseRoute:String?=null
     private val starts=WindowMoveStarts()
     val phase:WindowMoveCapture.Phase? get()=capture?.phase
     fun blocksPose():Boolean=phase in setOf(WindowMoveCapture.Phase.DRAGGING,WindowMoveCapture.Phase.NEEDS_SUBMIT,WindowMoveCapture.Phase.COMMITTING)
@@ -49,9 +50,9 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
         if(owner==null) {rejected++;lastReason="owner_unavailable";return false}
         ticket=owner;source=entity
         capture=WindowMoveCapture(WindowMoveIdentity(runtime,target,revision,owner.control.intent,entity.id,downTime),from,body,SystemClock.elapsedRealtime())
-        started++;lastReason="dragging";return true
+        started++;releaseRoute=null;lastReason="dragging";return true
     }
-    fun release(sourceId:Long,downTime:Long) {
+    fun release(sourceId:Long,downTime:Long,route:String="sdk_up") {
         val c=capture ?: return
         if(!owns(sourceId,downTime) || c.phase!=WindowMoveCapture.Phase.DRAGGING) return
         val owner=ticket ?: return
@@ -61,14 +62,17 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
         val next=sourcePose(entity)
         if(next==null) {c.cancel("source_pose_unavailable");return}
         c.preview(c.identity,next,SystemClock.elapsedRealtime())?.let {setAbsoluteTransform(parent,sdkPose(it))}
-        c.release(c.identity,SystemClock.elapsedRealtime())
+        if(c.release(c.identity,SystemClock.elapsedRealtime())) releaseRoute=route
     }
     fun pointerLost(sourceId:Long,downTime:Long?=null) {
         if(!owns(sourceId,downTime)) return
         val state=source?.let(::controller)
-        // Ray hover is allowed to leave the handle while the same tracked controller still holds trigger.
-        if(state?.isActive==true && state.buttonState and PRIMARY!=0) return
-        capture?.cancel("input_capture_lost")
+        // Hover/stop alone does not mean Cancel. A tracked released controller ends the captured gesture,
+        // even when no new ray hit exists at the window's updated SDK collision pose.
+        if(state?.isActive==true) {
+            if(state.buttonState and PRIMARY!=0) return
+            capture?.identity?.downTime?.let {release(sourceId,it,"sdk_off_handle_up")}
+        } else capture?.cancel("input_capture_lost")
     }
     fun cancelSource(sourceId:Long,reason:String) {if(owns(sourceId)) capture?.cancel(reason)}
     fun tick(runtimeState:JSONObject,placement:JSONObject) {
@@ -83,7 +87,10 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
             val from=entity?.let(::sourcePose)
             when {
                 state?.isActive!=true || from==null -> c.cancel("source_pose_unavailable")
-                state.buttonState and PRIMARY==0 -> {c.preview(c.identity,from,now)?.let {setAbsoluteTransform(parent,sdkPose(it))};c.release(c.identity,now)}
+                state.buttonState and PRIMARY==0 -> {
+                    c.preview(c.identity,from,now)?.let {setAbsoluteTransform(parent,sdkPose(it))}
+                    if(c.release(c.identity,now)) releaseRoute="controller_state_up"
+                }
                 else -> c.preview(c.identity,from,now)?.let {setAbsoluteTransform(parent,sdkPose(it))}
             }
         }
@@ -131,7 +138,7 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
     }
     fun metadata():JSONObject=JSONObject().put("phase",phase?.name ?: lastPhase).put("reason",capture?.reason ?: lastReason)
         .put("source",source?.id?.toString() ?: JSONObject.NULL).put("request_id",capture?.request ?: lastRequest ?: JSONObject.NULL)
-        .put("started",started).put("completed",completed).put("cancelled",cancelled).put("rejected",rejected)
+        .put("release_route",releaseRoute ?: JSONObject.NULL).put("started",started).put("completed",completed).put("cancelled",cancelled).put("rejected",rejected)
     override fun close() {
         if(closed) return
         closed=true;capture?.cancel("owner_disposed");end(false)

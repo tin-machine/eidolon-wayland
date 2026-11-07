@@ -258,8 +258,16 @@ object WindowControlsCase {
                             check(WindowMoveController.motion(placement.getJSONObject("pose"))?.near(moveBefore)==true) {"PREVIEW_PERSISTED_BEFORE_RELEASE"}
                             check(row(second).getJSONObject("mode_badge").getString("mode")=="MOVING")
                             result.put("whole_window_preview",true).put("mode_moving_observed",true);record("move_preview_not_persisted",s)
+                            scene().onNoIntersectionInput(checkNotNull(source),0,ButtonBits.ButtonTriggerR);scene().resolveInput()
+                            settled=SystemClock.elapsedRealtime()+120;stage="move_off_handle"
+                        }
+                        "move_off_handle" -> if(SystemClock.elapsedRealtime()>=settled) {
+                            check(row(second).getJSONObject("move").getString("phase")=="DRAGGING") {"OFF_HANDLE_CANCELLED_HELD_MOVE"}
+                            result.put("off_handle_capture_retained",true);record("off_handle_capture_retained",s)
                             val controller=checkNotNull(source).getComponent<Controller>();controller.buttonState=0;controller.changedButtons=ButtonBits.ButtonTriggerR
-                            checkNotNull(source).setComponent(controller);dispatch(hit(second,"move"),false);stage="move_applied"
+                            checkNotNull(source).setComponent(controller)
+                            scene().onNoIntersectionInput(checkNotNull(source),ButtonBits.ButtonTriggerR,0);scene().resolveInput()
+                            stage="move_applied"
                         }
                         "move_applied" -> if(ready(s,2) && row(second).getJSONObject("move").optLong("completed")==1L && requestAccepted("move",secondKey) && focused(s,secondKey)) {
                             val placement=items(s.getJSONObject("workspace").getJSONArray("windows")).first {it.getString("window")==second}.getJSONObject("placement")
@@ -270,7 +278,9 @@ object WindowControlsCase {
                             check(input?.getJSONObject("pointer")?.getLong("buttons")==pointerButtons)
                             val badges=adapter.metrics().getJSONObject("window_mode_badges")
                             check(badges.getLong("texture_create_calls")==modeTextures && badges.getLong("texture_updates")>modeUpdates)
-                            result.put("mode_texture_reused",true).put("move_native_ack_and_geometry_applied",true).put("move_raw_focus_restored",true);record("move_applied_and_refocused",s)
+                            val route=row(second).getJSONObject("move").getString("release_route")
+                            check(route in setOf("sdk_up","sdk_off_handle_up","controller_state_up"))
+                            result.put("move_release_route",route).put("mode_texture_reused",true).put("move_native_ack_and_geometry_applied",true).put("move_raw_focus_restored",true);record("move_applied_and_refocused",s)
                             priorRequests=requests.keys.toSet();dispatch(hit(first,"close"),true)
                             scene().onNoIntersectionInput(checkNotNull(source),ButtonBits.ButtonTriggerR,0);scene().resolveInput()
                             settled=SystemClock.elapsedRealtime()+300;stage="cancel"
