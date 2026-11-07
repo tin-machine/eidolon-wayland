@@ -50,6 +50,9 @@ object NativeSessionHost {
     private val productWorker = DebugSdkProductExecutor(debugSdkLease, worker)
     private var debugSdkCapture: ProbeCredentialCapture? = null
     @Volatile private var debugSdkFailure: String? = null
+    @Volatile private var debugSdkMode = "pattern"
+    @Volatile private var debugSdkRemoteStarted=false
+    @Volatile private var debugSdkInputScope: DebugSdkInputScope? = null
     private var identity: CredentialStore.Identity? = null
     private var profiles = JSONArray()
     private var lastConnectRequest: String? = null // connectとcancelをworker上の順序で束縛する。
@@ -607,7 +610,7 @@ object NativeSessionHost {
         if (code !in setOf(NativeBridge.ACCEPTED,NativeBridge.INVALID_ARGUMENT)) resetInput()
         return code!=NativeBridge.INVALID_ARGUMENT
     }
-    class DebugInputTrial internal constructor(internal val ticket:InputIntentSerial.Trial,val runtime:Long,epoch:Long) {
+    class DebugInputTrial internal constructor(internal val ticket:InputIntentSerial.Trial,val runtime:Long,epoch:Long,internal val sdkScope:DebugSdkInputScope?=null) {
         var epoch:Long=epoch;internal set
         internal val targets=mutableSetOf<String>()
         internal var resize:DebugPendingResize?=null
@@ -622,19 +625,65 @@ object NativeSessionHost {
             JSONObject(target.target).optString("scene")!=scenes.get().toString()) null
         else DebugInputTrial(inputIntents.capture(),target.runtime,target.epoch).also {it.targets.add(target.identity);debugInputActive=it}
     }
-    /** 通常runtimeのtarget lookup。固定Linux leaseは同じtrial専用のcontextへ分岐する。 */
+    /** 通常targetを公開せず、固定GTK leaseにだけInputIntentSerial上の能力を渡す。 */
+    fun debugCaptureSdkInput(owner:Any,target:JSONObject):DebugInputTrial? = inputIntents.serial {
+        val scope=debugSdkInputScope?.takeIf {it.owner===owner} ?: return@serial null
+        val captured=debugSdkInputTarget(scope,target.toString()) ?: return@serial null
+        if(!scope.claimTrial()) return@serial null
+        DebugInputTrial(inputIntents.capture(),captured.runtime,captured.epoch,scope).also {it.targets.add(captured.identity);debugInputActive=it}
+    }
+    private fun debugSdkInputState(scope:DebugSdkInputScope):JSONObject? = try {
+        check(BuildConfig.DEBUG && debugSdkInputScope===scope && debugSdkLease.owns(scope.owner) &&
+            scope.current(scope.owner,debugSdkLease.metadata(),handle,scenes.get()) &&
+            !editing.get() && !imeRawBlocked.get() && activityVisible.get() && xrState.get()=="FOCUSED")
+        val envelope=JSONObject(NativeBridge.nativeSnapshot(scope.runtime));check(envelope.getInt("code")==NativeBridge.ACCEPTED)
+        val value=envelope.getJSONObject("runtime");val app=value.getJSONObject("app");val transport=value.getJSONObject("transport")
+        check(value.getString("state")=="Ready" && value.getBoolean("activity_visible") && value.getString("xr_state")=="FOCUSED" &&
+            value.getString("scene")==scope.scene.toString() && app.getString("session")==scope.session && app.getString("nonce")==scope.nonce &&
+            app.getString("mode")==scope.mode && app.getString("state") in setOf("running","pass") && app.isNull("error") &&
+            transport.getString("session")==scope.session && transport.getString("state")=="ProbeReady")
+        val forward=transport.getJSONObject("linux_forward");val gtk=forward.getJSONObject("gtk")
+        check(forward.getString("session")==scope.session && forward.getString("nonce")==scope.nonce && forward.getInt("uid")>0 &&
+            forward.getString("state") in setOf("running","pass") && forward.isNull("error") && forward.getBoolean("tools_verified") &&
+            gtk.getString("case")==scope.case && gtk.getBoolean("process_bound") && gtk.isNull("report_error"))
+        value
+    } catch(_:Exception) {null}
+    private fun debugSdkInputTarget(scope:DebugSdkInputScope,target:String):InputTarget? { return try {
+        val key=JSONObject(target);val value=debugSdkInputState(scope) ?: return null
+        val identity=targetIdentity(key)
+        check(key.keys().asSequence().toSet()==setOf("session","window","scene","generation") && key.getString("session")==scope.session && key.getString("scene")==scope.scene.toString())
+        fun rows(a:JSONArray)=(0 until a.length()).map {a.getJSONObject(it)}
+        val row=rows(value.getJSONObject("app").getJSONArray("windows")).single {it.getString("window")==key.getString("window") && it.getString("life")=="Mapped"}
+        check(scope.permitsApp(row.getString("app_id")))
+        check(rows(value.getJSONArray("panels")).any {it.optString("action")=="create" && it.optBoolean("applied") && it.isNull("error") && targetIdentity(it.getJSONObject("target"))==identity})
+        check(rows(value.getJSONObject("render").getJSONArray("targets")).any {targetIdentity(it.getJSONObject("key"))==identity && it.getLong("frames")>0 &&
+            it.optString("content_frame").toLongOrNull()?.let {frame->frame>=row.getString("frame").toLong()}==true})
+        val adapter=checkNotNull(debugAdapterSnapshot());check(adapter.optString("scene")==scope.scene.toString())
+        check(rows(adapter.getJSONArray("targets")).any {targetIdentity(it.getJSONObject("target"))==identity && it.optString("runtime")==scope.runtime.toString() && !it.optBoolean("retiring") &&
+            !it.optBoolean("sdk_disposed") && !it.optBoolean("disposal_failed") && it.optBoolean("listener_owned") && it.optBoolean("input_owned")})
+        InputTarget(scope.runtime,value.getLong("input_resets"),identity,key.toString())
+    } catch(_:Exception) {null} }
     fun debugInputTarget(trial:DebugInputTrial,target:JSONObject):InputTarget? = inputIntents.serial {
-        inputTarget(target.toString())?.takeIf {it.runtime==trial.runtime && target.optString("scene")==scenes.get().toString()}
+        if(!debugInputCurrent(trial) || target.optString("scene")!=scenes.get().toString()) null
+        else if(trial.sdkScope!=null) debugSdkInputTarget(trial.sdkScope,target.toString())
+        else inputTarget(target.toString())?.takeIf {it.runtime==trial.runtime}
+    }
+    fun debugInputFocusMatches(trial:DebugInputTrial,target:JSONObject,token:String):Boolean = inputIntents.serial {
+        if(!debugInputCurrent(trial)) false else if(trial.sdkScope==null) keyboardFocus?.let {it.runtime==trial.runtime && it.epoch==trial.epoch && targetIdentity(JSONObject(it.target))==targetIdentity(target) && it.token==token}==true
+        else debugSdkInputState(checkNotNull(trial.sdkScope))?.let {value->
+            val input=value.getJSONObject("app").getJSONObject("input")
+            value.getLong("input_resets")==trial.epoch && target.getString("session")==trial.sdkScope.session && input.optString("focus_window")==target.getString("window") && input.optString("focus_token")==token
+        }==true
     }
     fun debugInputCurrent(trial:DebugInputTrial):Boolean = inputIntents.serial {
-        val valid=BuildConfig.DEBUG && debugInputActive===trial && handle==trial.runtime && debugImeCanRequestFocus()
+        val valid=BuildConfig.DEBUG && debugInputActive===trial && handle==trial.runtime && (trial.sdkScope?.let {debugSdkInputState(it)!=null} ?: debugImeCanRequestFocus())
         if(!valid && debugInputActive===trial) inputIntents.invalidate()
         valid && inputIntents.current(trial.ticket)
     }
     fun debugInputDispatch(trial:DebugInputTrial,target:InputTarget,focusToken:String?=null,pointerDown:Boolean=false,enqueue:()->Int):Boolean = inputIntents.serial {
         val result=inputIntents.dispatch(trial.ticket,{
             debugInputCurrent(trial) && target.runtime==trial.runtime && target.epoch==trial.epoch && debugInputTarget(trial,JSONObject(target.target))==target &&
-                (focusToken==null || keyboardFocus?.let {it.runtime==trial.runtime && it.epoch==trial.epoch && targetIdentity(JSONObject(it.target))==target.identity && it.token==focusToken}==true)
+                (focusToken==null || debugInputFocusMatches(trial,JSONObject(target.target),focusToken))
         }) {
             trial.targets.add(target.identity)
             if(pointerDown) {inputIntents.ownedIncrement(trial.ticket);releasePanelTextFocus()}
@@ -1129,17 +1178,19 @@ object NativeSessionHost {
     }
 
     /** private configはdebug sourceSetの固定準備処理からだけ渡し、通常config/prefsへ保存しない。 */
-    class DebugSdkProbeConfig(val configuration: String, val profile: ConnectionProfileV2.Value) {
+    class DebugSdkProbeConfig(val configuration: String, val profile: ConnectionProfileV2.Value, val mode:String="pattern") {
         override fun toString() = "DebugSdkProbeConfig(<private>)"
     }
     data class DebugSdkProbeReceipt(val runtime: Long, val connectRequest: String?, val phase: DebugSdkRuntimeLease.Phase, val error: String?)
     data class DebugSdkCommandReceipt(val runtime: Long, val request: String?, val code: Int)
-    fun debugSdkProbeCommand(owner: Any, type: String, session: String, nonce: String?, completed: (DebugSdkCommandReceipt) -> Unit) {
+    fun debugSdkProbeCommand(owner: Any, type: String, session: String, nonce: String?, gtkCase:String?=null, completed: (DebugSdkCommandReceipt) -> Unit) {
         val captured = debugSdkLease.metadata()
         if (!BuildConfig.DEBUG || !debugSdkLease.owns(owner) || captured.phase != DebugSdkRuntimeLease.Phase.ACTIVE ||
-            type !in setOf("linux_shm_sdk_probe", "disconnect") || !session.matches(Regex("[1-9][0-9]{0,18}")) ||
-            session.toLongOrNull() == null || (type == "linux_shm_sdk_probe" && nonce?.matches(Regex("[0-9a-f]{16}")) != true) ||
-            (type == "disconnect" && nonce != null)) {
+            type !in setOf("linux_shm_sdk_probe", "linux_gtk_probe", "linux_gtk_recover", "disconnect") || !session.matches(Regex("[1-9][0-9]{0,18}")) ||
+            session.toLongOrNull() == null || (type != "disconnect" && nonce?.matches(Regex("[0-9a-f]{16}")) != true) ||
+            (type == "linux_shm_sdk_probe" && (debugSdkMode!="pattern" || gtkCase!=null)) ||
+            (type in setOf("linux_gtk_probe","linux_gtk_recover") && (gtkCase !in setOf("input","dialog","resize") || debugSdkMode!="linux_gtk_$gtkCase" || debugSdkRemoteStarted)) ||
+            (type == "disconnect" && (nonce != null || gtkCase!=null))) {
             completed(DebugSdkCommandReceipt(captured.runtime,null,NativeBridge.STALE)); return
         }
         worker.execute {
@@ -1148,8 +1199,16 @@ object NativeSessionHost {
             }
             val request = requests.incrementAndGet().toString()
             val command = JSONObject().put("schema",1).put("type",type).put("request_id",request).put("session",session)
-            nonce?.let { command.put("nonce",it) }
-            val code = NativeBridge.nativeCommand(handle,command.toString())
+            nonce?.let { command.put("nonce",it) };gtkCase?.let {command.put("case",it)}
+            val code = inputIntents.serial {
+                if(type in setOf("linux_gtk_probe","linux_gtk_recover") && debugSdkRemoteStarted) NativeBridge.STALE
+                else NativeBridge.nativeCommand(handle,command.toString()).also {code->
+                    if(code==NativeBridge.ACCEPTED && type in setOf("linux_gtk_probe","linux_gtk_recover")) {
+                        debugSdkRemoteStarted=true
+                        if(type=="linux_gtk_probe") debugSdkInputScope=DebugSdkInputScope(owner,handle,session,checkNotNull(nonce),checkNotNull(gtkCase),scenes.get())
+                    }
+                }
+            }
             ui.post { completed(DebugSdkCommandReceipt(captured.runtime,request,code)) }
         }
     }
@@ -1174,7 +1233,8 @@ object NativeSessionHost {
                 stopRuntime()
                 check(debugSdkLease.normalRetired(owner, previous, registryEmpty())) { "PROBE_NORMAL_NOT_RETIRED" }
                 val prepared = prepare(runtimeConfigJson())
-                check(prepared.profile.backend == ConnectionProfileV2.Backend.LINUX_SSH && prepared.profile.profileId == "linux-probe") { "PROBE_PROFILE_INVALID" }
+                check(prepared.profile.backend == ConnectionProfileV2.Backend.LINUX_SSH && prepared.profile.profileId == "linux-probe" && prepared.mode in setOf("pattern","linux_gtk_input","linux_gtk_dialog","linux_gtk_resize")) { "PROBE_PROFILE_INVALID" }
+                debugSdkMode=prepared.mode;debugSdkInputScope=null;debugSdkRemoteStarted=false
                 handle = NativeBridge.nativeCreate(prepared.configuration)
                 if (handle == 0L) {
                     debugSdkLease.createFailed(owner, registryEmpty())
@@ -1207,6 +1267,7 @@ object NativeSessionHost {
             }
             var error: String? = null
             try {
+                inputIntents.serial {debugSdkInputScope=null;inputIntents.invalidate()}
                 debugSdkCapture?.close(); debugSdkCapture = null
                 val before = debugSdkLease.metadata()
                 if (before.phase != DebugSdkRuntimeLease.Phase.RESTORING || before.runtime != 0L) {

@@ -51,8 +51,10 @@ internal object GtkFixtureBinding {
         return candidate.takeIf {matching.singleOrNull()?.let {it.getLong("frames")>0 && it.optString("content_frame").toLongOrNull()?.let {n->n>0 && n>=producer}==true}==true}
     }
     /** Mapped消滅のほか、native panel/BoardとSDK所有物の成功回収receiptを照合する。 */
-    fun retired(runtime:JSONObject,adapter:JSONObject?,owner:Owner,owned:Set<Target>,foot:Set<String>):Boolean {
-        if(adapter==null || adapter.optString("scene")!=owner.scene || owned.isEmpty()) return false
+    fun retired(runtime:JSONObject,adapter:JSONObject?,owner:Owner,owned:Set<Target>,foot:Set<String>):Boolean =
+        retired(runtime,adapter,owner.handle,owner.scene,owned,foot)
+    fun retired(runtime:JSONObject,adapter:JSONObject?,runtimeHandle:Long,scene:String,owned:Set<Target>,foot:Set<String>):Boolean {
+        if(adapter==null || adapter.optString("scene")!=scene || owned.isEmpty()) return false
         val windows=owned.map {it.window}.toSet()
         fun rows(a:org.json.JSONArray)=(0 until a.length()).map {a.getJSONObject(it)}
         if(rows(runtime.getJSONArray("panels")).any {it.getJSONObject("target").optString("window") in windows}) return false
@@ -61,7 +63,7 @@ internal object GtkFixtureBinding {
         if(targets.size!=foot.size || targets.any {it.getJSONObject("target").optString("window") !in foot ||
             it.optBoolean("retiring") || it.optBoolean("sdk_disposed") || it.optBoolean("disposal_failed") || !it.optBoolean("listener_owned")}) return false
         val receipts=rows(adapter.optJSONArray("retired") ?: return false)
-        if(!owned.all {key->receipts.any {it.optString("runtime")==owner.handle.toString() && target(it.getJSONObject("target"))==key &&
+        if(!owned.all {key->receipts.any {it.optString("runtime")==runtimeHandle.toString() && target(it.getJSONObject("target"))==key &&
             it.optBoolean("sdk_disposed") && it.optBoolean("sdk_binding_released") && !it.optBoolean("disposal_failed")}}) return false
         if(runtime.getJSONObject("shutdown").getInt("sdk_bindings")!=foot.size) return false
         val board=runtime.optJSONObject("window_slots") ?: return false

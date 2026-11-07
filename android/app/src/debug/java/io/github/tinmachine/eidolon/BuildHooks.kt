@@ -27,7 +27,8 @@ object BuildHooks {
     private val ui = Handler(Looper.getMainLooper())
     private var running = false
     private val consumedNonces = ArrayDeque<String>()
-    fun commandComplete(request: String, code: String) { KeyboardCase.commandComplete(request, code);WindowControlsCase.commandComplete(request,code);WindowSlotsCase.commandComplete(request,code);LinuxShmSdkCase.commandComplete(NativeSessionHost.currentHandle(),request,code) }
+    private val gtkRecoveries=LinuxGtkRecoveryBudget()
+    fun commandComplete(request: String, code: String) { KeyboardCase.commandComplete(request, code);WindowControlsCase.commandComplete(request,code);WindowSlotsCase.commandComplete(request,code);LinuxShmSdkCase.commandComplete(NativeSessionHost.currentHandle(),request,code);LinuxGtkSdkCase.commandComplete(NativeSessionHost.currentHandle(),request,code) }
     fun windowControlRequested(action:String,runtime:Long,target:String,revision:Long,request:String,code:Int) = WindowControlsCase.requested(action,runtime,target,revision,request,code)
     @Volatile var preferencesFixture: String? = null
     private var heldPanel: String? = null
@@ -50,6 +51,10 @@ object BuildHooks {
         val nonce = intent.getStringExtra("nonce") ?: return
         if (!nonce.matches(Regex("[0-9a-f]{32}"))) return
         if (intent.extras?.keySet()?.any { it != "case" && it != "nonce" } == true) return
+        if (name == "linux-gtk-stop") {
+            intent.removeExtra("case");intent.removeExtra("nonce")
+            LinuxGtkSdkCase.stop(nonce);return
+        }
         if (name == "linux-shm-sdk-stop") {
             intent.removeExtra("case"); intent.removeExtra("nonce")
             LinuxShmSdkCase.stop(nonce); return
@@ -70,13 +75,17 @@ object BuildHooks {
             ImeProbe.sdkTap(nonce)
             return
         }
-        if (running || name !in setOf("linux-shm-sdk", "window-slots", "window-move", "window-controls", "extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe", "ime-terminal")) return
+        if (running || name !in setOf("linux-gtk-input", "linux-gtk-dialog", "linux-gtk-input-recover", "linux-gtk-dialog-recover", "linux-shm-sdk", "window-slots", "window-move", "window-controls", "extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe", "ime-terminal")) return
         intent.removeExtra("case"); intent.removeExtra("nonce")
-        if(nonce in consumedNonces) return
-        if(consumedNonces.size==64) consumedNonces.removeFirst()
-        consumedNonces.addLast(nonce)
+        val gtkRecovery=name in setOf("linux-gtk-input-recover","linux-gtk-dialog-recover")
+        if(gtkRecovery) {if(!gtkRecoveries.claim(name,nonce)) return} else if(nonce in consumedNonces) return
+        if(nonce !in consumedNonces) {
+            if(consumedNonces.size==64) consumedNonces.removeFirst()
+            consumedNonces.addLast(nonce)
+        }
         running = true
-        if (name == "linux-shm-sdk") LinuxShmSdkCase.start(nonce,context,adapter) {running=false}
+        if (name in setOf("linux-gtk-input","linux-gtk-dialog","linux-gtk-input-recover","linux-gtk-dialog-recover")) LinuxGtkSdkCase.start(name,nonce,context,adapter) {running=false}
+        else if (name == "linux-shm-sdk") LinuxShmSdkCase.start(nonce,context,adapter) {running=false}
         else if (name == "ime-terminal") ImeTerminalCase.start(nonce,scene) {running=false}
         else if (name == "ime-editor-probe") ImeProbe.start(nonce,context,scene) {running=false}
         else if (name == "stop") SdkCaseEnvironment.start(name,nonce,context,{done->LifecycleSdkCase.start(nonce,adapter,done)}) {running=false}
