@@ -86,3 +86,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_egl_surfaceless_probe.py -v
 ```
 
 一次資料: [AOSP Bionic link.h](https://android.googlesource.com/platform/bionic/+/331070e41ddd0e3669b8fc2625fd71a26045f0a3/libc/include/link.h)、[dl_iterate_phdr manual](https://man7.org/linux/man-pages/man3/dl_iterate_phdr.3.html)、[proc_pid_maps manual](https://man7.org/linux/man-pages/man5/proc_pid_maps.5.html)、[Mesa26.2.6 u_debug.h](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/util/u_debug.h)、[software driver helper](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/gallium/auxiliary/target-helpers/sw_helper.h)。
+
+実loaded imageの一致を確認した後も同じ初期化失敗だった。内部NULL分岐へ進む前段は、
+[非EGLの固定子ptrace能力probe](ptrace-capability-probe-20261108.md)で分ける。
+この前段も診断専用であり、EGL/SDL描画の合格にはしない。
