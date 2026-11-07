@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""既知pinのFreedoom準備物だけをTermux UID10158の新規asset runへ有界転送する。"""
+import argparse
+import base64
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import zlib
+from native_build import ROOT
+from quest_device import QuestDevice,package_uid,work_root
+from sdl_probe_install import InstallError,require,unique_object
+from freedoom_install import UID,REASONS,ENGINE_SHA,ENGINE_BYTES,hex64,validate_prepared,stream_chunks
+from freedoom_host_stream import transfer
+
+SOURCES=("scripts/sdl_probe_install.py","scripts/freedoom_probe_prepare.py","scripts/freedoom_install.py","scripts/freedoom_host_stream.py","scripts/quest-install-freedoom-probe")
+
+
+def source_hashes():return {name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in SOURCES}
+
+
+def remote_program():
+    code="import sys,types\n"
+    for name,path in zip(("sdl_probe_install","freedoom_probe_prepare","freedoom_install"),SOURCES):
+        code+=f"m=types.ModuleType({name!r});exec({(ROOT/path).read_text()!r},m.__dict__);sys.modules[m.__name__]=m\n"
+    code+="raise SystemExit(sys.modules['freedoom_install'].remote_main())\n"
+    return code
+
+
+def remote_source():
+    code=remote_program()
+    data=base64.b64encode(zlib.compress(code.encode(),9)).decode()
+    return f"import base64,zlib;exec(zlib.decompress(base64.b64decode({data!r})))"
+
+
+def validated_result(value,manifest,pin,engine_pin,payload_pin,wire_pin):
+    require(type(value) is dict and type(value.get("schema")) is int and value.get("schema")==1 and value.get("status") in {"installed","failed"} and
+            value.get("execution")=="not_run" and value.get("catalog")=="not_modified","REMOTE_RESULT_INVALID")
+    if value["status"]=="failed":
+        require(set(value)=={"schema","status","reason","execution","catalog"} and value["reason"] in REASONS,"REMOTE_RESULT_INVALID");return value
+    require(set(value)=={"schema","status","run_id","uid","manifest_sha256","payload_sha256","wire_sha256","files","engine","execution","catalog"} and
+            value["run_id"]==manifest["run_id"] and value["uid"]==UID and value["manifest_sha256"]==pin and value["payload_sha256"]==payload_pin and
+            value["wire_sha256"]==wire_pin and value["files"]=={n:v["bytes"] for n,v in manifest["files"].items()},"REMOTE_RESULT_INVALID")
+    require(all(type(v) is int for v in value["files"].values()),"REMOTE_RESULT_INVALID")
+    e=value["engine"]
+    require(type(e) is dict and set(e)=={"package","version","sha256","bytes","uid","mode","nlink","elf_machine","identity"} and
+            e["package"]=="chocolate-doom" and e["version"]=="3.1.1" and e["sha256"]==engine_pin and e["uid"]==UID and e["elf_machine"]==183 and
+            type(e["bytes"]) is int and e["bytes"]==ENGINE_BYTES and type(e["mode"]) is int and e["mode"]==0o700 and type(e["nlink"]) is int and e["nlink"]==1 and
+            type(e["identity"]) is list and len(e["identity"])==5 and e["identity"][2]==e["bytes"] and
+            all(type(v) is int and v>=0 for v in e["identity"]),"REMOTE_RESULT_INVALID")
+    return value
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument("--serial",required=True);parser.add_argument("--prepared-directory",type=Path,required=True)
+    parser.add_argument("--manifest-sha256",required=True);parser.add_argument("--engine-sha256",required=True);parser.add_argument("--artifact-root",type=Path)
+    args=parser.parse_args();os.umask(0o077)
+    if not args.prepared_directory.is_absolute() or not hex64(args.manifest_sha256) or args.engine_sha256!=ENGINE_SHA:parser.error("prepared directoryは絶対path、manifestは既知64hex、engineは固定pinが必要です")
+    root=args.artifact_root or work_root()/"eidolon-freedoom-install"
+    if not root.is_absolute():parser.error("artifact rootは絶対pathです")
+    run=root/(datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f")+f"-{os.getpid()}");run.mkdir(mode=0o700,parents=True)
+    result=dict(schema=1,status="failed",execution="not_run",catalog="not_modified")
+    try:
+        pins=source_hashes();raw,manifest,identities,payload_pin=validate_prepared(args.prepared_directory,args.manifest_sha256)
+        wire=hashlib.sha256();wire_bytes=0
+        for block in stream_chunks(args.prepared_directory,raw,args.manifest_sha256,args.engine_sha256,identities,payload_pin):wire.update(block);wire_bytes+=len(block)
+        result.update(run_id=manifest["run_id"],manifest_sha256=args.manifest_sha256,engine_sha256=args.engine_sha256,payload_sha256=payload_pin,wire_sha256=wire.hexdigest(),wire_bytes=wire_bytes,source_sha256=pins)
+        device=QuestDevice(args.serial,run);result["device"]=device.validate()
+        require(package_uid(device.adb("shell","pm","list","packages","-U","com.termux"),"com.termux")==UID,"UID_MISMATCH")
+        command=shlex.join(["run-as","com.termux","/data/data/com.termux/files/usr/bin/python3","-c",remote_source()])
+        require(len(command.encode())<=49*1024,"REMOTE_COMMAND_LIMIT");require(source_hashes()==pins,"SOURCE_CHANGED");result["remote_command_bytes"]=len(command.encode())
+        observed=transfer(["adb","-s",args.serial,"shell","-T",command],stream_chunks(args.prepared_directory,raw,args.manifest_sha256,args.engine_sha256,identities,payload_pin))
+        raw_result=observed.pop("stdout");result["transport"]=observed
+        if observed["local_error"] is not None:result["reason"]=observed["local_error"]
+        value=json.loads(raw_result,object_pairs_hook=unique_object);result["remote_result"]=validated_result(value,manifest,args.manifest_sha256,args.engine_sha256,payload_pin,wire.hexdigest())
+        require(source_hashes()==pins,"SOURCE_CHANGED")
+        if value["status"]=="installed" and observed["returncode"]==0 and observed["reaped"] and observed["pipes_drained"] and not observed["timed_out"] and observed["local_error"] is None and observed["output_bytes"]["stdin"]==wire_bytes:result["status"]="installed"
+    except (OSError,ValueError,TypeError,KeyError,RuntimeError) as error:
+        allowed=REASONS|{"REMOTE_RESULT_INVALID","REMOTE_COMMAND_LIMIT","SOURCE_CHANGED"}
+        result.setdefault("reason",str(error) if isinstance(error,InstallError) and str(error) in allowed else "HOST_INSTALL_FAILED")
+    (run/"result.json").write_text(json.dumps(result,indent=2)+"\n")
+    print(json.dumps(dict(status=result["status"],artifact=str(run),run_id=result.get("run_id"),reason=result.get("reason") or (result.get("remote_result") or {}).get("reason"),execution="not_run")))
+    return 0 if result["status"]=="installed" else 1
+
+
+if __name__=="__main__":raise SystemExit(main())

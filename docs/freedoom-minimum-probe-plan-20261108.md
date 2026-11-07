@@ -2,14 +2,15 @@
 
 2026-11-08時点。固定Kopper無効対照でEGL1.5/SDL GL・GLES contextが成立し、
 SDL software描画120frames/SHM120commit/SDK更新・退役・元foot維持と所有process回収も確認した。
-ゲームの実行・package導入・通常GUI解禁はまだ行っていない。
+engine packageは版固定導入済み。ゲームの実行・通常GUI解禁はまだ行っていない。
 
 ## 固定するengineとデータ
 
 [Termux公式recipe](https://github.com/termux/termux-packages/blob/fbdb3c03610c697322ac608e77cea2b553f49ef3/x11-packages/chocolate-doom/build.sh)の
 Chocolate Doom 3.1.1を使う。実機のapt候補も3.1.1だった。SDL2/SDL2-compat、SDL2_mixer、SDL2_netに依存する。
 当日の版固定simulateは更新0・追加7・削除0で、Chocolate Doom3.1.1、SDL2_mixer2.8.2、SDL2_net2.4.0、
-fluidsynth2.6.2、libxmp4.7.4、libmodplug0.8.9.1.r461-1、opusfile0.12-4だった。まだ導入していない。
+fluidsynth2.6.2、libxmp4.7.4、libmodplug0.8.9.1.r461-1、opusfile0.12-4だった。
+その後同じ7packageを更新0で導入し、[engineの固定pinとowned stream導入](freedoom-owned-install-20261108.md)へ進んだ。
 
 ゲームデータは商用WADを含めず、[Freedoom公式v0.13.0](https://github.com/freedoom/freedoom/releases/tag/v0.13.0)のPhase1を使う。
 [COPYING](https://github.com/freedoom/freedoom/blob/v0.13.0/COPYING.adoc)に従い、WADとともにCOPYING/CREDITS/CREDITS-MUSICも保持する。
