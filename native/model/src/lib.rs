@@ -19,3 +19,5 @@ pub mod workload;
 pub mod workspace;
 
 pub mod window_controls;
+
+pub mod window_slots;
