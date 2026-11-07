@@ -592,6 +592,21 @@ impl ProtocolState {
             .sizing
             .request(request, size)
     }
+    pub fn step_physical_size(
+        &mut self,
+        window: WindowId,
+        request: eidolon_model::ids::CommandSeq,
+        expected_command: Option<eidolon_model::ids::CommandSeq>,
+        expected: eidolon_model::resize::PhysicalSize,
+        step: eidolon_model::resize::PhysicalStep,
+    ) -> Result<(), &'static str> {
+        self.toplevels
+            .values_mut()
+            .find(|r| r.id == window && r.life == WindowLife::Mapped)
+            .ok_or("STALE")?
+            .sizing
+            .step(request, expected_command, expected, step)
+    }
     pub fn physical_size_applied(
         &mut self,
         window: WindowId,

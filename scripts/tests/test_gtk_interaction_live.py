@@ -176,6 +176,7 @@ def raw_resources(runtime, retired=False):
         window_controls=dict(entity_owners=n*6,listener_owners=n*2),
         window_mode_badges={name:n for name in ("entity_owners","object_owners","mesh_owners","material_owners","texture_owners","pixel_slots_in_use")},targets=[],retired=[])
     adapter["window_mode_badges"]["cleanup_pending_owners"]=0
+    adapter["window_menus"]={name:0 for name in ("owners","cleanup_pending_owners","entity_owners","listener_owners","object_owners","mesh_owners","material_owners","texture_owners")}
     for key in keys:
         number=int(key["window"])*100
         adapter["targets"].append(dict(target=key,entity=str(number),visual_entity=str(number+1),listener_owned=True,input_owned=True,
@@ -272,6 +273,18 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(proof.android_receipt(dict(check=row),NONCE,"input"),row)
         row["steps"]=[]
         with self.assertRaisesRegex(CaptureError,"GTK_ANDROID_SEQUENCE"):proof.android_receipt(dict(check=row),NONCE,"input")
+    def test_size_menu_pending_or_native_resource_owner_blocks_baseline_and_final_retirement(self):
+        runtime=dict(scene="3",render=dict(targets=[dict(key=dict(session="2",window="1",scene="3",generation="4"))]))
+        adapter=raw_resources(runtime);capture=dict(runtime=dict(handle="9",runtime=runtime),adapter=adapter)
+        baseline=proof.resources(capture);keys=[t["key"] for t in baseline["targets"]]
+        self.assertTrue(proof.baseline_resources(baseline,{"1"},keys))
+        for name in adapter["window_menus"]:
+            adapter["window_menus"][name]=1
+            self.assertFalse(proof.baseline_resources(proof.resources(capture),{"1"},keys))
+            adapter["window_menus"][name]=0
+        del adapter["window_menus"]
+        with self.assertRaises(KeyError):proof.resources(capture)
+
     def test_compressed_remote_command_and_fixed_receiver_only(self):
         source=cli.remote_source();compile(source,"gtk-interaction-remote","exec")
         command=__import__("shlex").join(["run-as","com.termux","/data/data/com.termux/files/usr/bin/python3","-c",source])

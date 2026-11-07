@@ -41,6 +41,9 @@ def resources(value):
     need(owners["panel_entities"]>=0,"GTK_RESOURCE_COUNTER")
     owners.update({"mode_"+name:counter(modes[name]) for name in
         ("entity_owners","object_owners","mesh_owners","material_owners","texture_owners","cleanup_pending_owners","pixel_slots_in_use")})
+    menus=adapter["window_menus"]
+    owners.update({"menu_"+name:counter(menus[name]) for name in
+        ("owners","cleanup_pending_owners","entity_owners","listener_owners","object_owners","mesh_owners","material_owners","texture_owners")})
     retired=[]
     for row in adapter["retired"]:
         need(decimal(row["runtime"]) and decimal(row["entity"]),"GTK_RESOURCE_RECEIPT")
@@ -74,6 +77,7 @@ def baseline_resources(resource, baseline, native_keys):
     expected=dict(panel_entities=len(targets),listeners=len(targets),decorations=sum(t["visual_entity"] is not None for t in targets),control_entities=buttons*3,control_listeners=buttons)
     expected.update({"mode_"+n:mode_count for n in ("entity_owners","object_owners","mesh_owners","material_owners","texture_owners","pixel_slots_in_use")})
     expected["mode_cleanup_pending_owners"]=0
+    expected.update({"menu_"+n:0 for n in ("owners","cleanup_pending_owners","entity_owners","listener_owners","object_owners","mesh_owners","material_owners","texture_owners")})
     return owners==expected
 
 

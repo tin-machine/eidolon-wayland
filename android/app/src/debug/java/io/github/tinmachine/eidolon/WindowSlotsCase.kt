@@ -30,7 +30,7 @@ object WindowSlotsCase {
         val expected = linkedMapOf<String, Int>()
         val leases = linkedMapOf<String, String>()
         val targets = linkedMapOf<String, JSONObject>()
-        val result = JSONObject().put("case", "window-slots").put("fixture_revision", "window-slots-v3").put("nonce", nonce).put("result", "running")
+        val result = JSONObject().put("case", "window-slots").put("fixture_revision", "window-slots-v4-four-controls").put("nonce", nonce).put("result", "running")
             .put("normal_foot_server", true).put("independent_clients_verified", false).put("physical_input_verified", false).put("hmd_verified", false)
             .put("synthetic_input", true).put("synthetic_visibility", false).put("auto_retry", false).put("checkpoints", rows)
         var handle = 0L
@@ -81,7 +81,7 @@ object WindowSlotsCase {
                     .put("frame_timing", it.optJSONObject("frame_timing")).put("width", it.optInt("width")).put("height", it.optInt("height")) }))
                 .put("workspace", s.getJSONObject("workspace").getJSONArray("windows"))
                 .put("adapter", JSONObject().put("scene", metrics.opt("scene")).put("bindings", metrics.getInt("bindings")).put("pending", metrics.getInt("pending"))
-                    .put("window_controls", metrics.getJSONObject("window_controls")).put("window_mode_badges", metrics.getJSONObject("window_mode_badges"))
+                    .put("window_controls", metrics.getJSONObject("window_controls")).put("window_mode_badges", metrics.getJSONObject("window_mode_badges")).put("window_menus",metrics.getJSONObject("window_menus"))
                     .put("targets", JSONArray(sdk().map { JSONObject().put("target", it.getJSONObject("target")).put("mode_badge", it.optJSONObject("mode_badge"))
                         .put("controls", it.optJSONObject("controls")).put("actual_pose", adapter.windowEntity(it.getJSONObject("target").getString("window"))?.let { entity -> PanelPoseCodec.fromSdk(getAbsoluteTransform(entity)) }) })))
             if (app != null) snapshot.put("app", JSONObject().put("state", app.optString("state")).put("session", app.optString("session"))
@@ -171,8 +171,8 @@ object WindowSlotsCase {
                 checkGate("controls_enabled", controls?.optBoolean("enabled") == true)
                 checkGate("controls_revision", controls?.optLong("revision", -1) == render.getLong("theme_revision"))
                 checkGate("controls_no_failure", controls?.optLong("failures", -1) == 0L)
-                checkGate("control_entities", controls?.optInt("entities", -1) == 9)
-                checkGate("buttons_ready_target", controls != null && target != null && list(controls.optJSONArray("buttons")).let { buttons -> buttons.size == 3 && buttons.all { it.optBoolean("ready") && same(it.getJSONObject("target"), target) } })
+                checkGate("control_entities", controls?.optInt("entities", -1) == 12)
+                checkGate("buttons_ready_target", controls != null && target != null && list(controls.optJSONArray("buttons")).let { buttons -> buttons.size == 4 && buttons.all { it.optBoolean("ready") && same(it.getJSONObject("target"), target) } })
                 checkGate("mode_present", badge != null)
                 checkGate("mode_object_ready", badge?.optBoolean("object_ready") == true)
                 checkGate("mode_no_failure", badge?.optLong("failures", -1) == 0L)
@@ -189,10 +189,12 @@ object WindowSlotsCase {
             }
             val controls = adapter.metrics().getJSONObject("window_controls")
             val badges = adapter.metrics().getJSONObject("window_mode_badges")
-            gate("control_entity_owners", controls.getLong("entity_owners") == count * 9L)
-            gate("control_listener_owners", controls.getLong("listener_owners") == count * 3L)
+            gate("control_entity_owners", controls.getLong("entity_owners") == count * 12L)
+            gate("control_listener_owners", controls.getLong("listener_owners") == count * 4L)
             for (name in listOf("entity_owners", "object_owners", "mesh_owners", "material_owners", "texture_owners", "pixel_slots_in_use")) gate("mode_$name", badges.getLong(name) == count.toLong())
             gate("mode_cleanup_clear", badges.getLong("cleanup_pending_owners") == 0L)
+            val menus=adapter.metrics().getJSONObject("window_menus")
+            for(name in listOf("owners","cleanup_pending_owners","entity_owners","listener_owners","object_owners","mesh_owners","material_owners","texture_owners")) gate("menu_$name",menus.getLong(name)==0L)
             val failure = gateOrder.firstOrNull { !gates.getBoolean(it) } ?: list(windowGates).firstNotNullOfOrNull { row -> row.getString("reason").takeIf { it != "ready" }?.let { "window.$it" } }
             return JSONObject().put("expected_count", count).put("ready", failure == null).put("reason", failure ?: "ready").put("gates", gates).put("windows", windowGates)
         }
@@ -352,7 +354,10 @@ object WindowSlotsCase {
                             check(s.getJSONObject("transport").getJSONArray("pending_cleanup").length() == 0 && s.getJSONObject("window_slots").getInt("occupied") == 0)
                             val c = adapter.metrics().getJSONObject("window_controls"); check(c.getLong("entity_owners") == 0L && c.getLong("listener_owners") == 0L)
                             val b = adapter.metrics().getJSONObject("window_mode_badges"); check(listOf("entity_owners", "object_owners", "mesh_owners", "material_owners", "texture_owners", "pixel_slots_in_use", "cleanup_pending_owners").all { b.getLong(it) == 0L })
-                            result.put("old_runtime_destroyed", true).put("control_mode_owners_zero", true).put("stopped_controls", c).put("stopped_modes", b).put("result", "pass")
+                            val menus=adapter.metrics().getJSONObject("window_menus")
+                            check(listOf("owners","cleanup_pending_owners","entity_owners","listener_owners","object_owners","mesh_owners","material_owners","texture_owners").all {menus.getLong(it)==0L})
+                            result.put("old_runtime_destroyed", true).put("control_mode_owners_zero", true).put("menu_owners_zero",true)
+                                .put("stopped_controls", c).put("stopped_modes", b).put("stopped_menus",menus).put("result", "pass")
                             finish(); return
                         }
                     }

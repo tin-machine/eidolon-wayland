@@ -1014,6 +1014,7 @@ impl Runtime {
                                 | Command::PoseApplied { target, .. }
                                 | Command::ResizeLogical { target, .. }
                                 | Command::SetPhysicalSize { target, .. }
+                                | Command::SetPhysicalSizeControl { target, .. }
                                 | Command::PhysicalSizeApplied { target, .. } => {
                                     let live = state.snapshot.scene == Some(target.scene)
                                         && state.panels.snapshot().iter().any(|p| {
@@ -1029,13 +1030,12 @@ impl Runtime {
                                             .iter()
                                             .any(|t| t.key == *target && t.frames > 0);
                                     let controls_current = match &command {
-                                        Command::SetPoseControl {
-                                            controls_revision, ..
-                                        } => gl.snapshot().theme_revision == *controls_revision,
+                                        Command::SetPoseControl { controls_revision, .. }
+                                        | Command::SetPhysicalSizeControl { controls_revision, .. } => gl.snapshot().theme_revision == *controls_revision,
                                         _ => true,
                                     };
                                     let controls_ready =
-                                        !matches!(&command, Command::SetPoseControl { .. })
+                                        !matches!(&command, Command::SetPoseControl { .. } | Command::SetPhysicalSizeControl { .. })
                                             || state.snapshot.activity_visible
                                                 && state.snapshot.xr_state == XrState::Focused
                                                 && state.render_visibility.iter().all(|v| *v);
@@ -1087,6 +1087,9 @@ impl Runtime {
                                                 *request_id,
                                                 *size,
                                             ),
+                                            Command::SetPhysicalSizeControl { request_id, expected_size_command, expected_size, step, .. } => current.step_physical_size(
+                                                target.window, *request_id, *expected_size_command, *expected_size, *step,
+                                            ),
                                             Command::PhysicalSizeApplied {
                                                 size_command,
                                                 size,
@@ -1104,6 +1107,7 @@ impl Runtime {
                                                 Command::SetPose { .. }
                                                     | Command::ResizeLogical { .. }
                                                     | Command::SetPhysicalSize { .. }
+                                                    | Command::SetPhysicalSizeControl { .. }
                                             )
                                             && let Some(window) =
                                                 current.current_window(target.window)

@@ -29,6 +29,10 @@ object WindowControlsCase {
         check(active==null)
         Check(nonce,adapter,scene,complete,"window-move").also {active=it;it.start()}
     }
+    fun startSize(nonce:String,adapter:SpatialPanelAdapter,scene:()->Scene,complete:(JSONObject)->Unit) {
+        check(active==null)
+        Check(nonce,adapter,scene,complete,"window-size").also {active=it;it.start()}
+    }
     fun commandComplete(request:String,code:String) {active?.let {if(it.requests.containsKey(request) || request in PROBES) it.completions[request]=code}}
     fun requested(action:String,runtime:Long,target:String,revision:Long,request:String,code:Int) {
         active?.let {if(runtime==it.handle && it.requests.size<32) it.requests[request]=JSONObject()
@@ -41,7 +45,7 @@ object WindowControlsCase {
         val requests=ConcurrentHashMap<String,String>()
         val completions=ConcurrentHashMap<String,String>()
         val rows=JSONArray()
-        val result=JSONObject().put("case",name).put("fixture_revision",if(name=="window-move") "window-move-v1" else "window-controls-v2").put("nonce",nonce).put("result","running")
+        val result=JSONObject().put("case",name).put("fixture_revision",when(name) {"window-size"->"window-size-v1";"window-move"->"window-move-v2-four-controls";else->"window-controls-v3-four-controls"}).put("nonce",nonce).put("result","running")
             .put("consumer","SDK").put("synthetic_input",true).put("synthetic_visibility",false)
             .put("physical_input_verified",false).put("hmd_verified",false).put("text_verified",false)
             .put("dispatch","Scene.onInput").put("raycast","Scene.lineSegmentIntersect")
@@ -57,6 +61,8 @@ object WindowControlsCase {
         var oldCloseRay:Pair<Vector3,Vector3>?=null
         var oldCloseEntity=""
         var modeTextures=0L;var modeUpdates=0L
+        var sizeInitial=WindowPhysicalSize(1.2f,.9f);var sizePixels="";var otherSize="";var otherControls=""
+        var oldMenuRay:Pair<Vector3,Vector3>?=null;var oldMenuEntity=0L;var sizeCommandBefore=""
         var moveBefore=WindowMotionPose.at()
         var moveExpected=WindowMotionPose.at()
         val controllerStart=WindowMotionPose.at(.2,1.0,.1)
@@ -77,14 +83,20 @@ object WindowControlsCase {
                 val c=row.optJSONObject("controls")
                 val badge=row.optJSONObject("mode_badge")
                 badge?.optBoolean("object_ready")==true && badge.optLong("failures")==0L && c?.optBoolean("enabled")==true && c.optLong("revision")==s.getJSONObject("render").getLong("theme_revision") &&
-                    c.optLong("failures")==0L && c.optInt("entities")==9 &&
-                    items(c.getJSONArray("buttons")).size==3 && items(c.getJSONArray("buttons")).all {it.optBoolean("ready") && same(it.getJSONObject("target"),target)} &&
+                    c.optLong("failures")==0L && c.optInt("entities")==12 &&
+                    items(c.getJSONArray("buttons")).size==4 && items(c.getJSONArray("buttons")).all {it.optBoolean("ready") && same(it.getJSONObject("target"),target)} &&
                     rendered.any {same(it.getJSONObject("key"),target) && it.getLong("frames")>0} &&
                     NativeSessionHost.inputTarget(target.toString())?.epoch==s.getLong("input_resets")
             }
         }
         fun record(label:String,s:JSONObject) {
-            rows.put(JSONObject().put("stage",label).put("runtime",s).put("adapter",adapter.metrics()))
+            if(name=="window-size") {
+                val m=adapter.metrics()
+                rows.put(JSONObject().put("stage",label).put("runtime",handle.toString()).put("scene",s.opt("scene")).put("epoch",s.optLong("input_resets"))
+                    .put("window_slots",s.optJSONObject("window_slots")).put("panels",s.optJSONArray("panels"))
+                    .put("windows",JSONArray(windows(s).map {JSONObject().put("window",it.getString("window")).put("life",it.optString("life")).put("logical_size",it.opt("logical_size")).put("sizing",it.optJSONObject("sizing"))}))
+                    .put("adapter_targets",m.getJSONArray("targets")).put("control_resources",m.getJSONObject("window_controls")).put("menu_resources",m.getJSONObject("window_menus")))
+            } else rows.put(JSONObject().put("stage",label).put("runtime",s).put("adapter",adapter.metrics()))
             result.put("cycles",rows);publish()
         }
         fun publish() {
@@ -127,7 +139,7 @@ object WindowControlsCase {
                 check(body.entity?.id==adapter.windowEntity(window)?.id) {"BODY_CONTROL_COLLISION"}
                 val a=hit(window,"focus");val b=hit(window,"close")
                 val diameter=checkNotNull(WindowControls.parse(s.getJSONObject("render").optJSONObject("window_controls"))).diameter
-                for(action in listOf("move","focus","close")) {
+                for(action in listOf("menu","move","focus","close")) {
                     val entity=Entity(button(window,action).getString("entity").toLong())
                     val local=p.inverse()*getAbsoluteTransform(entity).t
                     for(axis in 0..1) for((factor,inside) in listOf(.8 to true,1.3 to false)) {
@@ -152,7 +164,7 @@ object WindowControlsCase {
             oldCloseRay=ray(p,local.x.toDouble(),local.y.toDouble(),local.z.toDouble());oldCloseEntity=c.id.toString()
             result.put("geometry",proof).put("geometry_observed",true)
             val r=adapter.metrics().getJSONObject("window_controls")
-            check(r.getLong("entity_owners")==18L && r.getLong("listener_owners")==6L)
+            check(r.getLong("entity_owners")==24L && r.getLong("listener_owners")==8L)
             val badges=adapter.metrics().getJSONObject("window_mode_badges")
             for(field in listOf("entity_owners","object_owners","mesh_owners","material_owners","texture_owners")) check(badges.getLong(field)==2L)
             modeTextures=badges.getLong("texture_create_calls");modeUpdates=badges.getLong("texture_updates")
@@ -165,6 +177,38 @@ object WindowControlsCase {
         fun click(window:String,action:String) {
             priorRequests=requests.keys.toSet()
             val h=hit(window,action);dispatch(h,true);dispatch(h,false)
+        }
+        fun sizing(s:JSONObject,window:String)=windows(s).single {it.getString("window")==window}.getJSONObject("sizing")
+        fun physical(s:JSONObject,window:String)=sizing(s,window).getJSONObject("physical_size_m").let {WindowPhysicalSize(it.getDouble("width_m").toFloat(),it.getDouble("height_m").toFloat())}
+        fun pixelStamp(s:JSONObject,window:String)=windows(s).single {it.getString("window")==window}.let {
+            JSONObject().put("logical",it.opt("logical_size")).put("producer",it.getJSONObject("sizing").opt("producer_size_px"))
+                .put("canvas",items(s.getJSONArray("panels")).single {it.getJSONObject("target").getString("window")==window}.optJSONObject("decoration")?.opt("canvas")).toString()
+        }
+        fun menu(window:String)=row(window).getJSONObject("menu")
+        fun menuReady(window:String)=menu(window).let {it.optString("phase")=="MENU" && it.optJSONObject("view")?.let {v ->
+            v.optInt("listeners_ready")==3 && v.optBoolean("label_ready") && v.optLong("failures")==0L && v.getJSONArray("button_targets").length()==3
+        }==true}
+        fun menuHit(window:String,action:String):HitInfo {
+            val button=items(menu(window).getJSONObject("view").getJSONArray("button_targets")).single {it.getString("action")==action}
+            check(button.getBoolean("enabled") && button.getBoolean("ready"))
+            val entity=Entity(button.getString("entity").toLong());val p=pose(window);val local=p.inverse()*getAbsoluteTransform(entity).t
+            val segment=ray(p,local.x.toDouble(),local.y.toDouble(),local.z.toDouble())
+            val h=checkNotNull(intersect(segment));check(h.entity?.id==entity.id) {"MENU_WRONG_HIT"}
+            oldMenuRay=segment;oldMenuEntity=entity.id
+            return h
+        }
+        fun clickMenu(window:String,action:String) {priorRequests=requests.keys.toSet();val h=menuHit(window,action);dispatch(h,true);dispatch(h,false)}
+        fun sizeObserved(s:JSONObject,expected:WindowPhysicalSize,completions:Long):Boolean {
+            if(!ready(s,2) || !focused(s,secondKey) || menu(second).optString("phase")!="COMPLETE" || menu(second).optLong("completed")!=completions) return false
+            val value=sizing(s,second);val applied=value.optJSONObject("applied_physical_size_m") ?: return false
+            check(physical(s,second).near(expected) && WindowPhysicalSize(applied.getDouble("width_m").toFloat(),applied.getDouble("height_m").toFloat()).near(expected))
+            check(value.getString("size_command")==menu(second).getString("request_id"))
+            check(same(row(first).getJSONObject("target"),firstKey) && sizing(s,first).toString()==otherSize && controls(first).getJSONArray("buttons").toString()==otherControls)
+            check(pixelStamp(s,second)==sizePixels) {"PHYSICAL_SIZE_CHANGED_PIXELS"}
+            check(intersect(checkNotNull(oldMenuRay))?.entity?.id!=oldMenuEntity) {"RETIRED_MENU_STILL_HIT"}
+            val resources=adapter.metrics().getJSONObject("window_menus")
+            for(field in listOf("owners","cleanup_pending_owners","entity_owners","listener_owners","object_owners","mesh_owners","material_owners","texture_owners")) check(resources.getLong(field)==0L)
+            return true
         }
         fun sendKey(action:Int,code:Int,scan:Int) {
             val now=SystemClock.uptimeMillis()
@@ -227,7 +271,10 @@ object WindowControlsCase {
                             check(checkNotNull(input).getInt("pressed")==0 && input.getLong("delivered")==keys+2 && s.getLong("input_resets")>heldEpoch)
                             check(input.getJSONObject("pointer").getLong("buttons")==pointerButtons)
                             record("focus_second_ack_and_key_released",s)
-                            if(name=="window-move") {
+                            if(name=="window-size") {
+                                sizeInitial=physical(s,second);sizePixels=pixelStamp(s,second);otherSize=sizing(s,first).toString();otherControls=controls(first).getJSONArray("buttons").toString()
+                                keys=checkNotNull(input).getLong("delivered");sendKey(KeyEvent.ACTION_DOWN,KeyEvent.KEYCODE_SHIFT_LEFT,42);stage="size_held"
+                            } else if(name=="window-move") {
                                 heldEpoch=s.getLong("input_resets");moveBefore=checkNotNull(WindowMoveController.motion(pose(second)))
                                 dispatch(hit(second,"move"),true);dispatch(hit(second,"move"),false)
                                 settled=SystemClock.elapsedRealtime()+300;stage="move_source_rejected"
@@ -236,6 +283,38 @@ object WindowControlsCase {
                                 scene().onNoIntersectionInput(checkNotNull(source),ButtonBits.ButtonTriggerR,0);scene().resolveInput()
                                 settled=SystemClock.elapsedRealtime()+300;stage="cancel"
                             }
+                        }
+                        "size_held" -> if(checkNotNull(input).getInt("pressed")==1 && input.getLong("delivered")==keys+1) {
+                            heldEpoch=s.getLong("input_resets");click(second,"menu");stage="size_menu_larger"
+                        }
+                        "size_menu_larger" -> if(menuReady(second) && NativeSessionHost.inputTarget(firstKey.toString())!=null) {
+                            check(checkNotNull(input).getInt("pressed")==0 && input.getLong("delivered")==keys+2 && s.getLong("input_resets")>heldEpoch)
+                            result.put("menu_released_held_key",true)
+                            check(NativeSessionHost.inputTarget(secondKey.toString())==null && NativeSessionHost.inputTarget(firstKey.toString())!=null)
+                            check(row(second).getJSONObject("mode_badge").getString("mode")=="MENU")
+                            record("menu_reset_ack_and_android_release",s);clickMenu(second,"larger");stage="size_larger"
+                        }
+                        "size_larger" -> if(requestAccepted("physical-size",secondKey) && sizeObserved(s,checkNotNull(sizeInitial.step(true)),1)) {
+                            geometry(s);result.put("larger_native_ack_geometry_raw_focus",true).put("logical_producer_canvas_unchanged",true).put("other_window_unchanged",true)
+                            record("larger_native_model_geometry_focus",s);click(second,"menu");stage="size_menu_smaller"
+                        }
+                        "size_menu_smaller" -> if(menuReady(second)) {clickMenu(second,"smaller");stage="size_smaller"}
+                        "size_smaller" -> if(requestAccepted("physical-size",secondKey) && sizeObserved(s,sizeInitial,2)) {
+                            result.put("smaller_native_ack_geometry_raw_focus",true);record("smaller_native_model_geometry_focus",s)
+                            sizeCommandBefore=sizing(s,second).getString("size_command");click(second,"menu");stage="size_menu_back"
+                        }
+                        "size_menu_back" -> if(menuReady(second)) {clickMenu(second,"back");stage="size_back"}
+                        "size_back" -> if(ready(s,2) && focused(s,secondKey) && menu(second).optString("phase")=="COMPLETE" && menu(second).optLong("completed")==3L) {
+                            check(sizing(s,second).getString("size_command")==sizeCommandBefore && requests.keys.all {it in priorRequests || JSONObject(checkNotNull(requests[it])).getString("action")=="focus"})
+                            result.put("back_without_resize_refocused",true);record("back_does_not_resize",s);click(second,"menu");stage="size_menu_external"
+                        }
+                        "size_menu_external" -> if(menuReady(second)) {click(first,"focus");stage="size_external_cancel"}
+                        "size_external_cancel" -> if(ready(s,2) && focused(s,firstKey) && menu(second).optString("phase")=="CANCELLED") {
+                            check(sizing(s,second).getString("size_command")==sizeCommandBefore && adapter.metrics().getJSONObject("window_menus").getInt("owners")==0)
+                            check(requests.keys.all {it in priorRequests || JSONObject(checkNotNull(requests[it])).getString("action")=="focus"})
+                            result.put("external_focus_cancels_menu_without_refocus",true);record("external_focus_owner_loss",s)
+                            priorRequests=requests.keys.toSet();dispatch(hit(first,"close"),true);scene().onNoIntersectionInput(checkNotNull(source),ButtonBits.ButtonTriggerR,0);scene().resolveInput()
+                            settled=SystemClock.elapsedRealtime()+300;stage="cancel"
                         }
                         "move_source_rejected" -> if(SystemClock.elapsedRealtime()>=settled) {
                             val move=row(second).getJSONObject("move")
@@ -305,7 +384,7 @@ object WindowControlsCase {
                             check(same(row(second).getJSONObject("target"),secondKey))
                             val hit=intersect(checkNotNull(oldCloseRay));check(hit?.entity?.id?.toString()!=oldCloseEntity)
                             val resources=adapter.metrics().getJSONObject("window_controls")
-                            check(resources.getLong("entity_owners")==9L && resources.getLong("listener_owners")==3L)
+                            check(resources.getLong("entity_owners")==12L && resources.getLong("listener_owners")==4L)
                             check(adapter.metrics().getJSONObject("window_mode_badges").getLong("entity_owners")==1L)
                             result.put("closed_only_captured_window",true).put("retired_control_no_hit",true)
                             record("close_ack_and_retired_mesh",s);probe("9101203",firstKey,revision);stage="retired_target"
@@ -334,6 +413,9 @@ object WindowControlsCase {
                             val badges=adapter.metrics().getJSONObject("window_mode_badges")
                             for(field in listOf("entity_owners","object_owners","mesh_owners","material_owners","texture_owners","pixel_slots_in_use","cleanup_pending_owners")) check(badges.getLong(field)==0L)
                             check(badges.getInt("pixel_slots_allocated")<=9)
+                            val menus=adapter.metrics().getJSONObject("window_menus")
+                            for(field in listOf("owners","cleanup_pending_owners","entity_owners","listener_owners","object_owners","mesh_owners","material_owners","texture_owners")) check(menus.getLong(field)==0L)
+                            result.put("menu_resources_after_stop",menus)
                             result.put("mode_resources_after_stop",badges)
                             result.put("old_runtime_destroyed",true).put("control_owners_zero",true).put("mode_badge_owners_zero",true).put("resources_after_stop",resources)
                                 .put("result","pass")

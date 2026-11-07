@@ -9,7 +9,7 @@ class WindowControlLayoutTest {
         for(anchor in listOf("top-left","top-right","bottom-left","bottom-right")) for(size in listOf(.25,1.2,3.0)) {
             val spec=WindowControlLayout(anchor)
             val positions=spec.positions(size,size)
-            assertEquals(listOf("move","focus","close"),positions.map {it.action})
+            assertEquals(listOf("menu","move","focus","close"),positions.map {it.action})
             for(p in positions) {assertTrue(abs(p.y)-p.diameter/2>size/2);assertEquals(.08,p.diameter,0.0)}
             for((a,b) in positions.zipWithNext()) assertTrue(abs(a.x-b.x)>=spec.diameter+spec.gap-.000001)
         }

@@ -403,6 +403,15 @@ pub enum Command {
         target: crate::surface::TargetKey,
         size: crate::resize::PhysicalSize,
     },
+    SetPhysicalSizeControl {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        controls_revision: u64,
+        expected_size_command: Option<CommandSeq>,
+        expected_size: crate::resize::PhysicalSize,
+        step: crate::resize::PhysicalStep,
+    },
     PhysicalSizeApplied {
         schema: u32,
         request_id: CommandSeq,
@@ -626,6 +635,7 @@ impl Command {
             | Self::CloseWindowTarget { schema, .. }
             | Self::ResizeLogical { schema, .. }
             | Self::SetPhysicalSize { schema, .. }
+            | Self::SetPhysicalSizeControl { schema, .. }
             | Self::PhysicalSizeApplied { schema, .. }
             | Self::Pointer { schema, .. }
             | Self::FocusWindow { schema, .. }
@@ -751,6 +761,14 @@ impl Command {
             {
                 return Err(Status::InvalidArgument);
             }
+            Self::SetPhysicalSizeControl {
+                expected_size,
+                step,
+                ..
+            } => {
+                step.apply(*expected_size)
+                    .map_err(|_| Status::InvalidArgument)?;
+            }
             _ => (),
         }
         Ok(command)
@@ -778,6 +796,7 @@ impl Command {
             | Self::CloseWindowTarget { request_id, .. }
             | Self::ResizeLogical { request_id, .. }
             | Self::SetPhysicalSize { request_id, .. }
+            | Self::SetPhysicalSizeControl { request_id, .. }
             | Self::PhysicalSizeApplied { request_id, .. }
             | Self::Pointer { request_id, .. }
             | Self::FocusWindow { request_id, .. }
@@ -819,6 +838,7 @@ impl Command {
                 | Self::SetImeBackend { .. }
                 | Self::SetPose { .. }
                 | Self::SetPoseControl { .. }
+                | Self::SetPhysicalSizeControl { .. }
                 | Self::SetKeyboardLayout { .. }
                 | Self::ShowWindow { .. }
                 | Self::CloseWindow { .. }
@@ -852,6 +872,24 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("generation");
+        assert!(Command::parse(&value.to_string()).is_err());
+    }
+    #[test]
+    fn physical_control_requires_captured_revision_size_and_fixed_step() {
+        let source = r#"{"schema":1,"request_id":"1","type":"set_physical_size_control","controls_revision":2,"target":{"session":"2","window":"3","scene":"4","generation":"5"},"expected_size_command":null,"expected_size":{"width_m":1.2,"height_m":0.9},"step":"larger"}"#;
+        assert!(Command::parse(source).unwrap().needs_input_reset());
+        for name in ["controls_revision", "expected_size", "step", "target"] {
+            let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+            value.as_object_mut().unwrap().remove(name);
+            assert!(Command::parse(&value.to_string()).is_err());
+        }
+        for step in ["script", "resize_logical", "10"] {
+            let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+            value["step"] = step.into();
+            assert!(Command::parse(&value.to_string()).is_err());
+        }
+        let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+        value["expected_size"]["width_m"] = 3.0.into();
         assert!(Command::parse(&value.to_string()).is_err());
     }
     #[test]

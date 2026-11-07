@@ -372,12 +372,12 @@ object NativeSessionHost {
     } } } }
     data class WindowControlTicket(val runtime: Long, val target: String, val intent: Long, val revision: Long)
     /** SDK button down owns one immutable target; reset also releases any Linux-held key. */
-    fun beginWindowControl(target: JSONObject, runtime: Long, revision: Long): WindowControlTicket? {
+    fun beginWindowControl(target: JSONObject, runtime: Long, revision: Long): WindowControlTicket? = inputIntents.serial {
         check(Looper.myLooper()==Looper.getMainLooper())
-        val current=inputTarget(target.toString()) ?: return null
-        if(current.runtime!=runtime || runtime!=handle || revision<0) return null
+        val current=inputTarget(target.toString()) ?: return@serial null
+        if(current.runtime!=runtime || runtime!=handle || revision<0) return@serial null
         resetInput()
-        return WindowControlTicket(runtime,target.toString(),inputIntents.get(),revision)
+        WindowControlTicket(runtime,target.toString(),inputIntents.get(),revision)
     }
     fun windowControl(ticket: WindowControlTicket, action: String) { productWorker.execute { inputIntents.serial { safely {
         if(action !in setOf("focus","close") || handle!=ticket.runtime || inputIntents.get()!=ticket.intent || editing.get() ||
@@ -399,30 +399,80 @@ object NativeSessionHost {
             BuildHooks.windowControlRequested(action,ticket.runtime,ticket.target,ticket.revision,request,code)
         }
     } } } }
-    data class WindowMoveTicket(val control:WindowControlTicket,val source:Long)
-    private val windowMove=AtomicReference<WindowMoveTicket?>(null)
-    fun beginWindowMove(target:JSONObject,runtime:Long,revision:Long,source:Long):WindowMoveTicket? {
-        check(Looper.myLooper()==Looper.getMainLooper())
-        if(windowMove.get()!=null || source==0L || panelTextInputs.isNotEmpty()) return null
-        val control=beginWindowControl(target,runtime,revision) ?: return null
-        return WindowMoveTicket(control,source).takeIf {windowMove.compareAndSet(null,it)}
+    class WindowOperationTicket internal constructor(val control:WindowControlTicket,val source:Long,val kind:String) {
+        @Volatile var phase:String=kind;internal set
     }
-    fun windowMoveCurrent(ticket:WindowMoveTicket):Boolean=windowMove.get()===ticket && ticket.control.runtime==handle &&
-        ticket.control.intent==inputIntents.get() && activityVisible.get() && xrState.get()=="FOCUSED" && !editing.get() && panelTextInputs.isEmpty()
-    fun windowMoveSourceOwned(source:Long):Boolean=windowMove.get()?.source==source
-    private fun movingTarget(target:String):Boolean=windowMove.get()?.control?.target?.let {targetIdentity(JSONObject(it))==targetIdentity(JSONObject(target))}==true
+    data class WindowMoveTicket(val operation:WindowOperationTicket) {
+        val control get()=operation.control
+        val source get()=operation.source
+    }
+    private val windowOperation=AtomicReference<WindowOperationTicket?>(null)
+    private val windowOperationCompletions=ConcurrentHashMap<String,String>()
+    fun beginWindowMove(target:JSONObject,runtime:Long,revision:Long,source:Long):WindowMoveTicket? = inputIntents.serial {
+        check(Looper.myLooper()==Looper.getMainLooper())
+        if(windowOperation.get()!=null || source==0L || panelTextInputs.isNotEmpty()) return@serial null
+        val control=beginWindowControl(target,runtime,revision) ?: return@serial null
+        val owner=WindowOperationTicket(control,source,"move")
+        if(windowOperation.compareAndSet(null,owner)) WindowMoveTicket(owner) else null
+    }
+    fun windowOperationCurrent(ticket:WindowOperationTicket):Boolean = inputIntents.serial {
+        windowOperation.get()===ticket && ticket.control.runtime==handle && ticket.control.intent==inputIntents.get() &&
+            activityVisible.get() && xrState.get()=="FOCUSED" && !editing.get() && panelTextInputs.isEmpty() && !debugSdkLease.blocksProduct()
+    }
+    fun windowMoveCurrent(ticket:WindowMoveTicket):Boolean=windowOperationCurrent(ticket.operation)
+    fun windowMoveSourceOwned(source:Long):Boolean=windowOperation.get()?.let {it.kind=="move" && it.source==source}==true
+    private fun movingTarget(target:String):Boolean=windowOperation.get()?.takeIf {it.phase!="returning"}?.control?.target?.let {targetIdentity(JSONObject(it))==targetIdentity(JSONObject(target))}==true
     fun finishWindowMove(ticket:WindowMoveTicket,restore:Boolean) {
-        if(!windowMove.compareAndSet(ticket,null)) return
+        if(!windowOperation.compareAndSet(ticket.operation,null)) return
         if(restore && ticket.control.intent==inputIntents.get()) windowControl(ticket.control,"focus")
     }
-    fun submitWindowMovePose(ticket:WindowMoveTicket,pose:JSONObject):String? {
-        if(!windowMoveCurrent(ticket) || !PanelPoseCodec.valid(pose) || poseCompletions.size>=16) return null
+    fun submitWindowMovePose(ticket:WindowMoveTicket,pose:JSONObject):String? = inputIntents.serial {
+        if(!windowMoveCurrent(ticket) || !PanelPoseCodec.valid(pose) || poseCompletions.size>=16) return@serial null
         val request=requests.incrementAndGet().toString();poseCompletions[request]="pending"
         val code=NativeBridge.nativeCommand(ticket.control.runtime,JSONObject().put("schema",1).put("type","set_pose_control")
             .put("request_id",request).put("target",JSONObject(ticket.control.target)).put("pose",pose).put("controls_revision",ticket.control.revision).toString())
         BuildHooks.windowControlRequested("move",ticket.control.runtime,ticket.control.target,ticket.control.revision,request,code)
-        if(code!=NativeBridge.ACCEPTED) {poseCompletions.remove(request);return null}
-        return request
+        if(code!=NativeBridge.ACCEPTED) {poseCompletions.remove(request);return@serial null}
+        request
+    }
+    fun beginWindowMenu(control:WindowControlTicket):WindowOperationTicket? = inputIntents.serial {
+        check(Looper.myLooper()==Looper.getMainLooper())
+        if(windowOperation.get()!=null || control.runtime!=handle || control.intent!=inputIntents.get() || panelTextInputs.isNotEmpty() ||
+            editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || debugSdkLease.blocksProduct()) return@serial null
+        WindowOperationTicket(control,0,"menu").takeIf {windowOperation.compareAndSet(null,it)}
+    }
+    fun windowOperationAndroidReleased(ticket:WindowOperationTicket)=windowOperationCurrent(ticket) && !imeRawBlocked.get()
+    fun windowOperationPhase(ticket:WindowOperationTicket,phase:String):Boolean = inputIntents.serial {
+        if(!windowOperationCurrent(ticket) || phase !in setOf("menu","resizing","returning","cleanup")) return@serial false
+        ticket.phase=phase;true
+    }
+    fun finishWindowOperation(ticket:WindowOperationTicket) {windowOperation.compareAndSet(ticket,null)}
+    fun windowOperationCompletion(request:String):String? {
+        val code=windowOperationCompletions[request] ?: return null
+        if(code!="pending") windowOperationCompletions.remove(request)
+        return code
+    }
+    fun forgetWindowOperation(request:String) {windowOperationCompletions.remove(request)}
+    fun resetWindowOperation(ticket:WindowOperationTicket):String? = inputIntents.serial {
+        if(!windowOperationCurrent(ticket) || windowOperationCompletions.size>=8) return@serial null
+        val request=requests.incrementAndGet().toString();windowOperationCompletions[request]="pending"
+        if(enqueueInputReset(request)!=NativeBridge.ACCEPTED) {windowOperationCompletions.remove(request);return@serial null}
+        request
+    }
+    fun submitWindowSize(ticket:WindowOperationTicket,expectedCommand:String?,expected:WindowPhysicalSize,larger:Boolean):String? = inputIntents.serial {
+        if(!windowOperationCurrent(ticket) || !windowOperationAndroidReleased(ticket) || expected.step(larger)==null || windowOperationCompletions.size>=8) return@serial null
+        val request=requests.incrementAndGet().toString();windowOperationCompletions[request]="pending"
+        val code=NativeBridge.nativeCommand(ticket.control.runtime,JSONObject().put("schema",1).put("type","set_physical_size_control")
+            .put("request_id",request).put("target",JSONObject(ticket.control.target)).put("controls_revision",ticket.control.revision)
+            .put("expected_size_command",expectedCommand ?: JSONObject.NULL).put("expected_size",JSONObject().put("width_m",expected.width.toDouble()).put("height_m",expected.height.toDouble()))
+            .put("step",if(larger) "larger" else "smaller").toString())
+        BuildHooks.windowControlRequested("physical-size",ticket.control.runtime,ticket.control.target,ticket.control.revision,request,code)
+        if(code!=NativeBridge.ACCEPTED) {windowOperationCompletions.remove(request);return@serial null}
+        request
+    }
+    fun returnWindowOperation(ticket:WindowOperationTicket):Boolean = inputIntents.serial {
+        if(!windowOperationAndroidReleased(ticket) || !windowOperationPhase(ticket,"returning")) return@serial false
+        windowControl(ticket.control,"focus");true
     }
     fun requestSnapshot() { worker.execute { safely { publish() } } }
     fun currentHandle(): Long = handle
@@ -1325,7 +1375,7 @@ object NativeSessionHost {
         invalidateImeConnection()
         keyboardFocus = null
         inputTargets = emptyMap()
-        windowMove.set(null)
+        windowOperation.set(null);windowOperationCompletions.clear()
         val old = handle
         themeImportToken = null; themeRequests.clear(); themeImportMessage = null
         val started = SystemClock.elapsedRealtime()
@@ -1423,6 +1473,7 @@ object NativeSessionHost {
                 themeRequests.remove(event.getString("request_id"))?.invoke(event.getString("code"))
                 BuildHooks.commandComplete(event.getString("request_id"), event.getString("code"))
                 poseCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
+                windowOperationCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
                 if (event.getString("request_id") == lastConnectRequest) {
                     connectPending = false
                     if (event.getString("code") != "ACCEPTED") lastConnectRequest = null
@@ -1548,8 +1599,17 @@ object NativeSessionHost {
             focusedWindow.takeIf {keyboardFocus!=null},panelEditing=panelTextInputs.isNotEmpty(),imeProbe=BuildHooks.imeProbeActive())
         val status=if(debugSdkLease.blocksProduct()) InputStatus("FIXED_LINUX_PROBE","Linux描画の固定検査中 · 通常操作と文字入力を停止")
         else if(inputConditions.visible && inputConditions.xrFocused) {
-            val move=windowMove.get()
-            if(move!=null) InputStatus("WINDOW_MOVING","窓 ${JSONObject(move.control.target).getString("window")} を移動中 · その窓の文字入力を停止")
+            val move=windowOperation.get()
+            if(move!=null) {
+                val name=JSONObject(move.control.target).getString("window")
+                when(move.phase) {
+                    "menu" -> InputStatus("WINDOW_MENU","窓 $name の操作メニュー · その窓の文字入力を停止")
+                    "resizing" -> InputStatus("WINDOW_RESIZING","窓 $name の表示サイズを確認中 · その窓の文字入力を停止")
+                    "cleanup" -> InputStatus("WINDOW_OPERATION_CLEANUP","窓 $name の操作終了を確認中")
+                    "returning" -> InputStatus("WINDOW_RETURNING","窓 $name への入力復帰を確認中")
+                    else -> InputStatus("WINDOW_MOVING","窓 $name を移動中 · その窓の文字入力を停止")
+                }
+            }
             else imeInputMessage ?: InputStatus.from(inputConditions)
         } else InputStatus.from(inputConditions)
         ui.post {inputStatus.value=status}

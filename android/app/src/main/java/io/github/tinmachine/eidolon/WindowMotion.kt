@@ -86,14 +86,19 @@ class WindowMoveCapture(val identity:WindowMoveIdentity,sourcePose:WindowMotionP
 
 /** A badge describes this window's delivery gate, without copying text or candidate content. */
 enum class WindowMode(val label:String) {
-    PREPARING("準備中"), PAUSED("入力停止"), EDITING("配置編集"), MOVING("移動中"), PLACING("配置を確認中"),
+    CLEANUP("操作終了待ち"), MENU_WAIT("操作準備中"), MENU("窓の操作"), RESIZING("サイズ確認中"), RETURNING("入力復帰待ち"), PREPARING("準備中"), PAUSED("入力停止"), EDITING("配置編集"), MOVING("移動中"), PLACING("配置を確認中"),
     IME("IME入力の検証中"), IME_WAIT("IME終了待ち"), PANEL("設定欄へ入力"), NO_KEYBOARD("キーボード未検出"), SELECT("入力先を選択"), RAW("キー入力先");
     companion object {
-        fun from(targetReady:Boolean,visible:Boolean,editing:Boolean,move:WindowMoveCapture.Phase?,globalReason:String,focused:Boolean):WindowMode=when {
+        fun from(targetReady:Boolean,visible:Boolean,editing:Boolean,move:WindowMoveCapture.Phase?,globalReason:String,focused:Boolean,size:WindowSizeCapture.Phase?=null):WindowMode=when {
             !visible -> PAUSED
             editing -> EDITING
             move==WindowMoveCapture.Phase.DRAGGING -> MOVING
             move in setOf(WindowMoveCapture.Phase.NEEDS_SUBMIT,WindowMoveCapture.Phase.COMMITTING,WindowMoveCapture.Phase.GEOMETRY) -> PLACING
+            size==WindowSizeCapture.Phase.CANCELLED -> CLEANUP
+            size==WindowSizeCapture.Phase.RESETTING -> MENU_WAIT
+            size==WindowSizeCapture.Phase.MENU -> MENU
+            size in setOf(WindowSizeCapture.Phase.NEEDS_SUBMIT,WindowSizeCapture.Phase.COMMITTING,WindowSizeCapture.Phase.GEOMETRY) -> RESIZING
+            size==WindowSizeCapture.Phase.RETURNING -> RETURNING
             globalReason in setOf("IME_CONNECTING","IME_CLOSING","IME_RECOVERY") -> IME_WAIT
             globalReason=="IME_CONNECTED" && focused -> IME
             globalReason in setOf("PANEL_INPUT","IME_PROBE") -> PANEL
@@ -101,7 +106,7 @@ enum class WindowMode(val label:String) {
             globalReason in setOf("CONNECTING","PREPARING","TARGET_NOT_READY","NO_WINDOW") -> PREPARING
             !targetReady -> PREPARING
             globalReason=="NO_KEYBOARD" -> NO_KEYBOARD
-            focused && globalReason in setOf("READY","DEVICE_UNKNOWN") -> RAW
+            focused && (globalReason in setOf("READY","DEVICE_UNKNOWN") || globalReason.startsWith("WINDOW_")) -> RAW
             else -> SELECT
         }
     }

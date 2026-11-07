@@ -34,6 +34,29 @@ impl PhysicalSize {
             .all(|v| v.is_finite() && (0.25..=3.).contains(&v))
     }
 }
+/// 窓横の固定操作。軸ごとのclampをせず、範囲外なら比率ごと拒否する。
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhysicalStep {
+    Larger,
+    Smaller,
+}
+impl PhysicalStep {
+    pub fn apply(self, size: PhysicalSize) -> Result<PhysicalSize, &'static str> {
+        if !size.valid() {
+            return Err("INVALID_ARGUMENT");
+        }
+        let factor = match self {
+            Self::Larger => 1.1,
+            Self::Smaller => 1. / 1.1,
+        };
+        let next = PhysicalSize {
+            width_m: size.width_m * factor,
+            height_m: size.height_m * factor,
+        };
+        next.valid().then_some(next).ok_or("INVALID_ARGUMENT")
+    }
+}
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Sizing {
     pub physical_size_m: PhysicalSize,
@@ -42,6 +65,18 @@ pub struct Sizing {
     pub producer_size_px: Option<BufferSizePx>,
 }
 impl Sizing {
+    pub fn step(
+        &mut self,
+        request: CommandSeq,
+        expected_command: Option<CommandSeq>,
+        expected: PhysicalSize,
+        step: PhysicalStep,
+    ) -> Result<(), &'static str> {
+        if self.size_command != expected_command || self.physical_size_m != expected {
+            return Err("STALE");
+        }
+        self.request(request, step.apply(expected)?)
+    }
     pub fn request(&mut self, request: CommandSeq, size: PhysicalSize) -> Result<(), &'static str> {
         if !size.valid() {
             return Err("INVALID_ARGUMENT");
@@ -317,6 +352,68 @@ impl ResizeState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn physical_step_preserves_ratio_and_rejects_bounds_without_clamping() {
+        let size = super::PhysicalSize::default();
+        let larger = super::PhysicalStep::Larger.apply(size).unwrap();
+        assert!((size.width_m / size.height_m - larger.width_m / larger.height_m).abs() < 0.00001);
+        let original = super::PhysicalStep::Smaller.apply(larger).unwrap();
+        assert!((original.width_m - size.width_m).abs() < 0.00001);
+        assert!(
+            super::PhysicalStep::Larger
+                .apply(super::PhysicalSize {
+                    width_m: 3.,
+                    height_m: 1.
+                })
+                .is_err()
+        );
+        assert!(
+            super::PhysicalStep::Smaller
+                .apply(super::PhysicalSize {
+                    width_m: 1.,
+                    height_m: 0.25
+                })
+                .is_err()
+        );
+        assert!(
+            super::PhysicalStep::Larger
+                .apply(super::PhysicalSize {
+                    width_m: f32::NAN,
+                    height_m: 1.
+                })
+                .is_err()
+        );
+    }
+    #[test]
+    fn physical_step_requires_exact_size_stamp_and_does_not_touch_producer_pixels() {
+        let producer = Some(crate::window::BufferSizePx::new(1024, 768).unwrap());
+        let mut sizing = super::Sizing {
+            producer_size_px: producer,
+            applied_physical_size_m: Some(super::PhysicalSize::default()),
+            ..Default::default()
+        };
+        let initial = sizing.physical_size_m;
+        let request = crate::ids::CommandSeq::new(20).unwrap();
+        let other = crate::ids::CommandSeq::new(19).unwrap();
+        assert_eq!(
+            sizing.step(request, Some(other), initial, super::PhysicalStep::Larger),
+            Err("STALE")
+        );
+        assert_eq!(sizing.size_command, None);
+        sizing
+            .step(request, None, initial, super::PhysicalStep::Larger)
+            .unwrap();
+        let applied = sizing.physical_size_m;
+        assert_eq!(
+            sizing.step(other, None, initial, super::PhysicalStep::Smaller),
+            Err("STALE")
+        );
+        assert_eq!(sizing.physical_size_m, applied);
+        assert!(sizing.applied_physical_size_m.is_none());
+        assert_eq!(sizing.producer_size_px, producer);
+        assert_eq!(sizing.applied(Some(other), applied), Err("STALE"));
+        sizing.applied(Some(request), applied).unwrap();
+    }
     use super::*;
     fn owned_target(generation: i64) -> crate::surface::TargetKey {
         crate::surface::TargetKey {

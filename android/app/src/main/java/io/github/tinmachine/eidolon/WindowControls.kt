@@ -16,7 +16,7 @@ import org.json.JSONObject
 class WindowControls(private val parent: Entity, private val target: String, private val runtime: Long,
     private val sdk: Scene, private val objects: SceneObjectSystem, private val live: ()->Boolean,
     private val layout: WindowControlLayout, private val width: Double, private val height: Double,
-    private val revision: Long,private val move:WindowMoveController) : AutoCloseable {
+    private val revision: Long,private val move:WindowMoveController,private val menu:(NativeSessionHost.WindowControlTicket)->Boolean) : AutoCloseable {
     private val ui=Handler(Looper.getMainLooper())
     private var closed=false
     private var enabled=true
@@ -52,9 +52,9 @@ class WindowControls(private val parent: Entity, private val target: String, pri
                 var icon: Entity?=null
                 var adopted=false
                 try {
-                    face=create(when(position.action) {"move"->WindowControlMeshes.MOVE;"focus"->WindowControlMeshes.FOCUS;else->WindowControlMeshes.CLOSE},
+                    face=create(when(position.action) {"menu"->WindowControlMeshes.MENU;"move"->WindowControlMeshes.MOVE;"focus"->WindowControlMeshes.FOCUS;else->WindowControlMeshes.CLOSE},
                         MeshCollision.NoCollision,-.018f-d*.0125f,Vector3(d*.86f,d*.86f,d*.2375f))
-                    icon=create(when(position.action) {"move"->WindowControlMeshes.MOVE_ICON;"focus"->WindowControlMeshes.FOCUS_ICON;else->WindowControlMeshes.CLOSE_ICON},
+                    icon=create(when(position.action) {"menu"->WindowControlMeshes.MENU_ICON;"move"->WindowControlMeshes.MOVE_ICON;"focus"->WindowControlMeshes.FOCUS_ICON;else->WindowControlMeshes.CLOSE_ICON},
                         MeshCollision.NoCollision,-.018f-d*.14f,Vector3(d,d,d*.25f))
                     val button=Button(position.action,root,checkNotNull(face),checkNotNull(icon),d);buttons.add(button);adopted=true
                     (objects.getSceneObject(root) ?: objects.replaceOrReuseSceneObjectFuture(root)).whenComplete {obj,error -> ui.post {
@@ -98,7 +98,10 @@ class WindowControls(private val parent: Entity, private val target: String, pri
                     val ticket=button.tickets[source]?.takeIf {it.first==downTime}
                     val clicked=button.press.up(source,downTime,"$target:$revision")
                     if(ticket!=null) {button.tickets.remove(source);button.sources.remove(source);pressed(button,false)}
-                    if(clicked && ticket!=null && live()) {NativeSessionHost.windowControl(ticket.second,button.action);submitted++}
+                    if(clicked && ticket!=null && live()) {
+                        if(button.action=="menu") {if(menu(ticket.second)) submitted++ else rejected++}
+                        else {NativeSessionHost.windowControl(ticket.second,button.action);submitted++}
+                    }
                 }
             }
             return true // Consume only our separate control sphere; no Wayland pointer/key event.

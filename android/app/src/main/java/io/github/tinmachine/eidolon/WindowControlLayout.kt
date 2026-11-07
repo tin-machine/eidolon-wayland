@@ -14,7 +14,7 @@ data class WindowControlLayout(val anchor: String="top-right", val offsetX: Doub
         val vertical=if(anchor.startsWith("top")) 1 else -1
         val x=side*(width/2+offsetX)
         val y=vertical*(height/2+gap+diameter/2+offsetY)
-        return listOf(Placement("move",x-side*2*(diameter+gap),y,diameter),Placement("focus",x-side*(diameter+gap),y,diameter),Placement("close",x,y,diameter))
+        return listOf(Placement("menu",x-side*3*(diameter+gap),y,diameter),Placement("move",x-side*2*(diameter+gap),y,diameter),Placement("focus",x-side*(diameter+gap),y,diameter),Placement("close",x,y,diameter))
     }
 }
 

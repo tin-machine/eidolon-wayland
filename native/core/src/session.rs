@@ -309,6 +309,22 @@ impl Session {
             .ok_or("NOT_READY")?
             .set_physical_size(window, request, size)
     }
+    pub fn step_physical_size(
+        &mut self,
+        window: WindowId,
+        request: eidolon_model::ids::CommandSeq,
+        expected_command: Option<eidolon_model::ids::CommandSeq>,
+        expected: eidolon_model::resize::PhysicalSize,
+        step: eidolon_model::resize::PhysicalStep,
+    ) -> Result<(), &'static str> {
+        if self.closing {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .step_physical_size(window, request, expected_command, expected, step)
+    }
     pub fn physical_size_applied(
         &mut self,
         window: WindowId,

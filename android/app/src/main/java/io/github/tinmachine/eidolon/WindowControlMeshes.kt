@@ -13,6 +13,11 @@ object WindowControlMeshes {
     const val FOCUS="mesh://eidolon-control-focus"
     const val CLOSE="mesh://eidolon-control-close"
     const val MOVE="mesh://eidolon-control-move"
+    const val MENU="mesh://eidolon-control-menu"
+    const val MENU_ICON="mesh://eidolon-control-menu-icon"
+    const val SIZE_UP_ICON="mesh://eidolon-control-size-up-icon"
+    const val SIZE_DOWN_ICON="mesh://eidolon-control-size-down-icon"
+    const val MENU_BACK_ICON="mesh://eidolon-control-menu-back-icon"
     const val MOVE_ICON="mesh://eidolon-control-move-icon"
     const val FOCUS_ICON="mesh://eidolon-control-focus-icon"
     const val CLOSE_ICON="mesh://eidolon-control-close-icon"
@@ -20,11 +25,25 @@ object WindowControlMeshes {
         setAlbedoColor(Color.valueOf(color));setUnlit(true);setSidedness(MaterialSidedness.DOUBLE_SIDED)
     }
     fun register(activity: AppSystemActivity) {
-        for((uri,color) in listOf(OUTLINE to 0xff27354b.toInt(),FOCUS to 0xffb6efd9.toInt(),CLOSE to 0xffffb2d0.toInt(),MOVE to 0xffffdf9e.toInt()))
+        for((uri,color) in listOf(OUTLINE to 0xff27354b.toInt(),FOCUS to 0xffb6efd9.toInt(),CLOSE to 0xffffb2d0.toInt(),MOVE to 0xffffdf9e.toInt(),MENU to 0xffd2c5f6.toInt()))
             activity.registerMeshCreator(uri) { _:Entity -> SceneMesh.sphere(.5f,material(color)) }
         activity.registerMeshCreator(MOVE_ICON) { _:Entity -> icon(false,true) }
         activity.registerMeshCreator(FOCUS_ICON) { _:Entity -> icon(false) }
         activity.registerMeshCreator(CLOSE_ICON) { _:Entity -> icon(true) }
+        for((uri,kind) in listOf(MENU_ICON to "menu",SIZE_UP_ICON to "larger",SIZE_DOWN_ICON to "smaller",MENU_BACK_ICON to "back"))
+            activity.registerMeshCreator(uri) { _:Entity -> smallIcon(kind) }
+    }
+    private fun smallIcon(kind:String):SceneMesh {
+        val vertices=mutableListOf<Float>();val indices=mutableListOf<Int>()
+        fun rect(x:Float,y:Float,w:Float,h:Float) {val n=vertices.size/3;vertices.addAll(listOf(x-w/2,y-h/2,0f,x+w/2,y-h/2,0f,x+w/2,y+h/2,0f,x-w/2,y+h/2,0f));indices.addAll(listOf(n,n+1,n+2,n,n+2,n+3))}
+        when(kind) {
+            "menu" -> for(x in listOf(-.21f,0f,.21f)) rect(x,0f,.09f,.09f)
+            "back" -> {rect(.03f,0f,.46f,.065f);rect(-.18f,.10f,.065f,.22f);rect(-.18f,-.10f,.065f,.22f)}
+            else -> {rect(0f,0f,.48f,.07f);if(kind=="larger") rect(0f,0f,.07f,.48f)}
+        }
+        val count=vertices.size/3
+        return SceneMesh.meshWithMaterials(vertices.toFloatArray(),FloatArray(count*3){if(it%3==2) -1f else 0f},FloatArray(count*2),IntArray(count){-1},
+            indices.toIntArray(),intArrayOf(0,indices.size),arrayOf(material(0xff27354b.toInt())),true)
     }
     private fun icon(close: Boolean,move:Boolean=false): SceneMesh {
         val vertices=mutableListOf<Float>();val indices=mutableListOf<Int>()

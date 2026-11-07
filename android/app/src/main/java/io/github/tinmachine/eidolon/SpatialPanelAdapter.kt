@@ -55,6 +55,7 @@ class SpatialPanelAdapter {
         var input: InputAdapter? = null,
         var controls: WindowControls? = null, var controlsStamp: String? = null,
         var move:WindowMoveController?=null,var modeBadge:WindowModeBadge?=null,
+        var menu:WindowMenuController?=null,var menuStamp:String?=null,
         val grabSources: MutableMap<Long,Pair<Entity,Int>> = linkedMapOf(),
         var editing: Boolean = false, var wasGrabbed: Boolean = false,
         var poseRequested: String? = null, var poseAcked: String? = null,
@@ -178,11 +179,11 @@ class SpatialPanelAdapter {
         .put("bindings", bindings.size).put("listeners", listeners).put("callbacks", callbacks)
         .put("pending", pendingSurfaces.size + pendingObjects.size)
         .put("background_api", backgroundApi?.let { JSONObject(it.toString()) })
-        .put("decoration_entities", visuals.size).put("window_controls",WindowControls.resources()).put("window_mode_badges",WindowModeBadge.resources())
+        .put("decoration_entities", visuals.size).put("window_controls",WindowControls.resources()).put("window_mode_badges",WindowModeBadge.resources()).put("window_menus",WindowMenuView.resources())
         .put("targets", JSONArray(bindings.values.map { JSONObject().put("runtime",it.handle.toString()).put("entity",it.entity.id.toString()).put("target",JSONObject(it.key.toString())).put("role",it.role)
             .put("retiring",it.retire).put("sdk_disposed",it.sdkDisposed).put("disposal_failed",it.disposalFailed)
             .put("listener_owned",it.listener!=null).put("input_owned",it.input!=null)
-            .put("decoration",it.decoration).put("visual_entity",it.visual?.id?.toString()).put("controls",it.controls?.metadata()).put("move",it.move?.metadata()).put("mode_badge",it.modeBadge?.metadata())
+            .put("decoration",it.decoration).put("visual_entity",it.visual?.id?.toString()).put("controls",it.controls?.metadata()).put("move",it.move?.metadata()).put("mode_badge",it.modeBadge?.metadata()).put("menu",it.menu?.metadata())
             .put("visual_collision",if(!it.sdkDisposed) it.visual?.getComponent<Panel>()?.hittable?.name else null)
             .put("input_collision",if(!it.sdkDisposed && it.decoration!=null) it.entity.getComponent<Hittable>().hittable.name else null) }))
         .put("retired",JSONArray(retired.toList()))
@@ -306,8 +307,12 @@ class SpatialPanelAdapter {
             if(controls.metadata().optLong("failures")!=0L) current.disposalFailed=true
         };current.controls=null
     }
-    private fun disposeSdk(current: Binding) {
-        if(current.sdkDisposed) return
+    private fun disposeSdk(current: Binding):Boolean {
+        if(current.sdkDisposed) return !current.disposalFailed
+        // A menu owns a separate operation and may need another tick to finish native cleanup.
+        // Keep its controller and the binding before marking the remaining SDK disposal complete.
+        try {current.menu?.close();current.menu=null}
+        catch(failure:Exception) {event("menu_cleanup_pending_${failure.javaClass.simpleName}",current.entity.id);return false}
         current.sdkDisposed=true
         fun dispose(action:()->Unit) {runCatching(action).onFailure {current.disposalFailed=true;event("sdk_dispose_failure_${it.javaClass.simpleName}",current.entity.id)}}
         dispose {current.move?.close()};current.move=null
@@ -323,10 +328,10 @@ class SpatialPanelAdapter {
         current.listener = null; current.sceneObject = null; current.surface = null; current.replacement = null
         current.visual?.let { visual -> visuals.remove(visual.id); dispose { visual.destroy() } }; current.visual=null
         dispose {current.entity.destroy()}; destroyed++; event("entity_destroyed", current.entity.id)
+        return !current.disposalFailed
     }
     private fun destroy(current: Binding) {
-        disposeSdk(current)
-        if(current.disposalFailed) return
+        if(!disposeSdk(current)) return
         val code=NativeSessionHost.sdkBinding(current.ownerKey,current.handle,false)
         if(code!=NativeBridge.ACCEPTED && code!=NativeBridge.STALE) return
         bindings.remove(current.entity.id)
@@ -392,6 +397,7 @@ class SpatialPanelAdapter {
                     if (!current.retire) { current.retire = true; current.destroy = true }
                 }
                 if (current.retire) {
+                    current.menu?.close();current.menu=null
                     current.move?.close();current.move=null;current.modeBadge?.close();current.modeBadge=null
                     closeControls(current)
                     if (current.role == "windows" && !current.hidden) {
@@ -451,6 +457,7 @@ class SpatialPanelAdapter {
     }
     private fun applyControls(current: Binding, runtime: JSONObject) {
         if(current.retire || current.destroy || current.sdkDisposed) {
+            current.menu?.close();current.menu=null
             current.move?.close();current.move=null;current.modeBadge?.close();current.modeBadge=null;current.controls?.close();current.controls=null;return
         }
         val app=runtime.optJSONObject("app") ?: return
@@ -462,6 +469,13 @@ class SpatialPanelAdapter {
         val render=runtime.getJSONObject("render");val revision=render.optLong("theme_revision",0)
         val config=WindowControls.parse(render.optJSONObject("window_controls")) ?: return
         val controlTarget=current.key.toString()
+        val menuStamp="$controlTarget:$revision:$config"
+        if(current.menuStamp!=menuStamp) {
+            current.menu?.close();current.menu=null;current.menuStamp=menuStamp
+            val live={ !closed && scene==NativeSessionHost.currentSceneEpoch() && bindings[current.entity.id]===current && !current.retire && !current.destroy &&
+                current.handle==NativeSessionHost.currentHandle() && sameKey(current.key,JSONObject(controlTarget)) }
+            current.menu=WindowMenuController(current.entity,controlTarget,current.handle,revision,config,checkNotNull(runtimeScene),checkNotNull(objects),live)
+        }
         val stamp="$controlTarget:$revision:$config:$width:$height"
         if(current.controlsStamp!=stamp) {
             current.move?.close();current.move=null;current.modeBadge?.close();current.modeBadge=null
@@ -473,7 +487,7 @@ class SpatialPanelAdapter {
                 val move=WindowMoveController(current.entity,controlTarget,current.handle,revision,checkNotNull(runtimeScene),live)
                 current.move=move
                 current.controls=WindowControls(current.entity,controlTarget,current.handle,checkNotNull(runtimeScene),checkNotNull(objects),
-                    live,config,width,height,revision,move)
+                    live,config,width,height,revision,move) {ticket -> current.menu?.open(ticket)==true}
                 current.modeBadge=WindowModeBadge(current.entity,config,width,height,checkNotNull(runtimeScene),checkNotNull(objects),live)
             }.onFailure {
                 current.move?.close();current.move=null;current.modeBadge?.close();current.modeBadge=null;current.controls?.close();current.controls=null
@@ -482,9 +496,14 @@ class SpatialPanelAdapter {
         }
         val visible=runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED"
         current.controls?.setEnabled(!current.editing && visible)
+        val controls=current.controls?.metadata()
+        val controlsReady=controls?.optBoolean("enabled")==true && controls.optLong("failures")==0L &&
+            controls.optJSONArray("buttons")?.let {buttons -> buttons.length()==4 && (0 until buttons.length()).all {buttons.getJSONObject(it).optBoolean("ready")}}==true &&
+            current.modeBadge?.metadata()?.optBoolean("object_ready")==true
+        current.menu?.tick(runtime,controlsReady)
         val input=runtime.optJSONObject("app")?.optJSONObject("input")
         val focused=input!=null && !input.isNull("focus_token") && NativeSessionHost.keyboardFocusMatches(current.key,input.getString("focus_token"))
-        current.modeBadge?.update(WindowMode.from(NativeSessionHost.inputTarget(controlTarget)!=null,visible,current.editing,current.move?.phase,NativeSessionHost.inputStatus.value.reason,focused),visible)
+        current.modeBadge?.update(WindowMode.from(NativeSessionHost.inputTarget(controlTarget)!=null,visible,current.editing,current.move?.phase,NativeSessionHost.inputStatus.value.reason,focused,current.menu?.phase),visible)
     }
     private fun tickMove(current:Binding,runtime:JSONObject) {
         val windows=runtime.getJSONObject("workspace").getJSONArray("windows")
