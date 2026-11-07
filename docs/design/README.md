@@ -10,7 +10,7 @@
 
 ## 読む順序
 
-次の拡張は[Termuxの必要時起動とLinux GUIアプリの計画](../next-phase-termux-startup-linux-gui-plan-20261107.md)にまとめた。
+次の拡張は[Termuxの必要時起動・Linux GUI・負荷連動テーマの計画](../next-phase-termux-startup-linux-gui-plan-20261107.md)にまとめた。
 2026-11-07時点では相談段階で、実装開始待ち。既存taskの受入れ条件と状態は変更しない。
 
 1. 本書で到達点とタスク順を確認する。

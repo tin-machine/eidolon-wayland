@@ -1,4 +1,4 @@
-# 次フェーズ案: Termuxの必要時起動とLinux GUIアプリ
+# 次フェーズ案: Termuxの必要時起動・Linux GUI・負荷連動テーマ
 
 作成日: 2026-11-07。状態: **相談・計画のみ。実装開始の指示待ち**。
 調査基準は`5a515541296bee5227dfd09c87bb0104a66fbfec`、直近の実機候補はBuild133。
@@ -11,6 +11,7 @@
 1. Quest再起動後でも、Eidolonの「ターミナルを開く」から必要なTermuxサービスを起動し、接続できる。
 2. Termux上の小さなゲームを、Eidolonの平面パネルに表示してキーボードで遊べる。
 3. 成立した経路を、ゲーム以外のLinux GUIアプリを起動する仕組みへ広げる。
+4. 二枚のウィンドウのリングを見やすくし、外側・中央・内側でCPU・メモリー・Disk I/Oを表す。
 
 2026-11-07のユーザー確認では、スクロールすると「ターミナルを開く」が見つかり、
 再起動後に停止していたTermux/sshdを開発側で起動するとターミナルが開いた。
@@ -172,6 +173,125 @@ dialog・popupと独立toplevelを区別し、親を閉じた際の回収方針�
 HMDでの読みやすさ・入力感覚・実キーボード操作は最後にユーザーへ依頼する。
 これまでのUS101互換キーボード・Fキー検証免除の指定を引き継ぎ、Fキーを必須操作にしない。
 実機未確認は`not_run`のまま残し、host testやbuildだけで完了にしない。
+
+## 5. 次のテーマ課題: 太いリングと負荷に応じた回転
+
+2026-11-07の追加相談。調査基準は`2b11793`。**以下は次の課題であり、まだ実装しない。**
+ユーザーは、foot本体を含めるのが難しい場合は計測対象から外してよいと指定した。
+この指定に従い、共有foot本体を除外し、現在の窓別の作業計測を拡張する方針とする。
+
+### 二つ目のウィンドウと太さ
+
+現在の[render loop](../native/render/src/lib.rs)は、各表示targetの(SessionId, WindowId)に対して
+[独立したtheme player](../native/render/src/theme_state.rs)を呼ぶ。
+テーマを有効にすると二つ目にも同じ三重リングを描く実装で、focusedな一枚だけに限定していない。
+ただし、ユーザーから二つ目の装飾が分かりづらいとの指摘があり、HMDでの視認性は改善・確認が必要。
+線が細いことだけを原因と断定せず、端末本文による遮蔽、配置の重なり、サイズ、alphaも確認する。
+
+内蔵Cyan Orbitの[外側](../native/theme/assets/cyan-orbit/outer.svg)・
+[中央](../native/theme/assets/cyan-orbit/middle.svg)・
+[内側](../native/theme/assets/cyan-orbit/inner.svg)の円弧は、いずれも`stroke-width="2"`。
+次の変更では**2→6（約3倍）**とし、中央の線状目盛りも揃える。
+リングの直径・配置・回転方向・色・不透明度は最初の比較では維持する。
+外側の丸い目印は線幅ではないため、半径を機械的に3倍にしない。
+二枚とも同じ内蔵素材を適用し、import済みのユーザーテーマは書き換えない。
+既定のテーマ選択をONへ変える意味ではなく、内蔵テーマの見た目を変更する課題である。
+
+### 各リングの意味
+
+| リング | 計測対象 | 回転の要件 | 現在との差 |
+| --- | --- | --- | --- |
+| 外側 | 対応する作業のCPU使用量（1.0 = 1 core相当） | 低負荷では停止、高負荷ほど速く回転 | CPUは計測済み。固定12秒周期から、CPUだけに連動する速度へ変更 |
+| 中央 | 同じ作業のRSS合計（使用中メモリーの近似） | 保持量が多いほど速く回転 | RSSは計測・転送済み。描画側への受渡しと速度制御を追加 |
+| 内側 | 同じ作業のストレージ読み書き量/秒 | I/Oがないときは停止、多いほど速く回転 | collectorからの追加が必要。Quest上で取得可能か小規模検証を先行 |
+
+CPUの上下は外側だけを変更する。中央はメモリー量、内側はI/O量から独立して決める。
+CPUが暇でもメモリーを多く保持していれば中央は回り続ける。
+RSSは空きメモリー不足やOS全体の逼迫度ではなく、対象process群の保持量を表す。
+共有pageが複数processのRSSへ重複するため、厳密な物理メモリー占有量とは表示しない。
+
+初期調整案はCPUの既存busy閾値（開始0.15 core超、停止0.08 core未満）と1秒EMAを再利用する。
+速度は値に対して単調増加させ、上限を設ける。
+上限の仮値は外側60度/秒（4 core）、中央40度/秒（1GiB）、内側90度/秒（16MiB/秒）。
+中央・内側は0で停止し、それぞれ上限値まで線形に増加する案から比較する。
+CPUの閾値間では直前の停止/回転状態を保持し、閾値付近でのちらつきを防ぐ。
+これらはユーザー指定値ではなく、実機で調整する初期案。採用値と変更理由を記録する。
+
+### 計測範囲: foot本体を除外する
+
+現在の[launcher](../scripts/termux/eidolon-session.py)は一つの`foot --server`を起動し、
+各窓を`footclient`で追加する。共有serverのCPU/RSSを窓へ正確に配分する情報は持っていない。
+ユーザーの追加指定により、この課題のためにfootを窓別processへ分割する必要はない。
+
+- 通常のfoot: 登録済みPTYのシェルと、その子孫processを対象にする。
+- tmux使用時: 既存adapterで対応づけたtmux sessionのpaneと、その子孫processを対象にする。
+  同じsessionを二枚で表示した場合は同じ作業値になってよい。paneはPID/starttimeで重複排除する。
+- 同じTermux UIDという理由だけで、他の端末・全Termux・共有foot・sshd・Waypipe・collectorを合算しない。
+  APKの装飾描画の負荷も含めない。リングを描いた負荷でリング自身が加速する経路を作らない。
+- 短命process、親を離れたprocess、遠隔SSH先は現在の観測範囲に限界がある。未観測をゼロとしない。
+  GUI launcherへ広げる際は、そのappの所有identityと子processを別途対応づける。
+
+### Disk I/Oの技術的な条件
+
+Linuxには[`/proc/<pid>/io`](https://man7.org/linux/man-pages/man5/proc_pid_io.5.html)があり、
+processに帰属する読み書きのカウンターを取得できる。
+Questのkernel設定・Androidのアクセス制約があるため、Termuxの実collectorと同じUID/contextで
+対象のシェル・子processを読めるか確認する。ADB shellや別contextでの成功だけでは合格にしない。
+
+候補の指標は`read_bytes`と`write_bytes`の差分/秒。
+[`rchar`/`wchar`にはTTY等の入出力も含まれる](https://docs.kernel.org/filesystems/proc.html#proc-pid-io-display-the-io-accounting-fields)ので、
+これらをDisk I/Oの代用にしない。cache hitならread_bytesが増えない場合があり、
+write_bytesはdirty化時点の計上を含む。物理デバイスが今処理したbyte数や待ち時間そのものではない。
+`cancelled_write_bytes`は別processの書込み取消も含み得るため、単純減算で実書込量と断定しない。
+
+`/proc/<pid>/io`にはwait済みの子process分も含まれる。
+**生存する全PIDの差分を単純合算する方式は、子の終了・waitで二重計上し得るため採用を確定しない。**
+集計範囲を閉じたprocess treeとして扱う方法やthread単位のカウンター等を小probeで比較し、
+即時wait・遅延wait・子の終了・thread終了を再現してから集計方式を決める。
+厳密に対応づけられない区間はpartial/unknownにし、その区間の速度は更新しない。
+継続する不確実性はstaleへ落とす。新PIDの過去累積値を一秒分のI/Oとして扱わない。
+実装方式が決まるまでは内側の受入れを`not_run`に保ち、CPU/RSS側を先に進められるようにする。
+
+取得不可・権限拒否・欠測は「I/Oなし」と区別する。内側は現在角度で停止して薄く表示し、
+診断には取得不可の理由を残す。I/Oが読めなくてもCPUとメモリーの表示は継続する。
+root権限や端末設定の緩和を前提にせず、端末全体のDisk I/Oへ黙って置き換えない。
+
+### 回転速度の実装方針
+
+現行の[theme manifest](../native/theme/src/manifest.rs)のbindingはCPU meter専用で、
+[player](../native/theme/src/player.rs)のanimationは固定周期である。
+今回の速度連動にはtheme/runtimeの拡張が必要で、CSSやSVGの変更だけでは完結しない。
+
+- window・partごとに角度を保持し、単調時計の経過時間と角速度から積分する。
+  毎sampleでanimation durationを変えて現在角度を再計算する方式は、跳躍・巻戻りを起こすため避ける。
+  減速して0になったらその角度で停止し、再開時もそこから回す。中央の逆回転は維持する。
+- 1Hz計測をそのまま速度の段差にせず、平滑化と短い速度遷移を入れる。
+  window/partの位相をfocus変更やsample更新で初期化しない。
+- 非表示・sleepでは時計をpauseし、復帰時に非表示期間の回転を一気に追いつかせない。
+  workload/epoch変更では古い値と速度を捨て、角度は維持する。
+- metricごとにfresh/partial/stale/unavailableを管理する。3秒超の古い値では該当リングを停止・減光する。
+  既存CPU meterのhold-last仕様と、負荷連動リングの停止仕様を分ける。
+- 「動きを抑える」を最優先する。全リング停止・静止appの場合は不要なpresentを止める。
+  太くしたSVGを毎frame再raster/uploadする方式にはしない。
+- RSS/I/Oの受渡しをcollector→wire/model→core→render→playerまで通す。
+  未知fieldを拒否する既存`workload_v1`へ黙ってfieldを追加せず、版付きの新契約を設ける。
+  metricの可否を個別に持ち、launcherのSHA検証と同時更新を維持する。
+  themeも速度bindingを新仕様として区別し、従来v1 ZIPの固定回転を壊さない。
+
+### 実装再開後の順序と確認
+
+1. 三本の線幅を3倍にし、二枚それぞれで描画されること、非focused側・重なり・resizeを確認する。
+2. 既存CPU/RSSと合成値を使って、停止・低速・高速・滑らかな速度変更・欠測をhostで検証する。
+   二つの窓で片側だけ負荷を変え、もう片側の速度が変わらないことを確認する。
+3. Termuxの小probeでDisk I/Oの取得可否と二重計上を確認する。
+   小さな専用fileを用い、端末文字出力・cache hit・書込みを区別し、復元可能な範囲で実施する。
+4. 通常SDKでCPU作業、メモリー確保後の保持/解放、I/O、tmux共有session、停止/再接続を検証する。
+   メモリー試験はpageに実際に触れ、予約量だけをRSS増加とみなさない。
+   I/O取得不可ケースと、他の二指標が継続することも確認する。
+5. FD・process・SHM等の回収と描画負荷を比較した後、HMDで三本の意味と二枚の視認性を確認してもらう。
+
+テーマ課題はTermuxの必要時起動やDoomと独立して進められる。
+実装開始・課題間の優先順位は今回の計画追記では変更しない。
 
 ## 記録と保留事項
 
