@@ -1,0 +1,175 @@
+#!/usr/bin/python3
+"""自分の一時HOME・loopback専用sshd・固定Waypipe/SHMだけ。既存SSH設定へ書かない。"""
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import pwd
+import selectors
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+HELPER = ROOT / 'scripts/linux/eidolon-linux-session.py'
+NONCE = '1234567890abcdef'
+
+
+def need(value, token):
+    if not value: raise RuntimeError(token)
+
+
+class Owned:
+    def __init__(self, command, **options):
+        self.child = subprocess.Popen(command, start_new_session=True, **options)
+        self.reaped = False
+    def done(self):
+        return self.reaped or os.waitid(os.P_PID,self.child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is not None
+    def close(self):
+        if self.reaped:return self.child.returncode
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:os.killpg(self.child.pid,sig)
+            except ProcessLookupError:pass
+            deadline=time.monotonic()+1
+            while not self.done() and time.monotonic()<deadline:time.sleep(.01)
+        status=self.child.wait(timeout=2);self.reaped=True
+        for stream in (self.child.stdin,self.child.stdout,self.child.stderr):
+            if stream is not None:stream.close()
+        return status
+    def success(self):
+        need(self.done(),'CHILD_RUNNING')
+        status=self.close();need(status==0,'CHILD_FAILED')
+
+
+def run(args):
+    os.umask(0o077)
+    args.output.mkdir(mode=0o700,parents=True,exist_ok=False)
+    proof=dict(schema=1,case='linux-helper-shm',result='running',loopback_ssh=True,real_apk_uid=False,
+               physical_hmd=False,production_home_modified=False)
+    artifacts=args.output
+    metadata=json.loads((ROOT/'native/generated/waypipe-host.json').read_text())
+    waypipe=Path(metadata['executable']);producer=args.target_dir/'debug/eidolon-shm-fixture'
+    server=args.target_dir/'debug/examples/linux_shm_server'
+    need(metadata['target']=='host' and metadata['version']=='0.11.3' and hashlib.sha256(waypipe.read_bytes()).hexdigest()==metadata['sha256'],'WAYPIPE_INPUT')
+    need(producer.is_file() and server.is_file(),'BUILD_REQUIRED')
+    proof['helper_sha256']=hashlib.sha256(HELPER.read_bytes()).hexdigest()
+    proof['server_sha256']=hashlib.sha256(server.read_bytes()).hexdigest()
+    proof['source_revision']=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+    proof['source_hashes']={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in ('scripts/linux/eidolon-linux-session.py','scripts/check-linux-helper-shm','native/core/examples/linux_shm_server.rs','native/fixtures/shm-client/src/lib.rs','native/core/src/compositor/protocol.rs')}
+    proof['waypipe_sha256']=metadata['sha256'];proof['fixture_sha256']=hashlib.sha256(producer.read_bytes()).hexdigest()
+    with tempfile.TemporaryDirectory(prefix='elw-') as temporary:
+        directory=Path(temporary);home=directory/'home';home.mkdir(mode=0o700)
+        bundle=home/'.local/lib/eidolon-linux';bundle.mkdir(mode=0o700,parents=True)
+        for parent in (home/'.local',home/'.local/lib'):parent.chmod(0o700)
+        for source,name in ((HELPER,'eidolon-linux-session.py'),(waypipe,'waypipe'),(producer,'eidolon-shm-fixture')):
+            shutil.copyfile(source,bundle/name);(bundle/name).chmod(0o600 if name.endswith('.py') else 0o700)
+        manifest=dict(schema=1,backend='linux_posix',revision='eidolon-linux-shm-v1',files={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in bundle.iterdir()})
+        (bundle/'bundle.json').write_text(json.dumps(manifest,separators=(',',':')));(bundle/'bundle.json').chmod(0o600)
+        entry=directory/'entry.py'
+        entry.write_text("import importlib.util,sys\nfrom pathlib import Path\nsys.dont_write_bytecode=True\ns=importlib.util.spec_from_file_location('helper',"+repr(str(bundle/'eidolon-linux-session.py'))+");h=importlib.util.module_from_spec(s);s.loader.exec_module(h)\nh.system_python()\noutput=h.Output(1)\ntry:h.serve(Path("+repr(str(home))+"),"+repr(NONCE)+",0,output)\nfinally:output.close()\n")
+        for name in ('hostkey','clientkey'):
+            subprocess.run(['/usr/bin/ssh-keygen','-q','-t','ed25519','-N','','-f',str(directory/name)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        (directory/'authorized_keys').write_bytes((directory/'clientkey.pub').read_bytes())
+        with socket.socket() as reserve:reserve.bind(('127.0.0.1',0));port=reserve.getsockname()[1]
+        config=directory/'sshd_config'
+        config.write_text('\n'.join(['Port '+str(port),'ListenAddress 127.0.0.1','AddressFamily inet',
+            'HostKey '+str(directory/'hostkey'),'PidFile '+str(directory/'sshd.pid'),'AuthorizedKeysFile '+str(directory/'authorized_keys'),
+            'UsePAM no','PasswordAuthentication no','KbdInteractiveAuthentication no','PubkeyAuthentication yes',
+            'StrictModes no','PermitRootLogin no','AllowUsers '+pwd.getpwuid(os.getuid()).pw_name,'PermitUserEnvironment no',
+            'AllowAgentForwarding no','X11Forwarding no','PermitTTY no','AllowTcpForwarding remote','PermitListen 127.0.0.1:1','AllowStreamLocalForwarding yes',
+            'StreamLocalBindUnlink no','StreamLocalBindMask 0177','LogLevel ERROR',
+            'ForceCommand '+shlex.join(['/usr/bin/python3','-I','-S',str(entry)])])+'\n')
+        (directory/'known_hosts').write_text('[127.0.0.1]:'+str(port)+' '+(directory/'hostkey.pub').read_text())
+        control=directory/'c';destination=pwd.getpwuid(os.getuid()).pw_name+'@127.0.0.1'
+        ssh=['/usr/bin/ssh','-F','/dev/null','-p',str(port),'-i',str(directory/'clientkey'),'-o','IdentitiesOnly=yes',
+             '-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='+str(directory/'known_hosts'),
+             '-o','GlobalKnownHostsFile=/dev/null','-o','ConnectTimeout=3','-o','ExitOnForwardFailure=yes','-S',str(control)]
+        owners=[]; logs=[]; helper=None; forward=None; selector=selectors.DefaultSelector();pending=bytearray()
+        def spawn(command,name,**options):
+            log=(artifacts/(name+'.log')).open('wb');logs.append(log)
+            process=Owned(command,stderr=log,**options);owners.append(process);return process
+        def operation(operation,*options):
+            with (artifacts/('operation-'+operation+'.log')).open('ab') as operation_log:
+                result=subprocess.run(ssh+['-O',operation,*options,destination],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=operation_log,timeout=4)
+            need(result.returncode==0,'SSH_'+operation.upper())
+        def line(deadline):
+            while b'\n' not in pending:
+                need(time.monotonic()<deadline,'HELPER_TIMEOUT')
+                for key,_ in selector.select(.05):
+                    raw=os.read(key.fd,4096);need(raw,'HELPER_EOF');pending.extend(raw);need(len(pending)<=32768,'HELPER_OUTPUT_LIMIT')
+            raw,_,rest=pending.partition(b'\n');pending[:]=rest
+            value=json.loads(raw);need(value.get('nonce')==NONCE and value.get('uid')==os.getuid(),'HELPER_OWNER');return value
+        def send(kind,**fields):
+            helper.child.stdin.write((json.dumps(dict(schema=1,nonce=NONCE,type=kind,**fields))+'\n').encode());helper.child.stdin.flush()
+        try:
+            sshd=spawn(['/usr/sbin/sshd','-D','-e','-f',str(config)],'sshd',stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL)
+            deadline=time.monotonic()+5
+            while True:
+                need(time.monotonic()<deadline and not sshd.done(),'SSHD_START')
+                try:
+                    with socket.create_connection(('127.0.0.1',port),timeout=.1):break
+                except OSError:time.sleep(.02)
+            master=spawn(ssh+['-M','-N',destination],'ssh-master',stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL)
+            deadline=time.monotonic()+5
+            while not control.exists():need(time.monotonic()<deadline and not master.done(),'SSH_MASTER');time.sleep(.02)
+            operation('check');proof['ssh_authenticated']=True
+            local=directory/'local';local.mkdir(mode=0o700)
+            compositor=spawn([str(server),str(local)],'compositor',stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL)
+            deadline=time.monotonic()+5
+            while not (local/'w').exists():need(time.monotonic()<deadline and not compositor.done(),'COMPOSITOR_START');time.sleep(.01)
+            env={'PATH':'/usr/bin:/bin','HOME':str(home),'XDG_RUNTIME_DIR':str(local),'WAYLAND_DISPLAY':'w','LANG':'C.UTF-8'}
+            client=spawn([str(waypipe),'--no-gpu','--compress','none','--threads','1','--socket',str(local/'p'),'client'],
+                         'waypipe-client',env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL)
+            deadline=time.monotonic()+5
+            while not (local/'p').exists():need(time.monotonic()<deadline and not client.done(),'WAYPIPE_CLIENT');time.sleep(.01)
+            helper=spawn(ssh+['-T',destination,'fixed-linux-shm-fixture'],'ssh-helper',stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+            os.set_blocking(helper.child.stdout.fileno(),False);selector.register(helper.child.stdout,selectors.EVENT_READ)
+            prepared=line(time.monotonic()+5);need(prepared['type']=='prepared' and prepared['launcher_sha256']==proof['helper_sha256'],'PREPARED')
+            expected=home/'.eidolon-linux'/('s-'+NONCE)/'p';need(prepared['socket']==str(expected),'SOCKET_BOUND')
+            forward=str(expected)+':'+str(local/'p');operation('forward','-R',forward);proof['streamlocal_forwarded']=True
+            send('inspect_tools');tools=line(time.monotonic()+10)
+            need(tools['type']=='tools' and tools['files']==manifest['files'] and tools['waypipe_version']=='0.11.3','TOOLS_PIN')
+            send('start',mode='pattern');started=line(time.monotonic()+5);need(started['type']=='child_started','CHILD_STARTED')
+            finished=line(time.monotonic()+15);need(finished['type']=='finished','FINISHED')
+            proof['helper']={key:finished.get(key) for key in ('reason','cleaned','group_alive','child_reaped','pipes_closed','pattern_verified','pattern','stdout','stderr')}
+            need(finished['cleaned'] and not finished['group_alive'] and finished['child_reaped'] and finished['pipes_closed'] and finished['pattern_verified'],'REMOTE_SHM')
+            deadline=time.monotonic()+5
+            while not compositor.done():need(time.monotonic()<deadline,'COMPOSITOR_EXIT');time.sleep(.01)
+            compositor.success();proof['compositor']=json.loads((local/'server-result.json').read_text())
+            need(proof['compositor']['result']=='pass' and proof['compositor']['verified_frames']==100,'COMPOSITOR_SHM')
+            operation('cancel','-R',forward);forward=None;proof['forward_cancelled']=True
+            proof['result']='pass'
+        except Exception as error:
+            proof['result']='fail';proof['reason']=str(error) if str(error).isupper() and len(str(error))<=64 else error.__class__.__name__
+        finally:
+            if helper is not None and not helper.done():
+                try:send('stop')
+                except (OSError,ValueError):pass
+            for owner in reversed(owners):
+                try:owner.close()
+                except (OSError,subprocess.TimeoutExpired):proof['cleanup_failed']=True
+            selector.close()
+            for log in logs:log.close()
+            proof['owned_processes_reaped']=all(owner.reaped for owner in owners)
+            if (directory/'local/server-result.json').exists():proof['compositor']=json.loads((directory/'local/server-result.json').read_text())
+            receipt=home/'.eidolon-linux'/('r-'+NONCE+'.json')
+            proof['remote_directory_absent']=not (home/'.eidolon-linux'/('s-'+NONCE)).exists()
+            proof['receipt_cleaned']=receipt.exists() and json.loads(receipt.read_text()).get('cleaned') is True
+            if not proof['owned_processes_reaped'] or proof.get('cleanup_failed') or (proof['result']=='pass' and
+                    (not proof['remote_directory_absent'] or not proof['receipt_cleaned'])):proof['result']='fail'
+    (artifacts/'result.json').write_text(json.dumps(proof,indent=2)+'\n')
+    print(json.dumps({key:proof.get(key) for key in ('result','reason','streamlocal_forwarded','forward_cancelled','owned_processes_reaped','receipt_cleaned')}))
+    return 0 if proof['result']=='pass' else 1
+
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--target-dir',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
+    raise SystemExit(run(parser.parse_args()))
