@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""固定GTK初描画を現行leaseで5秒観測し、同jobでSDK初frameと退役を確認する。"""
+import argparse
+import datetime
+import json
+import os
+from pathlib import Path
+import secrets
+import selectors
+import shlex
+import subprocess
+import time
+
+from gui_probe_sdk import digest_sources, sdk_slice, summarize_first_frame
+from gtk_probe_run import GTK_SHA256, GTK_UID, GTK_VERSION
+from native_build import ROOT
+from quest_device import PACKAGE, QuestDevice, package_uid, work_root
+from sdl_lease_capture import CaptureError, MAX_SNAPSHOT, binding_key, canonical, decode, need, select_snapshot
+
+
+def remote_source():
+    source = "import sys,types\n"
+    for name, path in (("sdl_probe_install", "scripts/sdl_probe_install.py"),
+                       ("sdl_lease_capture", "scripts/sdl_lease_capture.py"),
+                       ("sdl_probe_run", "scripts/sdl_probe_run.py"),
+                       ("sdl_observation", "scripts/termux/eidolon-sdl-probe.py")):
+        source += f"m=types.ModuleType({name!r});exec({(ROOT / path).read_text()!r},m.__dict__);sys.modules[m.__name__]=m\n"
+    source += f"exec({(ROOT / 'scripts/gtk_probe_run.py').read_text()!r})\n"
+    return source
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--serial", required=True)
+    parser.add_argument("--artifact-root", type=Path)
+    args = parser.parse_args()
+    os.umask(0o077)
+    root = args.artifact_root or work_root() / "eidolon-gtk-first-frame"
+    if not root.is_absolute(): parser.error("artifact rootは絶対pathにしてください")
+    probe_id = secrets.token_hex(16)
+    run = root / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f") + "-" + probe_id)
+    run.mkdir(mode=0o700, parents=True)
+    device = QuestDevice(args.serial, run)
+    result = dict(schema=1, status="blocked", operator="eidolon-gtk-first-frame-v1", probe_id=probe_id,
+                  gtk_version=GTK_VERSION, binary_sha256=GTK_SHA256, sdk_samples=[], events=[],
+                  input="not_run", dialog="not_run", resize="not_run", hmd="not_run", physical_input="not_run")
+    child, selector, cancel_sent = None, None, False
+
+    def snapshot():
+        process = subprocess.run(["adb", "-s", args.serial, "exec-out", "run-as", PACKAGE, "head", "-c", str(MAX_SNAPSHOT + 1),
+                                  "no_backup/diagnostics/latest.json"], capture_output=True, timeout=5)
+        need(process.returncode == 0, "DIAGNOSTICS_UNAVAILABLE")
+        return decode(process.stdout)
+
+    def cancel():
+        nonlocal cancel_sent
+        if child is not None and not cancel_sent:
+            try:
+                child.stdin.write(canonical(dict(type="cancel")) + b"\n");child.stdin.flush()
+                cancel_sent = True
+            except (OSError, BrokenPipeError): pass
+
+    try:
+        result["device"] = device.validate()
+        result["device"]["physical_serial"] = device.adb("shell", "getprop", "ro.serialno").strip()
+        uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux")
+        need(uid == GTK_UID, "GTK_UID_MISMATCH")
+        digest, initial = digest_sources(), snapshot()
+        binding = select_snapshot(initial, digest, uid)
+        need(device.adb("shell", "pidof", PACKAGE).strip() == str(binding["process_id"]), "APK_PROCESS_NOT_CURRENT")
+        baseline = sdk_slice(initial)
+        need(len(baseline["mapped"]) == 1, "ONE_BASELINE_WINDOW_REQUIRED")
+        result["binding"] = binding
+        request = dict(binding=binding, probe_id=probe_id)
+        (run / "request.json").write_bytes(canonical(request) + b"\n")
+        source = remote_source()
+        result["remote_source_bytes"] = len(source.encode())
+        command = ["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python3", "-c", source]
+        child = subprocess.Popen(["adb", "-s", args.serial, "shell", "-T", shlex.join(command)], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        child.stdin.write(canonical(request) + b"\n");child.stdin.flush()
+        selector = selectors.DefaultSelector()
+        for name in ("stdout", "stderr"):
+            pipe = getattr(child, name);os.set_blocking(pipe.fileno(), False);selector.register(pipe, selectors.EVENT_READ, name)
+        started, last_poll, finished_at = time.monotonic(), 0.0, None
+        pending, stdout_bytes, stderr_bytes, finished = bytearray(), 0, 0, None
+        while time.monotonic() - started < 25:
+            now = time.monotonic()
+            if now - last_poll >= .1:
+                last_poll = now
+                try:
+                    value = snapshot()
+                    current = select_snapshot(value, digest, uid)
+                    need(binding_key(current) == binding_key(binding), "APK_BINDING_CHANGED")
+                    sample = sdk_slice(value)
+                    if not result["sdk_samples"] or result["sdk_samples"][-1]["sequence"] != sample["sequence"]:
+                        need(len(result["sdk_samples"]) < 256, "SDK_SAMPLE_LIMIT")
+                        result["sdk_samples"].append(sample)
+                except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+                    result["monitor_failure"] = error.reason if isinstance(error, CaptureError) else "SDK_MONITOR_UNAVAILABLE"
+                    cancel()
+            for key, _ in selector.select(.02):
+                data = os.read(key.fd, 4096)
+                if not data:
+                    selector.unregister(key.fd);continue
+                if key.data == "stderr":
+                    stderr_bytes += len(data)
+                    if stderr_bytes > 65536: cancel()
+                    continue
+                stdout_bytes += len(data);pending.extend(data)
+                need(stdout_bytes <= 131072 and len(pending) <= 65536, "REMOTE_OUTPUT_LIMIT")
+                while b"\n" in pending:
+                    line, _, rest = pending.partition(b"\n");pending = bytearray(rest)
+                    event = decode(line, 65536)
+                    need(type(event) is dict and event.get("phase") in {"validated", "started", "finished", "blocked"}, "REMOTE_EVENT_INVALID")
+                    if event["phase"] == "finished":
+                        finished = event["result"]
+                        need(finished.get("operator") == result["operator"] and finished.get("probe_id") == probe_id and
+                             finished.get("binary_sha256") == GTK_SHA256 and finished.get("gtk_version") == GTK_VERSION and
+                             finished.get("uid") == GTK_UID, "GTK_RESULT_MISMATCH")
+                        finished_at = time.monotonic()
+                    elif event["phase"] == "blocked":
+                        result["blocked_reason"] = event.get("reason");finished_at = time.monotonic()
+                    else: result["events"].append(event)
+            if finished_at is not None and time.monotonic() - finished_at >= 3: break
+            if child.poll() is not None and not selector.get_map() and finished_at is None: break
+        if finished_at is None: cancel()
+        child.stdin.close();child.wait(timeout=6)
+        result.update(remote_returncode=child.returncode, remote_result=finished, stderr_bytes=stderr_bytes)
+        need(digest_sources() == digest, "SOURCE_CHANGED")
+        result["sdk_observation"] = summarize_first_frame(baseline, result["sdk_samples"])
+        result["status"] = "observed" if (isinstance(finished, dict) and finished.get("status") == "observed" and
+                                          child.returncode == 0 and not result.get("monitor_failure") and
+                                          result["sdk_observation"]["status"] == "observed") else "failed"
+        if result.get("blocked_reason") and not result["events"]: result["status"] = "blocked"
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, RuntimeError) as error:
+        result.update(status="blocked" if child is None else "failed",
+                      reason=error.reason if isinstance(error, CaptureError) else "GTK_OPERATOR_UNAVAILABLE")
+        cancel()
+    finally:
+        if child is not None:
+            try:
+                if not child.stdin.closed: child.stdin.close()
+                child.wait(timeout=6)
+            except (OSError, subprocess.SubprocessError):
+                result["remote_cleanup_unconfirmed"] = True
+                child.terminate()  # host ADB handleのみ。remote cleanupの証拠にはしない。
+                try: child.wait(timeout=2)
+                except subprocess.SubprocessError: pass
+            child.stdout.close();child.stderr.close()
+        if selector is not None: selector.close()
+        (run / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(dict(status=result["status"], artifact=str(run), probe_id=probe_id,
+                          reason=result.get("reason") or result.get("blocked_reason"),
+                          sdk_observation=result.get("sdk_observation", {}).get("status"), hmd="not_run", physical_input="not_run")))
+    return 0 if result["status"] == "observed" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -12,30 +12,11 @@ import shlex
 import subprocess
 import time
 
-from native_build import ROOT, source_files
+from native_build import ROOT
+from gui_probe_sdk import digest_sources, sdk_slice
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
 from sdl_lease_capture import CaptureError, MAX_SNAPSHOT, binding_key, canonical, decode, hexadecimal, need, select_snapshot
 from sdl_probe_run import DEBUG_VARIANTS, STAGES, VARIANTS, variant_environment
-
-
-def digest_sources():
-    digest = hashlib.sha256()
-    for path in source_files(ROOT):
-        digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
-    return digest.hexdigest()
-
-
-def sdk_slice(value):
-    runtime = value["runtime"]["runtime"]
-    app = runtime["app"]
-    windows = sorted(row["window"] for row in app.get("windows", []) if row.get("life") == "Mapped")
-    targets = []
-    for row in runtime.get("render", {}).get("targets", []):
-        key = row.get("key", {})
-        if key.get("session") == app["session"]:
-            targets.append(dict(window=key.get("window"), scene=key.get("scene"), generation=key.get("generation"),
-                                frames=row.get("frames"), content_frame=row.get("content_frame")))
-    return dict(sequence=value["sequence"], mapped=windows, targets=targets)
 
 
 def summarize_sdk(baseline, samples):
