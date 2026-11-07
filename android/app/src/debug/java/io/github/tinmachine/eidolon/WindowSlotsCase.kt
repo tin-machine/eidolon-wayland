@@ -30,7 +30,7 @@ object WindowSlotsCase {
         val expected = linkedMapOf<String, Int>()
         val leases = linkedMapOf<String, String>()
         val targets = linkedMapOf<String, JSONObject>()
-        val result = JSONObject().put("case", "window-slots").put("fixture_revision", "window-slots-v2").put("nonce", nonce).put("result", "running")
+        val result = JSONObject().put("case", "window-slots").put("fixture_revision", "window-slots-v3").put("nonce", nonce).put("result", "running")
             .put("normal_foot_server", true).put("independent_clients_verified", false).put("physical_input_verified", false).put("hmd_verified", false)
             .put("synthetic_input", true).put("synthetic_visibility", false).put("auto_retry", false).put("checkpoints", rows)
         var handle = 0L
@@ -265,7 +265,20 @@ object WindowSlotsCase {
                     when (stage) {
                         "ready" -> if (s.optString("state") == "Ready" && s.optBoolean("activity_visible") && s.optString("xr_state") == "FOCUSED") {
                             check(s.getJSONObject("transport").getString("state") == "Idle"); handle = current; scene = s.getString("scene")
-                            NativeSessionHost.openTerminal(); stage = "first"; publish()
+                            // Nonce-isolated preferences default to Off. Select the required theme explicitly,
+                            // then wait for its actual native/render revision before opening the first foot.
+                            NativeSessionHost.setTheme("builtin", reduced = false)
+                            stage = "theme_ready"; deadline = SystemClock.elapsedRealtime() + 15000; publish()
+                        }
+                        "theme_ready" -> {
+                            val theme = s.getJSONObject("theme"); val render = s.getJSONObject("render")
+                            check(theme.isNull("error") && theme.isNull("fallback_reason")) { "THEME_SETUP_FAILED" }
+                            if (theme.optString("requested") == "builtin" && theme.optString("selection") == "builtin" && !theme.optBoolean("loading") &&
+                                theme.optLong("applied_revision", -1) == render.optLong("theme_revision", -2) && render.optString("theme_id") == "cyan-orbit") {
+                                result.put("setup_theme_revision", render.getLong("theme_revision"))
+                                record("builtin_theme_loaded_before_first_foot", s)
+                                NativeSessionHost.openTerminal(); stage = "first"; deadline = SystemClock.elapsedRealtime() + 60000; publish()
+                            }
                         }
                         "first" -> if (windows(s).size == 1 && windows(s).single().optString("life") == "Mapped") {
                             session = s.getJSONObject("app").getString("session"); expected[windows(s).single().getString("window")] = 0

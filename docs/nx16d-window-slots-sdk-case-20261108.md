@@ -1,14 +1,15 @@
 # NX16d: 九枠の固定SDKケース
 
 2026-11-08。[九枠接続](nx16c-nine-window-integration-20261108.md)向けのdebug case `window-slots`、
-fixture revisionは`window-slots-v2`。一回の新しいRuntime/foot serverで検査し、通常設定は既存の`SdkCaseEnvironment`で隔離・復元する。
+fixture revisionは`window-slots-v3`。一回の新しいRuntime/foot serverで検査し、通常設定は既存の`SdkCaseEnvironment`で隔離・復元する。
 Kotlin compilerとcached SDK 0.15.0/既存debug classによる新caseとdebug入口二ファイルの部分コンパイルは成功した。
 既存internal classの参照にはfriend-pathを指定した。独立のread-only reviewでも新しい確定blockerは見つかっていない。
 Android全体のcompile/lint/package、Quest実行と受入れはrootの後続gateであり、本checkpointでは未実行。
 
 ## 検査内容
 
-1. 初回の通常起動はHost APIと既存の認証/helperを通し、foot一窓の中央slotを捕捉する。
+1. nonce専用の設定でCyan Orbitを明示選択し、要求/採用/読み込み完了とnative/render revision一致を待つ。
+   その後の通常起動はHost APIと既存の認証/helperを通し、foot一窓の中央slotを捕捉する。
 2. 追加は固定requestを一件ずつ提出し、enqueue結果、`command_complete`、同requestの`window_launch.matched`、
    同じrequest originのBound leaseを別に確認する。三枚、六枚、九枚では二秒間のframe増加とSDK/poseを記録する。
 3. 各窓の順序、実Runtime/session/scene/generation、panel slot/applied、workspace pose ACK、SDK実Transformを照合する。
@@ -41,7 +42,7 @@ adb -s "$EIDOLON_QUEST_SERIAL" exec-out run-as io.github.tinmachine.eidolon \
 
 検査の成功は`check.case/nonce/fixture_revision`が一致し、`result=pass`だけでなく
 `product_settings_untouched=true`、`environment_failure`なしまで待って判定する。
-wrapper復元前の中間passだけで受け入れない。全体期限180秒、初回起動60秒、追加/回収は各15秒、停止30秒。
+wrapper復元前の中間passだけで受け入れない。全体期限180秒、theme準備15秒、初回起動60秒、追加/回収は各15秒、停止30秒。
 
 `check.enqueue_codes`はJNI enqueue code、`check.completions`はnative処理結果。
 `highest_ready_windows`はSDK/pose/resourceまでそろった最大枚数、`expected_count/requested_count`は検査中の段階を示す。
@@ -80,3 +81,9 @@ v2は取得済みの最新compact snapshotを一件だけ保持し、新しいsn
 frameとlistener確認後にpanelをACKし、続いてpose/physical geometryを確認する。入力targetはこの後の条件であり、Entity作成の前提ではない。
 core回帰では九枚すべての未ACK panelから有効な初期poseが得られることと、旧sceneのpanelではslotを作れないことを確認した。
 通常設定に保存された手動poseは維持する。検証nonceの空の設定に適用する九枠の既定poseへ、通常設定を上書きしない。
+
+Build167のv2を実行中のmetadataでは、希望/適用pose・SDK三ボタンまで成立し、
+themeだけが`requested/selection=off`・render.theme_id=nullであることを確認した。
+検証用の空の設定はOffが既定なのに、v1/v2はbuiltinを要求せずcyan-orbitの成立だけを待っていた。
+v3は上記のsetup stageを加えて原因を修正する。テーマ条件・pose ACK・入力targetの検査は維持する。
+製品設定の選択は変更せず、同じwrapperのnonce別設定とdigest復元を使う。
