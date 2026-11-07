@@ -90,6 +90,10 @@ impl Player {
     ) -> Result<(), crate::timeline::ClockError> {
         self.clock.set_running(now, visible)
     }
+    /// 読取専用の診断。非表示期間を除いたwindow時計を返し、metricやphaseを進めない。
+    pub fn elapsed(&self, now: Duration) -> Result<Duration, crate::timeline::ClockError> {
+        self.clock.elapsed(now)
+    }
     pub fn new(now: Duration) -> Self {
         Self {
             clock: Timeline::new(now, true),

@@ -180,6 +180,9 @@ impl Players {
         }
         Ok(())
     }
+    pub fn elapsed(&self, key: (SessionId, WindowId), now: Duration) -> Option<Duration> {
+        self.windows.get(&key)?.player.elapsed(now).ok()
+    }
     pub fn draw(
         &mut self,
         key: (SessionId, WindowId),

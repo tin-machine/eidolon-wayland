@@ -88,6 +88,10 @@ impl FrameTiming {
 pub struct TargetReport {
     pub key: TargetKey,
     pub frames: u64,
+    /// allocationを残したまま、このfull targetのpresentだけを止めた状態。
+    pub presentation_paused: bool,
+    /// 同じrender tickのwindow player clock。入力本文・shader値は含めない。
+    pub player_clock_ms: Option<u64>,
     pub content_frame: Option<FrameSeq>,
     pub role: RenderMode,
     pub canvas: Option<theme_state::Canvas>,
@@ -145,6 +149,7 @@ struct Shared {
     latest: Vec<Arc<Submission>>,
     mode: RenderMode,
     logical: Vec<(SessionId, WindowId)>,
+    hidden: Vec<TargetKey>,
     theme: Option<Arc<eidolon_theme::raster::CompiledTheme>>,
     theme_revision: u64,
     reduced_motion: bool,
@@ -255,6 +260,7 @@ impl Controller {
                 latest: vec![],
                 mode: RenderMode::Diagnostic,
                 logical: vec![],
+                hidden: vec![],
                 theme: None,
                 theme_revision: 0,
                 reduced_motion: false,
@@ -391,6 +397,29 @@ impl Controller {
         }
         state.logical.retain(|(s, _)| *s != session);
         state.logical.extend(windows.iter().map(|w| (session, *w)));
+        self.state.1.notify_one();
+        Status::Accepted
+    }
+    /// group背面のpresent/clockを停止する。logical登録、最新画像、SDK Surfaceの所有は変えない。
+    /// full target単位なので旧scene/世代のmaskを新しいSDK targetへ持ち越さない。
+    pub fn set_hidden_targets(&self, keys: &[TargetKey]) -> Status {
+        if keys.len() > limits::VISIBLE_PANELS
+            || keys
+                .iter()
+                .enumerate()
+                .any(|(i, key)| keys[..i].contains(key))
+        {
+            return Status::InvalidArgument;
+        }
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.stop {
+            return Status::NotReady;
+        }
+        if !keys.is_empty() && state.mode != RenderMode::Windows {
+            return Status::NotReady;
+        }
+        state.hidden = keys.to_vec();
+        drop(state);
         self.state.1.notify_one();
         Status::Accepted
     }
@@ -576,6 +605,7 @@ fn run_owner(owned: &State) -> bool {
     state.snapshot.targets.clear();
     state.latest.clear();
     state.logical.clear();
+    state.hidden.clear();
     state.theme = None;
     state.accepted_theme = None;
     state.semantic.clear();
@@ -630,6 +660,7 @@ fn owner(state: &State) {
             stop,
             mode,
             logical,
+            hidden,
             requested_theme,
             requested_revision,
             requested_reduced,
@@ -657,6 +688,7 @@ fn owner(state: &State) {
                 shared.stop,
                 shared.mode,
                 shared.logical.clone(),
+                shared.hidden.clone(),
                 shared.theme.clone(),
                 shared.theme_revision,
                 shared.reduced_motion,
@@ -737,6 +769,8 @@ fn owner(state: &State) {
                                 report: TargetReport {
                                     key,
                                     frames: 0,
+                                    presentation_paused: false,
+                                    player_clock_ms: None,
                                     content_frame: None,
                                     role,
                                     canvas: None,
@@ -868,17 +902,35 @@ fn owner(state: &State) {
                 });
             }
         }
+        for target in &mut active {
+            let paused =
+                target.report.role == RenderMode::Windows && hidden.contains(&target.report.key);
+            if target.report.presentation_paused && !paused {
+                target.needs_redraw = true;
+            }
+            target.report.presentation_paused = paused;
+        }
         let visible_windows: Vec<_> = active
             .iter()
             .filter(|a| {
                 visible
                     && a.report.role == RenderMode::Windows
+                    && !a.report.presentation_paused
                     && logical.contains(&(a.report.key.session, a.report.key.window))
             })
             .map(|a| (a.report.key.session, a.report.key.window))
             .collect();
         if let Err(error) = players.visibility(clock.elapsed(), &visible_windows) {
             update(state, |s| s.snapshot.theme_error = Some(error));
+        }
+        let player_now = clock.elapsed();
+        for target in &mut active {
+            target.report.player_clock_ms = players
+                .elapsed(
+                    (target.report.key.session, target.report.key.window),
+                    player_now,
+                )
+                .map(|value| value.as_millis().min(u128::from(u64::MAX)) as u64);
         }
         if (visible && Instant::now() >= next) || theme_context_lost {
             let mut lost = if theme_context_lost {
@@ -890,7 +942,8 @@ fn owner(state: &State) {
                 if theme_context_lost {
                     break;
                 }
-                if target.report.role != mode
+                if target.report.presentation_paused
+                    || target.report.role != mode
                     || (mode == RenderMode::Windows
                         && !logical
                             .contains(&(target.report.key.session, target.report.key.window)))
@@ -1784,5 +1837,173 @@ mod tests {
         wait(|| renderer.snapshot().targets.is_empty());
         renderer.request_stop();
         wait(|| renderer.is_finished());
+    }
+    #[test]
+    fn group_hidden_target_keeps_surface_and_latest_image_but_pauses_present_and_player_clock() {
+        let renderer = Controller::start().unwrap();
+        renderer.use_windows();
+        let theme = Arc::new(
+            eidolon_theme::raster::compile(
+                &eidolon_theme::cyan_orbit(),
+                &Default::default(),
+                &renderer.pixel_budget(),
+                &Default::default(),
+            )
+            .unwrap(),
+        );
+        renderer.set_theme(Some(theme), false);
+        let front = TargetKey::from_raw(71, 81, 91, 101).unwrap();
+        let back = TargetKey::from_raw(71, 82, 91, 101).unwrap();
+        renderer.windows(front.session, &[front.window, back.window]);
+        for key in [front, back] {
+            renderer.set_semantic_state(
+                key.session,
+                key.window,
+                theme_state::SemanticState {
+                    cpu_cores: Some(1.),
+                    io_bytes_per_second: Some(1048576.),
+                    ..Default::default()
+                },
+            );
+            let (image, probes) = fixtures::make(16, 1, key, 64, 64).unwrap();
+            renderer.submit(image, probes);
+            renderer.attach_window(key, PlatformWindow::default(), 64, 64);
+        }
+        renderer.set_visible(true);
+        wait(|| {
+            renderer.snapshot().targets.len() == 2
+                && renderer
+                    .snapshot()
+                    .targets
+                    .iter()
+                    .all(|t| t.frames > 2 && t.player_clock_ms.is_some())
+        });
+        assert_eq!(renderer.set_hidden_targets(&[back]), Status::Accepted);
+        wait(|| {
+            renderer
+                .snapshot()
+                .targets
+                .iter()
+                .any(|t| t.key == back && t.presentation_paused)
+        });
+        let paused = renderer.snapshot();
+        let held = paused
+            .targets
+            .iter()
+            .find(|t| t.key == back)
+            .unwrap()
+            .clone();
+        let front_frames = paused
+            .targets
+            .iter()
+            .find(|t| t.key == front)
+            .unwrap()
+            .frames;
+        let (image, probes) = fixtures::make(16, 2, back, 64, 64).unwrap();
+        assert_eq!(renderer.submit(image, probes), Status::Accepted);
+        renderer.set_semantic_state(
+            back.session,
+            back.window,
+            theme_state::SemanticState {
+                cpu_cores: Some(1.),
+                io_bytes_per_second: Some(2097152.),
+                ..Default::default()
+            },
+        );
+        thread::sleep(FRAME * 4);
+        let hidden = renderer.snapshot();
+        let held_after = hidden.targets.iter().find(|t| t.key == back).unwrap();
+        assert_eq!(held_after.frames, held.frames);
+        assert_eq!(held_after.content_frame, held.content_frame);
+        assert_eq!(held_after.player_clock_ms, held.player_clock_ms);
+        assert_eq!(
+            held_after.io_draw.as_ref().unwrap().bytes_per_second,
+            Some(1048576.)
+        );
+        assert!(
+            hidden
+                .targets
+                .iter()
+                .find(|t| t.key == front)
+                .unwrap()
+                .frames
+                > front_frames
+        );
+        assert_eq!(
+            (hidden.targets.len(), hidden.contexts, hidden.latest_images),
+            (2, 1, 2)
+        );
+        assert!(hidden.detached.is_empty());
+        assert_eq!(renderer.set_hidden_targets(&[]), Status::Accepted);
+        wait(|| {
+            renderer.snapshot().targets.iter().any(|t| {
+                t.key == back
+                    && !t.presentation_paused
+                    && t.content_frame == Some(FrameSeq::new(2).unwrap())
+                    && t.io_draw
+                        .as_ref()
+                        .is_some_and(|d| d.bytes_per_second == Some(2097152.))
+            })
+        });
+        let resumed = renderer.snapshot();
+        let front_clock = resumed
+            .targets
+            .iter()
+            .find(|t| t.key == front)
+            .unwrap()
+            .player_clock_ms
+            .unwrap();
+        let back_clock = resumed
+            .targets
+            .iter()
+            .find(|t| t.key == back)
+            .unwrap()
+            .player_clock_ms
+            .unwrap();
+        assert!(back_clock < front_clock);
+        // 古い世代だけのmaskは、新しい同windowのSurfaceに適用しない。
+        renderer.set_hidden_targets(&[back]);
+        renderer.detach(back);
+        wait(|| renderer.snapshot().targets.iter().all(|t| t.key != back));
+        let replacement = TargetKey {
+            generation: eidolon_model::ids::SurfaceGeneration::new(102).unwrap(),
+            ..back
+        };
+        let (image, probes) = fixtures::make(16, 3, replacement, 64, 64).unwrap();
+        renderer.submit(image, probes);
+        renderer.attach_window(replacement, PlatformWindow::default(), 64, 64);
+        wait(|| {
+            renderer
+                .snapshot()
+                .targets
+                .iter()
+                .any(|t| t.key == replacement && !t.presentation_paused && t.frames > 0)
+        });
+        renderer.request_stop();
+        wait(|| renderer.is_finished());
+        let stopped = renderer.snapshot();
+        assert_eq!(
+            (stopped.workers, stopped.contexts, stopped.latest_images),
+            (0, 0, 0)
+        );
+        assert!(stopped.targets.is_empty());
+    }
+    #[test]
+    fn group_hidden_mask_is_bounded_and_rejects_duplicate_keys_and_stopped_owner() {
+        let renderer = Controller::start().unwrap();
+        let key = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        assert_eq!(renderer.set_hidden_targets(&[key]), Status::NotReady);
+        renderer.use_windows();
+        assert_eq!(
+            renderer.set_hidden_targets(&[key, key]),
+            Status::InvalidArgument
+        );
+        let many: Vec<_> = (1..=10)
+            .map(|n| TargetKey::from_raw(1, n, 1, 1).unwrap())
+            .collect();
+        assert_eq!(renderer.set_hidden_targets(&many), Status::InvalidArgument);
+        renderer.request_stop();
+        wait(|| renderer.is_finished());
+        assert_eq!(renderer.set_hidden_targets(&[]), Status::NotReady);
     }
 }
