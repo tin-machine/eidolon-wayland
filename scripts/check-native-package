@@ -128,7 +128,7 @@ def inspect(apk):
                 or "/system/bin/linker64" not in header or set(needed) - {"libc.so", "libm.so", "libdl.so"}
                 or waypipe.get("needed") != needed or note_bytes(actual_note) != bytes(note)):
             raise ValueError("Waypipeの実際のABI/API/NDK/loader/依存が不正です")
-        for method in ("nativeBuildInfo", "nativeCreate", "nativeCommand", "nativeAttachSurface", "nativeAttachWindowSurface", "nativePoll", "nativeSnapshot", "nativeRequestStop", "nativeDestroy", "nativeGenerateIdentity", "nativePublicKey", "nativeProvideCredential"):
+        for method in ("nativeBuildInfo", "nativeCreate", "nativeCommand", "nativeAttachSurface", "nativeAttachWindowSurface", "nativePoll", "nativeSnapshot", "nativeCatalogUi", "nativeRequestStop", "nativeDestroy", "nativeGenerateIdentity", "nativePublicKey", "nativeProvideCredential"):
             if "Java_io_github_tinmachine_eidolon_NativeBridge_" + method not in output:
                 raise ValueError("JNI symbolがありません: " + method)
         if (b"eidolon-local-shm-fixture-code-v1" in data) != (info["profile"] == "debug"):

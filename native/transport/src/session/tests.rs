@@ -5,6 +5,50 @@ use russh::{
 };
 use tokio::net::TcpListener;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catalog_mailbox_is_bounded_scoped_and_separate_from_diagnostics() {
+    let controller = Controller::start().unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    let session = SessionId::new(7).unwrap();
+    controller.signals.update(|s| {
+        s.report.state = State::Ready;
+        s.report.session = Some(session);
+        s.cancel = Some(CancellationToken::new());
+        s.catalog_requests = Some(sender);
+        s.report.app_forward = Some(forward_app::Report {
+            state: "running",
+            ..Default::default()
+        });
+    });
+    let op = crate::catalog::Operation::Reload {
+        path: "private-file.toml".into(),
+    };
+    assert_eq!(
+        controller.catalog(SessionId::new(6).unwrap(), request(1), op.clone()),
+        Status::Stale
+    );
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(
+        controller.catalog(session, request(2), op.clone()),
+        Status::Accepted
+    );
+    assert_eq!(controller.catalog(session, request(3), op), Status::Busy);
+    let received = receiver.try_recv().unwrap();
+    assert_eq!(received.0, request(2));
+    assert!(controller.catalog_ui().pending);
+    assert!(
+        !serde_json::to_string(&controller.snapshot())
+            .unwrap()
+            .contains("private-file")
+    );
+    controller
+        .signals
+        .update(|s| s.cancel.as_ref().unwrap().cancel());
+    assert!(controller.catalog_ui().session.is_none());
+    assert!(receiver.try_recv().is_err());
+    stop(&controller).await;
+}
+
 #[derive(Clone, Copy)]
 enum Mode {
     Quiet,

@@ -263,6 +263,18 @@ pub enum Command {
         request_id: CommandSeq,
         session: crate::ids::SessionId,
     },
+    Catalog {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        operation: crate::catalog::Operation,
+    },
+    LaunchTerminal {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        target: crate::catalog::Target,
+    },
     ShowWindow {
         schema: u32,
         request_id: CommandSeq,
@@ -450,6 +462,8 @@ impl Command {
             | Self::BackgroundApplied { schema, .. }
             | Self::SetKeyboardLayout { schema, .. }
             | Self::OpenTerminal { schema, .. }
+            | Self::Catalog { schema, .. }
+            | Self::LaunchTerminal { schema, .. }
             | Self::ShowWindow { schema, .. }
             | Self::CloseWindow { schema, .. }
             | Self::ResizeLogical { schema, .. }
@@ -530,6 +544,12 @@ impl Command {
             return Err(Status::InvalidArgument);
         }
         match &command {
+            Self::Catalog { operation, .. } if !operation.valid() => {
+                return Err(Status::InvalidArgument);
+            }
+            Self::LaunchTerminal { target, .. } if !target.valid() => {
+                return Err(Status::InvalidArgument);
+            }
             Self::SetPose { pose, .. } | Self::PoseApplied { pose, .. } if !pose.valid() => {
                 return Err(Status::InvalidArgument);
             }
@@ -564,6 +584,8 @@ impl Command {
             | Self::BackgroundApplied { request_id, .. }
             | Self::SetKeyboardLayout { request_id, .. }
             | Self::OpenTerminal { request_id, .. }
+            | Self::Catalog { request_id, .. }
+            | Self::LaunchTerminal { request_id, .. }
             | Self::ShowWindow { request_id, .. }
             | Self::CloseWindow { request_id, .. }
             | Self::ResizeLogical { request_id, .. }
@@ -616,6 +638,23 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn launcher_commands_require_structured_arguments_and_snapshot_identity() {
+        let mut value = serde_json::json!({"schema":1,"request_id":"1","type":"launch_terminal","session":"7",
+            "target":{"kind":"temporary","definition":{"id":"example","label":"例","mode":"terminal","executable":"scripts/a b.sh","args":["", "a b", "$(touch never)"]}}});
+        assert!(Command::parse(&value.to_string()).is_ok());
+        value["target"]["definition"]["shell"] = "bash -c arbitrary".into();
+        assert!(Command::parse(&value.to_string()).is_err());
+        value["target"] =
+            serde_json::json!({"kind":"registered","id":"example","revision":"a".repeat(64)});
+        assert!(Command::parse(&value.to_string()).is_ok());
+        value["target"]["revision"] = "old".into();
+        assert!(Command::parse(&value.to_string()).is_err());
+        let save = serde_json::json!({"schema":1,"request_id":"2","type":"catalog","session":"7","operation":{
+            "kind":"save","path":".config/eidolon/launcher.toml","expected_revision":null,
+            "definition":{"id":"example","label":"例","mode":"terminal","executable":"scripts/run"}}});
+        assert!(Command::parse(&save.to_string()).is_ok());
+    }
     #[test]
     fn theme_import_only_accepts_fixed_private_tokens_and_closed_selection() {
         for kind in [

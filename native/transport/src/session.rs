@@ -125,7 +125,19 @@ struct Shared {
     forward: Option<(PathBuf, String, Option<CleanupScenario>)>,
     app: Option<(PathBuf, String, AppMode)>,
     forward_busy: bool,
-    terminal_requests: Option<tokio::sync::mpsc::Sender<CommandSeq>>,
+    terminal_requests:
+        Option<tokio::sync::mpsc::Sender<(CommandSeq, Option<crate::catalog::Target>)>>,
+    catalog_requests: Option<tokio::sync::mpsc::Sender<(CommandSeq, crate::catalog::Operation)>>,
+    catalog: CatalogUi,
+}
+/// UI専用。通常Snapshot/receiptへのserialize経路から分離する。
+#[derive(Clone, Default, Serialize)]
+pub struct CatalogUi {
+    pub session: Option<SessionId>,
+    pub request_id: Option<CommandSeq>,
+    pub pending: bool,
+    pub reply: Option<crate::catalog::Reply>,
+    pub error: Option<&'static str>,
 }
 struct Signals {
     shared: Mutex<Shared>,
@@ -189,6 +201,8 @@ impl Controller {
                 app: None,
                 forward_busy: false,
                 terminal_requests: None,
+                catalog_requests: None,
+                catalog: CatalogUi::default(),
             }),
             cv: Condvar::new(),
             notify: Notify::new(),
@@ -409,6 +423,17 @@ impl Controller {
         });
     }
     pub fn open_terminal(&self, session: SessionId, request: CommandSeq) -> Status {
+        self.launch_terminal(session, request, None)
+    }
+    pub fn launch_terminal(
+        &self,
+        session: SessionId,
+        request: CommandSeq,
+        target: Option<crate::catalog::Target>,
+    ) -> Status {
+        if target.as_ref().is_some_and(|target| !target.valid()) {
+            return Status::InvalidArgument;
+        }
         let s = self
             .signals
             .shared
@@ -431,8 +456,69 @@ impl Controller {
         {
             return Status::Busy;
         }
-        match sender.try_send(request) {
+        match sender.try_send((request, target)) {
             Ok(()) => Status::Accepted,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Status::Busy,
+            Err(_) => Status::NotReady,
+        }
+    }
+    pub fn catalog_ui(&self) -> CatalogUi {
+        let s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.state != State::Ready
+            || s.cancel.as_ref().is_none_or(|c| c.is_cancelled())
+            || s.catalog_requests.is_none()
+        {
+            return CatalogUi::default();
+        }
+        s.catalog.clone()
+    }
+    pub fn catalog(
+        &self,
+        session: SessionId,
+        request: CommandSeq,
+        operation: crate::catalog::Operation,
+    ) -> Status {
+        if !operation.valid() {
+            return Status::InvalidArgument;
+        }
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Status::Stale;
+        }
+        if s.report.state != State::Ready || s.cancel.as_ref().is_none_or(|c| c.is_cancelled()) {
+            return Status::NotReady;
+        }
+        if s.catalog.pending {
+            return Status::Busy;
+        }
+        let Some(sender) = s.catalog_requests.as_ref() else {
+            return Status::NotReady;
+        };
+        if s.report
+            .app_forward
+            .as_ref()
+            .is_none_or(|r| r.state != "running")
+        {
+            return Status::NotReady;
+        }
+        match sender.try_send((request, operation)) {
+            Ok(()) => {
+                s.catalog = CatalogUi {
+                    session: Some(session),
+                    request_id: Some(request),
+                    pending: true,
+                    ..Default::default()
+                };
+                Status::Accepted
+            }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Status::Busy,
             Err(_) => Status::NotReady,
         }
@@ -827,7 +913,12 @@ async fn connection(
             .take();
         if let Some((local_socket, nonce, mode)) = app {
             let (sender, terminal_requests) = tokio::sync::mpsc::channel(1);
-            signals.update(|s| s.terminal_requests = Some(sender));
+            let (catalog_sender, catalog_requests) = tokio::sync::mpsc::channel(1);
+            signals.update(|s| {
+                s.terminal_requests = Some(sender);
+                s.catalog_requests = Some(catalog_sender);
+                s.catalog = CatalogUi::default();
+            });
             let report = forward_app::run(
                 &client,
                 &connect.router,
@@ -840,6 +931,7 @@ async fn connection(
                     journal,
                     binding: &binding,
                     terminal_requests,
+                    catalog_requests,
                     observation: signals.observation.subscribe(),
                 },
                 &connect.cancel,
@@ -849,11 +941,26 @@ async fn connection(
                         s.report.pending_cleanup = r.pending_cleanup.clone();
                     })
                 },
+                |request, result| {
+                    signals.update(|s| {
+                        if s.report.session == Some(connect.session)
+                            && s.catalog.request_id == Some(request)
+                        {
+                            s.catalog.pending = false;
+                            match result {
+                                Ok(reply) => s.catalog.reply = Some(reply),
+                                Err(error) => s.catalog.error = Some(error),
+                            }
+                        }
+                    })
+                },
             )
             .await;
             signals.update(|s| {
                 s.forward_busy = false;
                 s.terminal_requests = None;
+                s.catalog_requests = None;
+                s.catalog = CatalogUi::default();
             });
             if connect.cancel.is_cancelled() {
                 return Err("CANCELLED");

@@ -102,6 +102,12 @@ impl Registry {
             Ok(Err(s)) | Err(s) => json!({"schema":1,"code":s as i32,"events":[]}),
         }
     }
+    pub fn catalog_ui(&self, id: i64) -> Value {
+        match self.guarded(id, Runtime::catalog_ui) {
+            Ok(catalog) => json!({"schema":1,"code":0,"catalog":catalog}),
+            Err(status) => json!({"schema":1,"code":status as i32}),
+        }
+    }
     pub fn counts(&self) -> Value {
         let entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
         json!({"runtimes":entries.runtimes.len(),"workers":entries.runtimes.values().filter(|r| !r.worker_finished()).count()})
@@ -169,6 +175,7 @@ mod tests {
             assert_eq!(registry.request_stop(id), Status::Stale);
             assert_eq!(registry.poll(id, 64)["code"], 1);
             assert_eq!(registry.snapshot(id)["code"], 1);
+            assert_eq!(registry.catalog_ui(id)["code"], 1);
             assert_eq!(registry.counts(), json!({"runtimes":0,"workers":0}));
             previous = id;
         }

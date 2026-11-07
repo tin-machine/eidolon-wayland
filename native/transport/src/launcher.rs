@@ -254,6 +254,8 @@ pub struct TerminalOpened {
     pub request_id: Option<CommandSeq>,
     pub success: bool,
     pub ordinal: u32,
+    #[serde(default)]
+    pub error: Option<crate::catalog::Error>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct TerminalLaunch {
@@ -478,6 +480,16 @@ impl Launcher {
             .await
     }
     pub async fn open_terminal(&mut self, request: CommandSeq) -> Result<(), &'static str> {
+        self.launch_terminal(request, None).await
+    }
+    pub async fn launch_terminal(
+        &mut self,
+        request: CommandSeq,
+        target: Option<crate::catalog::Target>,
+    ) -> Result<(), &'static str> {
+        if target.as_ref().is_some_and(|target| !target.valid()) {
+            return Err("INVALID_ARGUMENT");
+        }
         if self.report.phase != "running"
             || self.stopping.is_some()
             || self.report.terminal_count == 0
@@ -492,11 +504,13 @@ impl Launcher {
         }
         let terminal = self.allocate_terminal(Some(request))?;
         let session = self.terminal_session.ok_or("NOT_READY")?;
-        self.send_frame(
-            serde_json::json!({"type":"open_terminal_v1","schema":1,"nonce":self.nonce,"request_id":request,
-                              "session":session,"terminal_id":terminal}),
-        )
-        .await?;
+        let mut frame = serde_json::json!({"type":"open_terminal_v1","schema":1,"nonce":self.nonce,"request_id":request,
+                              "session":session,"terminal_id":terminal});
+        if let Some(target) = target {
+            frame["type"] = "open_terminal_v2".into();
+            frame["target"] = serde_json::to_value(target).map_err(|_| "INVALID_ARGUMENT")?;
+        }
+        self.send_frame(frame).await?;
         self.report.terminal_pending = Some(request);
         Ok(())
     }
@@ -681,6 +695,7 @@ impl Launcher {
                         && (value.request_id.is_none()
                             || value.request_id != self.report.terminal_pending))
                     || value.ordinal != self.report.terminal_count + u32::from(value.success)
+                    || (value.success && value.error.is_some())
                 {
                     return Err("PROTOCOL_ERROR");
                 }
@@ -938,6 +953,61 @@ mod tests {
         while owner.report.phase != "prepared" {
             owner.next().await.unwrap();
         }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_ssh_catalog_save_uses_revision_and_preserves_other_registrations() {
+        use crate::catalog::{Definition, Error, Operation};
+        let (ssh, mut owner) = fixture("raise RuntimeError('must not execute')", 10.).await;
+        prepared(&mut owner).await;
+        let definition: Definition=serde_json::from_value(serde_json::json!({
+            "id":"first","label":"非公開の表示名","mode":"terminal","executable":"/bin/echo","args":["private argument"]})).unwrap();
+        let first = owner
+            .catalog(
+                CommandSeq::new(1).unwrap(),
+                Operation::Save {
+                    path: ".config/eidolon/launcher.toml".into(),
+                    expected_revision: None,
+                    definition: definition.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(first.error.is_none(), "{:?}", first.error);
+        assert_eq!(first.total, 1);
+        let mut second = definition.clone();
+        second.id = "second".into();
+        let added = owner
+            .catalog(
+                CommandSeq::new(2).unwrap(),
+                Operation::Save {
+                    path: ".config/eidolon/launcher.toml".into(),
+                    expected_revision: Some(first.revision.clone()),
+                    definition: second,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(added.error.is_none());
+        assert_eq!(added.total, 2);
+        let stale = owner
+            .catalog(
+                CommandSeq::new(3).unwrap(),
+                Operation::Save {
+                    path: ".config/eidolon/launcher.toml".into(),
+                    expected_revision: Some(first.revision),
+                    definition,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale.error, Some(Error::CatalogChanged));
+        assert_eq!(stale.revision, added.revision);
+        let report = serde_json::to_string(&owner.report).unwrap();
+        assert!(!report.contains("非公開") && !report.contains("private argument"));
+        assert!(owner.report.child.is_none());
+        owner.request_stop().await.unwrap();
+        assert!(!owner.finish().await.unwrap().cleanup_pending);
+        ssh.close().await;
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn catalog_uses_authenticated_channel_preserves_snapshot_and_never_starts_child() {

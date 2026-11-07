@@ -87,6 +87,108 @@ object NativeSessionHost {
     private fun clearTerminalOpen() { terminalOpen?.let {TermuxStarter.cancel(it.nonce)};terminalOpen=null }
     val termuxHelp = mutableStateOf(false)
     val terminalBusy = mutableStateOf(false)
+    val launcherExpanded = mutableStateOf(false)
+    val launcherUi = mutableStateOf(LauncherUi())
+    val launcherFocusReset = mutableStateOf(0L)
+    private var launcherState = LauncherUi()
+    private data class CatalogPending(val session: String, val request: String, val path: String?, val kind: String,
+        val deadline: Long = SystemClock.elapsedRealtime()+8000)
+    private var catalogPending: CatalogPending? = null
+    private val panelTextInputs = ConcurrentHashMap.newKeySet<String>()
+    fun panelTextInput(key: String, active: Boolean) {
+        if(active) { if(panelTextInputs.add(key)) resetInput() } else panelTextInputs.remove(key)
+    }
+    private fun releasePanelTextFocus() {
+        if(panelTextInputs.isNotEmpty()) ui.post {launcherFocusReset.value=launcherFocusReset.value+1}
+    }
+    private fun launcherUpdate(value: LauncherUi) { launcherState=value;ui.post {launcherUi.value=value} }
+    fun showLauncher() { launcherExpanded.value=true }
+    fun reloadLauncher(path: String) { worker.execute { safely {
+        requestCatalog(JSONObject().put("kind","reload").put("path",path),path)
+    } } }
+    fun launcherPage(offset: Int) { worker.execute { safely {
+        requestCatalog(JSONObject().put("kind","page").put("revision",launcherState.revision).put("offset",offset))
+    } } }
+    fun saveLauncher(form: LauncherForm, path: String) { worker.execute { safely {
+        if(!form.valid()) return@safely
+        requestCatalog(JSONObject().put("kind","save").put("path",path).put("definition",form.definition())
+            .put("expected_revision",if(path==launcherState.path && !launcherState.builtin) launcherState.revision else JSONObject.NULL),path)
+    } } }
+    private fun requestCatalog(operation: JSONObject, path: String? = null) {
+        if(handle==0L || catalogPending!=null) return
+        val runtime=snapshot().getJSONObject("runtime")
+        val app=runtime.optJSONObject("app")
+        val session=runtime.getJSONObject("transport").optString("session")
+        if(app?.optString("state")!="running" || app.optString("mode")!="foot" || app.optString("session")!=session) {
+            launcherUpdate(launcherState.copy(message="まずターミナルを開いて接続してください"));return
+        }
+        val request=requests.incrementAndGet().toString()
+        val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","catalog").put("request_id",request)
+            .put("session",session).put("operation",operation).toString())
+        if(code==NativeBridge.ACCEPTED) {
+            catalogPending=CatalogPending(session,request,path,operation.getString("kind"))
+            launcherUpdate(launcherState.copy(busy=true,message=if(operation.getString("kind")=="save") "登録を保存中" else "一覧を読み込み中"))
+        } else launcherUpdate(launcherState.copy(message="操作を開始できません（$code）"))
+    }
+    private fun pumpCatalog(runtime: JSONObject) {
+        val transport=runtime.getJSONObject("transport")
+        val app=runtime.optJSONObject("app")
+        val session=transport.optString("session").takeIf { transport.optString("state")=="Ready" &&
+            app?.optString("state")=="running" && app.optString("mode")=="foot" && app.optString("session")==it } ?: ""
+        if(session!=launcherState.session) {
+            catalogPending=null
+            launcherUpdate(LauncherUi(session=session,connected=session.isNotEmpty(),path=launcherState.path))
+            if(session.isNotEmpty()) requestCatalog(JSONObject().put("kind","reload").put("path",launcherState.path),launcherState.path)
+        }
+        val pending=catalogPending ?: return
+        if(pending.session!=session || SystemClock.elapsedRealtime()>pending.deadline) {
+            catalogPending=null;launcherUpdate(launcherState.copy(busy=false,message="読込を確認できませんでした。再読込してください"));return
+        }
+        val envelope=JSONObject(NativeBridge.nativeCatalogUi(handle)) // UI専用。DiagnosticsStoreへ渡さない。
+        if(envelope.optInt("code")!=NativeBridge.ACCEPTED) return
+        val value=envelope.getJSONObject("catalog")
+        if(value.optString("session")!=pending.session || value.optString("request_id")!=pending.request || value.optBoolean("pending")) return
+        catalogPending=null
+        val reply=value.optJSONObject("reply")
+        if(reply==null) {launcherUpdate(launcherState.copy(busy=false,message=LauncherMessages.error(value.optString("error"))));return}
+        val entries=reply.getJSONArray("entries")
+        val error=reply.optString("error").takeIf { !reply.isNull("error") }
+        val successfulPath=if(error==null) pending.path else null
+        if(successfulPath!=null) application?.getSharedPreferences("launcher",Context.MODE_PRIVATE)?.edit()?.putString("path",successfulPath)?.apply()
+        launcherUpdate(launcherState.copy(busy=false,revision=reply.getString("revision"),builtin=reply.getBoolean("builtin"),
+            total=reply.getInt("total"),offset=reply.getInt("offset"),path=successfulPath ?: launcherState.path,
+            entries=(0 until entries.length()).map {i -> entries.getJSONObject(i).let { e ->
+                LauncherEntry(e.getString("id"),e.getString("label"),e.getString("icon"),e.getBoolean("available"),e.optString("error").takeIf { !e.isNull("error") })
+            }},message=if(error=="PATH_MISSING" && reply.getBoolean("builtin")) "設定ファイルは未作成です。標準のアプリ一覧を表示します"
+                else if(error!=null) LauncherMessages.error(error) else if(pending.kind=="save") "登録しました" else "アプリを選んで起動できます"))
+    }
+    fun launchRegistered(session: String, revision: String, id: String) { launchCatalogTerminal(session,
+        JSONObject().put("kind","registered").put("revision",revision).put("id",id)) }
+    fun launchFile(form: LauncherForm) {
+        if(form.valid()) launchCatalogTerminal(launcherUi.value.session,JSONObject().put("kind","temporary").put("definition",form.definition()))
+    }
+    private fun launchCatalogTerminal(expectedSession: String, target: JSONObject) {
+        val payload=target.toString()
+        worker.execute { safely {
+            if(handle==0L || terminalAdding!=null || terminalOpen!=null || pendingDisconnect!=null) return@safely
+            val runtime=snapshot().getJSONObject("runtime");val app=runtime.optJSONObject("app")
+            if(app?.optString("session")!=expectedSession || runtime.getJSONObject("transport").optString("session")!=expectedSession ||
+                app.optString("state")!="running" || app.optString("mode")!="foot") {
+                launcherUpdate(launcherState.copy(message="接続後に一覧を再読込してください"));return@safely
+            }
+            val windows=app.getJSONArray("windows")
+            if(windows.length()>=8) {launcherUpdate(launcherState.copy(message="ウィンドウ上限です。不要な窓を閉じてください"));return@safely}
+            releasePanelTextFocus()
+            val request=requests.incrementAndGet().toString()
+            val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","launch_terminal").put("request_id",request)
+                .put("session",expectedSession).put("target",JSONObject(payload)).toString())
+            if(code==NativeBridge.ACCEPTED) {
+                terminalError=null
+                terminalAdding=TerminalAdding(expectedSession,(0 until windows.length()).map {windows.getJSONObject(it).getString("window")}.toSet(),request)
+                launcherUpdate(launcherState.copy(message="起動中"))
+            } else launcherUpdate(launcherState.copy(message="起動できません（$code）"))
+        } }
+    }
     private var termuxRequests=0L
     private var termuxSuccesses=0L
     private var termuxFailures=0L
@@ -133,6 +235,8 @@ object NativeSessionHost {
         val application = context.applicationContext
         worker.execute { safely {
             this.application=application
+            if(handle==0L) launcherUpdate(launcherState.copy(path=application.getSharedPreferences("launcher",Context.MODE_PRIVATE)
+                .getString("path",launcherState.path) ?: launcherState.path))
             if (store == null) store = DiagnosticsStore(application)
             if (preferencesDir == null) preferencesDir = application.noBackupFilesDir.absolutePath
             if (paths == null) paths = JSONObject().put("native_library_dir", application.applicationInfo.nativeLibraryDir).put("files_dir", application.filesDir.absolutePath)
@@ -177,6 +281,7 @@ object NativeSessionHost {
         if (transport.getString("state") in setOf("Idle", "Disconnected", "Failed")) enqueueConnect()
     } } }
     fun openTerminal() { worker.execute { safely {
+        releasePanelTextFocus()
         if (handle == 0L || terminalOpen != null || pendingDisconnect != null || connectPending) return@safely
         val runtime = snapshot().getJSONObject("runtime")
         val transport = runtime.getJSONObject("transport")
@@ -402,7 +507,9 @@ object NativeSessionHost {
     /** SDK callbackではimmutableなtargetと小DTOだけをenqueueする。座標をログへ出さない。 */
     fun sendPointer(target: InputTarget, source: Long, uv: List<Double>?, event: JSONObject): Boolean {
         if (source<=0 || inputTarget(target.target)!=target) return false
-        if(event.optString("type")=="buttons" && event.optInt("state") and 1 != 0) inputIntents.incrementAndGet()
+        if(event.optString("type")=="buttons" && event.optInt("state") and 1 != 0) {
+            inputIntents.incrementAndGet();releasePanelTextFocus()
+        }
         val pointer=JSONObject().put("source",source.toString()).put("uv",uv?.let { JSONArray(it) } ?: JSONObject.NULL)
             .put("event",event).put("time_ms",SystemClock.uptimeMillis() and 0xffffffffL)
         val code=NativeBridge.nativeCommand(target.runtime,JSONObject().put("schema",1).put("type","pointer")
@@ -429,6 +536,7 @@ object NativeSessionHost {
         if(editing.get()) return@safely
         val runtime = snapshot().getJSONObject("runtime")
         val target=focusTarget(runtime,choice,requireApplied=false) ?: return@safely
+        releasePanelTextFocus()
         selectedWindow=target.getString("session") to target.getString("window")
         keyboardFocus=null;inputTargets=emptyMap()
         pendingInputFocus=PendingInputFocus(target.toString(),handle,inputIntents.incrementAndGet(),SystemClock.elapsedRealtime()+2000)
@@ -437,7 +545,7 @@ object NativeSessionHost {
     /** 入口の物理device判定はPhysicalKeyboard。ここは短いnative enqueueだけ。 */
     fun sendPhysicalKey(event: KeyEvent): Boolean {
         val focus = keyboardFocus ?: return false
-        if (editing.get() || focus.runtime != handle || !activityVisible.get() || xrState.get() != "FOCUSED") return false
+        if (editing.get() || panelTextInputs.isNotEmpty() || focus.runtime != handle || !activityVisible.get() || xrState.get() != "FOCUSED") return false
         val key = JSONObject().put("device", event.deviceId).put("scan_code", event.scanCode).put("key_code", event.keyCode)
             .put("action", if (event.action == KeyEvent.ACTION_DOWN) "pressed" else "released").put("repeat", event.repeatCount)
             .put("meta", event.metaState).put("time_ms", event.eventTime and 0xffffffffL)
@@ -505,6 +613,7 @@ object NativeSessionHost {
             Thread.sleep(2)
         }
         handle = 0
+        catalogPending=null;launcherUpdate(LauncherUi(path=launcherState.path))
         poseCompletions.clear();selectedWindow=null;lastFocusedWindow=null;editing.set(false);ui.post { layoutEditing.value=false }
         clearTerminalOpen(); terminalAdding = null; terminalError = null
         lastConnectRequest = null; pendingDisconnect = null; connectPending = false
@@ -534,6 +643,11 @@ object NativeSessionHost {
         for (index in 0 until values.length()) {
             val event = values.getJSONObject(index)
             if (event.optString("type") == "command_complete") {
+                catalogPending?.let { pending ->
+                    if(event.getString("request_id")==pending.request && event.getString("code")!="ACCEPTED") {
+                        catalogPending=null;launcherUpdate(launcherState.copy(busy=false,message="一覧を操作できません（${event.getString("code")}）"))
+                    }
+                }
                 pendingInputFocus?.let { pending ->
                     if (BuildConfig.DEBUG && event.getString("request_id") in listOf(pending.resetRequest,pending.focusRequest)) Log.i(TAG,"focus_complete request=${event.getString("request_id")} code=${event.getString("code")}")
                     if(event.getString("request_id")==pending.focusRequest) {
@@ -569,6 +683,7 @@ object NativeSessionHost {
                 terminalAdding?.let { operation ->
                     if(event.getString("request_id")==operation.request && event.getString("code")!="ACCEPTED") {
                         terminalError="追加できません（${event.getString("code")}）"; terminalAdding=null
+                        launcherUpdate(launcherState.copy(message=checkNotNull(terminalError)))
                     }
                 }
                 terminalOpen?.let { operation ->
@@ -590,6 +705,7 @@ object NativeSessionHost {
         pumpDisconnect()
         val snapshot = snapshot()
         val runtime = snapshot.getJSONObject("runtime")
+        pumpCatalog(runtime)
         pendingInputFocus?.let { request ->
             val target=JSONObject(request.target)
             val plans=runtime.getJSONArray("panels")
@@ -658,7 +774,7 @@ object NativeSessionHost {
         val inputConditions=InputConditions(runtime.getBoolean("activity_visible"),runtime.getString("xr_state")=="FOCUSED",
             runtime.getString("state")=="Ready",if(terminalOpen?.startupWaiting==true) "StartingTermux" else runtime.getJSONObject("transport").getString("state"),editing.get(),keyboardCount.get(),
             (runtime.optJSONObject("app")?.optJSONArray("windows")?.length() ?: 0)>0,inputTargets.isNotEmpty(),
-            focusedWindow.takeIf {keyboardFocus!=null})
+            focusedWindow.takeIf {keyboardFocus!=null},panelEditing=panelTextInputs.isNotEmpty())
         val status=InputStatus.from(inputConditions)
         ui.post {inputStatus.value=status}
         store?.updateInterface(JSONObject().put("input_reason",status.reason).put("input_action",status.action.name)
@@ -699,8 +815,16 @@ object NativeSessionHost {
         } } ?: emptyList()
         ui.post { windowChoices.value=choices }
         terminalAdding?.let { operation ->
-            if(currentApp?.optString("session")!=operation.session || choices.any { it.window !in operation.windows }) terminalAdding=null
-            else if(SystemClock.elapsedRealtime()>operation.deadline) { terminalError="ウィンドウの追加を確認できません。接続を閉じて再試行してください";terminalAdding=null }
+            val receipt=runtime.getJSONObject("transport").optJSONObject("app_forward")?.optJSONObject("remote")?.optJSONObject("last_terminal")
+            if(receipt?.optString("request_id")==operation.request && !receipt.optBoolean("success")) {
+                terminalError=LauncherMessages.error(receipt.optString("error"));terminalAdding=null
+                launcherUpdate(launcherState.copy(message=checkNotNull(terminalError)))
+            } else if(currentApp?.optString("session")!=operation.session) terminalAdding=null
+            else if(choices.any { it.window !in operation.windows }) {terminalAdding=null;launcherUpdate(launcherState.copy(message="ウィンドウを開きました"))}
+            else if(SystemClock.elapsedRealtime()>operation.deadline) {
+                terminalError="ウィンドウの追加を確認できません。接続を閉じて再試行してください";terminalAdding=null
+                launcherUpdate(launcherState.copy(message=checkNotNull(terminalError)))
+            }
         }
         val logical=selectedWindow?.optJSONObject("logical_size")
         val resize=selectedWindow?.optJSONObject("resize")

@@ -25,6 +25,7 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
         Text(input.message,color=if(input.reason=="READY") Color(0xFF67E8C3) else Color(0xFFFFD59E),style=MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(onClick={NativeSessionHost.openTerminal()}) {Text("ターミナルを開く")}
+            Button(onClick={NativeSessionHost.showLauncher()}) {Text("アプリ")}
             if(NativeSessionHost.terminalBusy.value) Button(onClick={NativeSessionHost.disconnect()}) {Text("取消")}
             when(input.action) {
                 InputStatus.Action.FINISH_EDITING -> Button(onClick={NativeSessionHost.finishLayoutEditing()}) {Text(input.actionLabel)}
@@ -47,8 +48,9 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
                 overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             Text("接続先: このQuestのTermux · ${NativeSessionHost.connectionSummary.value}",color=Color.White,style=MaterialTheme.typography.bodySmall,maxLines=2)
         }
-        Button(onClick={details=!details}) {Text(if(details) "設定と詳細を閉じる" else "設定と詳細")}
-        if(details) Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        if(NativeSessionHost.launcherExpanded.value) LauncherSettings(Modifier.weight(1f))
+        else Button(onClick={details=!details}) {Text(if(details) "設定と詳細を閉じる" else "設定と詳細")}
+        if(details && !NativeSessionHost.launcherExpanded.value) Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
             verticalArrangement=Arrangement.spacedBy(12.dp),horizontalAlignment=Alignment.CenterHorizontally) {
             Text(device.summary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
             Text(device.networkSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall)

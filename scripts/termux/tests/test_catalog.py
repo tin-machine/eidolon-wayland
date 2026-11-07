@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -218,6 +219,85 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(report['cleaned'])
         self.assertIsNone(report['child'])
         self.assertNotIn('one two', json.dumps(events))
+
+    def test_save_new_default_path_and_update_keep_order_and_literal_arguments(self):
+        path = '.config/eidolon/launcher.toml'
+        app = {**self.app, 'args': [*self.app['args'], 'emoji 😀', '\x7f\x85']}
+        first = self.catalog.request(dict(kind='save', path=path, expected_revision=None, definition=app))
+        self.assertIsNone(first['error'])
+        target = self.home / path
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(target.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(launcher.LauncherCatalog.parse(target.read_bytes())[0]['args'], app['args'])
+        second = self.catalog.request(dict(kind='save', path=path, expected_revision=first['revision'],
+                                           definition={**self.app, 'id': 'other'}))
+        self.assertIsNone(second['error'])
+        third = self.catalog.request(dict(kind='save', path=path, expected_revision=second['revision'],
+                                          definition={**app, 'label': '更新'}))
+        self.assertIsNone(third['error'])
+        self.assertEqual([entry['id'] for entry in third['entries']], ['script', 'other'])
+        self.assertEqual(third['entries'][0]['label'], '更新')
+        self.assertNotIn('one two', json.dumps(third))
+        self.assertFalse(list(target.parent.glob('*.tmp')))
+
+    def test_save_stale_revision_and_creation_collision_do_not_overwrite(self):
+        first = self.write([self.app])
+        before = self.config.read_bytes()
+        for revision in [None, '0' * 64, True]:
+            result = self.catalog.request(dict(kind='save', path='launcher.toml', expected_revision=revision,
+                                               definition={**self.app, 'label': 'not saved'}))
+            self.assertIsNotNone(result['error'])
+            self.assertEqual(self.config.read_bytes(), before)
+        self.config.write_bytes(toml([{**self.app, 'label': 'external edit'}]))
+        result = self.catalog.request(dict(kind='save', path='launcher.toml', expected_revision=first['revision'], definition=self.app))
+        self.assertEqual(result['error'], 'CATALOG_CHANGED')
+        self.assertIn(b'external edit', self.config.read_bytes())
+
+    def test_external_edit_during_save_is_detected_before_exchange(self):
+        first = self.write([self.app])
+        original_sync = launcher.os.fsync
+        changes = []
+        def sync(fd):
+            original_sync(fd)
+            if not changes:
+                changes.append(True)
+                self.config.write_bytes(toml([{**self.app, 'label': 'external wins'}]))
+        with patch.object(launcher.os, 'fsync', side_effect=sync):
+            result = self.catalog.request(dict(kind='save', path='launcher.toml', expected_revision=first['revision'], definition=self.app))
+        self.assertEqual(result['error'], 'CATALOG_CHANGED')
+        self.assertIn(b'external wins', self.config.read_bytes())
+        self.assertEqual(self.catalog.revision, first['revision'])
+        self.assertFalse(list(self.home.glob('*.tmp')))
+
+    def test_concurrent_savers_have_exactly_one_winner(self):
+        first = self.write([self.app])
+        barrier = threading.Barrier(2)
+        results = []
+        def save(label):
+            catalog = launcher.LauncherCatalog(self.home, self.prefix)
+            barrier.wait(timeout=2)
+            results.append(catalog.request(dict(kind='save', path='launcher.toml', expected_revision=first['revision'],
+                                               definition={**self.app, 'label': label})))
+        threads = [threading.Thread(target=save, args=(label,)) for label in ['first', 'second']]
+        for thread in threads: thread.start()
+        for thread in threads:
+            thread.join(timeout=3)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual([result['error'] for result in results].count(None), 1)
+        self.assertEqual([result['error'] for result in results].count('CATALOG_CHANGED'), 1)
+        self.assertIn(launcher.LauncherCatalog.parse(self.config.read_bytes())[0]['label'], ['first', 'second'])
+
+    def test_save_preserves_existing_file_on_invalid_or_over_limit_update(self):
+        first = self.write([{**self.app, 'id': f'app{i}'} for i in range(64)])
+        before = self.config.read_bytes()
+        result = self.catalog.request(dict(kind='save', path='launcher.toml', expected_revision=first['revision'], definition=self.app))
+        self.assertEqual(result['error'], 'CATALOG_LIMIT')
+        self.assertEqual(self.config.read_bytes(), before)
+        (self.home / 'unsafe').mkdir(mode=0o777)
+        (self.home / 'unsafe').chmod(0o777)
+        result = self.catalog.request(dict(kind='save', path='unsafe/new.toml', expected_revision=None, definition=self.app))
+        self.assertEqual(result['error'], 'CATALOG_FILE_UNSAFE')
+        self.assertFalse((self.home / 'unsafe/new.toml').exists())
 
 
 if __name__ == '__main__':

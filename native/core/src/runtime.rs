@@ -633,7 +633,18 @@ impl Runtime {
                                     }
                                 }
 
+                                Command::Catalog {
+                                    session,
+                                    request_id,
+                                    operation,
+                                    ..
+                                } => io.catalog(*session, *request_id, operation.clone()),
                                 Command::OpenTerminal {
+                                    session,
+                                    request_id,
+                                    ..
+                                }
+                                | Command::LaunchTerminal {
                                     session,
                                     request_id,
                                     ..
@@ -650,7 +661,14 @@ impl Runtime {
                                     {
                                         Status::Busy
                                     } else {
-                                        let code = io.open_terminal(*session, *request_id);
+                                        let target = match &command {
+                                            Command::LaunchTerminal { target, .. } => {
+                                                Some(target.clone())
+                                            }
+                                            _ => None,
+                                        };
+                                        let code =
+                                            io.launch_terminal(*session, *request_id, target);
                                         if code == Status::Accepted {
                                             opening_window = Some((
                                                 *session,
@@ -1561,6 +1579,9 @@ impl Runtime {
             events_pending: state.events.len() + state.terminal.len(),
             ..state.snapshot.clone()
         }
+    }
+    pub fn catalog_ui(&self) -> eidolon_transport::session::CatalogUi {
+        self.transport.catalog_ui()
     }
     pub fn poll(&self, max: usize) -> Result<Vec<Event>, Status> {
         if !(1..=limits::POLL_EVENTS).contains(&max) {

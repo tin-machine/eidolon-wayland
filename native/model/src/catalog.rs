@@ -1,5 +1,5 @@
 //! NX10: Termux所有の設定を照会する構造化契約。argvをSSH commandや診断へ埋め込まない。
-use eidolon_model::ids::CommandSeq;
+use crate::ids::CommandSeq;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,13 +63,34 @@ impl Definition {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
-    Reload { path: String },
-    Page { revision: String, offset: usize },
-    Inspect { definition: Definition },
+    Save {
+        path: String,
+        expected_revision: Option<String>,
+        definition: Definition,
+    },
+    Reload {
+        path: String,
+    },
+    Page {
+        revision: String,
+        offset: usize,
+    },
+    Inspect {
+        definition: Definition,
+    },
 }
 impl Operation {
     pub fn valid(&self) -> bool {
         match self {
+            Self::Save {
+                path,
+                expected_revision,
+                definition,
+            } => {
+                text(path, 1024)
+                    && expected_revision.as_ref().is_none_or(|v| hash(v))
+                    && definition.valid()
+            }
             Self::Reload { path } => text(path, 1024),
             Self::Page { revision, offset } => {
                 hash(revision) && *offset <= 64 && offset.is_multiple_of(8)
@@ -137,7 +158,7 @@ pub struct Reply {
     pub error: Option<Error>,
 }
 impl Reply {
-    pub(crate) fn valid(&self) -> bool {
+    pub fn valid(&self) -> bool {
         self.schema == 1
             && hash(&self.revision)
             && self.total <= 64
@@ -154,6 +175,26 @@ impl Reply {
                 Some(entry) => entry.valid() && self.entries.is_empty() && self.error.is_none(),
                 None => self.entries.len() == (self.total - self.offset).min(8),
             }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Target {
+    Registered { revision: String, id: String },
+    Temporary { definition: Definition },
+}
+impl Target {
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::Registered {
+                revision,
+                id: app_id,
+            } => hash(revision) && id(app_id),
+            Self::Temporary { definition } => {
+                definition.valid() && definition.mode == Mode::Terminal
+            }
+        }
     }
 }
 

@@ -18,6 +18,7 @@ import tempfile
 import math
 import struct
 import secrets
+import fcntl
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -92,9 +93,9 @@ def catalog_path(home, value):
     return path if path.is_absolute() else home / path
 
 
-def catalog_read(path):
+def catalog_read(path, *, directory_fd=None):
     """FIFO/deviceやsymlinkを開いて制御loopを待たせない。通常fileのみ上限付きで読む。"""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
@@ -150,6 +151,91 @@ class LauncherCatalog:
         # 構文/全件検査後に一括交換する。失敗時はpath/revision/順序も維持する。
         self.apps, self.path, self.revision = apps, target, hashlib.sha256(data).hexdigest()
 
+    @staticmethod
+    def encode(apps):
+        # JSONのstring escapeを使い、TOML basic stringが許容しないDEL/C1もescapeする。
+        def quoted(value):
+            encoded = json.dumps(value, ensure_ascii=False)
+            return ''.join(f'\\u{ord(c):04x}' if 127 <= ord(c) <= 159 else c for c in encoded)
+        lines = ['schema = 1'] if apps else ['schema = 1', 'apps = []']
+        for app in apps:
+            lines.append('\n[[apps]]')
+            for key, value in app.items():
+                encoded = '[' + ', '.join(quoted(arg) for arg in value) + ']' if isinstance(value, list) else quoted(value)
+                lines.append(key + ' = ' + encoded)
+        data = ('\n'.join(lines) + '\n').encode('utf-8')
+        if LauncherCatalog.parse(data) != apps:
+            raise CatalogError('CATALOG_INVALID')
+        return data
+
+    def save(self, path, expected_revision, definition):
+        app = catalog_definition(definition)
+        if expected_revision is not None and (not isinstance(expected_revision, str)
+                or not re.fullmatch(r'[0-9a-f]{64}', expected_revision)):
+            raise CatalogError('CATALOG_INVALID')
+        target = Path(os.path.abspath(catalog_path(self.home, path)))
+        # 既定の保存先のみ必要なdirectoryを作る。任意pathの親は利用者が用意する。
+        if target == self.home / '.config/eidolon/launcher.toml':
+            for directory in (self.home / '.config', target.parent):
+                try: directory.mkdir(mode=0o700)
+                except FileExistsError: pass
+                info = directory.lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+                    raise CatalogError('CATALOG_FILE_UNSAFE')
+        parent = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        lock, temporary = None, None
+        try:
+            info = os.fstat(parent)
+            if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                raise CatalogError('CATALOG_FILE_UNSAFE')
+            lock_name = '.eidolon-catalog-' + hashlib.sha256(target.name.encode()).hexdigest()[:16] + '.lock'
+            lock = os.open(lock_name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=parent)
+            info = os.fstat(lock)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                raise CatalogError('CATALOG_FILE_UNSAFE')
+            try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError: raise CatalogError('CATALOG_CHANGED') from None
+
+            def current():
+                try: return catalog_read(target.name, directory_fd=parent)
+                except FileNotFoundError: return None
+
+            before = current()
+            revision = hashlib.sha256(before).hexdigest() if before is not None else None
+            if revision != expected_revision:
+                raise CatalogError('CATALOG_CHANGED')
+            apps = self.parse(before) if before is not None else []
+            index = next((i for i, old in enumerate(apps) if old['id'] == app['id']), len(apps))
+            if index == len(apps): apps.append(app)
+            else: apps[index] = app
+            data = self.encode(apps)
+            temporary = '.eidolon-catalog-' + secrets.token_hex(12) + '.tmp'
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+            with os.fdopen(fd, 'wb') as out:
+                out.write(data)
+                out.flush()
+                os.fsync(out.fileno())
+            # cooperating helperはlockで直列化。外部editorの変更は交換直前にも検査する。
+            if current() != before:
+                raise CatalogError('CATALOG_CHANGED')
+            if before is None:
+                # 初回保存はlinkのEEXIST判定で、検査後に作られたfileも上書きしない。
+                try: os.link(temporary, target.name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+                except FileExistsError: raise CatalogError('CATALOG_CHANGED') from None
+                os.unlink(temporary, dir_fd=parent)
+            else:
+                os.replace(temporary, target.name, src_dir_fd=parent, dst_dir_fd=parent)
+            temporary = None
+            os.fsync(parent)
+            self.apps, self.path, self.revision = apps, target, hashlib.sha256(data).hexdigest()
+        finally:
+            if temporary is not None:
+                try: os.unlink(temporary, dir_fd=parent)
+                except FileNotFoundError: pass
+            if lock is not None: os.close(lock)
+            os.close(parent)
+
     def command(self, definition):
         app = catalog_definition(definition)
         try:
@@ -191,6 +277,9 @@ class LauncherCatalog:
         return dict(id=app['id'], label=app['label'], mode=app['mode'], icon=icon, available=error is None, error=error)
 
     def selected_command(self, revision, app_id):
+        return self.command(self.selected_definition(revision, app_id))
+
+    def selected_definition(self, revision, app_id):
         if revision != self.revision:
             raise CatalogError('CATALOG_CHANGED')
         if self.path is not None and hashlib.sha256(catalog_read(self.path)).hexdigest() != revision:
@@ -200,7 +289,21 @@ class LauncherCatalog:
             raise CatalogError('APP_NOT_FOUND')
         if app['mode'] != 'terminal':
             raise CatalogError('GUI_NOT_VERIFIED')
-        return self.command(app)
+        return app.copy()
+
+    def launch_definition(self, target):
+        if not isinstance(target, dict):
+            raise CatalogError('CATALOG_INVALID')
+        if target.get('kind') == 'registered' and set(target) == {'kind', 'revision', 'id'}:
+            app = self.selected_definition(target['revision'], target['id'])
+        elif target.get('kind') == 'temporary' and set(target) == {'kind', 'definition'}:
+            app = catalog_definition(target['definition'])
+        else:
+            raise CatalogError('CATALOG_INVALID')
+        if app['mode'] != 'terminal':
+            raise CatalogError('GUI_NOT_VERIFIED')
+        self.command(app)
+        return app
 
     def request(self, operation):
         """argv等をreply/通常診断へ転記しない。pageは最大8件で16KiB frame内に収める。"""
@@ -220,6 +323,8 @@ class LauncherCatalog:
                     raise CatalogError('CATALOG_INVALID')
             elif kind == 'inspect' and set(operation) == {'kind', 'definition'}:
                 inspected = self.summary(catalog_definition(operation['definition']))
+            elif kind == 'save' and set(operation) == {'kind', 'path', 'expected_revision', 'definition'}:
+                self.save(operation['path'], operation['expected_revision'], operation['definition'])
             else:
                 raise CatalogError('CATALOG_INVALID')
         except CatalogError as failure:
@@ -533,8 +638,72 @@ def terminal_shell(home, nonce, terminal, mode='foot'):
         pass
     env = tool_environment(directory)
     env.update(EIDOLON_SESSION_NONCE=nonce, EIDOLON_TERMINAL_ID=terminal)
-    command = shell_command(mode)
+    if mode == 'application':
+        definition = terminal_application_read(directory, terminal, consume=True)
+        command, cwd = LauncherCatalog(home).command(definition)
+        os.chdir(cwd)
+    else:
+        command = shell_command(mode)
     os.execve(command[0], command, env)
+
+
+def terminal_application_path(directory, terminal):
+    if not valid_terminal_id(terminal) or not re.fullmatch(r's-[0-9a-f]{16}', directory.name):
+        raise ValueError('TERMINAL_INVALID')
+    return directory / ('a-' + terminal + '.json')
+
+
+def terminal_application_write(directory, terminal, definition):
+    nonce = directory.name.removeprefix('s-')
+    if owned(directory.parent.parent, nonce) != directory:
+        raise ValueError('TERMINAL_INVALID')
+    path = terminal_application_path(directory, terminal)
+    record = dict(**marker(nonce), terminal_id=terminal, definition=catalog_definition(definition))
+    data = json.dumps(record, separators=(',', ':'), ensure_ascii=False).encode()
+    if len(data) > CONTROL_BYTES:
+        raise CatalogError('CATALOG_LIMIT')
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'wb') as out:
+            out.write(data)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def terminal_application_read(directory, terminal, *, consume=False):
+    path = terminal_application_path(directory, terminal)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size > CONTROL_BYTES):
+            raise ValueError('TERMINAL_INVALID')
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            data = stream.read(CONTROL_BYTES + 1)
+        if len(data) > CONTROL_BYTES:
+            raise ValueError('TERMINAL_INVALID')
+        value = json.loads(data)
+        if (not isinstance(value, dict) or set(value) != {'schema', 'nonce', 'uid', 'terminal_id', 'definition'}
+                or type(value.get('schema')) is not int or type(value.get('uid')) is not int
+                or any(value.get(key) != expected for key, expected in marker(directory.name.removeprefix('s-')).items())
+                or value.get('terminal_id') != terminal):
+            raise ValueError('TERMINAL_INVALID')
+        definition = catalog_definition(value['definition'])
+        if definition['mode'] != 'terminal':
+            raise ValueError('TERMINAL_INVALID')
+        current = path.lstat()
+        if (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino):
+            raise ValueError('TERMINAL_INVALID')
+        if consume: path.unlink()
+        return definition
+    finally:
+        os.close(fd)
+
+
+def terminal_application_remove(directory, terminal):
+    try: terminal_application_read(directory, terminal, consume=True)
+    except FileNotFoundError: pass
 
 
 class WorkloadObserver:
@@ -853,7 +1022,13 @@ def cleanup(home, nonce, *, creator=False):
         return {"schema": 1, "cleaned": False, "pending": True}
     # child/groupの終了後、作成者だけが転送pとWayland wを回収する。
     # unexpected fileやsymlinkならlease/markerも残し、完了を偽らない。
-    if {entry.name for entry in directory.iterdir()} - {"owner.json", "lease.json", "p", "w", "f", "m"}:
+    applications = []
+    for entry in directory.iterdir():
+        match = re.fullmatch(r'a-([1-9][0-9]{0,18})\.json', entry.name)
+        if match:
+            terminal_application_read(directory, match[1])
+            applications.append(match[1])
+    if {entry.name for entry in directory.iterdir()} - {"owner.json", "lease.json", "p", "w", "f", "m"} - {'a-' + terminal + '.json' for terminal in applications}:
         raise ValueError("DIRECTORY_NOT_EMPTY")
     sockets = []
     for name in ('p', 'w', 'f', 'm'):
@@ -867,6 +1042,8 @@ def cleanup(home, nonce, *, creator=False):
         sockets.append(sock)
     for sock in sockets:
         sock.unlink()
+    for terminal in applications:
+        terminal_application_remove(directory, terminal)
     if lease.exists():
         lease.unlink()
     if {entry.name for entry in directory.iterdir()} != {"owner.json"}:
@@ -1018,16 +1195,18 @@ def shell_command(mode):
     return command
 
 
-def terminal_command(directory, mode, terminal=None):
+def terminal_command(directory, mode, terminal=None, *, application=False):
     command = [str(TERMUX_PREFIX / 'bin/footclient'), '--server-socket=' + str(directory / 'f'), '--no-wait']
     if terminal is None:
+        if application: raise ValueError('TERMINAL_INVALID')
         return command + shell_command(mode)
     nonce = directory.name.removeprefix('s-')
     if not valid_terminal_id(terminal) or not re.fullmatch(r'[0-9a-f]{16}', nonce) or mode not in {'foot', 'foot_fixture'}:
         raise ValueError('TERMINAL_INVALID')
+    if application: command += ['--hold']
     command += ['--app-id=io.github.tinmachine.eidolon.foot.t-' + nonce + '-' + terminal,
                 sys.executable, str(Path(__file__).resolve()),
-                'terminal-shell' if mode == 'foot' else 'terminal-fixture', nonce, terminal]
+                'terminal-app' if application else 'terminal-shell' if mode == 'foot' else 'terminal-fixture', nonce, terminal]
     return command
 
 
@@ -1040,15 +1219,28 @@ class TerminalStarter:
         self.request = None
         self.count = 0
         self.terminal = None
+        self.application = False
+        self.pending_applications = set()
 
-    def begin(self, request, terminal=None):
+    def begin(self, request, terminal=None, definition=None):
         if self.deadline is not None:
             raise ValueError('CONTROL_INVALID')
+        self.prune_applications()
+        if definition is not None:
+            if len(self.pending_applications) >= WORKLOAD_TERMINALS:
+                raise CatalogError('CATALOG_LIMIT')
+            terminal_application_write(self.directory, terminal, definition)
+            self.pending_applications.add(terminal)
         self.request = request
         self.terminal = terminal
+        self.application = definition is not None
         self.deadline = time.monotonic() + 5
 
-    def close(self):
+    def prune_applications(self):
+        self.pending_applications = {terminal for terminal in self.pending_applications
+                                     if terminal_application_path(self.directory, terminal).exists()}
+
+    def close_child(self):
         if self.child is not None:
             # waitable/WNOWAITでleaderのPIDを予約している間だけ自分のgroupをsignalする。
             try: os.killpg(self.child.pid, signal.SIGKILL)
@@ -1056,30 +1248,48 @@ class TerminalStarter:
             self.child.wait(timeout=2)
             self.child = None
 
+    def close(self):
+        self.close_child()
+        for terminal in self.pending_applications:
+            terminal_application_remove(self.directory, terminal)
+        self.pending_applications.clear()
+        self.deadline = None
+
     def tick(self):
+        self.prune_applications()
         if self.deadline is None:
             return None
         success = False
+        error = None
         if self.child is None:
             path = self.directory / 'f'
             try: info = path.lstat()
             except FileNotFoundError: info = None
             if info is not None:
-                if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
-                    raise ValueError('DEPENDENCY_NOT_READY')
-                self.child = subprocess.Popen(terminal_command(self.directory, self.mode, self.terminal),
-                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    start_new_session=True, close_fds=True, env=tool_environment(self.directory))
+                try:
+                    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+                        raise ValueError('DEPENDENCY_NOT_READY')
+                    command = terminal_command(self.directory, self.mode, self.terminal, application=True) if self.application else terminal_command(self.directory, self.mode, self.terminal)
+                    self.child = subprocess.Popen(command,
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        start_new_session=True, close_fds=True, env=tool_environment(self.directory))
+                except (OSError, ValueError):
+                    error = 'PATH_UNAVAILABLE'
         if self.child is not None and waitable(self.child):
             # poll()/wait()より先に、同じgroupを回収してPID再利用を防ぐ。
             status = os.waitid(os.P_PID,self.child.pid,os.WEXITED | os.WNOWAIT)
             success = status.si_code == os.CLD_EXITED and status.si_status == 0
-        elif time.monotonic() < self.deadline:
+        elif error is None and time.monotonic() < self.deadline:
             return None
-        self.close()
+        self.close_child()
+        if self.application and not success:
+            terminal_application_remove(self.directory, self.terminal)
+            self.pending_applications.discard(self.terminal)
         self.deadline = None
         if success: self.count += 1
-        return dict(request_id=self.request, success=success, ordinal=self.count)
+        result = dict(request_id=self.request, success=success, ordinal=self.count)
+        if self.application: result['error'] = None if success else error or 'PATH_UNAVAILABLE'
+        return result
 
 
 def termux_direct_exec_available(env):
@@ -1353,10 +1563,11 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                                   'open_terminal': {'type', 'nonce', 'request_id'},
                                   'start_terminal_v1': {'type', 'nonce', 'mode', 'schema', 'session', 'terminal_id'},
                                   'open_terminal_v1': {'type', 'nonce', 'request_id', 'schema', 'session', 'terminal_id'},
+                                  'open_terminal_v2': {'type', 'nonce', 'request_id', 'schema', 'session', 'terminal_id', 'target'},
                                   'observe_workload_v1': {'type','nonce','schema','session','enabled'},
                                   'catalog_v1': {'type','nonce','schema','request_id','operation'}}
                         expected = shapes.get(kind, {'type', 'nonce'})
-                        if (len(line) > (CONTROL_BYTES if kind == 'catalog_v1' else 1024)
+                        if (len(line) > (CONTROL_BYTES if kind in {'catalog_v1', 'open_terminal_v2'} else 1024)
                                 or set(value) != expected or value["nonce"] != nonce):
                             raise ValueError("CONTROL_INVALID")
                         if kind == "heartbeat":
@@ -1377,21 +1588,39 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                                     or value['session'] != terminal_session or type(value['enabled']) is not bool):
                                 raise ValueError('CONTROL_INVALID')
                             if observer is not None: observer.set_enabled(value['enabled'])
-                        elif kind in {'open_terminal', 'open_terminal_v1'} and terminals is not None and terminals.count > 0:
+                        elif kind in {'open_terminal', 'open_terminal_v1', 'open_terminal_v2'} and terminals is not None and terminals.count > 0:
                             request = value['request_id']
                             if not isinstance(request,str) or not re.fullmatch(r'[1-9][0-9]{0,18}',request) or int(request)>9223372036854775807:
                                 raise ValueError('CONTROL_INVALID')
                             terminal = None
-                            if kind == 'open_terminal_v1':
+                            if kind in {'open_terminal_v1', 'open_terminal_v2'}:
                                 terminal = value['terminal_id']
                                 if (type(value['schema']) is not int or value['schema'] != 1 or terminal_session is None
                                         or value['session'] != terminal_session or not valid_terminal_id(terminal) or int(terminal) <= last_terminal):
                                     raise ValueError('CONTROL_INVALID')
                                 last_terminal = int(terminal)
-                                if observer is not None: observer.allow(terminal)
                             elif terminal_session is not None:
                                 raise ValueError('CONTROL_INVALID')
-                            terminals.begin(request, terminal)
+                            if kind == 'open_terminal_v2':
+                                try:
+                                    if terminals.deadline is not None:
+                                        raise CatalogError('CATALOG_LIMIT')
+                                    definition = catalog.launch_definition(value['target'])
+                                    terminals.begin(request, terminal, definition)
+                                    error = None
+                                except CatalogError as failure:
+                                    error = str(failure)
+                                except FileNotFoundError:
+                                    error = 'PATH_MISSING'
+                                except OSError:
+                                    error = 'PATH_UNAVAILABLE'
+                                if error is not None:
+                                    publish(dict(**marker(nonce), type='terminal_opened', request_id=request,
+                                                 success=False, ordinal=terminals.count, error=error))
+                                    continue
+                            else:
+                                terminals.begin(request, terminal)
+                            if observer is not None and terminal is not None: observer.allow(terminal)
                         elif kind == 'inspect_tools' and child is None:
                             checked_tools = inspect_tools(value['mode'])
                             publish({**marker(nonce), 'type': 'tools', **checked_tools})
@@ -1446,7 +1675,11 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
             except (OSError, ValueError):
                 observer_pending = True
                 report['error'] = 'CLEANUP_FAILED'
-        if terminals is not None: terminals.close()
+        if terminals is not None:
+            try: terminals.close()
+            except (OSError, ValueError, RecursionError):
+                observer_pending = True
+                report['error'] = 'CLEANUP_FAILED'
         if child is not None and not child_reaped:
             signal_owned(signal.SIGKILL)
             try:
@@ -1498,8 +1731,9 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
 
 def main(argv):
     os.umask(0o077)
-    if len(argv) == 3 and argv[0] in {'terminal-shell', 'terminal-fixture'}:
-        terminal_shell(Path.home(), argv[1], argv[2], 'foot' if argv[0] == 'terminal-shell' else 'foot_fixture')
+    if len(argv) == 3 and argv[0] in {'terminal-shell', 'terminal-fixture', 'terminal-app'}:
+        terminal_shell(Path.home(), argv[1], argv[2],
+                       {'terminal-shell': 'foot', 'terminal-fixture': 'foot_fixture', 'terminal-app': 'application'}[argv[0]])
         return
     if len(argv) == 3 and argv[0] == 'register-tmux':
         directory = owned(Path.home(), argv[1])

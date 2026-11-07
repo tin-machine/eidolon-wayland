@@ -38,7 +38,12 @@ pub(crate) struct Request<'a> {
     pub journal: &'a mut journal::Journal,
     pub binding: &'a str,
     pub observation: tokio::sync::watch::Receiver<bool>,
-    pub terminal_requests: tokio::sync::mpsc::Receiver<eidolon_model::ids::CommandSeq>,
+    pub terminal_requests: tokio::sync::mpsc::Receiver<(
+        eidolon_model::ids::CommandSeq,
+        Option<crate::catalog::Target>,
+    )>,
+    pub catalog_requests:
+        tokio::sync::mpsc::Receiver<(eidolon_model::ids::CommandSeq, crate::catalog::Operation)>,
 }
 
 pub(crate) async fn run<H: client::Handler>(
@@ -47,6 +52,10 @@ pub(crate) async fn run<H: client::Handler>(
     request: Request<'_>,
     cancel: &CancellationToken,
     publish: impl Fn(&Report),
+    publish_catalog: impl Fn(
+        eidolon_model::ids::CommandSeq,
+        Result<crate::catalog::Reply, &'static str>,
+    ),
 ) -> Report {
     let Request {
         session,
@@ -57,6 +66,7 @@ pub(crate) async fn run<H: client::Handler>(
         journal,
         binding,
         mut terminal_requests,
+        mut catalog_requests,
         mut observation,
     } = request;
     let started = std::time::Instant::now();
@@ -131,6 +141,7 @@ pub(crate) async fn run<H: client::Handler>(
             remote.observe_workload(enabled).await?;
         }
         let mut requests_open = true;
+        let mut catalog_open = true;
         while remote.report.phase != "finished" {
             tokio::select! {
                 biased;
@@ -142,8 +153,16 @@ pub(crate) async fn run<H: client::Handler>(
                     } else { observation_open = false; }
                 }
                 request = terminal_requests.recv(), if requests_open && remote.report.phase == "running" && remote.report.terminal_count > 0 && remote.report.terminal_pending.is_none() => {
-                    if let Some(request) = request { remote.open_terminal(request).await?; report.remote=Some(remote.report.clone()); }
+                    if let Some((request,target)) = request { remote.launch_terminal(request,target).await?; report.remote=Some(remote.report.clone()); }
                     else { requests_open=false; }
+                }
+                request = catalog_requests.recv(), if catalog_open && remote.report.phase == "running" => {
+                    if let Some((request, operation)) = request {
+                        let result = remote.catalog(request, operation).await;
+                        publish_catalog(request, result.clone());
+                        result?;
+                        report.remote = Some(remote.report.clone());
+                    } else { catalog_open = false; }
                 }
             }
             if let Some(child) = &remote.report.child {

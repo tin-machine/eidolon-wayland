@@ -113,15 +113,10 @@ class MainActivity : AppSystemActivity() {
             R.id.terminal_launcher_panel,
             composeViewCreator={_,context -> ComposeView(context).apply {setContent {
                 MaterialTheme {
-                    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
-                        Button(onClick={NativeSessionHost.openTerminal()},
-                            colors=androidx.compose.material3.ButtonDefaults.buttonColors(containerColor=Color(0xFFFFC4DF),contentColor=Color(0xFF28203D))) {
-                            Text(">_  ターミナル",style=MaterialTheme.typography.titleLarge)
-                        }
-                    }
+                    LauncherStrip()
                 }
             }}},
-            settingsCreator={UIPanelSettings(shape=QuadShapeOptions(width=.52f,height=.18f),
+            settingsCreator={UIPanelSettings(shape=QuadShapeOptions(width=1.05f,height=.22f),
                 display=DpPerMeterDisplayOptions(),style=PanelStyleOptions(themeResourceId=R.style.EidolonTheme))},
             panelSetupWithComposeView = { view, obj, _ -> view.post {
                 if(ownsScene()) obj.display?.presentation?.window?.let { window ->

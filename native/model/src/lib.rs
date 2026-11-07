@@ -1,5 +1,6 @@
 //! Android、GL、ネットワークに依存しない製品契約。
 pub mod build_info;
+pub mod catalog;
 pub mod commands;
 pub mod ids;
 pub mod input;
