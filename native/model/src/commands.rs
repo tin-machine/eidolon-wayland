@@ -22,6 +22,8 @@ pub struct RuntimeConfig {
     /// Debug専用保存profile。nested JSONも重複keyを失わずProfile::parseへ渡す。
     #[serde(default)]
     pub debug_probe_profile_v2: Option<String>,
+    #[serde(default)]
+    pub debug_linux_shm_pins: Option<String>,
 }
 impl Default for RuntimeConfig {
     fn default() -> Self {
@@ -33,6 +35,7 @@ impl Default for RuntimeConfig {
             installation: None,
             profiles: Vec::new(),
             debug_probe_profile_v2: None,
+            debug_linux_shm_pins: None,
         }
     }
 }
@@ -87,6 +90,11 @@ impl RuntimeConfig {
                 .as_ref()
                 .is_some_and(|id| !valid_installation(id))
         {
+            return Err(Status::InvalidArgument);
+        }
+        if self.debug_linux_shm_pins.as_ref().is_some_and(|json| {
+            json.is_empty() || json.len() > 4096 || self.debug_probe_profile_v2.is_none()
+        }) {
             return Err(Status::InvalidArgument);
         }
         if let Some(json) = &self.debug_probe_profile_v2 {
@@ -448,6 +456,18 @@ pub enum Command {
         schema: u32,
         request_id: CommandSeq,
     },
+    LinuxShmProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        nonce: String,
+    },
+    LinuxShmRecover {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        nonce: String,
+    },
     Connect {
         schema: u32,
         request_id: CommandSeq,
@@ -544,6 +564,8 @@ impl Command {
             | Self::CompositorProbe { schema, .. }
             | Self::ForwardProbe { schema, .. }
             | Self::ConnectSavedProbe { schema, .. }
+            | Self::LinuxShmProbe { schema, .. }
+            | Self::LinuxShmRecover { schema, .. }
             | Self::Connect { schema, .. }
             | Self::Disconnect { schema, .. }
             | Self::CancelConnect { schema, .. }
@@ -577,6 +599,8 @@ impl Command {
         | Self::NativeDepsProbe { nonce, .. }
         | Self::AppProbe { nonce, .. }
         | Self::StartApp { nonce, .. }
+        | Self::LinuxShmProbe { nonce, .. }
+        | Self::LinuxShmRecover { nonce, .. }
         | Self::CompositorProbe { nonce, .. } = &command
             && (nonce.len() != 16
                 || !nonce
@@ -686,6 +710,8 @@ impl Command {
             | Self::CompositorProbe { request_id, .. }
             | Self::ForwardProbe { request_id, .. }
             | Self::ConnectSavedProbe { request_id, .. }
+            | Self::LinuxShmProbe { request_id, .. }
+            | Self::LinuxShmRecover { request_id, .. }
             | Self::Connect { request_id, .. }
             | Self::Disconnect { request_id, .. }
             | Self::CancelConnect { request_id, .. }
@@ -883,6 +909,31 @@ mod tests {
             Command::parse(
                 r#"{"schema":1,"type":"connect_saved_probe","request_id":"7","host":"192.0.2.1"}"#
             )
+            .is_err()
+        );
+    }
+    #[test]
+    fn linux_shm_probe_wire_has_only_fixed_scope_and_nonce() {
+        for kind in ["linux_shm_probe", "linux_shm_recover"] {
+            let value = serde_json::json!({"schema":1,"type":kind,"request_id":"9007199254740993","session":"1","nonce":"1234567890abcdef"});
+            assert!(Command::parse(&value.to_string()).is_ok());
+            for (key, bad) in [
+                ("host", serde_json::json!("192.0.2.1")),
+                ("path", serde_json::json!("/tmp/x")),
+                ("nonce", serde_json::json!("../bad")),
+                ("session", serde_json::json!(1)),
+            ] {
+                let mut invalid = value.clone();
+                invalid[key] = bad;
+                assert!(Command::parse(&invalid.to_string()).is_err());
+            }
+        }
+        assert!(
+            RuntimeConfig {
+                debug_linux_shm_pins: Some("{}".into()),
+                ..Default::default()
+            }
+            .validate()
             .is_err()
         );
     }

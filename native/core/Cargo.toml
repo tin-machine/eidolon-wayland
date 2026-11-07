@@ -20,9 +20,10 @@ sha2 = "0.11"
 eidolon-shm-fixture = { path = "../fixtures/shm-client", optional = true }
 
 [features]
-debug-fixtures = ["dep:eidolon-shm-fixture", "eidolon-render/debug-fixtures"]
+debug-fixtures = ["dep:eidolon-shm-fixture", "eidolon-render/debug-fixtures", "eidolon-transport/debug-fixtures"]
 
 [dev-dependencies]
+eidolon-transport = { workspace = true, features = ["debug-fixtures"] }
 eidolon-render = { workspace = true, features = ["debug-fixtures"] }
 eidolon-shm-fixture = { path = "../fixtures/shm-client" }
 

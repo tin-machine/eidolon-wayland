@@ -457,6 +457,23 @@ impl Session {
             self.report.state = "running";
         }
     }
+    #[cfg(any(test, feature = "debug-fixtures"))]
+    pub fn linux_forwarding(&mut self, forward: &eidolon_transport::linux_probe::Report) {
+        if self.closing
+            || self.closed()
+            || forward.session != Some(self.session())
+            || forward.nonce != self.report.nonce
+        {
+            return;
+        }
+        if let Some(error) = forward.error {
+            self.fail(error);
+        } else if forward.state == "pass" {
+            self.report.state = "pass";
+        } else if forward.state == "running" {
+            self.report.state = "running";
+        }
+    }
     pub fn fail(&mut self, error: &'static str) {
         if self.report.error.is_none() {
             self.report.error = Some(error);

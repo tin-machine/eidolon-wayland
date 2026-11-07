@@ -122,7 +122,9 @@ impl Runtime {
     ) -> std::io::Result<Self> {
         let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "CONFIG_INVALID");
         config.validate().map_err(|_| invalid())?;
-        if config.debug_probe_profile_v2.is_some() && !cfg!(any(test, feature = "debug-fixtures")) {
+        if (config.debug_probe_profile_v2.is_some() || config.debug_linux_shm_pins.is_some())
+            && !cfg!(any(test, feature = "debug-fixtures"))
+        {
             return Err(invalid());
         }
         let probe_spec = config
@@ -138,6 +140,13 @@ impl Runtime {
                     .map_err(|_| invalid())
             })
             .transpose()?;
+        #[cfg(any(test, feature = "debug-fixtures"))]
+        let linux_pins = config
+            .debug_linux_shm_pins
+            .as_deref()
+            .map(eidolon_transport::linux_probe::Pins::parse)
+            .transpose()
+            .map_err(|_| invalid())?;
         let mut profiles = std::collections::BTreeMap::new();
         for wire in &config.profiles {
             let json = serde_json::to_string(wire).map_err(|_| invalid())?;
@@ -191,6 +200,7 @@ impl Runtime {
                     JoinHandle<serde_json::Value>,
                 )> = None;
                 let mut app: Option<crate::session::Session> = None;
+                let mut app_linux = false;
                 let mut slots = crate::window_slots::Controller::new(runtime_handle);
                 let mut slot_refused = Vec::new();
                 // server ACKだけで枠の予約を解かない。新windowがmapするまで追加を直列化する。
@@ -204,6 +214,7 @@ impl Runtime {
                     eidolon_model::ids::SessionId,
                     String,
                     eidolon_model::commands::AppMode,
+                    bool,
                     bool,
                 )> = None;
                 let clock = Instant::now();
@@ -269,12 +280,12 @@ impl Runtime {
                             .theme = themes.report();
                         let ssh = io.snapshot();
                         if !stopping.load(Ordering::Acquire)
-                            && pending_app.as_ref().is_none_or(|(session, nonce, _, _)| slots.can_begin(*session, nonce))
-                            && let Some((session, nonce, mode, virtual_clock)) = pending_app.take()
+                            && pending_app.as_ref().is_none_or(|(session, nonce, _, _, _)| slots.can_begin(*session, nonce))
+                            && let Some((session, nonce, mode, virtual_clock, linux)) = pending_app.take()
                         {
                             let started = (|| {
                                 if ssh.session != Some(session)
-                                    || ssh.state != eidolon_transport::session::State::Ready
+                                    || ssh.state != if linux {eidolon_transport::session::State::ProbeReady}else{eidolon_transport::session::State::Ready}
                                 {
                                     return Err("STALE");
                                 }
@@ -284,6 +295,7 @@ impl Runtime {
                                     if current.virtual_clock() != virtual_clock {
                                         return Err("NOT_READY");
                                     }
+                                    if app_linux!=linux {return Err("NOT_READY");}
                                     current.select_app(&nonce, mode)?;
                                     if !virtual_clock { slots.begin(session, &nonce).map_err(|_| "NOT_READY")?; }
                                     return Ok(());
@@ -310,6 +322,7 @@ impl Runtime {
                                         pixels: gl.pixel_budget(),
                                     },
                                 )?);
+                                app_linux=linux;
                                 if !virtual_clock {
                                     slots.begin(session, &nonce).map_err(|_| "NOT_READY")?;
                                     gl.use_windows();
@@ -340,9 +353,11 @@ impl Runtime {
                                 || current.snapshot().error.is_some();
                             let remote_gone = io.is_finished()
                                 || (ssh.owned_connections == 0 && ssh.forward.active == 0);
-                            if let Some(forward) = ssh.app_forward.as_ref() {
+                            if !app_linux && let Some(forward) = ssh.app_forward.as_ref() {
                                 current.forwarding(forward);
                             }
+                            #[cfg(any(test, feature = "debug-fixtures"))]
+                            if app_linux && let Some(forward)=ssh.linux_forward.as_ref() {current.linux_forwarding(forward);}
                             current.tick(close, remote_gone);
                             if let Some((session, request, nonce, before)) = opening_window.as_ref() {
                                 use eidolon_model::window_launch::{Candidate, Outcome, Report, correlate};
@@ -393,12 +408,19 @@ impl Runtime {
                             current.render_tick(&gl, clock.elapsed());
                             let report = current.snapshot();
                             if !close && report.ready && !report.forward_sent {
-                                let code = io.start_app(
+                                let code = if app_linux {
+                                    #[cfg(any(test, feature = "debug-fixtures"))]
+                                    {if let (Some(pins),Some(paths))=(linux_pins.as_ref(),config.paths.as_ref()) {
+                                        io.linux_probe(current.session(),std::path::Path::new(&paths.files_dir),current.socket().as_deref(),current.nonce(),pins.clone())
+                                    }else{Status::NotReady}}
+                                    #[cfg(not(any(test, feature = "debug-fixtures")))]
+                                    {Status::InvalidArgument}
+                                }else{io.start_app(
                                     current.session(),
                                     &current.socket().unwrap(),
                                     current.nonce(),
                                     current.mode(),
-                                );
+                                )};
                                 if code == Status::Accepted {
                                     current.forward_started();
                                 } else {
@@ -1322,7 +1344,7 @@ impl Runtime {
                                         Status::Busy
                                     } else {
                                         pending_app =
-                                            Some((*session, nonce.clone(), *mode, virtual_clock));
+                                            Some((*session, nonce.clone(), *mode, virtual_clock, false));
                                         state.snapshot.app = Some(crate::session::Report {
                                             state: "queued",
                                             session: Some(*session),
@@ -1451,6 +1473,33 @@ impl Runtime {
                                     } else {
                                         Status::NotReady
                                     }
+                                }
+                                Command::LinuxShmProbe {session,nonce,..} => {
+                                    #[cfg(any(test, feature = "debug-fixtures"))]
+                                    {
+                                        if linux_pins.is_none() || config.paths.is_none() {Status::NotReady}
+                                        else if ssh.session!=Some(*session) {Status::Stale}
+                                        else if ssh.state!=eidolon_transport::session::State::ProbeReady {Status::NotReady}
+                                        else if pending_app.is_some() || app.is_some() || helper.is_some() || dependencies.is_some() || compositor.is_some() || ssh.linux_forward.is_some() {Status::Busy}
+                                        else {
+                                            pending_app=Some((*session,nonce.clone(),eidolon_model::commands::AppMode::Pattern,true,true));
+                                            state.snapshot.app=Some(crate::session::Report{state:"queued",session:Some(*session),nonce:nonce.clone(),mode:Some(eidolon_model::commands::AppMode::Pattern),callback_clock:"virtual",..Default::default()});
+                                            Status::Accepted
+                                        }
+                                    }
+                                    #[cfg(not(any(test, feature = "debug-fixtures")))]
+                                    {let _=(session,nonce);Status::InvalidArgument}
+                                }
+                                Command::LinuxShmRecover {session,nonce,..} => {
+                                    #[cfg(any(test, feature = "debug-fixtures"))]
+                                    {
+                                        if app_busy || helper.is_some() || dependencies.is_some() || compositor.is_some() {Status::Busy}
+                                        else if let (Some(pins),Some(paths))=(linux_pins.as_ref(),config.paths.as_ref()) {
+                                            io.linux_probe(*session,std::path::Path::new(&paths.files_dir),None,nonce,pins.clone())
+                                        }else{Status::NotReady}
+                                    }
+                                    #[cfg(not(any(test, feature = "debug-fixtures")))]
+                                    {let _=(session,nonce);Status::InvalidArgument}
                                 }
                                 Command::ConnectSavedProbe { request_id, .. } => {
                                     if !cfg!(any(test, feature = "debug-fixtures")) {
@@ -1723,8 +1772,12 @@ impl Runtime {
         self.shared.lock().unwrap_or_else(|e| e.into_inner())
     }
     pub fn command(&self, command: Command) -> Status {
-        if matches!(command, Command::ConnectSavedProbe { .. })
-            && !cfg!(any(test, feature = "debug-fixtures"))
+        if matches!(
+            command,
+            Command::ConnectSavedProbe { .. }
+                | Command::LinuxShmProbe { .. }
+                | Command::LinuxShmRecover { .. }
+        ) && !cfg!(any(test, feature = "debug-fixtures"))
         {
             return Status::InvalidArgument;
         }

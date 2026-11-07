@@ -23,6 +23,9 @@ class LinuxSshProbeReceiver : BroadcastReceiver() {
         when(name) {
             "linux-ssh-probe" -> LinuxSshProbeCase.start(context.applicationContext, nonce)
             "linux-ssh-probe-stop" -> LinuxSshProbeCase.stop(nonce)
+            "linux-shm-probe" -> LinuxShmProbeCase.start(context.applicationContext, nonce)
+            "linux-shm-recover" -> LinuxShmProbeCase.start(context.applicationContext, nonce, recoveryOnly = true)
+            "linux-shm-probe-stop" -> LinuxShmProbeCase.stop(nonce)
         }
     }
 }

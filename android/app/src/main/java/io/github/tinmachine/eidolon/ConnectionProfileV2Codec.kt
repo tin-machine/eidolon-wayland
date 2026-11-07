@@ -7,11 +7,15 @@ import java.nio.charset.CodingErrorAction
 object ConnectionProfileV2Codec {
     const val MAX_BYTES = 16 * 1024
     fun decode(bytes: ByteArray, installation: String): ConnectionProfileV2.Value = try {
-        require(bytes.size in 1..MAX_BYTES)
+        ConnectionProfileV2.parse(decodeFields(bytes), installation)
+    } catch (_: Exception) { throw IllegalArgumentException("PROFILE_JSON_INVALID") }
+
+    internal fun decodeFields(bytes: ByteArray, maxBytes: Int = MAX_BYTES): Map<String, Any> {
+        require(maxBytes in 1..MAX_BYTES && bytes.size in 1..maxBytes)
         val text = Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString()
-        ConnectionProfileV2.parse(Reader(text).fields(), installation)
-    } catch (_: Exception) { throw IllegalArgumentException("PROFILE_JSON_INVALID") }
+        return Reader(text).fields()
+    }
 
     fun encode(profile: ConnectionProfileV2.Value): ByteArray {
         val value = ConnectionProfileV2.parse(profile.toFields(), profile.installation)

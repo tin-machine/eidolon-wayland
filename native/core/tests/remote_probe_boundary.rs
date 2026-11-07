@@ -14,6 +14,22 @@ fn remote_probe_is_rejected_without_the_packaged_debug_feature() {
     };
     assert!(config.validate().is_ok());
     assert!(Runtime::start(config).is_err());
+    let pins_config = RuntimeConfig {
+        installation: Some("1".repeat(32)),
+        debug_probe_profile_v2: Some(profile_json()),
+        debug_linux_shm_pins: Some(
+            serde_json::json!({
+                "schema": 1,
+                "bundle_sha256": "b".repeat(64),
+                "waypipe_sha256": "c".repeat(64),
+                "fixture_sha256": "d".repeat(64),
+            })
+            .to_string(),
+        ),
+        ..Default::default()
+    };
+    assert!(pins_config.validate().is_ok());
+    assert!(Runtime::start(pins_config).is_err());
     let runtime = Runtime::start(RuntimeConfig::default()).unwrap();
     assert_eq!(
         runtime.command(
@@ -26,6 +42,15 @@ fn remote_probe_is_rejected_without_the_packaged_debug_feature() {
         runtime.credential_scope(),
         Err(Status::InvalidArgument)
     ));
+    for kind in ["linux_shm_probe", "linux_shm_recover"] {
+        let command = serde_json::json!({
+            "schema": 1, "type": kind, "request_id": "2", "session": "1", "nonce": "1234567890abcdef"
+        });
+        assert_eq!(
+            runtime.command(Command::parse(&command.to_string()).unwrap()),
+            Status::InvalidArgument
+        );
+    }
     assert_eq!(
         runtime.provide_credential_for(
             eidolon_model::ids::SessionId::new(1).unwrap(),

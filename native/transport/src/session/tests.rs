@@ -6,6 +6,83 @@ use russh::{
 use tokio::net::TcpListener;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn linux_mailbox_requires_probe_ready_and_never_enables_normal_app_routes() {
+    let controller = Controller::start().unwrap();
+    let session = SessionId::new(7).unwrap();
+    let pins=crate::linux_probe::Pins::parse(&serde_json::json!({"schema":1,"bundle_sha256":"b".repeat(64),"waypipe_sha256":"c".repeat(64),"fixture_sha256":"d".repeat(64)}).to_string()).unwrap();
+    controller.signals.update(|s| {
+        s.report.state = State::Ready;
+        s.report.session = Some(session);
+        s.cancel = Some(CancellationToken::new());
+    });
+    assert_eq!(
+        controller.linux_probe(
+            session,
+            Path::new("/fixture"),
+            None,
+            "1234567890abcdef",
+            pins.clone()
+        ),
+        Status::NotReady
+    );
+    controller
+        .signals
+        .update(|s| s.report.state = State::ProbeReady);
+    assert_eq!(
+        controller.start_app(
+            session,
+            Path::new("/fixture/p"),
+            "1234567890abcdef",
+            AppMode::Foot
+        ),
+        Status::NotReady
+    );
+    assert_eq!(
+        controller.open_terminal(session, request(10)),
+        Status::NotReady
+    );
+    assert_eq!(
+        controller.linux_probe(
+            SessionId::new(8).unwrap(),
+            Path::new("/fixture"),
+            None,
+            "1234567890abcdef",
+            pins.clone()
+        ),
+        Status::Stale
+    );
+    assert_eq!(
+        controller.linux_probe(
+            session,
+            Path::new("/fixture"),
+            Some(Path::new("/fixture/p")),
+            "1234567890abcdef",
+            pins.clone()
+        ),
+        Status::Accepted
+    );
+    assert_eq!(
+        controller.linux_probe(
+            session,
+            Path::new("/fixture"),
+            None,
+            "1234567890abcdef",
+            pins
+        ),
+        Status::Busy
+    );
+    let snapshot = controller.snapshot();
+    assert_eq!(snapshot.state, State::ProbeReady);
+    assert_eq!(snapshot.linux_forward.unwrap().state, "queued");
+    assert!(
+        !serde_json::to_string(&controller.snapshot())
+            .unwrap()
+            .contains(&"b".repeat(64))
+    );
+    stop(&controller).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn catalog_mailbox_is_bounded_scoped_and_separate_from_diagnostics() {
     let controller = Controller::start().unwrap();
     let (sender, mut receiver) = tokio::sync::mpsc::channel(1);

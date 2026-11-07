@@ -45,6 +45,15 @@ class IdentityTests(unittest.TestCase):
         self.assertNotEqual(native.canonical(first), native.canonical(self.info(version=4)))
         self.assertNotEqual(native.canonical(first), native.canonical(self.info(profile="release")))
 
+    def test_embedded_linux_helper_changes_build_identity(self):
+        helper = self.root / "scripts/linux/eidolon-linux-session.py"
+        helper.parent.mkdir(parents=True)
+        helper.write_text("# fixed Linux helper version one\n")
+        first = self.info()
+        self.assertIn(helper, native.source_files(self.root))
+        helper.write_text("# fixed Linux helper version two\n")
+        self.assertNotEqual(first["source_digest"], self.info()["source_digest"])
+
     def test_gitless_archive_accepts_explicit_identity_and_rejects_bad_input(self):
         with patch.dict(os.environ, {"EIDOLON_SOURCE_DIGEST": "b" * 64, "EIDOLON_SOURCE_DIRTY": "false"}):
             first = self.info()

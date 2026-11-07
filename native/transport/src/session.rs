@@ -69,6 +69,10 @@ pub struct Snapshot {
     pub forward: forward::Report,
     pub forward_probe: Option<forward_probe::Report>,
     pub app_forward: Option<forward_app::Report>,
+    #[cfg(any(test, feature = "debug-fixtures"))]
+    pub linux_forward: Option<crate::linux_probe::Report>,
+    #[cfg(any(test, feature = "debug-fixtures"))]
+    pub linux_recovery: Option<crate::linux_probe::RecoveryReport>,
     pub journal_ready: bool,
     pub pending_cleanup: Vec<journal::Pending>,
     pub cleanup_audits: Vec<CleanupAudit>,
@@ -124,11 +128,20 @@ struct Shared {
     router: Option<Arc<forward::Router>>,
     forward: Option<(PathBuf, String, Option<CleanupScenario>)>,
     app: Option<(PathBuf, String, AppMode)>,
+    #[cfg(any(test, feature = "debug-fixtures"))]
+    linux: Option<LinuxWork>,
     forward_busy: bool,
     terminal_requests:
         Option<tokio::sync::mpsc::Sender<(CommandSeq, Option<crate::catalog::Target>)>>,
     catalog_requests: Option<tokio::sync::mpsc::Sender<(CommandSeq, crate::catalog::Operation)>>,
     catalog: CatalogUi,
+}
+#[cfg(any(test, feature = "debug-fixtures"))]
+struct LinuxWork {
+    files: PathBuf,
+    local_socket: Option<PathBuf>,
+    nonce: String,
+    pins: crate::linux_probe::Pins,
 }
 /// UI専用。通常Snapshot/receiptへのserialize経路から分離する。
 #[derive(Clone, Default, Serialize)]
@@ -212,6 +225,8 @@ impl Controller {
                 router: None,
                 forward: None,
                 app: None,
+                #[cfg(any(test, feature = "debug-fixtures"))]
+                linux: None,
                 forward_busy: false,
                 terminal_requests: None,
                 catalog_requests: None,
@@ -491,6 +506,59 @@ impl Controller {
             }
         });
     }
+    /// debug固定SHMと明示receipt回収だけ。ProbeReadyの通常app/catalog能力は変えない。
+    #[cfg(any(test, feature = "debug-fixtures"))]
+    pub fn linux_probe(
+        &self,
+        session: SessionId,
+        files: &Path,
+        local_socket: Option<&Path>,
+        nonce: &str,
+        pins: crate::linux_probe::Pins,
+    ) -> Status {
+        if !files.is_absolute()
+            || !forward_probe::valid_nonce(nonce)
+            || local_socket.is_some_and(|p| !p.is_absolute() || p.as_os_str().len() > 103)
+        {
+            return Status::InvalidArgument;
+        }
+        let mut shared = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if shared.report.session != Some(session) {
+            return Status::Stale;
+        }
+        if self.signals.stop.load(Ordering::Acquire)
+            || shared.report.state != State::ProbeReady
+            || shared.cancel.as_ref().is_none_or(|c| c.is_cancelled())
+        {
+            return Status::NotReady;
+        }
+        if shared.forward_busy {
+            return Status::Busy;
+        }
+        shared.forward_busy = true;
+        if local_socket.is_some() {
+            shared.report.linux_forward = Some(crate::linux_probe::Report {
+                state: "queued",
+                session: Some(session),
+                nonce: nonce.into(),
+                ..Default::default()
+            });
+        } else {
+            shared.report.linux_recovery = None;
+        }
+        shared.linux = Some(LinuxWork {
+            files: files.into(),
+            local_socket: local_socket.map(Path::to_path_buf),
+            nonce: nonce.into(),
+            pins,
+        });
+        self.signals.notify.notify_one();
+        Status::Accepted
+    }
     pub fn open_terminal(&self, session: SessionId, request: CommandSeq) -> Status {
         self.launch_terminal(session, request, None)
     }
@@ -759,6 +827,10 @@ fn owner(
             s.active_connect_request = None;
             s.forward = None;
             s.app = None;
+            #[cfg(any(test, feature = "debug-fixtures"))]
+            {
+                s.linux = None;
+            }
             s.forward_busy = false;
             s.report.forward = connect.router.report();
             s.router = None;
@@ -981,6 +1053,70 @@ async fn connection(
             .unwrap_or_else(|e| e.into_inner())
             .app
             .take();
+        #[cfg(any(test, feature = "debug-fixtures"))]
+        let linux_work = signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .linux
+            .take();
+        #[cfg(any(test, feature = "debug-fixtures"))]
+        if let Some(work) = linux_work {
+            if connect.profile.helper_supported {
+                return Err("LINUX_BACKEND_MISMATCH");
+            }
+            let revision = connect
+                .profile
+                .revision
+                .as_deref()
+                .ok_or("LINUX_BACKEND_MISMATCH")?;
+            if let Some(socket) = work.local_socket.as_deref() {
+                let report = crate::linux_probe::run(
+                    &client,
+                    &connect.router,
+                    crate::linux_probe::Request {
+                        session: connect.session,
+                        profile_binding: &binding,
+                        profile_revision: revision,
+                        files: &work.files,
+                        local_socket: socket,
+                        nonce: &work.nonce,
+                        uid,
+                        pins: &work.pins,
+                    },
+                    &connect.cancel,
+                    |value| signals.update(|s| s.report.linux_forward = Some(value.clone())),
+                )
+                .await;
+                signals.update(|s| {
+                    s.report.linux_forward = Some(report);
+                    s.forward_busy = false;
+                });
+            } else {
+                let report = crate::linux_probe::recover(
+                    &client,
+                    crate::linux_probe::Recovery {
+                        session: connect.session,
+                        profile_binding: &binding,
+                        profile_revision: revision,
+                        files: &work.files,
+                        nonce: &work.nonce,
+                        uid,
+                        pins: &work.pins,
+                    },
+                    &connect.cancel,
+                )
+                .await;
+                signals.update(|s| {
+                    s.report.linux_recovery = Some(report);
+                    s.forward_busy = false;
+                });
+            }
+            if connect.cancel.is_cancelled() {
+                return Err("CANCELLED");
+            }
+            continue;
+        }
         if let Some((local_socket, nonce, mode)) = app {
             let (sender, terminal_requests) = tokio::sync::mpsc::channel(1);
             let (catalog_sender, catalog_requests) = tokio::sync::mpsc::channel(1);

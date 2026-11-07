@@ -17,6 +17,7 @@ TARGET = "aarch64-linux-android"
 def source_files(root=ROOT):
     fixed = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts/build-native",
              "scripts/native-build-inputs", "scripts/native_build.py", "scripts/theme_licenses.py", "scripts/check-native-package", "scripts/termux/eidolon-session.py",
+             "scripts/linux/eidolon-linux-session.py",
              "scripts/build-native-deps", "scripts/check-native-deps", "scripts/native-keymap-generator.c", "scripts/prepare-smithay",
              "scripts/build-waypipe", "scripts/waypipe_build.py", "scripts/build-wayland-fixture"]
     paths = {root / p for p in fixed if (root / p).is_file()}
