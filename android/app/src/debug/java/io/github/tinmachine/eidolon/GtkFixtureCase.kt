@@ -41,6 +41,8 @@ object GtkFixtureCase {
         var trial:NativeSessionHost.DebugInputTrial?=null
         val ownedTargets=mutableSetOf<GtkFixtureBinding.Target>()
         var epoch=0L;var token="";var keys=0L;var buttons=0L;var stageStarted=started
+        var progress:GtkInputProgress?=null
+        var inputProgress:JSONObject?=null
         fun publish(result:String="running",reason:String?=null) {
             val binding=owner
             NativeSessionHost.publishCheck(JSONObject().put("case","gtk-$name").put("nonce",nonce).put("result",result).put("phase",phase)
@@ -49,7 +51,7 @@ object GtkFixtureCase {
                 .put("runtime",binding?.handle?.toString() ?: JSONObject.NULL).put("session",binding?.session ?: JSONObject.NULL)
                 .put("scene",binding?.scene ?: JSONObject.NULL).put("main_window",mainWindow.ifEmpty {null} ?: JSONObject.NULL)
                 .put("target",currentTarget?.json() ?: JSONObject.NULL).put("input_epoch",epoch)
-                .put("foot_windows",JSONArray(foot.sorted())).put("steps",rows).also {
+                .put("foot_windows",JSONArray(foot.sorted())).put("steps",rows).put("input_progress",inputProgress ?: JSONObject.NULL).also {
                     if(name=="resize") it.put("resize_replacement",trial?.let {captured->NativeSessionHost.debugInputResizeStatus(captured)} ?: JSONObject.NULL)
                 })
         }
@@ -149,6 +151,7 @@ object GtkFixtureCase {
                     check(input.getInt("pressed")==0 && input.getJSONObject("pointer").getInt("pressed")==0) {"GTK_INPUT_HELD"}
                     owner=binding;theme=runtime.getJSONObject("render").optLong("theme_revision",0)
                     epoch=runtime.getLong("input_resets");keys=input.getLong("delivered");buttons=input.getJSONObject("pointer").getLong("buttons")
+                    if(name!="resize") progress=GtkInputProgress(keys,buttons,name=="dialog")
                     val target=checkNotNull(GtkFixtureBinding.targetFor(runtime,mainWindow)) {"GTK_TARGET_UNAVAILABLE"};currentTarget=target;mainTarget=target
                     val inputTarget=checkNotNull(NativeSessionHost.inputTarget(target.json().toString())) {"GTK_INPUT_UNAVAILABLE"}
                     trial=checkNotNull(NativeSessionHost.debugCaptureInput(inputTarget)) {"GTK_INPUT_UNAVAILABLE"}
@@ -162,6 +165,13 @@ object GtkFixtureCase {
                         transition(if(name=="input") "WAIT_FOCUS" else "WAIT_DIALOG")
                     }
                 } else {
+                    val counters=progress?.let { gate ->
+                        inputProgress=GtkInputDiagnostics.observe(gate,phase,SystemClock.elapsedRealtime(),runtime,epoch,
+                            currentTarget?.window,token.takeIf {it.isNotEmpty()})
+                        check(gate.state!=GtkInputProgress.State.REJECTED) {"GTK_INPUT_PROGRESS_${gate.reason}"}
+                        gate.state==GtkInputProgress.State.COMPLETE
+                    // resizeは既存owned replacement receiptで検査し、GTK入力進捗を捏造しない。
+                    } ?: (name=="resize")
                     check(NativeSessionHost.debugInputCurrent(checkNotNull(trial))) {"GTK_INTENT_LOST"}
                     if(phase !in setOf("CLOSING","WAIT_LARGE","WAIT_RETURN") && !(name=="dialog" && phase in setOf("WAIT_DIALOG_CLOSED","OPERATIONS_COMPLETE"))) check(runtime.getLong("input_resets")==epoch) {"GTK_EPOCH_CHANGED"}
                     check(binding==owner && runtime.getJSONObject("render").optLong("theme_revision",0)==theme) {"GTK_OWNER_CHANGED"}
@@ -171,10 +181,7 @@ object GtkFixtureCase {
                     check((windows(runtime)-allowed).isEmpty()) {"GTK_OTHER_WINDOW"}
                     when(phase) {
                         "WAIT_FOCUS" -> {
-                          check(runtime.getLong("input_resets")==epoch && input.getLong("delivered")==keys &&
-                              input.getJSONObject("pointer").getLong("buttons")<=buttons+2) {"GTK_OTHER_INPUT"}
-                          if(focused(runtime,checkNotNull(currentTarget))) {
-                            check(input.getLong("delivered")==keys && input.getJSONObject("pointer").getLong("buttons")==buttons+2) {"GTK_OTHER_INPUT"}
+                          if(counters && focused(runtime,checkNotNull(currentTarget))) {
                             token=input.getString("focus_token");val target=checkNotNull(currentTarget);record("focused",runtime)
                             key(runtime,target,KeyEvent.KEYCODE_A,30,true);key(runtime,target,KeyEvent.KEYCODE_A,30,false)
                             key(runtime,target,KeyEvent.KEYCODE_DEL,14,true);key(runtime,target,KeyEvent.KEYCODE_DEL,14,false)
@@ -183,51 +190,43 @@ object GtkFixtureCase {
                         }
                         "WAIT_KEYS" -> {
                             check(focused(runtime,checkNotNull(currentTarget)) && input.getString("focus_token")==token) {"GTK_FOCUS_CHANGED"}
-                            check(input.getLong("delivered")<=keys+4 && input.getJSONObject("pointer").getLong("buttons")==buttons+2) {"GTK_OTHER_INPUT"}
-                            if(input.getLong("delivered")==keys+4 && input.getInt("pressed")==0) {
+                            if(counters) {
                                 val height=checkNotNull(GtkFixtureBinding.window(runtime,appId)).getJSONObject("logical_size").getInt("height")
                                 check(height in 240..4096) {"GTK_GEOMETRY_UNSUPPORTED"}
                                 record("typed",runtime);click(runtime,checkNotNull(currentTarget),.5,1.0-68.0/height);seal();transition("WAIT_CLICK")
                             }
                         }
-                        "WAIT_CLICK" -> if(input.getJSONObject("pointer").getLong("buttons")==buttons+4 && input.getJSONObject("pointer").getInt("pressed")==0) {
+                        "WAIT_CLICK" -> if(counters) {
                             record("clicked",runtime);transition("OPERATIONS_COMPLETE")
                         }
                         "WAIT_DIALOG" -> {
-                            check(runtime.getLong("input_resets")==epoch && input.getLong("delivered")==keys &&
-                                input.getJSONObject("pointer").getLong("buttons")<=buttons+2) {"GTK_OTHER_INPUT"}
                             val target=dialog?.let {GtkFixtureBinding.targetFor(runtime,it.getString("window"))}
-                            if(target!=null) {
-                                check(input.getJSONObject("pointer").getLong("buttons")==buttons+2) {"GTK_OTHER_INPUT"}
+                            if(target!=null && counters) {
                                 record("dialog_mapped",runtime,target)
                                 click(runtime,target,.5,.3);transition("WAIT_DIALOG_FOCUS")
                             } else if(SystemClock.elapsedRealtime()-stageStarted>6000) {finish("unsupported","DIALOG_TARGET_UNAVAILABLE");return}
                         }
                         "WAIT_DIALOG_FOCUS" -> {
-                            check(runtime.getLong("input_resets")==epoch && input.getLong("delivered")==keys &&
-                                input.getJSONObject("pointer").getLong("buttons")<=buttons+4) {"GTK_OTHER_INPUT"}
-                            if(focused(runtime,checkNotNull(currentTarget))) {
-                                check(input.getJSONObject("pointer").getLong("buttons")==buttons+4) {"GTK_OTHER_INPUT"}
+                            if(counters && focused(runtime,checkNotNull(currentTarget))) {
                                 token=input.getString("focus_token");record("dialog_focused",runtime);transition("DIALOG_READY")
                             }
                         }
                         "DIALOG_READY" -> {
-                            check(focused(runtime,checkNotNull(currentTarget)) && input.getString("focus_token")==token &&
-                                input.getLong("delivered")==keys && input.getJSONObject("pointer").getLong("buttons")==buttons+4) {"GTK_FOCUS_CHANGED"}
-                            if(dismissRequested) {
+                            check(focused(runtime,checkNotNull(currentTarget)) && input.getString("focus_token")==token) {"GTK_FOCUS_CHANGED"}
+                            if(counters && dismissRequested) {
                                 val target=checkNotNull(currentTarget)
                                 key(runtime,target,KeyEvent.KEYCODE_ESCAPE,1,true);key(runtime,target,KeyEvent.KEYCODE_ESCAPE,1,false)
                                 seal(target);record("dialog_escape",runtime);transition("WAIT_DIALOG_CLOSED")
                             }
                         }
-                        "WAIT_DIALOG_CLOSED" -> if(dialog==null) {record("dialog_retired",runtime);transition("OPERATIONS_COMPLETE")}
+                        "WAIT_DIALOG_CLOSED" -> if(counters && dialog==null) {record("dialog_retired",runtime);transition("OPERATIONS_COMPLETE")}
                         "WAIT_LARGE" -> if(adoptResize("large")) {
                             resize(checkNotNull(mainTarget),640,360);transition("WAIT_RETURN")
                         }
                         "WAIT_RETURN" -> if(adoptResize("returned")) {
                             seal();transition("OPERATIONS_COMPLETE")
                         }
-                        "OPERATIONS_COMPLETE" -> if(closeRequested) {
+                        "OPERATIONS_COMPLETE" -> if(counters && closeRequested) {
                             check(GtkFixtureBinding.window(runtime,appId)?.getString("window")==mainWindow) {"GTK_WINDOW_CHANGED"}
                             check(GtkFixtureBinding.targetFor(runtime,mainWindow)==mainTarget) {"GTK_TARGET_CHANGED"}
                             val target=checkNotNull(mainTarget);currentTarget=target
@@ -237,7 +236,7 @@ object GtkFixtureCase {
                             }) {"GTK_INTENT_LOST"}
                             closing=true;transition("CLOSING")
                         }
-                        "CLOSING" -> if(GtkFixtureBinding.window(runtime,appId)==null && GtkFixtureBinding.window(runtime,dialogId)==null &&
+                        "CLOSING" -> if(counters && GtkFixtureBinding.window(runtime,appId)==null && GtkFixtureBinding.window(runtime,dialogId)==null &&
                             GtkFixtureBinding.retired(runtime,NativeSessionHost.debugAdapterSnapshot(),checkNotNull(owner),ownedTargets,foot)) {
                             check(input.getInt("pressed")==0 && input.getJSONObject("pointer").getInt("pressed")==0) {"GTK_INPUT_HELD"}
                             record("retired",runtime);finish("completed");return

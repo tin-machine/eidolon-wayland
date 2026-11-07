@@ -179,13 +179,36 @@ def resize_step(step, previous, request):
     return int(step["resize_request"])
 
 
+def input_progress(row):
+    if row is None:return
+    counts={"floor_keys","floor_buttons","expected_keys","expected_buttons","observed_keys","observed_buttons","keys_pressed","buttons_pressed","expected_epoch","observed_epoch"}
+    need(type(row) is dict and set(row)==counts|{"schema","phase","state","reason","elapsed_ms","expected_focus_window","observed_focus_window","focus_token_matches"},"GTK_ANDROID_PROGRESS_SCHEMA")
+    need(type(row["schema"]) is int and row["schema"]==1 and all(type(row[n]) is int and 0<=row[n]<=2**63-1 for n in counts) and
+         type(row["elapsed_ms"]) is int and 0<=row["elapsed_ms"]<=6000 and type(row["phase"]) is str and row["phase"] in {
+             "WAIT_FOCUS","WAIT_KEYS","WAIT_CLICK","WAIT_DIALOG","WAIT_DIALOG_FOCUS","DIALOG_READY","WAIT_DIALOG_CLOSED","OPERATIONS_COMPLETE","CLOSING","WAIT_RETIRED"} and
+         all(row[n] is None or decimal(row[n]) for n in ("expected_focus_window","observed_focus_window")) and
+         (row["focus_token_matches"] is None or type(row["focus_token_matches"]) is bool),"GTK_ANDROID_PROGRESS_SCHEMA")
+    need(all(0<=row["expected_"+n]-row["floor_"+n]<=4 for n in ("keys","buttons")),"GTK_ANDROID_PROGRESS_RANGE")
+    reasons={"waiting":{"WAIT_COUNTERS"},"complete":{"COUNTERS_COMPLETE"},"rejected":{"CLOCK_REGRESSED","COUNTER_REGRESSED","COUNTER_EXCESS","UNEXPECTED_HELD","PROGRESS_TIMEOUT"}}
+    need(type(row["state"]) is str and row["state"] in reasons and type(row["reason"]) is str and row["reason"] in reasons[row["state"]],"GTK_ANDROID_PROGRESS_STATE")
+    if row["state"]!="rejected":
+        need(all(row["floor_"+n]<=row["observed_"+n]<=row["expected_"+n] for n in ("keys","buttons")) and
+             row["keys_pressed"]<=1 and row["buttons_pressed"]<=1,"GTK_ANDROID_PROGRESS_RANGE")
+    if row["state"]=="complete":
+        need(all(row["observed_"+n]==row["expected_"+n] for n in ("keys","buttons")) and
+             row["keys_pressed"]==row["buttons_pressed"]==0,"GTK_ANDROID_PROGRESS_COMPLETE")
+
+
 def android_receipt(value, nonce, case):
     row = value.get("check")
     if type(row) is not dict or row.get("case") != "gtk-"+case or row.get("nonce") != nonce: return None
     fields={"case", "nonce", "result", "phase", "reason", "scope", "physical_input_verified", "ime_verified",
-            "host_physical_filter_verified", "runtime", "session", "scene", "main_window", "target", "input_epoch", "foot_windows", "steps"}
+            "host_physical_filter_verified", "runtime", "session", "scene", "main_window", "target", "input_epoch", "foot_windows", "steps", "input_progress"}
     if case=="resize":fields.add("resize_replacement")
     need(set(row)==fields,"GTK_ANDROID_SCHEMA")
+    input_progress(row["input_progress"])
+    if case=="resize":need(row["input_progress"] is None,"GTK_ANDROID_PROGRESS_SCHEMA")
+    elif row["result"]=="completed":need(row["input_progress"] is not None and row["input_progress"]["state"]=="complete","GTK_ANDROID_PROGRESS_COMPLETE")
     if case=="resize":resize_status(row["resize_replacement"])
     need(row["scope"] == "target_bound_synthetic_native" and all(row[k] is False for k in
          ("physical_input_verified", "ime_verified", "host_physical_filter_verified")) and row["result"] in

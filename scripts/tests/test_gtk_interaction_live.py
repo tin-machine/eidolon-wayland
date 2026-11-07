@@ -26,6 +26,13 @@ spec=importlib.util.spec_from_loader(loader.name,loader);cli=importlib.util.modu
 NONCE="a"*32
 
 
+def input_progress(state="complete",reason="COUNTERS_COMPLETE"):
+    return dict(schema=1,phase="CLOSING",state=state,reason=reason,elapsed_ms=1,
+        floor_keys=4,floor_buttons=4,expected_keys=4,expected_buttons=4,observed_keys=4,observed_buttons=4,
+        keys_pressed=0,buttons_pressed=0,expected_epoch=1,observed_epoch=1,
+        expected_focus_window="5",observed_focus_window=None,focus_token_matches=False)
+
+
 def client(case="input",phase="final",sequence=1,uid=10158,pid=71):
     row={name:0 for name in gui.COUNTERS};row.update({name:False for name in gui.BOOLS})
     row.update(schema=1,probe="eidolon-gtk3-interaction-v1",run_id=NONCE,case=case,app_id=gui.app_ids(NONCE)[0],dialog_app_id=gui.app_ids(NONCE)[1],
@@ -268,7 +275,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(proof.current_frame(value,"main"),3)
         row=dict(case="gtk-input",nonce=NONCE,result="completed",phase="COMPLETE",reason=None,scope="target_bound_synthetic_native",
                  physical_input_verified=False,ime_verified=False,host_physical_filter_verified=False,runtime="9",session="2",scene="3",
-                 main_window="5",target=dict(session="2",window="5",scene="3",generation="4"),input_epoch=1,foot_windows=["1"],
+                 main_window="5",target=dict(session="2",window="5",scene="3",generation="4"),input_epoch=1,foot_windows=["1"],input_progress=input_progress(),
                  steps=[dict(stage=stage,target=None,input_epoch=1,delivered=4) for stage in proof.STAGES["input"]])
         self.assertEqual(proof.android_receipt(dict(check=row),NONCE,"input"),row)
         row["steps"]=[]
@@ -318,7 +325,7 @@ class HostJobTests(unittest.TestCase):
                     stages=proof.STAGES["input"] if retired else proof.STAGES["input"][:-1]
                     result["check"]=dict(case="gtk-input",nonce=NONCE,result="completed" if retired else "running",phase="COMPLETE" if retired else "OPERATIONS_COMPLETE",reason=None,
                         scope="target_bound_synthetic_native",physical_input_verified=False,ime_verified=False,host_physical_filter_verified=False,runtime="9",session="2",scene="3",main_window="5",
-                        target=dict(session="2",window="5",scene="3",generation="4"),input_epoch=1,foot_windows=["1"],
+                        target=dict(session="2",window="5",scene="3",generation="4"),input_epoch=1,foot_windows=["1"],input_progress=input_progress(),
                         steps=[dict(stage=s,target=None,input_epoch=1,delivered=4) for s in stages])
                 return result
             class Device:
@@ -424,6 +431,34 @@ class ReceiptLedgerTests(unittest.TestCase):
 
 
 
+class InputProgressTests(unittest.TestCase):
+    def test_partial_native_publication_is_waiting_until_up_and_final_count(self):
+        row=input_progress("waiting","WAIT_COUNTERS")
+        row.update(phase="WAIT_FOCUS",floor_keys=0,expected_keys=0,observed_keys=0,floor_buttons=0,expected_buttons=2,observed_buttons=1,buttons_pressed=1)
+        proof.input_progress(row)
+        row.update(state="complete",reason="COUNTERS_COMPLETE")
+        with self.assertRaisesRegex(CaptureError,"GTK_ANDROID_PROGRESS_COMPLETE"):proof.input_progress(row)
+        row.update(observed_buttons=2,buttons_pressed=0);proof.input_progress(row)
+
+    def test_fixed_failure_metadata_preserves_excess_without_declaring_success(self):
+        for reason,changes in (("COUNTER_EXCESS",dict(observed_keys=5)),("COUNTER_REGRESSED",dict(observed_buttons=3)),
+                               ("UNEXPECTED_HELD",dict(keys_pressed=2)),("PROGRESS_TIMEOUT",dict(elapsed_ms=6000))):
+            row=input_progress("rejected",reason);row.update(changes);proof.input_progress(row)
+            row.update(state="complete",reason="COUNTERS_COMPLETE")
+            if reason!="PROGRESS_TIMEOUT":
+                with self.assertRaises(CaptureError):proof.input_progress(row)
+
+    def test_text_unknown_fields_coerced_numbers_and_tokens_are_rejected(self):
+        for field,value in (("text","PRIVATE"),("observed_keys",True),("expected_epoch","1"),("observed_focus_window","PRIVATE"),
+                            ("focus_token_matches",1),("schema",True),("state",["complete"]),("reason","UNKNOWN")):
+            row=input_progress();row[field]=value
+            with self.assertRaises(CaptureError):proof.input_progress(row)
+
+    def test_old_android_schema_is_not_relabelled_as_new_proof(self):
+        row=OwnedResizeReceiptTests().row();del row["input_progress"]
+        with self.assertRaisesRegex(CaptureError,"GTK_ANDROID_SCHEMA"):proof.android_receipt(dict(check=row),NONCE,"resize")
+
+
 class OwnedResizeReceiptTests(unittest.TestCase):
     def row(self):
         target=dict(session="2",window="5",scene="3",generation="4")
@@ -436,7 +471,7 @@ class OwnedResizeReceiptTests(unittest.TestCase):
         steps.append(dict(stage="retired",target=steps[-1]["target"],input_epoch=7,delivered=4))
         return dict(case="gtk-resize",nonce=NONCE,result="completed",phase="COMPLETE",reason=None,scope="target_bound_synthetic_native",
             physical_input_verified=False,ime_verified=False,host_physical_filter_verified=False,runtime="9",session="2",scene="3",main_window="5",
-            target=steps[-1]["target"],input_epoch=5,foot_windows=["1"],steps=steps,
+            target=steps[-1]["target"],input_epoch=5,foot_windows=["1"],steps=steps,input_progress=None,
             resize_replacement=dict(request_id=None,pending=False,readiness=None,acknowledged=False,old_retirement_seen=False,reason="RESIZE_IDLE"))
 
     def validate(self,row):return proof.android_receipt(dict(check=row),NONCE,"resize")

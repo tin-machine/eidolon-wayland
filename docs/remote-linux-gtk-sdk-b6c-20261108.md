@@ -1,5 +1,33 @@
 # NX18 B6c: 固定Linux GTKのSDK表示と合成入力
 
+Build172では初回adapter cache待ちを17poll・438ms観測してcaptureに成功した。
+`wait_adapter_observed=true`、producer frame待ちはfalseで、初回準備待ちの修正は実機で成立した。
+次の `WAIT_FOCUS` では `PROBE_OTHER_INPUT` で停止した。失敗時の実counter値が当時は記録されていないため、
+具体的なDOWN/UPの到着順やcounter値までは断定しない。GTK input/dialogの総合合格は未確認のままとする。
+
+修正後はLinuxとTermuxの両固定caseで `GtkInputProgress` を共用する。
+focus/command ACK、native key・button counter、GTK callbackは別々に公開されるため、
+各操作の固定下限〜期待値の途中だけを最大6秒待つ。期待値と両pressed=0が揃うまで次の入力を送らない。
+余分なcounter、逆行、無関係なheld input、時刻逆行、期限ちょうど以降の完了は拒否する。
+待機中の観測値を新baselineへ変更しない。dialog Escapeの2イベントとpressed解除も確認し、
+既存のseal後の自己退役だけに許されたepoch変更以外は許可しない。
+`input_progress` は最後に判断したsnapshotの期待/観測counter・epoch・focus window IDとtoken一致bool、
+固定reasonだけを保存する。本文・key列・focus token自体は記録しない。
+
+別の静的レビューで、B6だけが各key/DOWN/UPの配送直前に最新producer frameの描画完了を要求していた。
+通常のHost/native入力は、適用済みfull targetと初回draw、epoch、可視性、focus tokenを確認するが、
+毎回のrepaint完了を要求しない。これは172の失敗原因と断定せず、通常経路との差として修正する。
+初回のframe同期を維持したうえで、同期済みtargetのlogical/pixel/physical size・pose・themeを固定する。
+同geometryのcontent更新だけなら継続し、owner/runtime/session/scene/epoch/full target、SDK所有、
+実geometry適用、native interactive gateは各配送の最終直列化境界で再確認する。
+dialogは別targetとして初回同期を要求し、2targetを超える取得やgeometry/世代変更への自動追従は拒否する。
+`input_target_continuity` は固定reason、target件数、repaint判定件数のみで、pose値を記録しない。
+
+この変更はpure Kotlin 42件（新規10件を含む）、GTK operator 34件、実SDK/APIを使う18 sourceの限定型検査で成功した。
+これらは次の同source APKでのLinux/Termux input/dialog実機検証と分ける。
+Termuxの受領schemaには必須 `input_progress`（resizeはnull）を追加し、operatorも同時に更新する。
+旧proofは旧APK/schemaのまま保持し、新schemaの合格へ読み替えない。
+
 Build171の初回inputは `PROBE_INPUT_UNAVAILABLE` で停止した。別nonceのB4 SHM/SDK回帰はともに成功したが、
 GTKは初回SDK draw一回、操作stepなしの段階であり、GUI合成入力は未合格として残す。
 caseは現在のadapterを確認する一方、Hostの入力gateは最大1秒周期のadapter snapshotと最新producer frameの描画を要求する。

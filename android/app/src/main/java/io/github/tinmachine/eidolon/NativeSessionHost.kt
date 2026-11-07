@@ -664,12 +664,14 @@ object NativeSessionHost {
         var epoch:Long=epoch;internal set
         internal val targets=mutableSetOf<String>()
         internal var resize:DebugPendingResize?=null
+        internal val sdkContinuity=sdkScope?.let {DebugSdkInputContinuity(runtime,epoch,it.session,it.scene.toString())}
     }
     internal data class DebugPendingResize(val token:InputResizeReplacement,val theme:Long,val frame:Long,val delivered:Long,
         val buttons:Long,val lease:String,val appId:String,val physical:String,val placement:String,val focus:String,var readiness:JSONObject?=null)
     private var debugInputActive:DebugInputTrial?=null
     class DebugSdkInputPreparation internal constructor(internal val scope:DebugSdkInputScope,internal val key:String,
-        internal val ticket:InputIntentSerial.Trial,internal val readiness:DebugSdkInputReadiness)
+        internal val ticket:InputIntentSerial.Trial,internal val readiness:DebugSdkInputReadiness,
+        internal val geometry:DebugSdkInputContinuity.Geometry)
     class DebugSdkInputPoll(val trial:DebugInputTrial?,val metadata:JSONObject)
     private var debugSdkInputPreparation:DebugSdkInputPreparation?=null
     data class DebugInputResizeReceipt(val request:String,val oldTarget:String,val target:InputTarget,val configuredSerial:Long,
@@ -687,7 +689,7 @@ object NativeSessionHost {
         if(!observed.unpressed || observed.stamp.epoch!=expectedEpoch || observed.stamp.keys!=expectedKeys || observed.stamp.buttons!=expectedButtons) return@serial null
         // provisional Trialはinvalidate()だけの物理入力も検知する。scopeの一回claimはREADYまで保留。
         val ticket=inputIntents.capture()
-        DebugSdkInputPreparation(scope,target.toString(),ticket,DebugSdkInputReadiness(observed.stamp.copy(intent=ticket.expected),SystemClock.elapsedRealtime()))
+        DebugSdkInputPreparation(scope,target.toString(),ticket,DebugSdkInputReadiness(observed.stamp.copy(intent=ticket.expected),SystemClock.elapsedRealtime()),observed.proof.geometry)
             .also {debugSdkInputPreparation=it}
     }
     fun debugPollSdkInput(prepared:DebugSdkInputPreparation):DebugSdkInputPoll = inputIntents.serial {
@@ -696,14 +698,16 @@ object NativeSessionHost {
             return@serial DebugSdkInputPoll(null,JSONObject(gate.metadata()))
         val owned=debugSdkInputPreparation===prepared && debugSdkInputScope===prepared.scope
         val observed=if(owned) debugSdkInputObservation(prepared.scope,prepared.key) else null
+        if(observed!=null && observed.proof.geometry!=prepared.geometry) gate.cancel("PROBE_INPUT_TARGET_CHANGED")
         val state=gate.observe(SystemClock.elapsedRealtime(),observed?.stamp,owned && observed!=null,
-            inputIntents.current(prepared.ticket),observed?.unpressed==true,observed?.adapterReady==true,observed?.frameReady==true)
+            inputIntents.current(prepared.ticket),observed?.unpressed==true,
+            observed?.adapterReady==true && observed.proof.geometryApplied && observed.proof.interactive,observed?.frameReady==true)
         var trial:DebugInputTrial?=null
         if(state==DebugSdkInputReadiness.State.READY) {
             if(prepared.scope.claimTrial() && gate.capture()) {
                 val target=checkNotNull(observed).target
                 trial=DebugInputTrial(prepared.ticket,target.runtime,target.epoch,prepared.scope)
-                    .also {it.targets.add(target.identity);debugInputActive=it}
+                    .also {check(checkNotNull(it.sdkContinuity).accept(observed.proof));it.targets.add(target.identity);debugInputActive=it}
             } else gate.cancel("PROBE_INPUT_ALREADY_CLAIMED")
         }
         if(gate.state==DebugSdkInputReadiness.State.CANCELLED) inputIntents.release(prepared.ticket)
@@ -726,7 +730,7 @@ object NativeSessionHost {
         value
     } catch(_:Exception) {null}
     private class DebugSdkInputObservation(val target:InputTarget,val stamp:DebugSdkInputReadiness.Stamp,
-        val unpressed:Boolean,val adapterReady:Boolean,val frameReady:Boolean)
+        val unpressed:Boolean,val adapterReady:Boolean,val frameReady:Boolean,val proof:DebugSdkInputContinuity.Proof)
     private fun debugSdkInputObservation(scope:DebugSdkInputScope,target:String):DebugSdkInputObservation? { return try {
         val key=JSONObject(target);val value=debugSdkInputState(scope) ?: return null
         val identity=targetIdentity(key)
@@ -737,6 +741,18 @@ object NativeSessionHost {
         check(rows(value.getJSONArray("panels")).any {it.optString("action")=="create" && it.optBoolean("applied") && it.isNull("error") && targetIdentity(it.getJSONObject("target"))==identity})
         val drawn=rows(value.getJSONObject("render").getJSONArray("targets")).single {targetIdentity(it.getJSONObject("key"))==identity}
         val frameReady=drawn.getLong("frames")>0 && drawn.optString("content_frame").toLongOrNull()?.let {frame->frame>=row.getString("frame").toLong()}==true
+        val logical=row.getJSONObject("logical_size");val sizing=row.getJSONObject("sizing");val physical=sizing.getJSONObject("physical_size_m")
+        val placement=rows(value.getJSONObject("workspace").getJSONArray("windows")).single {
+            it.getString("session")==scope.session && it.getString("window")==key.getString("window")}.getJSONObject("placement")
+        val pose=placement.getJSONObject("pose");check(PanelPoseCodec.valid(pose))
+        // TargetReportのGpuInfoはserde(flatten)。buffer寸法もgeometryへ含める。
+        val geometry=DebugSdkInputContinuity.Geometry(logical.getInt("width"),logical.getInt("height"),drawn.getInt("width"),drawn.getInt("height"),
+            physical.getDouble("width_m"),physical.getDouble("height_m"),
+            (0..2).map {pose.getJSONArray("position_m").getDouble(it)}+(0..3).map {pose.getJSONArray("rotation_xyzw").getDouble(it)},value.getJSONObject("render").getLong("theme_revision"))
+        val appliedPose=placement.optJSONObject("applied_pose");val appliedSize=sizing.optJSONObject("applied_physical_size_m")
+        val geometryApplied=appliedPose?.optJSONObject("target")?.let {targetIdentity(it)==identity}==true &&
+            appliedPose.optJSONObject("pose")?.let {PanelPoseCodec.near(it,pose)}==true &&
+            appliedSize?.optDouble("width_m")==geometry.physicalWidth && appliedSize.optDouble("height_m")==geometry.physicalHeight
         val adapter=debugAdapterSnapshot()
         val sdk=adapter?.takeIf {it.optString("scene")==scope.scene.toString()}?.getJSONArray("targets")?.let(::rows)?.singleOrNull {
             targetIdentity(it.getJSONObject("target"))==identity && it.optString("runtime")==scope.runtime.toString()}
@@ -746,14 +762,20 @@ object NativeSessionHost {
         val captured=InputTarget(scope.runtime,value.getLong("input_resets"),identity,key.toString())
         val stamp=DebugSdkInputReadiness.Stamp(scope.runtime,identity,captured.epoch,inputIntents.get(),input.getLong("delivered"),pointer.getLong("buttons"),
             if(input.isNull("focus_window")) null else input.getString("focus_window"),if(input.isNull("focus_token")) null else input.getString("focus_token"))
-        DebugSdkInputObservation(captured,stamp,input.getInt("pressed")==0 && pointer.getInt("pressed")==0,
-            sdk!=null && sdk.optBoolean("listener_owned") && sdk.optBoolean("input_owned"),frameReady)
+        val sdkOwned=sdk!=null && sdk.optBoolean("listener_owned") && sdk.optBoolean("input_owned")
+        DebugSdkInputObservation(captured,stamp,input.getInt("pressed")==0 && pointer.getInt("pressed")==0,sdkOwned,frameReady,
+            DebugSdkInputContinuity.Proof(debugResizeKey(scope.runtime,key),captured.epoch,geometry,drawn.getLong("frames")>0 && !drawn.optBoolean("presentation_paused"),geometryApplied,sdkOwned,frameReady))
     } catch(_:Exception) {null} }
-    private fun debugSdkInputTarget(scope:DebugSdkInputScope,target:String):InputTarget? = debugSdkInputObservation(scope,target)
-        ?.takeIf {it.adapterReady && it.frameReady}?.target
+    private fun debugSdkInputTarget(trial:DebugInputTrial,target:String):InputTarget? {
+        val observed=debugSdkInputObservation(checkNotNull(trial.sdkScope),target) ?: return null
+        return observed.target.takeIf {checkNotNull(trial.sdkContinuity).accept(observed.proof)}
+    }
+    fun debugInputContinuityStatus(trial:DebugInputTrial):JSONObject?=inputIntents.serial {
+        trial.sdkContinuity?.let {JSONObject(it.metadata())}
+    }
     fun debugInputTarget(trial:DebugInputTrial,target:JSONObject):InputTarget? = inputIntents.serial {
         if(!debugInputCurrent(trial) || target.optString("scene")!=scenes.get().toString()) null
-        else if(trial.sdkScope!=null) debugSdkInputTarget(trial.sdkScope,target.toString())
+        else if(trial.sdkScope!=null) debugSdkInputTarget(trial,target.toString())
         else inputTarget(target.toString())?.takeIf {it.runtime==trial.runtime}
     }
     fun debugInputFocusMatches(trial:DebugInputTrial,target:JSONObject,token:String):Boolean = inputIntents.serial {

@@ -1,5 +1,10 @@
 # GTK固定fixtureをAndroid合成入力へ接続する
 
+Build173候補の[共通入力進捗判定](remote-linux-gtk-sdk-b6c-20261108.md)では、focus成立後も
+DOWN/UPのcounterが期待値まで公開されるのを待つ。新checkの `input_progress` は必須fieldで、
+固定counter/epoch/focus IDと一致boolのみ。resizeは従来のowned replacementを使うためnullとなる。
+operatorも同じsourceへ更新し、旧APK/schemaの証拠を新しい合格として再解釈しない。
+
 このoperatorは既存のfoot/Waypipe leaseを維持したまま、[固定GTK fixture](gtk-interaction-fixture-20261108.md) の input/dialog/resize を一回ずつ確認する。通常GUI catalogやhelper modeは変更しない。専用C/build sourceと実機で作成したbinary/manifestのhost pinを使う。
 
 ## 実行順序
@@ -103,7 +108,7 @@ debugのbuild/lint/packageと単体182件、releaseのbuild/lint/packageと単�
 
 checkの `resize_replacement` は固定reason、request ID、boolによるreadiness、epoch/generationだけを公開する。
 入力本文、raw key、trace、画像、自由なエラー文字列を加えない。`large` / `returned` の受領は
-元target・request・実serial・固定sizeを含む。input/dialogのcheck schemaは変更しない。
+元target・request・実serial・固定sizeを含む。このresize checkpoint時点ではinput/dialogのcheck schemaは変更しなかった。
 
 hostではResizeStateのrequest/alias/無効要求3回帰を含む8件、既存InputIntentSerial9件と置換token14件、
 operatorの既存24件と新しい受領検査5件が成功した。実SDKを使う限定Kotlin型検査も成功した。

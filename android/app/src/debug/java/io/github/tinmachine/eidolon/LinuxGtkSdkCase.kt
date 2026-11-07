@@ -72,6 +72,7 @@ object LinuxGtkSdkCase {
         var token=""
         var baseKeys=0L
         var baseButtons=0L
+        var progress:GtkInputProgress?=null
         var inputPhase="WAIT_MAIN"
         var rowSequence=0L
         var verified=false
@@ -120,7 +121,9 @@ object LinuxGtkSdkCase {
                     .put("transport_state",transport.optString("state")).put("transport_error",transport.opt("error"))
                     .put("linux_state",forward?.optString("state")).put("linux_error",forward?.opt("error")).put("journal_pending",forward?.opt("journal_pending"))
                     .put("recovery_error",recovery?.opt("error")).put("recovery_pending",recovery?.opt("pending")).put("recovery_queried",recovery?.opt("queried"))
-                    .put("render_error",value.getJSONObject("render").opt("error")).put("sdk_bindings",value.getJSONObject("shutdown").optInt("sdk_bindings")))
+                    .put("render_error",value.getJSONObject("render").opt("error")).put("sdk_bindings",value.getJSONObject("shutdown").optInt("sdk_bindings"))
+                    .put("input_progress",result.opt("input_progress") ?: JSONObject.NULL)
+                    .put("input_target_continuity",trial?.let {NativeSessionHost.debugInputContinuityStatus(it)} ?: JSONObject.NULL))
             } catch(_:Exception) { }
             close()
         }
@@ -181,12 +184,16 @@ object LinuxGtkSdkCase {
         }
         fun send(type:String,key:JSONObject,fields:JSONObject=JSONObject(),focus:String?=null,down:Boolean=false):String {
             val captured=checkNotNull(trial) {"PROBE_INPUT_OWNER_LOST"}
-            val ticket=checkNotNull(NativeSessionHost.debugInputTarget(captured,key)) {"PROBE_INPUT_TARGET_LOST"}
+            val candidate=NativeSessionHost.debugInputTarget(captured,key)
+            result.put("input_target_continuity",NativeSessionHost.debugInputContinuityStatus(captured) ?: JSONObject.NULL)
+            val ticket=checkNotNull(candidate) {"PROBE_INPUT_TARGET_LOST"}
             check(ticket.runtime==handle && ticket.epoch==epoch) {"PROBE_INPUT_EPOCH_CHANGED"}
             val id=requests.incrementAndGet().toString();check(inputRequests.size<24) {"PROBE_INPUT_BOUND"};inputRequests.add(id)
             val envelope=JSONObject().put("schema",1).put("type",type).put("request_id",id).put("target",key)
             for(field in fields.keys().asSequence()) envelope.put(field,fields.get(field))
-            check(NativeSessionHost.debugInputDispatch(captured,ticket,focus,down) {NativeBridge.nativeCommand(handle,envelope.toString())}) {"PROBE_INPUT_REJECTED"}
+            val accepted=NativeSessionHost.debugInputDispatch(captured,ticket,focus,down) {NativeBridge.nativeCommand(handle,envelope.toString())}
+            result.put("input_target_continuity",NativeSessionHost.debugInputContinuityStatus(captured) ?: JSONObject.NULL)
+            check(accepted) {"PROBE_INPUT_REJECTED"}
             return id
         }
         fun allInputAccepted():Boolean = inputRequests.all {id->completions["$handle/$id"]?.let {check(it=="ACCEPTED") {"PROBE_INPUT_REJECTED"};true} ?: false}
@@ -230,6 +237,12 @@ object LinuxGtkSdkCase {
         }
         fun input(s:JSONObject,row:JSONObject?) {
             val nativeInput=s.getJSONObject("app").getJSONObject("input");val pointer=nativeInput.getJSONObject("pointer")
+            val counters=progress?.let {gate->
+                result.put("input_progress",GtkInputDiagnostics.observe(gate,inputPhase,SystemClock.elapsedRealtime(),s,epoch,
+                    currentTarget?.optString("window"),token.takeIf {it.isNotEmpty()}))
+                check(gate.state!=GtkInputProgress.State.REJECTED) {"PROBE_INPUT_PROGRESS_${gate.reason}"}
+                gate.state==GtkInputProgress.State.COMPLETE
+            } ?: false
             if(trial!=null) check(NativeSessionHost.debugInputCurrent(checkNotNull(trial))) {"PROBE_INPUT_OWNER_LOST"}
             if(inputPhase !in setOf("WAIT_MAIN","WAIT_DIALOG_CLOSED","WAIT_RETIRED")) check(s.getLong("input_resets")==epoch) {"PROBE_INPUT_EPOCH_CHANGED"}
             when(inputPhase) {
@@ -256,37 +269,36 @@ object LinuxGtkSdkCase {
                     trial=polled.trial ?: return
                     check(checkNotNull(trial).epoch==epoch) {"PROBE_INPUT_EPOCH_CHANGED"}
                     check(s.getLong("input_resets")==epoch) {"PROBE_INPUT_EPOCH_CHANGED"};record("captured",s)
+                    progress=GtkInputProgress(baseKeys,baseButtons,name=="dialog")
                     clickRect(s,key,row,if(name=="input") "entry_rect" else "button_rect")
                     inputPhase=if(name=="input") "WAIT_FOCUS" else "WAIT_DIALOG"
                 }
-                "WAIT_FOCUS" -> if(focused(s,checkNotNull(mainTarget)) && allInputAccepted()) {
-                    check(nativeInput.getLong("delivered")==baseKeys && pointer.getLong("buttons")==baseButtons+2) {"PROBE_OTHER_INPUT"}
+                "WAIT_FOCUS" -> if(counters && focused(s,checkNotNull(mainTarget)) && allInputAccepted()) {
                     token=nativeInput.getString("focus_token");val targetKey=checkNotNull(mainTarget)
                     key(s,targetKey,android.view.KeyEvent.KEYCODE_A,30,true);key(s,targetKey,android.view.KeyEvent.KEYCODE_A,30,false)
                     key(s,targetKey,android.view.KeyEvent.KEYCODE_DEL,14,true);key(s,targetKey,android.view.KeyEvent.KEYCODE_DEL,14,false)
                     inputPhase="WAIT_KEYS";record("keys_enqueued",s)
                 }
-                "WAIT_KEYS" -> if(row!=null && row.getBoolean("token_seen") && row.getBoolean("delete_seen") && row.getInt("entry_changes")==2 && allInputAccepted()) {
-                    check(nativeInput.getLong("delivered")==baseKeys+4 && nativeInput.getInt("pressed")==0 && pointer.getLong("buttons")==baseButtons+2) {"PROBE_OTHER_INPUT"}
+                "WAIT_KEYS" -> if(counters && row!=null && row.getBoolean("token_seen") && row.getBoolean("delete_seen") && row.getInt("entry_changes")==2 && allInputAccepted()) {
+                    check(focused(s,checkNotNull(mainTarget)) && nativeInput.getString("focus_token")==token) {"PROBE_FOCUS_CHANGED"}
                     clickRect(s,checkNotNull(mainTarget),row,"button_rect");seal();inputPhase="WAIT_CLICK";record("button_enqueued",s)
                 }
-                "WAIT_CLICK" -> if(row?.optBoolean("complete")==true && allInputAccepted()) {
-                    check(pointer.getLong("buttons")==baseButtons+4 && pointer.getInt("pressed")==0) {"PROBE_OTHER_INPUT"};if(target(s,appId)!=null) closeMain(s)
+                "WAIT_CLICK" -> if(counters && row?.optBoolean("complete")==true && allInputAccepted()) {
+                    if(target(s,appId)!=null) closeMain(s)
                 }
                 "WAIT_DIALOG" -> {
                     val key=target(s,dialogId) ?: return
-                    if(row?.optBoolean("dialog_parent_set")!=true || !allInputAccepted()) return
-                    check(row.getInt("dialog_opened")==1 && pointer.getLong("buttons")==baseButtons+2 && nativeInput.getLong("delivered")==baseKeys) {"PROBE_OTHER_INPUT"}
+                    if(!counters || row?.optBoolean("dialog_parent_set")!=true || !allInputAccepted()) return
+                    check(row.getInt("dialog_opened")==1) {"PROBE_OTHER_INPUT"}
                     result.put("dialog_parent_reported",true).put("native_parent_verified",false)
                     click(s,key,.5,.3);inputPhase="WAIT_DIALOG_FOCUS";record("dialog_visible",s)
                 }
-                "WAIT_DIALOG_FOCUS" -> if(focused(s,checkNotNull(currentTarget)) && allInputAccepted()) {
-                    check(pointer.getLong("buttons")==baseButtons+4 && nativeInput.getLong("delivered")==baseKeys) {"PROBE_OTHER_INPUT"}
+                "WAIT_DIALOG_FOCUS" -> if(counters && focused(s,checkNotNull(currentTarget)) && allInputAccepted()) {
                     token=nativeInput.getString("focus_token");val targetKey=checkNotNull(currentTarget)
                     key(s,targetKey,android.view.KeyEvent.KEYCODE_ESCAPE,1,true);key(s,targetKey,android.view.KeyEvent.KEYCODE_ESCAPE,1,false)
                     seal(targetKey);inputPhase="WAIT_DIALOG_CLOSED";record("dialog_escape",s)
                 }
-                "WAIT_DIALOG_CLOSED" -> if(row?.optBoolean("complete")==true && GtkFixtureBinding.window(s,dialogId)==null && allInputAccepted()) {
+                "WAIT_DIALOG_CLOSED" -> if(counters && row?.optBoolean("complete")==true && GtkFixtureBinding.window(s,dialogId)==null && allInputAccepted()) {
                     check(nativeInput.getInt("pressed")==0 && pointer.getInt("pressed")==0) {"PROBE_INPUT_HELD"};if(target(s,appId)!=null) {record("dialog_closed",s);closeMain(s)}
                 }
             }
