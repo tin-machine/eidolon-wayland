@@ -55,6 +55,12 @@ def validated_internal(value):
     for name in ("initial_stop","initialize_stop","exitkill_set","library_verified","instructions_verified","mapping_verified","breakpoints_armed","breakpoints_cleared"):
         require(type(value[name]) is bool,"REMOTE_RESULT_INVALID")
     require(value["mode_expected"] is None or type(value["mode_expected"]) is bool,"REMOTE_RESULT_INVALID")
+    mode=value["mode_observation"]
+    if mode is None:require(value["mode_expected"] is None,"REMOTE_RESULT_INVALID")
+    else:
+        require(type(mode) is dict and set(mode)=={"dri_type","type_is_swrast","fd_is_minus_one"} and mode["dri_type"] in set(stages.DRI_TYPES)|{"unknown"} and
+            type(mode["type_is_swrast"]) is bool and type(mode["fd_is_minus_one"]) is bool and mode["type_is_swrast"]==(mode["dri_type"]=="swrast") and
+            value["mode_expected"]==(mode["type_is_swrast"] and mode["fd_is_minus_one"]),"REMOTE_RESULT_INVALID")
     require(type(value["hits"]) is int and 0<=value["hits"]<=3 and type(value["stages"]) is dict and
         set(value["stages"])=={p[0] for p in stages.POINTS} and all(v is None or type(v) is bool for v in value["stages"].values()),"REMOTE_RESULT_INVALID")
     r=value["capability"]

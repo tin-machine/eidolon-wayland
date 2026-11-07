@@ -73,6 +73,26 @@ def elf_fixture():
 
 
 class StageTests(unittest.TestCase):
+    def test_mode_and_fd_are_independently_classified_without_register_or_fd_integer(self):
+        for kind,label in enumerate(n.DRI_TYPES):
+            for fd,missing in ((0xffffffff,True),(15,False),(0xfffffffe,False)):
+                fields=n.classify_mode(struct.unpack('<34Q',gpr(mode=kind,fd=fd)))
+                self.assertEqual(fields,dict(dri_type=label,type_is_swrast=kind==2,fd_is_minus_one=missing))
+                if kind!=2 or not missing:
+                    b,t=ready_trace();t.prepare();b.gpr=gpr(mode=kind,fd=fd);self.assertTrue(t.trap())
+                    v=t.report();self.assertEqual(v['mode_observation'],fields);self.assertFalse(v['mode_expected'])
+                    self.assertEqual(v['reason'],'DRI_MODE_UNEXPECTED');self.assertEqual(list(v['stages'].values()),[None]*3)
+                    self.assertEqual(b.hardware,ORIGINAL);cli.validated_internal(v)
+        for value in (4,0xffffffff):
+            fields=n.classify_mode(struct.unpack('<34Q',gpr(mode=value)))
+            self.assertEqual(fields,dict(dri_type='unknown',type_is_swrast=False,fd_is_minus_one=True));self.assertNotIn(str(value),json.dumps(fields))
+    def test_mode_wire_rejects_raw_values_inconsistent_booleans_and_free_enum(self):
+        b,t=ready_trace();t.prepare();b.gpr=gpr(mode=1);t.trap();valid=t.report()
+        for mutate in (lambda v:v['mode_observation'].update(fd=15),lambda v:v['mode_observation'].update(register=0),
+                       lambda v:v['mode_observation'].update(dri_type='PRIVATE'),lambda v:v['mode_observation'].update(type_is_swrast=True),
+                       lambda v:v['mode_observation'].update(fd_is_minus_one=1),lambda v:v.update(mode_observation=None)):
+            value=copy.deepcopy(valid);mutate(value)
+            with self.assertRaises(InstallError):cli.validated_internal(value)
     def test_kernel_normalized_disabled_controls_are_safe_and_other_slots_stay_unchanged(self):
         b,t=ready_trace(NormalizingBackend());self.assertTrue(t.prepare());b.gpr=gpr();self.assertTrue(t.trap())
         b.gpr=gpr(1,False);self.assertTrue(t.trap());self.assertEqual(t.report()['status'],'observed')

@@ -19,9 +19,10 @@ import egl_surfaceless_probe as egl
 from ptrace_capability_probe import Ptrace,PtraceError,decode_regsets
 
 UID=egl.UID
-OPERATOR="eidolon-egl-null-stages-v1"
+OPERATOR="eidolon-egl-null-stages-v2-mode-classification"
 LOADING_PROFILE="existing-egl-query-display-no-preload"
 NAME="libgallium-26.2.6.so"
+DRI_TYPES=("dri3","kopper","swrast","kms_swrast")
 POINTS=(("screen_allocation",0xaa91f0,0xb4000a80),("pipe_screen",0xaa92b8,0xaa0003e1),("dri_configs",0xaa92cc,0xf9000280))
 MAX_MAPS=1024*1024
 CHILD_SOURCE=None
@@ -37,6 +38,12 @@ def child_bootstrap(source):
     code=f"import base64,zlib;exec(zlib.decompress(base64.b64decode({payload!r})))"
     require(len(code.encode())<=49*1024,"CHILD_COMMAND_LIMIT")
     return code
+
+
+def classify_mode(registers):
+    kind=registers[23]&0xffffffff
+    return dict(dri_type=DRI_TYPES[kind] if kind<len(DRI_TYPES) else "unknown",type_is_swrast=kind==2,
+                fd_is_minus_one=(registers[26]&0xffffffff)==0xffffffff)
 
 
 class Backend(Ptrace):
@@ -157,7 +164,7 @@ class Trace:
         self.architecture=architecture or os.uname().machine;self.original=None;self.current=None;self.addresses=None
         self.initial=False;self.checkpoint=False;self.options=False;self.armed=False;self.cleared=True
         self.library_verified=self.instructions_verified=self.mapping_verified=False
-        self.reason=self.errno=None;self.capability=None;self.mode=None;self.hits=0
+        self.reason=self.errno=None;self.capability=None;self.mode=None;self.mode_fields=None;self.hits=0
         self.last_trap_owned=False
         self.values={name:None for name,_,_ in POINTS}
     def fail(self,reason,number=None):
@@ -211,7 +218,8 @@ class Trace:
             expected=sum(v is not None for v in self.values.values())
             require(index==expected and not any(v is False for v in self.values.values()),"STAGE_ORDER_INVALID")
             if index==0:
-                self.mode=(gpr[23]&0xffffffff)==2 and (gpr[26]&0xffffffff)==0xffffffff
+                self.mode_fields=classify_mode(gpr)
+                self.mode=self.mode_fields["type_is_swrast"] and self.mode_fields["fd_is_minus_one"]
                 require(self.mode,"DRI_MODE_UNEXPECTED")
             name=POINTS[index][0];self.values[name]=gpr[0]!=0
             if not self.values[name] or index==2:return self.disarm()
@@ -228,10 +236,10 @@ class Trace:
     def report(self):
         complete=self.mode is True and (any(v is False for v in self.values.values()) or all(v is True for v in self.values.values()))
         reason=self.reason or (None if complete else "CHECKPOINT_MISSING" if not self.checkpoint else "NO_HITS" if not self.hits else "PARTIAL_STAGES")
-        return dict(profile="mesa-26.2.6-first-swrast-three-null-v1",status="observed" if complete and reason is None and self.cleared else "unsupported",
+        return dict(profile="mesa-26.2.6-first-swrast-three-null-v2-mode",status="observed" if complete and reason is None and self.cleared else "unsupported",
             reason=reason,errno=self.errno,initial_stop=self.initial,initialize_stop=self.checkpoint,exitkill_set=self.options,
             capability=self.capability,library_verified=self.library_verified,instructions_verified=self.instructions_verified,mapping_verified=self.mapping_verified,
-            breakpoints_armed=self.armed,breakpoints_cleared=self.cleared,mode_expected=self.mode,hits=self.hits,stages=dict(self.values))
+            breakpoints_armed=self.armed,breakpoints_cleared=self.cleared,mode_expected=self.mode,mode_observation=self.mode_fields,hits=self.hits,stages=dict(self.values))
 
 
 def child_main():

@@ -23,7 +23,7 @@ library pathは受け付けない。APK、C/binary、配布manifestの更新・p
 
 ## 固定条件と観測範囲
 
-`eidolon-egl-null-stages-v1`は既存のsurfaceless probeと同じ4library pin、vendor JSON、
+`eidolon-egl-null-stages-v2-mode-classification`は既存のsurfaceless probeと同じ4library pin、vendor JSON、
 `LIBGL_ALWAYS_SOFTWARE=1` / `GALLIUM_DRIVER=softpipe` / `EGL_LOG_LEVEL=debug`を使う。
 Wayland/SDK、既存footや認証leaseへ操作しない。自分でPopenした固定Python子のmain threadだけを対象とする。
 
@@ -86,6 +86,25 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 
 hostでは実TRACEME/STOP/CONT/EXITKILL/期限/取消/回収を使い、AArch64のhardware stateとhit値はfixtureで分離する。
 これを実機SET/hitの合格へ読み替えない。固定の実機一回実行はoperatorが行う。
+
+## 初回実機のmode不一致とv2の追加分類
+
+v1の実機ではSET/最初のhit/解除、固定file/mapping/実3命令の照合、元initialize false/12289、
+元終了1/terminate/runtime不変/全回収が成立した。ただし`mode_expected=false`/
+`DRI_MODE_UNEXPECTED`で、3stageはすべて未観測のnullだった。これをNULL戻り値の判定とは扱わない。
+
+[dri_util.h](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/gallium/frontends/dri/dri_util.h)の
+enumはDRI3/KOPPER/SWRAST/KMS_SWRASTの順であり、固定ELFのprologueとjump tableも照合した。
+typeは第4引数w3→w23、FDは第2引数w1→w26で、現時点では割当の取り違えは見つからない。
+[surfaceless実装](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/egl/drivers/dri2/platform_surfaceless.c)は
+ForceSoftware時もDRM候補を先に試すため、最初のcallがDRM無しSWRASTであることは保証されない。
+v1はtypeとFDをANDしたboolしか保存しておらず、どちらが不一致だったかは分からない。
+
+v2は同じ最初のhitに`mode_observation`だけを追加する。保存内容は
+`dri_type`（`dri3/kopper/swrast/kms_swrast/unknown`の固定enum）、`type_is_swrast`、
+`fd_is_minus_one`の独立boolで、raw registerやFD整数は保存しない。
+元のmode gate・3stageの扱い・EGL初回結果・回収は維持する。
+source/operator/profileを更新して新runで一回だけ識別し、複数call追跡やSINGLESTEPへは広げない。
 
 一次資料: [Mesa26.2.6 dri_util.c](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/gallium/frontends/dri/dri_util.c)、
 [Linux v6.6 arm64 ptrace](https://github.com/torvalds/linux/blob/v6.6/arch/arm64/kernel/ptrace.c)、
