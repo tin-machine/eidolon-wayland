@@ -1,0 +1,41 @@
+# NX11: Termux GUI専用workerの子孫所有
+
+Freedoom固定demoは実機で自然終了0、SHM74commit、SDK更新・全資源退役、元foot維持、
+owned group/reap/pipe回収を確認した。通常GUIへ接続する前に、別sessionへ移った子孫の回収を補う。
+既存Termux helperにはWaypipe/Footserverのchildがあるため、そこでsubreaperを新規取得しない。
+固定GUI専用workerを起動し、その内部だけでsingle-thread・既存child無し・default SIGCHLDの所有者を作る。
+
+`scripts/termux/eidolon_gui_owner.py`はLinux C2a ownerのlive subreaper/pidfd契約を基にした。
+CLI、外部PID attach、保存PIDからsignalを再構築するAPIは無い。
+PID/starttime/全UIDをcapture前後で照合し、捕捉済みのpidfd以外へsignalしない。
+TERM→KILL、rootとadoptしたzombieのreap、連続二回の子孫空scan、全pidfd closeを個別に確認する。
+未確認/期限切れではpendingのlive ownerを残し、新しいownerへ置き換えない。
+
+Questでは`/proc/<pid>/task/<tid>/children`が提供されないため、その場合だけ同UIDの有限`/proc`列挙から
+PPIDの系統を作る。専用subreaper自身から到達するprocessだけを採用し、snapshot後のPID/starttime/UID/親も再照合する。
+whole-machineの同UID process全体を停止対象にしない。上限はproc entry4096、同UID process1024、1scan250msである。
+読み取り不能・上限超過・途中のreparentは完全な空snapshotへ変換しない。
+他ownerのD-Bus/systemd等が生成したprocessは、この子孫の保証へ含めない。
+
+## 固定capability probe
+
+```sh
+scripts/quest-probe-termux-gui-owner --serial "$EIDOLON_QUEST_SERIAL" \
+  --artifact-root "$EIDOLON_TASK_ROOT/termux-gui-owner-capability"
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s scripts/tests -p test_termux_gui_owner.py -v
+```
+
+このoperatorは新規Termux UID10158 processだけを使い、固定Python childのdouble-fork/setsid/adoptionと
+pidfd回収を一回確認する。子は4秒で自然終了する上限も持つ。既存のfoot/SSH shell/Wayland/Quest SDKへ触れない。
+command予算49KiB、source前後SHAと固定schemaだけを記録する。外部PID/path/argv/envのCLIは無い。
+raw出力、process一覧、環境値は保存しない。`supported`は子孫所有能力の確認であり、ゲーム/GUI起動合格ではない。
+
+host fixtureはQuestと同じPPID fallbackを必ず通し、通常group・setsid・PTY・二重fork・非leader threadからのfork、
+pendingから同ownerへの明示回収、古いcallback/別owner/既存child拒否、無関係な同UID siblingの生存を確認する。
+TermuxのSELinux/kernelでの実capabilityはoperatorの結果で別に判断する。
+
+通常GUIの実装では、worker hashを既存helper本体へ固定し、親helperはworkerの実handleを保持する。
+pending workerを強制killして孫の所有を失った状態を「回収済み」にしない。
+最初のGUIから使える隠れFootserver anchor、最後のGUI終了後のanchor維持、session Stop時のworker→anchor回収を
+後続のhelper/launch-cookie/slot契約と合わせる。既存terminalのfootclient経路とworkload識別は維持する。

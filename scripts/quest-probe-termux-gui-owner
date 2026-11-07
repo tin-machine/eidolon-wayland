@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""新規専用Termux子のsubreaper/pidfd回収を固定fixture一回で確認する。"""
+import argparse
+import base64
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import zlib
+from native_build import ROOT
+from quest_device import QuestDevice,work_root
+
+WORKER=r'''
+import json,os,select,signal,subprocess,sys,time
+from eidolon_gui_owner import ProcessOwner,OwnershipError,descendant_snapshot
+owner=child=None
+result=dict(schema=1,probe='eidolon-termux-gui-owner-v1',status='unsupported',uid=os.getuid(),reason=None,
+            readiness=False,adopted=False,separate_session=False,child_returncode=None,cleanup=None,pipes_closed=False)
+stop=[False]
+for number in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP):signal.signal(number,lambda *_:stop.__setitem__(0,True))
+try:
+    if os.getuid()!=10158:raise OwnershipError('UID_MISMATCH')
+    owner=ProcessOwner()
+    fixed="import os,signal,time\nif os.fork()!=0:os._exit(0)\nos.setsid()\nif os.fork()!=0:os._exit(0)\nsignal.signal(signal.SIGTERM,signal.SIG_IGN)\nsignal.signal(signal.SIGHUP,signal.SIG_IGN)\nprint('READY',flush=True)\ntime.sleep(4)\nos._exit(0)\n"
+    child=owner.spawn([sys.executable,'-I','-S','-B','-c',fixed],env=dict(PATH='/system/bin',LANG='C.UTF-8'))
+    deadline=time.monotonic()+2
+    while not stop[0] and time.monotonic()<deadline:
+        if select.select([child.stdout],[],[],.02)[0]:
+            result['readiness']=child.stdout.readline(16)==b'READY\n';break
+    deadline=time.monotonic()+1
+    while not stop[0] and time.monotonic()<deadline:
+        try:
+            rows=descendant_snapshot(owner.owner)
+            result['adopted']=any(row['parent']==os.getpid() and row['pid']!=child.pid for row in rows.values())
+            result['separate_session']=any(row['session']!=child.pid for row in rows.values())
+            if result['adopted'] and result['separate_session']:break
+        except (OSError,ValueError,OwnershipError):pass
+        time.sleep(.01)
+    result['cleanup']=owner.finish(timeout=3,grace=.1)
+    result['status']='supported' if result['readiness'] and result['adopted'] and result['separate_session'] and result['cleanup']['complete'] else 'unsupported'
+except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as error:
+    result['reason']=str(error) if isinstance(error,OwnershipError) else 'OWNERSHIP_UNAVAILABLE'
+finally:
+    if owner is not None and (result['cleanup'] is None or not result['cleanup']['complete']):result['cleanup']=owner.finish(timeout=3,grace=0)
+    if child is not None:
+        try:
+            child.communicate(timeout=2);result['child_returncode']=child.returncode
+            result['pipes_closed']=child.stdout.closed and child.stderr.closed
+        except subprocess.SubprocessError:result['status']='unsupported'
+    if not result['pipes_closed'] or result['child_returncode']!=0:result['status']='unsupported'
+print(json.dumps(result),flush=True)
+raise SystemExit(0 if result['status']=='supported' else 2)
+'''
+
+
+def remote_source():
+    data=(ROOT/'scripts/termux/eidolon_gui_owner.py').read_text()
+    source="import sys,types\nm=types.ModuleType('eidolon_gui_owner');sys.modules[m.__name__]=m\n"+f"exec({data!r},m.__dict__)\n"+WORKER
+    encoded=base64.b64encode(zlib.compress(source.encode(),9)).decode('ascii')
+    return f"import base64,zlib;exec(zlib.decompress(base64.b64decode({encoded!r})))"
+
+
+def valid(value):
+    fields={'schema','probe','status','uid','reason','readiness','adopted','separate_session','child_returncode','cleanup','pipes_closed'}
+    if type(value) is not dict or set(value)!=fields or type(value['schema']) is not int or value['schema']!=1 or value['probe']!='eidolon-termux-gui-owner-v1' or value['status'] not in {'supported','unsupported'} or value['uid']!=10158:return False
+    if not all(type(value[k]) is bool for k in ('readiness','adopted','separate_session','pipes_closed')):return False
+    import re
+    if value['reason'] is not None and (type(value['reason']) is not str or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,79}',value['reason'])):return False
+    cleanup=value['cleanup']
+    if cleanup is not None:
+        if type(cleanup) is not dict or set(cleanup)!={'schema','complete','pending','reason','term_signals','kill_signals','reaped','open_pidfds'}:return False
+        if type(cleanup['schema']) is not int or cleanup['schema']!=1 or any(type(cleanup[k]) is not bool for k in ('complete','pending')) or cleanup['complete']==cleanup['pending']:return False
+        if type(cleanup['reason']) is not str or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,79}',cleanup['reason']) or any(type(cleanup[k]) is not int or not 0<=cleanup[k]<=4096 for k in ('term_signals','kill_signals','reaped','open_pidfds')):return False
+    if value['child_returncode'] is not None and (type(value['child_returncode']) is not int or not -255<=value['child_returncode']<=255):return False
+    if value['status']=='supported' and not (value['reason'] is None and all(value[k] for k in ('readiness','adopted','separate_session','pipes_closed')) and value['child_returncode']==0 and cleanup is not None and cleanup['complete'] and cleanup['open_pidfds']==0):return False
+    return True
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--serial',required=True);parser.add_argument('--artifact-root',type=Path)
+    args=parser.parse_args();os.umask(0o077);root=args.artifact_root or work_root()/'eidolon-termux-gui-owner-capability'
+    if not root.is_absolute():parser.error('artifact rootは絶対pathです')
+    run=root/(datetime.datetime.now().strftime('%Y%m%dT%H%M%S-%f')+'-'+str(os.getpid()));run.mkdir(parents=True,mode=0o700)
+    result=dict(schema=1,status='unsupported',game_execution='not_run',wayland='not_used',hmd='not_run')
+    try:
+        result['device']=QuestDevice(args.serial,run).validate()
+        pins={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in ('scripts/quest-probe-termux-gui-owner','scripts/termux/eidolon_gui_owner.py')}
+        command=shlex.join(['run-as','com.termux','/data/data/com.termux/files/usr/bin/python3','-c',remote_source()])
+        if len(command.encode())>49*1024:raise ValueError('REMOTE_COMMAND_LIMIT')
+        child=subprocess.run(['adb','-s',args.serial,'shell','-T',command],stdin=subprocess.DEVNULL,capture_output=True,timeout=15)
+        result.update(returncode=child.returncode,stdout_bytes=len(child.stdout),stderr_bytes=len(child.stderr),source_sha256=pins,remote_command_bytes=len(command.encode()))
+        value=json.loads(child.stdout) if len(child.stdout)<=4096 else None
+        if valid(value):result['remote_result']=value
+        unchanged=pins=={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in pins};result['source_unchanged']=unchanged
+        if valid(value) and value['status']=='supported' and child.returncode==0 and unchanged:result['status']='supported'
+    except (OSError,ValueError,subprocess.SubprocessError):result['reason']='GUI_OWNER_CAPABILITY_UNAVAILABLE'
+    (run/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(dict(status=result['status'],artifact=str(run),game_execution='not_run')))
+    return 0 if result['status']=='supported' else 1
+
+
+if __name__=='__main__':raise SystemExit(main())
