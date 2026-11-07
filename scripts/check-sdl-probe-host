@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""隔離Weston/pixmanでSDLのSHM経路を反復観測する。Questの合格へ読み替えない。"""
+import argparse
+import datetime
+import importlib.util
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location('sdl_probe', ROOT / 'scripts/termux/eidolon-sdl-probe.py')
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+
+
+def only(root, name):
+    matches = list(root.rglob(name))
+    if len(matches) != 1:
+        raise ValueError('WESTON_PREFIX_INVALID')
+    return matches[0]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--weston-prefix', type=Path, required=True, help='Weston debをdpkg-deb -xしたroot。システム導入しない')
+    parser.add_argument('--artifact-root', type=Path, required=True)
+    parser.add_argument('--cycles', type=int, default=10)
+    args = parser.parse_args()
+    if not all(path.is_absolute() for path in [args.binary, args.weston_prefix, args.artifact_root]) or not 1 <= args.cycles <= 20:
+        parser.error('absolute paths / cycles 1..20 required')
+    os.umask(0o077)
+    run = args.artifact_root / (datetime.datetime.now().strftime('%Y%m%dT%H%M%S') + f'-{os.getpid()}')
+    run.mkdir(mode=0o700, parents=True)
+    prefix = args.weston_prefix
+    library = only(prefix, 'libweston-14.so.0')
+    executable_library = only(prefix, 'libexec_weston.so.0')
+    backend = only(prefix, 'headless-backend.so')
+    shell = only(prefix, 'kiosk-shell.so')
+    # 現在のX11/Wayland sessionへattachしない。短いsocket pathの使い捨てfixtureだけを/tmpへ置く。
+    with tempfile.TemporaryDirectory(prefix='eidolon-sdl-') as runtime:
+        os.environ.update(XDG_RUNTIME_DIR=runtime, WAYLAND_DISPLAY='nx11', LIBGL_ALWAYS_SOFTWARE='1',
+                          LD_LIBRARY_PATH=str(library.parent) + ':' + str(executable_library.parent),
+                          WESTON_MODULE_MAP=f'headless-backend.so={backend};kiosk-shell.so={shell}')
+        command = [str(prefix / 'usr/bin/weston'), '--backend=headless', '--renderer=pixman',
+                   '--shell=kiosk-shell.so', '--socket=nx11', '--idle-time=0', '--no-config']
+        results = []
+        with (run / 'weston.log').open('w') as log:
+            server = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                deadline = time.monotonic() + 5
+                while not (Path(runtime) / 'nx11').exists():
+                    if os.waitid(os.P_PID, server.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None or time.monotonic() > deadline:
+                        raise RuntimeError('WESTON_START_FAILED')
+                    time.sleep(.02)
+                warmup = probe.run(args.binary, frames=6, timeout=10)
+                (run / 'warmup.json').write_text(json.dumps(warmup, indent=2) + '\n')
+                before = len(list(Path(f'/proc/{server.pid}/fd').iterdir()))
+                fd_samples = []
+                if warmup['shm_gate'] == 'pass':
+                    for cycle in range(args.cycles):
+                        observed = probe.run(args.binary, frames=12, timeout=10)
+                        (run / f'cycle-{cycle + 1:02}.json').write_text(json.dumps(observed, indent=2) + '\n')
+                        results.append(observed)
+                        fd_samples.append(len(list(Path(f'/proc/{server.pid}/fd').iterdir())))
+                after = len(list(Path(f'/proc/{server.pid}/fd').iterdir()))
+                disabled = probe.run(args.binary, frames=6, timeout=10, disable_acceleration=True)
+                (run / 'disabled-framebuffer-acceleration.json').write_text(json.dumps(disabled, indent=2) + '\n')
+            finally:
+                try: os.killpg(server.pid, signal.SIGTERM)
+                except ProcessLookupError: pass
+                deadline = time.monotonic() + 3
+                while probe.group_live(server.pid) and time.monotonic() < deadline:
+                    time.sleep(.02)
+                if probe.group_live(server.pid):
+                    os.killpg(server.pid, signal.SIGKILL)
+                server.wait(timeout=3)
+        result = dict(schema=1, result='pass' if len(results) == args.cycles and all(r['shm_gate'] == 'pass' for r in results) and after <= before else 'fail',
+                      scope='isolated-host-wayland', quest_sdk='not_run', input='not_run', cycles=len(results),
+                      weston_fd_before=before, weston_fd_after=after, server_reaped=True,
+                      weston_fd_samples=fd_samples, resource_gate='pass' if after <= before else 'fail',
+                      disabled_framebuffer_shm_gate=disabled['shm_gate'],
+                      run_directory=str(run))
+        (run / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+        print(json.dumps(result))
+        return 0 if result['result'] == 'pass' else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
