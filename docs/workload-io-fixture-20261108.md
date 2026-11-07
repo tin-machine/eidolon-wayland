@@ -4,6 +4,26 @@
 
 ## 所有範囲と固定動作
 
+### 初回登録待ちとsample採用
+
+Build156の初回実行は、sample採用前に`scope_changed`で終了し、専用窓の回収と観測設定の復帰を確認した。
+snapshotのtransportは最新値、app workloadはowner tickの保存値なので、新しいraw telemetryが届いても
+native側はまだidentity=nullの登録待ちである場合がある。不一致値を保存していなかったため、そのrunの
+三つの照合条件のどれが不一致だったかは断定しない。
+
+固定caseにpure採用判定を追加した。採用前はidentity=nullかつ既知の準備状態
+(`pending` / `unavailable` / `registered`)だけ既存60秒deadline内で待つ。
+registered identity・captured window・shell_tree scope・native I/O表示の値が一致してから
+epoch/sequenceを採用する。未照合raw値はsample、write積分、成功flagへ入れない。
+同sequenceはnative表示到着後に再照合でき、描画の再照合では積分を重複加算しない。
+採用後のidentity/window/scope/epoch失効は即失敗し、別scopeへbindし直さない。
+`identity_changed` / `ambiguous`等の明確な失効は初回でも待機扱いにしない。
+固定state/reasonとidentity存在・window/scope/表示一致のboolを`admission`へ保存する。
+source欠測もboolだけで記録し、identity本文やキー入力本文は新しい診断へ追加しない。
+
+pure fixtureでは初回待機、同sequenceの遅延採用、未採用I/Oの混入防止、採用後失効、
+deadline境界、古いsequence、重複積分防止を確認する。実機再試験は修正版APKの導入後に行う。
+
 `LaunchTerminal` の即時返却はenqueue受理だけである。固定caseはHostから返されたrequest IDに一致するlaunch receiptを使い、そこから新terminal ID、登録scope、window、renderのscene/generationを照合する。初期窓や別の同時起動の窓を対象にしない。
 
 専用Pythonは `terminal-app` の登録後にexecされるため、同じPID/starttimeを観測rootとして保つ。引数は受け付けず、既存helperから渡されたsession/terminalの環境を確認する。専用子は独立session/process groupを作り、次の固定処理だけを行う。

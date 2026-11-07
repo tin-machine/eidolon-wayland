@@ -38,8 +38,7 @@ object IoWorkloadCase {
         private var terminal: String? = null
         private var window: NativeSessionHost.WindowChoice? = null
         private var renderKey: String? = null
-        private var epoch: String? = null
-        private var lastSequence = 0L
+        private var admission: IoWorkloadAdmission? = null
         private var partialFrame = -1L
         private var stage = "start"
         private var reason: String? = null
@@ -112,6 +111,9 @@ object IoWorkloadCase {
                 if (stage == "observe") {
                     check(added.singleOrNull()?.opt("accepted") != false) { "launch_rejected" }
                     val telemetry = remote.optJSONObject("workload")
+                    result.put("source_presence", JSONObject().put("telemetry", telemetry != null)
+                        .put("window_workload", workload != null).put("render_target", target != null))
+                    check(admission?.adopted != true || (telemetry != null && workload != null && target != null)) { "scope_changed" }
                     if (telemetry != null && workload != null && target != null) observe(telemetry, workload, target)
                     if (metricPositive && metricPartial && metricZero) {
                         changedObservation = true
@@ -146,7 +148,7 @@ object IoWorkloadCase {
             } catch (failure: Exception) {
                 reason = failure.message?.takeIf { it in setOf("runtime_changed", "app_missing", "terminal_not_ready", "observation_disabled",
                     "theme_required", "launcher_not_ready", "single_terminal_required", "session_changed", "ambiguous_launch", "render_target_changed",
-                    "launch_rejected", "epoch_changed", "sequence_invalid", "sample_limit", "scope_changed") } ?: "metadata_unavailable"
+                    "launch_rejected", "epoch_changed", "sequence_invalid", "sample_limit", "scope_changed", "timeout") } ?: "metadata_unavailable"
                 if (runtime == NativeSessionHost.currentHandle() && launchRequested && stage != "cleanup") {
                     stage = "cleanup"; cleanupDeadline = SystemClock.elapsedRealtime() + 10000; ui.postDelayed(this, 250)
                 } else finish("fail")
@@ -154,28 +156,36 @@ object IoWorkloadCase {
         }
         private fun observe(telemetry: JSONObject, workload: JSONObject, target: JSONObject) {
             val nextEpoch = telemetry.getString("epoch")
-            check(epoch == null || epoch == nextEpoch) { "epoch_changed" }; epoch = nextEpoch
             val sequence = telemetry.getString("sequence").toLongOrNull() ?: error("sequence_invalid")
-            if (sequence < lastSequence) return
-            val fresh = sequence > lastSequence
-            lastSequence = sequence
-            val value = list(telemetry.optJSONArray("workloads")).singleOrNull { it.getString("terminal_id") == terminal } ?: return
-            val io = value.optJSONObject("io") ?: return
+            val value = list(telemetry.optJSONArray("workloads")).singleOrNull { it.getString("terminal_id") == terminal }
+            val io = value?.optJSONObject("io")
+            result.put("raw_presence", JSONObject().put("terminal_workload", value != null).put("io", io != null))
+            if (value == null || io == null) { check(admission?.adopted != true) { "scope_changed" }; return }
             val expectedIdentity = nextEpoch + ":" + telemetry.getString("boot") + ":" + value.getString("workload_id")
-            check(workload.optString("identity") == expectedIdentity && workload.optString("window") == window?.window && value.getString("scope") == "shell_tree") { "scope_changed" }
             val display = workload.getJSONObject("display").getJSONObject("io")
             val drawn = target.optJSONObject("io_draw")
             val frames = target.getLong("decoration_frames")
             val rate = if (io.getString("state") == "available") io.getDouble("read_bytes_per_second") + io.getDouble("write_bytes_per_second") else null
             val nativeMatched = display.optString("state") == io.optString("state") &&
                 (if (rate == null) display.isNull("bytes_per_second") else display.opt("bytes_per_second") is Number && display.getDouble("bytes_per_second") == rate)
+            val gate = admission ?: IoWorkloadAdmission(checkNotNull(window).window, deadline).also { admission = it }
+            val input = IoWorkloadAdmission.Input(nextEpoch, sequence, expectedIdentity, workload.opt("identity") as? String,
+                workload.opt("window") as? String, workload.opt("state") as? String, value.opt("scope") as? String, nativeMatched)
+            val decision = gate.observe(input, SystemClock.elapsedRealtime())
+            result.put("admission", JSONObject(gate.metadata(input, decision)))
+            when (decision.kind) {
+                IoWorkloadAdmission.Kind.WAIT -> return
+                IoWorkloadAdmission.Kind.FAIL -> error(decision.reason.wire)
+                IoWorkloadAdmission.Kind.ACCEPT -> Unit
+            }
+            val fresh = decision.fresh
             val matched = nativeMatched && drawn != null && drawn.optString("workload_identity") == expectedIdentity && drawn.opt("inner_rotation_degrees") is Number &&
                 (if (rate == null) drawn.isNull("bytes_per_second") else drawn.opt("bytes_per_second") is Number && drawn.getDouble("bytes_per_second") == rate) &&
                 (if (rate == null) display.isNull("bytes_per_second") else display.opt("bytes_per_second") is Number && display.getDouble("bytes_per_second") == rate)
             check(!fresh || rows.length() < 128) { "sample_limit" }
             val sample = JSONObject().put("sequence", sequence.toString()).put("epoch", nextEpoch).put("terminal_id", terminal)
                 .put("window", window?.window).put("io", io).put("native_io", display).put("draw_io", drawn ?: JSONObject.NULL)
-                .put("decoration_frames", frames).put("matched", matched).put("elapsed_ms", SystemClock.elapsedRealtime()-started)
+                .put("decoration_frames", frames).put("native_matched", true).put("matched", matched).put("elapsed_ms", SystemClock.elapsedRealtime()-started)
             if (fresh || rows.length() == 0) rows.put(sample) else rows.put(rows.length()-1, sample)
             if (fresh && rate != null) accumulatedWrite += io.getDouble("write_bytes_per_second") * io.getDouble("interval_seconds")
             val transition = io.optString("state") == "partial" && io.optString("reason") in setOf("zombie_pending", "scope_changed", "snapshot_changed")
