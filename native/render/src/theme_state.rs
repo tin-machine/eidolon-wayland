@@ -22,11 +22,14 @@ pub struct SemanticState {
     pub busy: bool,
     pub cpu_cores: Option<f64>,
     pub rss_bytes: Option<u64>,
+    pub io_bytes_per_second: Option<f64>,
     pub workload_identity: Option<String>,
 }
 impl SemanticState {
     pub fn valid(&self) -> bool {
-        self.cpu_cores.is_none_or(|v| v.is_finite() && v >= 0.)
+        self.io_bytes_per_second
+            .is_none_or(|v| v.is_finite() && v >= 0.)
+            && self.cpu_cores.is_none_or(|v| v.is_finite() && v >= 0.)
             && self
                 .workload_identity
                 .as_ref()
@@ -177,6 +180,7 @@ impl Players {
                 eidolon_theme::player::Metrics {
                     cpu_cores: state.cpu_cores,
                     rss_bytes: state.rss_bytes,
+                    io_bytes_per_second: state.io_bytes_per_second,
                 },
             )
             .map_err(|_| "THEME_EVALUATION_FAILED")?;

@@ -424,4 +424,60 @@ mod tests {
         assert_eq!(other_session[0].terminal_id, None);
         assert_eq!(other_session[0].display.displayed_cores, None);
     }
+    #[test]
+    fn io_uses_registered_window_binding_and_does_not_refresh_without_new_sequence() {
+        let mut tracker = Tracker::default();
+        let mut remote = remote(1);
+        let telemetry = remote.workload.as_mut().unwrap();
+        telemetry.workloads[0].io = Some(eidolon_model::workload::IoSample {
+            state: eidolon_model::workload::IoState::Available,
+            read_bytes_per_second: Some(100.),
+            write_bytes_per_second: Some(200.),
+            interval_seconds: Some(1.),
+            sampled_monotonic_ms: Some(1000),
+            reason: None,
+        });
+        // CPU baselineはIO配送を妨げない。
+        telemetry.workloads[0].cpu_cores = None;
+        telemetry.workloads[0].coverage = eidolon_model::workload::Coverage::Partial;
+        telemetry.workloads[0].reason = Some("baseline".into());
+        assert!(telemetry.valid());
+        tracker.ingest(&remote, Duration::ZERO);
+        let windows = [window(10, 1), window(20, 2)];
+        let reports = tracker.sync(
+            session(),
+            "aaaaaaaaaaaaaaaa",
+            &windows,
+            Duration::ZERO,
+            true,
+        );
+        assert!(reports[0].display.stale);
+        assert_eq!(reports[0].display.io.bytes_per_second, Some(300.));
+        assert_eq!(reports[1].display.io.bytes_per_second, None);
+        tracker.ingest(&remote, Duration::from_secs(4));
+        let stale = tracker.sync(
+            session(),
+            "aaaaaaaaaaaaaaaa",
+            &windows,
+            Duration::from_secs(4),
+            true,
+        );
+        assert!(
+            stale
+                .iter()
+                .all(|w| w.display.io.bytes_per_second.is_none())
+        );
+        let disconnected = tracker.sync(
+            session(),
+            "aaaaaaaaaaaaaaaa",
+            &windows,
+            Duration::ZERO,
+            false,
+        );
+        assert!(
+            disconnected
+                .iter()
+                .all(|w| w.display.io.bytes_per_second.is_none())
+        );
+    }
 }

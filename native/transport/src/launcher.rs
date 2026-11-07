@@ -1087,13 +1087,23 @@ mod tests {
         owner.terminal_session = Some(SessionId::new(17).unwrap());
         owner.allocate_terminal(None).unwrap();
         owner.report.phase = "starting";
-        let value = serde_json::json!({"type":"workload_v1","schema":1,"nonce":owner.nonce,"uid":owner.uid,"session":"17",
+        let mut value = serde_json::json!({"type":"workload_v1","schema":1,"nonce":owner.nonce,"uid":owner.uid,"session":"17",
             "epoch":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","sequence":"1","sampled_monotonic_ms":1000,
             "boot":"00000000-0000-0000-0000-000000000001","capability":"available","interval_seconds":1.,"scan_seconds":0.01,
             "registrations":[{"terminal_id":"1","pid":123,"start":"10","tty":"/dev/pts/1"}],
             "workloads":[{"terminal_id":"1","workload_id":"shell:1:123:10","scope":"shell_tree","cpu_cores":1.,"rss_bytes":4096,
                           "processes":1,"coverage":"complete","reason":null}]});
+        value["workloads"][0]["io"] = serde_json::json!({"state":"available","read_bytes_per_second":0.,
+            "write_bytes_per_second":1048576.,"interval_seconds":1.,"sampled_monotonic_ms":1000,"reason":null});
         owner.frame(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(
+            owner.report.workload.as_ref().unwrap().workloads[0]
+                .io
+                .as_ref()
+                .unwrap()
+                .write_bytes_per_second,
+            Some(1048576.)
+        );
         assert!(owner.report.child.is_none());
         assert_eq!(owner.report.terminal_count, 0);
         assert!(owner.frame(&serde_json::to_vec(&value).unwrap()).is_err());
@@ -1112,6 +1122,17 @@ mod tests {
                     .is_err()
             );
         }
+        let mut unregistered_io = value.clone();
+        unregistered_io["sequence"] = serde_json::json!("2");
+        unregistered_io["workloads"][0]["cpu_cores"] = serde_json::Value::Null;
+        unregistered_io["workloads"][0]["coverage"] = serde_json::json!("partial");
+        unregistered_io["workloads"][0]["reason"] = serde_json::json!("baseline");
+        unregistered_io["registrations"] = serde_json::json!([]);
+        assert!(
+            owner
+                .frame(&serde_json::to_vec(&unregistered_io).unwrap())
+                .is_err()
+        );
         let mut unknown = value.clone();
         unknown["sequence"] = serde_json::json!("2");
         unknown["cmdline"] = serde_json::json!("not permitted");

@@ -81,6 +81,107 @@ impl Registration {
             })
     }
 }
+/// /proc/<tgid>/ioのstorage帰属量。physical disk throughputではない。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IoState {
+    Available,
+    Baseline,
+    Partial,
+    Unavailable,
+    Stale,
+    Stopped,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IoSample {
+    pub state: IoState,
+    pub read_bytes_per_second: Option<f64>,
+    pub write_bytes_per_second: Option<f64>,
+    pub interval_seconds: Option<f64>,
+    pub sampled_monotonic_ms: Option<u64>,
+    pub reason: Option<String>,
+}
+impl IoSample {
+    pub fn valid(&self) -> bool {
+        if self.state == IoState::Available {
+            let rate = |v: Option<f64>| {
+                v.is_some_and(|v| {
+                    v.is_finite() && (0.0..=18_446_744_073_709_551_616.0).contains(&v)
+                })
+            };
+            rate(self.read_bytes_per_second)
+                && rate(self.write_bytes_per_second)
+                && self
+                    .interval_seconds
+                    .is_some_and(|v| v.is_finite() && v > 0.0 && v <= 3.0)
+                && self.sampled_monotonic_ms.is_some()
+                && self.reason.is_none()
+        } else {
+            self.read_bytes_per_second.is_none()
+                && self.write_bytes_per_second.is_none()
+                && self.interval_seconds.is_none()
+                && self.sampled_monotonic_ms.is_none()
+                && matches!(
+                    (self.state, self.reason.as_deref()),
+                    (IoState::Baseline, Some("baseline"))
+                        | (
+                            IoState::Unavailable,
+                            Some("access_denied" | "io_unavailable")
+                        )
+                        | (IoState::Stale, Some("clock"))
+                        | (IoState::Stopped, Some("disabled"))
+                        | (
+                            IoState::Partial,
+                            Some(
+                                "scope_changed"
+                                    | "snapshot_changed"
+                                    | "zombie_pending"
+                                    | "root_missing"
+                                    | "scan_partial"
+                                    | "identity_changed"
+                                    | "read_limit"
+                                    | "parse_invalid"
+                                    | "counter_regressed"
+                                    | "rate_limit"
+                                    | "budget"
+                                    | "tmux_uncertain",
+                            ),
+                        )
+                )
+        }
+    }
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct IoDisplay {
+    pub state: IoState,
+    pub bytes_per_second: Option<f64>,
+    pub reason: Option<String>,
+}
+impl Default for IoDisplay {
+    fn default() -> Self {
+        Self {
+            state: IoState::Unavailable,
+            bytes_per_second: None,
+            reason: Some("unreported".into()),
+        }
+    }
+}
+impl IoDisplay {
+    pub fn stopped() -> Self {
+        Self {
+            state: IoState::Stopped,
+            bytes_per_second: None,
+            reason: Some("disabled".into()),
+        }
+    }
+    fn missing(&mut self) {
+        self.state = IoState::Stale;
+        self.bytes_per_second = None;
+        self.reason = Some("missing".into());
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workload {
@@ -88,6 +189,8 @@ pub struct Workload {
     pub workload_id: String,
     pub scope: Scope,
     pub cpu_cores: Option<f64>,
+    #[serde(default)]
+    pub io: Option<IoSample>,
     pub rss_bytes: Option<u64>,
     pub processes: usize,
     pub coverage: Coverage,
@@ -112,7 +215,11 @@ impl Workload {
             }
             _ => false,
         };
-        key && self.workload_id.len() <= 128
+        key && self
+            .io
+            .as_ref()
+            .is_none_or(|io| io.valid() && (io.state != IoState::Available || self.processes > 0))
+            && self.workload_id.len() <= 128
             && self.processes <= 512
             && self
                 .cpu_cores
@@ -167,9 +274,21 @@ impl Telemetry {
             && self.registrations.len() <= MAX_TERMINALS
             && self.workloads.len() <= MAX_TERMINALS
             && self.registrations.iter().all(Registration::valid)
-            && self.workloads.iter().all(Workload::valid)
+            && self.workloads.iter().all(|w| {
+                w.valid()
+                    && w.io.as_ref().is_none_or(|io| {
+                        io.sampled_monotonic_ms.is_none_or(|at| {
+                            at <= self.sampled_monotonic_ms
+                                && self.sampled_monotonic_ms - at <= 3000
+                        })
+                    })
+            })
             && self.workloads.iter().all(|workload| {
-                workload.coverage != Coverage::Complete
+                (workload.coverage != Coverage::Complete
+                    && !workload
+                        .io
+                        .as_ref()
+                        .is_some_and(|io| io.state == IoState::Available))
                     || self.registrations.iter().any(|registration| {
                         registration.terminal_id == workload.terminal_id
                             && (workload.scope != Scope::ShellTree
@@ -193,6 +312,7 @@ impl Telemetry {
                             && other.processes == row.processes
                             && other.coverage == row.coverage
                             && other.reason == row.reason
+                            && other.io == row.io
                     })
             })
             && self
@@ -241,6 +361,7 @@ pub struct Display {
     /// 欠測時には同じworkloadの最後の値だけを保持。別workloadへは持ち越さない。
     pub displayed_cores: Option<f64>,
     pub rss_bytes: Option<u64>,
+    pub io: IoDisplay,
     pub busy: bool,
     pub stale: bool,
     pub coverage: Coverage,
@@ -254,6 +375,7 @@ impl Default for Display {
             smoothed_cores: None,
             displayed_cores: None,
             rss_bytes: None,
+            io: IoDisplay::default(),
             busy: false,
             stale: true,
             coverage: Coverage::Unknown,
@@ -265,6 +387,7 @@ pub struct Activity {
     display: Display,
     identity: Option<(String, String, String)>,
     last_valid: Option<Duration>,
+    io_last_valid: Option<Duration>,
 }
 impl Activity {
     pub fn observe(
@@ -279,16 +402,35 @@ impl Activity {
         if self.identity.as_ref() != Some(&identity) {
             self.display = Display::default();
             self.last_valid = None;
+            self.io_last_valid = None;
             self.identity = Some(identity);
         }
         self.display.workload_id = Some(value.workload_id.clone());
         self.display.scope = Some(value.scope);
         self.display.coverage = value.coverage;
+        // CPUの欠測early-returnとは独立。IO partialもCPU/RSSへ伝播しない。
+        self.io_last_valid = None;
+        self.display.io = if let Some(io) = value.io.as_ref().filter(|io| io.valid()) {
+            let rate = io
+                .read_bytes_per_second
+                .zip(io.write_bytes_per_second)
+                .map(|(read, write)| read + write);
+            if io.state == IoState::Available {
+                self.io_last_valid = Some(now);
+            }
+            IoDisplay {
+                state: io.state,
+                bytes_per_second: rate,
+                reason: io.reason.clone(),
+            }
+        } else {
+            IoDisplay::default()
+        };
         let valid = value.valid()
             && value.coverage == Coverage::Complete
             && interval.is_some_and(|dt| dt.is_finite() && dt > 0.0 && dt <= 3.0);
         if !valid {
-            self.missing();
+            self.missing_cpu();
             return;
         }
         let cpu = value.cpu_cores.expect("complete");
@@ -316,12 +458,24 @@ impl Activity {
         self.last_valid = Some(now);
     }
     pub fn missing(&mut self) {
+        self.missing_cpu();
+        self.display.io.missing();
+        self.io_last_valid = None;
+    }
+    fn missing_cpu(&mut self) {
         self.display.stale = true;
         self.display.busy = false;
         self.display.instantaneous_cores = None;
     }
     pub fn snapshot(&self, now: Duration) -> Display {
         let mut display = self.display.clone();
+        if display.io.state == IoState::Available
+            && self
+                .io_last_valid
+                .is_none_or(|at| now < at || now - at > STALE_AFTER)
+        {
+            display.io.missing();
+        }
         if self
             .last_valid
             .is_none_or(|at| now < at || now - at > STALE_AFTER)
@@ -346,6 +500,7 @@ mod tests {
             workload_id: name.into(),
             scope: Scope::ShellTree,
             cpu_cores: cpu,
+            io: None,
             rss_bytes: Some(4096),
             processes: 1,
             coverage: if cpu.is_some() {
@@ -507,5 +662,176 @@ mod tests {
         let mut bad = before;
         bad.workloads[0].cpu_cores = Some(f64::NAN);
         assert!(!bad.valid());
+    }
+    fn io(rate: f64) -> IoSample {
+        IoSample {
+            state: IoState::Available,
+            read_bytes_per_second: Some(0.),
+            write_bytes_per_second: Some(rate),
+            interval_seconds: Some(1.),
+            sampled_monotonic_ms: Some(1000),
+            reason: None,
+        }
+    }
+    fn telemetry(rows: Vec<Workload>) -> Telemetry {
+        Telemetry {
+            schema: 1,
+            nonce: "a".repeat(16),
+            uid: 10158,
+            session: SessionId::new(1).unwrap(),
+            epoch: "b".repeat(32),
+            sequence: SampleSeq::new(1).unwrap(),
+            sampled_monotonic_ms: 1000,
+            boot: Some("00000000-0000-0000-0000-000000000001".into()),
+            capability: Capability::Available,
+            interval_seconds: Some(1.),
+            scan_seconds: 0.001,
+            registrations: vec![Registration {
+                terminal_id: TerminalId::new(1).unwrap(),
+                pid: 123,
+                start: "100".into(),
+                tty: "/dev/pts/1".into(),
+            }],
+            workloads: rows,
+        }
+    }
+    #[test]
+    fn io_channel_is_independent_of_cpu_baseline_and_cpu_survives_io_partial() {
+        let mut activity = Activity::default();
+        let mut row = workload(None, "shell:1:123:100");
+        row.io = Some(io(1048576.));
+        activity.observe("epoch", "boot", &row, None, Duration::ZERO);
+        let value = activity.snapshot(Duration::ZERO);
+        assert!(value.stale);
+        assert_eq!(value.io.bytes_per_second, Some(1048576.));
+        row.cpu_cores = Some(2.);
+        row.coverage = Coverage::Complete;
+        row.reason = None;
+        row.io = Some(IoSample {
+            state: IoState::Partial,
+            read_bytes_per_second: None,
+            write_bytes_per_second: None,
+            interval_seconds: None,
+            sampled_monotonic_ms: None,
+            reason: Some("zombie_pending".into()),
+        });
+        activity.observe("epoch", "boot", &row, Some(1.), Duration::from_secs(1));
+        let value = activity.snapshot(Duration::from_secs(1));
+        assert!(!value.stale);
+        assert_eq!(value.rss_bytes, Some(4096));
+        assert_eq!(value.io.state, IoState::Partial);
+        assert_eq!(value.io.bytes_per_second, None);
+    }
+    #[test]
+    fn io_zero_stale_disconnect_identity_and_disabled_are_distinct() {
+        let mut activity = Activity::default();
+        let mut row = workload(Some(0.), "shell:1:123:100");
+        row.io = Some(io(0.));
+        activity.observe("epoch", "boot", &row, Some(1.), Duration::from_secs(1));
+        assert_eq!(
+            activity
+                .snapshot(Duration::from_secs(1))
+                .io
+                .bytes_per_second,
+            Some(0.)
+        );
+        assert_eq!(activity.snapshot(Duration::ZERO).io.state, IoState::Stale);
+        assert_eq!(
+            activity
+                .snapshot(Duration::from_secs(5))
+                .io
+                .bytes_per_second,
+            None
+        );
+        activity.missing();
+        assert_eq!(
+            activity.snapshot(Duration::from_secs(1)).io.state,
+            IoState::Stale
+        );
+        row.io = None;
+        activity.observe("new", "boot", &row, Some(1.), Duration::from_secs(6));
+        assert_eq!(
+            activity.snapshot(Duration::from_secs(6)).io.state,
+            IoState::Unavailable
+        );
+        assert_eq!(IoDisplay::stopped().state, IoState::Stopped);
+        assert!(IoDisplay::stopped().bytes_per_second.is_none());
+    }
+    #[test]
+    fn io_wire_rejects_bad_numbers_wrong_state_and_old_or_future_time() {
+        let mut row = workload(Some(1.), "shell:1:123:100");
+        row.io = Some(io(0.));
+        let value = telemetry(vec![row]);
+        assert!(value.valid());
+        for rate in [-1., f64::NAN, f64::INFINITY, f64::MAX] {
+            let mut bad = value.clone();
+            bad.workloads[0].io.as_mut().unwrap().write_bytes_per_second = Some(rate);
+            assert!(!bad.valid());
+        }
+        for dt in [-1., 0., 3.1, f64::NAN] {
+            let mut bad = value.clone();
+            bad.workloads[0].io.as_mut().unwrap().interval_seconds = Some(dt);
+            assert!(!bad.valid());
+        }
+        let mut bad = value.clone();
+        bad.workloads[0].io.as_mut().unwrap().read_bytes_per_second = None;
+        assert!(!bad.valid());
+        let mut bad = value.clone();
+        bad.workloads[0].io.as_mut().unwrap().state = IoState::Partial;
+        assert!(!bad.valid());
+        let mut bad = value.clone();
+        bad.workloads[0].io.as_mut().unwrap().sampled_monotonic_ms = Some(1001);
+        assert!(!bad.valid());
+        let mut bad = value.clone();
+        bad.sampled_monotonic_ms = 4001;
+        assert!(!bad.valid());
+        let mut json = serde_json::to_value(value).unwrap();
+        json["workloads"][0]["io"]["path"] = serde_json::json!("not_allowed");
+        assert!(serde_json::from_value::<Telemetry>(json).is_err());
+    }
+    #[test]
+    fn io_cannot_bypass_registered_scope_when_cpu_is_partial() {
+        let mut row = workload(None, "shell:1:123:100");
+        row.io = Some(io(1.));
+        let value = telemetry(vec![row]);
+        assert!(value.valid());
+        let mut bad = value.clone();
+        bad.registrations.clear();
+        assert!(!bad.valid());
+        let mut bad = value.clone();
+        bad.workloads[0].workload_id = "shell:1:999:100".into();
+        assert!(!bad.valid());
+        let mut bad = value;
+        bad.registrations[0].start = "101".into();
+        assert!(!bad.valid());
+    }
+    #[test]
+    fn old_helper_omission_is_unknown_and_shared_tmux_rows_require_equal_io() {
+        let row = workload(Some(1.), "shell:1:123:100");
+        let mut json = serde_json::to_value(telemetry(vec![row])).unwrap();
+        json["workloads"][0].as_object_mut().unwrap().remove("io");
+        let old: Telemetry = serde_json::from_value(json).unwrap();
+        assert!(old.valid());
+        assert!(old.workloads[0].io.is_none());
+        let mut value = old;
+        value.workloads[0].workload_id = "tmux:987:200:$1".into();
+        value.workloads[0].scope = Scope::TmuxSession;
+        value.workloads[0].io = Some(io(10.));
+        let mut duplicate = value.workloads[0].clone();
+        duplicate.terminal_id = TerminalId::new(2).unwrap();
+        value.workloads.push(duplicate);
+        value.registrations.push(Registration {
+            terminal_id: TerminalId::new(2).unwrap(),
+            pid: 456,
+            start: "300".into(),
+            tty: "/dev/pts/2".into(),
+        });
+        assert!(value.valid());
+        value.workloads[1]
+            .io
+            .as_mut()
+            .unwrap()
+            .write_bytes_per_second = Some(11.);
+        assert!(!value.valid());
     }
 }

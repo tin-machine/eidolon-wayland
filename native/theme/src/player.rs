@@ -56,6 +56,7 @@ struct PartPlayer {
 pub struct Metrics {
     pub cpu_cores: Option<f64>,
     pub rss_bytes: Option<u64>,
+    pub io_bytes_per_second: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -118,6 +119,7 @@ impl Player {
             Metrics {
                 cpu_cores,
                 rss_bytes: None,
+                io_bytes_per_second: None,
             },
         )
     }
@@ -276,6 +278,9 @@ impl Player {
                         cpu.map(|v| if states.contains("busy") { v } else { 0. })
                     }
                     "workload.memory.rss_bytes" => metrics.rss_bytes.map(|v| v as f64),
+                    "workload.io.bytes_per_second" => metrics
+                        .io_bytes_per_second
+                        .filter(|v| v.is_finite() && *v >= 0.),
                     _ => None,
                 };
                 let speed = sample
@@ -405,6 +410,7 @@ mod tests {
         let metrics = Metrics {
             cpu_cores: Some(4.),
             rss_bytes: Some(67108864),
+            io_bytes_per_second: None,
         };
         let angle = |frame: &Frame, id: &str| match &frame.parts[id][&Property::Transform] {
             Value::Transform(t) => match t.last().unwrap() {
@@ -494,5 +500,65 @@ mod tests {
         p.clear_metrics();
         let changed_work = p.evaluate(&theme, s(3), true, true, &states, None).unwrap();
         assert!(!changed_work.parts["cpu-meter"].contains_key(&Property::Value));
+    }
+    #[test]
+    fn inner_io_rotation_is_independent_zero_stops_and_missing_holds() {
+        let theme = raster::compile(
+            &crate::cyan_orbit(),
+            &BTreeMap::new(),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let mut player = Player::new(s(0));
+        let states = BTreeSet::new(); // CPU stale/idle does not gate IO.
+        let angle = |frame: &Frame| match &frame.parts["ring-inner"][&Property::Transform] {
+            Value::Transform(t) => match t.last().unwrap() {
+                Transform::Rotate(v) => *v,
+                _ => panic!("rotation"),
+            },
+            _ => panic!("transform"),
+        };
+        let mut metrics = Metrics {
+            io_bytes_per_second: Some(1048576.),
+            ..Default::default()
+        };
+        player
+            .evaluate_with_metrics(&theme, s(0), true, false, &states, metrics)
+            .unwrap();
+        let running = player
+            .evaluate_with_metrics(&theme, s(1), true, false, &states, metrics)
+            .unwrap();
+        assert_eq!(angle(&running), 26.25);
+        assert!(running.active);
+        metrics.io_bytes_per_second = Some(0.);
+        player
+            .evaluate_with_metrics(&theme, s(1), true, false, &states, metrics)
+            .unwrap();
+        let zero = player
+            .evaluate_with_metrics(&theme, s(2), true, false, &states, metrics)
+            .unwrap();
+        assert_eq!(angle(&zero), 30.);
+        assert!(!zero.active);
+        metrics.io_bytes_per_second = None;
+        let missing = player
+            .evaluate_with_metrics(&theme, s(20), true, false, &states, metrics)
+            .unwrap();
+        assert_eq!(angle(&missing), 30.);
+        assert!(!missing.active);
+        assert_ne!(
+            zero.parts["ring-inner"][&Property::Opacity],
+            missing.parts["ring-inner"][&Property::Opacity]
+        );
+        metrics.io_bytes_per_second = Some(1048576.);
+        let resumed = player
+            .evaluate_with_metrics(&theme, s(40), true, false, &states, metrics)
+            .unwrap();
+        assert_eq!(angle(&resumed), 30.); // no catch-up
+        let reduced = player
+            .evaluate_with_metrics(&theme, s(41), true, true, &states, metrics)
+            .unwrap();
+        assert_eq!(angle(&reduced), 30.);
+        assert!(!reduced.active);
     }
 }

@@ -355,7 +355,13 @@ impl Runtime {
                                 .unwrap_or_else(|e| e.into_inner())
                                 .workspace
                                 .workload_observation();
-                            let snapshot = current.snapshot();
+                            let mut snapshot = current.snapshot();
+                            if !observation {
+                                for workload in &mut snapshot.workloads {
+                                    workload.display.io =
+                                        eidolon_model::workload::IoDisplay::stopped();
+                                }
+                            }
                             for workload in &snapshot.workloads {
                                 gl.set_semantic_state(
                                     current.session(),
@@ -369,6 +375,9 @@ impl Runtime {
                                             .flatten(),
                                         rss_bytes: (observation && !workload.display.stale)
                                             .then_some(workload.display.rss_bytes)
+                                            .flatten(),
+                                        io_bytes_per_second: observation
+                                            .then_some(workload.display.io.bytes_per_second)
                                             .flatten(),
                                         workload_identity: workload.identity.clone(),
                                     },

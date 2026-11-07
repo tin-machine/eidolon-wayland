@@ -169,7 +169,9 @@ impl Manifest {
                 .is_some_and(|p| p.kind != Kind::Meter)
                 || !matches!(
                     r.metric.as_str(),
-                    "workload.cpu.cores" | "workload.memory.rss_bytes"
+                    "workload.cpu.cores"
+                        | "workload.memory.rss_bytes"
+                        | "workload.io.bytes_per_second"
                 )
                 || !r.input_max.is_finite()
                 || r.input_max <= 0.

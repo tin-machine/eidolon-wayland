@@ -49,3 +49,9 @@ part = "ring-middle"
 metric = "workload.memory.rss_bytes"
 input_max = 67108864.0
 degrees_per_second = -40.0
+
+[[rotations]]
+part = "ring-inner"
+metric = "workload.io.bytes_per_second"
+input_max = 1048576.0
+degrees_per_second = 30.0

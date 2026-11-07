@@ -434,6 +434,208 @@ def process_tree(rows, roots):
     return found, missing
 
 
+# IOはCPU/RSSと別baseline。counterはTGID単位でありtask/<tid>/ioを加算しない。
+IO_SECONDS = .025
+IO_U64_MAX = 2**64 - 1
+IO_RATE_MAX = 2**64  # wire上の有限な防御上限。実機の性能を意味しない。
+
+
+def io_missing(reason, state='partial'):
+    return dict(state=state, read_bytes_per_second=None, write_bytes_per_second=None,
+                interval_seconds=None, sampled_monotonic_ms=None, reason=reason)
+
+
+def io_read_at(directory, name, limit):
+    fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    try:
+        data = bytearray()
+        while len(data) <= limit:
+            block = os.read(fd, min(4096, limit + 1 - len(data)))
+            if not block:
+                return bytes(data)
+            data.extend(block)
+        raise ValueError('read_limit')
+    finally:
+        os.close(fd)
+
+
+def io_counters(raw):
+    fields = {'rchar', 'wchar', 'syscr', 'syscw', 'read_bytes', 'write_bytes', 'cancelled_write_bytes'}
+    values = {}
+    for line in raw.decode('ascii').splitlines():
+        key, sep, value = line.partition(':')
+        value = value.strip()
+        if (not sep or key not in fields or key in values or not value.isascii()
+                or not value.isdecimal() or len(value) > 20 or int(value) > IO_U64_MAX):
+            raise ValueError('parse_invalid')
+        values[key] = int(value)
+    if values.keys() != fields:
+        raise ValueError('parse_invalid')
+    # rchar/wchar/cache hit/TTY出力やcancelled bytesからstorage速度を作らない。
+    return values['read_bytes'], values['write_bytes']
+
+
+def io_identity(directory, pid):
+    process = proc_stat(io_read_at(directory, 'stat', 8192).decode(errors='replace'), pid)
+    status = io_read_at(directory, 'status', 32768).decode(errors='replace')
+    fields = {}
+    for line in status.splitlines():
+        key, sep, value = line.partition(':')
+        if sep and key in {'Pid', 'Tgid', 'Uid'}:
+            if key in fields:
+                raise ValueError('parse_invalid')
+            values = value.split()
+            if any(not v.isascii() or not v.isdecimal() or len(v) > 20 for v in values):
+                raise ValueError('parse_invalid')
+            fields[key] = tuple(map(int, values))
+    if fields.get('Uid') != (os.getuid(),) * 4:
+        raise PermissionError('access_denied')
+    if fields.get('Pid') != (pid,) or fields.get('Tgid') != (pid,):
+        raise ValueError('identity_changed')
+    if process['state'] in {'Z', 'X', 'x'}:
+        raise ValueError('zombie_pending')
+    return process['pid'], process['start'], process['ppid']
+
+
+def observe_io(process, proc=Path('/proc')):
+    """proc FDをpinしPID/start/PPID/全UID/TGIDを前後検証。本文は保存しない。"""
+    directory = os.open(proc / str(process['pid']), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        if os.fstat(directory).st_uid != os.getuid():
+            raise PermissionError('access_denied')
+        expected = process['pid'], process['start'], process['ppid']
+        if io_identity(directory, process['pid']) != expected:
+            raise ValueError('identity_changed')
+        counters = io_counters(io_read_at(directory, 'io', 4096))
+        if io_identity(directory, process['pid']) != expected:
+            raise ValueError('identity_changed')
+        return counters
+    finally:
+        os.close(directory)
+
+
+def io_tree(rows, roots):
+    """Zを黙って落とさず、不確実なscopeはcounter採用を拒否する。"""
+    children, selected, queue = {}, {}, []
+    for row in rows.values():
+        children.setdefault(row['ppid'], []).append(row)
+    identities = tuple(sorted({(r['pid'], r['start']) for r in roots}))
+    for pid, start in identities:
+        row = rows.get(pid)
+        if row is None or row['start'] != start:
+            return None, 'root_missing'
+        queue.append(row)
+    if not queue:
+        return None, 'root_missing'
+    while queue:
+        row = queue.pop()
+        if row['pid'] in selected:
+            continue
+        if row['state'] in {'Z', 'X', 'x'}:
+            return None, 'zombie_pending'
+        selected[row['pid']] = row
+        for child in children.get(row['pid'], []):
+            if int(child['start']) < int(row['start']):
+                return None, 'identity_changed'
+            queue.append(child)
+    fingerprint = identities, tuple(sorted((r['pid'], r['start'], r['ppid']) for r in selected.values()))
+    return (fingerprint, selected), None
+
+
+class IoAggregate:
+    """生存TGID合計の差分。wait済み子/retiredを履歴加算しない。"""
+    def __init__(self):
+        self.previous, self.identity = {}, None
+
+    def update(self, key, identity, at, fingerprint, counters, reason=None):
+        if self.identity != identity:
+            self.previous.clear()
+            self.identity = identity
+        old = self.previous.pop(key, None)
+        if reason is not None:
+            state = 'unavailable' if reason in {'access_denied', 'io_unavailable'} else 'partial'
+            return io_missing(reason, state)
+        if (not math.isfinite(at) or not 0 <= at <= IO_U64_MAX / 1000
+                or int(at * 1000) > IO_U64_MAX):
+            return io_missing('clock', 'stale')
+        if (not counters or len(counters) > WORKLOAD_PROCESSES
+                or any(len(v) != 2 or any(type(n) is not int or not 0 <= n <= IO_U64_MAX for n in v) for v in counters.values())):
+            return io_missing('parse_invalid')
+        if old is not None:
+            previous_at, previous_fingerprint, previous_counters = old
+            if previous_fingerprint != fingerprint or previous_counters.keys() != counters.keys():
+                return io_missing('scope_changed')
+            dt = at - previous_at
+            if not 0 < dt <= 3:
+                return io_missing('clock', 'stale')
+            if any(any(n < p for n, p in zip(v, previous_counters[pid])) for pid, v in counters.items()):
+                return io_missing('counter_regressed')
+            # 個別counterの非減少を先に確認。合計差分だけでは逆行を隠せる。
+            rates = tuple((sum(v[i] for v in counters.values()) - sum(v[i] for v in previous_counters.values())) / dt for i in (0, 1))
+            if any(not math.isfinite(v) or v > IO_RATE_MAX for v in rates):
+                return io_missing('rate_limit')
+            self.previous[key] = at, fingerprint, counters.copy()
+            return dict(state='available', read_bytes_per_second=rates[0], write_bytes_per_second=rates[1],
+                        interval_seconds=dt, sampled_monotonic_ms=int(at * 1000), reason=None)
+        self.previous[key] = at, fingerprint, counters.copy()
+        return io_missing('baseline', 'baseline')
+
+
+def tmux_io_fingerprint(adapters):
+    """ticks/RSSの変化は除き、client/session/pane/server対応だけを比較する。"""
+    def identity(row):
+        return row['pid'], row['start'], row['ppid'], row['tty']
+    return sorted((s['server'] or (0, '0'), sorted((tty, c['session'], identity(c['process'])) for tty, c in s['clients'].items()),
+                   sorted((key, identity(row), s['pane_ttys'][key]) for key, row in s['panes'].items())) for s in adapters)
+
+
+def collect_io(scopes, before, before_partial, aggregate, identity, *, after_scan=scan_processes,
+               reader=observe_io, clock=time.monotonic, stopped=lambda: False, verify_tmux=lambda rows: True):
+    """unique scope毎1update、全scopeのTGID union毎1read、前後tree一致。"""
+    aggregate.previous = {key: value for key, value in aggregate.previous.items() if key in scopes}
+    prepared, union, errors, samples = {}, {}, {}, {}
+    for key, spec in scopes.items():
+        tree, error = io_tree(before, spec['roots'])
+        error = spec.get('error') or ('scan_partial' if before_partial else error)
+        if error:
+            errors[key] = error
+        else:
+            prepared[key] = tree
+            union.update(tree[1])
+    started = clock()
+    for pid, process in union.items():
+        if stopped() or clock() - started >= IO_SECONDS:
+            samples[pid] = 'budget'
+            continue
+        try:
+            samples[pid] = reader(process)
+        except PermissionError:
+            samples[pid] = 'access_denied'
+        except (FileNotFoundError, ProcessLookupError):
+            samples[pid] = 'io_unavailable'
+        except (OSError, ValueError, UnicodeError) as error:
+            samples[pid] = str(error) if str(error) in {'read_limit', 'parse_invalid', 'identity_changed', 'zombie_pending'} else 'io_unavailable'
+        if clock() - started > IO_SECONDS:
+            samples[pid] = 'budget'
+    at = clock()
+    after, after_partial, _ = after_scan(stopped=stopped) if prepared else ({}, False, 0)
+    tmux_stable = verify_tmux(after) if prepared else True
+    result = {}
+    for key, spec in scopes.items():
+        reason, fingerprint, counters = errors.get(key), None, {}
+        if reason is None:
+            fingerprint, selected = prepared[key]
+            tree, error = io_tree(after, spec['roots'])
+            reason = ('scan_partial' if after_partial else error) or ('snapshot_changed' if tree[0] != fingerprint else None)
+            if not tmux_stable:
+                reason = 'tmux_uncertain'
+            if reason is None:
+                reason = next((samples[pid] for pid in selected if isinstance(samples[pid], str)), None)
+                counters = {pid: samples[pid] for pid in selected} if reason is None else {}
+        result[key] = aggregate.update(key, identity, at, fingerprint, counters, reason)
+    return result
+
+
 class WorkloadDelta:
     """collector内の単調時計だけでdeltaを作る。欠測/新PID/逆行を0で補完しない。"""
     def __init__(self, ticks=None, pages=None):
@@ -714,6 +916,7 @@ class WorkloadObserver:
         self.lock, self.stopped = threading.Lock(), threading.Event()
         self.allowed, self.registered, self.latest = set(), {}, None
         self.pending_deadlines = {}
+        self.io = IoAggregate()
         self.enabled, self.setting_generation = True, 0
         self.last_terminal = 0
         self.sockets = {TERMUX_PREFIX / 'tmp' / f'tmux-{os.getuid()}' / 'default'}
@@ -824,18 +1027,20 @@ class WorkloadObserver:
                 adapters.append(query_tmux(path, rows, self.stopped.is_set))
             except (OSError, ValueError, UnicodeError):
                 adapter_partial = True
-        result = []
+        result, io_scopes = [], {}
         for terminal, identity in list(self.registered.items()):
             shell, missing = process_tree(rows, [identity])
             key, scope, selected = f'shell:{terminal}:{identity["pid"]}:{identity["start"]}', 'shell_tree', shell
             failed = adapter_partial
+            roots = [identity]
             try:
                 matches = [value for adapter in adapters if (value := tmux_scope(adapter, identity['tty'], shell)) is not None]
                 if len(matches) > 1:
                     raise ValueError('TMUX_AMBIGUOUS')
                 if matches:
                     tmux = matches[0]
-                    selected, lost = process_tree(rows, tmux['roots'])
+                    roots = tmux['roots']
+                    selected, lost = process_tree(rows, roots)
                     missing |= lost
                     pid, start = tmux['server']
                     key, scope = f'tmux:{pid}:{start}:{tmux["session"]}', 'tmux_session'
@@ -844,6 +1049,14 @@ class WorkloadObserver:
             total = counter.total(selected, values, partial=partial or failed, missing=missing)
             if failed:
                 total['reason'] = 'tmux_uncertain'
+            spec = dict(roots=roots, error='tmux_uncertain' if failed else None)
+            if key in io_scopes:
+                previous = io_scopes[key]
+                if {(r['pid'], r['start']) for r in roots} != {(r['pid'], r['start']) for r in previous['roots']}:
+                    spec['error'] = 'scope_changed'
+                else:
+                    spec['error'] = previous['error'] or spec['error']
+            io_scopes[key] = spec
             result.append(dict(terminal_id=terminal, workload_id=key, scope=scope, **total))
             # 確実なroot終了時のみ枠を開放。欠測だけでは他のprocessへ乗り換えない。
             gone = identity['pid'] in rows and (rows[identity['pid']]['start'] != identity['start'] or rows[identity['pid']]['state'] in {'Z', 'X', 'x'})
@@ -854,6 +1067,20 @@ class WorkloadObserver:
             if gone:
                 del self.registered[terminal]
                 with self.lock: self.allowed.discard(terminal)
+        def verify_tmux(after):
+            try:
+                again = [query_tmux(path, after, self.stopped.is_set) for path in self.sockets if path.exists()]
+                return tmux_io_fingerprint(adapters) == tmux_io_fingerprint(again)
+            except (OSError, ValueError, UnicodeError):
+                return False
+        try:
+            io = collect_io(io_scopes, rows, partial, self.io, (boot, self.epoch),
+                            after_scan=scan_processes, reader=observe_io, clock=time.monotonic, stopped=self.stopped.is_set, verify_tmux=verify_tmux)
+        except (OSError, ValueError, UnicodeError):
+            self.io = IoAggregate()
+            io = {key: io_missing('io_unavailable', 'unavailable') for key in io_scopes}
+        for value in result:
+            value['io'] = io[value['workload_id']]
         return dict(boot=boot, capability='available', interval_seconds=interval, scan_seconds=scan_seconds,
                     registrations=[dict(terminal_id=terminal, **identity) for terminal, identity in self.registered.items()], workloads=result)
 
@@ -872,6 +1099,7 @@ class WorkloadObserver:
                 generation = current_generation
                 # 同じcollector/SSH streamのepochは固定。pauseでは差分基準だけを更新する。
                 counter = WorkloadDelta() if boot is not None else None
+                self.io = IoAggregate()
             try:
                 if not enabled:
                     # socket/登録を維持し、/procの全走査とtmux照会を止める。
@@ -880,12 +1108,18 @@ class WorkloadObserver:
                 else:
                     body = self.sample(boot, counter) if counter is not None else dict(boot=None, capability='unavailable', interval_seconds=None, scan_seconds=0, registrations=[], workloads=[])
             except (OSError, ValueError, UnicodeError):
+                self.io = IoAggregate()
                 body = dict(boot=boot, capability='unavailable', interval_seconds=None, scan_seconds=0, registrations=[], workloads=[])
             self.sequence += 1
             value = dict(**marker(self.nonce), type='workload_v1', session=self.session, epoch=self.epoch,
                          sequence=str(self.sequence), sampled_monotonic_ms=int(time.monotonic() * 1000), **body)
             if len(json.dumps(value, separators=(',', ':')).encode()) > WORKLOAD_BYTES:
-                value.update(capability='unavailable', interval_seconds=None, registrations=[], workloads=[])
+                # IO追加でcontrol frame上限を超えた場合もCPU/RSSを先に残す。
+                for workload in value['workloads']:
+                    workload['io'] = None
+                self.io = IoAggregate()
+                if len(json.dumps(value, separators=(',', ':')).encode()) > WORKLOAD_BYTES:
+                    value.update(capability='unavailable', interval_seconds=None, registrations=[], workloads=[])
             with self.lock:
                 if generation == self.setting_generation:
                     self.latest = value
