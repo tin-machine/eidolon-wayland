@@ -1,7 +1,8 @@
 # NX11: Chocolate DoomとFreedoomの最小検証準備
 
-2026-11-08時点の計画。SDL/Mesaのloader整合化後もEGL初期化は未合格のため、
-ゲームの実行・package導入・通常GUI解禁は行っていない。
+2026-11-08時点。固定Kopper無効対照でEGL1.5/SDL GL・GLES contextが成立し、
+SDL software描画120frames/SHM120commit/SDK更新・退役・元foot維持と所有process回収も確認した。
+ゲームの実行・package導入・通常GUI解禁はまだ行っていない。
 
 ## 固定するengineとデータ
 
@@ -61,3 +62,47 @@ Waylandの2環境値は認証済みの現行leaseから引き継ぎ、Mesa CPU�
 4. 対話回でfocus・通常キーdown/up・focus喪失時のrelease・window close・Stopを確認する。
    観測したPIDをsignal対象へ流用せず、helperが生成して保持したhandle/groupだけを回収する。
 5. 一回の自然終了と製品Stop/反復、合成キー配送とHMD/物理操作を分けて記録する。HMD確認は最後に残す。
+
+## host準備の実装
+
+`scripts/prepare-freedoom-probe`は、上記固定archiveだけを検査し、Phase1 WAD、license/credits、
+526byteの短demo、専用config templateとmanifestを新規0700/0600のhost directoryへ用意する。
+archiveの所有・mode・regular file・size/SHA・読取り前後identityを確認する。
+zip全体をextractせず、重複名、traversal、symlink、特殊file、暗号化、不明compressionと上限超過を拒否する。
+WAD directory境界、DEMO1の版/1 player/header/source SHAと生成短demoの既知SHAも照合する。
+license/creditsが欠ける場合は準備を拒否する。過去runや途中失敗runを上書きしない。
+
+```sh
+scripts/prepare-freedoom-probe --archive /absolute/path/freedoom-0.13.0.zip \
+  --artifact-root "$EIDOLON_TASK_ROOT/freedoom-prepared-host"
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+  -s scripts/tests -p test_freedoom_probe_prepare.py -v
+```
+
+新しい`launch-plan.json`は**host準備専用schema**であり、launcher catalogへ渡す定義ではない。
+`demo128`と`interactive`の固定caseだけを生成し、自由argv/envやterminal modeへの偽装は無い。
+engineの実binary SHAは未取得として明記し、modeはgui/available=false/`GUI_NOT_VERIFIED`を維持する。
+gameのSDL backendはwayland、描画条件は既存SDLで成立したsoftpipe/Kopper無効profileとする。
+Waylandの2環境値は将来の実行時に認証済み現行leaseから取得し、古いsocket/nonceを流用しない。
+
+configはimmutable assetから新しいowned stateへコピーして使うtemplateである。
+実engineの`-config/-extraconfig`へ渡す先はstate側とし、終了時のconfig保存でasset pinを壊さない。
+このscriptはADB/Termux転送、apt、engine起動、通常catalogへの登録を行わない。
+`prepared`はhost file検証の完了だけを示す。
+
+## 実行と通常launcher opt-inまでの残作業
+
+| 段階 | 必要な条件・証拠 |
+| --- | --- |
+| package | root operatorが版固定simulateを再確認し、必要7packageだけ導入。Chocolate Doom3.1.1の実ELF/UID/mode/SHAと依存runtimeをpinする |
+| assets導入 | Termux実Python prefix→HOMEから専用新規asset/state directoryを導出。固定manifest/size/hashを再検査し、owned fileだけ0600で保存。28MB超のWADを引数へ入れず有限stream転送する |
+| 所有binding | 固定engine argv/cwd/新stateを生成。SDL Wayland app_idの制御方法を一次sourceと実metadataで確認し、実Popen handle/UID/starttime・full targetを結び付ける |
+| demo128 | `-playdemo`の自然終了0、SHM本体/content進行、SDK追加窓とframe/退役、Board/binding/control/MODE解放、元foot維持、owned group/reap/pipeを同jobで確認する |
+| 対話と停止 | 固定focus/epoch/intentで合成キーdown/upとcloseを分離確認。ゲームへの反応、focus喪失release、所有Stop・反復・切断を別caseにし、自然quitとsignal終了を混同しない |
+| profile付きGUI opt-in | 任意env fieldではなく型付きsoftware Wayland profileをhelper/native契約へ追加。検証済みprofile/engine/assetの明示opt-inだけを許可し、未検証GUIの既定拒否を維持する |
+| 最終確認 | HMD視認/物理キーボード/通常launcher操作を利用者が確認する。demoの記録入力を物理入力の合格に数えない |
+
+現在のcatalog `Definition`にはenv/profile fieldが無い。helperの`summary`、`selected_definition`、
+`launch_definition`はGUIを拒否し、native `Entry.valid`もGUI availableを拒否する。
+一箇所のgateを外すだけでは通常起動を実装できないため、helper・native・launcher表示の契約を合わせてから
+明示opt-inへ接続する。今回のhost準備ではこれらを変更しない。
