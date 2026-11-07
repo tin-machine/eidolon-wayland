@@ -80,6 +80,7 @@ pub struct Counters {
     pub unmaps: u64,
     pub pool_rejections: u64,
     pub last_rejected_pool_bytes: usize,
+    pub toplevel_rejections: u64,
 }
 
 /// SurfaceAttributesと同じtransaction/cacheを通る使用token。未適用の同期commitも保持する。
@@ -139,6 +140,8 @@ pub struct ProtocolState {
     _globals: Vec<GlobalId>,
     surfaces: Vec<WlSurface>,
     toplevels: HashMap<ObjectId, snapshot::WindowRecord>,
+    // wl_surface全体のSURFACES上限内。拒否roleをWindowId/描画へ登録しない。
+    rejected_toplevels: HashSet<ObjectId>,
     popups: Vec<PopupSurface>,
     dismissed_popups: HashSet<ObjectId>,
     popup_grabs: Vec<ObjectId>,
@@ -233,6 +236,7 @@ impl ProtocolState {
             _globals: globals,
             surfaces: vec![],
             toplevels: HashMap::new(),
+            rejected_toplevels: HashSet::new(),
             popups: vec![],
             dismissed_popups: HashSet::new(),
             popup_grabs: vec![],
@@ -276,6 +280,9 @@ impl ProtocolState {
     }
     pub fn surface_count(&self) -> usize {
         self.surfaces.len()
+    }
+    pub fn rejected_toplevel_count(&self) -> usize {
+        self.rejected_toplevels.len()
     }
     #[cfg(any(test, feature = "debug-fixtures"))]
     pub(super) fn surfaces_for_check(&self) -> Vec<WlSurface> {
@@ -339,6 +346,58 @@ impl ProtocolState {
                 }
             });
         }
+    }
+
+    fn in_rejected_toplevel(&self, surface: &WlSurface) -> bool {
+        let mut current = surface.clone();
+        let mut seen = HashSet::new();
+        for _ in 0..=limits::SURFACES {
+            if !seen.insert(current.id()) {
+                return false;
+            }
+            if self.rejected_toplevels.contains(&current.id()) {
+                return true;
+            }
+            if let Some(parent) = smithay::wayland::compositor::get_parent(&current) {
+                current = parent;
+            } else if let Some(parent) = self
+                .popups
+                .iter()
+                .find(|p| p.wl_surface() == &current)
+                .and_then(|p| p.get_parent_surface())
+            {
+                current = parent;
+            } else {
+                return false;
+            }
+        }
+        false
+    }
+    /// 拒否roleへ交差したbufferをcopyせず解放する。他surface/cacheの使用tokenは維持する。
+    fn discard_committed(&mut self, surface: &WlSurface) {
+        let assignment = with_states(surface, |states| {
+            let mut cached = states.cached_state.get::<SurfaceAttributes>();
+            let attrs = cached.current();
+            attrs.damage.clear();
+            attrs.buffer_delta.take();
+            attrs.buffer.take()
+        });
+        let changed = assignment.is_some();
+        if let Some(BufferAssignment::NewBuffer(buffer)) = assignment {
+            self.release_queue.insert(buffer.id(), buffer);
+        }
+        if changed {
+            with_states(surface, |states| {
+                states
+                    .cached_state
+                    .get::<BufferUse>()
+                    .current()
+                    .update
+                    .take();
+            });
+        }
+        self.pixels.remove(&surface.id());
+        self.output.leave(surface);
     }
 
     fn copy_committed(&mut self, surface: &WlSurface) {
@@ -447,6 +506,20 @@ impl CompositorHandler for ProtocolState {
     }
     fn commit(&mut self, surface: &WlSurface) {
         self.counters.commits += 1;
+        if self.in_rejected_toplevel(surface) {
+            let mut ignored = vec![];
+            with_surface_tree_upward(
+                surface,
+                (),
+                |_, _, _| TraversalAction::DoChildren(()),
+                |surface, _, _| ignored.push(surface.clone()),
+                |_, _, _| true,
+            );
+            for surface in ignored {
+                self.discard_committed(&surface);
+            }
+            return;
+        }
         if !self.prepare_role_commit(surface) {
             return;
         }
@@ -474,6 +547,7 @@ impl CompositorHandler for ProtocolState {
             .surface_meta
             .get(&surface.id())
             .and_then(|meta| meta.window);
+        self.rejected_toplevels.remove(&surface.id());
         self.forget_toplevel(surface);
         self.forget_popup(surface);
         self.surface_meta.remove(&surface.id());
@@ -510,9 +584,11 @@ impl XdgShellHandler for ProtocolState {
     }
     fn new_toplevel(&mut self, toplevel: ToplevelSurface) {
         if self.toplevels.len() >= limits::TOPLEVELS {
-            toplevel
-                .wl_surface()
-                .post_error(wl_surface::Error::InvalidSize, "toplevel budget exceeded");
+            // protocol errorは同じfoot serverの既存窓も切る。新しい余剰roleだけ閉じる。
+            // 拒否後のin-flight commitもcopyしない。clientが従わなくてもsurface予算は不変。
+            self.rejected_toplevels.insert(toplevel.wl_surface().id());
+            self.counters.toplevel_rejections += 1;
+            toplevel.send_close();
         } else {
             self.register_toplevel(toplevel);
         }
@@ -523,6 +599,11 @@ impl XdgShellHandler for ProtocolState {
                 .wl_surface()
                 .post_error(wl_surface::Error::InvalidSize, "popup parent required");
         } else {
+            let rejected = self.in_rejected_toplevel(popup.get_parent_surface().as_ref().unwrap());
+            if rejected {
+                self.dismissed_popups.insert(popup.wl_surface().id());
+                popup.send_popup_done();
+            }
             self.popups.push(popup);
         }
     }
@@ -566,6 +647,7 @@ impl XdgShellHandler for ProtocolState {
         });
     }
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        self.rejected_toplevels.remove(&surface.wl_surface().id());
         self.forget_toplevel(surface.wl_surface());
     }
     fn popup_destroyed(&mut self, surface: PopupSurface) {

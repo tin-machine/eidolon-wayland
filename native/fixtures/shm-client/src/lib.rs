@@ -28,6 +28,7 @@ use wayland_client::{
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
+pub mod capacity;
 pub mod clipboard;
 pub mod keyboard;
 pub mod pointer;
@@ -93,6 +94,7 @@ struct State {
     last_serial: u32,
     suppress_ack: bool,
     toplevel_size: Option<(i32, i32)>,
+    toplevel_closes: u32,
     popup_positions: Vec<(i32, i32, i32, i32)>,
     popup_done: u32,
     report: Report,
@@ -561,8 +563,12 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let xdg_toplevel::Event::Configure { width, height, .. } = event {
-            state.toplevel_size = Some((width, height));
+        match event {
+            xdg_toplevel::Event::Configure { width, height, .. } => {
+                state.toplevel_size = Some((width, height))
+            }
+            xdg_toplevel::Event::Close => state.toplevel_closes += 1,
+            _ => (),
         }
     }
 }

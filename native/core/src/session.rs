@@ -50,6 +50,8 @@ pub struct Report {
     pub pool_count: usize,
     pub pool_rejections: u64,
     pub last_rejected_pool_bytes: Option<usize>,
+    pub toplevel_rejections: u64,
+    pub rejected_toplevels: usize,
     pub memfd_fds_after: Option<usize>,
     pub memfd_maps_after: Option<usize>,
     pub directory_cleaned: bool,
@@ -675,6 +677,8 @@ impl Session {
             let _ = backend.with_all_objects_for(client, |_| self.report.objects += 1);
         }
         self.report.surfaces = state.surface_count();
+        self.report.toplevel_rejections = state.counters.toplevel_rejections;
+        self.report.rejected_toplevels = state.rejected_toplevel_count();
         self.report.pixel_bytes = state.pixel_bytes();
         let pool = state.pool_usage();
         self.report.pool_bytes = pool.bytes;

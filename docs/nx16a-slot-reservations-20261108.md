@@ -110,3 +110,27 @@ model全70件成功（追加した相関7件を含む）。逆順map、無関係
 受付欠落/未確定/拒否、duplicate、未mapped、初回request無し、wire ID表現を検査した。
 `CARGO_INCREMENTAL=0 cargo check --locked -p eidolon-core -p eidolon-transport`も成功。
 Android compile/SDK/Questはroot担当の後続gateであり、このcheckpointでは未実施。
+
+## NX16b中間: 余剰toplevelを同clientから切り離す
+
+通常toplevel上限を超えた新しいroleへ、client全体を終了するprotocol errorを送る処理を変更した。
+新roleだけへ`xdg_toplevel.close`を送り、WindowId/通常窓一覧/描画へ登録しない。
+拒否roleは既存の全wl_surface上限64内で追跡し、roleまたはsurfaceの消滅で記録を回収する。
+拒否と交差したcommitはSHM copyを行わず、bufferのreleaseと使用tokenを通常の共有使用検査へ返す。
+拒否roleを親にするpopupも表示しない。既存の窓・popupの入力や通常のSHM/pixel予算は維持する。
+
+`app.toplevel_rejections`は累積拒否数、`app.rejected_toplevels`は現在保持する拒否role数。
+拒否済みresourceを正常な表示枠数へ加えず、拒否を無視するclientへ最古の窓を強制closeして空きを作らない。
+これは容量超過toplevelに関する局所的な変更である。surface/SHMの別予算や不正protocolのerrorまで
+client単位の影響をなくしたものではない。表示可能枚数2・通常toplevel上限8・client上限4はまだ変更しない。
+
+固定wire fixture `eidolon-toplevel-capacity-v1`は一つのclientで現上限までmapし、
+余剰roleのclose、configure前に交差したattachの破棄とbuffer release、既存窓の同一ID維持と更新継続、
+拒否roleの消滅、一窓を閉じた後の新IDでの再作成、最後の全resource回収を検査する。
+同fixtureを含むcompositor関連18件がhostで成功した。
+
+```sh
+CARGO_INCREMENTAL=0 cargo test --locked -p eidolon-core compositor:: -- --test-threads=1
+```
+
+これは同じWayland client内の保護の検査であり、九つの独立client、SDK九枚、HMD表示の合格ではない。
