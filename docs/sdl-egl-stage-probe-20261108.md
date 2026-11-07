@@ -95,6 +95,44 @@ NDKr30の`libc++_shared.so`を配布する構成で、この結果と整合す�
 固定vendor JSON指定も、正しい探索先とvendorの実dlopen失敗が分かった現段階では第一選択にしない。
 SDK/Waylandの描画を変更したり、大きなSDL/Mesa rebuildへ進む前にloader失敗を分ける。
 
+## EGL初期化の既知ログ分類
+
+libc++整合後のBuild156では、GL/GLESとも`egl_initialize_failed`へ進んだ。
+vendor loaderの修復をEGL初期化成功とは扱わず、元のAPI失敗・cleanupを保持して次を調べる。
+
+Termuxの[Mesa recipe](https://github.com/termux/termux-packages/blob/fbdb3c03610c697322ac608e77cea2b553f49ef3/packages/mesa/build.sh)は
+Wayland EGLとllvmpipe/softpipeを有効化し、
+[Wayland swrast用patch](https://github.com/termux/termux-packages/blob/fbdb3c03610c697322ac608e77cea2b553f49ef3/packages/mesa/0012-always-use-software-for-swrast.patch)も持つ。
+[upstreamの初期化](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/egl/drivers/dri2/platform_wayland.c)は
+software指定時にSHM/formatのroundtrip、screen作成、EGLDevice、configの順へ進む。
+software実装が無いと決めつけず、まず失敗分類を取得する。
+
+```bash
+scripts/quest-run-sdl-probe --serial "$EIDOLON_QUEST_SERIAL" \
+  --run-id "$NEW_SDL_RUN_ID" --binary-sha256 "$SDL_BINARY_SHA256" \
+  --manifest-sha256 "$NEW_SDL_MANIFEST_SHA256" --variant egl-wayland-debug --stage gl-load
+```
+
+`egl-wayland-debug`は`egl-wayland`へ`EGL_LOG_LEVEL=debug`だけを加える固定対照で、renderとの併用は拒否する。
+Cは不変だが配備runnerを変更するため、必ず新runへ配備して新manifest SHAを固定する。
+既知binaryを再利用する場合は、新旧Cのhash一致と既知binaryのowner/mode/size/SHAを検査した上で、
+新runへ排他的にcopyし、旧runは変更しない。同Cの再compileも可能である。
+
+runnerの`egl_log`には、Mesa 26.2.6のsourceにある固定messageの分類・件数、最初の既知失敗分類、
+未一致行数、切詰め行数とcoverageだけを入れる。path、symbol、未知のerror本文は保存しない。
+分類例は`dri2_screen_failed`、`egl_device_setup_failed`、`egl_configs_missing`、`driver_load_failed`。
+`forced_software`と`driver_opened`は情報分類なので最初の失敗には数えない。
+stderrは全体8MiB・一行8KiB以内で分類し、超過・不完全行のcoverageを不完全にする。
+既存のdrain上限・取消・元API失敗・cleanup判定は維持し、stage時にWayland raw traceを有効にしない。
+分類が無い場合も原因の不存在とは判断しない。`diagnostic_gate`はAPI結果の観測であり、ログcoverageとは別である。
+
+根拠は[Mesa EGLのログ設定](https://docs.mesa3d.org/egl.html#environment-variables)、
+[EGL screen/configの失敗message](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/egl/drivers/dri2/egl_dri2.c)、
+[driver loaderのmessage](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/loader/loader.c)。
+必要になった場合は、公式にCPU renderer選択として定義されている
+[`GALLIUM_DRIVER=softpipe`](https://docs.mesa3d.org/envvars.html#envvar-GALLIUM_DRIVER)を別の一項対照で検討する。
+現時点でこのdriver切替を自動実行したり、大きなrebuildはしない。
+
 ## PCでの検査範囲
 
 stageのC関数をfake SDL APIとともにcompileし、6 stageの停止位置、固定GL属性、初回エラー分類、

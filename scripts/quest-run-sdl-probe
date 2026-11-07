@@ -64,10 +64,12 @@ def main():
     parser.add_argument("--binary-sha256", required=True)
     parser.add_argument("--manifest-sha256", required=True)
     parser.add_argument("--variant", choices=VARIANTS, default="baseline",
-                        help="baseline、またはEGL_PLATFORM=waylandだけを加える固定対照")
+                        help="baseline / Wayland EGL固定対照 / stage専用EGL debug分類")
     parser.add_argument("--stage", choices=STAGES, default="render", help="render、またはGL/GLESの固定初期化stage")
     parser.add_argument("--artifact-root", type=Path)
     args = parser.parse_args()
+    if args.variant == "egl-wayland-debug" and args.stage == "render":
+        parser.error("egl-wayland-debugは固定診断stageと組み合わせてください")
     if not hexadecimal(args.run_id, 32) or not hexadecimal(args.binary_sha256, 64) or not hexadecimal(args.manifest_sha256, 64):
         parser.error("run-idは32hex、binary/manifest SHAは既知の64hexを指定してください")
     os.umask(0o077)

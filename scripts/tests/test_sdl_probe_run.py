@@ -63,7 +63,7 @@ class SdlOperatorTests(unittest.TestCase):
                    f"probe={probe!r}\n"
                    "owned=None\n"
                    + ("owned=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],start_new_session=True)\n" if hold else "")
-                   + f"Path({str(self.directory / 'ready.json')!r}).write_text(json.dumps(dict(argv=sys.argv[1:],environment_keys=sorted(os.environ),graphics={{key:os.environ.get(key) for key in ['EGL_PLATFORM','LIBGL_ALWAYS_SOFTWARE']}},owned=owned.pid if owned else None)))\n"
+                   + f"Path({str(self.directory / 'ready.json')!r}).write_text(json.dumps(dict(argv=sys.argv[1:],environment_keys=sorted(os.environ),egl_log_level=os.environ.get('EGL_LOG_LEVEL'),graphics={{key:os.environ.get(key) for key in ['EGL_PLATFORM','LIBGL_ALWAYS_SOFTWARE']}},owned=owned.pid if owned else None)))\n"
                    + ("until=time.monotonic()+10\nwhile not stop[0] and time.monotonic()<until:time.sleep(.01)\n" if hold else "time.sleep(.05)\n")
                    + "if owned is not None:\n owned.terminate();owned.wait(timeout=2)\n"
                    "if stop[0]:probe.update(graphics_client='failed',shm_gate='fail')\n"
@@ -178,6 +178,30 @@ class SdlOperatorTests(unittest.TestCase):
         self.assertEqual(report["probe_result"]["shm_gate"], "not_run")
         self.assertFalse(report["probe_result"]["client"]["api"]["completed"])
         self.assertTrue(report["cleanup_confirmed"])
+
+    def test_debug_variant_adds_only_log_level_and_keeps_original_stage_failure(self):
+        request = self.prepare(stage="gl-load")
+        request["variant"] = "egl-wayland"
+        before = self.execute(request)
+        ready_before = json.loads((self.directory / "ready.json").read_text())
+        original = (self.directory / before["result_file"]).read_bytes()
+        request.update(probe_id="e" * 32, variant="egl-wayland-debug")
+        result = self.execute(request)
+        ready_after = json.loads((self.directory / "ready.json").read_text())
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertEqual(result["probe_result"]["client"], before["probe_result"]["client"])
+        self.assertEqual(result["probe_result"]["returncode"], 1)
+        self.assertEqual(ready_after["egl_log_level"], "debug")
+        self.assertEqual(set(ready_after["environment_keys"]) - set(ready_before["environment_keys"]), {"EGL_LOG_LEVEL"})
+        self.assertEqual(result["graphics_environment"], dict(LIBGL_ALWAYS_SOFTWARE="1", EGL_PLATFORM="wayland", EGL_LOG_LEVEL="debug"))
+        self.assertEqual((self.directory / before["result_file"]).read_bytes(), original)
+
+    def test_debug_requires_non_render_stage_before_spawn(self):
+        request = self.prepare()
+        request["variant"] = "egl-wayland-debug"
+        with self.assertRaisesRegex(CaptureError, "DEBUG_STAGE_REQUIRED"):
+            self.execute(request)
+        self.assertFalse((self.directory / "ready.json").exists())
 
     def test_free_or_missing_stage_is_rejected_before_spawn(self):
         request = self.prepare()

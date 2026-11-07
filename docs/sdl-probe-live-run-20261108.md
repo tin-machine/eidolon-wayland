@@ -23,6 +23,8 @@ binaryはAArch64 ELFだけを受け、既存resultは再利用しない。
 `EGL_PLATFORM=wayland`だけを追加する固定対照である。選択値とこの固定graphics envを
 host request/result・remote events/reportへ記録し、返却された条件との不一致は失敗にする。
 親processの`EGL_PLATFORM`や自由envを継承しない。
+`--variant egl-wayland-debug`は固定診断stage専用で、さらに`EGL_LOG_LEVEL=debug`だけを追加する。
+この場合もstderr本文を保存せず、[既知のEGLログ分類](sdl-egl-stage-probe-20261108.md#egl初期化の既知ログ分類)だけを集計する。
 
 Build152の最初の自然終了runでは、OpenGL rendererの失敗復元中にWayland windowのNULL破棄でSIGSEGVとなった。
 Termux MesaはX11をbuild時のnative platformにする一方、native displayのWayland自動判定もあるため、

@@ -24,6 +24,75 @@ ERROR_CLASSES = {'none', 'gl_library_unavailable', 'egl_library_unavailable', 'e
                  'egl_context_failed', 'egl_surface_failed', 'unclassified_sdl_error'}
 
 
+class EglLogSummary:
+    """Mesa26.2.6の既知messageを固定分類へ変換し、本文・path・symbolを結果へ出さない。"""
+    # egl/main/eglapi.c, drivers/dri2/{egl_dri2,platform_wayland}.c, loader/loader.c。
+    PATTERNS = {
+        'forced_software': b"Found 'LIBGL_ALWAYS_SOFTWARE' set, will use a CPU renderer",
+        'dri2_screen_failed': b'egl: failed to create dri2 screen',
+        'egl_device_setup_failed': b'DRI2: failed to setup EGLDevice',
+        'egl_configs_missing': b'failed to add any EGLConfigs',
+        'dri_format_missing': b'No DRI config supports native format ',
+        'dri_config_validation_failed': b'DRI2: failed to validate config ',
+        'driver_load_failed': b'MESA-LOADER: failed to open ',
+        'driver_opened': b'MESA-LOADER: dlopen(',
+        'device_info_failed': b'MESA-LOADER: failed to retrieve device information',
+        'wayland_format_map_failed': b'wayland-egl: we could not map the format table ',
+        'wayland_device_open_failed': b'wayland-egl: could not open ',
+        'wayland_drm_magic_failed': b'wayland-egl: drmGetMagic failed',
+        'wayland_prime_missing': b'wayland-egl: display does not support prime',
+    }
+    INFORMATION = {'forced_software', 'driver_opened'}
+
+    def __init__(self, enabled):
+        self.enabled = enabled
+        self.pending = bytearray()
+        self.bytes = self.lines = self.unmatched = self.truncated = 0
+        self.complete, self.dropping = True, False
+        self.known, self.first_failure = {}, None
+
+    def feed(self, data):
+        remaining = max(0, TRACE_LIMIT - self.bytes)
+        self.bytes += len(data)
+        if len(data) > remaining:
+            self.complete = False
+        data = data[:remaining]
+        if self.dropping:
+            end = data.find(b'\n')
+            if end < 0:
+                return
+            self.lines += 1
+            data, self.dropping = data[end + 1:], False
+        self.pending.extend(data)
+        while b'\n' in self.pending:
+            line, _, rest = self.pending.partition(b'\n')
+            self.pending = bytearray(rest)
+            self.lines += 1
+            if len(line) > LINE_LIMIT:
+                self.complete = False
+                self.truncated += 1
+                continue
+            matched = False
+            for key, pattern in self.PATTERNS.items():
+                if pattern in line:
+                    self.known[key] = self.known.get(key, 0) + 1
+                    matched = True
+                    if self.first_failure is None and key not in self.INFORMATION:
+                        self.first_failure = key
+            if not matched:
+                self.unmatched += 1
+        if len(self.pending) > LINE_LIMIT:
+            self.pending.clear()
+            self.dropping, self.complete = True, False
+            self.truncated += 1
+
+    def summary(self):
+        return dict(schema=1, profile='mesa-26.2.6-known-v1', enabled=self.enabled, bytes=self.bytes, lines=self.lines,
+                    complete=self.complete and not self.pending and not self.dropping,
+                    known=dict(sorted(self.known.items())), first_failure=self.first_failure,
+                    unmatched_lines=self.unmatched, truncated_lines=self.truncated)
+
+
 class WaylandTrace:
     """xdg_toplevelへattachされたbufferだけを数える。cursor用SHMは合格根拠にしない。"""
     def __init__(self):
@@ -267,6 +336,7 @@ def run(binary, *, driver='wayland', frames=120, timeout=15, inject=False, disab
     command = [str(binary), '--frames', str(frames)] + (['--inject-events'] if inject else [])
     if stage != 'render': command += ['--stage', stage]
     trace, output, overflow = WaylandTrace(), bytearray(), False
+    egl_log = EglLogSummary(environment.get('EGL_LOG_LEVEL') == 'debug')
     started, deadline, timed_out = time.monotonic(), time.monotonic() + timeout, False
     child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              env=environment, start_new_session=True, close_fds=True)
@@ -311,6 +381,7 @@ def run(binary, *, driver='wayland', frames=120, timeout=15, inject=False, disab
                     overflow |= len(output) > STDOUT_LIMIT
                 else:
                     trace.feed(data)
+                    egl_log.feed(data)
     finally:
         # WNOWAITでleaderを予約している間だけsignalし、子孫を含む所有groupを回収する。
         signal_group(signal.SIGKILL)
@@ -345,7 +416,7 @@ def run(binary, *, driver='wayland', frames=120, timeout=15, inject=False, disab
     return dict(schema=1, probe='eidolon-sdl-observation-v1', driver=driver,
                 binary_sha256=binary_hash, stage=stage,
                 disable_framebuffer_acceleration=disable_acceleration, elapsed_ms=int((time.monotonic() - started) * 1000),
-                client=client, trace=observation, error=error, returncode=child.returncode,
+                client=client, trace=observation, egl_log=egl_log.summary(), error=error, returncode=child.returncode,
                 timed_out=timed_out, cancelled=cancelled, cancel_signal=_cancellation['signal'],
                 output_overflow=overflow, term_sent=term_sent, kill_sent=kill_sent,
                 reaped=reaped, group_reclaimed=reclaimed, pipes_drained=pipes_drained, **gates)

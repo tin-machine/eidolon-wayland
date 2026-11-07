@@ -16,7 +16,7 @@ from sdl_lease_capture import (CaptureError, canonical, capture_remote, decode, 
 
 MAX_FILE = 8 * 1024 * 1024
 MAX_OUTPUT = 65536
-VARIANTS = ("baseline", "egl-wayland")
+VARIANTS = ("baseline", "egl-wayland", "egl-wayland-debug")
 STAGES = ("render", "gl-load", "gl-window", "gl-context", "gles-load", "gles-window", "gles-context")
 
 
@@ -25,8 +25,10 @@ def variant_environment(request):
     variant = request.get("variant")
     need(type(variant) is str and variant in VARIANTS, "VARIANT_INVALID")
     graphics = dict(LIBGL_ALWAYS_SOFTWARE="1")
-    if variant == "egl-wayland":
+    if variant in {"egl-wayland", "egl-wayland-debug"}:
         graphics["EGL_PLATFORM"] = "wayland"
+    if variant == "egl-wayland-debug":
+        graphics["EGL_LOG_LEVEL"] = "debug"
     return variant, graphics
 
 
@@ -130,6 +132,7 @@ def run_operator(request, home, control_fd, emit, *, capture=capture_remote, che
     variant, graphics = variant_environment(request)
     stage = request.get("stage")
     need(type(stage) is str and stage in STAGES, "STAGE_INVALID")
+    need(variant != "egl-wayland-debug" or stage != "render", "DEBUG_STAGE_REQUIRED")
     captured = capture(request["binding"], home)
     directory = validate_artifacts(request, home)
     checker(request["binding"], home, captured)
