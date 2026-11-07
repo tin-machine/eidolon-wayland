@@ -1,11 +1,53 @@
 # 次期日本語入力: まずfoot内でかな漢字変換する
 
-作成日: 2026-11-07。調査基準: `40692ec` / Build133。**NX05を実装・検証中**。
+作成日: 2026-11-07。当初の調査基準: `40692ec` / Build133。
+**現在はユーザー指定により、Termux側のFcitx5と日本語エンジンを再利用する方式を優先する。**
+SKK独自の操作を通常の日本語入力として要求しない。以下のttyskkの成功は旧方式のprobe記録として保持する。
 [実装記録](extensions-nx01-nx08-20261107.md)の固定版ttyskkはAndroidへビルド・導入し、
 QuestのTermux UID上の専用PTYで漢字候補・確定・取消・英数復帰の自動検証が成功した。
 HMD/物理キーボードとfoot内の見え方は最終確認に残す。
 ユーザー要件は「かな漢字変換ができればよい」。US101互換キーボードを継続使用し、Fキーを必須にしない。
 全体の着手順は[次フェーズ計画](next-phase-termux-startup-linux-gui-plan-20261107.md#implementation-order)のNX05 / NX09に従う。
+
+## 更新: TermuxのFcitx5を使う（2026-11-07）
+
+ユーザーはSKKの操作体系を避け、Termux内のFcitxパッケージを再利用したいと希望した。
+第一候補はFcitx5＋Mozc。Fcitx5は入力の枠組みであり、かな漢字変換には日本語エンジンが別途必要になる。
+変換エンジンはTermux側のprocess/packageとして動かし、EidolonにはWaylandの入力・候補表示の接続を追加する。
+既存packageで足りない場合も、Termux向けの追加packageやWaylandを有効にした再ビルドを先に検証する。
+直ちにMozcをAPKへ組み込む設計へ切り替えない。
+
+### 確認できたこと
+
+- Termux公式の[`fcitx5/build.sh`](https://github.com/termux/termux-packages/blob/5c3ea65e18dc46c0fd97cd0d6084708bac762cd9/x11-packages/fcitx5/build.sh)
+  は5.1.23 revision1を定義しているが、`-DENABLE_WAYLAND=OFF`である。
+  この定義のままのpackageを入れるだけでは、現在のnative Wayland footにIMEは接続されない。
+- 同revisionのrepository tree全体にMozc/Anthy/kkcのpackage定義は見つからなかった。
+  [Mozcの追加要望](https://github.com/termux/termux-packages/issues/29614)はopen。
+  公式recipeの有無と実機のapt候補・導入済み状態は区別する。実機照会はWi-Fi ADBがofflineとなり未完了。
+- Eidolonの`ProtocolState`にはtext-input/input-method/virtual-keyboardの接続がまだない。
+  同梱Smithayには`text_input`、`input_method`、`virtual_keyboard`の実装があるため、これを土台にする。
+- Fcitx5の[Wayland実装](https://github.com/fcitx/fcitx5/blob/master/src/frontend/waylandim/waylandimserverv2.cpp)は
+  input-method-v2とvirtual-keyboard-v1の両globalが揃ってからIMEを初期化する。
+  text-input-v3の公開だけでは完成しない。候補popup・focus・未処理キーの返送も必要。
+- GTK/QtのFcitx用環境変数はtoolkit連携用であり、footのWayland IME対応の代用にはしない。
+  公式の[Wayland説明](https://fcitx-im.org/wiki/Using_Fcitx_5_on_Wayland)と
+  [日本語エンジン一覧](https://fcitx-im.org/wiki/Input_method_engines)を参照した。
+
+### 実装する順序と成立条件
+
+1. Termuxのapt候補と依存・既存設定を確認し、Fcitx5のWayland有効化とMozcのBionic対応を小さく検証する。
+   SKK専用の入口・辞書修正の追加は保留し、通常の英字入力を維持する。
+2. PC上の専用Wayland client/IME fixtureでtext-input-v3・input-method-v2・virtual-keyboard-v1の経路を検証する。
+   未確定・確定・取消・未処理キー返送、押下解除、IME切断を含む。IME権限を一般clientへ無条件に公開しない。
+3. TermuxのFcitx5を所有する専用D-Bus/sessionと起動・停止へ組み込む。既存の他用途Fcitxやsession busを置換しない。
+   候補popupを親窓に結び、アプリ窓9枚の別枠として計測・回収する。別窓へ未確定文字を送らない。
+4. 実footでローマ字→Space変換→候補選択→Enter確定、取消、英数切替、tmux/nvim、resize・再接続を確認する。
+   設定と学習を更新・再起動で保持し、辞書不在やIME失敗では理由と英字入力へ戻す操作を示す。
+5. 最後にUSキーボードとHMDで受け入れる。一般GUIはNX15、別hostはNX18で別に確認する。
+
+今回の変更でNX09は小さいPTY wrapperの仕上げより大きい作業になる。
+Termux移植の成立性を確認しつつ、独立するNX10以降の実装を止めない。
 
 ## 現状と最初の到達点
 
@@ -34,7 +76,7 @@ Termuxのfootが`+ime`でビルドされていることや、日本語fallback f
 計画時点では両者とも現Questへの導入成功・Bionic互換性・ユーザー受入れは未確認だった。
 NX05のttyskkの導入と専用PTYでの成立は上記の実装記録を参照する。ユーザー受入れはまだ別条件。配布package・依存・license・辞書を先に調べる。
 SKKは変換の区切りを利用者が指定する操作方式なので、一般的なローマ字連文節変換と同じとは説明しない。
-NX05はttyskkで進める。継続採用とNX09の範囲は実機の使いやすさも確認して判断する。
+旧NX05のprobeはttyskkで進めた。継続採用は取りやめ、現在のNX09は上記のFcitx5優先方針に従う。
 
 NX05は一つの端末・一つの変換方式で可否と追加費用を判定する区切り。
 大きなTermux移植やGUI用IME基盤が必要ならここで見積りを改訂し、ほかの小さい拡張を先へ進める。

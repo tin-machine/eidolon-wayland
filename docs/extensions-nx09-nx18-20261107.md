@@ -24,7 +24,7 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 | NX06 | CPU/RSS独立回転、自動検証済み | 中央回転はユーザー採用。停止/欠測・多窓回帰を維持 |
 | NX07 | 固定helper、権限/取消等の自動検証済み | 再起動後を含む実利用の起動・復帰を継続確認 |
 | NX08 | 左下footボタン、ADB起動成功 | ユーザーへ「>_ ターミナル」と案内済み。NX10へ拡張 |
-| NX09 | 着手 | 専用日本語入口、永続学習/設定、エラー復帰、tmux/nvim/終了とfocus |
+| NX09 | 着手・Fcitx優先へ変更 | Termux Fcitx5再利用、日本語エンジン、Wayland連携、学習/設定、tmux/nvim/終了とfocus |
 | NX10 | 未着手 | カタログ、設定file、一時実行file、構造化argv、取消と回収 |
 | NX11 | 未着手 | SDL/SHM小probe、成立後Doom/Freedoomの個別実測 |
 | NX12 | 未着手 | 二枚で窓別移動/close/状態、テーマ指定操作部、サイズ/正面復帰 |
@@ -42,6 +42,18 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 次は辞書欠落・書込み不可・破損時の案内と英数への復帰、二つのwrapperでの学習保存、
 tmux/nvim・PTY/終了・focus切替を順に確認する。ランチャー統合は任意で、NX10の汎用起動と重複する固定modeを増やさない。
 上流ttyskkは前回と同じ固定revisionのcheckoutで調査する。現時点では追加修正や新しい検証の成功を主張しない。
+
+### ユーザー指定によるFcitx優先への変更
+
+調査中にユーザーがSKKの操作体系を避け、Termux内のFcitxパッケージ再利用を希望した。
+現在の方針と成立条件は[日本語入力計画の更新](japanese-input-plan-20261107.md#更新-termuxのfcitx5を使う2026-11-07)を正とする。
+Termux公式fcitx5は存在するがWayland無効。Mozcのrecipeも同revisionにないため、そのままの導入だけでは足りない。
+APKへのエンジン同梱へ直行せず、Termux側の有効化・追加packageと、EidolonのIME protocol接続を分けて検証する。
+
+方針変更前にはttyskkの学習とimportを24同時writerで試し、共通一時fileのrename失敗を再現した。
+上流の既存テストは順次保存であり、同時保存を検証していなかった。修正はまだ適用・配備していない。
+この不合格fixtureとログは作業rootに保持し、製品の通常testへ未修正のSKK fixtureを追加しない。
+既存の学習・設定fileは削除しない。実機apt照会はADB offlineで未完了、PC側のsource調査は継続可能。
 
 ## 記録
 
