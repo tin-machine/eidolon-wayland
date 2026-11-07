@@ -1,4 +1,4 @@
-//! 固定launcherの短いJSON lineとheartbeatだけを扱う。任意shell/pathを受けない。
+//! 固定launcherのJSON lineとheartbeat。利用者のpath/argvはSSH commandへ挿入しない。
 use crate::forward_probe::valid_nonce;
 use eidolon_model::{
     ids::{CommandSeq, SessionId, TerminalId},
@@ -270,6 +270,7 @@ enum Frame {
     TerminalOpened(TerminalOpened),
     #[serde(rename = "workload_v1")]
     WorkloadV1(Telemetry),
+    CatalogV1(crate::catalog::Reply),
     Finished(Finished),
 }
 
@@ -293,6 +294,10 @@ pub struct Report {
     pub error: Option<&'static str>,
 }
 pub struct Launcher {
+    // カタログのlabel/path/argvを通常のReport/receiptへ含めない。
+    catalog_pending: Option<CommandSeq>,
+    catalog_reply: Option<crate::catalog::Reply>,
+    last_catalog_request: Option<CommandSeq>,
     terminal_session: Option<SessionId>,
     next_terminal: Option<TerminalId>,
     expected_tools: Option<String>,
@@ -347,6 +352,9 @@ impl Launcher {
         cancel: CancellationToken,
     ) -> Result<Self, &'static str> {
         Ok(Self {
+            catalog_pending: None,
+            catalog_reply: None,
+            last_catalog_request: None,
             terminal_session: None,
             next_terminal: Some(TerminalId::new(1).unwrap()),
             expected_tools: None,
@@ -376,6 +384,44 @@ impl Launcher {
         self.report.phase = "starting";
         self.deadline = Instant::now() + Duration::from_secs(70);
         Ok(())
+    }
+    /// 認証・helper hash照合後の同じleaseで照会する。照会はappを起動しない。
+    pub async fn catalog(
+        &mut self,
+        request: CommandSeq,
+        operation: crate::catalog::Operation,
+    ) -> Result<crate::catalog::Reply, &'static str> {
+        if !matches!(self.report.phase, "prepared" | "running")
+            || self.stopping.is_some()
+            || self.catalog_pending.is_some()
+            || self
+                .last_catalog_request
+                .is_some_and(|last| request <= last)
+        {
+            return Err("NOT_READY");
+        }
+        if !operation.valid() {
+            return Err("INVALID_ARGUMENT");
+        }
+        self.catalog_pending = Some(request);
+        self.last_catalog_request = Some(request);
+        self.catalog_reply = None;
+        self.send_frame(
+            serde_json::json!({"type":"catalog_v1", "schema":1, "nonce":self.nonce,
+            "request_id":request, "operation":operation}),
+        )
+        .await?;
+        timeout(Duration::from_secs(5), async {
+            while self.catalog_reply.is_none() {
+                self.next().await?;
+                if self.report.phase == "finished" || self.stopping.is_some() {
+                    return Err("CANCELLED");
+                }
+            }
+            self.catalog_reply.take().ok_or("PROTOCOL_ERROR")
+        })
+        .await
+        .map_err(|_| "CATALOG_TIMEOUT")?
     }
     /// remote helperの版を照合してからforward/startへ進む。Echo経路には要求しない。
     pub async fn inspect_tools(&mut self, mode: &str) -> Result<Tools, &'static str> {
@@ -586,6 +632,18 @@ impl Launcher {
     fn frame(&mut self, line: &[u8]) -> Result<(), &'static str> {
         let frame: Frame = serde_json::from_slice(line).map_err(|_| "PROTOCOL_ERROR")?;
         match frame {
+            Frame::CatalogV1(value) => {
+                if !value.valid()
+                    || value.nonce != self.nonce
+                    || value.uid != self.uid
+                    || Some(value.request_id) != self.catalog_pending
+                    || self.catalog_reply.is_some()
+                {
+                    return Err("PROTOCOL_ERROR");
+                }
+                self.catalog_pending = None;
+                self.catalog_reply = Some(value);
+            }
             Frame::Prepared(value) => {
                 if self.report.phase != "preparing"
                     || value.schema != 1
@@ -880,6 +938,77 @@ mod tests {
         while owner.report.phase != "prepared" {
             owner.next().await.unwrap();
         }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn catalog_uses_authenticated_channel_preserves_snapshot_and_never_starts_child() {
+        use crate::catalog::{Error, Operation};
+        use std::os::unix::fs::PermissionsExt;
+        let (ssh, mut owner) = fixture("raise RuntimeError('must not execute')", 10.).await;
+        prepared(&mut owner).await;
+        let config = ssh.dir.join("launcher.toml");
+        std::fs::write(&config, "schema = 1\n[[apps]]\nid = 'example'\nlabel = '日本語 app'\nmode = 'terminal'\nexecutable = '/bin/echo'\nargs = ['one two', '$(touch never)']\n").unwrap();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let reply = owner
+            .catalog(
+                CommandSeq::new(1).unwrap(),
+                Operation::Reload {
+                    path: "launcher.toml".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(reply.error.is_none(), "catalog error: {:?}", reply.error);
+        assert_eq!(reply.entries[0].label, "日本語 app");
+        assert!(reply.entries[0].available);
+        assert!(!reply.builtin);
+        assert!(owner.report.child.is_none());
+        assert!(!ssh.dir.join("never").exists());
+        assert!(
+            !serde_json::to_string(&owner.report)
+                .unwrap()
+                .contains("日本語 app")
+        );
+        std::fs::write(config, "broken = [").unwrap();
+        let broken = owner
+            .catalog(
+                CommandSeq::new(2).unwrap(),
+                Operation::Reload {
+                    path: "launcher.toml".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(broken.error, Some(Error::CatalogInvalid));
+        assert_eq!(broken.revision, reply.revision);
+        assert_eq!(broken.entries[0].id, "example");
+        let operation = Operation::Page {
+            revision: reply.revision,
+            offset: 0,
+        };
+        assert!(
+            owner
+                .catalog(CommandSeq::new(2).unwrap(), operation.clone())
+                .await
+                .is_err()
+        );
+        let page = owner
+            .catalog(CommandSeq::new(3).unwrap(), operation)
+            .await
+            .unwrap();
+        assert_eq!(page.entries[0].id, "example");
+        // 古い応答を新しい照会へ流用しない。scope不一致も独立して検査。
+        let mut value = serde_json::to_value(page).unwrap();
+        value["type"] = "catalog_v1".into();
+        assert!(owner.frame(&serde_json::to_vec(&value).unwrap()).is_err());
+        owner.catalog_pending = Some(CommandSeq::new(3).unwrap());
+        value["nonce"] = "cccccccccccccccc".into();
+        assert!(owner.frame(&serde_json::to_vec(&value).unwrap()).is_err());
+        owner.catalog_pending = None;
+        owner.request_stop().await.unwrap();
+        let finished = owner.finish().await.unwrap();
+        assert!(!finished.cleanup_pending);
+        assert!(finished.finished.unwrap().child.is_none());
+        ssh.close().await;
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn workload_wire_is_separate_ordered_scoped_and_never_grants_child_ownership() {

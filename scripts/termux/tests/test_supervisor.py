@@ -66,7 +66,10 @@ class SupervisorTests(unittest.TestCase):
                     elif action == "wrong_nonce":
                         os.write(write, (json.dumps({"type": "heartbeat", "nonce": "d" * 16}) + "\n").encode())
                     elif action == "oversized":
-                        os.write(write, b"x" * 4097)
+                        # pipe容量を超えるpayloadはreaderと並行して送る。
+                        timer = threading.Thread(target=lambda: os.write(write, b"x" * (launcher.CONTROL_BYTES + 1)))
+                        timers.append(timer)
+                        timer.start()
 
             code = source.replace("READY_FILE", repr(str(home / "ready")))
             try:

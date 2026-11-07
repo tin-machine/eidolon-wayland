@@ -18,6 +18,10 @@ import tempfile
 import math
 import struct
 import secrets
+try:
+    import tomllib
+except ModuleNotFoundError:
+    tomllib = None  # Python 3.11未満でも既存のterminal起動/回収は維持する。
 
 SIZES = (1, 65536, *(8 * 1024 * 1024 for _ in range(4)))
 BLOCK = bytes(range(256)) * 256
@@ -33,6 +37,201 @@ WORKLOAD_ENTRIES = 4096
 WORKLOAD_SECONDS = 0.050
 WORKLOAD_TERMINALS = 16
 WORKLOAD_BYTES = 14000
+
+CATALOG_BYTES = 256 * 1024
+CATALOG_APPS = 64
+CATALOG_PAGE = 8
+CONTROL_BYTES = 16384
+
+
+class CatalogError(ValueError):
+    """利用者の設定不備はsession停止と区別する。path/argv本文をerrorに含めない。"""
+
+
+def catalog_text(value, limit, *, empty=False, multiline=False):
+    if (not isinstance(value, str) or (not value and not empty) or '\0' in value
+            or (not multiline and any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value))):
+        raise CatalogError('CATALOG_INVALID')
+    try:
+        size = len(value.encode('utf-8'))
+    except UnicodeError:
+        raise CatalogError('CATALOG_INVALID') from None
+    if size > limit:
+        raise CatalogError('CATALOG_LIMIT')
+    return value
+
+
+def catalog_definition(value):
+    """TOMLと一時起動に同じ構造を使う。shell展開や暗黙のPATH探索はしない。"""
+    required = {'id', 'label', 'mode', 'executable'}
+    optional = {'args', 'cwd', 'interpreter', 'icon'}
+    if not isinstance(value, dict) or not required <= value.keys() or value.keys() - required - optional:
+        raise CatalogError('CATALOG_INVALID')
+    if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,47}', catalog_text(value['id'], 48)):
+        raise CatalogError('CATALOG_INVALID')
+    if value['mode'] not in ('terminal', 'gui'):
+        raise CatalogError('CATALOG_INVALID')
+    result = dict(id=value['id'], label=catalog_text(value['label'], 160), mode=value['mode'],
+                  executable=catalog_text(value['executable'], 1024),
+                  cwd=catalog_text(value.get('cwd', '.'), 1024),
+                  icon=catalog_text(value.get('icon', 'builtin:script'), 1024))
+    args = value.get('args', [])
+    if not isinstance(args, list) or len(args) > 64:
+        raise CatalogError('CATALOG_LIMIT')
+    result['args'] = [catalog_text(arg, 2048, empty=True, multiline=True) for arg in args]
+    if 'interpreter' in value:
+        result['interpreter'] = catalog_text(value['interpreter'], 1024)
+    if len(json.dumps(result, ensure_ascii=False).encode()) > 8192:
+        raise CatalogError('CATALOG_LIMIT')
+    return result
+
+
+def catalog_path(home, value):
+    # ~、$、*は文字として扱う。相対pathは設定fileの親でなくTermux HOME基準。
+    path = Path(catalog_text(value, 1024))
+    return path if path.is_absolute() else home / path
+
+
+def catalog_read(path):
+    """FIFO/deviceやsymlinkを開いて制御loopを待たせない。通常fileのみ上限付きで読む。"""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise CatalogError('CATALOG_FILE_UNSAFE')
+        if info.st_size > CATALOG_BYTES:
+            raise CatalogError('CATALOG_LIMIT')
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            data = stream.read(CATALOG_BYTES + 1)
+        if len(data) > CATALOG_BYTES:
+            raise CatalogError('CATALOG_LIMIT')
+        after = os.fstat(fd)
+        if (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise CatalogError('CATALOG_CHANGED')
+        return data
+    finally:
+        os.close(fd)
+
+
+class LauncherCatalog:
+    """明示reload時だけ設定を採用する。読込/照会だけではprocessを生成しない。"""
+    def __init__(self, home, prefix=TERMUX_PREFIX):
+        self.home, self.prefix = Path(home), Path(prefix)
+        self.path = None
+        self.apps = [catalog_definition(dict(id='terminal', label='ターミナル', icon='builtin:terminal',
+                    mode='terminal', executable=str(self.prefix / 'bin/bash'), args=['--noprofile', '--norc', '-i'])),
+                    catalog_definition(dict(id='editor', label='エディター', icon='builtin:editor',
+                    mode='terminal', executable=str(self.prefix / 'bin/nvim')))]
+        self.revision = hashlib.sha256(json.dumps(self.apps, sort_keys=True).encode()).hexdigest()
+
+    @staticmethod
+    def parse(data):
+        if len(data) > CATALOG_BYTES:
+            raise CatalogError('CATALOG_LIMIT')
+        if tomllib is None:
+            raise CatalogError('CATALOG_UNAVAILABLE')
+        try:
+            value = tomllib.loads(data.decode('utf-8'))
+        except (ValueError, UnicodeError, RecursionError):
+            raise CatalogError('CATALOG_INVALID') from None
+        if set(value) != {'schema', 'apps'} or type(value['schema']) is not int or value['schema'] != 1:
+            raise CatalogError('CATALOG_SCHEMA')
+        if not isinstance(value['apps'], list) or len(value['apps']) > CATALOG_APPS:
+            raise CatalogError('CATALOG_LIMIT')
+        apps = [catalog_definition(app) for app in value['apps']]
+        if len({app['id'] for app in apps}) != len(apps):
+            raise CatalogError('CATALOG_DUPLICATE_ID')
+        return apps
+
+    def reload(self, path):
+        target = catalog_path(self.home, path)
+        data = catalog_read(target)
+        apps = self.parse(data)
+        # 構文/全件検査後に一括交換する。失敗時はpath/revision/順序も維持する。
+        self.apps, self.path, self.revision = apps, target, hashlib.sha256(data).hexdigest()
+
+    def command(self, definition):
+        app = catalog_definition(definition)
+        try:
+            executable = catalog_path(self.home, app['executable']).resolve(strict=True)
+            cwd = catalog_path(self.home, app['cwd']).resolve(strict=True)
+            if not executable.is_file():
+                raise CatalogError('EXECUTABLE_NOT_FILE')
+            if not cwd.is_dir() or not os.access(cwd, os.X_OK):
+                raise CatalogError('CWD_UNAVAILABLE')
+            if 'interpreter' in app:
+                interpreter = catalog_path(self.home, app['interpreter']).resolve(strict=True)
+                if not interpreter.is_file() or not os.access(interpreter, os.X_OK):
+                    raise CatalogError('INTERPRETER_UNAVAILABLE')
+                if not os.access(executable, os.R_OK):
+                    raise CatalogError('EXECUTABLE_DENIED')
+                argv = [str(interpreter), str(executable), *app['args']]
+            else:
+                if not os.access(executable, os.X_OK):
+                    raise CatalogError('EXECUTABLE_DENIED')
+                argv = [str(executable), *app['args']]
+            return argv, str(cwd)
+        except FileNotFoundError:
+            raise CatalogError('PATH_MISSING') from None
+        except (PermissionError, RuntimeError):
+            raise CatalogError('PATH_UNAVAILABLE') from None
+
+    def summary(self, app):
+        error = None
+        try:
+            self.command(app)
+            if app['mode'] == 'gui':
+                error = 'GUI_NOT_VERIFIED'
+        except CatalogError as failure:
+            error = str(failure)
+        except OSError:
+            error = 'PATH_UNAVAILABLE'
+        # 任意画像の取得/復号はしない。未対応iconは標準素材へ戻す。
+        icon = app['icon'] if app['icon'] in {'builtin:terminal', 'builtin:editor', 'builtin:script', 'builtin:game'} else 'builtin:script'
+        return dict(id=app['id'], label=app['label'], mode=app['mode'], icon=icon, available=error is None, error=error)
+
+    def selected_command(self, revision, app_id):
+        if revision != self.revision:
+            raise CatalogError('CATALOG_CHANGED')
+        if self.path is not None and hashlib.sha256(catalog_read(self.path)).hexdigest() != revision:
+            raise CatalogError('CATALOG_CHANGED')
+        app = next((app for app in self.apps if app['id'] == app_id), None)
+        if app is None:
+            raise CatalogError('APP_NOT_FOUND')
+        if app['mode'] != 'terminal':
+            raise CatalogError('GUI_NOT_VERIFIED')
+        return self.command(app)
+
+    def request(self, operation):
+        """argv等をreply/通常診断へ転記しない。pageは最大8件で16KiB frame内に収める。"""
+        offset, entries, inspected, error = 0, [], None, None
+        try:
+            if not isinstance(operation, dict):
+                raise CatalogError('CATALOG_INVALID')
+            kind = operation.get('kind')
+            if kind == 'reload' and set(operation) == {'kind', 'path'}:
+                self.reload(operation['path'])
+            elif kind == 'page' and set(operation) == {'kind', 'revision', 'offset'}:
+                if operation['revision'] != self.revision:
+                    raise CatalogError('CATALOG_CHANGED')
+                offset = operation['offset']
+                if type(offset) is not int or offset < 0 or offset > len(self.apps) or offset % CATALOG_PAGE:
+                    offset = 0
+                    raise CatalogError('CATALOG_INVALID')
+            elif kind == 'inspect' and set(operation) == {'kind', 'definition'}:
+                inspected = self.summary(catalog_definition(operation['definition']))
+            else:
+                raise CatalogError('CATALOG_INVALID')
+        except CatalogError as failure:
+            error = str(failure)
+        except FileNotFoundError:
+            error = 'PATH_MISSING'
+        except OSError:
+            error = 'PATH_UNAVAILABLE'
+        if inspected is None:
+            entries = [self.summary(app) for app in self.apps[offset:offset + CATALOG_PAGE]]
+        return dict(revision=self.revision, builtin=self.path is None, total=len(self.apps), offset=offset,
+                    entries=entries, inspected=inspected, error=error)
 
 
 def proc_stat(text, pid):
@@ -1047,6 +1246,7 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
     terminals = None
     observer, observer_pending = None, False
     terminal_session, last_terminal = None, 0
+    catalog, last_catalog_request = LauncherCatalog(home), 0
     output = {"stdout": Tail(), "stderr": Tail()}
     opened = set()
     pending = bytearray()
@@ -1141,27 +1341,37 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                 if stopping_at is not None:
                     continue
                 pending.extend(block)
-                if len(pending) > 4096:
-                    stop("ControlInvalid")
-                    continue
                 while b"\n" in pending and stopping_at is None:
                     line, _, rest = pending.partition(b"\n")
                     pending = bytearray(rest)
                     try:
+                        if len(line) > CONTROL_BYTES:
+                            raise ValueError('CONTROL_INVALID')
                         value = json.loads(line)
                         kind = value["type"]
                         shapes = {'start': {'type', 'nonce', 'mode'}, 'inspect_tools': {'type', 'nonce', 'mode'},
                                   'open_terminal': {'type', 'nonce', 'request_id'},
                                   'start_terminal_v1': {'type', 'nonce', 'mode', 'schema', 'session', 'terminal_id'},
                                   'open_terminal_v1': {'type', 'nonce', 'request_id', 'schema', 'session', 'terminal_id'},
-                                  'observe_workload_v1': {'type','nonce','schema','session','enabled'}}
+                                  'observe_workload_v1': {'type','nonce','schema','session','enabled'},
+                                  'catalog_v1': {'type','nonce','schema','request_id','operation'}}
                         expected = shapes.get(kind, {'type', 'nonce'})
-                        if len(line) > 1024 or set(value) != expected or value["nonce"] != nonce:
+                        if (len(line) > (CONTROL_BYTES if kind == 'catalog_v1' else 1024)
+                                or set(value) != expected or value["nonce"] != nonce):
                             raise ValueError("CONTROL_INVALID")
                         if kind == "heartbeat":
                             last_heartbeat = time.monotonic()
                         elif kind == "stop":
                             stop("Stop")
+                        elif kind == 'catalog_v1':
+                            request = value['request_id']
+                            if (type(value['schema']) is not int or value['schema'] != 1 or not isinstance(request, str)
+                                    or not re.fullmatch(r'[1-9][0-9]{0,18}', request)
+                                    or not last_catalog_request < int(request) <= 9223372036854775807):
+                                raise ValueError('CONTROL_INVALID')
+                            last_catalog_request = int(request)
+                            publish(dict(**marker(nonce), type='catalog_v1', request_id=request,
+                                         **catalog.request(value['operation'])))
                         elif kind == 'observe_workload_v1':
                             if (type(value['schema']) is not int or value['schema'] != 1 or terminal_session is None
                                     or value['session'] != terminal_session or type(value['enabled']) is not bool):
@@ -1224,9 +1434,11 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                                 terminals.begin(None, terminal)
                         else:
                             raise ValueError("CONTROL_INVALID")
-                    except (KeyError, TypeError, ValueError, OSError) as error:
+                    except (KeyError, TypeError, ValueError, OSError, RecursionError) as error:
                         report["error"] = "DEPENDENCY_NOT_READY" if error.args == ("DEPENDENCY_NOT_READY",) else "CONTROL_INVALID"
                         stop("ControlInvalid")
+                if len(pending) > CONTROL_BYTES:
+                    stop('ControlInvalid')
         report["group_alive"] = child is not None and not child_reaped and group_live(child.pid)
     finally:
         if observer is not None:
