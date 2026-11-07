@@ -18,6 +18,10 @@ STDOUT_LIMIT = 16384
 TRACE_LIMIT = 8 * 1024 * 1024
 LINE_LIMIT = 8192
 OBJECT_LIMIT = 8192
+STAGES = ('render', 'gl-load', 'gl-window', 'gl-context', 'gles-load', 'gles-window', 'gles-context')
+ERROR_CLASSES = {'none', 'gl_library_unavailable', 'egl_library_unavailable', 'egl_symbol_missing',
+                 'egl_display_unavailable', 'egl_initialize_failed', 'egl_config_unavailable',
+                 'egl_context_failed', 'egl_surface_failed', 'unclassified_sdl_error'}
 
 
 class WaylandTrace:
@@ -160,6 +164,42 @@ def probe_report(data):
     return value
 
 
+def stage_report(data, requested):
+    """API outcomeをcleanupより先に保持する。任意本文/未知fieldは受け入れない。"""
+    if len(data) > STDOUT_LIMIT or requested not in STAGES[1:]:
+        raise ValueError('STAGE_REPORT_INVALID')
+    lines = data.splitlines()
+    if not lines:
+        raise ValueError('STAGE_REPORT_INVALID')
+    value = json.loads(lines[0])
+    fields = {'schema', 'probe', 'requested_stage', 'stage', 'completed', 'error_class', 'fd_before'}
+    reached = ['init', 'attributes', 'load', 'window', 'context']
+    target = requested.split('-', 1)[1]
+    if (type(value) is not dict or set(value) != fields or type(value['schema']) is not int or value['schema'] != 1
+            or value['probe'] != 'eidolon-sdl-egl-stage-v1' or value['requested_stage'] != requested
+            or type(value['stage']) is not str or value['stage'] not in reached[:reached.index(target) + 1]
+            or type(value['completed']) is not bool or type(value['error_class']) is not str
+            or value['error_class'] not in ERROR_CLASSES
+            or (value['completed'] and (value['stage'] != target or value['error_class'] != 'none'))
+            or (not value['completed'] and value['error_class'] == 'none')
+            or type(value['fd_before']) is not int or not -1 <= value['fd_before'] <= 1000000):
+        raise ValueError('STAGE_REPORT_INVALID')
+    cleanup = None
+    cleanup_status = 'missing' if len(lines) == 1 else 'invalid'
+    if len(lines) == 2:
+        try:
+            candidate = json.loads(lines[1])
+            if (type(candidate) is dict and set(candidate) == {'schema', 'probe', 'requested_stage', 'completed', 'fd_after'}
+                    and type(candidate['schema']) is int and candidate['schema'] == 1
+                    and candidate['probe'] == 'eidolon-sdl-egl-cleanup-v1' and candidate['requested_stage'] == requested
+                    and candidate['completed'] is True and type(candidate['fd_after']) is int
+                    and -1 <= candidate['fd_after'] <= 1000000):
+                cleanup, cleanup_status = candidate, 'observed'
+        except (ValueError, TypeError):
+            pass
+    return dict(api=value, cleanup=cleanup, cleanup_status=cleanup_status)
+
+
 def assess(client, trace, returncode, *, driver, timed_out=False, reclaimed=False, cancelled=False):
     graphics = (client is not None and client['completed'] and returncode == 0 and not timed_out and not cancelled and reclaimed
                 and client['exit_reason'] != 'signal' and client['video_driver'] == driver
@@ -210,19 +250,22 @@ def cancellation_signals():
             signal.signal(number, handler)
 
 
-def run(binary, *, driver='wayland', frames=120, timeout=15, inject=False, disable_acceleration=False,
+def run(binary, *, driver='wayland', frames=120, timeout=15, inject=False, disable_acceleration=False, stage='render',
         _cancellation=None):
+    if stage not in STAGES or (stage != 'render' and (inject or disable_acceleration)):
+        raise ValueError('STAGE_INVALID')
     if _cancellation is None:
         with cancellation_signals() as cancellation:
             return run(binary, driver=driver, frames=frames, timeout=timeout, inject=inject,
-                       disable_acceleration=disable_acceleration, _cancellation=cancellation)
+                       disable_acceleration=disable_acceleration, stage=stage, _cancellation=cancellation)
     binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
     environment = os.environ.copy()
     environment.update(SDL_VIDEODRIVER=driver, SDL_RENDER_DRIVER='software')
-    if driver == 'wayland': environment['WAYLAND_DEBUG'] = 'client'
+    if driver == 'wayland' and stage == 'render': environment['WAYLAND_DEBUG'] = 'client'
     else: environment.pop('WAYLAND_DEBUG', None)
     if disable_acceleration: environment['SDL_FRAMEBUFFER_ACCELERATION'] = '0'
     command = [str(binary), '--frames', str(frames)] + (['--inject-events'] if inject else [])
+    if stage != 'render': command += ['--stage', stage]
     trace, output, overflow = WaylandTrace(), bytearray(), False
     started, deadline, timed_out = time.monotonic(), time.monotonic() + timeout, False
     child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -284,15 +327,23 @@ def run(binary, *, driver='wayland', frames=120, timeout=15, inject=False, disab
         selector.close()
         child.stdout.close()
         child.stderr.close()
-    try: client, error = probe_report(output), None
+    try: client, error = (probe_report(output) if stage == 'render' else stage_report(output, stage)), None
     except (ValueError, TypeError, UnicodeError): client, error = None, 'PROBE_REPORT_INVALID'
     observation = trace.summary()
     observation['complete'] &= pipes_drained
     cancelled = _cancellation['signal'] is not None
-    gates = assess(client, observation, child.returncode, driver=driver, timed_out=timed_out,
-                   reclaimed=reclaimed and reaped, cancelled=cancelled)
+    if stage == 'render':
+        gates = assess(client, observation, child.returncode, driver=driver, timed_out=timed_out,
+                       reclaimed=reclaimed and reaped, cancelled=cancelled)
+    else:
+        valid = (client is not None and client['cleanup'] is not None and
+                 child.returncode == (0 if client['api']['completed'] else 1) and
+                 not timed_out and not cancelled and not overflow and trace.bytes <= TRACE_LIMIT and
+                 reclaimed and reaped and pipes_drained)
+        gates = dict(graphics_client='not_run', shm_gate='not_run', input_gate='not_run', quest_sdk='not_run',
+                     diagnostic_gate='observed' if valid else 'partial' if client is not None else 'failed')
     return dict(schema=1, probe='eidolon-sdl-observation-v1', driver=driver,
-                binary_sha256=binary_hash,
+                binary_sha256=binary_hash, stage=stage,
                 disable_framebuffer_acceleration=disable_acceleration, elapsed_ms=int((time.monotonic() - started) * 1000),
                 client=client, trace=observation, error=error, returncode=child.returncode,
                 timed_out=timed_out, cancelled=cancelled, cancel_signal=_cancellation['signal'],
@@ -309,9 +360,12 @@ def main():
     parser.add_argument('--timeout', type=int, default=15)
     parser.add_argument('--inject-events', action='store_true')
     parser.add_argument('--disable-framebuffer-acceleration', action='store_true')
+    parser.add_argument('--stage', choices=STAGES, default='render')
     args = parser.parse_args()
     if not args.binary.is_absolute() or not args.result.is_absolute() or not 2 <= args.frames <= 600 or not 2 <= args.timeout <= 60:
         parser.error('absolute paths / frames 2..600 / timeout 2..60 required')
+    if args.stage != 'render' and (args.inject_events or args.disable_framebuffer_acceleration):
+        parser.error('diagnostic stages do not accept event injection or framebuffer overrides')
     info = args.binary.stat()
     if not stat.S_ISREG(info.st_mode) or info.st_size > 8 * 1024 * 1024:
         parser.error('bounded regular probe binary required')
@@ -321,16 +375,21 @@ def main():
     with cancellation_signals() as cancellation:
         result = run(args.binary, driver=args.driver, frames=args.frames, timeout=args.timeout,
                      inject=args.inject_events, disable_acceleration=args.disable_framebuffer_acceleration,
-                     _cancellation=cancellation)
+                     stage=args.stage, _cancellation=cancellation)
         # 元のclient/error/timeout証拠を保持する。取消は独立metadataであり成功へ昇格しない。
         if cancellation['signal'] is not None:
-            result.update(cancelled=True, cancel_signal=cancellation['signal'], graphics_client='failed')
-            if args.driver == 'wayland': result['shm_gate'] = 'fail'
+            result.update(cancelled=True, cancel_signal=cancellation['signal'])
+            if args.stage == 'render':
+                result['graphics_client'] = 'failed'
+                if args.driver == 'wayland': result['shm_gate'] = 'fail'
+            else: result['diagnostic_gate'] = 'partial' if result['client'] is not None else 'failed'
         with args.result.open('x') as stream:
             json.dump(result, stream, indent=2)
             stream.write('\n')
-        print(json.dumps({key: result[key] for key in ['graphics_client', 'shm_gate', 'input_gate', 'quest_sdk',
+        print(json.dumps({key: result[key] for key in ['stage', 'graphics_client', 'shm_gate', 'input_gate', 'quest_sdk',
                                                       'group_reclaimed', 'error', 'cancelled', 'cancel_signal']}))
+        if args.stage != 'render':
+            return 0 if cancellation['signal'] is None and result['diagnostic_gate'] == 'observed' else 1
         return 0 if (cancellation['signal'] is None and result['graphics_client'] == 'completed'
                      and (args.driver == 'dummy' or result['shm_gate'] == 'pass')) else 1
 

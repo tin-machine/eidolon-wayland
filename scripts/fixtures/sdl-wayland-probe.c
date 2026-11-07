@@ -32,21 +32,92 @@ static void json_text(const char *text)
     putchar('"');
 }
 
+/* Rendererの失敗復元を通さず、最初のGL/EGLエラーを固定分類で先に出力する。 */
+static const char *egl_error_class(void)
+{
+    const char *error = SDL_GetError();
+    if (strstr(error, "Could not initialize OpenGL / GLES library")) return "gl_library_unavailable";
+    if (strstr(error, "Could not load EGL library")) return "egl_library_unavailable";
+    if (strstr(error, "Could not retrieve EGL function")) return "egl_symbol_missing";
+    if (strstr(error, "Could not get EGL display")) return "egl_display_unavailable";
+    if (strstr(error, "Could not initialize EGL")) return "egl_initialize_failed";
+    if (strstr(error, "matching EGL config")) return "egl_config_unavailable";
+    if (strstr(error, "Could not create EGL context")) return "egl_context_failed";
+    if (strstr(error, "EGL window surface")) return "egl_surface_failed";
+    return "unclassified_sdl_error";
+}
+
+static int egl_stage_probe(const char *requested)
+{
+    const int gles = !strncmp(requested, "gles-", 5);
+    const char *operation = strchr(requested, '-') + 1;
+    const char *stage = "init", *error = "none";
+    int result = 1, loaded = 0;
+    const int before = fd_count();
+    SDL_Window *window = NULL;
+    SDL_GLContext context = NULL;
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) goto report;
+    SDL_StopTextInput();
+    stage = "attributes";
+    if (SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, gles ? SDL_GL_CONTEXT_PROFILE_ES : 0) != 0 ||
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2) != 0 ||
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, gles ? 0 : 1) != 0) goto report;
+    stage = "load";
+    if (SDL_GL_LoadLibrary(NULL) != 0) goto report;
+    loaded = 1;
+    if (!strcmp(operation, "load")) { result = 0; goto report; }
+    stage = "window";
+    window = SDL_CreateWindow("Eidolon EGL stage", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                              640, 400, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
+    if (window == NULL) goto report;
+    if (!strcmp(operation, "window")) { result = 0; goto report; }
+    stage = "context";
+    context = SDL_GL_CreateContext(window);
+    if (context == NULL) goto report;
+    result = 0;
+report:
+    if (result) error = egl_error_class();
+    /* cleanupがcrashしても最初のAPI失敗を残す。任意error本文は一度も出力しない。 */
+    printf("{\"schema\":1,\"probe\":\"eidolon-sdl-egl-stage-v1\",\"requested_stage\":");
+    json_text(requested);
+    printf(",\"stage\":"); json_text(stage);
+    printf(",\"completed\":%s,\"error_class\":", result ? "false" : "true"); json_text(error);
+    printf(",\"fd_before\":%d}\n", before);
+    fflush(stdout);
+    if (context != NULL) SDL_GL_DeleteContext(context);
+    if (window != NULL) SDL_DestroyWindow(window);
+    if (loaded) SDL_GL_UnloadLibrary();
+    SDL_Quit();
+    printf("{\"schema\":1,\"probe\":\"eidolon-sdl-egl-cleanup-v1\",\"requested_stage\":");
+    json_text(requested);
+    printf(",\"completed\":true,\"fd_after\":%d}\n", fd_count());
+    return result;
+}
+
 int main(int argc, char **argv)
 {
     unsigned requested = 120;
     int synthetic = 0;
+    const char *egl_stage = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) {
             char *end;
             unsigned long value = strtoul(argv[++i], &end, 10);
             if (*end || value < 2 || value > 600) return 64;
             requested = (unsigned)value;
+        } else if (!strcmp(argv[i], "--stage") && i + 1 < argc) {
+            egl_stage = argv[++i];
+            if (strcmp(egl_stage, "gl-load") && strcmp(egl_stage, "gl-window") && strcmp(egl_stage, "gl-context") &&
+                strcmp(egl_stage, "gles-load") && strcmp(egl_stage, "gles-window") && strcmp(egl_stage, "gles-context")) return 64;
         } else if (!strcmp(argv[i], "--inject-events")) synthetic = 1;
         else return 64;
     }
     signal(SIGTERM, stop);
     signal(SIGINT, stop);
+    if (egl_stage != NULL) {
+        if (synthetic) return 64;
+        return egl_stage_probe(egl_stage);
+    }
     const int before = fd_count();
     SDL_version compiled, linked;
     SDL_VERSION(&compiled);

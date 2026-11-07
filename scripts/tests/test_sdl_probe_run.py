@@ -47,14 +47,18 @@ class SdlOperatorTests(unittest.TestCase):
         self.proof = dict(identities={}, environment=dict(WAYLAND_DISPLAY="w", XDG_RUNTIME_DIR=str(self.home)))
         self.events = []
 
-    def prepare(self, *, original_failure=False, hold=False):
+    def prepare(self, *, original_failure=False, hold=False, stage="render"):
         probe = dict(schema=1, probe="eidolon-sdl-observation-v1", binary_sha256=self.binary_hash,
                      reaped=True, group_reclaimed=True, graphics_client="failed" if original_failure else "completed",
                      shm_gate="fail" if original_failure else "pass", error="ORIGINAL_RENDERER" if original_failure else None,
-                     returncode=7 if original_failure else 0, quest_sdk="not_run")
+                     returncode=7 if original_failure else 0, quest_sdk="not_run", stage=stage)
+        if stage != "render":
+            probe.update(graphics_client="not_run", shm_gate="not_run", diagnostic_gate="observed", returncode=1,
+                         client=dict(api=dict(completed=False, stage="load", error_class="egl_initialize_failed"),
+                                     cleanup=dict(completed=True)))
         program = ("import argparse,json,os,signal,subprocess,sys,time\nfrom pathlib import Path\n"
                    "os.umask(0o077)\np=argparse.ArgumentParser()\n"
-                   "p.add_argument('--binary');p.add_argument('--result');p.add_argument('--driver');p.add_argument('--frames');p.add_argument('--timeout')\n"
+                   "p.add_argument('--binary');p.add_argument('--result');p.add_argument('--driver');p.add_argument('--frames');p.add_argument('--timeout');p.add_argument('--stage')\n"
                    "a=p.parse_args()\nstop=[False]\nsignal.signal(signal.SIGTERM,lambda *_:stop.__setitem__(0,True))\n"
                    f"probe={probe!r}\n"
                    "owned=None\n"
@@ -78,7 +82,7 @@ class SdlOperatorTests(unittest.TestCase):
         (self.directory / "manifest.json").chmod(0o600)
         return dict(binding=self.binding, probe_id="c" * 32, run_id=self.run_id,
                     binary_sha256=self.binary_hash, manifest_sha256=hashlib.sha256(data).hexdigest(), sources=sources,
-                    variant="baseline")
+                    variant="baseline", stage=stage)
 
     def execute(self, request, **kwargs):
         read_fd, write_fd = os.pipe()
@@ -160,6 +164,28 @@ class SdlOperatorTests(unittest.TestCase):
                 self.execute(dict(request, variant=value))
         request.pop("variant")
         with self.assertRaisesRegex(CaptureError, "VARIANT_INVALID"):
+            self.execute(request)
+        self.assertFalse((self.directory / "ready.json").exists())
+
+    def test_stage_failure_is_diagnosed_without_becoming_graphics_success(self):
+        request = self.prepare(stage="gl-load")
+        report = self.execute(request)
+        ready = json.loads((self.directory / "ready.json").read_text())
+        self.assertEqual(ready["argv"][-2:], ["--stage", "gl-load"])
+        self.assertEqual(report["status"], "diagnosed")
+        self.assertEqual(report["stage"], "gl-load")
+        self.assertEqual(report["probe_result"]["returncode"], 1)
+        self.assertEqual(report["probe_result"]["shm_gate"], "not_run")
+        self.assertFalse(report["probe_result"]["client"]["api"]["completed"])
+        self.assertTrue(report["cleanup_confirmed"])
+
+    def test_free_or_missing_stage_is_rejected_before_spawn(self):
+        request = self.prepare()
+        for value in ("gl-load --arbitrary", {}, None):
+            with self.subTest(value=value), self.assertRaisesRegex(CaptureError, "STAGE_INVALID"):
+                self.execute(dict(request, stage=value))
+        request.pop("stage")
+        with self.assertRaisesRegex(CaptureError, "STAGE_INVALID"):
             self.execute(request)
         self.assertFalse((self.directory / "ready.json").exists())
 

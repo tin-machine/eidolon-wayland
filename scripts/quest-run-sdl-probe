@@ -15,7 +15,7 @@ import time
 from native_build import ROOT, source_files
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
 from sdl_lease_capture import CaptureError, MAX_SNAPSHOT, binding_key, canonical, decode, hexadecimal, need, select_snapshot
-from sdl_probe_run import VARIANTS, variant_environment
+from sdl_probe_run import STAGES, VARIANTS, variant_environment
 
 
 def digest_sources():
@@ -65,6 +65,7 @@ def main():
     parser.add_argument("--manifest-sha256", required=True)
     parser.add_argument("--variant", choices=VARIANTS, default="baseline",
                         help="baseline、またはEGL_PLATFORM=waylandだけを加える固定対照")
+    parser.add_argument("--stage", choices=STAGES, default="render", help="render、またはGL/GLESの固定初期化stage")
     parser.add_argument("--artifact-root", type=Path)
     args = parser.parse_args()
     if not hexadecimal(args.run_id, 32) or not hexadecimal(args.binary_sha256, 64) or not hexadecimal(args.manifest_sha256, 64):
@@ -77,7 +78,7 @@ def main():
     run = root / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f") + "-" + probe_id)
     run.mkdir(mode=0o700, parents=True)
     device = QuestDevice(args.serial, run)
-    result = dict(schema=1, status="blocked", probe_id=probe_id, run_id=args.run_id, variant=args.variant,
+    result = dict(schema=1, status="blocked", probe_id=probe_id, run_id=args.run_id, variant=args.variant, stage=args.stage,
                   graphics_environment=variant_environment(dict(variant=args.variant))[1],
                   hmd="not_run", physical_input="not_run",
                   sdk_samples=[], events=[])
@@ -115,7 +116,7 @@ def main():
             data = (ROOT / relative).read_bytes()
             sources[name] = dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
         request = dict(binding=binding, probe_id=probe_id, run_id=args.run_id, binary_sha256=args.binary_sha256,
-                       manifest_sha256=args.manifest_sha256, sources=sources, variant=args.variant)
+                       manifest_sha256=args.manifest_sha256, sources=sources, variant=args.variant, stage=args.stage)
         (run / "request.json").write_bytes(canonical(request) + b"\n")
         remote = "import sys,types\n"
         for name in ("sdl_probe_install", "sdl_lease_capture"):
@@ -163,7 +164,7 @@ def main():
                     need(type(event) is dict and event.get("phase") in {"validated", "started", "finished", "blocked"}, "REMOTE_EVENT_INVALID")
                     if event["phase"] == "finished":
                         finished = event["result"]
-                        need(finished.get("variant") == args.variant and
+                        need(finished.get("variant") == args.variant and finished.get("stage") == args.stage and
                              finished.get("graphics_environment") == result["graphics_environment"], "VARIANT_RESULT_MISMATCH")
                         finished_at = time.monotonic()
                     elif event["phase"] == "blocked":
@@ -183,8 +184,11 @@ def main():
         result["stderr_bytes"] = stderr_bytes
         need(digest_sources() == digest, "SOURCE_CHANGED")
         result["sdk_observation"] = summarize_sdk(baseline, result["sdk_samples"])
-        result["status"] = "completed" if (isinstance(finished, dict) and finished.get("status") == "completed" and
-                                                     not result.get("monitor_failure") and child.returncode == 0) else "failed"
+        if args.stage != "render":
+            result["sdk_observation"].update(status="not_verified", diagnostic_only=True)
+        expected = "completed" if args.stage == "render" else "diagnosed"
+        result["status"] = expected if (isinstance(finished, dict) and finished.get("status") == expected and
+                                         not result.get("monitor_failure") and child.returncode == 0) else "failed"
         if result.get("blocked_reason") and not result["events"]:
             result["status"] = "blocked"
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, RuntimeError) as error:
@@ -206,9 +210,10 @@ def main():
         if selector is not None:
             selector.close()
         (run / "result.json").write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps(dict(status=result["status"], artifact=str(run), probe_id=probe_id, reason=result.get("reason") or result.get("blocked_reason"),
+    print(json.dumps(dict(status=result["status"], artifact=str(run), probe_id=probe_id, stage=args.stage,
+                          reason=result.get("reason") or result.get("blocked_reason"),
                           sdk_observation=result.get("sdk_observation", {}).get("status"), hmd="not_run", physical_input="not_run")))
-    return 0 if result["status"] == "completed" else 1
+    return 0 if result["status"] in {"completed", "diagnosed"} else 1
 
 
 if __name__ == "__main__":

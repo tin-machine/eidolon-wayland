@@ -16,6 +16,8 @@ from sdl_probe_install import (InstallError, MAX_PAYLOAD, MAX_SOURCE, SOURCE_PAT
 
 class SdlInstallTests(unittest.TestCase):
     def setUp(self):
+        previous_umask = os.umask(0o077)
+        self.addCleanup(os.umask, previous_umask)
         self.directory = tempfile.TemporaryDirectory(prefix="eidolon-sdl-install-")
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)

@@ -17,6 +17,7 @@ from sdl_lease_capture import (CaptureError, canonical, capture_remote, decode, 
 MAX_FILE = 8 * 1024 * 1024
 MAX_OUTPUT = 65536
 VARIANTS = ("baseline", "egl-wayland")
+STAGES = ("render", "gl-load", "gl-window", "gl-context", "gles-load", "gles-window", "gles-context")
 
 
 def variant_environment(request):
@@ -127,6 +128,8 @@ def group_live(group):
 def run_operator(request, home, control_fd, emit, *, capture=capture_remote, checker=live_binding, timeout=20.0):
     """capture/checker/短いtimeoutの差替えはlocalhost fixtureだけ。CLIへ露出しない。"""
     variant, graphics = variant_environment(request)
+    stage = request.get("stage")
+    need(type(stage) is str and stage in STAGES, "STAGE_INVALID")
     captured = capture(request["binding"], home)
     directory = validate_artifacts(request, home)
     checker(request["binding"], home, captured)
@@ -141,8 +144,9 @@ def run_operator(request, home, control_fd, emit, *, capture=capture_remote, che
                        TMPDIR=str(prefix / "tmp"), LANG="C.UTF-8", **captured["environment"], **graphics)
     command = [sys.executable, str(directory / "eidolon-sdl-probe.py"), "--binary", str(directory / "eidolon-sdl-probe"),
                "--result", str(result_path), "--driver", "wayland", "--frames", "120", "--timeout", "15"]
+    if stage != "render": command += ["--stage", stage]
     emit(dict(phase="validated", run_id=request["run_id"], session=request["binding"]["session"], variant=variant,
-              graphics_environment=graphics))
+              graphics_environment=graphics, stage=stage))
     blocking = os.get_blocking(control_fd)
     selector = selectors.DefaultSelector()
     try:
@@ -172,7 +176,7 @@ def run_operator(request, home, control_fd, emit, *, capture=capture_remote, che
             pipe = getattr(child, name)
             os.set_blocking(pipe.fileno(), False)
             selector.register(pipe, selectors.EVENT_READ, name)
-        emit(dict(phase="started", run_id=request["run_id"], runner_pid=child.pid, runner_group=child.pid, variant=variant))
+        emit(dict(phase="started", run_id=request["run_id"], runner_pid=child.pid, runner_group=child.pid, variant=variant, stage=stage))
         while True:
             now = time.monotonic()
             exited = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
@@ -261,17 +265,20 @@ def run_operator(request, home, control_fd, emit, *, capture=capture_remote, che
         finally:
             os.close(fd)
         need(type(probe) is dict and probe.get("schema") == 1 and probe.get("probe") == "eidolon-sdl-observation-v1" and
-             probe.get("binary_sha256") == request["binary_sha256"], "PROBE_RESULT_INVALID")
+             probe.get("binary_sha256") == request["binary_sha256"] and probe.get("stage") == stage, "PROBE_RESULT_INVALID")
         validate_artifacts(request, home)
     except (OSError, ValueError, TypeError, KeyError) as error:
         failure = error.reason if isinstance(error, CaptureError) else "PROBE_RESULT_UNAVAILABLE"
     reclaimed = not group_live(child.pid)
     cleanup = (not forced and reclaimed and pipes_drained and isinstance(probe, dict) and
                probe.get("group_reclaimed") is True and probe.get("reaped") is True)
-    success = (cleanup and cancelled is None and failure is None and child.returncode == 0 and
+    success = (stage == "render" and cleanup and cancelled is None and failure is None and child.returncode == 0 and
                probe.get("graphics_client") == "completed" and probe.get("shm_gate") == "pass")
-    result = dict(schema=1, operator="eidolon-sdl-live-v1", status="completed" if success else "failed",
-                  variant=variant, graphics_environment=graphics,
+    diagnosed = (stage != "render" and cleanup and cancelled is None and failure is None and child.returncode == 0 and
+                 probe.get("diagnostic_gate") == "observed" and probe.get("graphics_client") == "not_run" and
+                 probe.get("shm_gate") == "not_run")
+    result = dict(schema=1, operator="eidolon-sdl-live-v1", status="completed" if success else "diagnosed" if diagnosed else "failed",
+                  variant=variant, graphics_environment=graphics, stage=stage,
                   run_id=request["run_id"], session=request["binding"]["session"], nonce=request["binding"]["nonce"],
                   binary_sha256=request["binary_sha256"], manifest_sha256=request["manifest_sha256"],
                   runner_returncode=child.returncode, runner_reaped=True, runner_group_reclaimed=reclaimed,
@@ -307,7 +314,7 @@ def remote_main():
             need(not interrupted["signal"], "WRAPPER_SIGNAL")
             live_binding(binding, home, captured)
         report = run_operator(request, termux_home(sys.executable), 0, emit, checker=check)
-        return 0 if report["status"] == "completed" else 1
+        return 0 if report["status"] in {"completed", "diagnosed"} else 1
     except (OSError, ValueError, TypeError, KeyError) as error:
         print(json.dumps(dict(phase="blocked", reason=error.reason if isinstance(error, CaptureError) else "OPERATOR_UNAVAILABLE")), flush=True)
         return 2

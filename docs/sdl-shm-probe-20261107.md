@@ -105,15 +105,17 @@ software指定でも内部の加速rendererを試せる。今回の別frameはOp
 最初の再作成が旧windowを破棄してから失敗し、復元時にもう一度破棄する経路が有力である。
 最初のGL library/EGL初期化失敗の理由はまだ取得していない。
 
-次はC/binary/配備runner/manifestを変えず、
+Build153ではC/binary/配備runner/manifestを変えず、
 [固定operator](sdl-probe-live-run-20261108.md)の`--variant egl-wayland`で
-`EGL_PLATFORM=wayland`だけを追加する一項対照を行う。
+`EGL_PLATFORM=wayland`だけを追加する一項対照も試したが、同じSIGSEGV `-11`、SHM commit 0だった。
+protocol error 0、元のfoot維持、所有process回収も確認し、描画は未合格である。
 [Termux Mesa recipe](https://github.com/termux/termux-packages/blob/fbdb3c03610c697322ac608e77cea2b553f49ef3/packages/mesa/build.sh)は
 native platformをX11にしているが、[Mesa 26.2.6の選択処理](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/egl/main/egldisplay.c)は
 環境値・native displayの自動判定・build時defaultの順に選ぶ。
 従って「未設定なら必ずX11になる」とは断定しない。対照の成功も別途SHM/SDK観測で判定し、
-元のSIGSEGV・終了code・回収結果を上書きしない。同じ失敗ならwindow作成前の固定GL load stageを小probeで調べ、
-SDL/Mesaの大きなrebuildはその結果を待つ。
+元のSIGSEGV・終了code・回収結果を上書きしない。
+次は[固定GL/EGL stage probe](sdl-egl-stage-probe-20261108.md)を新runへ配備し、
+window作成前のGL loadから別processごとに調べる。SDL/Mesaの大きなrebuildはその結果を待つ。
 
 ## Termuxへ持ち込む前の確認
 
@@ -156,8 +158,8 @@ python3 scripts/check-sdl-probe-host \
 
 実機で次に行う順序:
 
-1. 上記の配備・Bionic buildの既知hashを保持し、現行APK/leaseでfoot一枚を準備する。
-2. `--variant egl-wayland`の固定一項対照で自然終了を一回実行し、同じjobで二枚目のSDL窓・SHM更新・退役を観測する。
-   成立しない場合は最初のGL/EGL failureを小probeで分ける。描画成立後に製品経路と入力を検証する。
+1. GL/EGL stage対応C/runnerを新runへ配備・Bionic buildし、新しい既知hashを固定する。
+2. 現行APK/leaseでfoot一枚を準備し、`gl-load`と`gles-load`から最初の失敗を別processで分ける。
+   成功する条件を選んだ後に通常renderで二枚目のSDL窓・SHM更新・退役を観測し、製品経路と入力を検証する。
 3. 焦点移動・取消・10回の停止回収を追加し、成立後にChocolate Doom＋Freedoomへ進む。
    Doom成功と一般GUI対応は別に確認する。HMD/物理キーボードの受入れは最後に残す。

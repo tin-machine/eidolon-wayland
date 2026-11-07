@@ -45,6 +45,11 @@ runnerと子groupの回収・pipe drainは確認した。環境値一項では�
 次は明示的なGL library/window/contextの固定stageごとに最初の失敗を取得する。
 成功条件を緩めたり、同じ条件を反復して結果を選んだりしない。
 
+`--stage`の既定は従来の`render`である。初回GL/EGLエラーの
+[固定stage診断](sdl-egl-stage-probe-20261108.md)も選択できる。
+このstage追加でC/配備runnerを更新したrevisionでは、新runへの再配備・compile・新hashが必要になる。
+stage診断の完了は`diagnosed`と記録し、SHM描画の成功には数えない。
+
 remote wrapperは実際にspawnしたrunner handleを保持し、lease変更・stdin EOF・operator期限・signal時にrunnerへTERMを伝える。
 runnerが自身のSDL groupを回収する猶予を設け、強制runner KILLが必要ならcleanupを確認済みにしない。
 観測したshell/foot/Waypipe PIDへsignalを送らない。wrapperの結果は同run内の新規`operator-<probe-id>-report.json`にも保存する。
