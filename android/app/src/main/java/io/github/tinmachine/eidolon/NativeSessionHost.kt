@@ -381,8 +381,12 @@ object NativeSessionHost {
         if(action=="focus") {
             selectedWindow=target.getString("session") to target.getString("window")
             pendingInputFocus=PendingInputFocus(ticket.target,ticket.runtime,ticket.intent,SystemClock.elapsedRealtime()+10000,waitForIme=true,controlsRevision=ticket.revision)
-        } else NativeBridge.nativeCommand(ticket.runtime,JSONObject().put("schema",1).put("type","close_window_target")
-            .put("request_id",requests.incrementAndGet().toString()).put("target",target).put("controls_revision",ticket.revision).toString())
+        } else {
+            val request=requests.incrementAndGet().toString()
+            val code=NativeBridge.nativeCommand(ticket.runtime,JSONObject().put("schema",1).put("type","close_window_target")
+                .put("request_id",request).put("target",target).put("controls_revision",ticket.revision).toString())
+            BuildHooks.windowControlRequested(action,ticket.runtime,ticket.target,ticket.revision,request,code)
+        }
     } } }
     fun requestSnapshot() { worker.execute { safely { publish() } } }
     fun currentHandle(): Long = handle
@@ -1041,6 +1045,7 @@ object NativeSessionHost {
                         .put("request_id",focusRequest).put("target",target).put("input_epoch",runtime.getLong("input_resets"))
                     request.controlsRevision?.let {envelope.put("controls_revision",it)}
                     val code=NativeBridge.nativeCommand(handle,envelope.toString())
+                    request.controlsRevision?.let {BuildHooks.windowControlRequested("focus",request.runtime,request.target,it,focusRequest,code)}
                     when(code) {
                         NativeBridge.ACCEPTED -> {request.focusRequest=focusRequest;if (BuildConfig.DEBUG) Log.i(TAG,"focus_enqueue request=$focusRequest epoch=${runtime.getLong("input_resets")}")}
                         NativeBridge.BUSY -> Unit

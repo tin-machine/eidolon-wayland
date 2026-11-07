@@ -176,7 +176,7 @@ class SpatialPanelAdapter {
         .put("bindings", bindings.size).put("listeners", listeners).put("callbacks", callbacks)
         .put("pending", pendingSurfaces.size + pendingObjects.size)
         .put("background_api", backgroundApi?.let { JSONObject(it.toString()) })
-        .put("decoration_entities", visuals.size)
+        .put("decoration_entities", visuals.size).put("window_controls",WindowControls.resources())
         .put("targets", JSONArray(bindings.values.map { JSONObject().put("entity",it.entity.id.toString()).put("target",JSONObject(it.key.toString())).put("role",it.role)
             .put("decoration",it.decoration).put("visual_entity",it.visual?.id?.toString()).put("controls",it.controls?.metadata())
             .put("visual_collision",if(!it.sdkDisposed) it.visual?.getComponent<Panel>()?.hittable?.name else null)

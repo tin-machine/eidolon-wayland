@@ -95,6 +95,39 @@ privateの`no_backup/diagnostics/latest.json`で、`adapter.targets[].controls`�
 操作後は実runtimeの`app.input.focus_window/focus_token`や窓一覧を照合する。
 metadataのreadyやrequests_submittedだけでは、可視性・物理キーボード配送・close完了の合格にしない。
 
+## 固定SDK検証case
+
+`window-controls`はdebug APKだけの固定case。`SdkCaseEnvironment`がnonce別の設定で実行し、通常Host経路でfootを二枚用意する。
+実行前に通常作業を終了し、接続がIdleであることを確認する。caseは検証用runtimeへ入れ替えるため、通常作業中には起動しない。
+継続操作はActivityを再起動せず、同じcase内の段階処理で進む。外部から受け取る値はcase名と32桁hex nonceだけ。
+
+```sh
+EIDOLON_CONTROL_NONCE="$(openssl rand -hex 16)"
+adb -s "$EIDOLON_QUEST_SERIAL" shell am start \
+  -n io.github.tinmachine.eidolon/.MainActivity \
+  --es case window-controls --es nonce "$EIDOLON_CONTROL_NONCE"
+adb -s "$EIDOLON_QUEST_SERIAL" shell run-as io.github.tinmachine.eidolon \
+  cat no_backup/diagnostics/latest.json
+```
+
+`check.case/nonce`が開始要求と一致する最新の`check.result`を待つ。古い同名結果を成功に使わない。
+固定caseには次の観測を含む。これは実装した検査経路であり、統合APKでの実行成功は別途記録する。
+
+1. 二枚の実sphereを`Scene.lineSegmentIntersect`で検出し、本文の中央やボタン間のgapが操作sphereに誤hitしない。
+2. `Scene.onInput`→通常listenerで左右それぞれをfocus。検査hookが記録する同じrequest_idのnative ACKと実focusを別々に照合する。
+3. Shiftを押下した状態から別窓のfocusボタンへ移り、押下解除・fresh epochを確認。操作部eventでWayland pointer button数が増えない。
+4. close DOWN後のray離脱は取消となり、close要求や窓終了へ変わらない。
+5. 古いtheme revision・存在しないgenerationのcloseはnativeのSTALEとなり、二枚が残る。
+6. 全体選択先とは別の窓をcloseし、その窓のACK・退役・古いsphere位置のray非hit・残存窓を照合する。
+7. 退役した元TargetKeyの要求をSTALEで拒否し、残存窓のfocus/合成キー配送が継続する。
+8. runtimeを停止・破棄し、controls ownerがゼロになる。製品設定へ復帰した後にのみ最終結果を公開する。
+
+`check.requests`の`enqueue_code`は即時受付、`completion`はそのrequest_idのnative ACK。
+`check.probe_completions`は固定の不正target/revision検査のACKで、通常ボタンの要求と混ぜない。
+`adapter.window_controls`はentity/listenerの作成・解放APIが成功した回数と差分owner数を示す。
+SDK backendの遅延破棄をこのcounterだけで証明せず、close後の実ray非hitを別に確認する。
+HMD視認性・物理コントローラー・物理キーボードの合格には読み替えない。
+
 ## 検証と次の区切り
 
 hostで以下を確認した。

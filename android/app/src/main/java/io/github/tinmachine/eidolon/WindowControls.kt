@@ -39,11 +39,12 @@ class WindowControls(private val parent: Entity, private val target: String, pri
                 val bodyPose=getAbsoluteTransform(parent)
                 fun create(mesh: String,collision: MeshCollision,z: Float,scale: Vector3): Entity {
                     val entity=Entity.create(listOf(Mesh(Uri.parse(mesh),collision),TransformParent(parent),Transform(Pose()),Scale(Vector3(1f))))
+                    entityCreates++
                     try {
                         // SDK helpers account for scaleHierarchyApplied; the physical dimensions do not depend on its setting.
                         setAbsoluteTransform(entity,bodyPose * Pose(Vector3(position.x.toFloat(),position.y.toFloat(),z)))
                         setAbsoluteScale(entity,scale)
-                    } catch(error: Exception) {entity.destroy();throw error}
+                    } catch(error: Exception) {destroyEntity(entity);throw error}
                     return entity
                 }
                 val root=create(WindowControlMeshes.OUTLINE,MeshCollision.LineTest,-.018f,Vector3(d,d,d*.25f))
@@ -58,12 +59,15 @@ class WindowControls(private val parent: Entity, private val target: String, pri
                     val button=Button(position.action,root,checkNotNull(face),checkNotNull(icon),d);buttons.add(button);adopted=true
                     (objects.getSceneObject(root) ?: objects.replaceOrReuseSceneObjectFuture(root)).whenComplete {obj,error -> ui.post {
                         if(!closed && live() && buttons.contains(button)) {
-                            if(error==null && obj!=null) {button.obj=obj;button.listener=obj.addInputListener(listener(button))}
-                            else {failures++;setEnabled(false)}
+                            if(error==null && obj!=null) {
+                                runCatching {obj.addInputListener(listener(button))}.onSuccess {
+                                    button.obj=obj;button.listener=it;listenerAdds++
+                                }.onFailure {failures++;setEnabled(false)}
+                            } else {failures++;setEnabled(false)}
                         }
                     } }
                 } catch(error: Exception) {
-                    if(!adopted) for(entity in listOfNotNull(icon,face,root)) runCatching {entity.destroy()}
+                    if(!adopted) for(entity in listOfNotNull(icon,face,root)) runCatching {destroyEntity(entity)}
                     throw error
                 }
             }
@@ -132,12 +136,21 @@ class WindowControls(private val parent: Entity, private val target: String, pri
         closed=true
         buttons.forEach {button ->
             cancelSources(button)
-            runCatching {button.listener?.let {button.obj?.removeInputListener(it)}}.onFailure {failures++}
-            for(entity in listOf(button.icon,button.face,button.entity)) runCatching {entity.destroy()}.onFailure {failures++}
+            runCatching {button.listener?.let {token -> checkNotNull(button.obj).removeInputListener(token);listenerRemoves++}}.onFailure {failures++}
+            for(entity in listOf(button.icon,button.face,button.entity)) runCatching {destroyEntity(entity)}.onFailure {failures++}
         }
         buttons.clear()
     }
+    private fun destroyEntity(entity: Entity) {entity.destroy();entityDestroys++}
     companion object {
+        private var entityCreates=0L
+        private var entityDestroys=0L
+        private var listenerAdds=0L
+        private var listenerRemoves=0L
+        /** Successful SDK owner calls; actual deferred ray retirement is a separate fixture observation. */
+        fun resources(): JSONObject=JSONObject().put("entity_create_calls",entityCreates).put("entity_destroy_calls",entityDestroys)
+            .put("entity_owners",entityCreates-entityDestroys).put("listener_add_calls",listenerAdds).put("listener_remove_calls",listenerRemoves)
+            .put("listener_owners",listenerAdds-listenerRemoves)
         private val PRIMARY=ButtonBits.ButtonTriggerL or ButtonBits.ButtonTriggerR or ButtonBits.ButtonA or ButtonBits.ButtonX
         fun parse(value: JSONObject?): WindowControlLayout? {
             if(value==null) return WindowControlLayout()

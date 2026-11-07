@@ -18,6 +18,7 @@ object BuildHooks {
     fun imeProbePhysicalKey() = Unit
     fun holdPanelCreation(window: String): Boolean = false
     fun commandComplete(request: String, code: String) = Unit
+    fun windowControlRequested(action:String,runtime:Long,target:String,revision:Long,request:String,code:Int) = Unit
     fun accept(intent: Intent?, adapter: SpatialPanelAdapter, context: Context, scene: () -> Scene, recreate: () -> Unit) = Unit
     fun sceneReady(adapter: SpatialPanelAdapter, scene: () -> Scene, recreate: () -> Unit) = Unit
     fun runtimeConfiguration(configuration: String): String = configuration
