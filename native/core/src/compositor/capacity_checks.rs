@@ -30,6 +30,7 @@ pub struct Report {
     pub rejected_not_copied: bool,
     pub existing_client_preserved: bool,
     pub vacancy_reused: bool,
+    pub extra_client_rejected: bool,
     pub client: Option<fixture::Report>,
     pub clients_after: usize,
     pub objects_after: usize,
@@ -78,6 +79,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
             })
             .map_err(|_| "FIXTURE_THREAD")?;
         let deadline = Instant::now() + Duration::from_secs(25);
+        let mut idle_peers = vec![];
         let mut original = vec![];
         let mut removed = None;
         let mut copies = 0;
@@ -101,7 +103,12 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
                 windows.sort_by_key(|w| w.window.get());
                 let ids = windows.iter().map(|w| w.window).collect::<Vec<_>>();
                 let check = (|| {
-                    if object_counts(&display).0 != 1
+                    if object_counts(&display).0
+                        != if idle_peers.is_empty() {
+                            1
+                        } else {
+                            limits::CLIENTS
+                        }
                         || windows.iter().any(|w| w.life != WindowLife::Mapped)
                     {
                         return Err("SURVIVOR_NOT_MAPPED");
@@ -113,6 +120,23 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
                             {
                                 return Err("INITIAL_COUNT");
                             }
+                            for _ in 1..limits::CLIENTS {
+                                let (server, peer) =
+                                    UnixStream::pair().map_err(|_| "SOCKET_PAIR")?;
+                                state.accept(&display.handle(), server)?;
+                                idle_peers.push(peer);
+                            }
+                            let (extra, peer) = UnixStream::pair().map_err(|_| "SOCKET_PAIR")?;
+                            if !matches!(
+                                state.accept(&display.handle(), extra),
+                                Err("RESOURCE_LIMIT")
+                            ) || state.counters.client_rejections != 1
+                                || object_counts(&display).0 != limits::CLIENTS
+                            {
+                                return Err("EXTRA_CLIENT_NOT_ISOLATED");
+                            }
+                            drop(peer);
+                            report.extra_client_rejected = true;
                             original = ids;
                             copies = state.counters.copies;
                             bytes = state.pixel_bytes();
@@ -209,6 +233,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
         let _ = interrupt.shutdown(std::net::Shutdown::Both);
         worker.join().map_err(|_| "FIXTURE_PANIC")?;
         drop(interrupt);
+        drop(idle_peers);
         let cleanup_deadline = Instant::now() + Duration::from_secs(3);
         loop {
             display
@@ -236,6 +261,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
             || !report.rejected_not_copied
             || !report.existing_client_preserved
             || !report.vacancy_reused
+            || !report.extra_client_rejected
         {
             return Err("PROOF_INCOMPLETE");
         }

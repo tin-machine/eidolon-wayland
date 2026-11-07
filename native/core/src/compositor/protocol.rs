@@ -81,6 +81,7 @@ pub struct Counters {
     pub pool_rejections: u64,
     pub last_rejected_pool_bytes: usize,
     pub toplevel_rejections: u64,
+    pub client_rejections: u64,
 }
 
 /// SurfaceAttributesと同じtransaction/cacheを通る使用token。未適用の同期commitも保持する。
@@ -269,6 +270,7 @@ impl ProtocolState {
         let mut clients = 0;
         dh.backend_handle().with_all_clients(|_| clients += 1);
         if clients >= limits::CLIENTS {
+            self.counters.client_rejections += 1;
             return Err("RESOURCE_LIMIT");
         }
         dh.clone()
@@ -583,6 +585,10 @@ impl XdgShellHandler for ProtocolState {
         &mut self.shell
     }
     fn new_toplevel(&mut self, toplevel: ToplevelSurface) {
+        // surface作成で既に拒否したobjectを別の拒否表へ蓄積しない。
+        if !self.surface_meta.contains_key(&toplevel.wl_surface().id()) {
+            return;
+        }
         if self.toplevels.len() >= limits::TOPLEVELS {
             // protocol errorは同じfoot serverの既存窓も切る。新しい余剰roleだけ閉じる。
             // 拒否後のin-flight commitもcopyしない。clientが従わなくてもsurface予算は不変。

@@ -182,3 +182,10 @@ core全体は61件成功・1件前提不足・1件既存ignoreとなり、前提
 別worktreeの同名crateをshared targetへbuildした後は古いmtimeによる誤cache採用があり得るため、
 作業用owner lock内で自checkoutのworkspace crate entrypointのmtimeを更新し、Cargoとfixture実行を連続させる。
 cache全消去や新しい巨大target複製は不要である。Android/SDK/Quest検証はrootの後続gate。
+
+追加の境界確認として、client受入数の超過でもSession全体をfailにしないよう変更した。
+`ProtocolState::accept`の容量拒否は新socketだけをdropし、その他の受入失敗は従来どおりエラーにする。
+`app.client_rejections`はこの累積回数。固定fixtureは現在のclient受入枠をidle接続で満たしたうえで
+次の接続だけの拒否を確認し、先にmapした同clientの既存窓を更新して、最後に全接続/resourceを回収した。
+この追加fixtureもhostで成功した。idle接続枠の検査であり、独立client九枚の描画/入力検査を兼ねない。
+拒否surfaceの登録前に失敗したobjectはtoplevel拒否表へ入れず、表のSURFACES予算を明示的に守る。
