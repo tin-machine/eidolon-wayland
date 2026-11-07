@@ -23,6 +23,8 @@ host側のartifactは実行時に読み直す`codex-work-root`配下の`eidolon-
 `run-as com.termux`の`HOME`はapp data directoryを指す場合があるため、その値を保存先に使わない。
 実際に起動したTermux Pythonのcanonical prefixを検査し、`files/usr/bin/python*`から`files/home`を導出する。
 結果へ`home_source=python_prefix`を記録する。固定の`/data/data/.../home`や現在のWayland socket名を配備先へ埋め込まない。
+Android標準の`files`親が0771の場合は、ownerとgroupが同一appのUID/GIDでworld-writeがない場合に限り許容する。
+`usr`・`bin`・home以下の共有書込み禁止は維持し、端末上の既存modeを変更しない。
 
 転送JSON全体のSHA-256とUIDを照合し、内容のsize/hash・固定filename・manifestを検査してから書き込む。
 homeと親directoryは同UID・共有書込み不可、親symlinkは`openat`と`O_NOFOLLOW`で拒否する。

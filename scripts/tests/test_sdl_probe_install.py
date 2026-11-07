@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sdl_probe_install import (InstallError, MAX_PAYLOAD, MAX_SOURCE, SOURCE_PATHS,
@@ -169,6 +170,59 @@ class SdlInstallTests(unittest.TestCase):
         self.assertEqual(Path(report["directory"]), home / ".local/state/eidolon/nx11" / ("a" * 32))
         self.assertEqual((Path(report["directory"]) / "sdl-wayland-probe.c").read_bytes(),
                          (self.repository / SOURCE_PATHS["sdl-wayland-probe.c"]).read_bytes())
+
+    def prefix_fixture(self):
+        app = self.root / "com.termux"
+        binary = app / "files/usr/bin/python3.14"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"fixture")
+        home = app / "files/home"
+        home.mkdir(mode=0o700)
+        return binary, home
+
+    def test_android_files_0771_same_app_group_is_accepted_without_chmod(self):
+        binary, home = self.prefix_fixture()
+        files = binary.parents[2]
+        files.chmod(0o771)
+        self.assertEqual(os.getuid(), os.getgid(), "fixture requires the app-style UID/GID identity")
+        self.assertEqual(termux_home(str(binary)), home)
+        report = self.deploy(home=home)
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(stat.S_IMODE(files.stat().st_mode), 0o771)
+        self.assertEqual(stat.S_IMODE(home.stat().st_mode), 0o700)
+
+    def test_android_files_world_write_or_other_group_is_rejected(self):
+        binary, _ = self.prefix_fixture()
+        files = binary.parents[2]
+        files.chmod(0o773)
+        with self.assertRaisesRegex(InstallError, "PYTHON_PREFIX_UNSAFE"):
+            termux_home(str(binary))
+        files.chmod(0o771)
+        actual_stat = Path.stat
+
+        def different_group(path, *args, **kwargs):
+            value = actual_stat(path, *args, **kwargs)
+            if path == files:
+                fields = list(value)
+                fields[5] = os.getgid() + 1
+                return os.stat_result(fields)
+            return value
+
+        with patch.object(Path, "stat", different_group), self.assertRaisesRegex(InstallError, "PYTHON_PREFIX_UNSAFE"):
+            termux_home(str(binary))
+
+    def test_files_exception_does_not_allow_shared_write_in_usr_bin_or_home(self):
+        binary, home = self.prefix_fixture()
+        binary.parents[2].chmod(0o771)
+        for directory in (binary.parent, binary.parent.parent):
+            mode = stat.S_IMODE(directory.stat().st_mode)
+            directory.chmod(0o770)
+            with self.subTest(directory=directory.name), self.assertRaisesRegex(InstallError, "PYTHON_PREFIX_UNSAFE"):
+                termux_home(str(binary))
+            directory.chmod(mode)
+        home.chmod(0o770)
+        with self.assertRaisesRegex(InstallError, "DIRECTORY_UNSAFE"):
+            self.deploy(home=termux_home(str(binary)))
 
 
 if __name__ == "__main__":

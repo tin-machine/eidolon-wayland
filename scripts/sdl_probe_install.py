@@ -163,10 +163,16 @@ def termux_home(executable):
     require(binary.parent.name == "bin" and binary.name.startswith("python") and prefix.name == "usr" and
             prefix.parent.name == "files" and prefix.parent.parent.name == "com.termux", "PYTHON_PREFIX_INVALID")
     require(stat.S_ISREG(binary.stat().st_mode) and binary.stat().st_uid == os.getuid(), "PYTHON_PREFIX_UNSAFE")
-    for directory in (binary.parent, prefix, prefix.parent):
+    for directory in (binary.parent, prefix):
         info = directory.stat()
         require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o022,
                 "PYTHON_PREFIX_UNSAFE")
+    # Android/Termux標準のfiles親は0771。同じapp UID/GIDのgroup writeだけ許容する。
+    # usr/bin・home以下を共有書込み可能にする例外ではない。
+    files = prefix.parent.stat()
+    require(stat.S_ISDIR(files.st_mode) and files.st_uid == os.getuid() and
+            files.st_gid == os.getgid() == os.getuid() and not files.st_mode & 0o002,
+            "PYTHON_PREFIX_UNSAFE")
     home = prefix.parent / "home"
     require(stat.S_ISDIR(home.lstat().st_mode) and not home.is_symlink(), "HOME_INVALID")
     return home
