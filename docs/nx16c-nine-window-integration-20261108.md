@@ -102,3 +102,10 @@ workspace applied poseとfull targetの一致、render frame増加を確認し�
 待機stage/経過時間も結果へ残す。SDK/pose/inputの成立条件は緩めない。
 静的循環調査とcore回帰では、未appliedの9panelから初期poseを得られること、旧sceneを拒否することを確認した。
 新しい診断を入れた後に再実行し、原因と次の変更を記録する。
+
+Build167の診断v2（nonce `aff2d2a35b7cab60b498a1fe4069609e`）では、
+first窓の全個別gateがtrueで、globalでfalseなのは `theme_selected` だけだった。
+private preferencesの初期値はOffだが、fixtureはbuiltinの選択を送らずcyan-orbitを要求していた。
+正常配置/SDK/入力targetの成立を確認し、通常設定は不変のまま復帰した。
+診断v3はbuiltin選択→実load/revision採用確認→初回footの順に変更する。
+製品の成立条件やpool予算は緩めていない。次は3/6枚の資源実測から9枚へ進む。

@@ -2,7 +2,7 @@
 
 [B4](remote-linux-apk-shm-b4-20261108.md)のvirtual clock検査とは別に、固定100フレームをQuestの通常SDK Surfaceへ接続するdebug caseを追加する。通常Linux GUI、任意アプリ、ランチャーの接続先切替は対象にしない。SSH capabilityは検査中・検査後とも `ProbeReady` のまま。
 
-本checkpointは実装とhost検証の段階。実APK、実Linux bundle、SDK draw、HMDの合格を先取りしない。
+Build167で実APK・実Linux bundleからのSDK drawと回収を確認した。HMDの見え方、物理入力、通常Linux GUIアプリの起動は別の未完了条件として扱う。
 
 ## Hostが所有する一時runtime
 
@@ -75,3 +75,18 @@ SDK ownerの制御には `SdkCaseEnvironment` の既存stop/digest/復帰確認�
 - 構造preflightはrepository未対応。直接source確認を行い、private作業記録へ結果を保存する。
 
 次はrootが統合APKを生成し、B4の実SHM経路と別nonceでB5 SDK caseを実行する。SDK/GLの成功draw、通常設定保持、回収を確認してからHMDでの表示確認へ進む。
+
+## Build167で確認したSDK描画と復帰
+
+source `97ed1bb`、nonce `abe26cbf3e57dd2dfdeb05248d766e8e` の `linux-shm-sdk` は最終stage `finished` / PASS。
+APK UID10159→Linux UID1000、target(session514/window1/scene1/generation6)を通して、
+実受信100hashとtarget-driven callback100、同targetのdraw frame2→100/content100、実SDK Entityとpose適用を確認した。
+B4のvirtual clock検査とは別nonce・別実行で、SDKへ接続した結果である。
+
+remote回収、journal clear、切断・scope解除、local native/SDK回収、旧runtime destroy、
+通常設定不変、通常runtimeと同scene診断SDKのfresh draw復帰、owner lease解放が全て成立した。
+途中の `normal_runtime_restored` だけでoperatorを終了せず、`normal_sdk_restored` と `owner_lease_released` を待った。
+隔離PC sshdも自分のhandleをwaitして回収した。
+
+これは固定32×32 patternのSDK描画結果で、`normal_gui_enabled=false` / `physical_hmd=false` / `physical_input=false` を維持する。
+通常Linuxアプリ、GTK操作、接続先選択UIの完成とは区別する。

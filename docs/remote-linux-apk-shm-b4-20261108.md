@@ -2,7 +2,7 @@
 
 [B3aの固定Linux helper](remote-linux-helper-b3a-20261108.md)と[B3bのtransport owner](remote-linux-transport-b3b-20261108.md)を、debug APKの独立runtimeと既存Pattern AppSessionへ接続する。通常Termux設定や既存GUI起動のbackendは切り替えない。Linux接続のcapabilityは検査後も `ProbeReady` で、catalog、foot、任意GUIは引き続き拒否する。
 
-このcheckpointは配線とhost検証まで。APK UIDでのSSH→Linux helper→実SHM受信、SDK/GPU表示、物理HMDの受入れはそれぞれ別gateであり、本記録だけでは合格にしない。
+Build167でAPK UIDからの実SHM受信と回収を確認した。SDK表示は[B5の別結果](remote-linux-sdk-shm-b5-20261108.md)、物理HMDの受入れは未実施として区別する。
 
 ## 固定入力と実装境界
 
@@ -72,3 +72,23 @@ remoteのjournalが残ったこととlocal native ownerが残ったことは別�
 - core既存回帰63件PASS、既存ignore 1件。隔離worktreeにfixtureが見つからない初回1件は、target複製をせず共有cacheへのsymlinkで実行前提を整えて再検査した。検査binary内のtest名と件数まで同じCargo owner lock内で確認した。
 
 APK build/lint/package、実APK UIDからLinux account HOMEのbundleへ接続しての100画素hash/回収、cancel/receipt recovery、通常Termux復帰は次の実機gate。SDK表示と物理HMDはさらに別gateで、今回 `gui_enabled=false` / `gpu_verified=false` / `physical_hmd=false` を維持する。
+
+## Build167でのAPK実機受入れ
+
+source `97ed1bb` / digest `82376bedc3a0317ffffec2ceced17734f1efd9cf5f583a7ce70bc6cc44eddaec`、
+nonce `5846134cb284e772b8e7765813042ca4` の `linux-shm-probe` はPASS。
+APK UID10159からLinux UID1000へ認証し、同じSSH handleでWaypipe/固定helperへ進んだ。
+実受信の100画素hash・copies100・callbacks100と二つのWayland接続を確認した。
+remote child/group/pipe/forward/channel回収、Linux journal消失、切断・credential scope解放、
+local native回収・destroy、通常Termux設定不変・別normal runtime復帰が全て成立した。
+隔離したPC sshdは自分のPopen handleだけを停止・waitし、既存system sshdは変更していない。
+
+virtual frame clockの結果なので、SDK/GPU/HMDの合格へ読み替えない。
+先行Build165の `LINUX_JOURNAL_FAILED` は[Androidの排他的公開方式](remote-linux-journal-android-20261108.md)を修正した。
+同一profile/pins/endpoint/nonceで明示recoveryを行った結果は `not_required` で、remote cleanup PASSとは区別して保存した。
+
+Build167はdebug build/lint/package/JUnit167件、release build/lint/package/JUnit141件、
+debug実APKを指定したPython236件、featureなし実core拒否fixture1件が成功した。
+releaseの定義classを調べ、新debug GTK/Linux case・receiverとtest用JSON実装が混入していないことを確認した。
+Build166はJVMのAndroid JSON stubでGTK検査8件が失敗し未導入。固定版JSONをtest依存だけへ追加して再検査した。
+手順は[公開operator](remote-linux-operator-20261108.md)へまとめ、設定本文や鍵を結果へ保存しない。
