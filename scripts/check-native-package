@@ -177,6 +177,7 @@ def inspect(apk):
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ThemeSurfaceProbe;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ImeProbe;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ImeTerminalCase;")
+        debug_classes.append(b"Lio/github/tinmachine/eidolon/ViewerPoseCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ThemeRuntimeCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ThemeProbePainter;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/PointerCase;")

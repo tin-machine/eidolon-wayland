@@ -70,7 +70,7 @@ object BuildHooks {
             ImeProbe.sdkTap(nonce)
             return
         }
-        if (running || name !in setOf("window-size", "linux-gtk-input", "linux-gtk-dialog", "linux-gtk-input-recover", "linux-gtk-dialog-recover", "linux-shm-sdk", "window-slots", "window-move", "window-controls", "extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe", "ime-terminal")) return
+        if (running || name !in setOf("viewer-pose", "window-size", "linux-gtk-input", "linux-gtk-dialog", "linux-gtk-input-recover", "linux-gtk-dialog-recover", "linux-shm-sdk", "window-slots", "window-move", "window-controls", "extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe", "ime-terminal")) return
         intent.removeExtra("case"); intent.removeExtra("nonce")
         val gtkRecovery=name in setOf("linux-gtk-input-recover","linux-gtk-dialog-recover")
         if(gtkRecovery) {if(!gtkRecoveries.claim(name,nonce)) return} else if(nonce in consumedNonces) return
@@ -81,6 +81,7 @@ object BuildHooks {
         running = true
         if (name in setOf("linux-gtk-input","linux-gtk-dialog","linux-gtk-input-recover","linux-gtk-dialog-recover")) LinuxGtkSdkCase.start(name,nonce,context,adapter) {running=false}
         else if (name == "linux-shm-sdk") LinuxShmSdkCase.start(nonce,context,adapter) {running=false}
+        else if (name == "viewer-pose") ViewerPoseCase.start(nonce,scene) {running=false}
         else if (name == "ime-terminal") ImeTerminalCase.start(nonce,scene) {running=false}
         else if (name == "ime-editor-probe") ImeProbe.start(nonce,context,scene) {running=false}
         else if (name == "stop") SdkCaseEnvironment.start(name,nonce,context,{done->LifecycleSdkCase.start(nonce,adapter,done)}) {running=false}
