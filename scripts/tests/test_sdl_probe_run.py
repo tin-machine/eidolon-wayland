@@ -1,6 +1,9 @@
+import argparse
+import contextlib
 import hashlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -22,6 +25,31 @@ loader = importlib.machinery.SourceFileLoader("sdl_operator_cli", str(Path(__fil
 spec = importlib.util.spec_from_loader(loader.name, loader)
 cli = importlib.util.module_from_spec(spec)
 loader.exec_module(cli)
+
+
+class HostCommandBudgetTests(unittest.TestCase):
+    def test_oversized_fixed_source_is_rejected_before_adb_spawn(self):
+        class Device:
+            def __init__(self,*_):pass
+            def validate(self):return dict(model="Quest 3",api=34)
+            def adb(self,*args):
+                if args[:2]==("shell","pidof"):return "77"
+                if args[:3]==("shell","pm","list"):return "package:com.termux uid:10158"
+                return "fixture"
+        with tempfile.TemporaryDirectory(prefix="sdl-budget-") as td:
+            root=Path(td);sources=root/"source";artifacts=root/"artifacts"
+            for name,data in (("scripts/sdl_probe_install.py",b"x"*(50*1024)),("scripts/sdl_lease_capture.py",b"fixed"),
+                              ("scripts/sdl_probe_run.py",b"fixed"),("scripts/fixtures/sdl-wayland-probe.c",b"fixed"),("scripts/termux/eidolon-sdl-probe.py",b"fixed")):
+                target=sources/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+            args=argparse.Namespace(serial="fixture",run_id="a"*32,binary_sha256="b"*64,manifest_sha256="c"*64,
+                variant="egl-wayland-softpipe-kopper-disabled-debug",stage="gl-load",artifact_root=artifacts)
+            with patch.object(cli.argparse.ArgumentParser,"parse_args",return_value=args),patch.object(cli,"ROOT",sources),patch.object(cli,"QuestDevice",Device), \
+                 patch.object(cli,"digest_sources",return_value="fixed"),patch.object(cli,"select_snapshot",return_value=dict(uid=10158,process_id=77,session="17")), \
+                 patch.object(cli,"sdk_slice",return_value=dict(mapped=[1])),patch.object(cli.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"{}",b"")), \
+                 patch.object(cli.subprocess,"Popen") as spawn,contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(),1);spawn.assert_not_called()
+            result=json.loads(next(artifacts.glob("*/result.json")).read_text())
+            self.assertEqual(result["status"],"blocked");self.assertEqual(result["reason"],"REMOTE_COMMAND_LIMIT")
 
 
 class SdlOperatorTests(unittest.TestCase):
@@ -63,7 +91,7 @@ class SdlOperatorTests(unittest.TestCase):
                    f"probe={probe!r}\n"
                    "owned=None\n"
                    + ("owned=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],start_new_session=True)\n" if hold else "")
-                   + f"Path({str(self.directory / 'ready.json')!r}).write_text(json.dumps(dict(argv=sys.argv[1:],environment_keys=sorted(os.environ),egl_log_level=os.environ.get('EGL_LOG_LEVEL'),gallium_driver=os.environ.get('GALLIUM_DRIVER'),graphics={{key:os.environ.get(key) for key in ['EGL_PLATFORM','LIBGL_ALWAYS_SOFTWARE']}},owned=owned.pid if owned else None)))\n"
+                   + f"Path({str(self.directory / 'ready.json')!r}).write_text(json.dumps(dict(argv=sys.argv[1:],environment_keys=sorted(os.environ),egl_log_level=os.environ.get('EGL_LOG_LEVEL'),gallium_driver=os.environ.get('GALLIUM_DRIVER'),kopper_disable=os.environ.get('LIBGL_KOPPER_DISABLE'),graphics={{key:os.environ.get(key) for key in ['EGL_PLATFORM','LIBGL_ALWAYS_SOFTWARE']}},owned=owned.pid if owned else None)))\n"
                    + ("until=time.monotonic()+10\nwhile not stop[0] and time.monotonic()<until:time.sleep(.01)\n" if hold else "time.sleep(.05)\n")
                    + "if owned is not None:\n owned.terminate();owned.wait(timeout=2)\n"
                    "if stop[0]:probe.update(graphics_client='failed',shm_gate='fail')\n"
@@ -198,7 +226,7 @@ class SdlOperatorTests(unittest.TestCase):
 
     def test_debug_requires_non_render_stage_before_spawn(self):
         request = self.prepare()
-        for variant in ("egl-wayland-debug", "egl-wayland-softpipe-debug"):
+        for variant in ("egl-wayland-debug", "egl-wayland-softpipe-debug", "egl-wayland-softpipe-kopper-disabled-debug"):
             request["variant"] = variant
             with self.subTest(variant=variant), self.assertRaisesRegex(CaptureError, "DEBUG_STAGE_REQUIRED"):
                 self.execute(request)
@@ -231,6 +259,26 @@ class SdlOperatorTests(unittest.TestCase):
         self.assertEqual(ready["gallium_driver"], "softpipe")
         self.assertIsNone(ready["egl_log_level"])
         self.assertEqual(result["graphics_environment"], dict(LIBGL_ALWAYS_SOFTWARE="1", EGL_PLATFORM="wayland", GALLIUM_DRIVER="softpipe"))
+
+    def test_kopper_disable_debug_is_exactly_one_env_and_keeps_original_stage_failure(self):
+        request=self.prepare(stage="gl-load");request["variant"]="egl-wayland-softpipe-debug"
+        before=self.execute(request);first=json.loads((self.directory/"ready.json").read_text());saved=(self.directory/before["result_file"]).read_bytes()
+        request.update(probe_id="9"*32,variant="egl-wayland-softpipe-kopper-disabled-debug")
+        with patch.dict(os.environ,{"LIBGL_KOPPER_DISABLE":"PRIVATE","MESA_LOADER_DRIVER_OVERRIDE":"PRIVATE"}):result=self.execute(request)
+        ready=json.loads((self.directory/"ready.json").read_text())
+        self.assertEqual(result["status"],"diagnosed");self.assertEqual(result["probe_result"],before["probe_result"])
+        self.assertEqual(result["graphics_environment"],dict(before["graphics_environment"],LIBGL_KOPPER_DISABLE="1"))
+        self.assertEqual(set(ready["environment_keys"])-set(first["environment_keys"]),{"LIBGL_KOPPER_DISABLE"})
+        self.assertEqual(ready["kopper_disable"],"1");self.assertEqual(ready["gallium_driver"],"softpipe");self.assertEqual(ready["egl_log_level"],"debug")
+        self.assertNotIn("MESA_LOADER_DRIVER_OVERRIDE",ready["environment_keys"]);self.assertEqual((self.directory/before["result_file"]).read_bytes(),saved)
+        self.assertTrue(result["cleanup_confirmed"]);self.assertEqual(result["probe_result"]["returncode"],1)
+
+    def test_kopper_disable_non_debug_twin_allows_render_without_new_argv_or_pins(self):
+        request=self.prepare();request["variant"]="egl-wayland-softpipe-kopper-disabled"
+        result=self.execute(request);ready=json.loads((self.directory/"ready.json").read_text())
+        self.assertEqual(result["status"],"completed");self.assertEqual(ready["kopper_disable"],"1");self.assertIsNone(ready["egl_log_level"])
+        self.assertNotIn("--stage",ready["argv"]);self.assertEqual(result["graphics_environment"],dict(LIBGL_ALWAYS_SOFTWARE="1",EGL_PLATFORM="wayland",GALLIUM_DRIVER="softpipe",LIBGL_KOPPER_DISABLE="1"))
+        self.assertTrue(result["cleanup_confirmed"])
 
     def test_free_or_missing_stage_is_rejected_before_spawn(self):
         request = self.prepare()
@@ -301,7 +349,8 @@ class SdlOperatorTests(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
 
     def test_deadline_is_not_reported_as_success(self):
-        report = self.execute(self.prepare(hold=True), timeout=.2)
+        # fake runnerのhandler/owned child起動に余裕を持たせ、終了判定の期限超過を検査する。
+        report = self.execute(self.prepare(hold=True), timeout=1.0)
         self.assertTrue(report["timed_out"])
         self.assertEqual(report["cancel_reason"], "OPERATOR_TIMEOUT")
         self.assertTrue(report["cleanup_confirmed"])

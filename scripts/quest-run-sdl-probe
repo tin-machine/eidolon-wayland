@@ -45,7 +45,7 @@ def main():
     parser.add_argument("--binary-sha256", required=True)
     parser.add_argument("--manifest-sha256", required=True)
     parser.add_argument("--variant", choices=VARIANTS, default="baseline",
-                        help="固定Wayland EGL / stage専用debug / softpipe対照")
+                        help="固定Wayland EGL / stage専用debug / softpipe・Kopper無効対照")
     parser.add_argument("--stage", choices=STAGES, default="render", help="render、またはGL/GLESの固定初期化stage")
     parser.add_argument("--artifact-root", type=Path)
     args = parser.parse_args()
@@ -106,7 +106,10 @@ def main():
             remote += f"m=types.ModuleType({name!r});exec({(ROOT / ('scripts/' + name + '.py')).read_text()!r},m.__dict__);sys.modules[m.__name__]=m\n"
         remote += f"exec({(ROOT / 'scripts/sdl_probe_run.py').read_text()!r})\n"
         command = ["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python3", "-c", remote]
-        child = subprocess.Popen(["adb", "-s", args.serial, "shell", "-T", shlex.join(command)], stdin=subprocess.PIPE,
+        command_text = shlex.join(command)
+        need(len(command_text.encode()) <= 49 * 1024, "REMOTE_COMMAND_LIMIT")
+        result["remote_command_bytes"] = len(command_text.encode())
+        child = subprocess.Popen(["adb", "-s", args.serial, "shell", "-T", command_text], stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         child.stdin.write(canonical(request) + b"\n");child.stdin.flush()
         selector = selectors.DefaultSelector()

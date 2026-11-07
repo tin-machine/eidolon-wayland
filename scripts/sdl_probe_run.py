@@ -16,8 +16,9 @@ from sdl_lease_capture import (CaptureError, canonical, capture_remote, decode, 
 
 MAX_FILE = 8 * 1024 * 1024
 MAX_OUTPUT = 65536
-VARIANTS = ("baseline", "egl-wayland", "egl-wayland-debug", "egl-wayland-softpipe", "egl-wayland-softpipe-debug")
-DEBUG_VARIANTS = ("egl-wayland-debug", "egl-wayland-softpipe-debug")
+KOPPER_DISABLED_VARIANTS = ("egl-wayland-softpipe-kopper-disabled", "egl-wayland-softpipe-kopper-disabled-debug")
+VARIANTS = ("baseline", "egl-wayland", "egl-wayland-debug", "egl-wayland-softpipe", "egl-wayland-softpipe-debug") + KOPPER_DISABLED_VARIANTS
+DEBUG_VARIANTS = ("egl-wayland-debug", "egl-wayland-softpipe-debug", KOPPER_DISABLED_VARIANTS[1])
 STAGES = ("render", "gl-load", "gl-window", "gl-context", "gles-load", "gles-window", "gles-context")
 
 
@@ -30,8 +31,10 @@ def variant_environment(request):
         graphics["EGL_PLATFORM"] = "wayland"
     if variant in DEBUG_VARIANTS:
         graphics["EGL_LOG_LEVEL"] = "debug"
-    if variant in {"egl-wayland-softpipe", "egl-wayland-softpipe-debug"}:
+    if variant in ("egl-wayland-softpipe", "egl-wayland-softpipe-debug") + KOPPER_DISABLED_VARIANTS:
         graphics["GALLIUM_DRIVER"] = "softpipe"
+    if variant in KOPPER_DISABLED_VARIANTS:
+        graphics["LIBGL_KOPPER_DISABLE"] = "1"
     return variant, graphics
 
 

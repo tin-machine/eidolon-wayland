@@ -172,3 +172,35 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.tests.test_sdl_probe_run s
 
 hostの実SDLでも全Cをcompileし、dummyのGL load失敗分類と既存render 3 frames/3 pixel検査・回収を確認した。
 これらはQuestのGL/EGL成功・SHM・HMD視認の証拠には数えない。
+
+## Termux既定Kopperを無効にしたSDL対照
+
+[公開EGLの固定対照](egl-surfaceless-probe-20261108.md)ではKopper無効でEGL1.5初期化が成立した。
+続く[内部3段階](egl-null-stages-probe-20261108.md)もSWRAST/FD-1となり、3戻り値すべて非NULL、
+initialize成功/元終了0、解除/terminate/runtime不変/group/reap/pipe回収が成立した。
+固定4library/vendor/実mapping/命令pinは変えていない。過去Kopperの12289/終了1は保持する。
+これまでの`GALLIUM_DRIVER=softpipe`だけの失敗は実frontendがKopperであり、LLVM/JITの不具合を確定したものではない。
+
+SDL側へは既存softpipe対照から`LIBGL_KOPPER_DISABLE=1`だけを足す固定enumを追加した。
+
+- stage専用: `egl-wayland-softpipe-kopper-disabled-debug`
+- 非debug/render用: `egl-wayland-softpipe-kopper-disabled`
+
+```sh
+scripts/quest-run-sdl-probe --serial "$EIDOLON_QUEST_SERIAL" \
+  --run-id "$EIDOLON_SDL_RUN_ID" --binary-sha256 "$EIDOLON_SDL_BINARY_SHA256" \
+  --manifest-sha256 "$EIDOLON_SDL_MANIFEST_SHA256" \
+  --variant egl-wayland-softpipe-kopper-disabled-debug --stage gl-load \
+  --artifact-root "$EIDOLON_TASK_ROOT/sdl-kopper-disabled"
+```
+
+pin変数は既存配備時に保存した既知値を使い、現在のbinaryから期待SHAを生成しない。
+同じ固定enumで`gles-load`、必要なwindow/context段階を別processで確認する。
+成立後のrenderer確認は非debug twinと`--stage render`を使う。debug enumのrenderは禁止したままである。
+
+この変更はhost/operatorのenv enumだけでC/配布runnerを変更しない。既存run/binary/manifest pinを再利用し、
+結果だけを毎回新probe IDへ保存する。自然終了とsignal/取消、元API failure、固定lease/UID/2env、
+同jobのSDK観測とowned group回収を維持する。任意envやpreload、通常GUIカタログの許可は加えない。
+ADB commandは49KiB以下を検査し、byte数を記録する。
+render受入れではSHM/SDK frame/content進行に加え、実targetの退役/Board・binding解放と元foot継続も確認する。
+HMD/物理入力/通常launcher/Doomの受入れは別に残る。
