@@ -96,6 +96,9 @@ MVP判定: foot一枚で英数字/修飾キー、クリック、scroll、logical
 <a id="i05"></a>
 ## I05 — 二枚のwindowとlayer割当
 
+2026-11-07の次期要件は[最大九枚・グループ化の計画](../next-phase-termux-startup-linux-gui-plan-20261107.md)第7節を参照する。
+以下は現行の二枚構成の契約・受入れであり、九枚対応やグループアニメーションの実装完了を意味しない。
+
 coreに`logical_windows`と`visible_windows`を分離する。表示上限2、論理上限8。新しい三枚目はwindow一覧へ保持し、ユーザーが表示対象を切り替える。使用中の入力captureはfocus/表示切替前に解除する。
 
 SDK registrationはActivity単位で再利用し、Entity/bindingはwindow単位。slot解放→次windowへ割当時にもWindowId/SurfaceGenerationを照合する。layer数を16から単純計算せず、診断UI・背景・system overlay込みで実機計測する。
