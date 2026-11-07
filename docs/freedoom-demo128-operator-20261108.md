@@ -63,6 +63,13 @@ Mapped一覧から消えただけでは合格にしない。remoteの元終了�
 固定demoの記録入力、合成入力、物理キーボード、HMD視認、製品Stop/切断/反復を区別する。
 今回のoperatorはdemoの描画・自然終了だけで、後者は未確認のままである。
 
+Build172（source `569f1ea`）とoperator `ea1afc5` の実機run
+`d432402bcf34517ea35de91d83952225` はcompleted/SDK observedだった。
+固定app_idのSHM commit74回、非SHM/未知app_id/protocol errorは0、SDKの追加window3は最大68frame・5contentを観測した。
+engineは自然終了0、TERM/KILL/取消なしで、子・group・pipe回収、asset/runtime/lease不変が成立した。
+SDKの全target世代とBoard/controls/MODE/menuの所有資源も開始時へ戻り、元footは同じ所有者で全sampleを継続した。
+物理入力/HMD/通常launcher・製品Stopの受入れへ読み替えず、次の通常GUI接続へ進む。
+
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
   -s scripts/tests -p 'test_freedoom*.py' -v

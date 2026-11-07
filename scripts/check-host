@@ -106,6 +106,8 @@ try:
             renderer_static_link()
     if args.suite == "all":
         python_tests(ROOT / "scripts/tests")
+        # subreaperは専用process fixtureで検査し、通常のunittest discoveryとは分ける。
+        subprocess.run([sys.executable, str(ROOT / "scripts/test_linux_process_owner.py")], cwd=ROOT, check=True)
         launcher = ROOT / "scripts/termux/tests"
         if launcher.is_dir():
             python_tests(launcher)
