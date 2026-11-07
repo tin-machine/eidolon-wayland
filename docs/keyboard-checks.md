@@ -3,6 +3,31 @@
 2026-11-05。I02の実装中の記録。Bluetooth実機操作とHMDの受入れは最終段階に残す。
 固定入力の自動試験を、物理キーボードを接続した操作成功として扱わない。
 
+<a id="focus-recovery-20261107"></a>
+## 2026-11-07: 配置編集解除後の入力復旧
+
+Build133 / source調査`40692ec`。既存footの接続はReady・表示済みだったが、入力先は未選択だった。
+操作パネルの確認で配置編集モードが有効と判明し、ADBで「配置を確定して入力へ戻る」→
+「ターミナルへキー入力」を操作して`focus_window=1`を確認した。
+その後、**ユーザーが実キーボードで「入力できました」と確認**した。
+この成功は文字入力の復旧確認であり、日本語IMEや未実施の全キー・全モードの受入れへ広げない。
+
+ADBの仮想キーは現行PhysicalKeyboardの対象外。一時HIDによるキーもfootへの配送を確認できなかった。
+HID追加/削除後のfocus reset、最初の選択が維持されず再選択が必要なケースも観測した。
+追加の`am start --activity-single-top`はXR状態を一時変更してfocusを消す場合があり、
+前面化したことだけで入力先の復旧完了にしない。通常SDKと物理入力の結果を別に記録する。
+以前のdevice removeはユーザーによるキーボード差替えであり、ハブ・キーボード故障の根拠ではない。
+
+VR操作パネルは`dumpsys display`のlogical display IDと、`dumpsys SurfaceFlinger`のvirtual display IDを照合して取得できた。
+`adb exec-out screencap -p -d <SurfaceFlinger ID>`で位置を確認し、
+`adb shell input -d <logical ID> tap/swipe ...`で操作する。IDと座標はその都度確認し、固定値を再利用しない。
+`uiautomator dump`と全displayのUiAutomation取得では対象を得られず、sleep/非表示中のswipeも効かなかった。
+端末のsleep設定・APK・コードは変更せず、一時HIDと診断helperを片付けてfootを選び直した。
+詳細artifactは設定から読み直す`codex-work-root`内の`eidolon-keyboard-adb-focus-20261107/`にある。
+
+入力停止の理由を同じラベルへ潰さない改善は[次期入力状態表示](next-phase-termux-startup-linux-gui-plan-20261107.md#input-status)、
+かな漢字変換は[日本語入力計画](japanese-input-plan-20261107.md)へ引き継ぐ。
+
 ## 入力の経路
 
 Android `dispatchKeyEvent` → `PhysicalKeyboard` →短いJNI enqueue → protocol owner →

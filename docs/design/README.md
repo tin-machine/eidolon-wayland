@@ -12,6 +12,8 @@
 
 次の拡張は[Termuxの必要時起動・Linux GUI・ウィンドウ装飾と操作の計画](../next-phase-termux-startup-linux-gui-plan-20261107.md)にまとめた。
 2026-11-07時点では相談段階で、実装開始待ち。既存taskの受入れ条件と状態は変更しない。
+同日の追加要望で、[次期拡張の実装順](../next-phase-termux-startup-linux-gui-plan-20261107.md#implementation-order)を概算コスト順へ改訂した。
+入力停止理由の表示と[foot内のかな漢字変換](../japanese-input-plan-20261107.md)を加え、本文の節番号と着手順を分ける。
 [Quest全体のメトリクス・IP取得の調査](../quest-device-metrics-plan-20261107.md)も同計画の補足として参照する。
 [左下のアプリランチャー・file指定・設定fileの計画](../application-launcher-plan-20261107.md)も相談段階の拡張として参照する。
 [Ubuntu等のremote Linux GUI拡張案](../remote-linux-gui-plan-20261107.md)では、接続先profile・Linux helper・LAN性能の検証方針を扱う。

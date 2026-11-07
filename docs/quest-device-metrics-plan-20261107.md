@@ -138,14 +138,18 @@ CPUの`cpu`行は先頭8項目（user〜steal）の差分を合計し、guestを
 
 ## 実装を再開した後の確認順
 
-1. **通常権限で基本値を検証する。** バッテリー、total/available RAM、自プロセスCPU/PSS、
-   IP/gateway、thermal status、空き容量を、製品と同じUID・権限で取得する。
+全体は[次フェーズ計画の概算コスト順](next-phase-termux-startup-linux-gui-plan-20261107.md#implementation-order)に従う。
+基本表示を追加値の実装待ちにしないよう、以下1・2をNX04、3をNX14とする。
+
+1. **通常権限で基本値を検証する。** バッテリー/充電、total/available RAM、Quest自身のIPと接続先を、
+   製品と同じUID・権限で取得する。
    ADBとの同時刻比較で桁・単位・対象を確認し、充電/切断/network交替/復帰を試す。
-2. **任意の追加値を検証する。** 電流・残り時間、Wi-Fi詳細、通信量、thermal headroom、
+2. **基本値を表示する。** 窓別リングとは別に、Questの残量・RAM・接続状態を共通の状態表示へまとめる。
+   初期は操作画面の簡潔な表示とし、レイアウト拡張や高価な計測を前提にしない。
+3. **残る基本値と任意の追加値を検証する。** 自プロセスCPU/PSS、gateway、thermal status、空き容量、
+   電流・残り時間、Wi-Fi詳細、通信量、thermal headroom、
    SDK frame timingの対応状況を確認する。端末全体CPU/GPUはSDK連携方式が成立した場合だけ追加する。
    取得不可の追加値があっても基本値の実装を止めない。
-3. **共通の状態表示へまとめる。** 窓別リングとは別に、Questの残量・RAM・接続状態等を表示する案を検討する。
-   画面の配置・外観は未決定であり、この調査だけで新しい表示UIを確定しない。
 
 取得頻度の初期案はCPU/通信差分1秒、RAM 5秒、PSS/空き容量30秒、
 thermal headroom 10秒以上とし、battery/network/thermal statusは通知を優先する。

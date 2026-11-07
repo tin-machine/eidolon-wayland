@@ -121,7 +121,8 @@ X11アプリ、音声、clipboard/file転送、切断後の同一GUIセッショ
 4. **LAN性能と複数窓:** 静止/更新、圧縮、通信断、再接続、資源上限を確認する。
    HMDの読みやすさと操作遅延を最後に確認してもらう。複数hostの同時利用は次段階とする。
 
-今回の相談では既存のTermux・ゲーム・ランチャー等の優先順位を変更しない。
+全体の着手順は[次フェーズ計画の概算コスト順](next-phase-termux-startup-linux-gui-plan-20261107.md#implementation-order)のNX18へ改訂した。
+小さなUI・入力・Termux内の拡張を先行し、本書の一接続先probeは九枚/group完成を必須条件にしない。
 この調査を実装開始やUbuntu実機への変更承認として扱わない。
 
 [waypipe-author]: https://mstoeckl.com/notes/gsoc/blog.html
