@@ -83,3 +83,22 @@ Android compile/SDK配備後は次の順で判定する。過去の二枚SDK cas
 StreamLocalの旧固定validatorは512KiB/8channelを前提にするため、次APKの768KiB/12channelに対応する。
 過去artifactを読むときは、既知の旧/新予算とaccepted/peakの整合を検証し、任意の大きな値を許容しない。
 構造preflight/queueはこのrepositoryが非対応なのでsourceを直接確認した。
+
+## Build165の最初の実機結果と診断の追加
+
+Build165（source `d24b25d`、debug/lint/package/JUnit144件成功）の固定case
+`window-slots` はnonce `fd01f2208ddfd86597c6de3a77cdd06d` の `first` でtimeoutとなった。
+最初の1枚が全ready条件を満たさず、3/6/9枚やpool超過まで進んだ証拠はない。
+通常設定への復帰は成功した。timeout判定が最終snapshot保存より先にあったため、
+初回結果から失敗した条件を特定できなかった。
+
+同じBuild165で既存 `window-move` case（nonce `d54e2359e47a112e7253a80f2dd6579b`）は成功した。
+別に通常1footの生成直後と遅延後を確認し、遅延後にはpanel applied、
+workspace applied poseとfull targetの一致、render frame増加を確認した。
+通常の保存配置とnonce別private preferencesのcase既定配置は区別する。
+これらの結果は9枚の合格には含めない。
+
+次版は固定ready条件をglobal/各窓のboolへ分解し、timeout前の最新compact snapshotと
+待機stage/経過時間も結果へ残す。SDK/pose/inputの成立条件は緩めない。
+静的循環調査とcore回帰では、未appliedの9panelから初期poseを得られること、旧sceneを拒否することを確認した。
+新しい診断を入れた後に再実行し、原因と次の変更を記録する。

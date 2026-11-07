@@ -19,3 +19,14 @@ CARGO_INCREMENTAL=0 scripts/check-waypipe-ime
 ```
 
 push後の`8c92e61`/run `42402084389`と`e8bd699`/run `42402741125`は、host/android/report全体で成功した。
+
+## GTK実fixtureのCI依存
+
+`cc5c5cf` のCI run `42406322221` はhostとAndroidの両jobで、
+`test_gtk_interaction_fixture.HostGtkTests.setUpClass` の `pkg-config gtk+-3.0` が失敗した。
+Android APK生成自体やRust warning修正後のclippyではなく、両jobが実行するPython suiteの依存不足だった。
+
+両jobのapt導入へ `libgtk-3-dev xvfb` を追加した。検査をskipに変更せず、
+GTKの実C compileと隔離Xvfb上のcallback検証を維持する。ローカルで関連12件、
+統合後のPython236件（既存skip7件）、workflowの固定版actionlintが成功した。
+新しいremote runでCI全体が成功したことは、別にrun IDと結果で確認する。
