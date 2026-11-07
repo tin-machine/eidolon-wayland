@@ -14,9 +14,35 @@ import time
 
 from native_build import ROOT
 from gui_probe_sdk import digest_sources, sdk_slice
+from gtk_interaction_evidence import resources as resource_slice, resource_retirement
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
 from sdl_lease_capture import CaptureError, MAX_SNAPSHOT, binding_key, canonical, decode, hexadecimal, need, select_snapshot
 from sdl_probe_run import DEBUG_VARIANTS, STAGES, VARIANTS, variant_environment
+
+
+def sdk_sample(value):
+    row = sdk_slice(value)
+    runtime = value["runtime"]["runtime"]
+    row["resources"] = resource_slice(value)
+    row["native_targets"] = [dict(target["key"]) for target in runtime["render"]["targets"]
+                             if target["key"]["session"] == runtime["app"]["session"]]
+    return row
+
+
+def sdk_resources_retired(baseline, samples):
+    """Mapped消失だけでなく、同jobの全SDK世代と元footの所有資源を照合する。"""
+    rows = [baseline, *samples]
+    if not samples or any("resources" not in row or "native_targets" not in row for row in rows):
+        return False
+    original = set(baseline["mapped"])
+    owned = {}
+    for row in rows:
+        for target in row["resources"]["targets"]:
+            key = target["key"]
+            if key["window"] not in original:
+                owned[tuple(key[name] for name in ("session", "window", "scene", "generation"))] = key
+    evidence = [dict(resources=row["resources"], targets=[dict(key=key) for key in row["native_targets"]]) for row in rows]
+    return resource_retirement(evidence, original, list(owned.values()))
 
 
 def summarize_sdk(baseline, samples):
@@ -90,9 +116,12 @@ def main():
         initial = snapshot()
         binding = select_snapshot(initial, digest, uid)
         need(device.adb("shell", "pidof", PACKAGE).strip() == str(binding["process_id"]), "APK_PROCESS_NOT_CURRENT")
-        baseline = sdk_slice(initial)
+        baseline = sdk_sample(initial)
         need(len(baseline["mapped"]) == 1, "ONE_BASELINE_WINDOW_REQUIRED")
         result["binding"] = binding
+        result["operator_source_sha256"] = {
+            path: hashlib.sha256((ROOT/path).read_bytes()).hexdigest() for path in
+            ("scripts/quest-run-sdl-probe", "scripts/gui_probe_sdk.py", "scripts/gtk_interaction_evidence.py", "scripts/sdl_probe_run.py")}
         sources = {}
         for name, relative in (("sdl-wayland-probe.c", "scripts/fixtures/sdl-wayland-probe.c"),
                                ("eidolon-sdl-probe.py", "scripts/termux/eidolon-sdl-probe.py")):
@@ -126,7 +155,7 @@ def main():
                     value = snapshot()
                     current = select_snapshot(value, digest, uid)
                     need(binding_key(current) == binding_key(binding), "APK_BINDING_CHANGED")
-                    sample = sdk_slice(value)
+                    sample = sdk_sample(value)
                     if not result["sdk_samples"] or result["sdk_samples"][-1]["sequence"] != sample["sequence"]:
                         need(len(result["sdk_samples"]) < 256, "SDK_SAMPLE_LIMIT")
                         result["sdk_samples"].append(sample)
@@ -158,7 +187,8 @@ def main():
                     else:
                         result["events"].append(event)
             if finished_at is not None and time.monotonic() - finished_at >= 3:
-                break
+                if args.stage != "render" or sdk_resources_retired(baseline, result["sdk_samples"]) or time.monotonic()-finished_at >= 8:
+                    break
             if child.poll() is not None and not selector.get_map() and finished_at is None:
                 break
         if finished_at is None:
@@ -170,11 +200,15 @@ def main():
         result["stderr_bytes"] = stderr_bytes
         need(digest_sources() == digest, "SOURCE_CHANGED")
         result["sdk_observation"] = summarize_sdk(baseline, result["sdk_samples"])
+        result["sdk_observation"]["resources_retired"] = sdk_resources_retired(baseline, result["sdk_samples"])
+        if not result["sdk_observation"]["resources_retired"]:
+            result["sdk_observation"]["status"] = "not_verified"
         if args.stage != "render":
             result["sdk_observation"].update(status="not_verified", diagnostic_only=True)
         expected = "completed" if args.stage == "render" else "diagnosed"
         result["status"] = expected if (isinstance(finished, dict) and finished.get("status") == expected and
-                                         not result.get("monitor_failure") and child.returncode == 0) else "failed"
+                                         not result.get("monitor_failure") and child.returncode == 0 and
+                                         (args.stage != "render" or result["sdk_observation"]["status"] == "observed")) else "failed"
         if result.get("blocked_reason") and not result["events"]:
             result["status"] = "blocked"
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, RuntimeError) as error:

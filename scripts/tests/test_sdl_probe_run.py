@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import copy
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -39,13 +40,14 @@ class HostCommandBudgetTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="sdl-budget-") as td:
             root=Path(td);sources=root/"source";artifacts=root/"artifacts"
             for name,data in (("scripts/sdl_probe_install.py",b"x"*(50*1024)),("scripts/sdl_lease_capture.py",b"fixed"),
-                              ("scripts/sdl_probe_run.py",b"fixed"),("scripts/fixtures/sdl-wayland-probe.c",b"fixed"),("scripts/termux/eidolon-sdl-probe.py",b"fixed")):
+                              ("scripts/sdl_probe_run.py",b"fixed"),("scripts/fixtures/sdl-wayland-probe.c",b"fixed"),("scripts/termux/eidolon-sdl-probe.py",b"fixed"),
+                              ("scripts/quest-run-sdl-probe",b"fixed"),("scripts/gui_probe_sdk.py",b"fixed"),("scripts/gtk_interaction_evidence.py",b"fixed")):
                 target=sources/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
             args=argparse.Namespace(serial="fixture",run_id="a"*32,binary_sha256="b"*64,manifest_sha256="c"*64,
                 variant="egl-wayland-softpipe-kopper-disabled-debug",stage="gl-load",artifact_root=artifacts)
             with patch.object(cli.argparse.ArgumentParser,"parse_args",return_value=args),patch.object(cli,"ROOT",sources),patch.object(cli,"QuestDevice",Device), \
                  patch.object(cli,"digest_sources",return_value="fixed"),patch.object(cli,"select_snapshot",return_value=dict(uid=10158,process_id=77,session="17")), \
-                 patch.object(cli,"sdk_slice",return_value=dict(mapped=[1])),patch.object(cli.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"{}",b"")), \
+                 patch.object(cli,"sdk_sample",return_value=dict(mapped=[1])),patch.object(cli.subprocess,"run",return_value=subprocess.CompletedProcess([],0,b"{}",b"")), \
                  patch.object(cli.subprocess,"Popen") as spawn,contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(cli.main(),1);spawn.assert_not_called()
             result=json.loads(next(artifacts.glob("*/result.json")).read_text())
@@ -366,6 +368,25 @@ class SdlOperatorTests(unittest.TestCase):
         self.assertEqual(cli.summarize_sdk(base, [a, a, end])["status"], "not_verified")
         self.assertEqual(cli.summarize_sdk(base, [a, b])["status"], "not_verified")
         self.assertEqual(cli.summarize_sdk(base, [a, b, dict(sequence="4", mapped=[], targets=[])])["status"], "not_verified")
+
+    def test_sdk_retirement_requires_every_full_target_and_preserves_original_owners(self):
+        # GTKと共通の実所有台帳fixture。SDLのframe gateとは独立して回収を検査する。
+        from test_gtk_interaction_live import sdk
+        def row(value):
+            return dict(mapped=[w["window"] for w in value["windows"]], resources=value["resources"],
+                        native_targets=[t["key"] for t in value["targets"]])
+        baseline, live, end = row(sdk(main=False)), row(sdk()), row(sdk(retired=True))
+        self.assertTrue(cli.sdk_resources_retired(baseline,[live,end]))
+        self.assertFalse(cli.sdk_resources_retired(dict(mapped=["1"]),[live,end]))
+        for mutate in (lambda r:r["retired"].clear(),
+                       lambda r:r["retired"][0].update(sdk_binding_released=False),
+                       lambda r:r["board"].update(cleanup_required=True),
+                       lambda r:r["owners"].update(mode_texture_owners=2)):
+            changed=copy.deepcopy(end);mutate(changed["resources"])
+            self.assertFalse(cli.sdk_resources_retired(baseline,[live,changed]))
+        replacement=copy.deepcopy(live)
+        replacement["resources"]["targets"][-1]["key"]["generation"]="8"
+        self.assertFalse(cli.sdk_resources_retired(baseline,[live,replacement,end]))
 
     def test_invalid_control_fd_is_rejected_before_spawn(self):
         request = self.prepare()
