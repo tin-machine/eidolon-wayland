@@ -282,6 +282,36 @@ class BionicAdapterTests(unittest.TestCase):
         with patch.object(OWNER.platform,'machine',return_value='x86_64'),self.assertRaisesRegex(OWNER.OwnershipError,'PIDFD_UNSUPPORTED'):OWNER._Pidfds()
 
 
+class KernelChildProofTests(unittest.TestCase):
+    def test_only_echild_is_empty_live_and_waitable_children_are_not(self):
+        with patch.object(OWNER.os,'waitid',side_effect=ChildProcessError(errno.ECHILD,'fixed')):self.assertTrue(OWNER.kernel_children_absent())
+        for value in (None,object()):
+            with patch.object(OWNER.os,'waitid',return_value=value):self.assertFalse(OWNER.kernel_children_absent())
+        with patch.object(OWNER.os,'waitid',side_effect=PermissionError(errno.EACCES,'fixed')),self.assertRaises(PermissionError):OWNER.kernel_children_absent()
+    def scan(self,hidden=None):
+        actual=os.scandir('/proc');entries=list(actual);actual.close()
+        current=next(entry for entry in entries if entry.name==str(os.getpid()))
+        class Denied:
+            name=str(hidden or 2147483647)
+            def stat(self,**_):raise PermissionError(errno.EACCES,'fixed')
+        @contextlib.contextmanager
+        def entries(_):yield iter([current,Denied()])
+        return patch.object(OWNER.os,'scandir',side_effect=entries)
+    def test_denied_foreign_pid_stat_is_skipped_but_hidden_live_and_zombie_children_block_empty(self):
+        owner=OWNER.identity(os.getpid())
+        with self.scan():self.assertEqual(OWNER.proc_descendants(owner,time.monotonic()+1),{})
+        child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(.2)'],start_new_session=True)
+        try:
+            with self.scan(child.pid),self.assertRaisesRegex(OWNER.OwnershipError,'PROCESS_CHILDREN_UNVERIFIED'):
+                OWNER.proc_descendants(owner,time.monotonic()+1)
+            deadline=time.monotonic()+2
+            while os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is None:
+                self.assertLess(time.monotonic(),deadline);time.sleep(.01)
+            with self.scan(child.pid),self.assertRaisesRegex(OWNER.OwnershipError,'PROCESS_CHILDREN_UNVERIFIED'):
+                OWNER.proc_descendants(owner,time.monotonic()+1)
+        finally:child.wait(timeout=2)
+
+
 if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] in {'--worker', '--child'} and sys.argv[2] in CASES:
         if sys.argv[1] == '--child': child(sys.argv[2])

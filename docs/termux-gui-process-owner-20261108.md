@@ -50,6 +50,13 @@ Linuxでは既存Python wrapperを使う。他architectureへの番号の外挿�
 adapterが開いたlive fdだけをinstance内で追跡し、close時に集合から除く。番号再利用後の別fdを送信先にしない。
 元のunsupported結果は保持し、この修正後のcapabilityを別runで判断する。
 
+Android対応後の次runもspawn前で停止し、他PIDの`/proc/<pid>` directory statがEACCESになることを確認した。
+以後はUIDを確認する前の他PID directory stat拒否をskipする。一方、空snapshotには必ずkernelのchild証拠を加える。
+`waitid(P_ALL, WEXITED|WNOHANG|WNOWAIT)`がECHILDの時だけ空を認め、Noneのlive/stopped child、
+waitable zombie、権限不明を空へ変換しない。この条件は専用ownerの初期取得と終了時の二回空scanの両方に適用する。
+kernelが知らせたPIDをsignal先にする変更は無い。隠れたown childはpendingで保持する。
+fixtureでは他PID stat拒否のskipと、意図的にprocから隠した自分のlive child/zombieが完了を妨げることを確認する。
+
 通常GUIの実装では、worker hashを既存helper本体へ固定し、親helperはworkerの実handleを保持する。
 pending workerを強制killして孫の所有を失った状態を「回収済み」にしない。
 最初のGUIから使える隠れFootserver anchor、最後のGUI終了後のanchor維持、session Stop時のworker→anchor回収を

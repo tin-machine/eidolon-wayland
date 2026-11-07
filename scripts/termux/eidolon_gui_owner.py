@@ -1,5 +1,6 @@
 """固定GUI専用workerの子孫所有。C2aと同じpidfd境界をTermux procへ適用する。"""
 import ctypes
+import errno
 import os
 from pathlib import Path
 import platform
@@ -82,6 +83,20 @@ def same_process(first, second):
     return all(first[key] == second[key] for key in ('pid', 'start', 'uid'))
 
 
+def kernel_children_absent():
+    """専用subreaperのkernel child集合。None/live/zombieを空に変換しない。"""
+    try:os.waitid(os.P_ALL,0,os.WEXITED|os.WNOHANG|os.WNOWAIT)
+    except ChildProcessError as error:
+        if error.errno==errno.ECHILD:return True
+        raise
+    return False
+
+
+def require_empty_proof(rows):
+    if not rows:require(kernel_children_absent(),'PROCESS_CHILDREN_UNVERIFIED')
+    return rows
+
+
 def children(row, budget, deadline):
     """threadがforkしたchildも列挙する。途中のexit/reparentは成功判定せずscanを再試行。"""
     directory = Path('/proc') / str(row['pid']) / 'task'
@@ -124,7 +139,7 @@ def descendant_snapshot(owner, deadline=None):
             require(len(rows) + len(pending) < MAX_PROCESSES, 'PROCESS_SCAN_LIMIT')
             pending.append((identity(pid), row['pid']))
     require(len(rows) <= MAX_PROCESSES, 'PROCESS_SCAN_LIMIT')
-    return rows
+    return require_empty_proof(rows)
 
 
 def proc_descendants(owner,deadline):
@@ -134,7 +149,10 @@ def proc_descendants(owner,deadline):
             if not entry.name.isdecimal():continue
             count+=1;require(count<=MAX_PROC_ENTRIES and time.monotonic()<deadline,'PROCESS_SCAN_LIMIT')
             try:
-                if entry.stat(follow_symlinks=False).st_uid!=os.getuid():continue
+                info=entry.stat(follow_symlinks=False)
+            except (FileNotFoundError,ProcessLookupError,PermissionError):continue
+            if info.st_uid!=os.getuid():continue
+            try:
                 row=identity(int(entry.name));require(row['uid']==owner['uid'],'DESCENDANT_UID_CHANGED');rows[row['pid']]=row
             except (FileNotFoundError,ProcessLookupError):continue
             require(len(rows)<=MAX_PROCESSES,'PROCESS_SCAN_LIMIT')
@@ -151,7 +169,7 @@ def proc_descendants(owner,deadline):
         require(time.monotonic()<deadline,'PROCESS_SCAN_LIMIT')
         now=identity(pid);require(same_process(row,now) and row['parent']==now['parent'],'PROCESS_CHANGED')
     require(same_process(owner,identity(owner['pid'])),'OWNER_CHANGED')
-    return found
+    return require_empty_proof(found)
 
 
 class ProcessOwner:
