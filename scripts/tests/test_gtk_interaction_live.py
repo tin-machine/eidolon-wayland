@@ -228,8 +228,12 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(proof.summarize(samples,{"1"},"dialog",[client("dialog")],dict(result="completed"))["status"],"not_verified")
         self.assertEqual(proof.summarize([sdk(main=False),sdk(dialog=True),*samples[1:]],{"1"},"dialog",[client("dialog")],dict(result="completed"))["status"],"observed")
         self.assertFalse(proof.summarize(samples,{"1"},"resize",[client("resize")],dict(result="completed"))["sdk_resize_gate"])
-        sizes=[sdk(main=False),sdk(size=dict(width=800,height=500),phase="applied"),sdk(phase="applied"),sdk(retired=True)]
-        self.assertEqual(proof.summarize(sizes,{"1"},"resize",[client("resize")],dict(result="completed"))["status"],"observed")
+        _,large,_,_=ResizeObservationTests().ready()
+        retired=sdk(retired=True);retired["resources"]["retired"].append(dict(retired["resources"]["retired"][0],key=dict(session="2",window="5",scene="3",generation="6")))
+        sizes=[sdk(main=False),large,sdk(phase="applied"),retired]
+        android=OwnedResizeReceiptTests().row();observed=ResizeObservationTests().observation(android)
+        self.assertEqual(proof.summarize(sizes,{"1"},"resize",[client("resize")],android,observed)["status"],"observed")
+        self.assertEqual(proof.summarize(sizes,{"1"},"resize",[client("resize")],android)["status"],"not_verified")
     def test_missing_mapped_and_render_targets_cannot_hide_sdk_board_or_mode_leaks(self):
         samples=[sdk(main=False),sdk(),sdk(retired=True)]
         self.assertTrue(proof.summarize(samples,{"1"},"input",[client()],dict(result="completed"))["all_retired"])
@@ -368,6 +372,93 @@ class HostJobTests(unittest.TestCase):
             self.assertEqual(report["physical_input"],"not_run")
 
 
+class ResizeHostJobTests(unittest.TestCase):
+    def test_return_is_broadcast_once_only_after_large_c_and_matching_sdk_snapshot(self):
+        with tempfile.TemporaryDirectory(prefix="gtk-resize-host-") as directory:
+            root=Path(directory);marker=root/"step";state=dict(spawned=False,phase="before",returns=0,large_snapshots=0)
+            final=OwnedResizeReceiptTests().row()
+            def snapshot():
+                phase=state["phase"];retired=phase=="retired";main=state["spawned"] and not retired
+                large=phase=="large";operated=phase in {"operations","retired"}
+                generation="6" if large else "8" if operated else "4";epoch=3 if large else 5 if operated else 1
+                content="3" if large else "4" if operated else "2"
+                windows=[dict(window="1",app_id="baseline",life="Mapped",frame="1",logical_size=dict(width=1024,height=768),resize=dict(phase="idle"))]
+                targets=[dict(key=dict(session="2",window="1",scene="3",generation="4"),frames=4,content_frame="1")]
+                if main:
+                    size=dict(width=800,height=500) if large else dict(width=640,height=360)
+                    target=dict(session="2",window="5",scene="3",generation=generation)
+                    resize=dict(phase="idle")
+                    if large or operated:
+                        step=final["steps"][1 if large else 2];old=final["steps"][0 if large else 1]["target"]
+                        resize=dict(phase="applied",error=None,request=dict(request_id=step["resize_request"],target=old,width=size["width"],height=size["height"]),
+                            requested_logical_size=size,configured_logical_size=size,committed_size=size,
+                            **{n:step[n] for n in ("configured_serial","acknowledged_serial","committed_serial")})
+                    windows.append(dict(window="5",app_id=gui.app_ids(NONCE)[0],life="Mapped",frame=content,logical_size=size,resize=resize))
+                    targets.append(dict(key=target,frames=4,content_frame=content,content_size=size,presentation_paused=False))
+                runtime=dict(state="Ready",activity_visible=True,xr_state="FOCUSED",scene="3",app=dict(session="2",windows=windows,
+                    input=dict(focus_window=None,pressed=0,delivered=4,pointer=dict(pressed=0,buttons=0))),input_resets=epoch,render=dict(targets=targets))
+                adapter=raw_resources(runtime,retired)
+                for bound in adapter["targets"]:bound["runtime"]="9"
+                if retired:
+                    for g in ("6","8"):adapter["retired"].append(dict(runtime="9",target=dict(session="2",window="5",scene="3",generation=g),entity="500",sdk_disposed=True,sdk_binding_released=True,disposal_failed=False))
+                sequence="5" if retired else "4" if operated else "3" if large else "2" if state["spawned"] else "1"
+                value=dict(sequence=sequence,runtime=dict(handle="9",runtime=runtime),adapter=adapter)
+                if phase!="before":
+                    receipt=copy.deepcopy(final)
+                    if large:
+                        state["large_snapshots"]+=1;receipt.update(steps=receipt["steps"][:2],result="running",phase="LARGE_READY",input_epoch=3,
+                            target=receipt["steps"][1]["target"],resize_observation=dict(state="LARGE_READY",return_requests=0))
+                    elif not retired:receipt.update(steps=receipt["steps"][:3],result="running",phase="OPERATIONS_COMPLETE")
+                    value["check"]=receipt
+                return value
+            class Device:
+                def __init__(self,*_):pass
+                def validate(self):return dict(model="Quest 3",api=34)
+                def adb(self,*args,**kwargs):
+                    if args[:2]==("shell","pidof"):return "12345"
+                    if "pm" in args:return "package:com.termux uid:10158\n"
+                    if "broadcast" in args:
+                        action=args[args.index("case")+1]
+                        if action=="gtk-resize":state["phase"]="large";marker.write_text("large")
+                        if action=="gtk-resize-return":
+                            if state["phase"]!="large" or state["large_snapshots"]<1:raise AssertionError("return before current large snapshot")
+                            state["returns"]+=1;state["phase"]="operations";marker.write_text("returned")
+                        if action=="gtk-close":state["phase"]="retired";marker.write_text("retired")
+                    return ""
+            original_popen=subprocess.Popen
+            def spawn(*args,**kwargs):
+                state["spawned"]=True
+                ready=client("resize",phase="ready");large=client("resize",phase="state",sequence=2)
+                large.update(logical_size=[800,500],resize_large_seen=True)
+                complete=client("resize",phase="state",sequence=3);complete.update(resize_large_seen=True,resize_return_seen=True,complete=True)
+                final_client=client("resize",sequence=4)
+                remote=dict(schema=1,operator=gui.OPERATOR,status="observed",nonce=NONCE,binary_sha256="c"*64,manifest_sha256="d"*64,
+                    cleanup_confirmed=True,reaped=True,group_reclaimed=True,pipes_drained=True)
+                source=("import sys,json,os,time\nfrom pathlib import Path\nr=json.loads(sys.stdin.readline())\n"
+                    f"marker=Path({str(marker)!r})\n"
+                    "def emit(v):print(json.dumps(v),flush=True)\n"
+                    f"emit(dict(phase='validated',nonce={NONCE!r}));emit(dict(phase='started',child_pid=os.getpid(),child_group=os.getpid()))\n"
+                    f"emit(dict(phase='fixture',report={ready!r}))\n"
+                    "while not marker.exists():time.sleep(.01)\n"
+                    f"emit(dict(phase='fixture',report={large!r}))\n"
+                    "while marker.read_text()=='large':time.sleep(.01)\n"
+                    f"emit(dict(phase='fixture',report={complete!r}))\n"
+                    "while marker.read_text()!='retired':time.sleep(.01)\n"
+                    f"emit(dict(phase='fixture',report={final_client!r}));emit(dict(phase='finished',result={remote!r}))\n")
+                return original_popen([sys.executable,"-c",source],**kwargs)
+            args=argparse.Namespace(serial="fixture",case="resize",run_id="b"*32,binary_sha256="c"*64,manifest_sha256="d"*64,artifact_root=root/"artifacts")
+            binding=dict(handle="9",process_id=12345,session="2")
+            with patch.object(cli.argparse.ArgumentParser,"parse_args",return_value=args),patch.object(cli,"QuestDevice",Device), \
+                 patch.object(cli.secrets,"token_hex",return_value=NONCE),patch.object(cli,"digest_sources",return_value="e"*64), \
+                 patch.object(cli,"select_snapshot",return_value=binding),patch.object(cli.subprocess,"Popen",side_effect=spawn), \
+                 patch.object(cli.subprocess,"run",side_effect=lambda *a,**k:SimpleNamespace(returncode=0,stdout=canonical(snapshot()))),contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(),0)
+            result=json.loads(next((root/"artifacts").glob("*/result.json")).read_text())
+            self.assertEqual(state["returns"],1);self.assertEqual(result["status"],"observed")
+            self.assertEqual(result["resize_observation"]["target"]["generation"],"6")
+            self.assertTrue(result["evidence"]["sdk_resize_gate"] and result["evidence"]["host_resize_observation_gate"] and result["evidence"]["all_retired"])
+
+
 class CancelDrainTests(unittest.TestCase):
     def drain(self, source):
         import selectors
@@ -472,7 +563,8 @@ class OwnedResizeReceiptTests(unittest.TestCase):
         return dict(case="gtk-resize",nonce=NONCE,result="completed",phase="COMPLETE",reason=None,scope="target_bound_synthetic_native",
             physical_input_verified=False,ime_verified=False,host_physical_filter_verified=False,runtime="9",session="2",scene="3",main_window="5",
             target=steps[-1]["target"],input_epoch=5,foot_windows=["1"],steps=steps,input_progress=None,
-            resize_replacement=dict(request_id=None,pending=False,readiness=None,acknowledged=False,old_retirement_seen=False,reason="RESIZE_IDLE"))
+            resize_replacement=dict(request_id=None,pending=False,readiness=None,acknowledged=False,old_retirement_seen=False,reason="RESIZE_IDLE"),
+            resize_observation=dict(state="COMPLETE",return_requests=1))
 
     def validate(self,row):return proof.android_receipt(dict(check=row),NONCE,"resize")
 
@@ -508,5 +600,79 @@ class OwnedResizeReceiptTests(unittest.TestCase):
         status["readiness"]["producer_advanced"]=True;status["readiness"]["body"]="PRIVATE"
         with self.assertRaisesRegex(CaptureError,"GTK_ANDROID_RESIZE_STATUS"):self.validate(row)
 
+
+
+class ResizeObservationTests(unittest.TestCase):
+    def observation(self,android):
+        step=android["steps"][1]
+        return dict(sequence="2",target=step["target"],resize_request=step["resize_request"],logical_size=dict(width=800,height=500),
+            content_frame="3",**{n:step[n] for n in ("configured_serial","acknowledged_serial","committed_serial")})
+
+    def ready(self):
+        receipt=OwnedResizeReceiptTests().row();receipt.update(phase="LARGE_READY",result="running",steps=receipt["steps"][:2])
+        step=receipt["steps"][-1];receipt.update(target=step["target"],input_epoch=step["input_epoch"],resize_observation=dict(state="LARGE_READY",return_requests=0))
+        target=step["target"];size=dict(width=800,height=500)
+        window=dict(window="5",life="Mapped",frame="3",logical_size=size,resize=dict(phase="applied",error=None,
+            request=dict(request_id=step["resize_request"],target=receipt["steps"][0]["target"],width=800,height=500),
+            requested_logical_size=size,configured_logical_size=size,committed_size=size,
+            **{n:step[n] for n in ("configured_serial","acknowledged_serial","committed_serial")}))
+        render=dict(key=target,frames=4,content_frame="3",content_size=size,presentation_paused=False)
+        runtime=dict(state="Ready",activity_visible=True,xr_state="FOCUSED",scene="3",app=dict(session="2",windows=[window]),
+            panels=[dict(target=target,action="create",applied=True,error=None)],render=dict(targets=[render]))
+        bound=dict(target=target,runtime="9",retiring=False,sdk_disposed=False,disposal_failed=False,listener_owned=True,input_owned=True)
+        value=dict(sequence="2",runtime=dict(handle="9",runtime=runtime),adapter=dict(targets=[bound]))
+        sample=sdk(size=size,phase="applied");sample["sequence"]="2";sample["epoch"]=3
+        sample["windows"][1]["frame"]="3";sample["targets"][1].update(key=target,content_frame="3")
+        row=client("resize",phase="state");row.update(logical_size=[800,500],resize_large_seen=True)
+        return value,sample,row,receipt
+
+    def test_same_large_full_target_current_draw_and_c_counter_allow_one_observation(self):
+        values=self.ready();observed=proof.resize_large_observed(*values)
+        self.assertEqual(observed,self.observation(values[-1]))
+        self.assertEqual(proof.android_receipt(dict(check=values[-1]),NONCE,"resize"),values[-1])
+        completed=OwnedResizeReceiptTests().row()
+        self.assertTrue(proof.resize_observation_matches(observed,completed))
+        values[-1]["resize_observation"]["return_requests"]=1
+        self.assertIsNone(proof.resize_large_observed(*values))
+
+    def test_early_c_late_size_wrong_generation_and_held_input_never_send_return(self):
+        mutations=[lambda v,s,c,a:c.update(resize_large_seen=False),lambda v,s,c,a:c.update(resize_return_seen=True),
+            lambda v,s,c,a:c.update(run_id="b"*32),lambda v,s,c,a:a.update(phase="WAIT_LARGE"),
+            lambda v,s,c,a:s.update(pressed=1),lambda v,s,c,a:s.update(pointer_pressed=1),lambda v,s,c,a:s.update(epoch=4),
+            lambda v,s,c,a:s.update(delivered=5),lambda v,s,c,a:v["runtime"].update(handle="10"),
+            lambda v,s,c,a:v["runtime"]["runtime"]["app"]["windows"][0]["resize"].update(phase="awaiting_commit"),
+            lambda v,s,c,a:v["runtime"]["runtime"]["app"]["windows"][0]["resize"]["request"].update(request_id="999"),
+            lambda v,s,c,a:v["runtime"]["runtime"]["app"]["windows"][0].update(logical_size=dict(width=640,height=360)),
+            lambda v,s,c,a:v["runtime"]["runtime"]["render"]["targets"][0].update(content_frame="2"),
+            lambda v,s,c,a:v["runtime"]["runtime"]["render"]["targets"][0].update(presentation_paused=True),
+            lambda v,s,c,a:v["adapter"]["targets"][0].update(target=dict(a["target"],generation="9")),
+            lambda v,s,c,a:v["adapter"]["targets"][0].update(sdk_disposed=True),
+            lambda v,s,c,a:v["runtime"]["runtime"]["panels"][0].update(applied=False)]
+        for change in mutations:
+            values=self.ready();change(*values)
+            self.assertIsNone(proof.resize_large_observed(*values),change)
+
+    def test_saved_large_snapshot_must_match_the_observation_sequence_target_and_frame(self):
+        _,sample,_,_=self.ready();android=OwnedResizeReceiptTests().row();observation=self.observation(android)
+        self.assertTrue(proof.resize_observation_recorded([sample],observation,android))
+        for mutate in (lambda s:s.update(sequence="99"),lambda s:s["targets"][1].update(key=dict(observation["target"],generation="9")),
+                       lambda s:s["windows"][1].update(resize_phase="awaiting_commit"),lambda s:s["targets"][1].update(content_frame="2")):
+            changed=copy.deepcopy(sample);mutate(changed)
+            self.assertFalse(proof.resize_observation_recorded([changed],observation,android))
+        self.assertFalse(proof.resize_observation_recorded([],observation,android))
+
+    def test_old_schema_or_duplicate_ack_count_cannot_be_relabelled_completed(self):
+        for mutate in (lambda r:r.pop("resize_observation"),lambda r:r["resize_observation"].update(return_requests=True),
+                       lambda r:r["resize_observation"].update(return_requests=0),lambda r:r["resize_observation"].update(return_requests=2),
+                       lambda r:r["resize_observation"].update(state="LARGE_READY")):
+            row=OwnedResizeReceiptTests().row();mutate(row)
+            with self.assertRaises(CaptureError):proof.android_receipt(dict(check=row),NONCE,"resize")
+
+    def test_host_observation_cannot_claim_other_request_target_or_opaque_serial(self):
+        android=OwnedResizeReceiptTests().row()
+        for mutate in (lambda r:r.update(resize_request="101"),lambda r:r["target"].update(generation="9"),
+                       lambda r:r.update(committed_serial=4),lambda r:r.update(configured_serial=True),lambda r:r.update(body="PRIVATE")):
+            observed=copy.deepcopy(self.observation(android));mutate(observed)
+            self.assertFalse(proof.resize_observation_matches(observed,android))
 
 if __name__=="__main__":unittest.main()

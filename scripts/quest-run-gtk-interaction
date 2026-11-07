@@ -16,7 +16,7 @@ import zlib
 
 from gui_probe_sdk import digest_sources
 from gtk_interaction_run import CASES, OPERATOR, completed
-from gtk_interaction_evidence import ReceiptLedger, baseline_resources, android_receipt, current_frame, ready, sample, summarize
+from gtk_interaction_evidence import ReceiptLedger, baseline_resources, android_receipt, current_frame, ready, sample, summarize, resize_large_observed
 from native_build import ROOT
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
 from sdl_lease_capture import CaptureError, MAX_SNAPSHOT, binding_key, canonical, decode, hexadecimal, need, select_snapshot
@@ -80,6 +80,7 @@ def main():
     device = QuestDevice(args.serial,run)
     result = dict(schema=1,operator=OPERATOR,status="failed",case=args.case,nonce=nonce,run_id=args.run_id,
                   sdk_samples=[],fixture_reports=[],android_receipts=[],events=[],physical_input="not_run",ime="not_run",hmd="not_run")
+    resize_observation=None
     child=selector=None;cancelled=started_android=closed_android=dismissed_android=False;initial_content=None
     pending=bytearray();sizes=dict(stdout=0,stderr=0);finished=ended=None
     def control_cancel():
@@ -169,17 +170,23 @@ def main():
                 broadcast("gtk-"+args.case);started_android=True
             if not cancelled and started_android and not dismissed_android and latest_android and latest_android["phase"]=="DIALOG_READY" and last_row and last_row["dialog_visible"] and last_row["dialog_draws"]>=1 and current_frame(latest,"dialog") is not None:
                 broadcast("gtk-dialog-dismiss");dismissed_android=True
+            if not cancelled and finished is None and args.case=="resize" and started_android and resize_observation is None and latest_android:
+                observed=resize_large_observed(value,latest,last_row,latest_android)
+                if observed is not None:
+                    # sampleは既に保存済み。一回だけnonce固定receiverへ進行を許可する。
+                    resize_observation=observed;result["resize_observation"]=observed
+                    broadcast("gtk-resize-return")
             fresh=current_frame(latest,"main") if latest else None
             if not cancelled and finished is None and started_android and not closed_android and latest_android and latest_android["phase"]=="OPERATIONS_COMPLETE" and completed(last_row,args.case) and fresh is not None and (args.case!="input" or fresh>initial_content):
                 broadcast("gtk-close");closed_android=True
-            if ended is not None and latest_android and latest_android["result"]=="completed" and summarize(result["sdk_samples"],baseline,args.case,result["fixture_reports"],latest_android)["all_retired"]:break
+            if ended is not None and latest_android and latest_android["result"]=="completed" and summarize(result["sdk_samples"],baseline,args.case,result["fixture_reports"],latest_android,resize_observation)["all_retired"]:break
             if ended is not None and time.monotonic()-ended>=8:break
             if child.poll() is not None and not selector.get_map() and ended is None:break
         if ended is None:control_cancel()
         close_input();child.wait(timeout=6)
         result.update(remote_returncode=child.returncode,remote_result=finished,output_bytes=sizes)
         need(digest_sources()==digest and operator_hashes()==source_pins,"SOURCE_CHANGED")
-        result["evidence"]=summarize(result["sdk_samples"],baseline,args.case,result["fixture_reports"],latest_android)
+        result["evidence"]=summarize(result["sdk_samples"],baseline,args.case,result["fixture_reports"],latest_android,resize_observation)
         result["status"]="observed" if finished and finished.get("status")=="observed" and child.returncode==0 and result["evidence"]["status"]=="observed" and not result.get("android_failure") else "failed"
     except (OSError,ValueError,TypeError,KeyError,RuntimeError,subprocess.SubprocessError) as error:
         result["reason"]=error.reason if isinstance(error,CaptureError) else "GTK_HOST_OPERATOR_UNAVAILABLE";control_cancel()

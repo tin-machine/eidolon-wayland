@@ -16,11 +16,12 @@ object GtkFixtureCase {
     fun command(name:String,nonce:String) {
         check(Looper.myLooper()==Looper.getMainLooper())
         val current=active
-        if(name in setOf("gtk-close","gtk-cancel","gtk-dialog-dismiss")) {
+        if(name in setOf("gtk-close","gtk-cancel","gtk-dialog-dismiss","gtk-resize-return")) {
             if(current?.nonce!=nonce) return
             when(name) {
                 "gtk-cancel" -> current.finish("cancelled","GTK_HOST_CANCEL")
                 "gtk-dialog-dismiss" -> if(current.name=="dialog" && current.phase=="DIALOG_READY") current.dismissRequested=true
+                "gtk-resize-return" -> if(current.name=="resize" && current.phase=="LARGE_READY" && current.resizeObservation.requestReturn()) current.publish()
                 else -> current.closeRequested=true
             }
         } else if(current==null) {
@@ -41,6 +42,7 @@ object GtkFixtureCase {
         var trial:NativeSessionHost.DebugInputTrial?=null
         val ownedTargets=mutableSetOf<GtkFixtureBinding.Target>()
         var epoch=0L;var token="";var keys=0L;var buttons=0L;var stageStarted=started
+        val resizeObservation=GtkResizeObservation()
         var progress:GtkInputProgress?=null
         var inputProgress:JSONObject?=null
         fun publish(result:String="running",reason:String?=null) {
@@ -52,7 +54,10 @@ object GtkFixtureCase {
                 .put("scene",binding?.scene ?: JSONObject.NULL).put("main_window",mainWindow.ifEmpty {null} ?: JSONObject.NULL)
                 .put("target",currentTarget?.json() ?: JSONObject.NULL).put("input_epoch",epoch)
                 .put("foot_windows",JSONArray(foot.sorted())).put("steps",rows).put("input_progress",inputProgress ?: JSONObject.NULL).also {
-                    if(name=="resize") it.put("resize_replacement",trial?.let {captured->NativeSessionHost.debugInputResizeStatus(captured)} ?: JSONObject.NULL)
+                    if(name=="resize") {
+                        it.put("resize_replacement",trial?.let {captured->NativeSessionHost.debugInputResizeStatus(captured)} ?: JSONObject.NULL)
+                        it.put("resize_observation",JSONObject().put("state",resizeObservation.state.name).put("return_requests",resizeObservation.returnRequests))
+                    }
                 })
         }
         fun record(stage:String,runtime:JSONObject,target:GtkFixtureBinding.Target?=currentTarget) {
@@ -116,13 +121,14 @@ object GtkFixtureCase {
                 .put("resize_request",receipt.request).put("old_target",receipt.oldTarget).put("replacement",receipt.replaced)
                 .put("configured_serial",receipt.configuredSerial).put("acknowledged_serial",receipt.acknowledgedSerial)
                 .put("committed_serial",receipt.committedSerial).put("width",receipt.width).put("height",receipt.height))
-            publish();return true
+            return true
         }
         fun transition(value:String) {phase=value;stageStarted=SystemClock.elapsedRealtime();publish()}
         fun finish(requestedResult:String,requestedReason:String?=null) {
             if(done) return
             val lost=requestedResult=="completed" && trial?.let {NativeSessionHost.debugFinishInput(it)}!=true
             val result=if(lost) "failed" else requestedResult;val reason=if(lost) "GTK_INTENT_LOST" else requestedReason
+            if(result!="completed" && name=="resize") resizeObservation.cancel()
             done=true;ui.removeCallbacks(this)
             // このsourceだけを取消。外部intent後のfocusや全inputをreset/restoreしない。
             currentTarget?.let {target->owner?.let {binding->runCatching {
@@ -221,10 +227,24 @@ object GtkFixtureCase {
                         }
                         "WAIT_DIALOG_CLOSED" -> if(counters && dialog==null) {record("dialog_retired",runtime);transition("OPERATIONS_COMPLETE")}
                         "WAIT_LARGE" -> if(adoptResize("large")) {
-                            resize(checkNotNull(mainTarget),640,360);transition("WAIT_RETURN")
+                            resizeObservation.largeReady(checkNotNull(mainTarget).json().toString());transition("LARGE_READY")
+                        }
+                        "LARGE_READY" -> {
+                            val target=checkNotNull(mainTarget)
+                            check(GtkFixtureBinding.window(runtime,appId)?.getString("window")==mainWindow) {"GTK_WINDOW_CHANGED"}
+                            val panels=runtime.getJSONArray("panels")
+                            val current=(0 until panels.length()).map {panels.getJSONObject(it)}
+                                .filter {it.optString("action")=="create"}.map {GtkFixtureBinding.target(it.getJSONObject("target"))}
+                                .filter {it.session==target.session && it.window==target.window && it.scene==target.scene}
+                            check(current==listOf(target)) {"GTK_TARGET_CHANGED"}
+                            check(SystemClock.elapsedRealtime()-stageStarted<8000) {"GTK_RESIZE_OBSERVATION_TIMEOUT"}
+                            // 同世代の一時的なrepaint待ちはtarget交換ではない。最終enqueueは既存Hostのatomic gateを通す。
+                            if(NativeSessionHost.debugInputTarget(checkNotNull(trial),target.json())!=null && resizeObservation.beginReturn(target.json().toString())) {
+                                resize(checkNotNull(mainTarget),640,360);transition("WAIT_RETURN")
+                            }
                         }
                         "WAIT_RETURN" -> if(adoptResize("returned")) {
-                            seal();transition("OPERATIONS_COMPLETE")
+                            resizeObservation.complete();seal();transition("OPERATIONS_COMPLETE")
                         }
                         "OPERATIONS_COMPLETE" -> if(counters && closeRequested) {
                             check(GtkFixtureBinding.window(runtime,appId)?.getString("window")==mainWindow) {"GTK_WINDOW_CHANGED"}

@@ -204,17 +204,25 @@ def android_receipt(value, nonce, case):
     if type(row) is not dict or row.get("case") != "gtk-"+case or row.get("nonce") != nonce: return None
     fields={"case", "nonce", "result", "phase", "reason", "scope", "physical_input_verified", "ime_verified",
             "host_physical_filter_verified", "runtime", "session", "scene", "main_window", "target", "input_epoch", "foot_windows", "steps", "input_progress"}
-    if case=="resize":fields.add("resize_replacement")
+    if case=="resize":fields.update({"resize_replacement","resize_observation"})
     need(set(row)==fields,"GTK_ANDROID_SCHEMA")
     input_progress(row["input_progress"])
     if case=="resize":need(row["input_progress"] is None,"GTK_ANDROID_PROGRESS_SCHEMA")
     elif row["result"]=="completed":need(row["input_progress"] is not None and row["input_progress"]["state"]=="complete","GTK_ANDROID_PROGRESS_COMPLETE")
-    if case=="resize":resize_status(row["resize_replacement"])
+    if case=="resize":
+        resize_status(row["resize_replacement"])
+        observation=row["resize_observation"]
+        need(type(observation) is dict and set(observation)=={"state","return_requests"} and
+             observation["state"] in {"WAITING_LARGE","LARGE_READY","WAIT_RETURN","COMPLETE","CANCELLED"} and
+             type(observation["return_requests"]) is int and observation["return_requests"] in {0,1},"GTK_ANDROID_RESIZE_OBSERVATION")
+        if row["result"]=="completed":need(observation==dict(state="COMPLETE",return_requests=1),"GTK_ANDROID_RESIZE_OBSERVATION")
+        if row["phase"]=="LARGE_READY":need(observation["state"]=="LARGE_READY","GTK_ANDROID_RESIZE_OBSERVATION")
+        if row["phase"]=="WAIT_RETURN":need(observation==dict(state="WAIT_RETURN",return_requests=1),"GTK_ANDROID_RESIZE_OBSERVATION")
     need(row["scope"] == "target_bound_synthetic_native" and all(row[k] is False for k in
          ("physical_input_verified", "ime_verified", "host_physical_filter_verified")) and row["result"] in
          {"running", "completed", "failed", "unsupported", "cancelled"}, "GTK_ANDROID_SCOPE")
     need(row["phase"] in {"START", "WAIT_FOCUS", "WAIT_KEYS", "WAIT_CLICK", "WAIT_DIALOG", "WAIT_DIALOG_FOCUS", "DIALOG_READY", "WAIT_DIALOG_CLOSED",
-                          "WAIT_LARGE", "WAIT_RETURN", "OPERATIONS_COMPLETE", "CLOSING", "COMPLETE", "UNSUPPORTED", "CANCELLED"}, "GTK_ANDROID_PHASE")
+                          "WAIT_LARGE", "LARGE_READY", "WAIT_RETURN", "OPERATIONS_COMPLETE", "CLOSING", "COMPLETE", "UNSUPPORTED", "CANCELLED"}, "GTK_ANDROID_PHASE")
     need(row["reason"] is None or type(row["reason"]) is str and __import__("re").fullmatch(r"(?:GTK_[A-Z_]+|DIALOG_TARGET_UNAVAILABLE)", row["reason"]), "GTK_ANDROID_REASON")
     need(all(row[k] is None or decimal(row[k]) for k in ("runtime", "session", "scene", "main_window")) and
          type(row["input_epoch"]) is int and row["input_epoch"] >= 0 and type(row["steps"]) is list and len(row["steps"]) <= 24 and
@@ -245,6 +253,57 @@ def current_frame(sample, role):
         if target["key"]["window"]==window["window"] and content is not None and target["frames"]>=1 and window.get("frame") is not None and int(content)>=int(window["frame"]):
             return int(content)
     return None
+
+
+def resize_large_observed(value, sdk_sample, fixture, android):
+    """現在の同full targetの800x500をPCが保存してから、一回のreturnだけを許可する。"""
+    if not android or android.get("phase")!="LARGE_READY" or android.get("resize_observation")!=dict(state="LARGE_READY",return_requests=0):return None
+    if not fixture or fixture.get("case")!="resize" or fixture.get("run_id")!=android.get("nonce") or fixture.get("phase") not in {"ready","state"} or fixture.get("resize_large_seen") is not True or fixture.get("resize_return_seen") is not False or fixture.get("logical_size")!=[800,500]:return None
+    try:
+        steps=android["steps"]
+        if [step["stage"] for step in steps]!=["captured","large"]:return None
+        step=steps[-1];target=key(step["target"]);expected=dict(width=800,height=500)
+        if target!=android["target"] or (step["width"],step["height"])!=(800,500):return None
+        if current_frame(sdk_sample,"main") is None or sdk_sample["epoch"]!=step["input_epoch"] or sdk_sample["delivered"]!=step["delivered"] or sdk_sample["pressed"]!=0 or sdk_sample["pointer_pressed"]!=0:return None
+        runtime=value["runtime"]["runtime"];adapter=value["adapter"]
+        if value["sequence"]!=sdk_sample["sequence"] or runtime.get("state")!="Ready" or runtime.get("activity_visible") is not True or runtime.get("xr_state")!="FOCUSED":return None
+        if not any(t["key"]==target for t in sdk_sample["targets"]):return None
+        if value["runtime"]["handle"]!=android["runtime"] or runtime["scene"]!=target["scene"] or runtime["app"]["session"]!=target["session"]:return None
+        windows=[w for w in runtime["app"]["windows"] if w["window"]==target["window"] and w["life"]=="Mapped"]
+        if len(windows)!=1:return None
+        window=windows[0];resize=window["resize"];request=resize["request"]
+        old=":".join(request["target"][n] for n in ("session","window","scene","generation"))
+        if request["request_id"]!=step["resize_request"] or old!=step["old_target"] or (request["width"],request["height"])!=(800,500):return None
+        if resize["phase"]!="applied" or resize["error"] is not None or any(size!=expected for size in (window["logical_size"],resize["requested_logical_size"],resize["configured_logical_size"],resize["committed_size"])):return None
+        serials={n:resize[n] for n in ("configured_serial","acknowledged_serial","committed_serial")}
+        if any(type(v) is not int or not 0<=v<=2**32-1 or v!=step[n] for n,v in serials.items()):return None
+        native=[t for t in runtime["render"]["targets"] if t["key"]==target]
+        if len(native)!=1 or native[0]["frames"]<1 or native[0].get("presentation_paused") is not False or native[0]["content_size"]!=expected or not __import__("re").fullmatch(r"[1-9][0-9]*",str(native[0]["content_frame"])) or int(native[0]["content_frame"])<int(window["frame"]):return None
+        plans=[p for p in runtime["panels"] if p["target"]==target and p["action"]=="create" and p["applied"] is True and p["error"] is None]
+        bound=[t for t in adapter["targets"] if t["target"]==target]
+        if len(plans)!=1 or len(bound)!=1 or bound[0]["runtime"]!=android["runtime"] or any(bound[0][n] is not False for n in ("retiring","sdk_disposed","disposal_failed")) or any(bound[0][n] is not True for n in ("listener_owned","input_owned")):return None
+        return dict(sequence=sdk_sample["sequence"],target=target,resize_request=step["resize_request"],logical_size=expected,
+                    content_frame=str(native[0]["content_frame"]),**serials)
+    except (KeyError,TypeError,ValueError,OverflowError):return None
+
+
+def resize_observation_matches(observation, android):
+    if not android or type(observation) is not dict:return False
+    fields={"sequence","target","resize_request","logical_size","content_frame","configured_serial","acknowledged_serial","committed_serial"}
+    if set(observation)!=fields or not decimal(str(observation["sequence"])) or not decimal(observation["content_frame"]):return False
+    large=[step for step in android.get("steps",[]) if step["stage"]=="large"]
+    return len(large)==1 and observation["target"]==large[0]["target"] and observation["resize_request"]==large[0]["resize_request"] and observation["logical_size"]==dict(width=800,height=500) and all(type(observation[n]) is int and observation[n]==large[0][n] for n in ("configured_serial","acknowledged_serial","committed_serial")) and android.get("resize_observation")==dict(state="COMPLETE",return_requests=1)
+
+
+def resize_observation_recorded(samples, observation, android):
+    if not resize_observation_matches(observation,android):return False
+    large=next(step for step in android["steps"] if step["stage"]=="large")
+    for snapshot in samples:
+        if snapshot["sequence"]!=observation["sequence"] or snapshot["epoch"]!=large["input_epoch"] or snapshot["delivered"]!=large["delivered"] or snapshot["pressed"]!=0 or snapshot["pointer_pressed"]!=0:continue
+        windows=[w for w in snapshot["windows"] if w["role"]=="main" and w["window"]==observation["target"]["window"]]
+        targets=[t for t in snapshot["targets"] if t["key"]==observation["target"]]
+        if len(windows)==len(targets)==1 and windows[0]["resize_phase"]=="applied" and windows[0]["logical_size"]==observation["logical_size"] and targets[0]["frames"]>=1 and targets[0]["content_frame"] is not None and int(targets[0]["content_frame"])>=int(observation["content_frame"]) and current_frame(snapshot,"main") is not None:return True
+    return False
 
 
 def receipt_scope(row, binding, scene, baseline, observed_main):
@@ -305,7 +364,7 @@ class ReceiptLedger:
         return accepted
 
 
-def summarize(samples, baseline, case, fixture, android):
+def summarize(samples, baseline, case, fixture, android, resize_observation=None):
     main, dialog, first = set(), set(), set()
     owned=[]
     base_resources=samples[0].get("resources") if samples else None
@@ -333,9 +392,10 @@ def summarize(samples, baseline, case, fixture, android):
     last_report = fixture[-1] if fixture else None
     c_gate = bool(last_report and last_report["phase"] == "final" and last_report["reason"] == "completed" and completed(last_report, case))
     resize = case != "resize" or any(s == dict(width=800, height=500) for s in sizes) and any(s == dict(width=640, height=360) for s in sizes)
+    observed = case!="resize" or resize_observation_recorded(samples,resize_observation,android)
     mapped = len(main) == 1 and main <= first and (case != "dialog" or len(dialog) == 1 and dialog <= first)
-    passed = bool(mapped and preserved and retired and c_gate and resize and android and android["result"] == "completed" and
+    passed = bool(mapped and preserved and retired and c_gate and resize and observed and android and android["result"] == "completed" and
                   last["pressed"] == last["pointer_pressed"] == 0)
     return dict(status="observed" if passed else "not_verified", main_windows=sorted(main), dialog_windows=sorted(dialog),
-                baseline_preserved=preserved, all_retired=retired, client_counter_gate=c_gate, sdk_resize_gate=resize,
+                baseline_preserved=preserved, all_retired=retired, client_counter_gate=c_gate, sdk_resize_gate=resize, host_resize_observation_gate=observed,
                 sdk_first_frames=sorted(first & (main | dialog)), physical_input="not_run", ime="not_run", hmd="not_run")
