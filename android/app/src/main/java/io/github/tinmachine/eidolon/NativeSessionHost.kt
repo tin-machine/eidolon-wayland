@@ -268,21 +268,22 @@ object NativeSessionHost {
             }
         } }
     }
-    fun sceneReady(): Long {
+    fun sceneReady(): Long = inputIntents.serial {
+        inputIntents.invalidate()
         val scene = scenes.incrementAndGet()
         send("scene_ready", "scene", scene.toString())
-        return scene
+        scene
     }
     fun currentSceneEpoch(): Long = scenes.get()
-    fun setXrState(value: String, expectedScene: Long? = null): Boolean {
-        if(expectedScene!=null && expectedScene!=scenes.get()) return false
-        if(value!="FOCUSED") {keyboardFocus=null;inputTargets=emptyMap()}
-        xrState.set(value);send("set_xr_state","state",value);return true
+    fun setXrState(value: String, expectedScene: Long? = null): Boolean = inputIntents.serial {
+        if(expectedScene!=null && expectedScene!=scenes.get()) return@serial false
+        if(value!="FOCUSED") {inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()}
+        xrState.set(value);send("set_xr_state","state",value);true
     }
-    fun setActivityVisible(value: Boolean, expectedScene: Long? = null): Boolean {
-        if(expectedScene!=null && expectedScene!=scenes.get()) return false
-        if(!value) {keyboardFocus=null;inputTargets=emptyMap()}
-        activityVisible.set(value);send("set_activity_state","visible",value);return true
+    fun setActivityVisible(value: Boolean, expectedScene: Long? = null): Boolean = inputIntents.serial {
+        if(expectedScene!=null && expectedScene!=scenes.get()) return@serial false
+        if(!value) {inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()}
+        activityVisible.set(value);send("set_activity_state","visible",value);true
     }
     private fun enqueueConnect(): String? {
         val request = requests.incrementAndGet().toString()
@@ -358,14 +359,14 @@ object NativeSessionHost {
     }
     fun showWindow(choice: WindowChoice, slot: Int) { windowCommand(choice,"show_window",slot) }
     fun closeWindow(choice: WindowChoice) { windowCommand(choice,"close_window",null) }
-    private fun windowCommand(choice: WindowChoice, type: String, slot: Int?) { productWorker.execute { safely {
+    private fun windowCommand(choice: WindowChoice, type: String, slot: Int?) { productWorker.execute { inputIntents.serial { safely {
         if(handle==0L) return@safely
         resetInput()
         val command=JSONObject().put("schema",1).put("request_id",requests.incrementAndGet().toString()).put("type",type)
             .put("session",choice.session).put("scene",choice.scene).put("window",choice.window)
         if(slot!=null) command.put("slot",slot)
         NativeBridge.nativeCommand(handle,command.toString())
-    } } }
+    } } } }
     data class WindowControlTicket(val runtime: Long, val target: String, val intent: Long, val revision: Long)
     /** SDK button down owns one immutable target; reset also releases any Linux-held key. */
     fun beginWindowControl(target: JSONObject, runtime: Long, revision: Long): WindowControlTicket? {
@@ -440,8 +441,10 @@ object NativeSessionHost {
             .put("command_seq", plan.getString("command_seq")).put("target", plan.getJSONObject("target"))
             .put("action", plan.getString("action")).toString())
     fun resetInput(): Int = inputIntents.serial { resetInputLocked() }
-    fun resetInputForRetiringTarget(target:JSONObject):Int = inputIntents.serial { resetInputLocked(targetIdentity(target)) }
-    private fun resetInputLocked(retiring:String?=null): Int {
+    fun resetInputForRetiringTarget(target:JSONObject,runtime:Long):Int = inputIntents.serial {
+        if(runtime<=0 || runtime!=handle) NativeBridge.STALE else resetInputLocked(InputRetirement(runtime,targetIdentity(target)))
+    }
+    private fun resetInputLocked(retiring:InputRetirement?=null): Int {
         invalidateImeConnection()
         if(retiring==null) inputIntents.incrementAndGet() else inputIntents.retiring(retiring)
         if (BuildConfig.DEBUG) Log.i(TAG,"input_reset intent=${inputIntents.get()}")
@@ -559,27 +562,30 @@ object NativeSessionHost {
     fun ackBackground(scene: Long, command: String?, background: String, runtime: Long): Int = NativeBridge.nativeCommand(runtime,
         JSONObject().put("schema",1).put("type","background_applied").put("request_id",requests.incrementAndGet().toString()).put("scene",scene.toString())
             .put("background_command",command ?: JSONObject.NULL).put("background",background).toString())
-    fun nudgePose(x: Double=0.0,y: Double=0.0,z: Double=0.0,yaw: Double=0.0) { productWorker.execute { safely {
+    fun nudgePose(x: Double=0.0,y: Double=0.0,z: Double=0.0,yaw: Double=0.0) { productWorker.execute { inputIntents.serial { safely {
         if(handle==0L) return@safely
+        resetInputLocked()
         val runtime=snapshot().getJSONObject("runtime");val target=selectedTarget(runtime) ?: return@safely
         val windows=runtime.getJSONObject("workspace").getJSONArray("windows")
         val window=(0 until windows.length()).map {windows.getJSONObject(it)}.firstOrNull {it.getString("window")==target.getString("window") && it.getString("session")==target.getString("session")} ?: return@safely
         val pose=PanelPoseCodec.nudge(window.getJSONObject("placement").getJSONObject("pose"),x,y,z,yaw)
         if(PanelPoseCodec.valid(pose)) NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","set_pose").put("request_id",requests.incrementAndGet().toString()).put("target",target).put("pose",pose).toString())
-    } } }
-    fun resizeTerminal(width: Int, height: Int) { productWorker.execute { safely {
+    } } } }
+    fun resizeTerminal(width: Int, height: Int) { productWorker.execute { inputIntents.serial { safely {
         if(handle==0L) return@safely
+        resetInputLocked()
         val target=selectedTarget(snapshot().getJSONObject("runtime")) ?: return@safely
         NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","resize_logical")
             .put("request_id",requests.incrementAndGet().toString()).put("target",target).put("width",width).put("height",height).toString())
-    } } }
-    fun setPhysicalSize(width: Double, height: Double) { productWorker.execute { safely {
+    } } } }
+    fun setPhysicalSize(width: Double, height: Double) { productWorker.execute { inputIntents.serial { safely {
         if(handle==0L) return@safely
+        resetInputLocked()
         val target=selectedTarget(snapshot().getJSONObject("runtime")) ?: return@safely
         NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","set_physical_size")
             .put("request_id",requests.incrementAndGet().toString()).put("target",target)
             .put("size",JSONObject().put("width_m",width).put("height_m",height)).toString())
-    } } }
+    } } } }
     fun ackPhysicalSize(target: JSONObject, command: String?, size: JSONObject, runtime: Long): Int =
         NativeBridge.nativeCommand(runtime,JSONObject().put("schema",1).put("type","physical_size_applied")
             .put("request_id",requests.incrementAndGet().toString()).put("target",target)
@@ -627,12 +633,12 @@ object NativeSessionHost {
     }
     fun debugSealInput(trial:DebugInputTrial):Boolean=inputIntents.serial {debugInputCurrent(trial) && inputIntents.seal(trial.ticket)}
     fun debugExpectRetirement(trial:DebugInputTrial,target:JSONObject):Boolean=inputIntents.serial {
-        debugInputCurrent(trial) && targetIdentity(target) in trial.targets && inputIntents.expectRetirement(trial.ticket,targetIdentity(target))
+        debugInputCurrent(trial) && targetIdentity(target) in trial.targets && inputIntents.expectRetirement(trial.ticket,InputRetirement(trial.runtime,targetIdentity(target)))
     }
     fun debugCloseInputTarget(trial:DebugInputTrial,target:JSONObject,enqueue:()->Int):Boolean=inputIntents.serial {
         if(!debugInputCurrent(trial) || !inputIntents.isSealed(trial.ticket) || targetIdentity(target) !in trial.targets) false
         else {
-            inputIntents.expectRetirement(trial.ticket,targetIdentity(target))
+            inputIntents.expectRetirement(trial.ticket,InputRetirement(trial.runtime,targetIdentity(target)))
             (enqueue()==NativeBridge.ACCEPTED).also {if(!it) inputIntents.invalidate()}
         }
     }

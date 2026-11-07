@@ -1,11 +1,13 @@
 package io.github.tinmachine.eidolon
 
+internal data class InputRetirement(val runtime:Long,val target:String)
+
 /** 比較からnative enqueueまでを同じ境界で直列化する。callbackから外部lockを保持して入らない。 */
 internal class InputIntentSerial {
     class Trial internal constructor(internal var expected:Long) {
         internal var lost=false
         internal var sealed=false
-        internal val retire=mutableSetOf<String>()
+        internal val retire=mutableSetOf<InputRetirement>()
     }
     private val lock=Any()
     private var value=0L
@@ -30,11 +32,11 @@ internal class InputIntentSerial {
         current(trial).also {if(it) trial.sealed=true}
     }
     fun isSealed(trial:Trial):Boolean=serial {current(trial) && trial.sealed}
-    fun expectRetirement(trial:Trial,key:String):Boolean=serial {
+    fun expectRetirement(trial:Trial,key:InputRetirement):Boolean=serial {
         (current(trial) && trial.sealed).also {if(it) trial.retire.add(key)}
     }
     /** 入力を再開できないsealed trialの事前指定targetだけ。外部resetは従来どおり永久失効。 */
-    fun retiring(key:String):Long=serial {
+    fun retiring(key:InputRetirement):Long=serial {
         val trial=active
         if(trial!=null && current(trial) && trial.sealed && trial.retire.remove(key)) ownedIncrement(trial)
         else incrementAndGet()

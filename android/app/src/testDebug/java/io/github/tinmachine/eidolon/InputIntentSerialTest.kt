@@ -13,7 +13,7 @@ class InputIntentSerialTest {
         serial.serial {serial.incrementAndGet();dispatches++}
         assertNull(serial.dispatch(trial,{true}) {dispatches++})
         assertFalse(serial.current(trial));assertEquals(1,dispatches)
-        assertFalse(serial.seal(trial));assertFalse(serial.expectRetirement(trial,"gtk"))
+        assertFalse(serial.seal(trial));assertFalse(serial.expectRetirement(trial,InputRetirement(1,"gtk")))
     }
     @Test fun normalInputWaitsForConditionalCheckAndEnqueueAsOneOperation() {
         val serial=InputIntentSerial();val trial=serial.capture();val entered=CountDownLatch(1);val attempted=CountDownLatch(1)
@@ -39,16 +39,22 @@ class InputIntentSerialTest {
         assertEquals(true,serial.dispatch(trial,{true}) {serial.ownedIncrement(trial);true})
         assertTrue(serial.current(trial));assertEquals(captured+1,serial.get())
         assertTrue(serial.seal(trial));assertNull(serial.dispatch(trial,{true}) {error("late focus")})
-        assertTrue(serial.expectRetirement(trial,"gtk/main"));serial.retiring("gtk/main")
+        assertTrue(serial.expectRetirement(trial,InputRetirement(1,"gtk/main")));serial.retiring(InputRetirement(1,"gtk/main"))
         assertTrue(serial.current(trial));assertNull(serial.dispatch(trial,{true}) {error("late key")})
-        serial.retiring("gtk/main");assertFalse(serial.current(trial)) // receipt消費は一回だけ。
+        serial.retiring(InputRetirement(1,"gtk/main"));assertFalse(serial.current(trial)) // receipt消費は一回だけ。
     }
     @Test fun foreignRetirementAndPhysicalKeyLoseEvenSealedTrialWithoutEpochRebase() {
         for(physical in listOf(false,true)) {
-            val serial=InputIntentSerial();val trial=serial.capture();serial.seal(trial);serial.expectRetirement(trial,"gtk")
-            if(physical) serial.invalidate() else serial.retiring("foot")
-            assertFalse(serial.current(trial));serial.retiring("gtk");assertFalse(serial.current(trial))
+            val serial=InputIntentSerial();val trial=serial.capture();serial.seal(trial);serial.expectRetirement(trial,InputRetirement(1,"gtk"))
+            if(physical) serial.invalidate() else serial.retiring(InputRetirement(1,"foot"))
+            assertFalse(serial.current(trial));serial.retiring(InputRetirement(1,"gtk"));assertFalse(serial.current(trial))
         }
+    }
+    @Test fun sameTargetFromDifferentRuntimeCannotConsumeRetirementPermission() {
+        val serial=InputIntentSerial();val trial=serial.capture();serial.seal(trial)
+        assertTrue(serial.expectRetirement(trial,InputRetirement(1,"gtk")))
+        serial.retiring(InputRetirement(2,"gtk"));assertFalse(serial.current(trial))
+        serial.retiring(InputRetirement(1,"gtk"));assertFalse(serial.current(trial))
     }
     @Test fun contextFailureAndNewCaptureCannotResurrectOldIntent() {
         val serial=InputIntentSerial();val old=serial.capture();assertNull(serial.dispatch(old,{false}) {true})

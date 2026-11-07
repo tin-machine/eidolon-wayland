@@ -400,7 +400,7 @@ class SpatialPanelAdapter {
                         // IgnoreVisibleの入力面も、native Surface解放待ちに入る前に無効化する。
                         current.entity.setComponent(Hittable(MeshCollision.NoCollision))
                         current.visual?.setComponent(Visible(false))
-                        NativeSessionHost.resetInputForRetiringTarget(current.ownerKey)
+                        NativeSessionHost.resetInputForRetiringTarget(current.ownerKey,current.handle)
                         event("window_hidden", current.entity.id)
                     }
                     if (current.attached && !current.detachSent) {
