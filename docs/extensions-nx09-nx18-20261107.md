@@ -32,7 +32,7 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 | NX08 | 左下footボタン、ADB起動成功 | ユーザーへ「>_ ターミナル」と案内済み。NX10へ拡張 |
 | NX09 | 共通text-input-v3と[debug端末IME/Ctrl+Space](android-ime-terminal-probe-20261108.md)を実装、実IMM/InputConnectionと直接入力復帰を確認 | 通常利用の入口、かな漢字変換・候補・物理Ctrl+Spaceの最終受入れ。案A固有の不成立ならTermux Fcitx5 |
 | NX10 | カタログUI・保存・稼働中footへの任意起動を接続 | Build143のPC検査。初回任意起動・個別取消・配置保存とQuest実機確認は残件 |
-| NX11 | [Kopper選択の原因と固定一項対照](egl-surfaceless-probe-20261108.md)を特定、QuestのEGL1.5初期化と内部3段階が成功 | SDLのcontext/renderer、Doom/Freedoomの描画・起動・回収 |
+| NX11 | [Kopper選択の原因](egl-surfaceless-probe-20261108.md)を特定、[Build170のSDL](sdl-probe-live-run-20261108.md)でGL/GLES context、120frame画素・SHM/SDK描画・全窓資源回収が成功 | Doom/Freedoomの描画・起動・回収、物理入力/HMD |
 | NX12 | focus/closeに加え[move/窓横MODE](nx12b-window-move-mode-20261108.md)もBuild161のSDK固定case成功 | サイズ/正面復帰、HMD/物理受入れ |
 | NX13 | Build159でI/O値とdrawを照合し、Build163で専用root/子のidentity退役と一時data残存0を外部確認 | thread/共有tmux、多窓、HMD。APK内の回収未検証flagは外部証拠と区別 |
 | NX14 | CPU148、熱/容量152、PSS154、gateway164を製品UID・停止復帰確認 | HMD表示受入れ、追加値。全体CPU/GPUは取得経路ごとに判断 |

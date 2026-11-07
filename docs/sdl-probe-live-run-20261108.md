@@ -73,3 +73,18 @@ PC検査:
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.tests.test_sdl_probe_run -v
 ```
+# Build170: Kopper無効での実機描画
+
+2026-11-08、[EGL選択の切分け](egl-surfaceless-probe-20261108.md)後に固定variant
+`egl-wayland-softpipe-kopper-disabled` を使用した。既存softpipe条件に足すのは `LIBGL_KOPPER_DISABLE=1` 一項だけで、
+C/runner/binary/manifestは既知の配備を維持した。GL/GLESのload/contextの4stageはそれぞれ完了true・終了0だった。
+
+render `798459015709a062ea7a6d1f6fe1fb23` は120frame/120pixel check、SHM commit120、非SHM0、protocol error0で成功した。
+SDKは追加window7で最大118frameと12個の異なるcontent frameを観測した。自然終了後、元footを維持し、
+全SDK世代のdispose/binding release、Board予約、Entity/listener/装飾/control/MODEの所有数が開始前へ戻った。
+この回収はGTKと共通の資源台帳を同jobで採取して判定し、Mapped消失だけでは合格させない。終了後の待機は最大8秒である。
+
+rendererはsoftware、SDLはcompile/linkとも2.32.10。元のFD counter3→7と`kill_sent=true`も結果へそのまま保存した。
+子process/group/reap/pipe回収は確認済みであり、process内のsteady FD balanceや無信号終了を確認した結果にはしない。
+物理入力・IME・HMD視認・Doom/Freedoomは別の検証として残る。旧libc++/Kopper初期化失敗の記録は保持する。
+
