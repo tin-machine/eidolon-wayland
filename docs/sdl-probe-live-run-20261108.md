@@ -39,6 +39,12 @@ scripts/quest-run-sdl-probe --serial "$EIDOLON_QUEST_SERIAL" \
 今後これらの配備物を変更する場合は、新run IDへ配備・compileしてhostの既知hashを取り直す。
 大きなSDL/Mesa rebuildや通常設定の永続変更は、この対照に含めない。
 
+Build153で`egl-wayland`を一回実行したが、同じSIGSEGV（client exit -11）を再現した。
+protocol errorは0、content SHM commitは0、追加のmapped windowはなく、元のfootは継続した。
+runnerと子groupの回収・pipe drainは確認した。環境値一項では解消しなかったため、
+次は明示的なGL library/window/contextの固定stageごとに最初の失敗を取得する。
+成功条件を緩めたり、同じ条件を反復して結果を選んだりしない。
+
 remote wrapperは実際にspawnしたrunner handleを保持し、lease変更・stdin EOF・operator期限・signal時にrunnerへTERMを伝える。
 runnerが自身のSDL groupを回収する猶予を設け、強制runner KILLが必要ならcleanupを確認済みにしない。
 観測したshell/foot/Waypipe PIDへsignalを送らない。wrapperの結果は同run内の新規`operator-<probe-id>-report.json`にも保存する。

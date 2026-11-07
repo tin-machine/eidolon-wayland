@@ -56,3 +56,14 @@ cargo test --offline -p eidolon-core -p eidolon-render -p eidolon-transport --li
 固定counterのwait二重計上反例、集合変更、PID/UID/TGID、zombie、前後tmux変更、共有scopeの一回更新、counter逆行、cache hit、短いread、budget、clock、CPU/RSSとの独立性、登録照合、wire最大16行、I/O独立回転・ゼロ・欠測・reduced-motionを検査する。hostのself TGID読取りと別TID拒否は、Questでの成功の代用にしない。
 
 次の実機確認は同版配備後、登録した単一shellで固定write/read/wait、次にthread終了、二窓で同じtmux session、観測OFF/ON・切断復帰の順とする。kernel版、I/O state/reason、固定counter差分、scan時間を記録し、実入力本文・個人IPは公開記録へ載せない。
+
+## Build153の配備とidle観測
+
+debug build・lint・APK検査・JUnit 104件成功後、旧runtimeの正常停止とcleanup journalが空であることを確認し、
+同版helperとBuild153を配備した。helper SHA256は
+`ef09a9b3f72bd1954e94144a97bd044b3f3376a27598dbc89bb22955d5e5fab2`。
+hostのTermux関連95件、scripts関連152件（実APK指定7件skip）、design・format検査も成功した。
+
+通常経路で開いた登録shellの7時点で、native側のI/Oが`available / 0 bytes/s`、CPU/RSSがcompleteとして継続した。
+これは実測ゼロと配送の確認範囲であり、非zero、wait後、thread終了、共有tmux、描画semanticの実機確認は含まない。
+固定I/O専用端末の検証を追加してそれらを個別に評価する。HMDでの内側リングは未受入れ。
