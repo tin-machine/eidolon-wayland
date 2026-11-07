@@ -202,14 +202,13 @@ impl Controller {
             };
             let native_done = !contains(observation.native);
             if window.is_some() {
-                if native_done {
-                    if board
+                if native_done
+                    && board
                         .acknowledge(ticket, Ack::Native)
                         .map_err(|_| Status::Failed)?
                         == Released::Complete
-                    {
-                        continue;
-                    }
+                {
+                    continue;
                 }
                 if !contains(observation.sdk) && !contains(observation.panels) {
                     board
