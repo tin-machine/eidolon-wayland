@@ -1,5 +1,6 @@
 //! SSH identity/pin。秘密型をSerialize/Debugへ公開しない。
 pub use eidolon_model::catalog;
+pub mod connect_profile;
 pub mod credentials;
 pub mod exec;
 pub mod forward;

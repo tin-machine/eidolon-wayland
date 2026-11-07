@@ -66,6 +66,7 @@ struct Fixture {
     handle: Arc<Mutex<Option<server::Handle>>>,
     audit: Arc<Mutex<Option<serde_json::Value>>>,
     audits: Arc<AtomicUsize>,
+    non_probe_execs: Arc<AtomicUsize>,
 }
 impl server::Server for Fixture {
     type Handler = Self;
@@ -122,6 +123,7 @@ impl server::Handler for Fixture {
         session: &mut Session,
     ) -> Result<(), Self::Error> {
         if data != exec::COMMAND.as_bytes() {
+            self.non_probe_execs.fetch_add(1, Ordering::AcqRel);
             let value = self.audit.lock().unwrap().clone();
             if data
                 == launcher::command("cleanup", "ffffffffffffffff")
@@ -206,6 +208,7 @@ async fn fixture(
         handle: Arc::new(Mutex::new(None)),
         audit: Arc::new(Mutex::new(None)),
         audits: Arc::new(AtomicUsize::new(0)),
+        non_probe_execs: Arc::new(AtomicUsize::new(0)),
     };
     let state = fixture.clone();
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -661,5 +664,224 @@ async fn corrupt_pending_journal_fails_before_network_and_preserves_its_contents
     assert_eq!(state.execs.load(Ordering::Acquire), 0);
     assert_eq!(std::fs::read(&path).unwrap(), b"corrupt fixture");
     stop(&controller).await;
+    server.abort();
+}
+
+fn linux_profile(
+    profile: &Profile,
+    address: SocketAddr,
+    revision: &str,
+) -> eidolon_model::connection_profile::Profile {
+    eidolon_model::connection_profile::Profile::parse(&serde_json::json!({
+        "schema":2,"installation":profile.installation,"profile_id":"linux-fixture","revision":revision,
+        "display_name":"Fixed SSH fixture","backend":"linux_ssh","host":address.ip().to_string(),"port":address.port(),
+        "username":profile.username,"host_key":profile.host_key,
+    }).to_string(), &profile.installation).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_endpoints_and_credentials_are_captured_per_request_and_linux_is_probe_only() {
+    let (address_a, profile_a, key_a, state_a, server_a) = fixture(Mode::Quiet).await;
+    let (address_b, profile_b, key_b, state_b, server_b) = fixture(Mode::Quiet).await;
+    let a = linux_profile(&profile_a, address_a, "9007199254740993");
+    let b = linux_profile(&profile_b, address_b, "9007199254740994");
+    assert_ne!(a.binding(), b.binding());
+    let controller = Controller::start().unwrap();
+    assert_eq!(
+        controller.connect_spec(ConnectSpec::from_v2(&a).unwrap(), request(1)),
+        Status::Accepted
+    );
+    wait(&controller, |r| r.state == State::AwaitingCredential).await;
+    let scope_a = controller.credential_scope().unwrap();
+    assert_eq!(scope_a.profile_id, "linux-fixture");
+    assert_eq!(scope_a.revision.as_deref(), Some("9007199254740993"));
+    assert_eq!(scope_a.binding, a.binding());
+    assert_eq!(
+        controller.provide(scope_a.session, request(1), key_a.clone()),
+        Status::Stale
+    );
+    assert_eq!(
+        controller.provide_for(scope_a.session, request(1), &b.binding(), key_a.clone()),
+        Status::Stale
+    );
+    assert_eq!(
+        controller.provide_for(scope_a.session, request(1), &scope_a.binding, key_a.clone()),
+        Status::Accepted
+    );
+    wait(&controller, |r| r.state == State::ProbeReady).await;
+    assert!(controller.credential_scope().is_none());
+    assert!(controller.snapshot().probe.token_matched);
+    let nonce = "aaaaaaaaaaaaaaaa";
+    assert_eq!(
+        controller.start_app(
+            scope_a.session,
+            Path::new("/fixed/sock"),
+            nonce,
+            AppMode::Foot
+        ),
+        Status::NotReady
+    );
+    assert_eq!(
+        controller.forward_probe(scope_a.session, Path::new("/fixed"), nonce),
+        Status::NotReady
+    );
+    assert_eq!(
+        controller.cleanup_probe(
+            scope_a.session,
+            Path::new("/fixed"),
+            nonce,
+            CleanupScenario::ControlEof
+        ),
+        Status::NotReady
+    );
+    assert_eq!(
+        controller.open_terminal(scope_a.session, request(2)),
+        Status::NotReady
+    );
+    assert_eq!(
+        controller.catalog(
+            scope_a.session,
+            request(3),
+            crate::catalog::Operation::Reload {
+                path: "fixture.toml".into()
+            }
+        ),
+        Status::NotReady
+    );
+    assert!(controller.catalog_ui().session.is_none());
+    let diagnostics = serde_json::to_string(&controller.snapshot()).unwrap();
+    assert!(!diagnostics.contains(&scope_a.binding));
+    assert!(!diagnostics.contains(&profile_a.host_key));
+    assert_eq!(state_a.execs.load(Ordering::Acquire), 1);
+    assert_eq!(state_a.non_probe_execs.load(Ordering::Acquire), 0);
+    assert_eq!(controller.disconnect(scope_a.session), Status::Accepted);
+    wait(&controller, |r| {
+        r.state == State::Disconnected && r.tokio_threads == 0
+    })
+    .await;
+    assert!(controller.credential_scope().is_none());
+    assert_eq!(
+        controller.connect_spec(ConnectSpec::from_v2(&b).unwrap(), request(4)),
+        Status::Accepted
+    );
+    wait(&controller, |r| r.state == State::AwaitingCredential).await;
+    let scope_b = controller.credential_scope().unwrap();
+    assert!(scope_b.session > scope_a.session);
+    assert_eq!(controller.cancel_connect(request(1)), Status::Stale);
+    assert_eq!(
+        controller.provide_for(scope_a.session, request(1), &scope_a.binding, key_a),
+        Status::Stale
+    );
+    assert_eq!(
+        controller.provide_for(scope_b.session, request(4), &scope_a.binding, key_b.clone()),
+        Status::Stale
+    );
+    assert_eq!(
+        controller.provide_for(scope_b.session, request(4), &scope_b.binding, key_b),
+        Status::Accepted
+    );
+    wait(&controller, |r| r.state == State::ProbeReady).await;
+    assert_eq!(
+        controller.snapshot().profile_revision.as_deref(),
+        Some("9007199254740994")
+    );
+    assert_eq!(state_b.execs.load(Ordering::Acquire), 1);
+    assert_eq!(state_b.non_probe_execs.load(Ordering::Acquire), 0);
+    assert_eq!(
+        state_a.passwords.load(Ordering::Acquire) + state_b.passwords.load(Ordering::Acquire),
+        0
+    );
+    stop(&controller).await;
+    server_a.abort();
+    server_b.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_wrong_endpoint_pin_never_requests_identity_or_falls_back() {
+    let (address_a, profile_a, _, state_a, server_a) = fixture(Mode::Quiet).await;
+    let (_, profile_b, _, _, server_b) = fixture(Mode::Quiet).await;
+    let wrong = linux_profile(&profile_b, address_a, "1");
+    let controller = Controller::start().unwrap();
+    assert_eq!(
+        controller.connect_spec(ConnectSpec::from_v2(&wrong).unwrap(), request(1)),
+        Status::Accepted
+    );
+    wait(&controller, |r| r.state == State::Failed).await;
+    assert_eq!(controller.snapshot().error, Some("HOST_KEY_MISMATCH"));
+    assert_eq!(controller.snapshot().credential_requests, 0);
+    assert!(controller.credential_scope().is_none());
+    assert_eq!(state_a.execs.load(Ordering::Acquire), 0);
+    assert_ne!(profile_a.host_key, profile_b.host_key);
+    stop(&controller).await;
+    server_a.abort();
+    server_b.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_probe_preserves_legacy_foreign_and_same_scope_journals_without_running_cleanup_helper()
+{
+    let (address, profile, key, state, server) = fixture(Mode::Quiet).await;
+    let current = linux_profile(&profile, address, "1");
+    let foreign = linux_profile(
+        &profile,
+        (Ipv4Addr::new(192, 0, 2, 1), address.port()).into(),
+        "1",
+    );
+    let root = JournalRoot::new();
+    let bindings = vec![
+        journal::binding(&profile),
+        foreign.binding(),
+        current.binding(),
+    ];
+    assert_ne!(bindings[0], bindings[2]);
+    let mut journal = journal::Journal::load(Some(&root.0)).unwrap();
+    for (i, binding) in bindings.iter().enumerate() {
+        journal
+            .remember(journal::Entry {
+                nonce: format!("{:016x}", i + 1),
+                session: SessionId::new(i as i64 + 1).unwrap(),
+                uid: 4242,
+                binding: binding.clone(),
+                child: None,
+            })
+            .unwrap();
+    }
+    drop(journal);
+    let controller = Controller::start_with_root(Some(root.0.clone())).unwrap();
+    controller.connect_spec(ConnectSpec::from_v2(&current).unwrap(), request(1));
+    wait(&controller, |r| r.state == State::AwaitingCredential).await;
+    let scope = controller.credential_scope().unwrap();
+    controller.provide_for(scope.session, scope.request, &scope.binding, key);
+    wait(&controller, |r| r.state == State::CleanupPending).await;
+    let snapshot = controller.snapshot();
+    assert_eq!(snapshot.pending_cleanup.len(), 3);
+    assert_eq!(
+        snapshot
+            .cleanup_audits
+            .iter()
+            .filter(|a| a.error == Some("CLEANUP_PROFILE_MISMATCH"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        snapshot
+            .cleanup_audits
+            .iter()
+            .filter(|a| a.error == Some("CLEANUP_BACKEND_UNSUPPORTED"))
+            .count(),
+        1
+    );
+    assert_eq!(state.non_probe_execs.load(Ordering::Acquire), 0);
+    assert_eq!(state.audits.load(Ordering::Acquire), 0);
+    stop(&controller).await;
+    let persisted = journal::Journal::load(Some(&root.0)).unwrap();
+    assert_eq!(
+        persisted
+            .entries()
+            .iter()
+            .map(|e| e.binding.clone())
+            .collect::<Vec<_>>(),
+        bindings
+    );
     server.abort();
 }

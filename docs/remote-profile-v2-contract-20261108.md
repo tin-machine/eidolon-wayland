@@ -5,6 +5,9 @@
 自動移行、remoteへの接続、Linux helper、profile切替UIは本変更に含めない。
 [遠隔Linux計画](remote-linux-gui-plan-20261107.md)の最初の実装単位。
 
+後続の[B1通信側契約](remote-transport-b1-20261108.md)でv2の内部接続APIと固定SSH試験を追加した。
+通常runtime/Host/UIへの配線、実設定fileの移行、遠隔GUI有効化は引き続き未実装。
+
 ## 型と範囲
 
 Androidの `ConnectionProfileV2` と Rustの `model::connection_profile` は同じ契約を持つ。

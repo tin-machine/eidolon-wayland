@@ -1,7 +1,6 @@
 //! SSHはI/O ownerが作るTokio runtime上だけで実行する。再接続前に旧runtimeを回収する。
 use crate::{
-    exec, forward, forward_app, forward_probe,
-    host_key::{Profile, parse_key},
+    connect_profile::ConnectSpec, exec, forward, forward_app, forward_probe, host_key::Profile,
     journal, launcher,
 };
 use eidolon_model::{
@@ -45,6 +44,7 @@ pub enum State {
     Connecting,
     AwaitingCredential,
     Authenticating,
+    ProbeReady,
     Ready,
     Recovering,
     CleanupPending,
@@ -58,6 +58,7 @@ pub struct Snapshot {
     pub state: State,
     pub session: Option<SessionId>,
     pub profile_id: Option<String>,
+    pub profile_revision: Option<String>,
     pub credential_request: Option<CommandSeq>,
     pub workers: usize,
     pub tokio_threads: usize,
@@ -101,16 +102,14 @@ impl Default for Deadlines {
     }
 }
 struct PendingConnect {
-    profile: Profile,
-    pin: PublicKey,
+    profile: ConnectSpec,
     request: CommandSeq,
     cancel: CancellationToken,
 }
 struct Connect {
     session: SessionId,
     router: Arc<forward::Router>,
-    profile: Profile,
-    pin: PublicKey,
+    profile: ConnectSpec,
     request: CommandSeq,
     cancel: CancellationToken,
 }
@@ -118,6 +117,7 @@ struct Shared {
     report: Snapshot,
     connect: Option<PendingConnect>,
     credential: Option<PrivateKey>,
+    credential_scope: Option<CredentialScope>,
     busy: bool,
     active_connect_request: Option<CommandSeq>,
     cancel: Option<CancellationToken>,
@@ -155,6 +155,18 @@ impl Signals {
 pub struct Controller {
     signals: Arc<Signals>,
     worker: JoinHandle<()>,
+    #[cfg(test)]
+    legacy_test_endpoint: SocketAddr,
+}
+
+/// UI/owner専用、通常Snapshotには含めない。鍵の供給先を設定世代まで固定する。
+#[derive(Clone)]
+pub struct CredentialScope {
+    pub session: SessionId,
+    pub request: CommandSeq,
+    pub profile_id: String,
+    pub revision: Option<String>,
+    pub binding: String,
 }
 impl Controller {
     pub fn start() -> std::io::Result<Self> {
@@ -179,7 +191,7 @@ impl Controller {
         Self::start_at_with_hook(endpoint, deadlines, root, || {})
     }
     fn start_at_with_hook(
-        endpoint: SocketAddr,
+        _legacy_endpoint: SocketAddr,
         deadlines: Deadlines,
         root: Option<PathBuf>,
         before_owner: impl FnOnce() + Send + 'static,
@@ -193,6 +205,7 @@ impl Controller {
                 },
                 connect: None,
                 credential: None,
+                credential_scope: None,
                 busy: false,
                 active_connect_request: None,
                 cancel: None,
@@ -216,11 +229,12 @@ impl Controller {
             .spawn(move || {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     before_owner();
-                    owner(&owned, endpoint, deadlines, root.as_deref())
+                    owner(&owned, deadlines, root.as_deref())
                 }));
                 owned.update(|s| {
                     s.connect = None;
                     s.credential = None;
+                    s.credential_scope = None;
                     s.busy = false;
                     s.active_connect_request = None;
                     s.report.workers = 0;
@@ -239,13 +253,26 @@ impl Controller {
                     }
                 });
             })?;
-        Ok(Self { signals, worker })
+        Ok(Self {
+            signals,
+            worker,
+            #[cfg(test)]
+            legacy_test_endpoint: _legacy_endpoint,
+        })
     }
     pub fn connect(&self, profile: Profile, request: CommandSeq) -> Status {
-        let pin = match parse_key(&profile.host_key) {
-            Ok(pin) => pin,
+        let profile = match ConnectSpec::legacy(profile) {
+            Ok(profile) => profile,
             Err(_) => return Status::InvalidArgument,
         };
+        #[cfg(test)]
+        let profile = ConnectSpec {
+            endpoint: self.legacy_test_endpoint,
+            ..profile
+        };
+        self.connect_spec(profile, request)
+    }
+    pub fn connect_spec(&self, profile: ConnectSpec, request: CommandSeq) -> Status {
         let mut s = self
             .signals
             .shared
@@ -263,6 +290,7 @@ impl Controller {
             state: State::Connecting,
             session: None,
             profile_id: Some(profile.profile_id.clone()),
+            profile_revision: profile.revision.clone(),
             workers: 1,
             credential_requests: s.report.credential_requests,
             journal_ready: s.report.journal_ready,
@@ -270,11 +298,11 @@ impl Controller {
             ..Default::default()
         };
         let cancel = CancellationToken::new();
+        s.credential_scope = None;
         s.cancel = Some(cancel.clone());
         s.router = None;
         s.connect = Some(PendingConnect {
             profile,
-            pin,
             request,
             cancel,
         });
@@ -295,6 +323,37 @@ impl Controller {
         Status::NotReady
     }
     pub fn provide(&self, session: SessionId, request: CommandSeq, key: PrivateKey) -> Status {
+        self.provide_scoped(session, request, None, key)
+    }
+    /// v2はlegacyの無束縛provideを受け付けず、このprivate scopeの照合を必須にする。
+    pub fn provide_for(
+        &self,
+        session: SessionId,
+        request: CommandSeq,
+        binding: &str,
+        key: PrivateKey,
+    ) -> Status {
+        self.provide_scoped(session, request, Some(binding), key)
+    }
+    pub fn credential_scope(&self) -> Option<CredentialScope> {
+        let s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        (s.report.state == State::AwaitingCredential
+            && !self.signals.stop.load(Ordering::Acquire)
+            && s.cancel.as_ref().is_some_and(|c| !c.is_cancelled()))
+        .then(|| s.credential_scope.clone())
+        .flatten()
+    }
+    fn provide_scoped(
+        &self,
+        session: SessionId,
+        request: CommandSeq,
+        binding: Option<&str>,
+        key: PrivateKey,
+    ) -> Status {
         let mut s = self
             .signals
             .shared
@@ -305,6 +364,14 @@ impl Controller {
             || s.report.session != Some(session)
             || s.report.credential_request != Some(request)
             || s.report.state != State::AwaitingCredential
+            || s.credential_scope.as_ref().is_none_or(|scope| {
+                scope.session != session
+                    || scope.request != request
+                    || match binding {
+                        Some(value) => value != scope.binding,
+                        None => scope.revision.is_some(),
+                    }
+            })
             || s.credential.is_some()
         {
             return Status::Stale;
@@ -327,6 +394,7 @@ impl Controller {
         }
         s.credential = None;
         s.report.credential_request = None;
+        s.credential_scope = None;
         if s.busy {
             s.report.state = State::Disconnecting;
         }
@@ -348,6 +416,7 @@ impl Controller {
         }
         s.credential = None;
         s.report.credential_request = None;
+        s.credential_scope = None;
         s.report.state = State::Disconnecting;
         self.signals.notify.notify_one();
         Status::Accepted
@@ -576,6 +645,7 @@ impl Controller {
         self.signals.stop.store(true, Ordering::Release);
         self.signals.update(|s| {
             s.credential = None;
+            s.credential_scope = None;
             if let Some(cancel) = &s.cancel {
                 cancel.cancel();
             }
@@ -595,7 +665,6 @@ impl Drop for Controller {
 
 fn owner(
     signals: &Arc<Signals>,
-    endpoint: SocketAddr,
     deadlines: Deadlines,
     root: Option<&Path>,
 ) -> Result<(), &'static str> {
@@ -645,12 +714,18 @@ fn owner(
             session,
             router: Arc::new(forward::Router::new(session)),
             profile: pending.profile,
-            pin: pending.pin,
             request: pending.request,
             cancel: pending.cancel,
         };
         signals.update(|s| {
             s.report.session = Some(session);
+            s.credential_scope = Some(CredentialScope {
+                session,
+                request: connect.request,
+                profile_id: connect.profile.profile_id.clone(),
+                revision: connect.profile.revision.clone(),
+                binding: connect.profile.binding.clone(),
+            });
             s.router = Some(connect.router.clone());
         });
         let (start, end) = (signals.clone(), signals.clone());
@@ -668,13 +743,8 @@ fn owner(
             .build();
         let result = match runtime {
             Ok(runtime) => {
-                let result = runtime.block_on(connection(
-                    signals,
-                    endpoint,
-                    &connect,
-                    deadlines,
-                    &mut journal,
-                ));
+                let result =
+                    runtime.block_on(connection(signals, &connect, deadlines, &mut journal));
                 // UI/coreではなくownerでdrop。未完SSH task/FD/秘密keyとTokio workerを回収。
                 drop(runtime);
                 result
@@ -683,6 +753,7 @@ fn owner(
         };
         signals.update(|s| {
             s.credential = None;
+            s.credential_scope = None;
             s.cancel = None;
             s.busy = false;
             s.active_connect_request = None;
@@ -796,7 +867,6 @@ impl client::Handler for Peer {
 }
 async fn connection(
     signals: &Signals,
-    endpoint: SocketAddr,
     connect: &Connect,
     deadlines: Deadlines,
     journal: &mut journal::Journal,
@@ -804,7 +874,7 @@ async fn connection(
     signals.update(|s| s.report.owned_connections = 1);
     let mismatch = Arc::new(AtomicBool::new(false));
     let peer = Peer {
-        pin: connect.pin.clone(),
+        pin: connect.profile.pin.clone(),
         mismatch: mismatch.clone(),
         session: connect.session,
         router: connect.router.clone(),
@@ -812,7 +882,7 @@ async fn connection(
     let setup = async {
         let mut client = timeout(
             deadlines.connect,
-            client::connect(Arc::new(ssh_config()), endpoint, peer),
+            client::connect(Arc::new(ssh_config()), connect.profile.endpoint, peer),
         )
         .await
         .map_err(|_| "CONNECT_TIMEOUT")?
@@ -884,7 +954,7 @@ async fn connection(
         Ok::<_, &'static str>(client)
     };
     let mut client = tokio::select! { biased; _=connect.cancel.cancelled()=>return Err("CANCELLED"), result=setup=>result? };
-    let binding = journal::binding(&connect.profile);
+    let binding = connect.profile.binding.clone();
     let uid = signals
         .shared
         .lock()
@@ -1042,6 +1112,8 @@ async fn reconcile<H: client::Handler>(
         };
         if entry.binding != binding || entry.uid != uid {
             view.error = Some("CLEANUP_PROFILE_MISMATCH");
+        } else if !connect.profile.helper_supported {
+            view.error = Some("CLEANUP_BACKEND_UNSUPPORTED");
         } else {
             let audit = tokio::select! {biased;
                 _=connect.cancel.cancelled()=>return Err("CANCELLED"),
@@ -1067,7 +1139,11 @@ async fn reconcile<H: client::Handler>(
         s.report.pending_cleanup = journal.pending();
         s.report.cleanup_audits = audits;
         if journal.is_empty() {
-            s.report.state = State::Ready;
+            s.report.state = if connect.profile.helper_supported {
+                State::Ready
+            } else {
+                State::ProbeReady
+            };
             s.report.error = None;
         } else {
             s.report.state = State::CleanupPending;
