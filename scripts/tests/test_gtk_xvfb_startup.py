@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import unittest
+from unittest.mock import patch
 
 from gtk_xvfb_startup import wait_ready
 
@@ -68,6 +69,25 @@ class XvfbStartupTests(unittest.TestCase):
 
     def test_gtk_success_at_deadline_is_not_ready(self):
         with self.assertRaisesRegex(RuntimeError, "XVFB_GTK_DISPLAY_TIMEOUT"): self.run_ready(probe_delay=.1)
+
+    def test_slow_displayfd_does_not_leave_only_milliseconds_for_first_gtk_connection(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd,b"123\n");os.close(write_fd);write_fd=None
+            now=[0.0];budgets=[]
+            def select_ready(*_):
+                now[0]=4.965
+                return [read_fd],[],[]
+            def probe(display, remaining):
+                budgets.append(remaining);now[0]+=1.0
+                return subprocess.CompletedProcess([],2,json.dumps(dict(phase="final",reason="wayland_required",host_selftest=False)).encode(),b"")
+            with patch("gtk_xvfb_startup.select.select",side_effect=select_ready):
+                display,_=wait_ready(read_fd,Child(),probe,Counter(),timeout=5,clock=lambda:now[0])
+            self.assertEqual(display,":123");self.assertEqual(budgets,[5.0])
+            self.assertLess(now[0],10)
+        finally:
+            os.close(read_fd)
+            if write_fd is not None:os.close(write_fd)
 
 
 if __name__ == "__main__": unittest.main()

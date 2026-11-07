@@ -43,6 +43,10 @@ def wait_ready(read_fd, child, probe, stderr, *, timeout=5, clock=time.monotonic
             if b"\n" not in data: continue
             if not re.fullmatch(rb"[0-9]{1,5}\n", data) or int(data) > 65535: fail("XVFB_DISPLAYFD_INVALID")
             display = ":" + data[:-1].decode("ascii")
+            # Server startup can consume almost the whole first budget on a cold CI host.
+            # GTK gets its own finite connection budget; never launch a 35ms GTK probe.
+            deadline = clock() + timeout
+            remaining = deadline - clock()
         attempts += 1
         try: completed = probe(display, remaining)
         except subprocess.TimeoutExpired as error:
