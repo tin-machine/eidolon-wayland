@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""固定SDLを現行leaseで一回だけ自然終了させ、同jobでSDK metadataを観測する。"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import selectors
+import shlex
+import subprocess
+import time
+
+from native_build import ROOT, source_files
+from quest_device import PACKAGE, QuestDevice, package_uid, work_root
+from sdl_lease_capture import CaptureError, MAX_SNAPSHOT, binding_key, canonical, decode, hexadecimal, need, select_snapshot
+
+
+def digest_sources():
+    digest = hashlib.sha256()
+    for path in source_files(ROOT):
+        digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def sdk_slice(value):
+    runtime = value["runtime"]["runtime"]
+    app = runtime["app"]
+    windows = sorted(row["window"] for row in app.get("windows", []) if row.get("life") == "Mapped")
+    targets = []
+    for row in runtime.get("render", {}).get("targets", []):
+        key = row.get("key", {})
+        if key.get("session") == app["session"]:
+            targets.append(dict(window=key.get("window"), scene=key.get("scene"), generation=key.get("generation"),
+                                frames=row.get("frames"), content_frame=row.get("content_frame")))
+    return dict(sequence=value["sequence"], mapped=windows, targets=targets)
+
+
+def summarize_sdk(baseline, samples):
+    extra, maxima, content = set(), {}, {}
+    for sample in samples:
+        extra.update(set(sample["mapped"]) - set(baseline["mapped"]))
+        for target in sample["targets"]:
+            if target["window"] not in baseline["mapped"] and isinstance(target["frames"], int):
+                maxima[target["window"]] = max(maxima.get(target["window"], 0), target["frames"])
+                if target.get("content_frame") is not None:
+                    content.setdefault(target["window"], set()).add(str(target["content_frame"]))
+    last = samples[-1] if samples else baseline
+    retired = bool(extra) and not (extra & set(last["mapped"]))
+    preserved = set(baseline["mapped"]) <= set(last["mapped"])
+    observed = (len(extra) == 1 and retired and preserved and
+                all(maxima.get(window, 0) >= 2 and len(content.get(window, ())) >= 2 for window in extra))
+    return dict(status="observed" if observed else "not_verified", additional_windows=sorted(extra), maximum_frames=maxima,
+                distinct_content_frames={key: len(value) for key, value in content.items()}, all_retired=retired,
+                baseline_windows_preserved=preserved)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--serial", required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--binary-sha256", required=True)
+    parser.add_argument("--manifest-sha256", required=True)
+    parser.add_argument("--artifact-root", type=Path)
+    args = parser.parse_args()
+    if not hexadecimal(args.run_id, 32) or not hexadecimal(args.binary_sha256, 64) or not hexadecimal(args.manifest_sha256, 64):
+        parser.error("run-idは32hex、binary/manifest SHAは既知の64hexを指定してください")
+    os.umask(0o077)
+    root = args.artifact_root or work_root() / "eidolon-sdl-live-run"
+    if not root.is_absolute():
+        parser.error("artifact rootは絶対pathにしてください")
+    probe_id = secrets.token_hex(16)
+    run = root / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f") + "-" + probe_id)
+    run.mkdir(mode=0o700, parents=True)
+    device = QuestDevice(args.serial, run)
+    result = dict(schema=1, status="blocked", probe_id=probe_id, run_id=args.run_id, hmd="not_run", physical_input="not_run",
+                  sdk_samples=[], events=[])
+    child, selector, cancel_sent = None, None, False
+
+    def snapshot():
+        process = subprocess.run(["adb", "-s", args.serial, "exec-out", "run-as", PACKAGE, "head", "-c", str(MAX_SNAPSHOT + 1),
+                                  "no_backup/diagnostics/latest.json"], capture_output=True, timeout=5)
+        need(process.returncode == 0, "DIAGNOSTICS_UNAVAILABLE")
+        return decode(process.stdout)
+
+    def cancel():
+        nonlocal cancel_sent
+        if child is not None and not cancel_sent:
+            try:
+                child.stdin.write(canonical(dict(type="cancel", run_id=args.run_id)) + b"\n");child.stdin.flush()
+                cancel_sent = True
+            except (OSError, BrokenPipeError):
+                pass
+
+    try:
+        result["device"] = device.validate()
+        result["device"]["physical_serial"] = device.adb("shell", "getprop", "ro.serialno").strip()
+        uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux")
+        digest = digest_sources()
+        initial = snapshot()
+        binding = select_snapshot(initial, digest, uid)
+        need(device.adb("shell", "pidof", PACKAGE).strip() == str(binding["process_id"]), "APK_PROCESS_NOT_CURRENT")
+        baseline = sdk_slice(initial)
+        need(len(baseline["mapped"]) == 1, "ONE_BASELINE_WINDOW_REQUIRED")
+        result["binding"] = binding
+        sources = {}
+        for name, relative in (("sdl-wayland-probe.c", "scripts/fixtures/sdl-wayland-probe.c"),
+                               ("eidolon-sdl-probe.py", "scripts/termux/eidolon-sdl-probe.py")):
+            data = (ROOT / relative).read_bytes()
+            sources[name] = dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+        request = dict(binding=binding, probe_id=probe_id, run_id=args.run_id, binary_sha256=args.binary_sha256,
+                       manifest_sha256=args.manifest_sha256, sources=sources)
+        (run / "request.json").write_bytes(canonical(request) + b"\n")
+        remote = "import sys,types\n"
+        for name in ("sdl_probe_install", "sdl_lease_capture"):
+            remote += f"m=types.ModuleType({name!r});exec({(ROOT / ('scripts/' + name + '.py')).read_text()!r},m.__dict__);sys.modules[m.__name__]=m\n"
+        remote += f"exec({(ROOT / 'scripts/sdl_probe_run.py').read_text()!r})\n"
+        command = ["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python3", "-c", remote]
+        child = subprocess.Popen(["adb", "-s", args.serial, "shell", "-T", shlex.join(command)], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        child.stdin.write(canonical(request) + b"\n");child.stdin.flush()
+        selector = selectors.DefaultSelector()
+        for name in ("stdout", "stderr"):
+            pipe = getattr(child, name);os.set_blocking(pipe.fileno(), False);selector.register(pipe, selectors.EVENT_READ, name)
+        started, last_poll, finished_at = time.monotonic(), 0.0, None
+        pending, stdout_bytes, stderr_bytes = bytearray(), 0, 0
+        finished = None
+        while time.monotonic() - started < 30:
+            now = time.monotonic()
+            if now - last_poll >= .1:
+                last_poll = now
+                try:
+                    value = snapshot()
+                    current = select_snapshot(value, digest, uid)
+                    need(binding_key(current) == binding_key(binding), "APK_BINDING_CHANGED")
+                    sample = sdk_slice(value)
+                    if not result["sdk_samples"] or result["sdk_samples"][-1]["sequence"] != sample["sequence"]:
+                        need(len(result["sdk_samples"]) < 256, "SDK_SAMPLE_LIMIT")
+                        result["sdk_samples"].append(sample)
+                except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+                    result["monitor_failure"] = error.reason if isinstance(error, CaptureError) else "SDK_MONITOR_UNAVAILABLE"
+                    cancel()
+            for key, _ in selector.select(.02):
+                data = os.read(key.fd, 4096)
+                if not data:
+                    selector.unregister(key.fd);continue
+                if key.data == "stderr":
+                    stderr_bytes += len(data)
+                    if stderr_bytes > 65536:
+                        cancel()
+                    continue
+                stdout_bytes += len(data);pending.extend(data)
+                need(stdout_bytes <= 131072 and len(pending) <= 65536, "REMOTE_OUTPUT_LIMIT")
+                while b"\n" in pending:
+                    line, _, rest = pending.partition(b"\n");pending = bytearray(rest)
+                    event = decode(line, 65536)
+                    need(type(event) is dict and event.get("phase") in {"validated", "started", "finished", "blocked"}, "REMOTE_EVENT_INVALID")
+                    if event["phase"] == "finished":
+                        finished = event["result"];finished_at = time.monotonic()
+                    elif event["phase"] == "blocked":
+                        result["blocked_reason"] = event.get("reason");finished_at = time.monotonic()
+                    else:
+                        result["events"].append(event)
+            if finished_at is not None and time.monotonic() - finished_at >= 3:
+                break
+            if child.poll() is not None and not selector.get_map() and finished_at is None:
+                break
+        if finished_at is None:
+            cancel()
+        child.stdin.close()
+        child.wait(timeout=6)
+        result["remote_returncode"] = child.returncode
+        result["remote_result"] = finished
+        result["stderr_bytes"] = stderr_bytes
+        need(digest_sources() == digest, "SOURCE_CHANGED")
+        result["sdk_observation"] = summarize_sdk(baseline, result["sdk_samples"])
+        result["status"] = "completed" if (isinstance(finished, dict) and finished.get("status") == "completed" and
+                                                     not result.get("monitor_failure") and child.returncode == 0) else "failed"
+        if result.get("blocked_reason") and not result["events"]:
+            result["status"] = "blocked"
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, RuntimeError) as error:
+        result.update(status="blocked" if child is None else "failed",
+                      reason=error.reason if isinstance(error, CaptureError) else "OPERATOR_UNAVAILABLE")
+        cancel()
+    finally:
+        if child is not None:
+            try:
+                if not child.stdin.closed:
+                    child.stdin.close()
+                child.wait(timeout=6)
+            except (OSError, subprocess.SubprocessError):
+                result["remote_cleanup_unconfirmed"] = True
+                child.terminate()  # hostのADB handleだけ。remoteが終了した証拠にはしない。
+                try:child.wait(timeout=2)
+                except subprocess.SubprocessError:pass
+            child.stdout.close();child.stderr.close()
+        if selector is not None:
+            selector.close()
+        (run / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(dict(status=result["status"], artifact=str(run), probe_id=probe_id, reason=result.get("reason") or result.get("blocked_reason"),
+                          sdk_observation=result.get("sdk_observation", {}).get("status"), hmd="not_run", physical_input="not_run")))
+    return 0 if result["status"] == "completed" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
