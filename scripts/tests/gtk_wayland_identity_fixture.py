@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 from gtk_interaction_run import InteractionTrace
+from sdl_probe_run import group_live
 
 
 class IdentityTrace(InteractionTrace):
@@ -41,8 +42,13 @@ class VirtualWayland:
         for name in ("runtime","home","config","cache","data"):(self.root/name).mkdir(mode=0o700)
         self.environment={k:v for k,v in os.environ.items() if k not in {"DISPLAY","WAYLAND_DISPLAY","DBUS_SESSION_BUS_ADDRESS","SESSION_MANAGER","KDE_FULL_SESSION"}}
         self.environment.update(HOME=str(self.root/"home"),XDG_RUNTIME_DIR=str(self.root/"runtime"),XDG_CONFIG_HOME=str(self.root/"config"),
-            XDG_CACHE_HOME=str(self.root/"cache"),XDG_DATA_HOME=str(self.root/"data"),QT_QPA_PLATFORM="offscreen",KWIN_COMPOSE="Q",LIBGL_ALWAYS_SOFTWARE="1")
-        self.server=subprocess.Popen(["dbus-run-session","--","kwin_wayland","--virtual","--no-lockscreen","--no-global-shortcuts","--no-kactivities",
+            XDG_CACHE_HOME=str(self.root/"cache"),XDG_DATA_HOME=str(self.root/"data"),QT_QPA_PLATFORM="offscreen",QT_QPA_PLATFORMTHEME="generic",
+            QT_NO_XDG_DESKTOP_PORTAL="1",GTK_USE_PORTAL="0",GIO_USE_VFS="local",GSETTINGS_BACKEND="memory",KWIN_COMPOSE="Q",LIBGL_ALWAYS_SOFTWARE="1")
+        # systemのservice directoriesを含めずportal等のdaemon/FUSE自動起動を許さない。
+        config=self.root/"session.conf"
+        config.write_text('<busconfig><type>session</type><listen>unix:tmpdir='+str(self.root/'runtime')+'</listen><auth>EXTERNAL</auth><policy context="default"><allow send_destination="*"/><allow receive_sender="*"/><allow own="*"/></policy></busconfig>')
+        config.chmod(0o600)
+        self.server=subprocess.Popen(["dbus-run-session","--config-file="+str(config),"--","kwin_wayland","--virtual","--no-lockscreen","--no-global-shortcuts","--no-kactivities",
             "--socket","gtk-fixed","--width","1024","--height","768"],env=self.environment,stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
         self.server_bytes=0;self.stop=threading.Event()
@@ -57,17 +63,27 @@ class VirtualWayland:
             finally:selector.close()
         self.reader=threading.Thread(target=discard,daemon=True);self.reader.start()
         deadline=time.monotonic()+6
-        while time.monotonic()<deadline and self.server.poll() is None:
+        while time.monotonic()<deadline and os.waitid(os.P_PID,self.server.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is None:
             if (self.root/"runtime/gtk-fixed").is_socket():return self
             time.sleep(.02)
         self.__exit__(None,None,None);raise RuntimeError("GTK_PRIVATE_WAYLAND_UNAVAILABLE")
     def __exit__(self,*_):
+        # wrapperを先にreapするとKWinがcacheを書き終える前にdirectory削除へ進み得る。
+        # leaderはWNOWAITで保持し、実spawn group全体の終了後にreapする。
         try:os.killpg(self.server.pid,signal.SIGTERM)
         except ProcessLookupError:pass
-        try:self.server.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            os.killpg(self.server.pid,signal.SIGKILL);self.server.wait(timeout=2)
-        self.stop.set();self.reader.join(timeout=2);self.server.stdout.close();self.server.stderr.close();self.temporary.cleanup()
+        until=time.monotonic()+3
+        while group_live(self.server.pid) and time.monotonic()<until:time.sleep(.02)
+        if group_live(self.server.pid):
+            try:os.killpg(self.server.pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+            until=time.monotonic()+2
+            while group_live(self.server.pid) and time.monotonic()<until:time.sleep(.02)
+        self.server_reclaimed=not group_live(self.server.pid)
+        self.server.wait(timeout=2)
+        self.stop.set();self.reader.join(timeout=2);self.server.stdout.close();self.server.stderr.close()
+        if not self.server_reclaimed:raise RuntimeError("GTK_PRIVATE_WAYLAND_GROUP_NOT_RECLAIMED")
+        self.temporary.cleanup()
     def run(self,binary,case,nonce):
         env=dict(self.environment,WAYLAND_DISPLAY="gtk-fixed",WAYLAND_DEBUG="client",GDK_BACKEND="wayland",GDK_GL="disable",GDK_RENDERING="image",
             GTK_IM_MODULE="gtk-im-context-simple",GSETTINGS_BACKEND="memory",GTK_USE_PORTAL="0",DBUS_SESSION_BUS_ADDRESS="unix:path="+str(self.root/"no-session-bus"))

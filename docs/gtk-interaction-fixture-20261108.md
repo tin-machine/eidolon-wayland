@@ -58,10 +58,12 @@ hostはGTK3 dev、pkg-config、C compiler、Xvfbを使用する。`EIDOLON_GTK_F
 
 ダイアログは初期mainIDから専用dialogIDへ遷移できるが、最初のSHM buffer commit時には専用dialogIDであること、別toplevel・set_parentがあることを要求する。未知IDを許すgate変更はしていない。縦boxの最後のbuttonは余白を受けて高さ88以上に広がる設計であり、固定pointが報告矩形内にあるかを従来どおり照合する。
 
-PCのreal Wayland検証は既設KWinのvirtual backendを、私有runtime/HOME/config/cache/dataと私有D-Busで起動する。full trace/画像を保存せず、既知IDの遷移・最初のSHM時のrole・別toplevel/parent・SHM commit数だけを集計する。host selftestのinput callback自体は合成であり、この検証をQuest入力/HMDの合格にはしない。KWin/dbus-run-sessionが無い環境ではこの1検査をskipする。
+PCのreal Wayland検証は既設KWinのvirtual backendを、私有runtime/HOME/config/cache/dataと、service directoryを含まない私有D-Bus設定で起動する。full trace/画像を保存せず、既知IDの遷移・最初のSHM時のrole・別toplevel/parent・SHM commit数だけを集計する。host selftestのinput callback自体は合成であり、この検証をQuest入力/HMDの合格にはしない。KWin/dbus-run-sessionが無い環境ではこの1検査をskipする。
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_gtk_interaction_fixture.py -v
 ```
 
 Cが変わったため、実機ではinstallerで新run-idを作り、source/manifest/binary SHAを新たに固定する。既存runへCやbinaryを上書きしない。Android sourceや通常GUI catalogは変更不要である。
+
+検証環境でも、通常の私有session busはsystemにあるportal serviceを自動起動できる。最初のhost試行でidentity検査は通ってもruntime/docのFUSE跡により一時directoryの削除が失敗したため、fixtureではservice activationを持たないbus configとportal無効envを使う。GTKのwire検査成功とhost testの後片付け成功を別々に確認する。
