@@ -7,7 +7,7 @@ use crate::{
     window_slots::{CAPACITY, Entry, Phase as SlotPhase},
     workspace::PanelPose,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 pub const ANIMATION: Duration = Duration::from_millis(500);
@@ -67,6 +67,13 @@ impl Member {
             && !self.locked
             && !self.operation_active
     }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    Collapse,
+    Expand,
+    NextFront,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -178,6 +185,40 @@ impl Group {
             revision: 0,
             blocked: false,
         })
+    }
+    /// 再構成したmemberへ最後の確定layoutを渡す。callerは別group_idを発行し、旧ACKを拒否する。
+    pub fn restore(
+        scope: Scope,
+        members: Vec<Member>,
+        front: WindowId,
+        anchor: PanelPose,
+        layout: Layout,
+        now: Duration,
+    ) -> Result<Self, Error> {
+        let mut group = Self::new(scope, members, front, now)?;
+        if !anchor.valid() {
+            return Err(Error::Bounds);
+        }
+        group.stable = layout;
+        group.anchor = anchor;
+        group.poses(layout, front, anchor)?;
+        group.cancel("scope_restored")?;
+        Ok(group)
+    }
+    pub fn current_revision(&self) -> i64 {
+        self.revision
+    }
+    pub fn current_layout(&self) -> Layout {
+        self.transition.as_ref().map_or(self.stable, |t| t.goal)
+    }
+    pub fn current_front(&self) -> WindowId {
+        self.transition.as_ref().map_or(self.front, |t| t.front)
+    }
+    pub fn confirmed_front(&self) -> WindowId {
+        self.front
+    }
+    pub fn confirmed_anchor(&self) -> PanelPose {
+        self.anchor
     }
     pub fn scope(&self) -> &Scope {
         &self.scope
@@ -1141,6 +1182,49 @@ mod tests {
             Err(Error::IdExhausted)
         );
         assert_eq!(g.saved(), before);
+    }
+    #[test]
+    fn recaptured_scene_restores_only_confirmed_layout_and_waits_for_new_target_geometry() {
+        let (_, mut old) = group(2);
+        let front = old.members[0].target;
+        old.arrange(request(100), Layout::Collapsed, front, ms(0), true, false)
+            .unwrap();
+        settle(&mut old, 0);
+        old.arrange(request(101), Layout::Expanded, front, ms(1), false, false)
+            .unwrap();
+        old.sample(ms(200)).unwrap();
+        let mut members = old.members.clone();
+        let mut scope = old.scope.clone();
+        scope.scene = SceneEpoch::new(99).unwrap();
+        for member in &mut members {
+            member.target.scene = scope.scene;
+            member.target.generation =
+                SurfaceGeneration::new(member.target.generation.get() + 100).unwrap();
+        }
+        let mut restored = Group::restore(
+            scope,
+            members,
+            old.confirmed_front(),
+            old.confirmed_anchor(),
+            old.stable_layout(),
+            ms(0),
+        )
+        .unwrap();
+        assert_eq!(restored.current_layout(), Layout::Collapsed);
+        assert!(
+            restored
+                .sample(ms(0))
+                .unwrap()
+                .iter()
+                .all(|row| !row.input_allowed)
+        );
+        let revision = restored.revision().unwrap();
+        assert_eq!(
+            restored.applied(revision, front, key_pose(), true, ms(0)),
+            Err(Error::Stale)
+        );
+        settle(&mut restored, 0);
+        assert_eq!(restored.stable_layout(), Layout::Collapsed);
     }
     #[test]
     fn empty_group_is_terminal_and_cannot_admit_into_a_retired_front_or_scope() {

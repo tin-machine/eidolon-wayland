@@ -258,7 +258,7 @@ pub fn capture_foot(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use eidolon_model::{
         ids::{
@@ -272,7 +272,7 @@ mod tests {
         workload::terminal_app_id,
     };
     const NONCE: &str = "0123456789abcdef";
-    fn fixture(
+    pub(crate) fn fixture(
         n: usize,
     ) -> (
         RuntimeHandle,

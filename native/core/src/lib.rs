@@ -14,3 +14,5 @@ pub mod workload;
 pub mod workspace;
 
 pub mod window_groups;
+
+pub mod window_group_owner;
