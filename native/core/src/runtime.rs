@@ -459,8 +459,8 @@ impl Runtime {
                                 slot_refused.retain(|(session,window)| *session==current.session() && snapshot.windows.iter().any(|w|w.window==*window));
                                 for window in &slot_report.unassigned {
                                     let key=(current.session(),*window);
-                                    if !slot_refused.contains(&key) {
-                                        if current.close_window(*window).is_ok() { slot_refused.push(key); }
+                                    if !slot_refused.contains(&key) && current.close_window(*window).is_ok() {
+                                        slot_refused.push(key);
                                     }
                                 }
                                 shared.snapshot.window_slots = slot_report;
