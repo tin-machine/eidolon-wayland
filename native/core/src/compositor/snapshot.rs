@@ -542,6 +542,19 @@ impl ProtocolState {
             .ok_or("STALE")?;
         record.resize.request(size)
     }
+    pub fn request_resize_owned(
+        &mut self,
+        target: eidolon_model::surface::TargetKey,
+        request: eidolon_model::ids::CommandSeq,
+        size: LogicalSize,
+    ) -> Result<(), &'static str> {
+        self.toplevels
+            .values_mut()
+            .find(|r| r.id == target.window && r.life == WindowLife::Mapped)
+            .ok_or("STALE")?
+            .resize
+            .request_owned(request, target, size)
+    }
     pub fn restore_sizes(
         &mut self,
         window: WindowId,

@@ -1058,9 +1058,10 @@ impl Runtime {
                                                     Err("STALE")
                                                 }
                                             }
-                                            Command::ResizeLogical { width, height, .. } => current
-                                                .resize_logical(
-                                                    target.window,
+                                            Command::ResizeLogical { request_id, width, height, .. } => current
+                                                .resize_logical_owned(
+                                                    *target,
+                                                    *request_id,
                                                     eidolon_model::window::LogicalSize {
                                                         width: *width,
                                                         height: *height,

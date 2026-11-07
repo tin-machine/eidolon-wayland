@@ -280,6 +280,20 @@ impl Session {
             .ok_or("NOT_READY")?
             .request_resize(window, size)
     }
+    pub fn resize_logical_owned(
+        &mut self,
+        target: eidolon_model::surface::TargetKey,
+        request: eidolon_model::ids::CommandSeq,
+        size: LogicalSize,
+    ) -> Result<(), &'static str> {
+        if self.closing || target.session != self.session() {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .request_resize_owned(target, request, size)
+    }
     pub fn set_physical_size(
         &mut self,
         window: WindowId,

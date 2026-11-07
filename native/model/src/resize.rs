@@ -78,6 +78,7 @@ pub enum Phase {
 }
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
+    pub request: Option<ResizeRequest>,
     pub requested_logical_size: Option<LogicalSize>,
     pub configured_serial: Option<u32>,
     pub configured_logical_size: Option<LogicalSize>,
@@ -86,6 +87,12 @@ pub struct Report {
     pub committed_size: Option<LogicalSize>,
     pub phase: Phase,
     pub error: Option<&'static str>,
+}
+/// 通常commandの受付と、そのconfigure/ACK/commit serialを同じreportへ結び付ける。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ResizeRequest {
+    pub request_id: CommandSeq,
+    pub target: crate::surface::TargetKey,
 }
 #[derive(Clone, Copy)]
 struct Ticket {
@@ -116,6 +123,21 @@ impl ResizeState {
         self.report.clone()
     }
     pub fn request(&mut self, size: LogicalSize) -> Result<(), &'static str> {
+        self.request_inner(size)?;
+        self.report.request = None;
+        Ok(())
+    }
+    pub fn request_owned(
+        &mut self,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        size: LogicalSize,
+    ) -> Result<(), &'static str> {
+        self.request_inner(size)?;
+        self.report.request = Some(ResizeRequest { request_id, target });
+        Ok(())
+    }
+    fn request_inner(&mut self, size: LogicalSize) -> Result<(), &'static str> {
         logical_size(size.width, size.height)?;
         if self.tickets.len() >= Self::TICKETS {
             return Err("RESOURCE_LIMIT");
@@ -296,6 +318,87 @@ impl ResizeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn owned_target(generation: i64) -> crate::surface::TargetKey {
+        crate::surface::TargetKey {
+            session: crate::ids::SessionId::new(1).unwrap(),
+            window: crate::ids::WindowId::new(2).unwrap(),
+            scene: crate::ids::SceneEpoch::new(3).unwrap(),
+            generation: crate::ids::SurfaceGeneration::new(generation).unwrap(),
+        }
+    }
+    #[test]
+    fn owned_resize_receipt_keeps_request_and_old_target_through_alias_serial_commit() {
+        let mut state = ResizeState::default();
+        let request = crate::ids::CommandSeq::new(7).unwrap();
+        let target = owned_target(4);
+        state
+            .request_owned(request, target, size(800, 500))
+            .unwrap();
+        state.sent(11, content(1), Duration::ZERO).unwrap();
+        state.alias(12, size(800, 500)).unwrap();
+        state.acknowledge(12);
+        assert!(state.commit(Some(12), content(2), size(800, 500)));
+        let report = state.report();
+        assert_eq!(
+            report.request,
+            Some(ResizeRequest {
+                request_id: request,
+                target
+            })
+        );
+        assert_eq!(report.phase, Phase::Applied);
+        assert_eq!(report.configured_serial, Some(11));
+        assert_eq!(report.acknowledged_serial, Some(12));
+        assert_eq!(report.committed_serial, Some(12));
+        assert_eq!(report.requested_logical_size, Some(size(800, 500)));
+        assert_eq!(report.committed_size, Some(size(800, 500)));
+    }
+    #[test]
+    fn replacement_request_and_unowned_restore_cannot_keep_old_resize_receipt() {
+        let mut state = ResizeState::default();
+        let first = crate::ids::CommandSeq::new(7).unwrap();
+        let second = crate::ids::CommandSeq::new(8).unwrap();
+        let target = owned_target(4);
+        state.request_owned(first, target, size(800, 500)).unwrap();
+        state.sent(11, content(1), Duration::ZERO).unwrap();
+        state.request_owned(second, target, size(640, 360)).unwrap();
+        state.acknowledge(11);
+        assert!(state.commit(Some(11), content(2), size(800, 500)));
+        assert_ne!(state.report().phase, Phase::Applied);
+        assert_eq!(state.report().request.unwrap().request_id, second);
+        state.sent(12, content(2), Duration::ZERO).unwrap();
+        state.acknowledge(12);
+        assert!(state.commit(Some(12), content(3), size(640, 360)));
+        assert_eq!(state.report().phase, Phase::Applied);
+        assert_eq!(state.report().request.unwrap().request_id, second);
+        state.request(size(640, 360)).unwrap();
+        assert!(state.report().request.is_none());
+        // The existing repaint policy may display later content once no configure is pending.
+        // It must not revive either owned request or claim the requested 640x360 was applied.
+        assert!(state.commit(Some(11), content(4), size(800, 500)));
+        assert!(state.report().request.is_none());
+        assert_eq!(state.report().phase, Phase::Adjusted);
+    }
+    #[test]
+    fn invalid_owned_resize_does_not_replace_receipt() {
+        let mut state = ResizeState::default();
+        let request = crate::ids::CommandSeq::new(7).unwrap();
+        let target = owned_target(4);
+        state
+            .request_owned(request, target, size(800, 500))
+            .unwrap();
+        let before = state.report().request;
+        assert!(
+            state
+                .request_owned(
+                    crate::ids::CommandSeq::new(8).unwrap(),
+                    owned_target(5),
+                    size(100, 100)
+                )
+                .is_err()
+        );
+        assert_eq!(state.report().request, before);
+    }
     fn size(w: u32, h: u32) -> LogicalSize {
         LogicalSize::new(w, h).unwrap()
     }
