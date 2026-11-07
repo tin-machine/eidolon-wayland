@@ -27,3 +27,23 @@ host platformによる検査であり、Android GPUの実資源やHMD視認の�
 次は、検証済み起動情報と現在Boardに束縛したgroup owner、workspace保存poseから独立するpresentation overlay、
 SDKの実geometry ACK、Host/native両側の窓単位入力gateを接続する。
 その後に固定SDK caseで前面切替・反転・close/new・背面時計停止と再表示時の最新画像を確認する。
+
+## B2a: footの候補分類と描画準備を分ける
+
+coreに `inspect_foot` / `capture_foot` を用意した。前者は現在の認証済みfoot forwarding、
+nonce・UID・child PID/start/group、受理済みTerminalLaunch、一意なmapped marker、現在のBound Board leaseを照合する。
+最初のfootは実機記録どおりUnrequested枠と `request_id=null` の主窓受領を照合し、追加窓は固有requestと照合する。
+現在runtimeとsessionが違うlease、曖昧なmarker、受領のないapp_idだけの自己申告は採用しない。
+GTK等の別アプリをfootへ寄せない。
+
+後者はさらに完全な現在target、applied panel、slot、描画実績とcontent frameの存在、workspaceのbound placement、
+有効なpose/physical sizeを確認する。memberの取得APIもfull targetを使い、WindowIdだけで操作対象を引き直さない。
+初めて表示する窓や新規追加のfootは、分類が済んでもSDK準備待ちであれば入場させない。
+この二段階は、まとめた束へ追加される新窓がgroup入場前に入力を受ける競合を、次のownerで防ぐために使う。
+
+背面は意図的にcontentが古くなり得るため、分類時に現在producer frameとの一致は要求しない。
+前面切替/展開の終点では、新しいSDK geometryと最新contentの別ACKを必須にする。
+このcaptureはHostのMove/Menu/IME排他や入力intentの現在性を代用せず、操作とACKの直前に再取得する。
+Controller、native command、SDK overlay、Host/native入力gateへの接続はまだ後続である。
+
+この分類/captureのhost検査9件とcore packageの全target clippyが成功した。初期主窓のnull requestについては、既存の実機メタデータとも対応を確認した。新しいgroup操作の実機検証はまだ行っていない。

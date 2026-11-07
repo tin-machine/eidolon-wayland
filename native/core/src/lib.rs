@@ -12,3 +12,5 @@ pub mod waypipe;
 pub mod window_slots;
 pub mod workload;
 pub mod workspace;
+
+pub mod window_groups;
