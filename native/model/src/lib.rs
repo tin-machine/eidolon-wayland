@@ -21,3 +21,5 @@ pub mod workspace;
 pub mod window_controls;
 
 pub mod window_slots;
+
+pub mod window_launch;

@@ -174,6 +174,7 @@ impl Runtime {
                 let mut opening_window: Option<(
                     eidolon_model::ids::SessionId,
                     eidolon_model::ids::CommandSeq,
+                    String,
                     Vec<eidolon_model::ids::WindowId>,
                 )> = None;
                 let mut pending_app: Option<(
@@ -316,25 +317,29 @@ impl Runtime {
                                 current.forwarding(forward);
                             }
                             current.tick(close, remote_gone);
-                            if let Some((session, request, before)) = opening_window.as_ref() {
+                            if let Some((session, request, nonce, before)) = opening_window.as_ref() {
+                                use eidolon_model::window_launch::{Candidate, Outcome, Report, correlate};
                                 let now = current.snapshot();
-                                let failed = ssh
-                                    .app_forward
-                                    .as_ref()
-                                    .and_then(|r| r.remote.as_ref())
-                                    .and_then(|r| r.last_terminal.as_ref())
-                                    .is_some_and(|r| r.request_id == Some(*request) && !r.success);
-                                if close
-                                    || current.session() != *session
-                                    || failed
-                                    || now.windows.iter().any(|w| {
-                                        !before.contains(&w.window)
-                                            && w.life == eidolon_model::window::WindowLife::Mapped
-                                    })
+                                let expected_nonce = nonce.as_str();
+                                let candidates: Vec<_> = now.windows.iter().map(|w| Candidate {
+                                    window: w.window, app_id: w.app_id.as_deref(), life: w.life,
+                                }).collect();
+                                let outcome = if close || current.session() != *session
+                                    || current.nonce() != expected_nonce || ssh.session != Some(*session)
                                 {
-                                    opening_window = None;
-                                }
+                                    Outcome::Cancelled
+                                } else {
+                                    ssh.app_forward.as_ref().filter(|f| f.nonce == expected_nonce)
+                                        .and_then(|f| f.remote.as_ref()).map_or(Outcome::AwaitingReceipt, |remote| {
+                                            correlate(expected_nonce, Some(*request), &remote.terminal_launches, &candidates, before)
+                                        })
+                                };
+                                state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.window_launch = Some(Report {
+                                    session: *session, request_id: *request, outcome,
+                                });
+                                if outcome.completed() { opening_window = None; }
                             }
+
                             let selected = state
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
@@ -806,9 +811,14 @@ impl Runtime {
                                         let code =
                                             io.launch_terminal(*session, *request_id, target);
                                         if code == Status::Accepted {
+                                            state.snapshot.window_launch = Some(eidolon_model::window_launch::Report {
+                                                session: *session, request_id: *request_id,
+                                                outcome: eidolon_model::window_launch::Outcome::Queued,
+                                            });
                                             opening_window = Some((
                                                 *session,
                                                 *request_id,
+                                                app.as_ref().unwrap().nonce().to_owned(),
                                                 app.as_ref()
                                                     .unwrap()
                                                     .snapshot()

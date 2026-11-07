@@ -31,6 +31,7 @@ pub struct Snapshot {
     pub theme: crate::theme::Report,
     pub render: eidolon_render::Snapshot,
     pub transport: eidolon_transport::session::Snapshot,
+    pub window_launch: Option<eidolon_model::window_launch::Report>,
 }
 impl Default for Snapshot {
     fn default() -> Self {
@@ -60,6 +61,7 @@ impl Default for Snapshot {
             theme: Default::default(),
             render: Default::default(),
             transport: Default::default(),
+            window_launch: None,
         }
     }
 }

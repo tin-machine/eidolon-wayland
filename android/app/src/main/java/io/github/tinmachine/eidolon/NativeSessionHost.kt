@@ -1184,11 +1184,14 @@ object NativeSessionHost {
         ui.post { windowChoices.value=choices }
         terminalAdding?.let { operation ->
             val receipt=runtime.getJSONObject("transport").optJSONObject("app_forward")?.optJSONObject("remote")?.optJSONObject("last_terminal")
+            val owned=runtime.optJSONObject("window_launch")?.takeIf {it.optString("session")==operation.session && it.optString("request_id")==operation.request}
             if(receipt?.optString("request_id")==operation.request && !receipt.optBoolean("success")) {
                 terminalError=LauncherMessages.error(receipt.optString("error"));terminalAdding=null
                 launcherUpdate(launcherState.copy(message=checkNotNull(terminalError)))
             } else if(currentApp?.optString("session")!=operation.session) terminalAdding=null
-            else if(choices.any { it.window !in operation.windows }) {terminalAdding=null;launcherUpdate(launcherState.copy(message="ウィンドウを開きました"))}
+            else if(owned?.optString("phase")=="matched" && owned.optString("window") !in operation.windows && choices.any {it.window==owned.optString("window")}) {
+                terminalAdding=null;launcherUpdate(launcherState.copy(message="ウィンドウを開きました"))
+            }
             else if(SystemClock.elapsedRealtime()>operation.deadline) {
                 terminalError="ウィンドウの追加を確認できません。接続を閉じて再試行してください";terminalAdding=null
                 launcherUpdate(launcherState.copy(message=checkNotNull(terminalError)))

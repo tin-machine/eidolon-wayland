@@ -257,12 +257,8 @@ pub struct TerminalOpened {
     #[serde(default)]
     pub error: Option<crate::catalog::Error>,
 }
-#[derive(Clone, Debug, Serialize)]
-pub struct TerminalLaunch {
-    pub terminal_id: TerminalId,
-    pub request_id: Option<CommandSeq>,
-    pub accepted: Option<bool>,
-}
+pub use eidolon_model::window_launch::TerminalLaunch;
+
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Frame {

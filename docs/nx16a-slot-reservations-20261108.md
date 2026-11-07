@@ -11,14 +11,14 @@
 | model limits | TOPLEVELS=8 / VISIBLE_PANELS=2 / CLIENTS=4 | 通常toplevel・表示・独立clientの上限を分ける |
 | native panels | visible配列2、空きへmapped順に割当、showで交換 | 予約されたslotを正本にし、他窓を勝手に詰めない |
 | workspace | slotごとの横並びpose、app_id/slotによる保存復元 | 共通grid基底、新規未配置だけの既定、保存済み自由poseを優先 |
-| Runtime launch | opening_window一件、beforeに無いMapped窓で完了 | requestと実窓のcorrelationを確定し、完了順に予約を奪わせない |
+| Runtime launch | opening_window一件。NX16b前半でfootのrequest/receipt/markerを照合 | Boardへの予約接続、並行起動と退役の扱い |
 | compositor | 9枚未対応。上限超過はwl_surface.post_error | 余剰窓の拒否で同clientの既存窓を巻き込まない |
 | StreamLocal | 実装側MAX_CHANNELS=8、別途model定数も存在 | 九clientと補助接続の実数、channel予算の正本 |
 | Kotlin/SDK | bindings>=2、枠1/2のUI | 非同期pending・退役中を含む上限、三→六→九の配備gate |
 
-既存Runtimeは同時起動を一件に抑えているが、新Mapped窓がそのrequestの結果だと確定する情報はない。
-単純にlaunchの受付数だけ増やすと、別アプリのdialogや取消済み起動の遅い結果を、別requestへ結び得る。
-統合時は所有tokenを伝える経路を確定する。foot固有のapp_id/titleだけで一般GUIまで成立したことにしない。
+初回調査時はRuntimeの「新Mappedなら完了」に注目したが、既存のTermux helperにはすでに
+nonce/terminal ID付きfoot app_idとrequest ID付き受付receiptがあった。NX16b前半はこの経路を接続した（下記）。
+このfoot固有のmarkerで一般GUIやプロセス停止権限まで成立したことにはしない。
 所有が不明な窓を「最初の新Mapped」という理由だけで予約へ結び付けない。
 
 compositorのprotocol errorは同clientへ影響するため、容量超過の新toplevelだけへcloseを要求し、
@@ -85,3 +85,28 @@ hostのmodel全63件が成功（新規slot/geometry 11件）。逆完了、pendi
 `CARGO_INCREMENTAL=0 cargo test --locked -p eidolon-model`で再現できる。
 隔離checkoutではworkspace解決に必要なgenerated Smithayを既存の生成物へ向け、gitignore対象の子symlinkを利用した。
 sourceのみをcommitし、生成物は含めない。構造preflightはrepository非対応のためsourceを直接確認した。
+
+
+## NX16b前半: 起動requestとfoot窓の照合
+
+上限変更より先に、既存の`terminal_launches`（request/terminal ID/受付成否）と
+`io.github.tinmachine.eidolon.foot.t-<nonce>-<terminal_id>`のapp_idを照合する純粋モデルを追加した。
+Runtime側でsessionとforward nonceを先に検査し、通常toplevel列だけを候補に渡す。
+Popupは別のcompositor列であり候補に含めない。古い既存窓、別nonce、無関係なdialog、
+未受付/未mapped、重複receipt、重複markerを起動成功として扱わない。
+
+`runtime.window_launch`はsession/request IDと`phase`を返し、成功時のみterminal/window IDを加える。
+`queued`→受付/窓待ち→`matched`または`rejected/cancelled`を区別する。
+曖昧な状態は待機を継続する。UIの「ウィンドウを開きました」も、そのrequestの`matched`と
+同じ窓がmapped選択肢に存在する場合だけ表示する。単に別の新窓が現れただけでは完了しない。
+既存の起動直列化と8秒のUI確認期限は維持する。期限到達をslot回収ACKへ読み替えない。
+
+app_idはclientの自己申告なので、これは信頼済みreceiptと組み合わせた配置相関である。
+この値を任意プロセスのkill権限として使わない。現在のcatalogはfoot内terminal起動であり、
+一般GUI用markerや複数の独立Wayland clientについての合格ではない。
+Termux helperの変更、窓数上限の変更、slot BoardとSDK drainの接続はこの前半に含めない。
+
+model全70件成功（追加した相関7件を含む）。逆順map、無関係な窓、別nonce、既存窓、
+受付欠落/未確定/拒否、duplicate、未mapped、初回request無し、wire ID表現を検査した。
+`CARGO_INCREMENTAL=0 cargo check --locked -p eidolon-core -p eidolon-transport`も成功。
+Android compile/SDK/Questはroot担当の後続gateであり、このcheckpointでは未実施。
