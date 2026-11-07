@@ -12,6 +12,10 @@ import time
 import unittest
 import importlib.machinery
 import shlex
+import ctypes
+import contextlib
+import errno
+from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / 'termux/eidolon_gui_owner.py'
 SPEC = importlib.util.spec_from_file_location('eidolon_linux_process_owner', SOURCE)
@@ -245,6 +249,37 @@ class CapabilityOperatorTests(unittest.TestCase):
         self.assertEqual(value['status'],'supported');self.assertTrue(value['adopted'] and value['separate_session'] and value['pipes_closed'])
         self.assertTrue(value['cleanup']['complete']);self.assertEqual(value['cleanup']['open_pidfds'],0)
         value['uid']=10158;self.assertTrue(cli.valid(value));value['body']='PRIVATE';self.assertFalse(cli.valid(value))
+
+
+class BionicAdapterTests(unittest.TestCase):
+    class Call:
+        def __init__(self,descriptor):self.descriptor=descriptor;self.calls=[];self.error=None
+        def __call__(self,*args):
+            values=[item.value if hasattr(item,'value') else item for item in args];self.calls.append(values)
+            if self.error is not None:ctypes.set_errno(self.error);return -1
+            return self.descriptor if values[0]==434 else 0
+    def make(self,call):
+        class Library:pass
+        library=Library();library.syscall=call
+        stack=contextlib.ExitStack();self.addCleanup(stack.close)
+        stack.enter_context(patch.object(OWNER.sys,'platform','android'));stack.enter_context(patch.object(OWNER.platform,'machine',return_value='aarch64'))
+        stack.enter_context(patch.object(OWNER.ctypes,'CDLL',return_value=library));return OWNER._Pidfds()
+    def test_aarch64_uses_exact_uapi_widths_and_only_its_opened_live_fd(self):
+        descriptor=os.open('/dev/null',os.O_RDONLY);call=self.Call(descriptor);adapter=self.make(call)
+        self.assertEqual(adapter.open(123),descriptor);adapter.send(descriptor,signal.SIGTERM)
+        self.assertEqual(call.calls,[[434,123,0],[424,descriptor,signal.SIGTERM,None,0]])
+        self.assertIs(call.argtypes[0],ctypes.c_long);self.assertIs(call.restype,ctypes.c_long)
+        with self.assertRaisesRegex(OWNER.OwnershipError,'PIDFD_NOT_OWNED'):adapter.send(descriptor+1,signal.SIGKILL)
+        adapter.close(descriptor);other=os.open('/dev/null',os.O_RDONLY)
+        try:
+            with self.assertRaisesRegex(OWNER.OwnershipError,'PIDFD_NOT_OWNED'):adapter.send(other,signal.SIGTERM)
+        finally:os.close(other)
+        self.assertEqual(len(call.calls),2)
+    def test_syscall_errno_is_preserved_and_other_architecture_is_unsupported(self):
+        call=self.Call(-1);call.error=errno.EPERM;adapter=self.make(call)
+        with self.assertRaises(OSError) as caught:adapter.open(123)
+        self.assertEqual(caught.exception.errno,errno.EPERM);self.assertEqual(adapter.owned,set())
+        with patch.object(OWNER.platform,'machine',return_value='x86_64'),self.assertRaisesRegex(OWNER.OwnershipError,'PIDFD_UNSUPPORTED'):OWNER._Pidfds()
 
 
 if __name__ == '__main__':

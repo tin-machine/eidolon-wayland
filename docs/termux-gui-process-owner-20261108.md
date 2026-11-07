@@ -35,6 +35,21 @@ host fixtureはQuestと同じPPID fallbackを必ず通し、通常group・setsid
 pendingから同ownerへの明示回収、古いcallback/別owner/既存child拒否、無関係な同UID siblingの生存を確認する。
 TermuxのSELinux/kernelでの実capabilityはoperatorの結果で別に判断する。
 
+## Android CPythonのpidfd wrapper欠落
+
+最初の実機probeは`PLATFORM_UNSUPPORTED`で、child spawn前に拒否した。
+実環境は`sys.platform='android'`、AArch64/Python3.14.8であり、`os.pidfd_open`と
+`signal.pidfd_send_signal`が提供されていなかった。Linux CPythonのwrapper有無とkernel能力は別である。
+同UIDの固定own childだけを使った別検証では、kernelのpidfd open/signalが成功し、TERM終了とreapを確認した。
+
+この根拠に限定し、Android/AArch64/LP64だけにBionic `syscall` adapterを追加した。
+NDK27.3.13750724の`sysroot/usr/include/asm-generic/unistd.h`で`pidfd_open=434`、
+`pidfd_send_signal=424`を照合し、`unistd.h`の`long syscall(long, ...)`に合わせる。
+番号は`long`、pid/fd/signalは`int`、flagsは`unsigned int`、NULL siginfoはpointerで渡し、errnoを保持する。
+Linuxでは既存Python wrapperを使う。他architectureへの番号の外挿や、PIDだけへのsignal fallbackは行わない。
+adapterが開いたlive fdだけをinstance内で追跡し、close時に集合から除く。番号再利用後の別fdを送信先にしない。
+元のunsupported結果は保持し、この修正後のcapabilityを別runで判断する。
+
 通常GUIの実装では、worker hashを既存helper本体へ固定し、親helperはworkerの実handleを保持する。
 pending workerを強制killして孫の所有を失った状態を「回収済み」にしない。
 最初のGUIから使える隠れFootserver anchor、最後のGUI終了後のanchor維持、session Stop時のworker→anchor回収を

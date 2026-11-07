@@ -2,6 +2,7 @@
 import ctypes
 import os
 from pathlib import Path
+import platform
 import signal
 import subprocess
 import sys
@@ -16,6 +17,40 @@ _active_owner = None
 
 class OwnershipError(RuntimeError):
     """固定tokenのみ。argv/path/環境/terminal本文は例外へ含めない。"""
+
+
+class _Pidfds:
+    """Android CPythonのwrapper欠落だけを固定AArch64 UAPIで補う。所有fdはこのinstance内だけ。"""
+    def __init__(self):
+        self.owned=set();self.library=None
+        if sys.platform=='linux' and hasattr(os,'pidfd_open') and hasattr(signal,'pidfd_send_signal'):
+            self.kind='python';return
+        require(sys.platform=='android' and os.name=='posix' and platform.machine()=='aarch64' and
+                ctypes.sizeof(ctypes.c_void_p)==ctypes.sizeof(ctypes.c_long)==8,'PIDFD_UNSUPPORTED')
+        self.library=ctypes.CDLL(None,use_errno=True)
+        self.library.syscall.restype=ctypes.c_long
+        self.library.syscall.argtypes=[ctypes.c_long]  # Bionic: long syscall(long, ...)
+        self.kind='bionic_aarch64_syscall'
+
+    def _call(self,number,*args):
+        ctypes.set_errno(0)
+        value=self.library.syscall(ctypes.c_long(number),*args)
+        if value<0:raise OSError(ctypes.get_errno(),'PIDFD_SYSCALL_FAILED')
+        return value
+
+    def open(self,pid):
+        require(type(pid) is int and 0<pid<=2147483647,'PROCESS_IDENTITY_INVALID')
+        descriptor=os.pidfd_open(pid,0) if self.kind=='python' else self._call(434,ctypes.c_int(pid),ctypes.c_uint(0))
+        require(type(descriptor) is int and descriptor>=0,'PIDFD_UNSUPPORTED')
+        self.owned.add(descriptor);return descriptor
+
+    def send(self,descriptor,number):
+        require(type(descriptor) is int and descriptor in self.owned and number in (0,signal.SIGTERM,signal.SIGKILL),'PIDFD_NOT_OWNED')
+        if self.kind=='python':signal.pidfd_send_signal(descriptor,number,None,0)
+        else:self._call(424,ctypes.c_int(descriptor),ctypes.c_int(number),ctypes.c_void_p(),ctypes.c_uint(0))
+
+    def close(self,descriptor):
+        require(descriptor in self.owned,'PIDFD_NOT_OWNED');self.owned.remove(descriptor);os.close(descriptor)
 
 
 def require(value, token):
@@ -123,10 +158,10 @@ class ProcessOwner:
     """新規single-thread helperだけでenable。pending時はこのlive ownerを保持する。"""
     def __init__(self):
         global _active_owner
-        require(sys.platform == 'linux' and os.getuid() == os.geteuid() != 0, 'PLATFORM_UNSUPPORTED')
+        require(sys.platform in {'linux','android'} and os.name=='posix' and os.getuid() == os.geteuid() != 0, 'PLATFORM_UNSUPPORTED')
         require(_active_owner is None or _active_owner.owner['pid'] != os.getpid() or
                 _active_owner.result is not None, 'OWNER_ALREADY_ACTIVE')
-        require(hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'), 'PIDFD_UNSUPPORTED')
+        self.pidfds=_Pidfds()
         require(signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL, 'SIGCHLD_UNSUPPORTED')
         self.owner = identity(os.getpid())
         require(len(list(Path('/proc/self/task').iterdir())) == 1, 'HELPER_NOT_DEDICATED')
@@ -137,9 +172,9 @@ class ProcessOwner:
         require(library.prctl(36, 1, 0, 0, 0) == 0, 'SUBREAPER_UNSUPPORTED')
         status = ctypes.c_int()
         require(library.prctl(37, ctypes.addressof(status), 0, 0, 0) == 0 and status.value == 1, 'SUBREAPER_UNSUPPORTED')
-        descriptor = os.pidfd_open(os.getpid(), 0)
-        try: signal.pidfd_send_signal(descriptor, 0, None, 0)
-        finally: os.close(descriptor)
+        descriptor = self.pidfds.open(os.getpid())
+        try: self.pidfds.send(descriptor, 0)
+        finally: self.pidfds.close(descriptor)
         self.handles = {}  # (pid,start) -> live fd; journalから復元しない。
         self.roots = {}
         self.closing = False
@@ -168,14 +203,14 @@ class ProcessOwner:
             return self.handles[key]
         require(len(self.handles) < MAX_PROCESSES, 'PROCESS_HANDLE_LIMIT')
         require(row['uid'] == self.owner['uid'], 'DESCENDANT_UID_CHANGED')
-        descriptor = os.pidfd_open(row['pid'], 0)
+        descriptor = self.pidfds.open(row['pid'])
         try:
             require(same_process(row, identity(row['pid'])), 'PROCESS_CHANGED')
             value = dict(fd=descriptor, term=False, kill=False)
             self.handles[key] = value
             return value
         except BaseException:
-            os.close(descriptor)
+            self.pidfds.close(descriptor)
             raise
 
     def _signal(self, row, number):
@@ -183,7 +218,7 @@ class ProcessOwner:
         value = self._capture(row)
         field = 'kill' if number == signal.SIGKILL else 'term'
         if value[field]: return
-        try: signal.pidfd_send_signal(value['fd'], number, None, 0)
+        try: self.pidfds.send(value['fd'], number)
         except ProcessLookupError: return
         value[field] = True
         if number == signal.SIGKILL: self.kill_signals += 1
@@ -214,7 +249,7 @@ class ProcessOwner:
                     if empty_scans >= 2:
                         # Popenのroot statusも確定させる。既に呼出元がwaitした場合はno-op。
                         for child in self.roots.values(): child.wait(timeout=0)
-                        for value in self.handles.values(): os.close(value['fd'])
+                        for value in self.handles.values(): self.pidfds.close(value['fd'])
                         self.handles.clear()
                         self.result = self._report(True, 'COMPLETED')
                         return dict(self.result)
