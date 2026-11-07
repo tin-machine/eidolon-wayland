@@ -18,4 +18,4 @@ CARGO_INCREMENTAL=0 scripts/check-waypipe-clipboard
 CARGO_INCREMENTAL=0 scripts/check-waypipe-ime
 ```
 
-CIの再受入れはこの変更をpushした後のrunで別途確認する。
+push後の`8c92e61`/run `42402084389`と`e8bd699`/run `42402741125`は、host/android/report全体で成功した。

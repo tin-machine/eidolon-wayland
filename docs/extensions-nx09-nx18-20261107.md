@@ -34,10 +34,10 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 | NX10 | カタログUI・保存・稼働中footへの任意起動を接続 | Build143のPC検査。初回任意起動・個別取消・配置保存とQuest実機確認は残件 |
 | NX11 | SDL/SHM小probeを実装、隔離host成功 | Questで公式SDL2/Mesa経路を検証し、成立後Doom/Freedoomへ |
 | NX12 | focus/closeに加え[move/窓横MODE](nx12b-window-move-mode-20261108.md)もBuild161のSDK固定case成功 | サイズ/正面復帰、HMD/物理受入れ |
-| NX13 | 同UID I/O、重複計上防止、内側回転を実装。Build159で正値→partial→zeroと成功drawを照合 | 専用子の実機回収証拠、thread/共有tmux、多窓、HMD |
-| NX14 | CPUをBuild148、熱/容量を152、PSSを154で製品UID・停止復帰確認 | HMD表示受入れ、gateway等の残値。全体CPU/GPUは取得経路ごとに判断 |
+| NX13 | Build159でI/O値とdrawを照合し、Build163で専用root/子のidentity退役と一時data残存0を外部確認 | thread/共有tmux、多窓、HMD。APK内の回収未検証flagは外部証拠と区別 |
+| NX14 | CPU148、熱/容量152、PSS154、gateway164を製品UID・停止復帰確認 | HMD表示受入れ、追加値。全体CPU/GPUは取得経路ごとに判断 |
 | NX15 | [固定GTK](gtk-first-frame-probe-20261108.md)のSHM/SDK初描画・回収をBuild160で確認 | 入力/dialog/resize、製品起動・Stop、HMD |
-| NX16 | 未着手 | 二→三→六→九枚、指定順配置、資源予算、10枚目制限 |
+| NX16 | [九枠台帳・起動相関・回収](nx16a-slot-reservations-20261108.md)を実装、Build164の二窓で確認 | 表示は現時点2枚。三→六→九枚、指定順配置、資源予算、10枚目制限 |
 | NX17 | 未着手 | 同種窓の集約、500ms展開、前面/取消/reduced motion |
 | NX18 | v2接続設定・endpoint別認証を実装し、[Build162の実APK SSH probe](remote-apk-probe-b2-20261108.md)成功。通常接続はv1を維持 | Linux helper SHM/実APK描画、ランチャー統合と切断回収 |
 

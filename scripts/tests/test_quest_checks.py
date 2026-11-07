@@ -92,6 +92,17 @@ class ResultTests(unittest.TestCase):
                     "transport": {"forward_probe": report}, "after_stop": {"workers": 0, "tokio_threads": 0, "owned_connections": 0, "forward": {"active": 0}}},
                     "runtime": {"handle": "2", "runtime": {"state": "Ready", "activity_visible": True, "xr_state": "FOCUSED", "transport": {"state": "Idle"}}}}
         self.assertTrue(forward_result(snapshot, nonce, info, 4242))
+        extended = copy.deepcopy(snapshot)
+        extended["check"]["transport"]["forward_probe"]["forwarding"]["copy_buffer_limit"] = 768 * 1024
+        self.assertTrue(forward_result(extended, nonce, info, 4242))
+        for limit in [640 * 1024, 768 * 1024 + 1, float(768 * 1024), {}, []]:
+            bad = copy.deepcopy(extended)
+            bad["check"]["transport"]["forward_probe"]["forwarding"]["copy_buffer_limit"] = limit
+            with self.assertRaises(ValueError): forward_result(bad, nonce, info, 4242)
+        for peak in [7, 12, 4.0]:
+            bad = copy.deepcopy(extended)
+            bad["check"]["transport"]["forward_probe"]["forwarding"]["peak"] = peak
+            with self.assertRaises(ValueError): forward_result(bad, nonce, info, 4242)
         self.assertFalse(forward_result(snapshot, "old", info, 4242))
         with self.assertRaises(ValueError): forward_result(snapshot, nonce, info, 4243)
         for key in ["hashes_matched", "half_close", "forward_cancelled", "local_cleaned", "remote_cleaned"]:

@@ -1,5 +1,19 @@
 # NX13: 登録terminal内の固定I/O fixture
 
+## Build163の外部終了確認
+
+probe `1f8d22425e69a7e71b4c201922c9cb7a`で再び`metrics_and_draw`を確認し、
+登録rootと専用writerのPID/starttimeを生存中に採取した。同UIDの`/proc/*/stat`から
+親子関係を照合し、固定case終了後は両identityの退役を確認した。
+続くread-only照会ではprivate fixture directory内の`.io-data-*`は0件だった。
+以前のcollectorは`/proc/<pid>/task/<pid>/children`を前提にしていたが、Questには
+このfileが無いことを確認した。子を観測できなかったBuild159を成功へ書き換えず、
+今回の別観測として記録する。通常terminalの本文・argv・全環境は採取していない。
+
+APK内の`fixture_cleanup_verified=false`は、APK自体が子groupの完全回収を検証した値ではないため維持する。
+外部operatorの`known_fixture_processes_retired=true`と、一時data directoryの残存0を別の証拠とする。
+thread終了・共有tmux・多窓とHMDは引き続き別の受入れ条件。
+
 ## Build159の実機結果
 
 debug build・lint・APK検査・JUnit 124件成功後、同版helperと固定fixtureで再検証した。

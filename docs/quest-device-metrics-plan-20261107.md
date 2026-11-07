@@ -6,9 +6,19 @@
 `available`、`no_explicit_gateway`、`unknown`を分け、直結経路や取得失敗をgatewayのIPへ置き換えない。
 IPv4/IPv6を対象とし、APIが返したIPv6 scopeは保持する。これはAPの管理IPや任意宛先への疎通確認ではない。
 新しい権限は追加せず、既存の5秒tickと可視期間の購読を使う。取得中にactive networkが変われば値を採用しない。
-統合APKでの検証結果は次のcheckpointへ追記する。
+Build164で同APK UIDからIPv4 gateway一件を取得し、ADBのdefault routeとの一致を確認した。
+Homeで採取時刻が進まないこと、復帰後に新しい採取時刻とgatewayを再取得することも確認した。
+debug build/lint/package/JUnit140件成功。IPv6実環境・network切替・HMD視認は未受入れ。
 [getLinkPropertiesの権限・欠測条件](https://developer.android.com/reference/android/net/ConnectivityManager#getLinkProperties(android.net.Network))と
 [RouteInfoのdefault/next hop/type](https://developer.android.com/reference/android/net/RouteInfo)を確認した。
+
+```sh
+adb -s "$EIDOLON_QUEST_SERIAL" exec-out run-as io.github.tinmachine.eidolon \
+  cat no_backup/diagnostics/latest.json | jq '.interface.device | {sampled_monotonic_ms, network, gateway_status, default_gateways, gateway_scope}'
+adb -s "$EIDOLON_QUEST_SERIAL" shell ip route show table all
+```
+
+上の出力にはprivateなIPが含まれるので、公開記録には件数・IP version・一致boolだけを残す。
 [実装・検証記録](extensions-nx01-nx08-20261107.md)と計画段階の記述を区別する。
 
 調査日: 2026-11-07。基準revision: `74555aa`。状態: **計画のみ。製品への実装開始待ち**。

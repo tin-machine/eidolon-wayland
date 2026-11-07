@@ -1348,15 +1348,18 @@ def forward_result(snapshot, nonce, expected, termux_uid, *, instrumentation=Fal
         return False
     report = result.get("transport", {}).get("forward_probe", {})
     forwarding = report.get("forwarding", {})
+    limit = forwarding.get("copy_buffer_limit")
+    quota = {512 * 1024: 8, 768 * 1024: 12}.get(limit) if type(limit) is int else None
+    peak = forwarding.get("peak")
     total = 1 + 65536 + 4 * 8 * 1024 * 1024
     after = result.get("after_stop", {})
     if (result.get("cleanup_failed") or result.get("credential_requests") != 1
             or report.get("state") != "pass" or report.get("nonce") != nonce[:16] or report.get("uid") != termux_uid
             or report.get("channels") != 6 or report.get("bytes") != total or report.get("error") is not None
             or not all(report.get(key) for key in ["hashes_matched", "half_close", "forward_cancelled", "local_cleaned", "remote_cleaned"])
-            or forwarding.get("accepted") != 6 or forwarding.get("active") != 0 or not 4 <= forwarding.get("peak", 0) <= 8
+            or forwarding.get("accepted") != 6 or forwarding.get("active") != 0
+            or quota is None or type(peak) is not int or not 4 <= peak <= min(6, quota)
             or forwarding.get("failed") != 0 or forwarding.get("remote_to_local") != total or forwarding.get("local_to_remote") != total + 54
-            or forwarding.get("copy_buffer_limit") != 512 * 1024
             or any(after.get(key) != 0 for key in ["workers", "tokio_threads", "owned_connections"])
             or after.get("forward", {}).get("active") != 0):
         raise ValueError("転送のbyte/hash/EOF/上限/回収検査が不正です")

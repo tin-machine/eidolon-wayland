@@ -1,6 +1,20 @@
 # NX16a: 九枠の予約・解放モデル
 
-2026-11-08。基準`7d00288`。**model-only checkpointであり、通常APKの窓数上限は変更しない。**
+## Build163/164で確認した範囲
+
+Build163でrequest/session/nonce付きfoot markerと実windowの相関を確認した。
+Build164のSDK固定case `2124a9e2d7eeeb0a65df3a33eb21ca4e`もPASSし、
+JNIの実runtime handleに結び付いた台帳でcenter/rightの二件がBoundになった。
+片側をcloseした後はoccupied1/rightだけになり、survivor入力を維持した。
+停止後はoccupied0/entries空、cleanup_required=false、通常設定不変を確認した。
+台帳capacity9と表示limit2は分けて報告している。九枚表示の合格ではない。
+
+debug build/lint/package/JUnit140件、独立したhost compositor19件が成功。
+host modelは先行統合時76件成功。shared host targetの別checkout cacheを使い回さないよう、
+host Cargo所有lockと自checkoutのentrypoint mtime更新を行ってから検証した。
+三→六→九枚、逆順map/穴再利用、独立client、予算、光学/HMDの受入れは後続に残る。
+
+以下は初期model checkpointと段階的な接続記録。基準`7d00288`では通常APKの窓数上限を変更していない。
 [最大9枚の計画](next-phase-termux-startup-linux-gui-plan-20261107.md)を段階化する。
 `native/model/src/window_slots.rs`を追加し、受付と描画完了、窓消滅と資源回収を分けて扱う。
 
