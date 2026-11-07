@@ -5,6 +5,12 @@ use tokio_util::sync::CancellationToken;
 
 // shell argvは固定codeと検査済みhexだけ。account HOMEを環境変数/remote応答からexecへ挿入しない。
 pub(super) fn command(pins: &Pins, nonce: &str) -> Result<String, &'static str> {
+    bootstrap(pins, nonce, "prepare")
+}
+pub(super) fn cleanup_command(pins: &Pins, nonce: &str) -> Result<String, &'static str> {
+    bootstrap(pins, nonce, "cleanup")
+}
+fn bootstrap(pins: &Pins, nonce: &str, mode: &str) -> Result<String, &'static str> {
     if !crate::forward_probe::valid_nonce(nonce) || !pins.valid() {
         return Err("INVALID_ARGUMENT");
     }
@@ -36,13 +42,14 @@ def pinned(home):
  assert value[2]=='{}' and value[1]['waypipe']=='{}' and value[1]['eidolon-shm-fixture']=='{}'
  return value
 m['bundle']=pinned
-m['main'](['prepare','{}'])
+m['main'](['{}','{}'])
 "#,
         pins.bundle_sha256,
         pins.helper_sha256(),
         pins.bundle_sha256,
         pins.waypipe_sha256,
         pins.fixture_sha256,
+        mode,
         nonce
     );
     Ok(format!(

@@ -453,3 +453,138 @@ async fn preexisting_journal_is_reported_pending_without_remote_exec_or_replacem
     assert!(!ssh.dir.join(".eidolon-linux").exists());
     ssh.close().await;
 }
+
+fn recovery<'a>(dir: &'a Path, pins: &'a Pins) -> Recovery<'a> {
+    Recovery {
+        session: SessionId::new(2).unwrap(),
+        profile_binding: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        profile_revision: "9007199254740993",
+        files: dir,
+        nonce: "1234567890abcdef",
+        uid: unsafe { libc::getuid() },
+        pins,
+    }
+}
+#[test]
+fn cleanup_receipt_requires_exact_scope_and_resource_absence() {
+    let nonce = "1234567890abcdef";
+    let mut reply = frame("unused");
+    reply.as_object_mut().unwrap().remove("type");
+    reply["cleaned"] = true.into();
+    reply["already_absent"] = true.into();
+    reply["receipt"] = finished();
+    let check =
+        |v: &serde_json::Value| protocol::audit(v.to_string().as_bytes(), nonce, 1000, &pins());
+    assert_eq!(check(&reply), Ok(true));
+    for key in ["uid", "nonce", "revision", "backend"] {
+        let mut v = reply.clone();
+        v["receipt"][key] = if key == "uid" {
+            999.into()
+        } else {
+            "wrong".into()
+        };
+        assert!(check(&v).is_err());
+    }
+    let mut v = reply.clone();
+    v["receipt"] = serde_json::Value::Null;
+    assert_eq!(check(&v), Err("LINUX_RECEIPT_MISSING"));
+    for key in ["group_alive", "pipes_closed"] {
+        let mut v = reply.clone();
+        v["receipt"][key] = (key == "group_alive").into();
+        assert_eq!(check(&v), Ok(false));
+    }
+    let mut pending = frame("unused");
+    pending.as_object_mut().unwrap().remove("type");
+    pending["cleaned"] = false.into();
+    pending["pending"] = true.into();
+    assert_eq!(check(&pending), Ok(false));
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_ssh_receipt_recovery_requires_saved_binding_and_does_not_signal_pid() {
+    let ssh=crate::forward::openssh::OpenSsh::with_forced_command(|dir|{
+        fs::DirBuilder::new().mode(0o700).create(dir.join(".eidolon-linux")).unwrap();
+        let helper=Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/linux/eidolon-linux-session.py").canonicalize().unwrap();
+        let entry=dir.join("audit.py");
+        fs::write(&entry,format!("import runpy,json\nfrom pathlib import Path\nm=runpy.run_path({})\nh=Path({})\n(h/'audit_called').write_text('1')\nprint(json.dumps(m['cleanup'](h,'1234567890abcdef')),flush=True)\n",serde_json::to_string(helper.to_str().unwrap()).unwrap(),serde_json::to_string(dir.to_str().unwrap()).unwrap())).unwrap();fs::set_permissions(&entry,fs::Permissions::from_mode(0o600)).unwrap();
+        Some(format!("/usr/bin/python3 -I -S {}",entry.display()))
+    }).await;
+    let temp = Temp::new();
+    let p = pins();
+    let socket = temp.0.join("p");
+    let mut original = request(&temp.0, &socket, &p);
+    original.uid = unsafe { libc::getuid() };
+    let _journal = journal::Journal::reserve(&original).unwrap();
+    let pending = temp.0.join("linux-probe-state/pending.json");
+    let bytes = fs::read(&pending).unwrap();
+    for field in ["binding", "revision", "nonce", "uid"] {
+        let mut r = recovery(&temp.0, &p);
+        match field {
+            "binding" => {
+                r.profile_binding =
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+            "revision" => r.profile_revision = "1",
+            "nonce" => r.nonce = "aaaaaaaaaaaaaaaa",
+            "uid" => r.uid += 1,
+            _ => unreachable!(),
+        };
+        let result = recover(&ssh.client, r, &CancellationToken::new()).await;
+        assert_eq!(result.error, Some("LINUX_CLEANUP_SCOPE_MISMATCH"));
+        assert!(!result.queried && result.pending);
+        assert!(!ssh.dir.join("audit_called").exists());
+        assert_eq!(fs::read(&pending).unwrap(), bytes);
+    }
+    for field in ["bundle", "waypipe", "fixture"] {
+        let mut changed = p.clone();
+        match field {
+            "bundle" => changed.bundle_sha256 = "f".repeat(64),
+            "waypipe" => changed.waypipe_sha256 = "f".repeat(64),
+            "fixture" => changed.fixture_sha256 = "f".repeat(64),
+            _ => unreachable!(),
+        };
+        let wrong = recover(
+            &ssh.client,
+            recovery(&temp.0, &changed),
+            &CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(wrong.error, Some("LINUX_CLEANUP_SCOPE_MISMATCH"));
+        assert!(!wrong.queried && wrong.pending);
+        assert!(!ssh.dir.join("audit_called").exists());
+    }
+    let missing = recover(
+        &ssh.client,
+        recovery(&temp.0, &p),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(missing.error, Some("LINUX_RECEIPT_MISSING"));
+    assert!(missing.queried && missing.pending);
+    assert_eq!(fs::read(&pending).unwrap(), bytes);
+    let mut receipt = finished();
+    receipt["uid"] = unsafe { libc::getuid() }.into();
+    let receipt_path = ssh.dir.join(".eidolon-linux/r-1234567890abcdef.json");
+    fs::write(&receipt_path, receipt.to_string()).unwrap();
+    fs::set_permissions(&receipt_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let result = recover(
+        &ssh.client,
+        recovery(&temp.0, &p),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(result.error, None, "{result:?}");
+    assert_eq!(result.origin_session, Some(SessionId::new(1).unwrap()));
+    assert_eq!(result.session, SessionId::new(2).unwrap());
+    assert!(result.receipt_verified && result.channel_closed && !result.pending);
+    assert!(!pending.exists());
+    assert!(receipt_path.exists());
+    let absent = recover(
+        &ssh.client,
+        recovery(&temp.0, &p),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(absent.error, None);
+    assert!(!absent.queried && !absent.pending && !absent.receipt_verified);
+    ssh.close().await;
+}

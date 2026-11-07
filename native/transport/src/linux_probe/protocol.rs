@@ -148,6 +148,9 @@ impl Protocol {
             return Err("LINUX_PROTOCOL_ERROR");
         }
         let frame: Frame = serde_json::from_slice(line).map_err(|_| "LINUX_PROTOCOL_ERROR")?;
+        self.frame(frame)
+    }
+    fn frame(&mut self, frame: Frame) -> Result<(), &'static str> {
         match frame {
             Frame::Prepared {
                 schema,
@@ -322,6 +325,58 @@ impl Protocol {
     pub fn pattern_pass(&self) -> bool {
         self.cleaned() && self.pattern
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Audit {
+    schema: u32,
+    backend: String,
+    revision: String,
+    nonce: String,
+    uid: u32,
+    cleaned: bool,
+    already_absent: Option<bool>,
+    pending: Option<bool>,
+    receipt: Option<Frame>,
+}
+pub(super) fn audit(raw: &[u8], nonce: &str, uid: u32, pins: &Pins) -> Result<bool, &'static str> {
+    if raw.is_empty() || raw.len() > 16384 {
+        return Err("LINUX_AUDIT_INVALID");
+    }
+    let value: Audit = serde_json::from_slice(raw).map_err(|_| "LINUX_AUDIT_INVALID")?;
+    let mut protocol = Protocol::new(nonce, uid, pins);
+    if !protocol.common(
+        value.schema,
+        &value.backend,
+        &value.revision,
+        &value.nonce,
+        value.uid,
+    ) {
+        return Err("LINUX_AUDIT_INVALID");
+    }
+    if !value.cleaned {
+        return if value.pending == Some(true)
+            && value.already_absent.is_none()
+            && value.receipt.is_none()
+        {
+            Ok(false)
+        } else {
+            Err("LINUX_AUDIT_INVALID")
+        };
+    }
+    if value.pending.is_some() || value.already_absent != Some(true) {
+        return Err("LINUX_AUDIT_INVALID");
+    }
+    let receipt = value.receipt.ok_or("LINUX_RECEIPT_MISSING")?;
+    let Frame::Finished { child_reaped, .. } = &receipt else {
+        return Err("LINUX_AUDIT_INVALID");
+    };
+    protocol.child_started = *child_reaped;
+    protocol.report.phase = "prepared";
+    protocol.frame(receipt)?;
+    // channel EOF/exitはcallerで別検査。ここではreceipt自体の資源回収証拠だけ。
+    Ok(protocol.cleaned)
 }
 
 pub(super) fn valid_socket(path: &str, nonce: &str) -> bool {

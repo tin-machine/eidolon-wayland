@@ -1,5 +1,7 @@
 //! Linux専用の未回収owner。旧Termux journalは読まない・照合しない・削除しない。
 use super::Request;
+use eidolon_model::ids::SessionId;
+use serde::Deserialize;
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
@@ -13,6 +15,21 @@ pub(super) struct Journal {
     bytes: Vec<u8>,
     device: u64,
     inode: u64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Stored {
+    schema: u32,
+    backend: String,
+    profile_binding: String,
+    profile_revision: String,
+    session: SessionId,
+    uid: u32,
+    nonce: String,
+    helper_sha256: String,
+    bundle_sha256: String,
+    waypipe_sha256: String,
+    fixture_sha256: String,
 }
 fn check_directory(path: &Path, private: bool) -> Result<(), &'static str> {
     let m = std::fs::symlink_metadata(path).map_err(|_| "LINUX_JOURNAL_INVALID")?;
@@ -62,6 +79,47 @@ fn read(path: &Path) -> Result<(File, Vec<u8>), &'static str> {
     Ok((f, bytes))
 }
 impl Journal {
+    pub fn matching(
+        request: &super::Recovery<'_>,
+    ) -> Result<Option<(Self, SessionId)>, &'static str> {
+        check_directory(request.files, false)?;
+        let directory = request.files.join("linux-probe-state");
+        match std::fs::symlink_metadata(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            _ => check_directory(&directory, true)?,
+        }
+        let path = directory.join("pending.json");
+        match std::fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            _ => (),
+        }
+        let (file, bytes) = read(&path)?;
+        let stored: Stored = serde_json::from_slice(&bytes).map_err(|_| "LINUX_JOURNAL_INVALID")?;
+        if stored.schema != 1
+            || stored.backend != "linux_posix"
+            || stored.profile_binding != request.profile_binding
+            || stored.profile_revision != request.profile_revision
+            || stored.uid != request.uid
+            || stored.nonce != request.nonce
+            || stored.helper_sha256 != request.pins.helper_sha256()
+            || stored.bundle_sha256 != request.pins.bundle_sha256
+            || stored.waypipe_sha256 != request.pins.waypipe_sha256
+            || stored.fixture_sha256 != request.pins.fixture_sha256
+        {
+            return Err("LINUX_CLEANUP_SCOPE_MISMATCH");
+        }
+        let m = file.metadata().map_err(|_| "LINUX_JOURNAL_INVALID")?;
+        Ok(Some((
+            Self {
+                directory,
+                path,
+                bytes,
+                device: m.dev(),
+                inode: m.ino(),
+            },
+            stored.session,
+        )))
+    }
     pub fn reserve(request: &Request<'_>) -> Result<Self, &'static str> {
         check_directory(request.files, false)?;
         let directory = request.files.join("linux-probe-state");
@@ -79,7 +137,8 @@ impl Journal {
         }
         let bytes=serde_json::to_vec(&serde_json::json!({"schema":1,"backend":"linux_posix","profile_binding":request.profile_binding,
             "profile_revision":request.profile_revision,"session":request.session,"uid":request.uid,"nonce":request.nonce,
-            "helper_sha256":request.pins.helper_sha256(),"bundle_sha256":request.pins.bundle_sha256})).map_err(|_|"LINUX_JOURNAL_FAILED")?;
+            "helper_sha256":request.pins.helper_sha256(),"bundle_sha256":request.pins.bundle_sha256,
+            "waypipe_sha256":request.pins.waypipe_sha256,"fixture_sha256":request.pins.fixture_sha256})).map_err(|_|"LINUX_JOURNAL_FAILED")?;
         let temporary = directory.join(format!(".pending-{:016x}", rand::random::<u64>()));
         let publish = (|| -> Result<(), &'static str> {
             let mut file = OpenOptions::new()

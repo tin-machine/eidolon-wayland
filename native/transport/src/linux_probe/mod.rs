@@ -2,6 +2,8 @@
 mod journal;
 mod owner;
 mod protocol;
+mod recovery;
+pub use recovery::{Recovery, RecoveryReport, recover};
 
 use crate::forward;
 use eidolon_model::ids::SessionId;
