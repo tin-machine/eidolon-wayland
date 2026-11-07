@@ -70,7 +70,7 @@ class ImeEditorView(
         permanentlyClosed = true
         editor.reset("close")
         connection = null
-        val imm = inputMethod
+        val imm = runCatching { inputMethod }.getOrNull()
         // An IMM service failure must not abort native reset/disable in the owner.
         // The owner still requires actual IMM release; exceptions never imply success.
         runCatching { if (isAttachedToWindow && imm?.isActive(this) == true) imm.restartInput(this) }

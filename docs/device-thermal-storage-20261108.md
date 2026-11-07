@@ -69,3 +69,17 @@ Androidの実API取得・listener解除・画面表示は統合ビルドと実�
 測定条件の確認は、Eidolonを前面で起動して初回取得、30秒後の更新、Homeへ移動してstopped/null、
 復帰してpending→新しい値への移行を観測する。熱負荷を意図的に上げる操作は必要ない。
 NONEが返ってもthermal実装の完全対応や高温時の通知を確認できたとは扱わない。
+
+## Build152の実機確認
+
+2026-11-08、debug build・lint・APK検査とJUnit 104件が成功したAPKをQuestへ導入した。
+製品UIDでthermal statusは`available / code=0`、listenerは`registered`を取得した。
+hardware supportは`not_verified`を維持し、NONEから対応済み・正常温度とは判断していない。
+
+app data filesystemはtotal 110,166,224,896 bytes、available約104,053,125,120 bytesを取得した。
+約30秒の異なる2時点で更新し、既存の電池・CPU値も継続して取得できた。
+Homeへの遷移でthermal/filesystemとも`stopped/null`、復帰後は以前より新しい観測時刻の値へ戻った。
+これは公開値とlifetimeの検証であり、高温時の通知、listener解除失敗の実機再現、HMDでの可読性は未受入れ。
+
+個別値・版・source入力archiveは、作業rootの`eidolon-ime-implementation-20261107/`にある
+`details152-observations.json`、`details152-lifecycle.json`、`builds/20261108T011823-774530/`へ保存した。
