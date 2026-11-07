@@ -107,8 +107,11 @@ request_id/旧full target、configure/ACK/commit serial、サイズ、旧SDK回�
 
 1. 旧版の実行ownerとpending journalを先に確認する。pendingがあれば旧APK/helper/bundle/pinsと
    同profile identityで明示recoverし、未確認のまま新bundle/profileへ進めない。
-2. private作業領域へ旧Linux bundle、Androidのprofile/staged・saved pins/journal、隔離sshdの設定・鍵・
-   起動記録、導入APKとsource digestを保全する。本文を公開ログへ出さない。通常sshdは変更しない。
+2. 公開可能な旧Linux bundleと導入APK/sourceの識別情報を保全する。隔離sshdの秘密鍵とAndroidの
+   private identityは既存のsecret runtime内に保持し、作業領域へcopy/tarしない。作業記録には既存path・
+   public identityのhash・permission・起動recipeだけを残す。Androidの非secret profile/pins/journalは
+   固定allowlistの各fileをschema・所有権・symlink・size検査後に個別保存する。directory全体をarchiveせず、
+   通常credentials本文を記録へ持ち込まない。接続metadataは非公開とし、通常sshdは変更しない。
 3. 旧manifestで固定Waypipe/SHM fixtureを照合し、このcheckoutの新helperと組み合わせた新base manifestを作る。
    全owner停止中に固定bundleを切り替え、`scripts/build-linux-gtk-bundle` で固定C/GTK binary/追加manifestを生成する。
 4. 同profile binding/revisionのまま新base/GTK pinsを生成し、新APK/helper/Cのsource一致を確認して配備する。
