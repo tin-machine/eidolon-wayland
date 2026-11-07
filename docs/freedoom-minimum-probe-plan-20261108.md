@@ -3,6 +3,7 @@
 2026-11-08時点。固定Kopper無効対照でEGL1.5/SDL GL・GLES contextが成立し、
 SDL software描画120frames/SHM120commit/SDK更新・退役・元foot維持と所有process回収も確認した。
 engine packageは版固定導入済み。ゲームの実行・通常GUI解禁はまだ行っていない。
+[固定demo128 operator](freedoom-demo128-operator-20261108.md)を実装し、実機描画・自然終了の入口を分離した。
 
 ## 固定するengineとデータ
 
