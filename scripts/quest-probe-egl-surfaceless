@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""固定Quest/Termuxのsurfaceless+softpipe初期化を公開EGL APIだけで一回診断する。"""
+import argparse
+import base64
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import selectors
+import shlex
+import subprocess
+import time
+import zlib
+
+from egl_surfaceless_probe import LIBRARIES, OPERATOR, UID
+from native_build import ROOT
+from quest_device import QuestDevice, package_uid, work_root
+from sdl_probe_install import InstallError, canonical, require
+
+SOURCES = ("scripts/sdl_probe_install.py", "scripts/termux/eidolon-sdl-probe.py", "scripts/egl_surfaceless_probe.py")
+
+
+def source_hashes():
+    return {path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in SOURCES}
+
+
+def remote_program():
+    source = "import sys,types\n"
+    for name, path in zip(("sdl_probe_install", "sdl_observation", "egl_probe"), SOURCES):
+        data = (ROOT / path).read_text()
+        if name == "sdl_observation":
+            # stderr既知分類だけを再利用。Wayland parser/runner本体は送らず実行もしない。
+            require("\nclass WaylandTrace:" in data, "LOG_SOURCE_INVALID")
+            data = data.split("\nclass WaylandTrace:", 1)[0]
+        source += f"m=types.ModuleType({name!r});exec({data!r},m.__dict__);sys.modules[m.__name__]=m\n"
+    child = source + "raise SystemExit(sys.modules['egl_probe'].child_main())\n"
+    return source + f"sys.modules['egl_probe'].CHILD_SOURCE={child!r}\nraise SystemExit(sys.modules['egl_probe'].remote_main())\n"
+
+
+def remote_source():
+    payload = base64.b64encode(zlib.compress(remote_program().encode(), level=9)).decode("ascii")
+    return f"import base64,zlib;exec(zlib.decompress(base64.b64decode({payload!r})))"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--serial", required=True)
+    parser.add_argument("--artifact-root", type=Path)
+    args = parser.parse_args()
+    os.umask(0o077)
+    root = args.artifact_root or work_root() / "eidolon-egl-surfaceless"
+    if not root.is_absolute(): parser.error("artifact rootは絶対pathにしてください")
+    probe_id = secrets.token_hex(16)
+    run = root / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f") + "-" + probe_id)
+    run.mkdir(mode=0o700, parents=True)
+    result = dict(schema=1, status="blocked", operator=OPERATOR, probe_id=probe_id,
+                  wayland="not_run", sdk="not_run", drawing="not_run", input="not_run", hmd="not_run", events=[])
+    device, child, selector, sent = QuestDevice(args.serial, run), None, None, False
+
+    def cancel():
+        nonlocal sent
+        if child is not None and not sent and not child.stdin.closed:
+            try: child.stdin.write(b'{"type":"cancel"}\n');child.stdin.flush();sent = True
+            except (OSError, ValueError): pass
+
+    def close_input():
+        if child is not None and not child.stdin.closed:
+            try: child.stdin.close()
+            except (OSError, ValueError): pass
+
+    try:
+        result["device"] = device.validate()
+        require(package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux") == UID,
+                "UID_MISMATCH")
+        hashes, source = source_hashes(), remote_source()
+        require(source_hashes() == hashes, "SOURCE_CHANGED")
+        result["source_sha256"] = hashes
+        command = shlex.join(["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python3", "-c", source])
+        require(len(command.encode()) <= 49 * 1024, "REMOTE_COMMAND_LIMIT")
+        result["remote_command_bytes"] = len(command.encode())
+        child = subprocess.Popen(["adb", "-s", args.serial, "shell", "-T", command], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        child.stdin.write(canonical(dict(probe_id=probe_id)) + b"\n");child.stdin.flush()
+        selector = selectors.DefaultSelector()
+        for name in ("stdout", "stderr"):
+            pipe = getattr(child, name);os.set_blocking(pipe.fileno(), False);selector.register(pipe, selectors.EVENT_READ, name)
+        started, pending, sizes, finished = time.monotonic(), bytearray(), dict(stdout=0, stderr=0), None
+        while time.monotonic() - started < 30:
+            for key, _ in selector.select(.05):
+                data = os.read(key.fd, 8192)
+                if not data: selector.unregister(key.fd);continue
+                sizes[key.data] += len(data)
+                if key.data == "stderr":
+                    if sizes["stderr"] > 65536: cancel()
+                    continue
+                require(sizes["stdout"] <= 65536, "REMOTE_OUTPUT_LIMIT")
+                pending.extend(data)
+                while b"\n" in pending:
+                    line, _, rest = pending.partition(b"\n");pending = bytearray(rest)
+                    event = json.loads(line)
+                    require(type(event) is dict and event.get("phase") in {"validated", "started", "finished", "blocked"}, "REMOTE_EVENT_INVALID")
+                    if event["phase"] == "finished":
+                        require(finished is None, "REMOTE_EVENT_INVALID")
+                        finished = event["result"]
+                        require(finished.get("operator") == OPERATOR and finished.get("probe_id") == probe_id and
+                                finished.get("uid") == UID and all(finished.get("libraries", {}).get(k) == v for k, v in LIBRARIES.items()),
+                                "REMOTE_RESULT_MISMATCH")
+                        close_input()
+                    elif event["phase"] == "blocked":
+                        result["blocked_reason"] = event.get("reason");close_input()
+                    else:
+                        require(len(result["events"]) < 2, "REMOTE_EVENT_INVALID")
+                        result["events"].append(event)
+            if child.poll() is not None and not selector.get_map(): break
+        if child.poll() is None: cancel()
+        close_input();child.wait(timeout=6)
+        result.update(remote_returncode=child.returncode, remote_result=finished, output_bytes=sizes)
+        require(not pending and source_hashes() == hashes, "SOURCE_CHANGED_OR_OUTPUT_INVALID")
+        result["status"] = "diagnosed" if finished and finished.get("status") == "diagnosed" and child.returncode == 0 else "failed"
+        if result.get("blocked_reason") and not result["events"]: result["status"] = "blocked"
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+        result.update(status="blocked" if child is None else "failed",
+                      reason=str(error) if isinstance(error, InstallError) else "EGL_HOST_OPERATOR_UNAVAILABLE")
+        cancel()
+    finally:
+        if child is not None:
+            close_input()
+            try: child.wait(timeout=6)
+            except (OSError, subprocess.SubprocessError):
+                result["remote_cleanup_unconfirmed"] = True
+                child.terminate()  # hostのADB handleのみ。remote回収成功とは扱わない。
+                try: child.wait(timeout=2)
+                except (OSError, subprocess.SubprocessError): pass
+            result.setdefault("remote_returncode", child.returncode)
+            child.stdout.close();child.stderr.close()
+        if selector is not None: selector.close()
+        (run / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(dict(status=result["status"], artifact=str(run), probe_id=probe_id,
+                          reason=result.get("reason") or result.get("blocked_reason"), drawing="not_run")))
+    return 0 if result["status"] == "diagnosed" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
