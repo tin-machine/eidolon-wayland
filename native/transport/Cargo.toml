@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+debug-fixtures = []
+
 [dependencies]
 eidolon-model.workspace = true
 serde.workspace = true

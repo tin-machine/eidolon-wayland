@@ -28,6 +28,11 @@ fn write(path: &std::path::Path, data: &[u8]) {
 }
 impl OpenSsh {
     pub async fn new() -> Self {
+        Self::with_forced_command(|_| None).await
+    }
+    pub async fn with_forced_command(
+        command: impl FnOnce(&std::path::Path) -> Option<String>,
+    ) -> Self {
         let dir =
             std::env::temp_dir().join(format!("eidolon-openssh-{:016x}", rand::random::<u64>()));
         std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
@@ -57,6 +62,14 @@ impl OpenSsh {
         );
         // /tmp上の0700 fixtureで合成鍵だけを使う。製品sshdのStrictModesは変更しない。
         write(&dir.join("config"),format!("Port {}\nListenAddress 127.0.0.1\nHostKey {}/host\nAuthorizedKeysFile {}/authorized_keys\nPidFile {}/pid\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nAuthenticationMethods publickey\nUsePAM no\nPermitRootLogin yes\nAllowUsers {}\nAllowStreamLocalForwarding yes\nAllowTcpForwarding yes\nStreamLocalBindMask 0177\nStreamLocalBindUnlink no\nLogLevel VERBOSE\n",endpoint.port(),dir.display(),dir.display(),dir.display(),user).as_bytes());
+        if let Some(command) = command(&dir) {
+            assert!(!command.contains('\n') && !command.contains('\r'));
+            let mut config = OpenOptions::new()
+                .append(true)
+                .open(dir.join("config"))
+                .unwrap();
+            writeln!(config, "ForceCommand {command}").unwrap();
+        }
         let log = OpenOptions::new()
             .write(true)
             .create_new(true)

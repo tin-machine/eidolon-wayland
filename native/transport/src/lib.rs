@@ -9,6 +9,8 @@ pub mod forward_probe;
 pub mod host_key;
 pub mod journal;
 pub mod launcher;
+#[cfg(any(test, feature = "debug-fixtures"))]
+pub mod linux_probe;
 pub mod session;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
