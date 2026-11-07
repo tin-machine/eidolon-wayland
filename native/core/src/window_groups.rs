@@ -91,7 +91,11 @@ pub fn inspect_foot(
         || !forward.pending_cleanup.is_empty()
         || remote.phase != "running"
         || remote.error.is_some()
-        || remote.cleanup_pending
+        // cleanup_pendingはrunning中も回収責務を表す。終了通知/EOF/exitだけをlive喪失として扱う。
+        || remote.finished.is_some()
+        || remote.eof
+        || remote.exit_status.is_some()
+        || remote.exit_signal
         || tools.schema != 1
         || tools.nonce != app.nonce
         || tools.mode != "foot"
@@ -380,6 +384,7 @@ pub(crate) mod tests {
         };
         let remote = eidolon_transport::launcher::Report {
             phase: "running",
+            cleanup_pending: true,
             terminal_launches: launches,
             tools: Some(tools),
             child: Some(eidolon_transport::launcher::Identity {
@@ -553,6 +558,72 @@ pub(crate) mod tests {
         let mut no_content = render.clone();
         no_content.targets[0].content_frame = None;
         assert!(capture_foot(runtime, &snapshot, &transport, &no_content).is_err());
+    }
+    #[test]
+    fn running_remote_can_own_cleanup_duty_but_eof_exit_or_finished_never_proves_live() {
+        let (runtime, snapshot, transport, render) = fixture(2);
+        assert!(
+            transport
+                .app_forward
+                .as_ref()
+                .unwrap()
+                .remote
+                .as_ref()
+                .unwrap()
+                .cleanup_pending
+        );
+        assert_eq!(
+            capture_foot(runtime, &snapshot, &transport, &render)
+                .unwrap()
+                .members
+                .len(),
+            2
+        );
+        for case in 0..4 {
+            let mut changed = transport.clone();
+            let remote = changed
+                .app_forward
+                .as_mut()
+                .unwrap()
+                .remote
+                .as_mut()
+                .unwrap();
+            match case {
+                0 => remote.eof = true,
+                1 => remote.exit_status = Some(0),
+                2 => remote.exit_signal = true,
+                _ => {
+                    remote.finished = Some(eidolon_transport::launcher::Finished {
+                        schema: 1,
+                        nonce: NONCE.into(),
+                        uid: 10158,
+                        reason: "Stop".into(),
+                        child: None,
+                        exit_status: Some(0),
+                        exit_signal: None,
+                        term_sent: false,
+                        kill_sent: false,
+                        cleaned: true,
+                        group_alive: false,
+                        pipes_closed: true,
+                        stdout: eidolon_transport::launcher::Metrics {
+                            bytes: 0,
+                            truncated: false,
+                            retained: 0,
+                        },
+                        stderr: eidolon_transport::launcher::Metrics {
+                            bytes: 0,
+                            truncated: false,
+                            retained: 0,
+                        },
+                        echo: None,
+                        pattern: None,
+                        error: None,
+                    })
+                }
+            }
+            assert!(capture_foot(runtime, &snapshot, &changed, &render).is_err());
+        }
     }
     #[test]
     fn nonce_uid_child_scope_and_forward_failures_are_not_a_fresh_capture() {
