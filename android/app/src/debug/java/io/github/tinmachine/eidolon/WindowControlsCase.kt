@@ -168,7 +168,14 @@ object WindowControlsCase {
                 check(SystemClock.elapsedRealtime()<deadline) {"WINDOW_CONTROLS_TIMEOUT"}
                 val current=NativeSessionHost.currentHandle()
                 if(current>0) {
-                    val s=JSONObject(NativeBridge.nativeSnapshot(current)).getJSONObject("runtime")
+                    val envelope=JSONObject(NativeBridge.nativeSnapshot(current))
+                    val s=envelope.optJSONObject("runtime")
+                    if(s==null) {
+                        // stopRuntime destroys the registry entry before clearing the Host handle.
+                        // Only our explicit stop/restart stage may observe that transient stale handle.
+                        check(stage=="stopped" && envelope.optInt("code")==NativeBridge.STALE) {"RUNTIME_SNAPSHOT_UNAVAILABLE"}
+                        ui.postDelayed(this,32);return
+                    }
                     check(s.getString("state")!="Failed")
                     s.optJSONObject("app")?.let {check(it.isNull("error"))}
                     val input=s.optJSONObject("app")?.optJSONObject("input")
@@ -260,7 +267,7 @@ object WindowControlsCase {
                 ui.postDelayed(this,32)
             } catch(failure:Exception) {
                 result.put("result","fail").put("stage",stage).put("failure_class",failure.javaClass.simpleName)
-                    .put("failure_site",failure.stackTrace.firstOrNull()?.toString()).put("adapter",adapter.metrics())
+                    .put("failure_site",failure.stackTrace.firstOrNull {it.className.startsWith("io.github.tinmachine.eidolon.")}?.toString()).put("adapter",adapter.metrics())
                 if(NativeSessionHost.currentHandle()>0) result.put("failure_runtime",JSONObject(NativeBridge.nativeSnapshot(NativeSessionHost.currentHandle())))
                 try {cleanup()} catch(_:Exception) {result.put("cleanup_failed",true)}
                 finish()
