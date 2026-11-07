@@ -19,5 +19,7 @@ pub mod primitives;
 pub mod protocol;
 #[cfg(any(test, feature = "debug-fixtures"))]
 pub use protocol::ime_checks;
+#[cfg(test)]
+mod independent_clients_checks;
 pub mod shm;
 mod shm_budget;
