@@ -33,7 +33,7 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 | NX09 | ユーザー指定で優先再開 | Android IMEのSpatial probeと共通text-input-v3を分担して準備。実footへ段階化し、案A固有の不成立ならTermux Fcitx5 |
 | NX10 | カタログUI・保存・稼働中footへの任意起動を接続 | Build143のPC検査。初回任意起動・個別取消・配置保存とQuest実機確認は残件 |
 | NX11 | SDL/SHM小probeを実装、隔離host成功 | Questで公式SDL2/Mesa経路を検証し、成立後Doom/Freedoomへ |
-| NX12 | [窓別focus/close・テーマ配置](nx12a-window-controls-20261108.md)を実装、Build157の実SDK固定case成功 | move/窓横MODEの次segment、サイズ/正面復帰、HMD/物理受入れ |
+| NX12 | focus/closeに加え[move/窓横MODE](nx12b-window-move-mode-20261108.md)もBuild161のSDK固定case成功 | サイズ/正面復帰、HMD/物理受入れ |
 | NX13 | 同UID I/O、重複計上防止、内側回転を実装。Build159で正値→partial→zeroと成功drawを照合 | 専用子の実機回収証拠、thread/共有tmux、多窓、HMD |
 | NX14 | CPUをBuild148、熱/容量を152、PSSを154で製品UID・停止復帰確認 | HMD表示受入れ、gateway等の残値。全体CPU/GPUは取得経路ごとに判断 |
 | NX15 | [固定GTK](gtk-first-frame-probe-20261108.md)のSHM/SDK初描画・回収をBuild160で確認 | 入力/dialog/resize、製品起動・Stop、HMD |

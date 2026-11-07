@@ -5,6 +5,21 @@
 Build157で確定した二ボタンのSDK総合PASSは、その版と証拠のまま保持する。
 以下の新しい三ボタン・移動・MODEの実機受入れは別に行い、hostテストの成功でHMD/物理操作を合格にしない。
 
+## Build161のSDK固定case結果
+
+probe `286c59434c219161f920207b13988f7f`で三ボタンと移動・MODEの固定caseがPASS。
+debug build/lint/package/JUnit134件も成功した。APK SHA-256は
+`9c7c785d447e4b63c7c16c576b08a8eedc3e2f58ce7f9af744e4754d365a28e7`、
+source digestは`efd2369c063a8f43433d37c714b12d39152ea01f73cbf450e962dd72d995f84e`。
+
+実SDKのray/listenerを通し、source pose欠落拒否、窓全体のpreviewとMOVING表示、
+release前のnative pose不変を確認した。保持中にrayをハンドルから外してもcaptureを保持し、
+同ControllerのUPを`sdk_off_handle_up`で受けて、native ACK・モデルpose・SDK geometry適用・
+raw focus復帰まで到達した。MODEのtextureは作り直さず更新された。
+取消によるclose防止、古いrevision/generation拒否、捕捉窓だけのclose、旧control非hit、
+source/旧runtime退役、controlsとMODEのownerゼロ、通常設定不変も確認した。
+この結果は合成SDK入力であり、HMD視認・物理コントローラー操作・文字配送の受入れは残る。
+
 ## 操作
 
 各窓の本文外に、クリーム色の四方向矢印、ミント色のfocus、ピンク色のcloseを並べる。
