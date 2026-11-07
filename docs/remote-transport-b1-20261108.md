@@ -58,3 +58,7 @@ DNSは型作成の失敗として検査し、実DNSや実LANへアクセスし�
 既存transport testsも含めて実行する。これらはSSH/owner契約の検証であり、Linux helper、
 Waypipe/SHM、GUI、入力、LAN性能、HMDの受入れ結果ではない。
 次はB2の保存/Host/runtime配線と、Linux helperの独立adapter・固定SHM検証を進める。
+
+## 続き
+
+APK UIDでの固定検査用配線は[NX18 B2](remote-apk-probe-b2-20261108.md)を参照。通常Linux GUIの有効化とは分離する。

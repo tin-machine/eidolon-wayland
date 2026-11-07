@@ -115,6 +115,15 @@ impl Registry {
             Err(status) => json!({"schema":1,"code":status as i32}),
         }
     }
+    /// 接続ownerだけが読む。bindingはsnapshot/pollへ複製しない。
+    pub fn credential_scope(&self, id: i64) -> Value {
+        match self.guarded(id, Runtime::credential_scope) {
+            Ok(Ok(scope)) => {
+                json!({"schema":1,"code":0,"scope":scope.map(|s| json!({"session":s.session,"request_id":s.request,"profile_id":s.profile_id,"revision":s.revision,"binding":s.binding}))})
+            }
+            Ok(Err(status)) | Err(status) => json!({"schema":1,"code":status as i32,"scope":null}),
+        }
+    }
     pub fn counts(&self) -> Value {
         let entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
         json!({"runtimes":entries.runtimes.len(),"workers":entries.runtimes.values().filter(|r| !r.worker_finished()).count()})

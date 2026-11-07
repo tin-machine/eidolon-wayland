@@ -19,6 +19,9 @@ pub struct RuntimeConfig {
     pub installation: Option<String>,
     #[serde(default)]
     pub profiles: Vec<ConnectionProfile>,
+    /// Debug専用保存profile。nested JSONも重複keyを失わずProfile::parseへ渡す。
+    #[serde(default)]
+    pub debug_probe_profile_v2: Option<String>,
 }
 impl Default for RuntimeConfig {
     fn default() -> Self {
@@ -29,6 +32,7 @@ impl Default for RuntimeConfig {
             paths: None,
             installation: None,
             profiles: Vec::new(),
+            debug_probe_profile_v2: None,
         }
     }
 }
@@ -84,6 +88,20 @@ impl RuntimeConfig {
                 .is_some_and(|id| !valid_installation(id))
         {
             return Err(Status::InvalidArgument);
+        }
+        if let Some(json) = &self.debug_probe_profile_v2 {
+            let profile = crate::connection_profile::Profile::parse(
+                json,
+                self.installation
+                    .as_deref()
+                    .ok_or(Status::InvalidArgument)?,
+            )
+            .map_err(|_| Status::InvalidArgument)?;
+            if profile.profile_id() != "linux-probe"
+                || profile.backend() != crate::connection_profile::Backend::LinuxSsh
+            {
+                return Err(Status::InvalidArgument);
+            }
         }
         for profile in &self.profiles {
             if profile.schema != 1
@@ -426,6 +444,10 @@ pub enum Command {
         session: crate::ids::SessionId,
         nonce: String,
     },
+    ConnectSavedProbe {
+        schema: u32,
+        request_id: CommandSeq,
+    },
     Connect {
         schema: u32,
         request_id: CommandSeq,
@@ -521,6 +543,7 @@ impl Command {
             | Self::StartApp { schema, .. }
             | Self::CompositorProbe { schema, .. }
             | Self::ForwardProbe { schema, .. }
+            | Self::ConnectSavedProbe { schema, .. }
             | Self::Connect { schema, .. }
             | Self::Disconnect { schema, .. }
             | Self::CancelConnect { schema, .. }
@@ -662,6 +685,7 @@ impl Command {
             | Self::StartApp { request_id, .. }
             | Self::CompositorProbe { request_id, .. }
             | Self::ForwardProbe { request_id, .. }
+            | Self::ConnectSavedProbe { request_id, .. }
             | Self::Connect { request_id, .. }
             | Self::Disconnect { request_id, .. }
             | Self::CancelConnect { request_id, .. }
@@ -819,6 +843,47 @@ mod tests {
         assert!(Command::parse(&key.replace("\"focus_token\":\"1\",", "")).is_err());
         assert!(
             Command::parse(&key.replace("\"focus_token\":\"1\"", "\"focus_token\":\"0\"")).is_err()
+        );
+    }
+    #[test]
+    fn saved_probe_wire_keeps_nested_validation_and_has_no_free_endpoint_command() {
+        let key =
+            include_str!("../../../android/app/src/test/resources/connection-profiles-v2.tsv")
+                .lines()
+                .find(|l| l.starts_with("linux-"))
+                .unwrap()
+                .split('\t')
+                .nth(7)
+                .unwrap();
+        let profile = serde_json::json!({"schema":2,"installation":"1".repeat(32),"profile_id":"linux-probe","revision":"9007199254740993","display_name":"fixture","backend":"linux_ssh","host":"192.0.2.1","port":22,"username":"fixture","host_key":key});
+        let mut config = RuntimeConfig {
+            installation: Some("1".repeat(32)),
+            debug_probe_profile_v2: Some(profile.to_string()),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+        for (key, value) in [
+            ("profile_id", serde_json::json!("other-profile")),
+            ("backend", serde_json::json!("termux_local")),
+            ("revision", serde_json::json!(9007199254740993_u64)),
+            ("installation", serde_json::json!("2".repeat(32))),
+        ] {
+            let mut bad = profile.clone();
+            bad[key] = value;
+            config.debug_probe_profile_v2 = Some(bad.to_string());
+            assert!(config.validate().is_err());
+        }
+        config.debug_probe_profile_v2 =
+            Some(profile.to_string().trim_end_matches('}').to_owned() + ",\"schema\":2}");
+        assert!(config.validate().is_err());
+        assert!(
+            Command::parse(r#"{"schema":1,"type":"connect_saved_probe","request_id":"7"}"#).is_ok()
+        );
+        assert!(
+            Command::parse(
+                r#"{"schema":1,"type":"connect_saved_probe","request_id":"7","host":"192.0.2.1"}"#
+            )
+            .is_err()
         );
     }
     #[test]

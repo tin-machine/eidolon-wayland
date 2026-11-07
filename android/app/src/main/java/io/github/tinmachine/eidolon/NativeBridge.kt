@@ -15,6 +15,9 @@ object NativeBridge {
     @JvmStatic external fun nativeCommand(handle: Long, commandJson: String): Int
     @JvmStatic external fun nativeGenerateIdentity(): ByteArray
     @JvmStatic external fun nativePublicKey(privateKey: ByteArray): String
+    /** Debug限定接続owner用。返り値を通常diagnostics/logへ保存しない。 */
+    @JvmStatic external fun nativeCredentialScope(handle: Long): String
+    @JvmStatic external fun nativeProvideCredentialFor(handle: Long, session: Long, requestId: Long, binding: String, privateKey: ByteArray): Int
     @JvmStatic external fun nativeProvideCredential(handle: Long, session: Long, requestId: Long, privateKey: ByteArray): Int
     @JvmStatic external fun nativeAttachSurface(handle: Long, session: Long, window: Long, scene: Long, generation: Long,
         surface: android.view.Surface, widthPx: Int, heightPx: Int): Int

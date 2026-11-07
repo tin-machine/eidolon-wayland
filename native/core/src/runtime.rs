@@ -23,6 +23,8 @@ struct Shared {
     panels: crate::panels::Controller,
     workspace: crate::workspace::Controller,
     credentials: eidolon_transport::credentials::CredentialSlot,
+    // 設定bindingは通常snapshot/eventへ出さない。
+    credential_scope: Option<eidolon_transport::session::CredentialScope>,
     // 最新のSDK可視性。遅れて処理する通常commandで描画pauseを巻き戻さない。
     render_visibility: [bool; 2],
     snapshot: Snapshot,
@@ -32,6 +34,10 @@ struct Shared {
     terminal: VecDeque<Event>,
 }
 impl Shared {
+    fn clear_credentials(&mut self) {
+        self.credentials.clear();
+        self.credential_scope = None;
+    }
     fn refresh_ime(&mut self, app: Option<&crate::session::Session>) {
         self.ime_ui = if self.snapshot.state == RuntimeState::Ready
             && self.snapshot.activity_visible
@@ -60,7 +66,7 @@ impl Shared {
         }
         if self.snapshot.error.is_none() {
             self.ime_ui = None;
-            self.credentials.clear();
+            self.clear_credentials();
             self.snapshot.error = Some(code);
             self.snapshot.state = RuntimeState::Failed;
             self.terminal.push_back(Event::Failure { error: code });
@@ -95,6 +101,22 @@ impl Runtime {
     ) -> std::io::Result<Self> {
         let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "CONFIG_INVALID");
         config.validate().map_err(|_| invalid())?;
+        if config.debug_probe_profile_v2.is_some() && !cfg!(any(test, feature = "debug-fixtures")) {
+            return Err(invalid());
+        }
+        let probe_spec = config
+            .debug_probe_profile_v2
+            .as_ref()
+            .map(|json| {
+                let profile = eidolon_model::connection_profile::Profile::parse(
+                    json,
+                    config.installation.as_deref().ok_or_else(invalid)?,
+                )
+                .map_err(|_| invalid())?;
+                eidolon_transport::connect_profile::ConnectSpec::from_v2(&profile)
+                    .map_err(|_| invalid())
+            })
+            .transpose()?;
         let mut profiles = std::collections::BTreeMap::new();
         for wire in &config.profiles {
             let json = serde_json::to_string(wire).map_err(|_| invalid())?;
@@ -121,6 +143,7 @@ impl Runtime {
             panels: Default::default(),
             workspace: crate::workspace::Controller::load(None),
             credentials: Default::default(),
+            credential_scope: None,
             render_visibility: [false; 2],
             snapshot: Snapshot::default(),
             commands: VecDeque::new(),
@@ -406,19 +429,32 @@ impl Runtime {
                                     (ssh.session, ssh.credential_request)
                             {
                                 if last_credential != Some((session, request)) {
-                                    shared.credentials.begin(session, request);
-                                    shared.emit(Event::CredentialRequired {
-                                        session,
-                                        request_id: request,
-                                        profile_id: "termux-local".into(),
-                                    });
-                                    last_credential = Some((session, request));
+                                    shared.clear_credentials();
+                                    if let Some(scope) = io
+                                        .credential_scope()
+                                        .filter(|s| s.session == session && s.request == request)
+                                    {
+                                        shared.credentials.begin(session, request);
+                                        shared.emit(Event::CredentialRequired {
+                                            session,
+                                            request_id: request,
+                                            profile_id: scope.profile_id.clone(),
+                                        });
+                                        shared.credential_scope = Some(scope);
+                                        last_credential = Some((session, request));
+                                    }
                                 }
-                                if let Ok(key) = shared.credentials.take(session, request) {
-                                    io.provide(session, request, key);
+                                if let Ok(key) = shared.credentials.take(session, request)
+                                    && let Some(scope) = shared.credential_scope.take()
+                                {
+                                    if scope.revision.is_some() {
+                                        io.provide_for(session, request, &scope.binding, key);
+                                    } else {
+                                        io.provide(session, request, key);
+                                    }
                                 }
                             } else if last_credential.take().is_some() {
-                                shared.credentials.clear();
+                                shared.clear_credentials();
                             }
                             if matches!(render.error, Some("RENDER_STALLED" | "JNI_FAILURE")) {
                                 shared.fail(render.error.unwrap());
@@ -1345,6 +1381,17 @@ impl Runtime {
                                         Status::NotReady
                                     }
                                 }
+                                Command::ConnectSavedProbe { request_id, .. } => {
+                                    if !cfg!(any(test, feature = "debug-fixtures")) {
+                                        Status::InvalidArgument
+                                    } else if app_busy {
+                                        Status::Busy
+                                    } else if let Some(spec) = &probe_spec {
+                                        io.connect_spec(spec.clone(), *request_id)
+                                    } else {
+                                        Status::NotReady
+                                    }
+                                }
                                 Command::Connect {
                                     profile_id,
                                     request_id,
@@ -1363,7 +1410,7 @@ impl Runtime {
                                 } => {
                                     let code = io.cancel_connect(*connect_request);
                                     if code == Status::Accepted {
-                                        state.credentials.clear();
+                                        state.clear_credentials();
                                         last_credential = None;
                                         resetting.store(true, Ordering::Release);
                                     }
@@ -1372,7 +1419,7 @@ impl Runtime {
                                 Command::Disconnect { session, .. } => {
                                     let code = io.disconnect(*session);
                                     if code == Status::Accepted {
-                                        state.credentials.clear();
+                                        state.clear_credentials();
                                         last_credential = None;
                                     }
                                     code
@@ -1588,7 +1635,7 @@ impl Runtime {
                 state.snapshot.theme.workers = 0;
                 state.snapshot.theme.loading = false;
                 state.snapshot.panels.clear();
-                state.credentials.clear();
+                state.clear_credentials();
                 state.terminal.push_back(Event::Stopped);
             })?;
         Ok(Self {
@@ -1605,6 +1652,11 @@ impl Runtime {
         self.shared.lock().unwrap_or_else(|e| e.into_inner())
     }
     pub fn command(&self, command: Command) -> Status {
+        if matches!(command, Command::ConnectSavedProbe { .. })
+            && !cfg!(any(test, feature = "debug-fixtures"))
+        {
+            return Status::InvalidArgument;
+        }
         // BUSYでもfocus喪失・解除の安全効果は通常queueと別に伝える。
         if command.needs_input_reset() {
             self.reset.store(true, Ordering::Release);
@@ -1700,7 +1752,7 @@ impl Runtime {
             if state.snapshot.state != RuntimeState::Stopped {
                 state.snapshot.state = RuntimeState::Stopping;
             }
-            state.credentials.clear();
+            state.clear_credentials();
             state.ime_ui = None;
         }
         self.render.request_stop();
@@ -1863,9 +1915,76 @@ impl Runtime {
         if state.snapshot.state != RuntimeState::Ready || self.stop.load(Ordering::Acquire) {
             return Status::Stale;
         }
+        if state
+            .credential_scope
+            .as_ref()
+            .is_none_or(|scope| scope.revision.is_some())
+        {
+            return Status::Stale;
+        }
+        Self::supply_credential(&mut state, &self.worker, session, request, private)
+    }
+    /// Debug専用private取得。通常diagnosticsはbindingを含めない。
+    pub fn credential_scope(
+        &self,
+    ) -> Result<Option<eidolon_transport::session::CredentialScope>, Status> {
+        if !cfg!(any(test, feature = "debug-fixtures")) {
+            return Err(Status::InvalidArgument);
+        }
+        let state = self.lock();
+        if state.snapshot.state != RuntimeState::Ready || self.stop.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        Ok(state
+            .credential_scope
+            .as_ref()
+            .filter(|scope| {
+                scope.revision.is_some()
+                    && self.transport.credential_scope().is_some_and(|live| {
+                        live.session == scope.session
+                            && live.request == scope.request
+                            && live.binding == scope.binding
+                    })
+            })
+            .cloned())
+    }
+    pub fn provide_credential_for(
+        &self,
+        session: eidolon_model::ids::SessionId,
+        request: eidolon_model::ids::CommandSeq,
+        binding: &str,
+        private: eidolon_transport::credentials::Secret,
+    ) -> Status {
+        if !cfg!(any(test, feature = "debug-fixtures")) {
+            return Status::InvalidArgument;
+        }
+        let mut state = self.lock();
+        if state.snapshot.state != RuntimeState::Ready
+            || self.stop.load(Ordering::Acquire)
+            || state.credential_scope.as_ref().is_none_or(|scope| {
+                scope.session != session
+                    || scope.request != request
+                    || scope.revision.is_none()
+                    || scope.binding != binding
+            })
+            || self.transport.credential_scope().is_none_or(|scope| {
+                scope.session != session || scope.request != request || scope.binding != binding
+            })
+        {
+            return Status::Stale;
+        }
+        Self::supply_credential(&mut state, &self.worker, session, request, private)
+    }
+    fn supply_credential(
+        state: &mut Shared,
+        worker: &JoinHandle<()>,
+        session: eidolon_model::ids::SessionId,
+        request: eidolon_model::ids::CommandSeq,
+        private: eidolon_transport::credentials::Secret,
+    ) -> Status {
         match state.credentials.provide(session, request, private) {
             Ok(()) => {
-                self.worker.thread().unpark();
+                worker.thread().unpark();
                 Status::Accepted
             }
             Err(eidolon_transport::Error::Stale) => Status::Stale,
@@ -1897,6 +2016,48 @@ impl Drop for Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_credential_api_rejects_v2_and_private_binding_never_enters_snapshot() {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let runtime = Runtime::start_with_hook(RuntimeConfig::default(), move || {
+            entered_tx.send(()).unwrap();
+            resume_rx.recv().unwrap();
+        })
+        .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let session = eidolon_model::ids::SessionId::new(9).unwrap();
+        let request = eidolon_model::ids::CommandSeq::new(7).unwrap();
+        let binding = "private-probe-fixture-binding";
+        {
+            let mut state = runtime.lock();
+            state.credentials.begin(session, request);
+            state.credential_scope = Some(eidolon_transport::session::CredentialScope {
+                session,
+                request,
+                profile_id: "linux-probe".into(),
+                revision: Some("9007199254740993".into()),
+                binding: binding.into(),
+            });
+        }
+        let legacy_rejected = runtime.provide_credential(session, request, vec![].into());
+        let forged_rejected =
+            runtime.provide_credential_for(session, request, binding, vec![].into());
+        let private_absent = !serde_json::to_string(&runtime.snapshot())
+            .unwrap()
+            .contains(binding)
+            && !serde_json::to_string(&runtime.poll(64).unwrap())
+                .unwrap()
+                .contains(binding);
+        runtime.request_stop();
+        resume_tx.send(()).unwrap();
+        wait(&runtime, Runtime::can_destroy);
+        assert_eq!(legacy_rejected, Status::Stale);
+        assert_eq!(forged_rejected, Status::Stale);
+        assert!(private_absent);
+        assert!(runtime.credential_scope().unwrap().is_none());
+    }
+
     #[test]
     fn ime_text_is_private_and_urgent_reset_hides_it_even_when_queue_is_full() {
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();

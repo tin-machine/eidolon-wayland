@@ -136,6 +136,52 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeProv
     .resolve_with::<BridgePolicy, _>(|| handle)
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeCredentialScope<'a>(
+    mut env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    handle: jlong,
+) -> JString<'a> {
+    env.with_env(|env| JString::from_str(env, global().credential_scope(handle).to_string()))
+        .resolve_with::<BridgePolicy, _>(|| handle)
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeProvideCredentialFor<
+    'a,
+>(
+    mut env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    handle: jlong,
+    session: jlong,
+    request: jlong,
+    binding: JString<'a>,
+    private: JByteArray<'a>,
+) -> jint {
+    env.with_env(|env| -> jni::errors::Result<i32> {
+        use eidolon_model::ids::{CommandSeq, SessionId};
+        let (Ok(session), Ok(request)) = (SessionId::new(session), CommandSeq::new(request)) else {
+            return Ok(Status::InvalidArgument as i32);
+        };
+        let Some(binding) = bounded_json(env, &binding)?.filter(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }) else {
+            return Ok(Status::InvalidArgument as i32);
+        };
+        let Some(secret) = secret_bytes(env, &private)? else {
+            return Ok(Status::InvalidArgument as i32);
+        };
+        Ok(global()
+            .guarded(handle, |runtime| {
+                runtime.provide_credential_for(session, request, &binding, secret)
+            })
+            .unwrap_or_else(|s| s) as i32)
+    })
+    .resolve_with::<BridgePolicy, _>(|| handle)
+}
+
 #[cfg(debug_assertions)]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_tinmachine_eidolon_DebugNativeBridge_nativeVerifyPin<'a>(

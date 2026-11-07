@@ -45,6 +45,7 @@ object NativeSessionHost {
     @Volatile private var themeImportToken: String? = null
     private var themeImportMessage: String? = null
     private var credentials: CredentialStore? = null
+    private val probeRecovery = ProbeRuntimeRecovery()
     private var identity: CredentialStore.Identity? = null
     private var profiles = JSONArray()
     private var lastConnectRequest: String? = null // connectとcancelをworker上の順序で束縛する。
@@ -892,6 +893,9 @@ object NativeSessionHost {
         }
     }
     private fun startRuntime() {
+        if (!probeRecovery.canStartNormal()) {
+            ui.post { summary.value = "検証runtimeの停止を確認できません。検証を停止してください" }; return
+        }
         handle = NativeBridge.nativeCreate(runtimeConfigJson())
         val deadline = SystemClock.elapsedRealtime() + 5000
         while (snapshot().getJSONObject("runtime").getString("state") == "Starting") {
@@ -905,6 +909,19 @@ object NativeSessionHost {
     }
     fun runtimeConfigJson(): String = BuildHooks.runtimeConfiguration(JSONObject().put("schema", 1).put("paths", checkNotNull(paths))
         .put("installation", checkNotNull(identity).installation).put("profiles", profiles).put("preferences_dir",checkNotNull(preferencesDir)).toString())
+    /** withStoppedRuntimeの同じworkerから同期呼出し。通常Host/設定への切替は行わない。 */
+    fun provideDebugProbeCredential(runtime: Long, capture: ProbeCredentialCapture, event: JSONObject): Int {
+        check(BuildConfig.DEBUG && handle == 0L && runtime == capture.runtime) { "PROBE_OWNER_INVALID" }
+        val envelope = JSONObject(NativeBridge.nativeCredentialScope(runtime))
+        val fields = envelope.keys().asSequence().associateWith { key ->
+            val value = envelope.get(key)
+            if (value is JSONObject) value.keys().asSequence().associateWith { value.get(it) } else value
+        }
+        val supply = capture.claim(runtime, event.opt("session"), event.opt("request_id"), event.opt("profile_id"), fields)
+        return checkNotNull(credentials).withPrivateKey { key ->
+            NativeBridge.nativeProvideCredentialFor(runtime, supply.session, supply.request, supply.binding, key)
+        }
+    }
     fun sdkBinding(target: JSONObject, runtime: Long, owned: Boolean): Int = NativeBridge.nativeCommand(runtime,
         JSONObject().put("schema",1).put("type",if(owned) "register_sdk_binding" else "release_sdk_binding")
             .put("request_id",requests.incrementAndGet().toString()).put("target",target).toString())
@@ -948,15 +965,25 @@ object NativeSessionHost {
         Log.i(TAG, "runtime_stopped handle=$old duration_ms=${SystemClock.elapsedRealtime() - started}")
     }
     /** 診断の排他的実行。固定caseの実装自体はdebug sourceSetだけに置く。 */
-    fun withStoppedRuntime(action: (DiagnosticsStore) -> Unit, completed: () -> Unit) {
+    fun withStoppedRuntime(action: (DiagnosticsStore) -> Unit, completed: () -> Unit) =
+        exclusiveRuntime(null, action, completed) { true }
+    /** Debug固定caseのowner回収が確認されるまで、他case/通常runtime再作成を抑止する。 */
+    fun withStoppedRuntimeGuarded(owner: Any, action: (DiagnosticsStore) -> Unit, completed: () -> Unit, canRestart: () -> Boolean) {
+        check(BuildConfig.DEBUG)
+        exclusiveRuntime(owner, action, completed, canRestart)
+    }
+    private fun exclusiveRuntime(owner: Any?, action: (DiagnosticsStore) -> Unit, completed: () -> Unit, canRestart: () -> Boolean) {
         worker.execute {
+            if (!probeRecovery.permits(owner)) { ui.post(completed); return@execute }
             try {
                 stopRuntime()
                 action(checkNotNull(store))
             } catch (failure: Exception) {
                 Log.e(TAG, "exclusive_failure class=${failure.javaClass.simpleName}")
             } finally {
-                safely { if (handle == 0L) startRuntime() }
+                val recovered = runCatching(canRestart).getOrDefault(false)
+                if (owner != null) { if (recovered) probeRecovery.release(owner) else probeRecovery.retain(owner) }
+                safely { if (handle == 0L && recovered) startRuntime() }
                 ui.post(completed)
             }
         }
