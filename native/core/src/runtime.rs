@@ -342,6 +342,9 @@ impl Runtime {
                                         cpu_cores: (observation && !workload.display.stale)
                                             .then_some(workload.display.smoothed_cores)
                                             .flatten(),
+                                        rss_bytes: (observation && !workload.display.stale)
+                                            .then_some(workload.display.rss_bytes)
+                                            .flatten(),
                                         workload_identity: workload.identity.clone(),
                                     },
                                 );

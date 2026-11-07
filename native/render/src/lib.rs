@@ -1288,6 +1288,16 @@ mod tests {
         renderer.windows(key.session, &[key.window, other.window]);
         renderer.set_theme(Some(theme.clone()), false);
         for key in [key, other] {
+            renderer.set_semantic_state(
+                key.session,
+                key.window,
+                theme_state::SemanticState {
+                    busy: true,
+                    cpu_cores: Some(2.),
+                    rss_bytes: Some(268435456),
+                    ..Default::default()
+                },
+            );
             let (image, probes) = fixtures::make(16, 1, key, 64, 64).unwrap();
             renderer.submit(image, probes);
             renderer.attach_window(key, PlatformWindow::default(), 64, 64);

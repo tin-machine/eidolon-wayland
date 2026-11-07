@@ -2,7 +2,7 @@
 use crate::{
     manifest::Error,
     raster::CompiledTheme,
-    style::{Animation, Clip, Property, Value},
+    style::{Animation, Clip, Property, Transform, Value},
     timeline::{Easing, Timeline, cycle_fraction},
 };
 use std::{
@@ -48,6 +48,14 @@ struct PartPlayer {
     clip: Option<Playing>,
     last_meter: Option<f64>,
     binding: Option<crate::manifest::Binding>,
+    rotation: crate::rotation::Rotation,
+    rotation_binding: Option<crate::manifest::RotationBinding>,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct Metrics {
+    pub cpu_cores: Option<f64>,
+    pub rss_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +78,7 @@ impl Player {
         for part in self.parts.values_mut() {
             part.last_meter = None;
             part.values.remove(&Property::Value);
+            part.rotation.clear_metric();
         }
     }
     /// visibility通知はmetrics/stateを更新せずclockだけを変更する。
@@ -100,6 +109,29 @@ impl Player {
         states: &BTreeSet<String>,
         cpu_cores: Option<f64>,
     ) -> Result<Frame, Error> {
+        self.evaluate_with_metrics(
+            theme,
+            now,
+            visible,
+            reduced_motion,
+            states,
+            Metrics {
+                cpu_cores,
+                rss_bytes: None,
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_with_metrics(
+        &mut self,
+        theme: &CompiledTheme,
+        now: Duration,
+        visible: bool,
+        reduced_motion: bool,
+        states: &BTreeSet<String>,
+        metrics: Metrics,
+    ) -> Result<Frame, Error> {
         self.clock
             .set_running(now, visible)
             .map_err(|_| Error("animation clock reversed/overflowed".into()))?;
@@ -117,7 +149,7 @@ impl Player {
             active: false,
             changed: false,
         };
-        let cpu = cpu_cores.filter(|v| v.is_finite() && *v >= 0.);
+        let cpu = metrics.cpu_cores.filter(|v| v.is_finite() && *v >= 0.);
         let mut states = states.clone();
         if cpu.is_none() {
             states.insert("telemetry-stale".into());
@@ -233,6 +265,44 @@ impl Player {
             } else {
                 part.clip = None;
             }
+            let binding = theme.manifest.rotations.iter().find(|r| &r.part == id);
+            if part.rotation_binding.as_ref() != binding {
+                part.rotation.clear_metric();
+                part.rotation_binding = binding.cloned();
+            }
+            if let Some(binding) = binding {
+                let sample = match binding.metric.as_str() {
+                    "workload.cpu.cores" => {
+                        cpu.map(|v| if states.contains("busy") { v } else { 0. })
+                    }
+                    "workload.memory.rss_bytes" => metrics.rss_bytes.map(|v| v as f64),
+                    _ => None,
+                };
+                let speed = sample
+                    .map(|v| (v / binding.input_max).clamp(0., 1.) * binding.degrees_per_second);
+                let (angle, active) = part
+                    .rotation
+                    .sample(time, speed, reduced_motion || !visible);
+                let transforms = match values.get(&Property::Transform) {
+                    Some(Value::Transform(v)) => v.clone(),
+                    _ => Vec::new(),
+                };
+                values.insert(
+                    Property::Transform,
+                    Value::Transform(
+                        transforms
+                            .into_iter()
+                            .chain([Transform::Rotate(angle)])
+                            .collect(),
+                    ),
+                );
+                if sample.is_none()
+                    && let Some(Value::Number(opacity)) = values.get_mut(&Property::Opacity)
+                {
+                    *opacity *= 0.35;
+                }
+                frame.active |= active;
+            }
             frame.parts.insert(id.clone(), values);
         }
         frame.active &= visible;
@@ -254,11 +324,24 @@ mod tests {
         Duration::from_secs(v)
     }
     #[test]
-    fn real_builtin_keeps_phase_on_focus_sample_and_equivalent_reload() {
+    fn legacy_v1_keeps_phase_on_focus_sample_and_equivalent_reload() {
+        let mut bundle = crate::cyan_orbit();
+        let manifest = String::from_utf8(bundle.files["theme.toml"].clone()).unwrap();
+        bundle.files.insert(
+            "theme.toml".into(),
+            manifest
+                .split("[[rotations]]")
+                .next()
+                .unwrap()
+                .replace("format_version = 2", "format_version = 1")
+                .into_bytes(),
+        );
+        let mut css = String::from_utf8(bundle.files["style.css"].clone()).unwrap();
+        css.push_str("\n#ring-outer { animation: spin-cw 12s linear infinite; transform: rotate(0deg); }\n#ring-middle { animation: spin-ccw 18s linear infinite; transform: rotate(0deg); }\n#ring-inner { animation: spin-cw 8s linear infinite; }");
+        bundle.files.insert("style.css".into(), css.into_bytes());
         let budget = PixelBudget::default();
         let quota = raster::RasterBudget::default();
-        let theme =
-            raster::compile(&crate::cyan_orbit(), &BTreeMap::new(), &budget, &quota).unwrap();
+        let theme = raster::compile(&bundle, &BTreeMap::new(), &budget, &quota).unwrap();
         let mut player = Player::new(s(0));
         let states = BTreeSet::new();
         player
@@ -279,8 +362,7 @@ mod tests {
             );
         }
         assert!(frame.active && frame.changed);
-        let reloaded =
-            raster::compile(&crate::cyan_orbit(), &BTreeMap::new(), &budget, &quota).unwrap();
+        let reloaded = raster::compile(&bundle, &BTreeMap::new(), &budget, &quota).unwrap();
         let frame = player
             .evaluate(&reloaded, s(3), true, false, &focused, Some(1.))
             .unwrap();
@@ -307,6 +389,78 @@ mod tests {
             .evaluate(&theme, s(51), true, true, &states, None)
             .unwrap();
         assert!(!unchanged.active && !unchanged.changed);
+    }
+    #[test]
+    fn builtin_cpu_and_rss_rotate_independently_and_missing_does_not_catch_up() {
+        let theme = raster::compile(
+            &crate::cyan_orbit(),
+            &BTreeMap::new(),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let mut player = Player::new(s(0));
+        let busy = BTreeSet::from(["busy".into()]);
+        let idle = BTreeSet::new();
+        let metrics = Metrics {
+            cpu_cores: Some(4.),
+            rss_bytes: Some(1073741824),
+        };
+        let angle = |frame: &Frame, id: &str| match &frame.parts[id][&Property::Transform] {
+            Value::Transform(t) => match t.last().unwrap() {
+                Transform::Rotate(v) => *v,
+                _ => panic!("rotation"),
+            },
+            _ => panic!("transform"),
+        };
+        player
+            .evaluate_with_metrics(&theme, s(0), true, false, &busy, metrics)
+            .unwrap();
+        let running = player
+            .evaluate_with_metrics(&theme, s(1), true, false, &busy, metrics)
+            .unwrap();
+        assert_eq!(angle(&running, "ring-outer"), 52.5);
+        assert_eq!(angle(&running, "ring-middle"), 325.);
+        assert_eq!(angle(&running, "ring-inner"), 0.); // I/O未計測を動きで偽らない。
+        let half = Metrics {
+            rss_bytes: Some(536870912),
+            ..metrics
+        };
+        player
+            .evaluate_with_metrics(&theme, s(1), true, false, &idle, half)
+            .unwrap();
+        let idle_cpu = player
+            .evaluate_with_metrics(&theme, s(2), true, false, &idle, half)
+            .unwrap();
+        assert_eq!(angle(&idle_cpu, "ring-outer"), 60.);
+        assert_eq!(angle(&idle_cpu, "ring-middle"), 302.5);
+        assert!(idle_cpu.active); // CPU停止でもRSSは独立して回る。
+        let reduced = player
+            .evaluate_with_metrics(&theme, s(2), true, true, &idle, half)
+            .unwrap();
+        assert!(!reduced.active);
+        assert_eq!(angle(&reduced, "ring-middle"), 302.5);
+        let missing = player
+            .evaluate_with_metrics(&theme, s(10), true, false, &busy, Metrics::default())
+            .unwrap();
+        assert_eq!(angle(&missing, "ring-middle"), 302.5);
+        assert!(!missing.active);
+        let returned = player
+            .evaluate_with_metrics(&theme, s(20), true, false, &busy, metrics)
+            .unwrap();
+        assert_eq!(angle(&returned, "ring-middle"), 302.5);
+        let reloaded = raster::compile(
+            &crate::cyan_orbit(),
+            &BTreeMap::new(),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let focused = BTreeSet::from(["focused".into(), "busy".into()]);
+        let focused_frame = player
+            .evaluate_with_metrics(&reloaded, s(20), true, false, &focused, metrics)
+            .unwrap();
+        assert_eq!(angle(&focused_frame, "ring-middle"), 302.5);
     }
     #[test]
     fn never_received_cpu_has_no_fill_but_stale_preserves_last_value() {

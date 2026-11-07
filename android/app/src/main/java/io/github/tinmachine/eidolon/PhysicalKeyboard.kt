@@ -12,7 +12,10 @@ class PhysicalKeyboard(context: Context) : InputManager.InputDeviceListener {
     private val manager = context.getSystemService(InputManager::class.java)
     private var active=false
     private val consumed = mutableSetOf<Pair<Int, Int>>()
-    fun resume() { active=true;manager.registerInputDeviceListener(this, Handler(Looper.getMainLooper())) }
+    fun resume() {
+        if(active) return
+        active=true;manager.registerInputDeviceListener(this, Handler(Looper.getMainLooper()));refreshDevices()
+    }
     fun pause(resetInput: Boolean=true) { active=false;manager.unregisterInputDeviceListener(this);if(resetInput) NativeSessionHost.resetInput() }
     fun dispatch(event: KeyEvent): Boolean {
         if (event.action !in setOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) return false
@@ -31,10 +34,17 @@ class PhysicalKeyboard(context: Context) : InputManager.InputDeviceListener {
         // 焦点喪失でreset済みのkey upもComposeへ漏らさない。
         return sent || previouslyConsumed
     }
-    override fun onInputDeviceAdded(deviceId: Int) = Unit
-    override fun onInputDeviceChanged(deviceId: Int) { if(active) NativeSessionHost.resetInput() }
+    private fun refreshDevices() {
+        val count=runCatching { manager.inputDeviceIds.toList().mapNotNull {manager.getInputDevice(it)}.count {
+            !it.isVirtual && it.isExternal && it.supportsSource(InputDevice.SOURCE_KEYBOARD) && it.keyboardType==InputDevice.KEYBOARD_TYPE_ALPHABETIC
+        } }.getOrNull()
+        NativeSessionHost.setKeyboardCount(count)
+    }
+    override fun onInputDeviceAdded(deviceId: Int) { if(active) refreshDevices() }
+    override fun onInputDeviceChanged(deviceId: Int) { if(active) {refreshDevices();NativeSessionHost.resetInput()} }
     override fun onInputDeviceRemoved(deviceId: Int) {
         if(!active) return
+        refreshDevices()
         consumed.removeAll { it.first == deviceId }
         NativeSessionHost.resetInput()
     }

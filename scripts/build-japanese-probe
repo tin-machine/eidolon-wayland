@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""固定revisionのttyskkと辞書をQuest向けに用意する。APK・通常shell設定は変更しない。"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import urllib.request
+
+from native_build import NDK, API
+from quest_device import work_root
+
+REVISION = "9ada7618c69585bb00d201796381a3e96ebbfe09"
+DICT_REVISION = "0a164e6b990c5eb5b59eb7d8789f08865dc2f644"
+DICT_HASH = "c791f578d1b4040fce282db29bc22b2cc7ea46f83e269fab2e0fa779e2967e40"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--artifact-root", type=Path)
+args = parser.parse_args()
+os.umask(0o077)
+root = args.artifact_root or work_root() / "eidolon-japanese-probe"
+if not root.is_absolute():
+    parser.error("artifact-rootは絶対pathが必要です")
+root.mkdir(parents=True, exist_ok=True, mode=0o700)
+source = root / "ttyskk"
+
+
+def run(argv, **kwargs):
+    return subprocess.check_output(argv, cwd=source, text=True, **kwargs).strip()
+
+
+if not source.exists():
+    source.mkdir(mode=0o700)
+    run(["git", "init", "-q"])
+    run(["git", "remote", "add", "origin", "https://github.com/barewalker/ttyskk.git"])
+    run(["git", "fetch", "--depth", "1", "origin", REVISION])
+    run(["git", "checkout", "--detach", "FETCH_HEAD"])
+if run(["git", "rev-parse", "HEAD"]) != REVISION or run(["git", "status", "--porcelain"]):
+    raise RuntimeError("ttyskk checkoutのrevision/差分が想定外です")
+env = os.environ.copy()
+ndk = Path(env.get("ANDROID_HOME", "/opt/android-sdk")) / "ndk" / NDK
+clang = ndk / f"toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android{API}-clang"
+if not clang.is_file():
+    raise RuntimeError("固定NDKのclangがありません")
+env["CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"] = str(clang)
+with (root / "build.log").open("w") as log:
+    subprocess.run(["cargo", "build", "--locked", "--release", "--target", "aarch64-linux-android", "-p", "ttyskk", "--bin", "ttyskk"],
+                   cwd=source, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+out = root / "artifacts"
+out.mkdir(mode=0o700, exist_ok=True)
+for src, dest in [(source / "target/aarch64-linux-android/release/ttyskk", "ttyskk"),
+                  (source / "LICENSE-MIT", "LICENSE-MIT"), (source / "LICENSE-APACHE", "LICENSE-APACHE")]:
+    shutil.copyfile(src, out / dest)
+url = f"https://raw.githubusercontent.com/skk-dev/dict/{DICT_REVISION}/SKK-JISYO.L"
+dictionary = root / "SKK-JISYO.L"
+if not dictionary.exists():
+    with urllib.request.urlopen(url, timeout=30) as response:
+        dictionary.write_bytes(response.read(8 * 1024 * 1024))
+if hashlib.sha256(dictionary.read_bytes()).hexdigest() != DICT_HASH:
+    raise RuntimeError("SKK-JISYO.L hash不一致")
+shutil.copyfile(dictionary, out / "SKK-JISYO.L")
+# 元辞書のcopyright/headerは保持。GPL本文も導入先へ置く。
+gpl = Path("/usr/share/common-licenses/GPL-2")
+shutil.copyfile(gpl, out / "COPYING-SKK")
+manifest = {"ttyskk_revision": REVISION, "dictionary_revision": DICT_REVISION,
+            "ndk": NDK, "api": API, "dictionary_url": url,
+            "files": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(out.iterdir()) if p.name != "manifest.json"}}
+(out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+print(out)

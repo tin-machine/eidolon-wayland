@@ -1,5 +1,13 @@
 # キーボード・seatの検証記録
 
+## 入力状態表示と復帰（Build141）
+
+主画面の上部に入力停止の理由を表示し、「窓Nへ入力」で対象を明示する。
+配置編集時は「配置を確定して入力へ戻る」を使う。描画とSDKのapplied通知の間に押しても、
+同じ窓の準備とreset完了を待ってfocusを送る。別の選択・入力解除・対象世代変更では待機を取り消す。
+[NX01〜08の記録](extensions-nx01-nx08-20261107.md)の通常SDK結果と、以下の過去の物理入力確認を区別する。
+
+
 2026-11-05。I02の実装中の記録。Bluetooth実機操作とHMDの受入れは最終段階に残す。
 固定入力の自動試験を、物理キーボードを接続した操作成功として扱わない。
 
@@ -36,7 +44,7 @@ Smithay seat → APKのWaypipe → SSH → TermuxのWaypipe → Wayland client�
 
 Android入口は物理device、`SOURCE_KEYBOARD`、down/up、system keyを確認する。
 操作パネルに焦点がある間は通常のAndroid/Compose配送を使う。
-「ターミナルへキー入力」で表示済みパネルを選び、「操作パネルへ戻る」で解除する。
+「窓Nへ入力」で表示済みパネルを選び、「操作パネルへ戻る」で解除する。
 controller clickによるwindow選択はI03で接続する。
 
 AndroidはLinuxの入力keycodeをscanCodeとして公開するが、公開APIはdeviceごとの差異も警告している。

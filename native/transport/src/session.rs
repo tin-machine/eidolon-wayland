@@ -730,9 +730,11 @@ async fn connection(
         )
         .await
         .map_err(|_| "CONNECT_TIMEOUT")?
-        .map_err(|_| {
+        .map_err(|error| {
             if mismatch.load(Ordering::Acquire) {
                 "HOST_KEY_MISMATCH"
+            } else if matches!(error, russh::Error::IO(ref io) if io.kind() == std::io::ErrorKind::ConnectionRefused) {
+                "SSH_CONNECTION_REFUSED"
             } else {
                 "SSH_CONNECT_FAILED"
             }

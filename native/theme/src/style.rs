@@ -429,6 +429,7 @@ impl Stylesheet {
         for (id, part) in &m.parts {
             let rules: Vec<_> = self.rules.iter().filter(|r| &r.part == id).collect();
             let bound = m.bindings.iter().any(|b| &b.part == id);
+            let rotated = m.rotations.iter().any(|b| &b.part == id);
             // 全状態組合せを評価する。別stateで排他的に指定された値同士を誤って競合させない。
             for mask in 0..(1 << STATES.len()) {
                 let states: BTreeSet<_> = STATES
@@ -459,6 +460,14 @@ impl Stylesheet {
                     .chain(animated.iter().copied())
                     .chain(d.transitions.iter().flat_map(|v| v.keys().copied()))
                     .collect();
+                if rotated
+                    && (animated.contains(&Property::Transform)
+                        || d.transitions
+                            .as_ref()
+                            .is_some_and(|t| t.contains_key(&Property::Transform)))
+                {
+                    return Err(err("rotation/CSS transform writer conflict"));
+                }
                 if part.kind == Kind::Svg && all.contains(&Property::Tint)
                     || part.kind != Kind::Meter && all.contains(&Property::Value)
                 {

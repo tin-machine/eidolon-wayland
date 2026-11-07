@@ -7,27 +7,59 @@ Questのアプリライブラリの「提供元不明 / Unknown Sources」から
 
 ## 再起動後（既に設定済みの端末）
 
-1. Termuxを起動する。既存の`eidolon-sshd`サービスを設定した環境では次を実行する。
+Build134以降は、下記のTermux連携を一度設定すれば、Eidolonの操作画面または左下の
+「ターミナル」ボタンから開ける。既にSSHが起動していればそのまま接続し、接続拒否の場合だけ
+固定helperを一度呼ぶ。起動待ちは最大15秒。認証失敗・ホスト鍵不一致ではサービス起動へ進まない。
 
-   ```bash
-   . "$PREFIX/etc/profile.d/start-services.sh"
-   sv up eidolon-sshd
-   sv status eidolon-sshd
-   ```
+1. ライブラリからEidolonを開く。境界・追跡の案内があれば解消する。
+2. 固定上部の「ターミナルを開く」、または左下のピンク色の「ターミナル」を押す。
+   接続中の連打はまとめる。さらに開くとfootが増え、現在の同時表示は二枚。
+3. 「窓 N へ入力」で対象を選ぶ。上部には配置編集中・キーボード未検出・未選択等の理由と入力先を表示する。
+4. 接続設定・テーマ・配置・パススルー等は「設定と詳細」を開く。終了は「接続を閉じる」。
 
-   `run:`を確認する。Quest再起動でTermux/sshdも停止する。アプリの自動起動は未対応。
-   サービスを導入していない新規環境は、下の初回準備でsshdを起動する。
-2. ライブラリからEidolonを開く。境界・追跡の案内があれば解消する。
-3. 「ターミナルを開く」を押す。さらに押すとfootを追加できる。同時表示は二枚。
-   接続処理中の重複押下はまとめて処理する。
-4. ウィンドウを選択して入力する。US配列は既定。「現実を背景に」でパススルーへ戻せる。
-   終了は「SSH切断」。再接続時にshellの作業内容は引き継がれない。
+配置編集の終了には「配置を確定して入力へ戻る」を使う。対象が表示中なら、入力リセットの完了後に
+同じ窓へ入力を戻す。対象が終了・再生成された場合や二枚のどちらを選ぶか不明な場合は、窓を明示選択する。
+キーボード抜差し、システム画面・sleepからの復帰後は、入力先を選び直すことがある。
 
-文字が入力できない場合は、操作画面に「配置を確定して入力へ戻る」があれば押して配置編集を終了し、
-対象のターミナルを選び直す。一枚での復帰は「ターミナルへキー入力」でも行える。
-キーボードの抜差し・システム画面からの復帰後も入力先が解除されることがある。
-入力停止理由の常時表示は[次期計画](next-phase-termux-startup-linux-gui-plan-20261107.md#input-status)であり、現在の画面には未実装。
-US/JISはキー配置の設定で、かな漢字変換の有効化ではない。日本語入力は[別途計画中](japanese-input-plan-20261107.md)。
+電池/充電・RAM空き/総量・Quest自身のIPは通常APK権限で取得する。
+RAMはAndroidの`availMem`でありLinuxの`MemFree`とは異なる。IPは既定ネットワークのローカルアドレスで、
+ルーターや外部サーバーのIPではない。接続先は別表示の`このQuestのTermux`（127.0.0.1:8022）。
+値が取れないときは「不明」と表示する。可視期間に5秒間隔で更新し、非表示時は購読を止める。
+
+US/JISはキー配列だけを変更する。かな漢字変換は専用の`eidolon-japanese`入口を使う
+[最小probe](extensions-nx01-nx08-20261107.md)であり、通常のfoot全体にIMEを自動適用するものではない。
+
+### Termux連携の初回設定
+
+既存の`eidolon-sshd`がある端末では次をTermuxで実行する。
+
+```sh
+install -m 700 scripts/termux/eidolon-start "$PREFIX/bin/eidolon-start"
+mkdir -p "$HOME/.termux"
+# termux.propertiesに以下の設定を一度だけ追加・編集する。
+# allow-external-apps=true
+termux-reload-settings
+```
+
+Eidolonの「設定と詳細」→「Termux連携を許可」でAndroidの権限を許可する。
+この連携には[Termux公式RUN_COMMAND](https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent)の
+実行権限と`allow-external-apps=true`の両方が必要。製品が送る実行file/引数は固定である。
+開発用ADBからの同等導入は`python3 scripts/quest-setup-extensions --serial SERIAL --grant-run-command`。
+変更前の設定fileはTermux内のprivate backupへ保存される。
+
+`eidolon-sshd`サービスをまだ作っていない初回環境では、Eidolonを切断した状態で
+`bash scripts/termux-bootstrap.sh 'ssh-ed25519 AAAA…'`へ許可するクライアントの公開鍵を渡す。
+既存鍵は保持し、loopback:8022専用のserviceを構成する。通常の更新のたびにbootstrapは実行しない。
+
+権限拒否、helper未導入、設定不足、起動制限では、理由と「Termuxを開く」を表示する。
+必要ならTermux側で次を実行してからEidolonに戻り、再試行する。
+
+```sh
+. "$PREFIX/etc/profile.d/start-services.sh"
+sv up eidolon-sshd
+sv status eidolon-sshd
+```
+
 
 再起動後はADBの待受・IPも変わり得る。開発用Wi-Fi ADBはUSBで対象を照合して
 `adb -s USB_SERIAL tcpip 5555`、その時点のIPへ`adb connect IP:5555`を行う。
@@ -62,7 +94,7 @@ foot --version
 
 ## 公開鍵をペアリングする
 
-1. Eidolonの「接続設定・初回ペアリング」を開き、「APK公開鍵をコピー」を押す。
+1. Eidolonの「設定と詳細」→「接続設定・初回ペアリング」を開き、「APK公開鍵をコピー」を押す。
 2. Termuxへ戻り、展開先で次を実行する。`'…'`全体をコピーした公開鍵で置換する。
 
    ```bash

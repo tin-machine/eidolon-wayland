@@ -1,4 +1,4 @@
-//! format v1の入口。schemaの検証前にasset I/OやGPU allocationを開始しない。
+//! format v1/v2の入口。schemaの検証前にasset I/OやGPU allocationを開始しない。
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,6 +15,17 @@ pub struct Manifest {
     pub parts: BTreeMap<String, Part>,
     #[serde(default)]
     pub bindings: Vec<Binding>,
+    #[serde(default)]
+    pub rotations: Vec<RotationBinding>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RotationBinding {
+    pub part: String,
+    pub metric: String,
+    pub input_max: f64,
+    pub degrees_per_second: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -90,7 +101,9 @@ impl Manifest {
 
     pub fn validate(&self) -> Result<(), Error> {
         let fail = |reason: &str| Err(Error(reason.into()));
-        if self.format_version != 1 {
+        if !matches!(self.format_version, 1 | 2)
+            || self.format_version == 1 && !self.rotations.is_empty()
+        {
             return fail("unsupported format_version");
         }
         if !identifier(&self.id)
@@ -145,6 +158,28 @@ impl Manifest {
                 return fail("invalid or duplicate binding");
             }
         }
+        let mut rotated = BTreeSet::new();
+        if self.rotations.len() > MAX_PARTS {
+            return fail("rotation limit");
+        }
+        for r in &self.rotations {
+            if !self
+                .parts
+                .get(&r.part)
+                .is_some_and(|p| p.kind != Kind::Meter)
+                || !matches!(
+                    r.metric.as_str(),
+                    "workload.cpu.cores" | "workload.memory.rss_bytes"
+                )
+                || !r.input_max.is_finite()
+                || r.input_max <= 0.
+                || !r.degrees_per_second.is_finite()
+                || r.degrees_per_second.abs() > 360.
+                || !rotated.insert(&r.part)
+            {
+                return fail("invalid or duplicate rotation binding");
+            }
+        }
         Ok(())
     }
 
@@ -193,6 +228,24 @@ clamp = true
 missing = "hold-last"
 "#;
     #[test]
+    fn rotations_require_v2_and_one_bounded_writer_per_existing_part() {
+        let source = include_str!("../assets/cyan-orbit/theme.toml");
+        assert!(Manifest::parse(source).is_ok());
+        for (before, after) in [
+            ("format_version = 2", "format_version = 1"),
+            ("input_max = 4.0", "input_max = 0.0"),
+            ("degrees_per_second = 60.0", "degrees_per_second = inf"),
+            ("degrees_per_second = 60.0", "degrees_per_second = 361.0"),
+            ("part = \"ring-middle\"", "part = \"ring-outer\""),
+            ("workload.memory.rss_bytes", "workload.disk.bytes"),
+        ] {
+            assert!(
+                Manifest::parse(&source.replace(before, after)).is_err(),
+                "{before}"
+            );
+        }
+    }
+    #[test]
     fn manifest_and_binding_keep_missing_distinct_from_zero() {
         let m = Manifest::parse(SOURCE).unwrap();
         assert_eq!(m.ordered_parts()[0].0, "ring");
@@ -205,7 +258,7 @@ missing = "hold-last"
     #[test]
     fn reject_schema_drift_escape_nonfinite_and_ambiguous_binding() {
         for (old, new) in [
-            ("format_version = 1", "format_version = 2"),
+            ("format_version = 1", "format_version = 3"),
             ("name =", "unknown ="),
             ("window-backdrop", "window-unknown"),
             ("assets/ring.svg", "../ring.svg"),

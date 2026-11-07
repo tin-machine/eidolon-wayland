@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""承認済みQuestのTermuxへ固定起動helperと任意の日本語probeを導入する。"""
+import argparse
+import base64
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+
+from quest_device import QuestDevice, PACKAGE, work_root
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--serial", required=True)
+parser.add_argument("--japanese-artifacts", type=Path)
+parser.add_argument("--grant-run-command", action="store_true")
+parser.add_argument("--artifact-root", type=Path)
+args = parser.parse_args()
+os.umask(0o077)
+root = args.artifact_root or work_root() / "eidolon-extensions-setup"
+if not root.is_absolute():
+    parser.error("artifact-rootは絶対pathが必要です")
+run = root / datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f")
+run.mkdir(mode=0o700, parents=True)
+device = QuestDevice(args.serial, run)
+device.validate()
+repo = Path(__file__).resolve().parents[1]
+files = {"usr/bin/eidolon-start": (repo / "scripts/termux/eidolon-start").read_bytes()}
+if args.japanese_artifacts:
+    artifacts = args.japanese_artifacts
+    manifest = json.loads((artifacts / "manifest.json").read_text())
+    expected = {"ttyskk", "SKK-JISYO.L", "LICENSE-MIT", "LICENSE-APACHE", "COPYING-SKK"}
+    if set(manifest["files"]) != expected:
+        raise ValueError("日本語artifact一覧が想定外です")
+    for name in sorted(expected):
+        data = (artifacts / name).read_bytes()
+        if hashlib.sha256(data).hexdigest() != manifest["files"][name]:
+            raise ValueError("日本語artifact hash不一致")
+        files["home/.local/share/eidolon/japanese/" + name] = data
+    files["home/.local/share/eidolon/japanese/manifest.json"] = (artifacts / "manifest.json").read_bytes()
+    files["usr/bin/eidolon-japanese"] = (repo / "scripts/termux/eidolon-japanese").read_bytes()
+payload = json.dumps({path: base64.b64encode(data).decode() for path, data in files.items()})
+# データはstdinに渡す。shell引数へのJSON補間や共有storage上の中間fileを使わない。
+installer = r'''
+import base64,hashlib,json,os,re,sys
+from pathlib import Path
+os.umask(0o077)
+root=Path('/data/data/com.termux/files')
+backup=root/'home/.local/state/eidolon/setup-backups'
+backup.mkdir(parents=True,exist_ok=True,mode=0o700)
+def save(path,data,mode):
+    if path.is_symlink(): raise RuntimeError('symlink destination')
+    if path.exists() and path.read_bytes()==data: return
+    if path.exists():
+        previous=path.read_bytes(); digest=hashlib.sha256(previous).hexdigest()
+        (backup/(path.name+'.'+digest)).write_bytes(previous)
+    path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    temporary=path.with_name(path.name+'.eidolon-new')
+    with temporary.open('xb') as out: out.write(data)
+    temporary.chmod(mode);temporary.replace(path)
+files=json.load(sys.stdin)
+for relative,encoded in files.items():
+    data=base64.b64decode(encoded,validate=True)
+    path=root/relative
+    mode=0o700 if relative.startswith('usr/bin/') or relative.endswith('/ttyskk') else 0o600
+    save(path,data,mode)
+props=root/'home/.termux/termux.properties'
+old=props.read_text() if props.exists() else ''
+pattern=r'(?m)^\s*allow-external-apps\s*=.*$'
+enabled=bool(re.search(r'(?m)^\s*allow-external-apps\s*=\s*true\s*$',old))
+new=re.sub(pattern,'allow-external-apps=true',old) if re.search(pattern,old) else old+'\nallow-external-apps=true\n'
+save(props,new.encode(),0o600)
+config=root/'home/.local/share/eidolon/japanese/config.toml'
+if (root/'home/.local/share/eidolon/japanese/ttyskk').exists() and not config.exists():
+    save(config,b'[behavior]\nmode_marker = "letter"\n[candidates]\nlayout = "float"\n',0o600)
+print(json.dumps({'helper_installed':True,'external_apps_previously_enabled':enabled,'backup_dir':str(backup),
+ 'files':{k:hashlib.sha256(base64.b64decode(v)).hexdigest() for k,v in files.items()}}))
+'''
+command = shlex.join(["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python", "-c", installer])
+result = subprocess.run(["adb", "-s", args.serial, "shell", "-T", command], input=payload, text=True,
+                        capture_output=True, timeout=90)
+(run / "install.log").write_text(result.stdout + result.stderr)
+if result.returncode:
+    raise RuntimeError(f"Termux導入失敗: {run}")
+device.adb("shell", "am", "broadcast", "-a", "com.termux.app.reload_style", "-p", "com.termux")
+if args.grant_run_command:
+    device.adb("shell", "pm", "grant", PACKAGE, "com.termux.permission.RUN_COMMAND")
+print(f"導入記録: {run}")

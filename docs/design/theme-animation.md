@@ -3,8 +3,10 @@
 2026-11-06。基底は`12bad86`。Phase 5の残る手動受入れを保持し、この追加機能をPhase 6の全耐久・release完了より先に実装する。
 ユーザー操作が必要な確認は最後にまとめ、実装・host検証・可能なQuest検証を先に進める。
 
-2026-11-07の次期要望（未実装）: [次フェーズ計画](../next-phase-termux-startup-linux-gui-plan-20261107.md)の第5節に、
+2026-11-07の追加要望: [次フェーズ計画](../next-phase-termux-startup-linux-gui-plan-20261107.md)の第5節に、
 リング線幅3倍、外側CPU・中央RSS・内側Disk I/Oによる独立した速度制御を追記した。
+NX01/06で線幅・外側CPU・中央RSSを実装した。内側Disk I/OはNX13へ残す。
+速度・欠測・v1互換の契約は[追加実装記録](../extensions-nx01-nx08-20261107.md)を正とする。
 共有foot本体はユーザー指定により計測対象から除外できるため、シェル/子processまたはtmux sessionを対象とする。
 同計画の第6節には、テーマで配置と外観を指定する移動・閉じる・menu等の窓別操作を追記した。
 初期デザインは大きめの丸いkawaii/sweet/popなボタン。右上は初期テーマの配置であり、共通実装へ固定しない。
@@ -70,7 +72,7 @@ collector/workloadの対応変更時は`clear_metrics`で他作業のhold-last�
 
 | 上限・書式 | 現在の実装 |
 | --- | --- |
-| TOML | format_version=1、未知field拒否、64KiB、16part、16binding |
+| TOML | format_version=1/2（rotationはv2）、未知field拒否、64KiB、16part、16binding |
 | CSS | 256KiB、256rule、32clip、各64keyframe。`#part`と既知状態class、opacity/tint/value/transform、transition、単一animation |
 | 補間 | transformは同じ関数列のみ。0→360度の巻き数を保持。標準easingのBézierはxを解いて評価する |
 | animation | 1ms〜24h、finite count 1〜1,000,000またはinfinite、fill none。focus/metrics/同一定義reloadで再開始しない |

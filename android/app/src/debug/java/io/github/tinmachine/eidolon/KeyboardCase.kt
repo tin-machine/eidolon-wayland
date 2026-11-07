@@ -59,7 +59,11 @@ object KeyboardCase {
                             check(state.getJSONObject("transport").getString("state")=="Idle")
                             handle = current; NativeSessionHost.openTerminal(); stage = "display"
                         }
-                        "display" -> if (focused && app?.optString("mode")=="foot" && panel?.optString("role")=="windows" && panel.getLong("frames")>=3) {
+                        "display" -> if (focused && app?.optString("mode")=="foot" && panel?.optString("role")=="windows" && panel.getLong("frames")>=1 &&
+                            app.getJSONArray("windows").let { windows -> (0 until windows.length()).any { i ->
+                                windows.getJSONObject(i).let { w -> w.getString("window")==panel.getJSONObject("key").getString("window") &&
+                                    w.optString("frame")==panel.optString("content_frame") }
+                            } }) {
                             val plans = state.getJSONArray("panels")
                             if (plans.length()==1 && plans.getJSONObject(0).getBoolean("applied")) {
                                 target = JSONObject(panel.getJSONObject("key").toString()); record("before",state)

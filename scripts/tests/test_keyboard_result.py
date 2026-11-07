@@ -79,12 +79,12 @@ class ProductKeyboardTests(unittest.TestCase):
                           focus_token=None if index in [0,4,5] else ('1' if index<4 else '2'),
                           focus_window=None if index in [0,4,5] else '1', pressed=2 if index==3 else 0,
                           delivered=[0,0,4,6,8,8,8,10][index])
-            state=dict(state='Ready',activity_visible=True,xr_state='FOCUSED',scene='1',input_resets=1 if index<4 else 2,
+            state=dict(state='Ready',activity_visible=True,xr_state='FOCUSED',scene='1',input_resets=0 if index==0 else 1 if index<4 else 2,
                        app=dict(session='1',mode='foot',callback_clock='target-driven',error=None,input=keyboard,copies=index+1,
-                                local=dict(uid=4242,executable_sha256='2'*64)),
+                                local=dict(uid=4242,executable_sha256='2'*64),windows=[dict(window='1',frame='2')]),
                        transport=dict(state='Ready',session='1',credential_requests=1,
                                       app_forward=dict(uid=4343,mode='foot',state='running',error=None)),
-                       render=dict(targets=[dict(key=copy.deepcopy(target),role='windows',frames=3)]))
+                       render=dict(targets=[dict(key=copy.deepcopy(target),role='windows',frames=2,content_frame='2')]))
             rows.append(dict(stage=stage,runtime=state))
         restored=dict(state='Ready',activity_visible=True,xr_state='FOCUSED',transport=dict(state='Idle',pending_cleanup=[]),
                       render=dict(targets=[dict(role='diagnostic',frames=3)]))
@@ -105,6 +105,15 @@ class ProductKeyboardTests(unittest.TestCase):
         bad=copy.deepcopy(snapshot);bad['check']['cycles'][4]['runtime']['input_resets']=1
         with self.assertRaises(ValueError):
             keyboard_result(bad,'a'*32,{},4242,4343,package)
+
+    def test_static_latest_frame_is_enough_but_missing_or_stale_is_rejected(self):
+        snapshot,package=self.fixture()
+        self.assertTrue(keyboard_result(snapshot,'a'*32,{},4242,4343,package))
+        for field,value in [('frames',0),('content_frame','1'),('content_frame',None)]:
+            bad=copy.deepcopy(snapshot)
+            bad['check']['cycles'][0]['runtime']['render']['targets'][0][field]=value
+            with self.subTest(field=field,value=value),self.assertRaises(ValueError):
+                keyboard_result(bad,'a'*32,{},4242,4343,package)
 
     def test_synthetic_scope_and_stop_are_required(self):
         snapshot,package=self.fixture()

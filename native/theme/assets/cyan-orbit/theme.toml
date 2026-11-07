@@ -1,4 +1,4 @@
-format_version = 1
+format_version = 2
 id = "cyan-orbit"
 name = "Cyan Orbit"
 style = "style.css"
@@ -37,3 +37,15 @@ input = [0.0, 4.0]
 output = [0.0, 1.0]
 clamp = true
 missing = "hold-last"
+
+[[rotations]]
+part = "ring-outer"
+metric = "workload.cpu.cores"
+input_max = 4.0
+degrees_per_second = 60.0
+
+[[rotations]]
+part = "ring-middle"
+metric = "workload.memory.rss_bytes"
+input_max = 1073741824.0
+degrees_per_second = -40.0

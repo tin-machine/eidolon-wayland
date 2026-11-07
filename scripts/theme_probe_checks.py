@@ -203,7 +203,8 @@ def theme_performance(rows):
             if (n<0 or len(bins)!=32 or any(x<0 for x in bins) or sum(bins)!=n
                     or b.get('samples',0)-a.get('samples',0)!=n or total<0
                     or (mode=='off' and dec!=0) or (mode!='off' and dec!=n)
-                    or (mode in {'animated','animated_metrics'} and n<10)):
+                    or (mode=='animated' and n!=0)
+                    or (mode=='animated_metrics' and n<10)):
                 raise ValueError('theme performance counters invalid')
             def quantile(p):
                 seen=0

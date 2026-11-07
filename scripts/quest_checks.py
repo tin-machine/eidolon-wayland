@@ -175,12 +175,17 @@ def keyboard_result(snapshot, nonce, expected, uid, termux_uid, package):
                 or app.get('local',{}).get('uid') != uid or app.get('local',{}).get('executable_sha256') != package.get('dependencies',{}).get('waypipe',{}).get('sha256')
                 or transport.get('session') != target['session'] or transport.get('state') != 'Ready' or transport.get('credential_requests') != 1
                 or forward.get('uid') != termux_uid or forward.get('mode') != 'foot' or forward.get('state') != 'running' or forward.get('error') is not None
-                or len(panels) != 1 or panels[0].get('key') != target or panels[0].get('role') != 'windows' or panels[0].get('frames',0) < 3
+                or len(panels) != 1 or panels[0].get('key') != target or panels[0].get('role') != 'windows' or panels[0].get('frames',0) < 1
                 or keyboard.get('focus_window') != expected_focus or keyboard.get('pressed') != (2 if index==3 else 0)
                 or (token is not None if expected_focus is None else not isinstance(token,str) or not re.fullmatch('[1-9][0-9]*',token))
                 or keyboard.get('delivered') != base+[0,0,4,6,8,8,8,10][index]
-                or type(state.get('input_resets')) is not int or (state['input_resets'] != epoch if index<4 else state['input_resets'] <= epoch)):
+                or type(state.get('input_resets')) is not int or (state['input_resets'] > epoch if index==0 else state['input_resets'] != epoch if index<4 else state['input_resets'] <= epoch)):
             raise ValueError('製品Host/foot/SDKとkey/resetの結果が不正です')
+    initial=rows[0]['runtime']
+    rendered=initial['render']['targets'][0]
+    if not any(w.get('window')==target['window'] and isinstance(w.get('frame'),str) and
+               w['frame']==rendered.get('content_frame') for w in initial['app'].get('windows',[])):
+        raise ValueError('初期footの最新frameが描画されていません')
     first_token=rows[1]['runtime']['app']['input']['focus_token']
     second_token=rows[6]['runtime']['app']['input']['focus_token']
     if (any(rows[i]['runtime']['app']['input']['focus_token'] != first_token for i in [2,3])

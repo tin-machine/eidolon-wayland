@@ -13,11 +13,13 @@ class DiagnosticsStore(context: Context) {
     private var runtime = JSONObject()
     private var check: JSONObject? = null
     private var adapter: JSONObject? = null
+    private var interfaceState: JSONObject? = null
     private var sequence = 0L
 
     fun publishRuntime(snapshot: JSONObject) { runtime = snapshot; write() }
     fun publishCheck(result: JSONObject) { check = result; write() }
     fun publishAdapter(value: JSONObject) { adapter = value; write() }
+    fun updateInterface(value: JSONObject) { interfaceState = value }
 
     private fun write() {
         val value = JSONObject().put("schema", 1).put("sequence", (++sequence).toString())
@@ -26,6 +28,7 @@ class DiagnosticsStore(context: Context) {
             .put("runtime", runtime)
         check?.let { value.put("check", it) }
         adapter?.let { value.put("adapter", it) }
+        interfaceState?.let { value.put("interface", it) }
         val bytes = value.toString().toByteArray(Charsets.UTF_8)
         require(bytes.size <= 1024 * 1024) { "RESOURCE_LIMIT" }
         val temporary = File(directory, "latest.json.tmp")

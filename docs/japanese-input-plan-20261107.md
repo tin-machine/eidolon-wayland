@@ -1,6 +1,9 @@
 # 次期日本語入力: まずfoot内でかな漢字変換する
 
-作成日: 2026-11-07。調査基準: `40692ec` / Build133。**計画のみ。導入・実装・実機検証は未実施**。
+作成日: 2026-11-07。調査基準: `40692ec` / Build133。**NX05を実装・検証中**。
+[実装記録](extensions-nx01-nx08-20261107.md)の固定版ttyskkはAndroidへビルド・導入し、
+QuestのTermux UID上の専用PTYで漢字候補・確定・取消・英数復帰の自動検証が成功した。
+HMD/物理キーボードとfoot内の見え方は最終確認に残す。
 ユーザー要件は「かな漢字変換ができればよい」。US101互換キーボードを継続使用し、Fキーを必須にしない。
 全体の着手順は[次フェーズ計画](next-phase-termux-startup-linux-gui-plan-20261107.md#implementation-order)のNX05 / NX09に従う。
 
@@ -28,9 +31,10 @@ Termuxのfootが`+ime`でビルドされていることや、日本語fallback f
 [uim-fep公式説明](https://github.com/uim/uim/wiki/Uim-Fep)には端末アプリ用の入力、Anthy/SKK等のエンジン、状態行がある。
 [ttyskkの上流説明](https://github.com/barewalker/ttyskk/blob/main/README.md)はPTY内のSKK変換と確定文字の子プロセスへの送信を扱う。
 後者の対応環境の説明はLinux/macOSであり、Android/Termux対応の証拠ではない。
-どちらも現Questへの導入成功・Bionic互換性・ユーザー受入れは未確認。配布package・依存・license・辞書を先に調べる。
+計画時点では両者とも現Questへの導入成功・Bionic互換性・ユーザー受入れは未確認だった。
+NX05のttyskkの導入と専用PTYでの成立は上記の実装記録を参照する。ユーザー受入れはまだ別条件。配布package・依存・license・辞書を先に調べる。
 SKKは変換の区切りを利用者が指定する操作方式なので、一般的なローマ字連文節変換と同じとは説明しない。
-特定エンジンを採用済みにせず、起動までの変更量と実機の使いやすさで選ぶ。
+NX05はttyskkで進める。継続採用とNX09の範囲は実機の使いやすさも確認して判断する。
 
 NX05は一つの端末・一つの変換方式で可否と追加費用を判定する区切り。
 大きなTermux移植やGUI用IME基盤が必要ならここで見積りを改訂し、ほかの小さい拡張を先へ進める。

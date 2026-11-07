@@ -1,0 +1,13 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# 専用入口。既存のshell/辞書/rcを置き換えない。
+set -eu
+root=/data/data/com.termux/files/home/.local/share/eidolon/japanese
+[ -x "$root/ttyskk" ] && [ -f "$root/SKK-JISYO.L" ] || {
+    printf '%s\n' '日本語probeを先に導入してください' >&2
+    exit 1
+}
+export TTYSKK_JISYO="$root/SKK-JISYO.L"
+export TTYSKK_USER_JISYO="$root/user-jisyo"
+export TTYSKK_CONFIG="$root/config.toml"
+unset TTYSKK_DEBUG
+exec "$root/ttyskk" "$@"

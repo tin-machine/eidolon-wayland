@@ -12,7 +12,23 @@ import org.json.JSONObject
 object SdkCaseEnvironment {
     fun start(name:String,nonce:String,context:Context,launch:((JSONObject)->Unit)->Unit,complete:()->Unit) {
         val ui=Handler(Looper.getMainLooper())
-        val original=NativeSessionHost.currentHandle()
+        val deadline=SystemClock.elapsedRealtime()+15000
+        ui.post(object:Runnable {
+            override fun run() {
+                val original=NativeSessionHost.currentHandle()
+                if(original>0 && JSONObject(NativeBridge.nativeSnapshot(original)).optJSONObject("runtime")?.optString("state")=="Ready") {
+                    startReady(name,nonce,context,original,launch,complete)
+                } else if(SystemClock.elapsedRealtime()<deadline) ui.postDelayed(this,32)
+                else {
+                    NativeSessionHost.publishCheck(JSONObject().put("case",name).put("nonce",nonce).put("result","fail")
+                        .put("environment_failure","INITIAL_RUNTIME_TIMEOUT"))
+                    complete()
+                }
+            }
+        })
+    }
+    private fun startReady(name:String,nonce:String,context:Context,original:Long,launch:((JSONObject)->Unit)->Unit,complete:()->Unit) {
+        val ui=Handler(Looper.getMainLooper())
         var originalDigest=""
         var fixture=0L
         var finished=false

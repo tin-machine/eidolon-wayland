@@ -21,6 +21,7 @@ pub struct SemanticState {
     pub focused: bool,
     pub busy: bool,
     pub cpu_cores: Option<f64>,
+    pub rss_bytes: Option<u64>,
     pub workload_identity: Option<String>,
 }
 impl SemanticState {
@@ -167,7 +168,17 @@ impl Players {
         }
         let frame = window
             .player
-            .evaluate(theme, now, true, reduced, &state.classes(), state.cpu_cores)
+            .evaluate_with_metrics(
+                theme,
+                now,
+                true,
+                reduced,
+                &state.classes(),
+                eidolon_theme::player::Metrics {
+                    cpu_cores: state.cpu_cores,
+                    rss_bytes: state.rss_bytes,
+                },
+            )
             .map_err(|_| "THEME_EVALUATION_FAILED")?;
         let canvas = Canvas::for_content(content)?;
         let slots = canvas.slots(content);
@@ -203,12 +214,20 @@ mod tests {
         let mut state = SemanticState {
             workload_identity: Some("first".into()),
             cpu_cores: Some(1.),
+            busy: true,
             ..Default::default()
         };
         let first = players
             .draw(key, &theme, Duration::ZERO, size, false, &state)
             .unwrap();
         assert!(first.frame.parts["cpu-meter"].contains_key(&Property::Value));
+        let moving = players
+            .draw(key, &theme, Duration::from_secs(1), size, false, &state)
+            .unwrap();
+        assert_ne!(
+            first.frame.parts["ring-outer"],
+            moving.frame.parts["ring-outer"]
+        );
         state.cpu_cores = None;
         assert!(
             players
@@ -223,8 +242,8 @@ mod tests {
             .draw(key, &theme, Duration::from_secs(2), size, false, &state)
             .unwrap();
         assert!(!changed.frame.parts["cpu-meter"].contains_key(&Property::Value));
-        assert_ne!(
-            first.frame.parts["ring-outer"][&Property::Transform],
+        assert_eq!(
+            moving.frame.parts["ring-outer"][&Property::Transform],
             changed.frame.parts["ring-outer"][&Property::Transform]
         );
     }
@@ -243,7 +262,11 @@ mod tests {
         let key = (SessionId::new(1).unwrap(), WindowId::new(1).unwrap());
         let other = (key.0, WindowId::new(2).unwrap());
         let size = LogicalSize::new(1024, 768).unwrap();
-        let state = SemanticState::default();
+        let state = SemanticState {
+            busy: true,
+            cpu_cores: Some(4.),
+            ..Default::default()
+        };
         let sec = Duration::from_secs;
         let angle = |d: Drawing| d.frame.parts["ring-outer"][&Property::Transform].clone();
         players
@@ -258,7 +281,7 @@ mod tests {
                     .draw(key, &theme, sec(3), size, false, &state)
                     .unwrap()
             ),
-            Value::Transform(vec![Transform::Rotate(90.)])
+            Value::Transform(vec![Transform::Rotate(172.5)])
         );
         assert_eq!(
             angle(
@@ -266,7 +289,7 @@ mod tests {
                     .draw(other, &theme, sec(3), size, false, &state)
                     .unwrap()
             ),
-            Value::Transform(vec![Transform::Rotate(30.)])
+            Value::Transform(vec![Transform::Rotate(52.5)])
         );
         players.visibility(sec(3), &[other]).unwrap(); // old Surface gone; logical window remains
         players.visibility(sec(100), &[key, other]).unwrap();
@@ -283,7 +306,7 @@ mod tests {
         assert_eq!(resized.canvas.content_origin, [240, 340]);
         assert_eq!(
             angle(resized),
-            Value::Transform(vec![Transform::Rotate(90.)])
+            Value::Transform(vec![Transform::Rotate(172.5)])
         );
         players.retain(&[other]); // true logical unmap resets only this clock
         assert_eq!(

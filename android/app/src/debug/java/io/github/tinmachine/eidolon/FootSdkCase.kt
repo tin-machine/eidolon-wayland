@@ -43,7 +43,8 @@ object FootSdkCase {
                             check(current == handle)
                             val state = checkNotNull(runtime)
                             val transport = state.getJSONObject("transport")
-                            check(transport.getString("state") != "Failed")
+                            // 接続拒否は製品Hostの必要時起動へ進める。認証/pin不一致は失敗のまま。
+                            check(transport.getString("state") != "Failed" || transport.optString("error")=="SSH_CONNECTION_REFUSED")
                             val app = state.optJSONObject("app")
                             if (app != null) check(app.isNull("error"))
                             val plans = state.getJSONArray("panels")

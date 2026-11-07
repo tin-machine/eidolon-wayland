@@ -5,26 +5,14 @@ import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.unit.dp
 import com.meta.spatial.compose.ComposeFeature
 import com.meta.spatial.compose.ComposeViewPanelRegistration
 import com.meta.spatial.core.Entity
@@ -46,6 +34,8 @@ import com.meta.spatial.vr.VRFeature
 /** XR診断パネル。nativeとAPKの版整合をここでも表示する。 */
 class MainActivity : AppSystemActivity() {
     private var panel: Entity? = null
+    private var launcher: Entity? = null
+    private val deviceMetrics by lazy { DeviceMetrics(applicationContext,NativeSessionHost::publishDeviceMetrics) }
     private var sceneEpoch=0L
     private fun ownsScene(): Boolean = !isDestroyed && (sceneEpoch==0L || sceneEpoch==NativeSessionHost.currentSceneEpoch())
     private val nativePanels by lazy { SpatialPanelAdapter() }
@@ -82,6 +72,11 @@ class MainActivity : AppSystemActivity() {
                 Transform(Pose(Vector3(-1.45f, 1.4f, 1.4f))),
             ))
         }
+        if(launcher==null) {
+            launcher=Entity.create(listOf(
+                Panel(R.id.terminal_launcher_panel),Transform(Pose(Vector3(-.75f,.65f,1.35f))),
+            ))
+        }
         nativePanels.sceneReady(epoch, scene)
         BuildHooks.sceneReady(nativePanels,{scene},{recreate()})
         Log.i(TAG, "scene_ready version=${BuildConfig.VERSION_CODE} panel=${panel?.id}")
@@ -95,97 +90,7 @@ class MainActivity : AppSystemActivity() {
                 ComposeView(context).apply {
                     setContent {
                         MaterialTheme {
-                            var clicks by remember { mutableIntStateOf(0) }
-                            Column(
-                                Modifier.fillMaxSize().background(Color(0xFF102331)).padding(32.dp).verticalScroll(rememberScrollState()),
-                                verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterVertically),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                            ) {
-                                Text("Eidolon", color = Color.White, style = MaterialTheme.typography.headlineLarge)
-                                Text("Build ${BuildConfig.VERSION_CODE}", color = Color(0xFF67E8C3))
-                                val native = NativeBridge.status
-                                Text(if (native.ready) "Rust ready · Build ${BuildConfig.VERSION_CODE}" else "Rust load failed: ${native.error}", color = if (native.ready) Color(0xFF67E8C3) else Color.Red)
-                                Text("Runtime: ${NativeSessionHost.summary.value}", color = Color.White)
-                                Text(NativeSessionHost.credentialSummary.value, color = Color.White)
-                                Text("SSH: ${NativeSessionHost.connectionSummary.value}", color = Color.White)
-                                ConnectionSettings()
-                                Button(onClick = { NativeSessionHost.openTerminal() }) { Text("ターミナルを開く") }
-                                for (window in NativeSessionHost.windowChoices.value) {
-                                    Text("ウィンドウ ${window.window} · ${window.slot?.let { "表示枠 ${it+1}" } ?: "一覧に保持"}",color=Color.White)
-                                    if(window.ambiguous) Text("同じアプリを複数開いているため、配置は今回の接続中に保持します",color=Color.White)
-                                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                        Button(onClick={NativeSessionHost.selectWindow(window)}) { Text("選択") }
-                                        Button(onClick={NativeSessionHost.showWindow(window,0)}) { Text("枠1へ表示") }
-                                        Button(onClick={NativeSessionHost.showWindow(window,1)}) { Text("枠2へ表示") }
-                                        Button(onClick={NativeSessionHost.closeWindow(window)}) { Text("閉じる") }
-                                    }
-                                }
-                                Text(NativeSessionHost.workspaceSummary.value,color=Color.White)
-                                val observing = NativeSessionHost.workloadObservation.value
-                                Button(onClick={NativeSessionHost.setWorkloadObservation(!observing)}) {
-                                    Text(if(observing) "負荷の計測を停止" else "負荷の計測を再開")
-                                }
-                                val theme = NativeSessionHost.themeUi.value
-                                Text(theme.message, color=Color.White)
-                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                    Button(onClick={NativeSessionHost.setTheme("off")}) { Text("装飾なし") }
-                                    Button(onClick={NativeSessionHost.setTheme("builtin")}) { Text("Cyan Orbit") }
-                                    Button(enabled=theme.imported,onClick={NativeSessionHost.setTheme("imported")}) { Text("読み込んだテーマ") }
-                                }
-                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                    Button(onClick={chooseTheme()}) { Text("テーマZIPを読み込む") }
-                                    Button(enabled=!theme.loading,onClick={NativeSessionHost.setTheme(theme.selection,!theme.reduced)}) {
-                                        Text(if(theme.reduced) "アニメーションを有効に" else "動きを抑える")
-                                    }
-                                }
-                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                    Button(onClick={NativeSessionHost.setBackground("passthrough")}) { Text("現実を背景に") }
-                                    Button(onClick={NativeSessionHost.setBackground("virtual")}) { Text("単色の背景に") }
-                                }
-                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                    Button(onClick={NativeSessionHost.setKeyboardLayout("us")}) { Text("US配列") }
-                                    Button(onClick={NativeSessionHost.setKeyboardLayout("jis")}) { Text("JIS配列") }
-                                }
-                                Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.setLayoutEditing(!NativeSessionHost.layoutEditing.value)}) {
-                                    Text(if(NativeSessionHost.layoutEditing.value) "配置を確定して入力へ戻る" else "配置を編集")
-                                }
-                                if(NativeSessionHost.layoutEditing.value) {
-                                    Text("グリップで移動できます。ボタンは選択したパネルに適用します。",color=Color.White)
-                                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                        Button(onClick={NativeSessionHost.nudgePose(x=-.1)}) { Text("左") }
-                                        Button(onClick={NativeSessionHost.nudgePose(x=.1)}) { Text("右") }
-                                        Button(onClick={NativeSessionHost.nudgePose(y=.1)}) { Text("上") }
-                                        Button(onClick={NativeSessionHost.nudgePose(y=-.1)}) { Text("下") }
-                                    }
-                                    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                        Button(onClick={NativeSessionHost.nudgePose(z=-.1)}) { Text("手前") }
-                                        Button(onClick={NativeSessionHost.nudgePose(z=.1)}) { Text("奥") }
-                                        Button(onClick={NativeSessionHost.nudgePose(yaw=-15.0)}) { Text("角度 −15°") }
-                                        Button(onClick={NativeSessionHost.nudgePose(yaw=15.0)}) { Text("角度 +15°") }
-                                    }
-                                }
-                                Text(NativeSessionHost.layoutSummary.value,color=Color.White)
-                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.resizeTerminal(800,600)}) { Text("800×600") }
-                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.resizeTerminal(1024,768)}) { Text("1024×768") }
-                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.resizeTerminal(1280,720)}) { Text("1280×720") }
-                                }
-                                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.setPhysicalSize(.96,.72)}) { Text("小さく表示") }
-                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.setPhysicalSize(1.2,.9)}) { Text("標準表示") }
-                                    Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.setPhysicalSize(1.44,1.08)}) { Text("大きく表示") }
-                                }
-                                Text(NativeSessionHost.keyboardSummary.value, color = Color.White)
-                                Button(onClick = { NativeSessionHost.focusTerminal() }) { Text("ターミナルへキー入力") }
-                                Button(onClick = { NativeSessionHost.resetInput() }) { Text("操作パネルへ戻る") }
-                                Button(onClick = { NativeSessionHost.disconnect() }) { Text("接続を閉じる") }
-                                Text("Spatial SDK 0.15.0 · Android API ${Build.VERSION.SDK_INT}", color = Color.White)
-                                Button(onClick = {
-                                    clicks++
-                                    Log.i(TAG, "panel_click count=$clicks version=${BuildConfig.VERSION_CODE}")
-                                }) { Text("確認 / Verify ($clicks)") }
-                                Button(onClick = { NativeSessionHost.requestSnapshot() }) { Text("診断を保存 / Snapshot") }
-                            }
+                            ControlPanel(::chooseTheme,::allowTermux,::openTermux)
                         }
                     }
                 }
@@ -197,6 +102,21 @@ class MainActivity : AppSystemActivity() {
                     style = PanelStyleOptions(themeResourceId = R.style.EidolonTheme),
                 )
             },
+        ),
+        ComposeViewPanelRegistration(
+            R.id.terminal_launcher_panel,
+            composeViewCreator={_,context -> ComposeView(context).apply {setContent {
+                MaterialTheme {
+                    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center) {
+                        Button(onClick={NativeSessionHost.openTerminal()},
+                            colors=androidx.compose.material3.ButtonDefaults.buttonColors(containerColor=Color(0xFFFFC4DF),contentColor=Color(0xFF28203D))) {
+                            Text(">_  ターミナル",style=MaterialTheme.typography.titleLarge)
+                        }
+                    }
+                }
+            }}},
+            settingsCreator={UIPanelSettings(shape=QuadShapeOptions(width=.52f,height=.18f),
+                display=DpPerMeterDisplayOptions(),style=PanelStyleOptions(themeResourceId=R.style.EidolonTheme))},
         ),
     ) + nativePanels.registration + nativePanels.decorationRegistration + BuildHooks.additionalPanels()
 
@@ -236,13 +156,26 @@ class MainActivity : AppSystemActivity() {
         else NativeSessionHost.cancelThemeImport(token)
     }
 
+    private fun allowTermux() {
+        NativeSessionHost.resetInput()
+        if(checkSelfPermission(TermuxStarter.PERMISSION)!=android.content.pm.PackageManager.PERMISSION_GRANTED)
+            requestPermissions(arrayOf(TermuxStarter.PERMISSION),4202)
+    }
+    private fun openTermux() {
+        NativeSessionHost.resetInput()
+        packageManager.getLaunchIntentForPackage("com.termux")?.let {
+            try {startActivity(it)} catch(_:android.content.ActivityNotFoundException) { }
+        }
+    }
     override fun onResume() {
         super.onResume()
+        deviceMetrics.start()
         if(ownsScene()) {keyboard.resume();NativeSessionHost.setActivityVisible(true,sceneEpoch.takeIf {it>0})}
         Log.i(TAG, "activity_resumed version=${BuildConfig.VERSION_CODE}")
     }
 
     override fun onPause() {
+        deviceMetrics.stop()
         val current=ownsScene();keyboard.pause(resetInput=current)
         if(current) NativeSessionHost.setActivityVisible(false,sceneEpoch.takeIf {it>0})
         Log.i(TAG, "activity_paused version=${BuildConfig.VERSION_CODE}")
@@ -270,6 +203,7 @@ class MainActivity : AppSystemActivity() {
     override fun onSpatialShutdown() {
         BuildHooks.sceneClosing()
         nativePanels.close()
+        launcher?.destroy();launcher=null
         panel?.destroy()
         panel = null
         Log.i(TAG, "spatial_shutdown version=${BuildConfig.VERSION_CODE}")

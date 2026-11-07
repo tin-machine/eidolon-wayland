@@ -387,6 +387,23 @@ async fn valid_pin_auth_uid_and_stderr_flood_drain_to_eof_then_owned_stop() {
     server.abort();
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refused_connection_is_distinct_and_never_requests_identity() {
+    let (_address, profile, _key, _state, server) = fixture(Mode::Flood).await;
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let controller = Controller::start_on(address, Deadlines::default()).unwrap();
+    controller.connect(profile, request(1));
+    wait(&controller, |s| {
+        s.state == State::Failed && s.owned_connections == 0
+    })
+    .await;
+    assert_eq!(controller.snapshot().error, Some("SSH_CONNECTION_REFUSED"));
+    assert_eq!(controller.snapshot().credential_requests, 0);
+    stop(&controller).await;
+    server.abort();
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wrong_pin_never_requests_credential_and_wrong_identity_never_falls_back() {
     let (address, mut profile, _key, state, server) = fixture(Mode::Flood).await;
     let original = profile.clone();

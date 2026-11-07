@@ -1,0 +1,19 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# RUN_COMMAND専用の固定入口。共有serviceを再起動・無効化しない。
+set -eu
+umask 077
+export PREFIX=/data/data/com.termux/files/usr
+export HOME=/data/data/com.termux/files/home
+export PATH="$PREFIX/bin:/system/bin"
+service_dir="$PREFIX/var/service/eidolon-sshd"
+[ -x "$service_dir/run" ] && [ -f "$HOME/.ssh/eidolon_sshd_config" ] || exit 10
+"$PREFIX/bin/sshd" -t -f "$HOME/.ssh/eidolon_sshd_config" || exit 11
+# sv upはdown fileを消さず今回だけ起動する。既存の有効/無効設定を維持する。
+. "$PREFIX/etc/profile.d/start-services.sh"
+for attempt in 1 2 3 4 5; do
+    [ -p "$service_dir/supervise/control" ] && break
+    sleep 1
+done
+[ -p "$service_dir/supervise/control" ] || exit 12
+"$PREFIX/bin/sv" -w 6 up "$service_dir" >/dev/null 2>&1 || exit 13
+exit 0

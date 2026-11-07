@@ -4,6 +4,7 @@ pub mod manifest;
 pub mod package;
 pub mod player;
 pub mod raster;
+mod rotation;
 pub mod style;
 pub mod timeline;
 

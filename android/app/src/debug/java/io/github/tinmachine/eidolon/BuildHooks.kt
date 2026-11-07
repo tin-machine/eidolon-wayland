@@ -36,7 +36,7 @@ object BuildHooks {
     fun accept(intent: Intent?, adapter: SpatialPanelAdapter, context: Context, scene: () -> Scene, recreate: () -> Unit) {
         val name = intent?.getStringExtra("case") ?: return
         val nonce = intent.getStringExtra("nonce") ?: return
-        if (running || name !in setOf("stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product") || !nonce.matches(Regex("[0-9a-f]{32}"))) return
+        if (running || name !in setOf("extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product") || !nonce.matches(Regex("[0-9a-f]{32}"))) return
         if (intent.extras?.keySet()?.any { it != "case" && it != "nonce" } == true) return
         intent.removeExtra("case"); intent.removeExtra("nonce")
         if(nonce in consumedNonces) return
@@ -46,8 +46,9 @@ object BuildHooks {
         if (name == "stop") SdkCaseEnvironment.start(name,nonce,context,{done->LifecycleSdkCase.start(nonce,adapter,done)}) {running=false}
         else if (name == "theme-surface") ThemeSurfaceProbe.start(nonce,scene) {running=false}
         else if (name in setOf("layout","two-windows","theme-sdk")) LayoutSdkCase.start(nonce,context,adapter,scene,recreate,name) {running=false}
-        else if(name in setOf("resize","pointer","keyboard","ray","foot")) SdkCaseEnvironment.start(name,nonce,context,{ done ->
+        else if(name in setOf("extensions","resize","pointer","keyboard","ray","foot")) SdkCaseEnvironment.start(name,nonce,context,{ done ->
             when(name) {
+                "extensions" -> ExtensionsSdkCase.start(nonce,done)
                 "resize" -> ResizeCase.start(nonce,adapter,scene,done)
                 "pointer" -> PointerCase.start(nonce,adapter,scene,done)
                 "keyboard" -> KeyboardCase.start(nonce,adapter,done)

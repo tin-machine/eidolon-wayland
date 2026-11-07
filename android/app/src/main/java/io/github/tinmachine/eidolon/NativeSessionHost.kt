@@ -25,6 +25,7 @@ object NativeSessionHost {
     @Volatile private var handle = 0L // 作成・停止はworker、短いenqueueは任意threadから。
     private val xrState = AtomicReference("IDLE")
     private val activityVisible = AtomicBoolean(false)
+    private var application: Context? = null
     private var store: DiagnosticsStore? = null
     private var paths: JSONObject? = null
     private var preferencesDir: String? = null
@@ -57,6 +58,16 @@ object NativeSessionHost {
     @Volatile private var inputTargets: Map<String, InputTarget> = emptyMap()
     private fun targetIdentity(target: JSONObject): String = listOf("session","window","scene","generation").joinToString(":") { target.getString(it) }
     val keyboardSummary = mutableStateOf("操作パネルへ入力")
+    val inputStatus = mutableStateOf(InputStatus("PREPARING","画面を準備中"))
+    private val keyboardCount = AtomicReference<Int?>(null)
+    val deviceMetrics = mutableStateOf(DeviceMetricsSnapshot())
+    private val latestMetrics = AtomicReference(DeviceMetricsSnapshot())
+    fun setKeyboardCount(value: Int?) { keyboardCount.set(value) }
+    fun publishDeviceMetrics(value: DeviceMetricsSnapshot) { latestMetrics.set(value);deviceMetrics.value=value }
+    private val inputIntents=AtomicLong(0)
+    private data class PendingInputFocus(val target: String, val runtime: Long, val ticket: Long, val deadline: Long,
+        var resetRequest: String? = null, var resetCompleted: Boolean = false, var focusRequest: String? = null)
+    private var pendingInputFocus: PendingInputFocus? = null
     val layoutSummary = mutableStateOf("ターミナルを開くとサイズを変更できます")
     val layoutAvailable = mutableStateOf(false)
     data class WindowChoice(val session: String, val scene: String, val window: String, val slot: Int?, val ambiguous: Boolean=false)
@@ -67,10 +78,18 @@ object NativeSessionHost {
     private var lastWrite = 0L
     private var state = "Starting"
     private var sshState = "未接続"
-    private data class TerminalOpen(val nonce: String, val previousSession: String,
+    private data class TerminalOpen(val nonce: String, var previousSession: String,
         var connectRequest: String? = null, var connectAccepted: Boolean = false,
-        var startRequest: String? = null, val deadline: Long = SystemClock.elapsedRealtime()+30000)
+        var startRequest: String? = null, val deadline: Long = SystemClock.elapsedRealtime()+45000,
+        var startupAttempted: Boolean = false, var startupWaiting: Boolean = false,
+        var startupDeadline: Long = 0, var retryReady: Boolean = false)
     private var terminalOpen: TerminalOpen? = null // workerだけで操作し、二重clickをcoalesceする。
+    private fun clearTerminalOpen() { terminalOpen?.let {TermuxStarter.cancel(it.nonce)};terminalOpen=null }
+    val termuxHelp = mutableStateOf(false)
+    val terminalBusy = mutableStateOf(false)
+    private var termuxRequests=0L
+    private var termuxSuccesses=0L
+    private var termuxFailures=0L
     private var terminalError: String? = null
     val summary = mutableStateOf("Starting")
     val credentialSummary = mutableStateOf("鍵を確認中")
@@ -113,6 +132,7 @@ object NativeSessionHost {
     fun initialize(context: Context) {
         val application = context.applicationContext
         worker.execute { safely {
+            this.application=application
             if (store == null) store = DiagnosticsStore(application)
             if (preferencesDir == null) preferencesDir = application.noBackupFilesDir.absolutePath
             if (paths == null) paths = JSONObject().put("native_library_dir", application.applicationInfo.nativeLibraryDir).put("files_dir", application.filesDir.absolutePath)
@@ -180,6 +200,7 @@ object NativeSessionHost {
         val bytes = ByteArray(8).also { java.security.SecureRandom().nextBytes(it) }
         val operation = TerminalOpen(bytes.joinToString("") { "%02x".format(it.toInt() and 255) }, transport.optString("session"))
         terminalError = null
+        ui.post {termuxHelp.value=false}
         if (transport.getString("state") != "Ready") {
             if (transport.getString("state") !in setOf("Idle", "Disconnected", "Failed")) return@safely
             operation.connectRequest = enqueueConnect()
@@ -188,7 +209,8 @@ object NativeSessionHost {
         terminalOpen = operation
     } } }
     fun disconnect() { worker.execute { safely {
-        terminalOpen = null; terminalAdding=null; terminalError = null
+        pendingInputFocus=null
+        clearTerminalOpen(); terminalAdding=null; terminalError = null
         resetInput()
         if (handle == 0L || pendingDisconnect != null) return@safely
         val session = snapshot().getJSONObject("runtime").getJSONObject("transport").optString("session").takeIf { it.toLongOrNull() != null }
@@ -241,12 +263,15 @@ object NativeSessionHost {
             .put("command_seq", plan.getString("command_seq")).put("target", plan.getJSONObject("target"))
             .put("action", plan.getString("action")).toString())
     fun resetInput(): Int {
+        inputIntents.incrementAndGet()
+        if (BuildConfig.DEBUG) Log.i(TAG,"input_reset intent=${inputIntents.get()}")
         keyboardFocus = null
         inputTargets = emptyMap()
         if (handle == 0L) return NativeBridge.NOT_READY
-        return NativeBridge.nativeCommand(handle, JSONObject().put("schema", 1)
-            .put("request_id", requests.incrementAndGet().toString()).put("type", "reset_input").toString())
+        return enqueueInputReset(requests.incrementAndGet().toString())
     }
+    private fun enqueueInputReset(request: String): Int = NativeBridge.nativeCommand(handle,
+        JSONObject().put("schema",1).put("request_id",request).put("type","reset_input").toString())
     fun inputTarget(target: String): InputTarget? {
         if (editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED") return null
         return inputTargets[targetIdentity(JSONObject(target))]?.takeIf { it.runtime==handle }
@@ -261,6 +286,17 @@ object NativeSessionHost {
     fun setLayoutEditing(value: Boolean) {
         editing.set(value); resetInput(); ui.post { layoutEditing.value=value }
     }
+    fun finishLayoutEditing() { worker.execute { safely {
+        if(handle==0L) return@safely
+        val runtime=snapshot().getJSONObject("runtime")
+        val target=focusTarget(runtime,requireApplied=false)
+        editing.set(false);ui.post {layoutEditing.value=false}
+        keyboardFocus=null;inputTargets=emptyMap()
+        val ticket=inputIntents.incrementAndGet()
+        pendingInputFocus=target?.let { PendingInputFocus(it.toString(),handle,ticket,SystemClock.elapsedRealtime()+2000) }
+        if (BuildConfig.DEBUG) Log.i(TAG,"focus_begin editing target=${target?.let {targetIdentity(it)}} ticket=$ticket")
+        if(target==null) resetInput()
+    } } }
     fun selectWindow(choice: WindowChoice) { worker.execute { safely {
         selectedWindow=choice.session to choice.window; resetInput()
     } } }
@@ -366,6 +402,7 @@ object NativeSessionHost {
     /** SDK callbackではimmutableなtargetと小DTOだけをenqueueする。座標をログへ出さない。 */
     fun sendPointer(target: InputTarget, source: Long, uv: List<Double>?, event: JSONObject): Boolean {
         if (source<=0 || inputTarget(target.target)!=target) return false
+        if(event.optString("type")=="buttons" && event.optInt("state") and 1 != 0) inputIntents.incrementAndGet()
         val pointer=JSONObject().put("source",source.toString()).put("uv",uv?.let { JSONArray(it) } ?: JSONObject.NULL)
             .put("event",event).put("time_ms",SystemClock.uptimeMillis() and 0xffffffffL)
         val code=NativeBridge.nativeCommand(target.runtime,JSONObject().put("schema",1).put("type","pointer")
@@ -374,15 +411,28 @@ object NativeSessionHost {
         if (code !in setOf(NativeBridge.ACCEPTED,NativeBridge.INVALID_ARGUMENT)) resetInput()
         return code!=NativeBridge.INVALID_ARGUMENT
     }
-    fun focusTerminal() { worker.execute { safely {
+    private fun focusTarget(runtime: JSONObject, choice: WindowChoice? = null, requireApplied: Boolean = true): JSONObject? {
+        val plans=runtime.getJSONArray("panels")
+        val live=(0 until plans.length()).map {plans.getJSONObject(it)}
+            .filter {it.optString("action")=="create" && (!requireApplied || it.optBoolean("applied")) && it.isNull("error")}
+            .map {it.getJSONObject("target")}
+        val wanted=choice?.let {it.session to it.window} ?: selectedWindow
+        if(wanted!=null) {
+            val match=live.firstOrNull {(it.getString("session") to it.getString("window"))==wanted && (choice==null || it.getString("scene")==choice.scene)}
+            if(match!=null || choice!=null) return match
+        }
+        return live.singleOrNull()
+    }
+    fun focusTerminal(choice: WindowChoice? = null) { worker.execute { safely {
+        pendingInputFocus=null
         if (handle == 0L) return@safely
+        if(editing.get()) return@safely
         val runtime = snapshot().getJSONObject("runtime")
-        val plans = runtime.getJSONArray("panels")
-        val plan = (0 until plans.length()).map { plans.getJSONObject(it) }
-            .firstOrNull { it.getString("action") == "create" && it.getBoolean("applied") && it.isNull("error") } ?: return@safely
-        NativeBridge.nativeCommand(handle, JSONObject().put("schema", 1).put("type", "focus_window")
-            .put("request_id", requests.incrementAndGet().toString()).put("target", plan.getJSONObject("target"))
-            .put("input_epoch", runtime.getLong("input_resets")).toString())
+        val target=focusTarget(runtime,choice,requireApplied=false) ?: return@safely
+        selectedWindow=target.getString("session") to target.getString("window")
+        keyboardFocus=null;inputTargets=emptyMap()
+        pendingInputFocus=PendingInputFocus(target.toString(),handle,inputIntents.incrementAndGet(),SystemClock.elapsedRealtime()+2000)
+        if (BuildConfig.DEBUG) Log.i(TAG,"focus_begin explicit target=${targetIdentity(target)} ticket=${inputIntents.get()}")
     } } }
     /** 入口の物理device判定はPhysicalKeyboard。ここは短いnative enqueueだけ。 */
     fun sendPhysicalKey(event: KeyEvent): Boolean {
@@ -456,7 +506,7 @@ object NativeSessionHost {
         }
         handle = 0
         poseCompletions.clear();selectedWindow=null;lastFocusedWindow=null;editing.set(false);ui.post { layoutEditing.value=false }
-        terminalOpen = null; terminalAdding = null; terminalError = null
+        clearTerminalOpen(); terminalAdding = null; terminalError = null
         lastConnectRequest = null; pendingDisconnect = null; connectPending = false
         Log.i(TAG, "runtime_stopped handle=$old duration_ms=${SystemClock.elapsedRealtime() - started}")
     }
@@ -484,6 +534,22 @@ object NativeSessionHost {
         for (index in 0 until values.length()) {
             val event = values.getJSONObject(index)
             if (event.optString("type") == "command_complete") {
+                pendingInputFocus?.let { pending ->
+                    if (BuildConfig.DEBUG && event.getString("request_id") in listOf(pending.resetRequest,pending.focusRequest)) Log.i(TAG,"focus_complete request=${event.getString("request_id")} code=${event.getString("code")}")
+                    if(event.getString("request_id")==pending.focusRequest) {
+                        when(event.getString("code")) {
+                            "STALE", "NOT_READY", "BUSY" -> pending.focusRequest=null
+                            else -> pendingInputFocus=null
+                        }
+                    }
+                    if(event.getString("request_id")==pending.resetRequest) {
+                        when(event.getString("code")) {
+                            "ACCEPTED" -> pending.resetCompleted=true
+                            "BUSY" -> pending.resetRequest=null
+                            else -> pendingInputFocus=null
+                        }
+                    }
+                }
                 themeRequests.remove(event.getString("request_id"))?.invoke(event.getString("code"))
                 BuildHooks.commandComplete(event.getString("request_id"), event.getString("code"))
                 poseCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
@@ -509,9 +575,9 @@ object NativeSessionHost {
                     val request = event.getString("request_id")
                     if (request == operation.connectRequest || request == operation.startRequest) {
                         if (event.getString("code") != "ACCEPTED") {
-                            terminalError = "開始できません（${event.getString("code")}）"; terminalOpen = null
+                            terminalError = "開始できません（${event.getString("code")}）"; clearTerminalOpen()
                         } else if (request == operation.connectRequest) operation.connectAccepted = true
-                        else terminalOpen = null
+                        else clearTerminalOpen()
                     }
                 }
             }
@@ -524,6 +590,45 @@ object NativeSessionHost {
         pumpDisconnect()
         val snapshot = snapshot()
         val runtime = snapshot.getJSONObject("runtime")
+        pendingInputFocus?.let { request ->
+            val target=JSONObject(request.target)
+            val plans=runtime.getJSONArray("panels")
+            val current=(0 until plans.length()).map {plans.getJSONObject(it)}.firstOrNull {p ->
+                p.optString("action")=="create" && p.isNull("error") && targetIdentity(p.getJSONObject("target"))==targetIdentity(target)
+            }?.getJSONObject("target")
+            if(SystemClock.elapsedRealtime()>request.deadline || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" ||
+                request.runtime!=handle || request.ticket!=inputIntents.get() ||
+                current==null || targetIdentity(current)!=targetIdentity(target)) {
+                if (BuildConfig.DEBUG) Log.i(TAG,"focus_cancel expired=${SystemClock.elapsedRealtime()>request.deadline} editing=${editing.get()} visible=${activityVisible.get()} xr=${xrState.get()} runtime=${request.runtime==handle} ticket=${request.ticket==inputIntents.get()} target=${current!=null}")
+                pendingInputFocus=null
+            }
+            else if(request.resetRequest==null) {
+                val reset=requests.incrementAndGet().toString()
+                when(enqueueInputReset(reset)) {
+                    NativeBridge.ACCEPTED -> {request.resetRequest=reset;if (BuildConfig.DEBUG) Log.i(TAG,"focus_reset request=$reset")}
+                    NativeBridge.BUSY -> Unit
+                    else -> pendingInputFocus=null
+                }
+            } else if(request.resetCompleted && request.focusRequest==null) {
+                val panels=runtime.getJSONArray("panels")
+                val frames=runtime.getJSONObject("render").getJSONArray("targets")
+                val ready=(0 until panels.length()).any {i -> panels.getJSONObject(i).let {p ->
+                    targetIdentity(p.getJSONObject("target"))==targetIdentity(target) && p.optBoolean("applied") && p.isNull("error")
+                }} && (0 until frames.length()).any {i -> frames.getJSONObject(i).let {f ->
+                    targetIdentity(f.getJSONObject("key"))==targetIdentity(target) && f.getLong("frames")>0
+                }}
+                if(ready) {
+                    val focusRequest=requests.incrementAndGet().toString()
+                    val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","focus_window")
+                        .put("request_id",focusRequest).put("target",target).put("input_epoch",runtime.getLong("input_resets")).toString())
+                    when(code) {
+                        NativeBridge.ACCEPTED -> {request.focusRequest=focusRequest;if (BuildConfig.DEBUG) Log.i(TAG,"focus_enqueue request=$focusRequest epoch=${runtime.getLong("input_resets")}")}
+                        NativeBridge.BUSY -> Unit
+                        else -> pendingInputFocus=null
+                    }
+                }
+            }
+        }
         val focusedWindow = runtime.optJSONObject("app")?.optJSONObject("input")?.optString("focus_window")?.takeIf { it.toLongOrNull()!=null }
         if(focusedWindow!=null && (focusedWindow!=lastFocusedWindow || selectedWindow?.first!=runtime.getJSONObject("app").getString("session"))) selectedWindow=runtime.getJSONObject("app").getString("session") to focusedWindow
         lastFocusedWindow=focusedWindow
@@ -550,6 +655,16 @@ object NativeSessionHost {
             KeyboardFocus(handle, runtime.getLong("input_resets"), focused.getJSONObject("target").toString(), runtime.getJSONObject("app").getJSONObject("input").getString("focus_token")) else null
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else "ターミナルへ入力"
         ui.post { keyboardSummary.value = keyboardLabel }
+        val inputConditions=InputConditions(runtime.getBoolean("activity_visible"),runtime.getString("xr_state")=="FOCUSED",
+            runtime.getString("state")=="Ready",if(terminalOpen?.startupWaiting==true) "StartingTermux" else runtime.getJSONObject("transport").getString("state"),editing.get(),keyboardCount.get(),
+            (runtime.optJSONObject("app")?.optJSONArray("windows")?.length() ?: 0)>0,inputTargets.isNotEmpty(),
+            focusedWindow.takeIf {keyboardFocus!=null})
+        val status=InputStatus.from(inputConditions)
+        ui.post {inputStatus.value=status}
+        store?.updateInterface(JSONObject().put("input_reason",status.reason).put("input_action",status.action.name)
+            .put("editing",editing.get()).put("keyboard_count",keyboardCount.get() ?: JSONObject.NULL)
+            .put("focus_window",focusedWindow ?: JSONObject.NULL).put("device",latestMetrics.get().json())
+            .put("termux_start",JSONObject().put("requests",termuxRequests).put("successes",termuxSuccesses).put("failures",termuxFailures)))
         val workspace=runtime.getJSONObject("workspace");val storage=workspace.getJSONObject("storage")
         val observing=workspace.getBoolean("workload_observation")
         ui.post { workloadObservation.value=observing }
@@ -595,21 +710,49 @@ object NativeSessionHost {
         ui.post { layoutAvailable.value=logical!=null; layoutSummary.value=label }
         val transport = snapshot.getJSONObject("runtime").getJSONObject("transport")
         terminalOpen?.let { operation ->
-            val ready = transport.getString("state") == "Ready" && (operation.connectRequest == null ||
-                operation.connectAccepted && transport.optString("session") != operation.previousSession)
-            if (ready && operation.startRequest == null) {
-                val request = requests.incrementAndGet().toString()
-                val command = JSONObject().put("schema", 1).put("type", "start_app").put("request_id", request)
-                    .put("session", transport.getString("session")).put("nonce", operation.nonce).put("mode", "foot")
-                val code = NativeBridge.nativeCommand(handle, command.toString())
-                if (code == NativeBridge.ACCEPTED) operation.startRequest = request
-                else { terminalError = "ターミナルを開始できません（$code）"; terminalOpen = null }
-            } else if (SystemClock.elapsedRealtime() >= operation.deadline ||
-                transport.getString("state") == "Failed" && transport.optString("session") != operation.previousSession) {
-                terminalError = "接続を開始できません"; terminalOpen = null
+            val now=SystemClock.elapsedRealtime()
+            val failed=transport.getString("state")=="Failed" && operation.connectAccepted &&
+                transport.optString("session")!=operation.previousSession
+            if(now>=operation.deadline || operation.startupWaiting && now>=operation.startupDeadline) {
+                terminalError="起動待ちが時間切れになりました。Termuxを開いて再試行してください"
+                ui.post {termuxHelp.value=true};clearTerminalOpen()
+            } else if(operation.retryReady && !connectPending && transport.getInt("owned_connections")==0) {
+                operation.previousSession=transport.optString("session")
+                operation.connectAccepted=false
+                operation.connectRequest=enqueueConnect()
+                if(operation.connectRequest!=null) operation.retryReady=false
+            } else if(!operation.startupWaiting && !operation.retryReady && failed) {
+                if(!operation.startupAttempted && transport.optString("error")=="SSH_CONNECTION_REFUSED" &&
+                    transport.getInt("owned_connections")==0 && activityVisible.get()) {
+                    operation.startupAttempted=true;operation.startupWaiting=true;operation.startupDeadline=now+15000
+                    termuxRequests++
+                    val error=TermuxStarter.start(checkNotNull(application),operation.nonce) {error ->
+                        worker.execute {
+                            if(terminalOpen===operation && operation.startupWaiting && SystemClock.elapsedRealtime()<operation.startupDeadline) {
+                                operation.startupWaiting=false
+                                if(error==null) {operation.retryReady=true;termuxSuccesses++}
+                                else {termuxFailures++;terminalError=error;ui.post {termuxHelp.value=true};clearTerminalOpen()}
+                            }
+                        }
+                    }
+                    if(error!=null) {termuxFailures++;terminalError=error;ui.post {termuxHelp.value=true};clearTerminalOpen()}
+                } else if(transport.getInt("owned_connections")==0) {
+                    terminalError="接続を開始できません。接続状態と設定を確認してください";clearTerminalOpen()
+                }
+            } else {
+                val ready=transport.getString("state")=="Ready" && !operation.startupWaiting && !operation.retryReady &&
+                    (operation.connectRequest==null || operation.connectAccepted && transport.optString("session")!=operation.previousSession)
+                if(ready && operation.startRequest==null) {
+                    val request=requests.incrementAndGet().toString()
+                    val command=JSONObject().put("schema",1).put("type","start_app").put("request_id",request)
+                        .put("session",transport.getString("session")).put("nonce",operation.nonce).put("mode","foot")
+                    val code=NativeBridge.nativeCommand(handle,command.toString())
+                    if(code==NativeBridge.ACCEPTED) operation.startRequest=request
+                    else if(code!=NativeBridge.BUSY) {terminalError="ターミナルを開始できません（$code）";clearTerminalOpen()}
+                }
             }
         }
-        val phase = when (val value = transport.getString("state")) {
+        val phase = if(terminalOpen?.startupWaiting==true) "Termuxを起動中（最大15秒）" else when (val value = transport.getString("state")) {
             "Idle", "Disconnected" -> "未接続"
             "Connecting", "AwaitingCredential", "Authenticating" -> "接続中（切断ボタンで取消）"
             "Ready" -> "接続済み"
@@ -620,7 +763,7 @@ object NativeSessionHost {
             else -> value
         }
         val pending = transport.optJSONArray("pending_cleanup")?.length() ?: 0
-        val appError = snapshot.getJSONObject("runtime").optJSONObject("app")?.optString("error", "")?.takeIf { it.isNotEmpty() }
+        val appError = snapshot.getJSONObject("runtime").optJSONObject("app")?.takeUnless {it.isNull("error")}?.optString("error")?.takeIf {it.isNotEmpty()}
         val panelError = snapshot.getJSONObject("runtime").optJSONArray("panels")?.let { plans ->
             (0 until plans.length()).map { plans.getJSONObject(it) }.firstOrNull { !it.isNull("error") }?.getString("error")
         }
@@ -629,13 +772,15 @@ object NativeSessionHost {
             "HOST_KEY_UNKNOWN" -> "初回の接続設定が必要です"
             "HOST_KEY_MISMATCH" -> "Termuxのホスト鍵が保存済みの鍵と違います。接続設定で指紋を照合してください"
             "AUTH_FAILED" -> "公開鍵認証に失敗しました。TermuxへAPK公開鍵を登録してください"
-            "AUTH_TIMEOUT", "SSH_CONNECT_FAILED", "CONNECT_TIMEOUT" -> "Termuxでsshdを起動し、ターミナルを開き直してください"
+            "SSH_CONNECTION_REFUSED", "AUTH_TIMEOUT", "SSH_CONNECT_FAILED", "CONNECT_TIMEOUT" -> "Termuxでsshdを起動し、ターミナルを開き直してください"
             "REMOTE_EXIT", "SSH_IO_FAILED" -> "接続先が終了しました。Termuxを確認し、ターミナルを開き直してください"
             else -> transport.optString("error").takeUnless {it.isEmpty() || it=="null"}
         }
-        val ssh = phase + (if (pending > 0) " · 未確認の回収 ${pending}件" else "") +
-            (connectionError?.let {" · $it"} ?: "") + (error?.let { " · $it" } ?: "")
+        val ssh = phase + (if (pending > 0 && transport.getString("state")!="Ready") " · 未確認の回収 ${pending}件" else "") +
+            ((error ?: connectionError)?.let {" · $it"} ?: "")
         if (ssh != sshState) { sshState = ssh; ui.post { connectionSummary.value = ssh } }
+        val busy=terminalOpen!=null || terminalAdding!=null || connectPending || pendingDisconnect!=null
+        ui.post {terminalBusy.value=busy}
         val next = snapshot.getJSONObject("runtime").getString("state")
         val editable=canChangeConnection(snapshot.getJSONObject("runtime"))
         if(editable!=connectionEditable) {connectionEditable=editable;ui.post {connectionUi.value=connectionUi.value.copy(canSave=editable)}}

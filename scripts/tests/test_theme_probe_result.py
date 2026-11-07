@@ -90,6 +90,7 @@ class ThemePerformanceTests(unittest.TestCase):
             after['transport']=dict(app_forward=dict(remote=dict(workload=dict(capability='unavailable',scan_seconds=0))))
             after['app']=dict(workloads=[dict(window=w,terminal_id=w,state='registered',display=dict(coverage='complete',stale=mode!='animated_metrics',scope='shell_tree',rss_bytes=1000)) for w in ('1','2')])
             for t in after['render']['targets']:
+                if mode=='animated': continue  # v2は欠測中に停止する。
                 t['frames']+=20;t['decoration_frames']+=0 if mode=='off' else 20
                 t['frame_timing']=dict(samples=30,total_us=60000,histogram_ms=[0,30]+[0]*30)
             rows.append(dict(mode=mode,elapsed_ms=6000,process_cpu_ms=300,before=before,after=after))
@@ -119,9 +120,14 @@ class ThemePerformanceTests(unittest.TestCase):
     def test_interval_deltas_and_incomplete_or_stale_proofs(self):
         rows=self.fixture()
         reports=theme_performance(rows)
-        self.assertEqual(reports[2]['targets'][0]['draw_p95_upper_ms'],2)
+        self.assertIsNone(reports[2]['targets'][0]['draw_p95_upper_ms'])
+        self.assertEqual(reports[3]['targets'][0]['draw_p95_upper_ms'],2)
         self.assertAlmostEqual(reports[0]['process_cpu_cores'],.05)
         variants=[]
+        r=copy.deepcopy(rows)
+        t=r[2]['after']['render']['targets'][0]
+        t['frames']+=1;t['decoration_frames']+=1;t['frame_timing']['samples']+=1;t['frame_timing']['histogram_ms'][1]+=1;t['frame_timing']['total_us']+=2000
+        variants.append(r)  # 観測停止中も回り続ける退行。
         r=copy.deepcopy(rows);r[0]['after']['render']['targets'][0]['frame_timing']['histogram_ms'][1]+=1;variants.append(r)
         r=copy.deepcopy(rows);r[0]['after']['render']['targets'][0]['key']['generation']='2';variants.append(r)
         r=copy.deepcopy(rows);r[3]['after']['app']['workloads'][0]['display']['stale']=True;variants.append(r)

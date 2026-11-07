@@ -2,7 +2,7 @@
 # 公式GitHub debug版Termuxの初回bootstrap完了後、Termux UIDで実行する。
 set -euo pipefail
 umask 077
-public_key=${1:?PCのSSH公開鍵を一つ指定してください}
+public_key=${1:?許可するクライアントのSSH公開鍵を一つ指定してください}
 [[ "$public_key" == ssh-ed25519\ * ]] || { echo 'ed25519公開鍵が必要です' >&2; exit 2; }
 export PREFIX=/data/data/com.termux/files/usr
 export HOME=/data/data/com.termux/files/home
