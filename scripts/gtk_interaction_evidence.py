@@ -273,7 +273,8 @@ def resize_large_observed(value, sdk_sample, fixture, android):
         if len(windows)!=1:return None
         window=windows[0];resize=window["resize"];request=resize["request"]
         old=":".join(request["target"][n] for n in ("session","window","scene","generation"))
-        if request["request_id"]!=step["resize_request"] or old!=step["old_target"] or (request["width"],request["height"])!=(800,500):return None
+        # native ResizeRequestはrequest_idとtargetだけ。dimensionsは直下の4size receiptで照合する。
+        if set(request)!={"request_id","target"} or request["request_id"]!=step["resize_request"] or old!=step["old_target"]:return None
         if resize["phase"]!="applied" or resize["error"] is not None or any(size!=expected for size in (window["logical_size"],resize["requested_logical_size"],resize["configured_logical_size"],resize["committed_size"])):return None
         serials={n:resize[n] for n in ("configured_serial","acknowledged_serial","committed_serial")}
         if any(type(v) is not int or not 0<=v<=2**32-1 or v!=step[n] for n,v in serials.items()):return None

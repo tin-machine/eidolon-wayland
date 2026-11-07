@@ -28,3 +28,13 @@ Android診断には固定の`resize_observation.state`と`return_requests`（0�
 - 固定operatorのPython検査: 40件PASS。C/SDK観測後に一回だけreturnし、元サイズ・閉鎖・SDK/Board回収まで進む通しのhost fixtureを含む。
 - 実Android/Meta SDK classpathによる変更関連6 sourceの限定型検査: PASS。
 - Gradle/APK/Questの実機受入れは統合後に別途行う。物理入力・IME・HMD確認の合格にはしない。
+
+## Build174でのhost schema修正
+
+初回の174実機ではlargeの800×500・同full target drawをPCが採取できた一方、
+returnを送れず8秒で期限切れになった。回収と元のfootは維持された。
+原因はhostが`ResizeRequest`へ存在しない`width`/`height`を要求し、host fixtureにも同じ誤った形を持ち込んでいたことだった。
+`ResizeRequest`は`request_id`と`target`の二つだけとして照合し、dimensionsはwindowのlogical sizeと
+resize reportのrequested/configured/committed size、およびrenderのcontent sizeで確認する。
+新しいfixtureはこの実Report形を使い、各sizeの不一致もそれぞれ拒否する。
+Android/nativeのgate変更や固定sleep、実機の合格への読み替えは行わない。

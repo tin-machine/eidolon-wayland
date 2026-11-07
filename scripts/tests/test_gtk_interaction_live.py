@@ -390,7 +390,7 @@ class ResizeHostJobTests(unittest.TestCase):
                     resize=dict(phase="idle")
                     if large or operated:
                         step=final["steps"][1 if large else 2];old=final["steps"][0 if large else 1]["target"]
-                        resize=dict(phase="applied",error=None,request=dict(request_id=step["resize_request"],target=old,width=size["width"],height=size["height"]),
+                        resize=dict(phase="applied",error=None,request=dict(request_id=step["resize_request"],target=old),
                             requested_logical_size=size,configured_logical_size=size,committed_size=size,
                             **{n:step[n] for n in ("configured_serial","acknowledged_serial","committed_serial")})
                     windows.append(dict(window="5",app_id=gui.app_ids(NONCE)[0],life="Mapped",frame=content,logical_size=size,resize=resize))
@@ -613,7 +613,7 @@ class ResizeObservationTests(unittest.TestCase):
         step=receipt["steps"][-1];receipt.update(target=step["target"],input_epoch=step["input_epoch"],resize_observation=dict(state="LARGE_READY",return_requests=0))
         target=step["target"];size=dict(width=800,height=500)
         window=dict(window="5",life="Mapped",frame="3",logical_size=size,resize=dict(phase="applied",error=None,
-            request=dict(request_id=step["resize_request"],target=receipt["steps"][0]["target"],width=800,height=500),
+            request=dict(request_id=step["resize_request"],target=receipt["steps"][0]["target"]),
             requested_logical_size=size,configured_logical_size=size,committed_size=size,
             **{n:step[n] for n in ("configured_serial","acknowledged_serial","committed_serial")}))
         render=dict(key=target,frames=4,content_frame="3",content_size=size,presentation_paused=False)
@@ -628,6 +628,7 @@ class ResizeObservationTests(unittest.TestCase):
 
     def test_same_large_full_target_current_draw_and_c_counter_allow_one_observation(self):
         values=self.ready();observed=proof.resize_large_observed(*values)
+        self.assertEqual(set(values[0]["runtime"]["runtime"]["app"]["windows"][0]["resize"]["request"]),{"request_id","target"})
         self.assertEqual(observed,self.observation(values[-1]))
         self.assertEqual(proof.android_receipt(dict(check=values[-1]),NONCE,"resize"),values[-1])
         completed=OwnedResizeReceiptTests().row()
@@ -643,6 +644,10 @@ class ResizeObservationTests(unittest.TestCase):
             lambda v,s,c,a:v["runtime"]["runtime"]["app"]["windows"][0]["resize"].update(phase="awaiting_commit"),
             lambda v,s,c,a:v["runtime"]["runtime"]["app"]["windows"][0]["resize"]["request"].update(request_id="999"),
             lambda v,s,c,a:v["runtime"]["runtime"]["app"]["windows"][0].update(logical_size=dict(width=640,height=360)),
+            lambda v,s,c,a:v["runtime"]["runtime"]["app"]["windows"][0]["resize"].update(requested_logical_size=dict(width=640,height=360)),
+            lambda v,s,c,a:v["runtime"]["runtime"]["app"]["windows"][0]["resize"].update(configured_logical_size=dict(width=640,height=360)),
+            lambda v,s,c,a:v["runtime"]["runtime"]["app"]["windows"][0]["resize"].update(committed_size=dict(width=640,height=360)),
+            lambda v,s,c,a:v["runtime"]["runtime"]["render"]["targets"][0].update(content_size=dict(width=640,height=360)),
             lambda v,s,c,a:v["runtime"]["runtime"]["render"]["targets"][0].update(content_frame="2"),
             lambda v,s,c,a:v["runtime"]["runtime"]["render"]["targets"][0].update(presentation_paused=True),
             lambda v,s,c,a:v["adapter"]["targets"][0].update(target=dict(a["target"],generation="9")),
