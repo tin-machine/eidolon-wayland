@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""実Eidolon ProtocolStateと固定Waypipe両端でtext-input-v3配送を検査する。"""
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+
+from native_build import ROOT
+from quest_device import work_root
+
+
+def validate(proof, metadata):
+    expected = dict(schema=1, state='pass', fixture_revision='eidolon-ime-waypipe-protocol-v2',
+                    server='Eidolon ProtocolState', synthetic_input=True, physical_input_verified=False,
+                    uid=os.getuid(), waypipe_version=metadata['version'], waypipe_sha256=metadata['sha256'],
+                    waypipe_ends=2, checkpoints=12, geometry_race_preserved=True, queued_payload_unchanged=True,
+                    clients_after=0, objects_after=0, surfaces_after=0, windows_after=0,
+                    pixel_bytes_after=0, pool_bytes_after=0, owned_groups_waited=3,
+                    drive_error=None, fixed_payload_only=True, payload_logged=False)
+    client = dict(schema=1, state='pass', fixture_revision='eidolon-ime-waypipe-client-v2',
+                  manager_version=1, mapped=2, enters=3, leaves=3, done=7, commits=4, preedits=4,
+                  done_serials=[1, 1, 1, 1, 2, 3, 4], fixed_payload_only=True, payload_logged=False)
+    if any(k not in proof or type(proof[k]) is not type(v) or proof[k] != v for k, v in expected.items()):
+        raise ValueError('IME_WAYPIPE_PROOF')
+    observed_client = proof.get('client', {})
+    if (observed_client != client
+            or any(type(observed_client.get(k)) is not type(v) for k, v in client.items())
+            or any(type(serial) is not int for serial in observed_client.get('done_serials', []))
+            or type(proof.get('connections')) is not int or proof['connections'] < 1):
+        raise ValueError('IME_WAYPIPE_CLIENT')
+    ime = proof.get('ime', {})
+    if any(type(ime.get(k)) is not type(v) or ime[k] != v
+           for k, v in dict(objects=0, active=False, delivered=7, rejected=4).items()):
+        raise ValueError('IME_WAYPIPE_COUNTS')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--artifact-root', type=Path)
+    args = parser.parse_args()
+    os.umask(0o077)
+    parent = args.artifact_root or work_root() / 'eidolon-ime-implementation-20261107/waypipe-validation'
+    if not parent.is_absolute():
+        parser.error('artifact rootは絶対pathにしてください')
+    run = parent / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + str(os.getpid()))
+    run.mkdir(mode=0o700, parents=True)
+    metadata = json.loads((ROOT / 'native/generated/waypipe-host.json').read_text())
+    binary = Path(metadata['executable'])
+    if (metadata.get('target') != 'host' or metadata.get('version') != '0.11.3'
+            or hashlib.sha256(binary.read_bytes()).hexdigest() != metadata.get('sha256')):
+        raise SystemExit('現在のscripts/build-waypipe --target hostを先に実行してください')
+    fixture = ROOT / 'scripts/fixtures/ime-waypipe'
+    shutil.copyfile(fixture / 'ime_client.py', run / 'ime_client.py')
+    source_files = ['native/core/src/compositor/ime.rs', 'native/core/src/compositor/protocol.rs',
+                    'native/model/src/ime.rs', 'scripts/fixtures/ime-waypipe/src/main.rs',
+                    'scripts/fixtures/ime-waypipe/ime_client.py']
+    inputs = dict(source_revision=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
+                  source_hashes={name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in source_files},
+                  waypipe_version=metadata['version'], waypipe_sha256=metadata['sha256'])
+    (run / 'inputs.json').write_text(json.dumps(inputs, indent=2) + '\n')
+    argv = ['cargo', '+1.95.0', 'run', '--locked', '--offline', '--manifest-path', str(fixture / 'Cargo.toml'),
+            '--target-dir', str(ROOT / 'target'), '--', str(ROOT), str(run)]
+    (run / 'command.json').write_text(json.dumps(argv, indent=2) + '\n')
+    # Harness自身が30秒で打ち切り、Waypipe両端とclientを各process group単位でwaitする。
+    with (run / 'build-and-run.log').open('w') as log:
+        result = subprocess.run(argv, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, timeout=600)
+    print(json.dumps(dict(artifact=str(run), exit_code=result.returncode)), flush=True)
+    if result.returncode:
+        raise SystemExit(result.returncode)
+    proof = json.loads((run / 'result.json').read_text())
+    validate(proof, metadata)
+    print(json.dumps(proof, ensure_ascii=False))
+
+
+if __name__ == '__main__':
+    main()

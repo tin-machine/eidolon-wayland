@@ -13,7 +13,7 @@ class ShmGateTests(unittest.TestCase):
     def fixture(self):
         nonce, build = "a" * 32, {"profile": "debug"}
         normal = dict(globals=[[name, version] for name, version in [("wl_compositor", 4), ("wl_subcompositor", 1),
-            ("wl_shm", 1), ("wl_output", 3), ("wl_seat", 5), ("xdg_wm_base", 1), ("wl_data_device_manager", 3)]],
+            ("wl_shm", 1), ("wl_output", 3), ("wl_seat", 5), ("xdg_wm_base", 1), ("wl_data_device_manager", 3), ("zwp_text_input_manager_v3", 1)]],
             frames=100, configures=1, acks=1, releases=100, callbacks=100, enters=1, leaves=1,
             cancellations=2, empty_selection=True, output_mode=[1024, 768, 60000], output_scale=1,
             output_geometry=True, output_done=True, seat_capabilities=0, protocol_error=False)

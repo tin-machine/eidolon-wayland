@@ -12,6 +12,7 @@ data class InputConditions(
     val targetReady: Boolean = false,
     val focusedWindow: String? = null,
     val panelEditing: Boolean = false,
+    val imeProbe: Boolean = false,
 )
 
 data class InputStatus(val reason: String, val message: String, val action: Action = Action.NONE) {
@@ -26,6 +27,7 @@ data class InputStatus(val reason: String, val message: String, val action: Acti
         fun from(c: InputConditions): InputStatus = when {
             !c.visible || !c.xrFocused -> InputStatus("BACKGROUND", "入力停止 · Eidolonへ戻ると入力できます")
             !c.runtimeReady -> InputStatus("PREPARING", "入力停止 · 画面を準備中")
+            c.imeProbe -> InputStatus("IME_PROBE", "入力先: 日本語入力の検証パネル · Linuxへのキー転送は停止中")
             c.panelEditing -> InputStatus("PANEL_INPUT", "入力先: ランチャーの設定欄")
             c.transport != "Ready" -> when(c.transport) {
                 "Idle", "Disconnected", "Failed" -> InputStatus("DISCONNECTED", "入力停止 · 接続されていません", Action.OPEN)

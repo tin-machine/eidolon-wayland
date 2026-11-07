@@ -128,7 +128,7 @@ def inspect(apk):
                 or "/system/bin/linker64" not in header or set(needed) - {"libc.so", "libm.so", "libdl.so"}
                 or waypipe.get("needed") != needed or note_bytes(actual_note) != bytes(note)):
             raise ValueError("Waypipeの実際のABI/API/NDK/loader/依存が不正です")
-        for method in ("nativeBuildInfo", "nativeCreate", "nativeCommand", "nativeAttachSurface", "nativeAttachWindowSurface", "nativePoll", "nativeSnapshot", "nativeCatalogUi", "nativeRequestStop", "nativeDestroy", "nativeGenerateIdentity", "nativePublicKey", "nativeProvideCredential"):
+        for method in ("nativeBuildInfo", "nativeCreate", "nativeCommand", "nativeAttachSurface", "nativeAttachWindowSurface", "nativePoll", "nativeSnapshot", "nativeCatalogUi", "nativeImeUi", "nativeRequestStop", "nativeDestroy", "nativeGenerateIdentity", "nativePublicKey", "nativeProvideCredential"):
             if "Java_io_github_tinmachine_eidolon_NativeBridge_" + method not in output:
                 raise ValueError("JNI symbolがありません: " + method)
         if (b"eidolon-local-shm-fixture-code-v1" in data) != (info["profile"] == "debug"):
@@ -139,6 +139,8 @@ def inspect(apk):
             raise ValueError("profileとkeyboard wire fixtureの同梱が不一致です")
         if (b"eidolon-pointer-wire-fixture-v1" in data) != (info["profile"] == "debug"):
             raise ValueError("profileとpointer wire fixtureの同梱が不一致です")
+        if (b"eidolon-text-input-v3-wire-v2" in data) != (info["profile"] == "debug"):
+            raise ValueError("profileとIME wire fixtureの同梱が不一致です")
         if (b"eidolon-render-fixture-code-v1" in data) != (info["profile"] == "debug"):
             raise ValueError("profileとrender fixtureの同梱が不一致です")
         helper_path = f"lib/{ABI}/libeidolon_probe_bin.so"
@@ -173,6 +175,7 @@ def inspect(apk):
         debug_classes.append(b"Lio/github/tinmachine/eidolon/FootSdkCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/RayCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ThemeSurfaceProbe;")
+        debug_classes.append(b"Lio/github/tinmachine/eidolon/ImeProbe;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ThemeRuntimeCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ThemeProbePainter;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/PointerCase;")

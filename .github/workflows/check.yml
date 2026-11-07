@@ -39,6 +39,8 @@ jobs:
         run: scripts/check-host --suite all
       - name: Waypipe経由clipboardの上限と仲介bufferの範囲を確認
         run: scripts/check-waypipe-clipboard
+      - name: Waypipe両端でIMEの配送・失効・資源回収を検証
+        run: scripts/check-waypipe-ime
 
   android:
     runs-on: ubuntu-24.04

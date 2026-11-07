@@ -1,6 +1,6 @@
 # 次フェーズ案: 入力状態・日本語入力・Termux・Linux GUI・ウィンドウ操作
 
-作成日: 2026-11-07。状態: **NX01〜NX18全体の実装継続をユーザーが承認。日本語変換はユーザー指定で一旦保留し、NX10を先行**。
+作成日: 2026-11-07。状態: **NX01〜NX18全体の実装継続をユーザーが承認。追加レビュー後の指示で日本語入力（NX09）を優先再開し、独立作業も並行する**。
 当初の調査基準は`5a515541296bee5227dfd09c87bb0104a66fbfec`。継続基準は`4ea6986`、実機はBuild142。
 Build142の円の太さ・中央の回転・物理文字入力はユーザー確認済み。残る個別受入れは維持する。
 ゴールの再設定後の進捗・証拠・次の作業は[計画全体の継続記録](extensions-nx09-nx18-20261107.md)へ記録する。
@@ -30,7 +30,7 @@ Sは既存素材・UIの局所変更、Mは複数層の接続や起動・回収�
 | 6 / NX06 | 外側CPU・中央RSSの速度連動（第5節） | M | NX01の素材を使用。既存計測値から停止・再開・欠測を実装し、Disk I/O待ちにしない |
 | 7 / NX07 | Termux必要時起動（第1節） | M | 製品UIDのprobe→固定helper→起動UI。権限不足・取消・起動失敗も扱う |
 | 8 / NX08 | 最小ランチャー: 左下の既存foot起動（第9節） | M | NX03の起動処理を再利用。設定file・任意file・GUIアイコンの完成とは分ける |
-| 保留 / NX09 | Android IME先行probeと共通text-input基盤（第12節） | M〜L・要probe | 実装の保留を継続。再開時は[新計画](android-ime-wayland-plan-20261107.md)に従いSpatial標準入力欄→独自InputConnection→実footを検証。案A固有の不成立ならTermux Fcitx5へ進む |
+| 優先再開 / NX09 | Android IME先行probeと共通text-input基盤（第12節） | M〜L・要probe | 追加レビュー後の指示で再開。[新計画](android-ime-wayland-plan-20261107.md)に従いSpatial標準入力欄・独自InputConnectionの試作と共通基盤を並行準備。案A固有の不成立ならTermux Fcitx5へ進む |
 | 10 / NX10 | ランチャーカタログ・設定file・一時file指定（第9節） | M〜L | NX08から拡張。構造化したpath/argv、取消・連打・回収を先に確認。GUI登録はNX11後 |
 | 11 / NX11 | SDL/SHM probe→Doom + Freedoom（第2〜4節） | M〜L・不確実 | 現行二枚でfootから開始可。NX07/10の完成を必須にせず、表示方式の不成立を大移植で埋めない |
 | 12 / NX12 | 窓別の移動・close・テーマ指定ボタン（第6・11節） | M〜L | まず二枚。入力状態の窓横表示、窓別の入力停止と復帰、サイズ・正面復帰を段階的に接続 |
@@ -720,7 +720,7 @@ NX12以降は二枚で異なる状態、移動中の窓と非対象窓、装飾O
 
 ## 12. かな漢字変換を使える最小の日本語入力
 
-実装は保留中。再開時の方式選定・検証順は[Android IME先行の新計画](android-ime-wayland-plan-20261107.md)を正本とする。
+実装は追加レビュー後の指示で再開した。方式選定・検証順は[Android IME先行の新計画](android-ime-wayland-plan-20261107.md)を正本とする。
 ユーザーは複数Linuxアプリで使うcompositorのtext-input-v3対応と、Android側IMEを先に検証する方式を選択した。
 現行のUS/JIS keymap、UTF-8 clipboard、日本語の表示と、IMEでの入力成功は別である。
 NX09は小さなSpatialパネルで日本語変換・実USキーボード・候補UIを確認し、独自InputConnectionと実footへ進む。

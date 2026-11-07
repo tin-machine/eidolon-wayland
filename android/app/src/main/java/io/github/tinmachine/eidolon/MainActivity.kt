@@ -58,6 +58,7 @@ class MainActivity : AppSystemActivity() {
         } else {
             Log.e(TAG, "native_failed version=${BuildConfig.VERSION_CODE} error=${native.error}")
         }
+        BuildHooks.imeProbeActivity(this)
         BuildHooks.accept(intent,nativePanels,applicationContext,{scene},{recreate()})
     }
 
@@ -128,6 +129,7 @@ class MainActivity : AppSystemActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        BuildHooks.imeProbeActivity(this)
         BuildHooks.accept(intent,nativePanels,applicationContext,{scene},{recreate()})
     }
 

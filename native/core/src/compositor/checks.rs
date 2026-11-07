@@ -241,6 +241,7 @@ pub fn run(mode: Mode, stop: Arc<AtomicBool>) -> Report {
             ("wl_shm".into(), 1),
             ("wl_output".into(), 3),
             ("wl_seat".into(), 5),
+            ("zwp_text_input_manager_v3".into(), 1),
             ("xdg_wm_base".into(), 1),
             ("wl_data_device_manager".into(), 3),
         ];
@@ -331,13 +332,20 @@ pub fn run_scenario(
         report["nonce"] = nonce.into();
         return report;
     }
+    if matches!(scenario, S::TextInput) {
+        let mut report = serde_json::to_value(super::ime_checks::run(stop)).unwrap();
+        report["nonce"] = nonce.into();
+        return report;
+    }
     enum Probe {
         Shm(Mode),
         State(F),
     }
     let probe = match scenario {
         S::LogicalResize => Probe::State(F::LogicalResize),
-        S::Pointer | S::KeyboardUs | S::KeyboardJis | S::Popup | S::Clipboard => unreachable!(),
+        S::Pointer | S::KeyboardUs | S::KeyboardJis | S::TextInput | S::Popup | S::Clipboard => {
+            unreachable!()
+        }
         S::Lifecycle => Probe::State(F::Lifecycle),
         S::Transforms => Probe::State(F::Transforms),
         S::FrameGates => Probe::State(F::FrameGates),

@@ -162,6 +162,22 @@ PSS等の重い計測を描画threadで行わず、単一のcollectorで窓数�
 切断前のIPや古い負荷を現在値として表示しない。個別の不能や例外は他項目へ伝播させない。
 計測自体によるCPU・描画遅延・電池消費を、有効/無効の比較で確認する。
 
+## NX14a実装記録（Build148）
+
+自プロセスCPUを既存の5秒collectorへ追加した。`Process.getElapsedCpuTime()`の差分を
+`SystemClock.elapsedRealtime()`の差分で割り、1コアを100%とする。複数コアの100%超を丸めず、
+操作画面の詳細欄に実測区間とともに表示する。Quest全体やTermux内の作業CPUとは別の値である。
+
+初回・停止・取得失敗・時計/counter後退・15秒超の欠測は数値を捏造せず状態を分ける。
+早いbattery通知でもCPUの観測時刻を新しく見せない。listener/timerは既存経路を再利用し、追加permissionはない。
+pure JVM 12件、統合debug build・lint・JUnit 80件が成功した。
+Quest上の製品UIDで5つの異なる約5秒区間を取得し、有限・非負・単位の契約を確認した。
+数値は約65〜67%だったが、これは当該条件の観測値であり性能目標や比較benchmarkではない。
+Homeへの遷移後の`stopped/null`、Activity復帰後の`warming_up/null`、新しい約5秒区間後の`available`も実機で確認した。
+HMDの可読性と計測負荷の比較は別の確認事項として扱う。PSS/熱/容量等を含むNX14全体の完了とはしない。
+
+記録は作業rootの`eidolon-ime-implementation-20261107/nx14a/`と`cpu148-observations.json`。
+
 [battery]: https://developer.android.com/reference/android/os/BatteryManager
 [memory]: https://developer.android.com/reference/android/app/ActivityManager.MemoryInfo
 [process]: https://developer.android.com/reference/android/os/Process#getElapsedCpuTime()

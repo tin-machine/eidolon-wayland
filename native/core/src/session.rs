@@ -187,6 +187,36 @@ impl Session {
             .ok_or("NOT_READY")?
             .key_at_focus(window, focus_token, key)
     }
+    pub fn set_ime_backend(&mut self, enabled: bool) -> Result<(), &'static str> {
+        if self.closing {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .set_ime_backend_enabled(enabled);
+        Ok(())
+    }
+    /// 本文を含むためReport/snapshotへ格納しない。UI専用の短命な取得経路。
+    pub fn ime_snapshot(&self, input_epoch: u64) -> Option<eidolon_model::ime::ImeSnapshot> {
+        if self.closing {
+            return None;
+        }
+        self.protocol.as_ref()?.ime_snapshot(input_epoch)
+    }
+    pub fn ime(
+        &mut self,
+        input_epoch: u64,
+        transaction: &eidolon_model::ime::ImeTransaction,
+    ) -> Result<(), &'static str> {
+        if self.closing {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .apply_ime(input_epoch, transaction)
+    }
     pub fn set_visible_windows(&mut self, selected: &[(SessionId, WindowId)]) {
         self.report.visible_windows = selected
             .iter()

@@ -1,11 +1,12 @@
 # 日本語入力計画: Android IMEを先に検証し、Wayland text-input-v3へ接続する
 
-作成日: 2026-11-07。状態: **計画。案A/Bの新規実装・実機検証は未着手**。
+作成日: 2026-11-07。状態: **ユーザー指定で実装を再開。A1/A2の限定試作とC1を準備中。案A採用・実機IME受入れは未完了**。
 調査基準: `dde7941f28170b9ba58d3a25f2ab10ef5d549408`。実装開始時にmainとの差分、APK、Quest OS、IMEの版を再確認する。
-作成中のmain更新`2b6a38032bc1d8777644d14dbef96b2843c36bdf`を取り込み、**NX09の実装保留・NX10先行を維持する**。
-本書は日本語入力の実装を再開するときの方針とする。
+作成時はmain更新`2b6a38032bc1d8777644d14dbef96b2843c36bdf`を取り込み、NX09を保留してNX10を先行していた。
+追加レビュー後、ユーザーが日本語入力の実装開始と、その後の残ゴール継続を明示したため、`795f184`からNX09を優先して再開した。
+本書を日本語入力の実装方針とする。実装・実機検査の進捗は[実装記録](android-ime-implementation-20261107.md)へ分離する。
 2026-11-07の実現性レビューは`b0b28ecad8a26b15255e807d7adf404752c724b9`を基準に実施した。
-固定依存とfoot sourceを確認し、IME表示条件・編集能力・古いtransactionの破棄条件を補った。新しい実機検証や日本語入力の実装再開を意味しない。
+当初のレビューでは固定依存とfoot sourceを確認し、IME表示条件・編集能力・古いtransactionの破棄条件を補った。その時点では実機検証と実装再開は未実施だった。
 追加の独立レビューは`8b0fcb4`を基準に、Quest/SDK・protocol・実装費用の三担当で実施した。
 以下へSDKの操作復帰、固定Smithayの具体的な反例、試作準備と採用判定の分離を反映した。
 
@@ -24,7 +25,7 @@
 - 通常のローマ字入力、Spaceによる変換・候補選択、確定・取消・英数復帰を目標にする。SKK固有操作を通常利用の要件に戻さない。
 - 旧ttyskkのprobe・学習データ・失敗記録は保持する。その成功を案A/Bの受入れに流用しない。
 - 本書のtask ID、command/event名、file分割案は設計案であり、実装済みAPIや利用可能な検査コマンドではない。
-- この変更は計画の追加・参照の整合まで。実装やQuestの設定変更が完了したとは扱わない。
+- 本書の設計案と実装済みの範囲は、実装記録と照合する。計画の記載だけを実装・受入れの証拠にしない。
 
 ## 2. 確認した現状と未確定事項
 
@@ -309,6 +310,22 @@ Androidにはpre-IME/IME/post-IMEの段階があるため、`dispatchKeyEvent`�
 [AOSPの入力段階](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android14-dev/core/java/android/view/ViewRootImpl.java)を参照し、
 Horizon/Spatialの実経路でcallbackが来る段階と未処理キーの取得方法を確認する。
 
+2026-11-07のユーザー指定で、切替ショートカットは**Ctrl+Space**とする。
+Eidolon内の「IMEへ入力するモード」と「Linuxへ直接キーを送るモード」を切り替える。
+利用するIMEと日本語の選択はQuest側の設定で行う。アプリがIME内部の言語・変換モードを自由に強制できるとは扱わない。
+
+- 左右のCtrlに対応し、1回のSpace押下で1回だけ切り替える。repeat、遅いkeyup、Ctrlを先に離す操作を検査する。
+- Shift/Alt/Metaを併用する別ショートカットは対象外。切替を受理したCtrl/SpaceはLinuxとAndroidへ重複配送しない。
+- 切替前にLinuxへ届いたCtrl downをurgent resetで解除する。Android接続待ちでも解除を遅らせない。
+- IME側に先に消費される可能性を考慮し、IME中の終了操作はpre-IME入口でも検証する。
+- 接続準備中・IME入力中・直接入力・解除失敗を画面に区別して示す。切替要求を出しただけで「日本語入力可能」と表示しない。
+- 終了時は未確定を取り消し、native reset/disableの完了とAndroid入力接続の解除を確認してから直接入力へ戻す。
+
+[Android InputMethodManager](https://developer.android.com/reference/android/view/inputmethod/InputMethodManager)のAPI権限と、
+[AOSP 14の未処理キー処理](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android14-release/services/core/java/com/android/server/policy/PhoneWindowManager.java)を参照する。
+AOSPでは未処理のCtrl+Spaceが物理キーボードの配列切替へ進む場合がある。Horizon OSでの実際の処理と競合は実機確認し、
+Eidolonが切替を受理しない状況でOSまで一律に遮断する実装にはしない。
+
 各IME transactionには、既存target tuple、`input_epoch`、`focus_token`に加え、入力接続世代と順序番号を束縛する案を使う。
 同じ窓へ戻った場合も古いInputConnectionを再利用しない。Kotlin側の早期検査に加えてRust ownerで再検査する。
 `ACCEPTED`はenqueue成功であり、確定文字の適用成功とは区別する。
@@ -427,6 +444,6 @@ HMD画像が必要な場合は室内を含む可能性があるため、既存�
 回収結果と次の作業を[NX09以降の継続記録](extensions-nx09-nx18-20261107.md)へ追記する。
 詳細artifactの保存先は作業開始時の`codex-work-root`設定から取得する。
 
-初期状態は、IME-00/A1/A2/C1/A3/B1/B2/C2-T/C2-Gすべて未着手。案Bは条件付きであり、A採用時にBを実装する必要はない。
+再開時点ではIME-00/A1/A2/C1を準備中、A3/B1/B2/C2-T/C2-Gは未着手。案Bは条件付きであり、A採用時にBを実装する必要はない。
 文書追加、Android標準入力欄の成功、共通wire試験の成功、実foot成功、HMD受入れを別々の到達点として記録する。
 再開後に最初に実装するのはIME-00とIME-A1の小さなSpatial入力probeである。

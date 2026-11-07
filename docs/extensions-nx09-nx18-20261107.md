@@ -6,10 +6,11 @@ NX01〜NX18を対象とするゴールを再設定した。開始基準は`4ea69
 実装・PC/Questの自動検証を先に進め、ユーザーによる装着・物理操作は最後にまとめる。
 文書の更新や一部テストの成功だけで計画全体を完了にしない。
 
-**日本語入力の実装は保留し、再開時の方針を[Android IME先行の新計画](android-ime-wayland-plan-20261107.md)へ更新した。**
-再開後は案Aの小さなSpatial入力probeを先行し、固有の制約で成立しなければ案BのTermux Fcitx5へ進む。
+**追加レビュー後のユーザー指定で、日本語入力の実装を再開し優先して進める。**
+[Android IME先行の新計画](android-ime-wayland-plan-20261107.md)に従い案Aの小さなSpatial入力probeを先行し、固有の制約で成立しなければ案BのTermux Fcitx5へ進む。
 方式選定に必要なHMD/物理確認は採用ゲートとする。標準欄・独自editorの試作と自動検査は先に準備し、装着確認をまとめる。
-以下のFcitx/ttyskk調査は履歴として保持し、新方式の検証は未着手。
+以下のFcitx/ttyskk調査は履歴として保持する。A1/A2限定試作とC1を実装し、Build145でnative wire v2、Build147でSDKクリック経由の実Android入力接続を確認した。
+実IMEによる日本語変換は未確認。版ごとの証拠と不具合修正は[日本語入力の実装記録](android-ime-implementation-20261107.md)に記す。
 
 ## 引き継ぐ証拠と未完了条件
 
@@ -29,18 +30,18 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 | NX06 | CPU/RSS独立回転、自動検証済み | 中央回転はユーザー採用。停止/欠測・多窓回帰を維持 |
 | NX07 | 固定helper、権限/取消等の自動検証済み | 再起動後を含む実利用の起動・復帰を継続確認 |
 | NX08 | 左下footボタン、ADB起動成功 | ユーザーへ「>_ ターミナル」と案内済み。NX10へ拡張 |
-| NX09 | ユーザー指定で一旦保留 | NX10以降を先行。再開時はAndroid IMEのSpatial probe→共通text-input-v3→実foot、案A固有の不成立ならTermux Fcitx5。新方式は未検証 |
+| NX09 | ユーザー指定で優先再開 | Android IMEのSpatial probeと共通text-input-v3を分担して準備。実footへ段階化し、案A固有の不成立ならTermux Fcitx5 |
 | NX10 | カタログUI・保存・稼働中footへの任意起動を接続 | Build143のPC検査。初回任意起動・個別取消・配置保存とQuest実機確認は残件 |
 | NX11 | SDL/SHM小probeを実装、隔離host成功 | Questで公式SDL2/Mesa経路を検証し、成立後Doom/Freedoomへ |
 | NX12 | 未着手 | 二枚で窓別移動/close/状態、テーマ指定操作部、サイズ/正面復帰 |
 | NX13 | 未着手 | 実UIDのDisk I/O probe、計測契約、内側回転 |
-| NX14 | 未着手 | 自プロセスCPU/PSS、熱/容量等。全体CPU/GPUは取得経路ごとに判断 |
+| NX14 | 自プロセスCPUを実装しBuild148で製品UIDの取得・停止復帰を確認 | HMD表示受入れ、PSS・熱/容量等は残件。全体CPU/GPUは取得経路ごとに判断 |
 | NX15 | 未着手 | 小さな一般GUI一つの描画/入力/dialog/resize |
 | NX16 | 未着手 | 二→三→六→九枚、指定順配置、資源予算、10枚目制限 |
 | NX17 | 未着手 | 同種窓の集約、500ms展開、前面/取消/reduced motion |
 | NX18 | 未着手 | Linux接続先profile/helper、小probe、ランチャー統合と切断回収 |
 
-## NX09の開始調査（現在は保留）
+## NX09の開始調査（当時の保留までの履歴）
 
 `scripts/termux/eidolon-japanese`は固定ttyskk・共有辞書・専用設定と学習fileへの入口を既に持つ。
 通常shellのrcは置き換えず、設定の初回作成と再導入時の保持は`quest-setup-extensions`にある。

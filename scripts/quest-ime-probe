@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""日本語入力の比較パネルを開始・観測・終了する。観測成功をIME受入れ合格にしない。"""
+import argparse
+import datetime
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import time
+
+from quest_device import PACKAGE, QuestDevice, work_root
+from ime_probe_checks import MAX_SNAPSHOT_BYTES, action_outcome, parse_receipt
+
+
+def receipt(device, nonce):
+    # 本文を含み得るIME service dumpやlogcatは採取しない。製品の専用metadataだけ読む。
+    raw = device.adb("exec-out", "run-as", PACKAGE, "head", "-c", str(MAX_SNAPSHOT_BYTES + 1),
+                     "no_backup/diagnostics/latest.json", timeout=10)
+    return parse_receipt(raw, nonce)
+
+
+def observe(device, nonce, action, timeout, *, clock=time.monotonic, sleep=time.sleep, record=lambda _: None):
+    deadline = clock() + timeout
+    while clock() < deadline:
+        try:
+            current = receipt(device, nonce)
+        except (RuntimeError, json.JSONDecodeError):
+            current = None
+        if current is not None:
+            record(current)
+            outcome = action_outcome(action, current)
+            if outcome is not None:
+                return current, outcome
+        sleep(.2)
+    raise TimeoutError("PROBE_RECEIPT_TIMEOUT")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("start", "status", "exercise", "sdk-tap", "stop"))
+    parser.add_argument("--serial", required=True)
+    parser.add_argument("--nonce", help="startでは省略時に生成。他の操作は開始時のnonceを指定")
+    parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--timeout", type=int, default=25, help="metadata待機秒数（1..60、既定25）")
+    args = parser.parse_args()
+    nonce = args.nonce or (secrets.token_hex(16) if args.action == "start" else "")
+    if not re.fullmatch(r"[0-9a-f]{32}", nonce):
+        parser.error("32桁の小文字hex nonceが必要です")
+    if not 1 <= args.timeout <= 60:
+        parser.error("timeoutは1..60秒にしてください")
+    os.umask(0o077)
+    parent = args.artifact_root or work_root() / "eidolon-ime-probe"
+    if not parent.is_absolute():
+        parser.error("artifact rootには絶対pathを指定してください")
+    run = parent / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f") + "-" + args.action)
+    run.mkdir(mode=0o700, parents=True)
+    device = QuestDevice(args.serial, run)
+    result = dict(schema=1, action=args.action, nonce=nonce, status="failed", acceptance="not_verified",
+                  observation_only=True, metadata_received=False, action_status="not_completed")
+    exit_code = 1
+    def record(observed):
+        # allowlist検査後のmetadataだけを保存。元snapshotや例外messageは書かない。
+        (run / "probe.json").write_text(json.dumps(observed, ensure_ascii=False, indent=2) + "\n")
+        result.update(metadata_received=True, probe_result=observed["result"])
+
+    try:
+        result.update(device.validate())
+        before = None
+        if args.action != "status":
+            try:
+                before = receipt(device, nonce)
+            except (RuntimeError, json.JSONDecodeError):
+                pass  # 初回起動前のdiagnostics未作成等。後続の操作/receiptで確認する。
+            if args.action == "start" and before is not None:
+                record(before)
+                raise ValueError("NONCE_ALREADY_OBSERVED")
+            if args.action in {"exercise", "sdk-tap"}:
+                if before is None or action_outcome("start", before) != "panel_fixture_ready":
+                    raise ValueError("PROBE_NOT_READY")
+                record(before)
+                proof_key = "sdk_tap" if args.action == "sdk-tap" else "exercise"
+                other_key = "exercise" if args.action == "sdk-tap" else "sdk_tap"
+                if before.get(proof_key, {}).get("result") != "not_run":
+                    raise ValueError("SEQUENCE_UNAVAILABLE_OR_ALREADY_REQUESTED")
+                if before.get(other_key, {}).get("result") == "running":
+                    raise ValueError("CONCURRENT_PROBE_SEQUENCE")
+        already_stopped = args.action == "stop" and before is not None and before["result"] == "completed"
+        if args.action != "status" and not already_stopped:
+            case = {"start": "ime-editor-probe", "stop": "ime-editor-probe-stop",
+                    "exercise": "ime-editor-probe-exercise", "sdk-tap": "ime-editor-probe-sdk-tap"}[args.action]
+            # shell引数は固定component/caseと検査済みnonceのみ。am出力は保存しない。
+            device.adb("shell", "am", "start", "-W", "-n", PACKAGE + "/.DebugCommandActivity",
+                       "--es", "case", case, "--es", "nonce", nonce)
+        observed, outcome = observe(device, nonce, args.action, args.timeout, record=record)
+        if already_stopped:
+            outcome = "already_stopped"
+        result.update(status="observed", probe_result=observed["result"], metadata_received=True, action_status=outcome)
+        if args.action == "stop":
+            result["views_detached_observed"] = observed.get("views_detached_observed", False)
+        exit_code = 0  # 指定範囲の操作/取得を確認。日本語入力の合格ではない。
+    except Exception as error:
+        result["failure_class"] = type(error).__name__
+        if isinstance(error, (ValueError, TimeoutError)) and re.fullmatch(r"[A-Z_]{3,64}", str(error)):
+            result["failure_code"] = str(error)
+    finally:
+        (run / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        print(json.dumps({**result, "artifact": str(run)}, ensure_ascii=False))
+    return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

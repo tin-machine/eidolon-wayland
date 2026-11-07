@@ -514,10 +514,25 @@ ADB serverと端末のadbdも区別する。[AOSP man page](https://android.goog
 adb -s "$quest_serial" shell am broadcast \
   -a com.oculus.vrpowermanager.prox_close
 
-# 試験に対応した状態へ戻すときの非装着通知例
+# 非装着を模擬する場合（通常センサー制御への復帰とは別）
 adb -s "$quest_serial" shell am broadcast \
   -a com.oculus.vrpowermanager.prox_far
+
+# 開発用の装着模擬を終え、実際の近接センサーへ制御を戻す
+adb -s "$quest_serial" shell am broadcast \
+  -a com.oculus.vrpowermanager.automation_disable
 ```
+
+`automation_disable`は[Meta XR OperatorのQuest公式手順](https://developers.meta.com/vr/documentation/unity/meta-xr-operator/quest/#test-with-the-headset-off-your-face)に掲載されている。
+`prox_far`は非装着通知なので、それだけで通常センサー制御へ戻ったと扱わない。
+2026-11-07の再確認では、給電中・`mStayOn=true`でも`Asleep`だったQuestが`prox_close`直後に`Awake`へ変わり、約40秒後も維持した。
+続く`automation_disable`は正常応答し、その約180秒後に再び`Asleep`へ移ったことを電源状態で確認した。
+コマンド応答だけでなく休止への遷移も記録したが、実際の装着・非装着による復帰試験は別途行う。
+この短時間観測を長時間の無人動作や再起動後の維持の保証にはしない。個別時刻・変更前後は作業rootの`eidolon-ime-implementation-20261107/proximity-trial/`へ保存した。
+
+その後、ユーザーから「検証が止まるため、しばらく通常の近接センサー制御へ戻さない」と指示があった。
+現在の継続開発では`prox_close`を維持し、検証ごとの自動`automation_disable`を行わない。
+この設定が有効な観測を通常の非装着sleep試験へ数えず、通常の制御へ戻す時期はこの運用指示と分けて扱う。
 
 `GET_PROPERTY`で現状を記録し、必要な設定だけ変更して終了時に戻す。**STSで変えた設定はrebootだけでは元に戻らない**。Meta VR CLIにもproximity、testing設定、property操作があるが、各操作の復旧方法を採用版で確認する。`configure-testing restore`の既定値復元と、利用者の試験前設定への復元が一致するとは仮定しない。
 

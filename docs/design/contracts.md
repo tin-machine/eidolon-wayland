@@ -72,6 +72,7 @@ external fun nativeAttachWindowSurface(
 ): Int
 external fun nativePoll(handle: Long, maxEvents: Int): String
 external fun nativeSnapshot(handle: Long): String
+external fun nativeImeUi(handle: Long): String
 external fun nativeRequestStop(handle: Long): Int
 external fun nativeDestroy(handle: Long): Int
 ```
@@ -99,6 +100,16 @@ I03で`cancel_connect(connect_request)`を追加した。元の`connect.request_
 入力commandは全target tupleと`input_epoch`を持ち、keyはさらに`focus_token`を必須とする。
 tokenはkeyboard focus変更ごとに更新し、同じwindowへの再入でも古いkeyを拒否する。
 pointer capture中のkeyboard focus変更はepochを進めず、同じpressのreleaseを失わない。
+
+NX09の限定試作では`ime(target, transaction)`を追加した。SDK targetの全世代と、transactionの
+session/window/surface/focus_token/input_epoch/activation/edit_revisionを照合する。
+`nativeImeUi`はsurroundingを含み得るUI専用の所有済みsnapshotで、通常診断・poll・ログへ保存しない。
+backendは既定off。現段階の`set_ime_backend(session, enabled)`による有効化はdebugのみとし、
+A1/A2受入れ前の通常機能とはしない。reset・非表示・停止ではUI snapshotを失効させる。
+enqueueのACCEPTEDとcommand_completeの配送完了を区別し、拒否された確定を再送しない。
+text-inputのwire serialと編集内容の世代は別に扱う。geometry-only更新ではrevisionを保ち、
+同revisionの既知serial区間だけを受理し、最新serialでdoneを送る。本文を新しいtargetへ付け替えない。
+詳細と検証範囲は[IME実装記録](../android-ime-implementation-20261107.md)を参照する。
 
 I06では`set_pose(target,pose)`、`pose_applied(target,pose_command?,pose)`、
 `set_background(background)`、`background_applied(scene,background_command?,background)`、

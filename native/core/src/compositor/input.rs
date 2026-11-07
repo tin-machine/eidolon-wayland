@@ -17,6 +17,7 @@ use smithay::{
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct InputReport {
+    pub ime: super::ImeReport,
     pub clipboard: super::clipboard::ClipboardReport,
     pub pointer: super::pointer::PointerReport,
     pub keyboard: bool,
@@ -131,6 +132,7 @@ impl ProtocolState {
     }
     pub fn input_report(&self) -> InputReport {
         let mut report = self.input.report.clone();
+        report.ime = self.ime_report();
         report.clipboard = self.clipboard_report();
         report.focus_surface = self
             ._seat
@@ -295,6 +297,7 @@ impl ProtocolState {
         self.reset_keyboard();
     }
     fn reset_keyboard(&mut self) {
+        self.ime_new_focus(None);
         let keys = self.input.keys.reset();
         let focused = self.input.report.focus_window.take().is_some();
         self.input.report.focus_token = None;
@@ -372,6 +375,9 @@ mod tests {
 
     #[test]
     fn standalone_keymaps_create_real_seat_keyboard_without_system_paths() {
+        // 他のfixtureは/proc/self/fdでkeymap FDの回収を検査するため、
+        // clientを作らないkeyboardも生成から破棄まで同じlockで所有する。
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
         for (layout, shifted_two) in [(KeyboardLayout::Us, b'@'), (KeyboardLayout::Jis, b'"')] {
             let display = Display::<ProtocolState>::new().unwrap();
             let mut state = ProtocolState::new(&display.handle(), SessionId::new(1).unwrap());

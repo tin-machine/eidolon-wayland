@@ -972,7 +972,7 @@ def shm_result(snapshot, nonce, expected, uid, case, *, instrumentation=False):
         raise ValueError("SHM scenario数・回収が不正です")
     globals_expected = sorted([[name, version] for name, version in [
         ("wl_compositor", 4), ("wl_subcompositor", 1), ("wl_shm", 1), ("wl_output", 3),
-        ("wl_seat", 5), ("xdg_wm_base", 1), ("wl_data_device_manager", 3)]])
+        ("wl_seat", 5), ("xdg_wm_base", 1), ("wl_data_device_manager", 3), ("zwp_text_input_manager_v3", 1)]])
     for index, (row, (scenario, mode)) in enumerate(zip(rows, modes)):
         report = row.get("report", {})
         frames, configures, mapped, copies = (1, 2, 2, 2) if scenario == "shared_cache" else (100, 1, 1, 100)

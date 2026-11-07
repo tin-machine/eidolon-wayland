@@ -9,6 +9,9 @@ object BuildHooks {
     fun registerMeshes(activity: com.meta.spatial.toolkit.AppSystemActivity) = Unit
     fun additionalPanels(): List<com.meta.spatial.toolkit.PanelRegistration> = emptyList()
     fun sceneClosing() = Unit
+    fun imeProbeActivity(activity: android.app.Activity) = Unit
+    fun imeProbeActive(): Boolean = false
+    fun imeProbePhysicalKey() = Unit
     fun holdPanelCreation(window: String): Boolean = false
     fun commandComplete(request: String, code: String) = Unit
     fun accept(intent: Intent?, adapter: SpatialPanelAdapter, context: Context, scene: () -> Scene, recreate: () -> Unit) = Unit

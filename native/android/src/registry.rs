@@ -108,6 +108,13 @@ impl Registry {
             Err(status) => json!({"schema":1,"code":status as i32}),
         }
     }
+    /// IME本文を含み得る専用取得。snapshot/pollの記録経路へ含めない。
+    pub fn ime_ui(&self, id: i64) -> Value {
+        match self.guarded(id, Runtime::ime_ui) {
+            Ok(ime) => json!({"schema":1,"code":0,"ime":ime}),
+            Err(status) => json!({"schema":1,"code":status as i32}),
+        }
+    }
     pub fn counts(&self) -> Value {
         let entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
         json!({"runtimes":entries.runtimes.len(),"workers":entries.runtimes.values().filter(|r| !r.worker_finished()).count()})
@@ -176,6 +183,7 @@ mod tests {
             assert_eq!(registry.poll(id, 64)["code"], 1);
             assert_eq!(registry.snapshot(id)["code"], 1);
             assert_eq!(registry.catalog_ui(id)["code"], 1);
+            assert_eq!(registry.ime_ui(id)["code"], 1);
             assert_eq!(registry.counts(), json!({"runtimes":0,"workers":0}));
             previous = id;
         }

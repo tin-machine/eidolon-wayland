@@ -23,6 +23,7 @@ object CompositorCase {
                 "resize-wire" -> listOf("logical_resize")
                 "pointer-wire" -> listOf("pointer")
                 "keyboard-wire" -> listOf("keyboard_us", "keyboard_jis")
+                "ime-wire" -> listOf("text_input")
                 "shm-truncate" -> listOf("truncate")
                 "wayland-state" -> listOf("lifecycle", "transforms", "frame_gates", "tree", "bad_serial", "stale_configure", "premature_buffer", "unconfigured_remap", "bad_scale", "positioner_overflow")
                 else -> listOf("pattern", "shared_cache", "invalid_dimensions", "invalid_stride", "invalid_offset", "invalid_format", "negative_resize", "oversized_pool", "pool_limit")

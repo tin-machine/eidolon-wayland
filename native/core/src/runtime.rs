@@ -16,6 +16,8 @@ use std::{
 };
 
 struct Shared {
+    // surroundingを含む。diagnostics::Snapshot/Eventへコピーしない。
+    ime_ui: Option<eidolon_model::ime::ImeSnapshot>,
     shutdown: crate::shutdown::Watch,
     sdk_bindings: Vec<eidolon_model::surface::TargetKey>,
     panels: crate::panels::Controller,
@@ -30,12 +32,34 @@ struct Shared {
     terminal: VecDeque<Event>,
 }
 impl Shared {
+    fn refresh_ime(&mut self, app: Option<&crate::session::Session>) {
+        self.ime_ui = if self.snapshot.state == RuntimeState::Ready
+            && self.snapshot.activity_visible
+            && self.snapshot.xr_state == XrState::Focused
+            && self.render_visibility.iter().all(|v| *v)
+        {
+            app.and_then(|current| current.ime_snapshot(self.snapshot.input_resets))
+                .filter(|ime| {
+                    self.panels.snapshot().iter().any(|panel| {
+                        panel.target.session == ime.target.session
+                            && panel.target.window == ime.target.window
+                            && Some(panel.target.scene) == self.snapshot.scene
+                            && panel.applied
+                            && panel.error.is_none()
+                            && panel.action == eidolon_model::commands::PanelAction::Create
+                    })
+                })
+        } else {
+            None
+        };
+    }
     fn fail(&mut self, code: &'static str) {
         // 回収済みownerに遅いJNI例外が来てもStoppedを巻き戻さない。
         if self.snapshot.state == RuntimeState::Stopped {
             return;
         }
         if self.snapshot.error.is_none() {
+            self.ime_ui = None;
             self.credentials.clear();
             self.snapshot.error = Some(code);
             self.snapshot.state = RuntimeState::Failed;
@@ -91,6 +115,7 @@ impl Runtime {
         let render = Arc::new(eidolon_render::Controller::start()?);
         let gl = render.clone();
         let shared = Arc::new(Mutex::new(Shared {
+            ime_ui: None,
             shutdown: Default::default(),
             sdk_bindings: vec![],
             panels: Default::default(),
@@ -561,6 +586,7 @@ impl Runtime {
                         state.snapshot.panels = state.panels.snapshot();
                         state.snapshot.workspace = state.workspace.snapshot();
                         if resetting.swap(false, Ordering::AcqRel) {
+                            state.ime_ui = None;
                             state.snapshot.input_resets += 1;
                             if let Some(current) = app.as_mut() {
                                 current.reset_input();
@@ -572,11 +598,76 @@ impl Runtime {
                             thread::park_timeout(Duration::from_millis(5));
                             continue;
                         }
+                        state.refresh_ime(app.as_ref());
                         if let Some(command) = state.commands.pop_front() {
                             let mut asynchronous = false;
                             let app_busy =
                                 pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
                             let code = match &command {
+                                Command::SetImeBackend {
+                                    session, enabled, ..
+                                } => {
+                                    if *enabled && !cfg!(debug_assertions) {
+                                        Status::NotReady
+                                    } else if let Some(current) = app
+                                        .as_mut()
+                                        .filter(|a| a.session() == *session && !a.closed())
+                                    {
+                                        match current.set_ime_backend(*enabled) {
+                                            Ok(()) => Status::Accepted,
+                                            Err("STALE") => Status::Stale,
+                                            Err(_) => Status::NotReady,
+                                        }
+                                    } else {
+                                        Status::Stale
+                                    }
+                                }
+                                Command::Ime {
+                                    target,
+                                    transaction,
+                                    ..
+                                } => {
+                                    let live = state.panels.snapshot().iter().any(|p| {
+                                        p.target == *target
+                                            && p.action
+                                                == eidolon_model::commands::PanelAction::Create
+                                            && p.applied
+                                            && p.error.is_none()
+                                    }) && gl
+                                        .snapshot()
+                                        .targets
+                                        .iter()
+                                        .any(|t| t.key == *target && t.frames > 0);
+                                    if resetting.load(Ordering::Acquire)
+                                        || transaction.target.input_epoch
+                                            != state.snapshot.input_resets
+                                        || state.snapshot.scene != Some(target.scene)
+                                        || !live
+                                        || transaction.target.session != target.session
+                                        || transaction.target.window != target.window
+                                    {
+                                        Status::Stale
+                                    } else if !state.render_visibility.iter().all(|v| *v)
+                                        || !state.snapshot.activity_visible
+                                        || state.snapshot.xr_state != XrState::Focused
+                                    {
+                                        Status::NotReady
+                                    } else if let Some(current) = app
+                                        .as_mut()
+                                        .filter(|a| a.session() == target.session && !a.closed())
+                                    {
+                                        match current.ime(state.snapshot.input_resets, transaction)
+                                        {
+                                            Ok(()) => Status::Accepted,
+                                            Err("STALE") => Status::Stale,
+                                            Err("INVALID_ARGUMENT") => Status::InvalidArgument,
+                                            Err("RESOURCE_LIMIT") => Status::Busy,
+                                            Err(_) => Status::NotReady,
+                                        }
+                                    } else {
+                                        Status::Stale
+                                    }
+                                }
                                 Command::SetTheme {
                                     selection,
                                     reduced_motion,
@@ -1309,6 +1400,8 @@ impl Runtime {
                                 ),
                             };
                             state.snapshot.commands_processed += 1;
+                            // ACKをUIへ公開する前にlast_sequence等も同じowner順序で更新する。
+                            state.refresh_ime(app.as_ref());
                             if !asynchronous {
                                 state.emit(Event::CommandComplete {
                                     request_id: command.request_id(),
@@ -1410,6 +1503,7 @@ impl Runtime {
                 state.snapshot.input_resets += 1;
                 state.snapshot.commands_cancelled += state.commands.len() as u64;
                 state.commands.clear();
+                state.ime_ui = None;
                 state.snapshot.state = RuntimeState::Stopped;
                 state.shutdown.finish(Instant::now());
                 state.snapshot.theme.workers = 0;
@@ -1495,7 +1589,10 @@ impl Runtime {
         if state.commands.len() == limits::CORE_COMMANDS {
             if matches!(
                 command,
-                Command::Key { .. } | Command::FocusWindow { .. } | Command::Pointer { .. }
+                Command::Key { .. }
+                    | Command::FocusWindow { .. }
+                    | Command::Pointer { .. }
+                    | Command::Ime { .. }
             ) {
                 self.reset.store(true, Ordering::Release);
                 self.worker.thread().unpark();
@@ -1525,6 +1622,7 @@ impl Runtime {
                 state.snapshot.state = RuntimeState::Stopping;
             }
             state.credentials.clear();
+            state.ime_ui = None;
         }
         self.render.request_stop();
         self.transport.request_stop();
@@ -1582,6 +1680,21 @@ impl Runtime {
     }
     pub fn catalog_ui(&self) -> eidolon_transport::session::CatalogUi {
         self.transport.catalog_ui()
+    }
+    /// この返り値はUI接続専用。通常snapshot・診断・disk保存の経路から隔離する。
+    pub fn ime_ui(&self) -> Option<eidolon_model::ime::ImeSnapshot> {
+        let state = self.lock();
+        if self.stop.load(Ordering::Acquire)
+            || self.reset.load(Ordering::Acquire)
+            || state.snapshot.state != RuntimeState::Ready
+            || !state.snapshot.activity_visible
+            || state.snapshot.xr_state != XrState::Focused
+            || !state.render_visibility.iter().all(|v| *v)
+        {
+            None
+        } else {
+            state.ime_ui.clone()
+        }
     }
     pub fn poll(&self, max: usize) -> Result<Vec<Event>, Status> {
         if !(1..=limits::POLL_EVENTS).contains(&max) {
@@ -1705,6 +1818,55 @@ impl Drop for Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ime_text_is_private_and_urgent_reset_hides_it_even_when_queue_is_full() {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let runtime = Runtime::start_with_hook(RuntimeConfig::default(), move || {
+            entered_tx.send(()).unwrap();
+            resume_rx.recv().unwrap();
+        })
+        .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let private: eidolon_model::ime::ImeSnapshot = serde_json::from_value(serde_json::json!({
+            "target":{"session":"1","window":"2","surface":"3","focus_token":"4",
+                "input_epoch":0,"activation":1,"serial":1},"edit_revision":1,"last_sequence":0,
+            "surrounding":{"text":"private-ime-fixture","cursor":0,"anchor":0},
+            "content_hint":0,"content_purpose":0,"cursor_rectangle":null,"change_cause":0
+        }))
+        .unwrap();
+        {
+            let mut state = runtime.lock();
+            state.render_visibility = [true, true];
+            state.snapshot.activity_visible = true;
+            state.snapshot.xr_state = XrState::Focused;
+            state.ime_ui = Some(private);
+        }
+        let private_available = runtime.ime_ui().is_some();
+        let ordinary_contains_text = serde_json::to_string(&runtime.snapshot())
+            .unwrap()
+            .contains("private-ime-fixture");
+        for id in 1..=limits::CORE_COMMANDS {
+            runtime.command(Command::SetWorkloadObservation {
+                schema: 1,
+                request_id: eidolon_model::ids::CommandSeq::new(id as i64).unwrap(),
+                enabled: false,
+            });
+        }
+        let result = runtime.command(Command::ResetInput {
+            schema: 1,
+            request_id: eidolon_model::ids::CommandSeq::new(999).unwrap(),
+        });
+        let reset_hid_text = runtime.ime_ui().is_none();
+        runtime.request_stop();
+        resume_tx.send(()).unwrap();
+        wait(&runtime, Runtime::can_destroy);
+        assert!(private_available);
+        assert!(!ordinary_contains_text);
+        assert_eq!(result, Status::Busy);
+        assert!(reset_hid_text);
+        assert!(runtime.ime_ui().is_none());
+    }
     use eidolon_model::ids::{CommandSeq, SceneEpoch};
     use std::{sync::Barrier, time::Instant};
     fn wait(runtime: &Runtime, predicate: impl Fn(&Runtime) -> bool) {

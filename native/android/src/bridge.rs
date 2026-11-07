@@ -354,6 +354,16 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeCata
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeImeUi<'a>(
+    mut env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    handle: jlong,
+) -> JString<'a> {
+    env.with_env(|env| JString::from_str(env, global().ime_ui(handle).to_string()))
+        .resolve_with::<BridgePolicy, _>(|| handle)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativePoll<'a>(
     mut env: EnvUnowned<'a>,
     _: JClass<'a>,

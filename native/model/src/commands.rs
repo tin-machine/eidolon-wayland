@@ -166,6 +166,7 @@ pub enum CompositorScenario {
     Pointer,
     KeyboardUs,
     KeyboardJis,
+    TextInput,
     Lifecycle,
     Transforms,
     FrameGates,
@@ -331,6 +332,19 @@ pub enum Command {
         focus_token: CommandSeq,
         key: crate::keyboard::KeyPacket,
     },
+    /// A1/A2の受入れまで有効化はdebug buildに限定する。保存設定にはしない。
+    SetImeBackend {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        enabled: bool,
+    },
+    Ime {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        transaction: crate::ime::ImeTransaction,
+    },
     AdapterApplied {
         schema: u32,
         request_id: CommandSeq,
@@ -472,6 +486,8 @@ impl Command {
             | Self::Pointer { schema, .. }
             | Self::FocusWindow { schema, .. }
             | Self::Key { schema, .. }
+            | Self::SetImeBackend { schema, .. }
+            | Self::Ime { schema, .. }
             | Self::AdapterApplied { schema, .. }
             | Self::AdapterFailed { schema, .. }
             | Self::SceneReady { schema, .. }
@@ -544,6 +560,16 @@ impl Command {
             return Err(Status::InvalidArgument);
         }
         match &command {
+            Self::Ime {
+                target,
+                transaction,
+                ..
+            } if !transaction.valid()
+                || target.session != transaction.target.session
+                || target.window != transaction.target.window =>
+            {
+                return Err(Status::InvalidArgument);
+            }
             Self::Catalog { operation, .. } if !operation.valid() => {
                 return Err(Status::InvalidArgument);
             }
@@ -594,6 +620,8 @@ impl Command {
             | Self::Pointer { request_id, .. }
             | Self::FocusWindow { request_id, .. }
             | Self::Key { request_id, .. }
+            | Self::SetImeBackend { request_id, .. }
+            | Self::Ime { request_id, .. }
             | Self::AdapterApplied { request_id, .. }
             | Self::AdapterFailed { request_id, .. }
             | Self::SceneReady { request_id, .. }
@@ -619,6 +647,7 @@ impl Command {
         matches!(
             self,
             Self::ResetInput { .. }
+                | Self::SetImeBackend { .. }
                 | Self::SetPose { .. }
                 | Self::SetKeyboardLayout { .. }
                 | Self::ShowWindow { .. }
@@ -638,6 +667,25 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ime_envelope_rejects_cross_window_payload_and_hides_text_in_debug() {
+        let value = serde_json::json!({"schema":1,"type":"ime","request_id":"1",
+            "target":{"session":"1","window":"2","scene":"3","generation":"4"},
+            "transaction":{"target":{"session":"1","window":"2","surface":"5","focus_token":"6",
+                "input_epoch":0,"activation":1,"serial":4294967295u32},"edit_revision":1,"sequence":1,
+                "commit":"private-ime-fixture","preedit":null,"delete_before":0,"delete_after":0}});
+        let parsed = Command::parse(&value.to_string()).unwrap();
+        assert!(!format!("{parsed:?}").contains("private-ime-fixture"));
+        assert!(!parsed.needs_input_reset());
+        for field in ["session", "window"] {
+            let mut invalid = value.clone();
+            invalid["transaction"]["target"][field] = "9".into();
+            assert!(Command::parse(&invalid.to_string()).is_err());
+        }
+        let mut invalid = value;
+        invalid["transaction"]["commit"] = "a".repeat(crate::ime::IME_TEXT_BYTES + 1).into();
+        assert!(Command::parse(&invalid.to_string()).is_err());
+    }
     #[test]
     fn launcher_commands_require_structured_arguments_and_snapshot_identity() {
         let mut value = serde_json::json!({"schema":1,"request_id":"1","type":"launch_terminal","session":"7",

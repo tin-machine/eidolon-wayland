@@ -54,6 +54,10 @@ object NativeSessionHost {
     private var pendingDisconnect: PendingDisconnect? = null
     private data class KeyboardFocus(val runtime: Long, val epoch: Long, val target: String, val token: String)
     @Volatile private var keyboardFocus: KeyboardFocus? = null
+    @Volatile private var imeConnection: ImeSessionConnection? = null // Methods belong to UI; worker only captures this identity.
+    private val imeRawBlocked = AtomicBoolean(false)
+    private var imeFrameOrder = 0L // Worker-to-UI ordered packet sequence.
+    private var imeAndroidReleased: (() -> Boolean)? = null // UI only; captures a WeakReference, never an Activity.
     data class InputTarget(val runtime: Long, val epoch: Long, val identity: String, val target: String)
     @Volatile private var inputTargets: Map<String, InputTarget> = emptyMap()
     private fun targetIdentity(target: JSONObject): String = listOf("session","window","scene","generation").joinToString(":") { target.getString(it) }
@@ -368,6 +372,7 @@ object NativeSessionHost {
             .put("command_seq", plan.getString("command_seq")).put("target", plan.getJSONObject("target"))
             .put("action", plan.getString("action")).toString())
     fun resetInput(): Int {
+        invalidateImeConnection()
         inputIntents.incrementAndGet()
         if (BuildConfig.DEBUG) Log.i(TAG,"input_reset intent=${inputIntents.get()}")
         keyboardFocus = null
@@ -542,8 +547,200 @@ object NativeSessionHost {
         pendingInputFocus=PendingInputFocus(target.toString(),handle,inputIntents.incrementAndGet(),SystemClock.elapsedRealtime()+2000)
         if (BuildConfig.DEBUG) Log.i(TAG,"focus_begin explicit target=${targetIdentity(target)} ticket=${inputIntents.get()}")
     } } }
+    /** Explicit debug-only endpoint. Normal UI never calls this or enables the Android backend. */
+    fun debugCreateImeEditor(context: Context): ImeEditorView? {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (!BuildConfig.DEBUG || imeRawBlocked.get()) return null
+        val focus = keyboardFocus ?: return null
+        if (focus.runtime != handle || editing.get() || panelTextInputs.isNotEmpty() || !activityVisible.get() || xrState.get() != "FOCUSED") return null
+        val target = strictImeSdkTarget(JSONObject(focus.target)) ?: return null
+        var editorReference = java.lang.ref.WeakReference<ImeEditorView>(null)
+        lateinit var connection: ImeSessionConnection
+        connection = ImeSessionConnection(focus.runtime, target, focus.epoch,
+            requestId = { requests.incrementAndGet().toString() },
+            enqueue = { request, command -> enqueueImeCommand(connection, request, command) },
+            clock = SystemClock::elapsedRealtime,
+            onClosed = { editorReference.get()?.closeEditor() })
+        imeAndroidReleased = {
+            val editor = editorReference.get()
+            editor == null || (!editor.hasFocus() && editor.context.getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.isAcceptingText != true)
+        }
+        imeConnection = connection
+        imeRawBlocked.set(true)
+        inputIntents.incrementAndGet() // Cancel pending automatic focus work, preserving the captured target.
+        val view = ImeEditorView(context,
+            onTransaction = connection::submit,
+            onKeyEvent = { event ->
+                val generation = editorReference.get()?.metadata()?.generation
+                val captured = generation?.let(connection::keyFocus)
+                captured != null && sendImeNonTextKey(connection, captured, event)
+            },
+            onEditorAction = { false },
+            onInvalidated = { generation, reason ->
+                if (reason == "focus_lost") connection.close() else connection.editorInvalidated(generation)
+            },
+            onConnectionOpened = connection::openEditor,
+            canEditGeneration = connection::acceptsEditor)
+        editorReference = java.lang.ref.WeakReference(view)
+        // Backend enable requests urgent reset immediately: a prior Ctrl down must not
+        // remain held in Linux while Android is still waiting to create its connection.
+        connection.start()
+        watchImeDeadline(connection)
+        return view
+    }
+
+    fun debugCloseImeEditor() {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (BuildConfig.DEBUG) imeConnection?.close()
+    }
+
+    /** Metadata only: no surrounding/preedit/commit, key events, or private payload strings. */
+    fun debugImeStatus(): ImeSessionMetadata? {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        return if (BuildConfig.DEBUG) imeConnection?.metadata() else null
+    }
+
+    /** Android focus/IMM exit is a separate observation from native delivery/cleanup ACKs. */
+    fun debugImeAndroidReleased(): Boolean {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        return imeAndroidReleased?.invoke() ?: true
+    }
+
+    private fun watchImeDeadline(connection: ImeSessionConnection) {
+        ui.postDelayed({
+            if (imeConnection === connection) {
+                connection.expire()
+                val metadata = connection.metadata()
+                imeRawBlocked.set(metadata.rawBlocked || !debugImeAndroidReleased())
+                if (metadata.phase != ImeSessionPhase.CLOSED || (!metadata.rawBlocked && imeRawBlocked.get())) watchImeDeadline(connection)
+            }
+        }, 250)
+    }
+
+    private fun invalidateImeConnection() {
+        val connection = imeConnection ?: return
+        ui.post {
+            if (imeConnection === connection) {
+                // stop cleanup may already have retired this owner before this UI task runs.
+                imeRawBlocked.set(true)
+                connection.close()
+            }
+        }
+    }
+
+    private fun strictImeSdkTarget(value: JSONObject): ImeSdkTarget? {
+        fun id(key: String) = value.opt(key) as? String
+        return ImeSdkTarget(id("session") ?: return null, id("window") ?: return null,
+            id("scene") ?: return null, id("generation") ?: return null).takeIf { it.valid() }
+    }
+    private fun imeSdkJson(target: ImeSdkTarget) = JSONObject().put("session", target.session).put("window", target.window)
+        .put("scene", target.scene).put("generation", target.generation)
+    private fun imeFocus(value: KeyboardFocus?): ImeSessionFocus? = value?.let {
+        val target = strictImeSdkTarget(JSONObject(it.target)) ?: return null
+        ImeSessionFocus(it.runtime, it.epoch, target, it.token)
+    }
+    private fun imeEnqueueCode(code: Int) = when (code) {
+        NativeBridge.ACCEPTED -> ImeEnqueueResult.ACCEPTED
+        NativeBridge.BUSY -> ImeEnqueueResult.BUSY
+        NativeBridge.INVALID_ARGUMENT -> ImeEnqueueResult.INVALID_ARGUMENT
+        else -> ImeEnqueueResult.UNAVAILABLE
+    }
+    private fun imeDeliveryCode(code: String) = when (code) {
+        "ACCEPTED" -> ImeDeliveryResult.APPLIED
+        "STALE" -> ImeDeliveryResult.STALE
+        "NOT_READY" -> ImeDeliveryResult.NOT_READY
+        "INVALID_ARGUMENT" -> ImeDeliveryResult.INVALID_ARGUMENT
+        else -> ImeDeliveryResult.FAILED
+    }
+    private fun enqueueImeCommand(connection: ImeSessionConnection, request: String, command: ImeSessionCommand): ImeEnqueueResult {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (!BuildConfig.DEBUG || imeConnection !== connection || connection.runtime != handle || handle == 0L) return ImeEnqueueResult.UNAVAILABLE
+        val envelope = JSONObject().put("schema", 1).put("request_id", request)
+        when (command) {
+            is ImeSessionCommand.Backend -> envelope.put("type", "set_ime_backend").put("session", connection.target.session).put("enabled", command.enabled)
+            ImeSessionCommand.Reset -> envelope.put("type", "reset_input")
+            is ImeSessionCommand.Focus -> {
+                val target = inputTargets.values.firstOrNull { it.runtime == connection.runtime && it.epoch == command.epoch &&
+                    strictImeSdkTarget(JSONObject(it.target)) == connection.target } ?: return ImeEnqueueResult.UNAVAILABLE
+                envelope.put("type", "focus_window").put("target", JSONObject(target.target)).put("input_epoch", command.epoch)
+            }
+            is ImeSessionCommand.Transaction -> {
+                if (!imeFocusCurrent(connection, command.focus)) return ImeEnqueueResult.UNAVAILABLE
+                envelope.put("type", "ime").put("target", imeSdkJson(connection.target)).put("transaction", JSONObject(command.payload.toPayloadJson()))
+            }
+        }
+        // This private envelope is consumed synchronously and never retained in diagnostics/ACK maps.
+        return imeEnqueueCode(NativeBridge.nativeCommand(connection.runtime, envelope.toString()))
+    }
+    private fun imeFocusCurrent(connection: ImeSessionConnection, focus: ImeSessionFocus) =
+        imeConnection === connection && connection.runtime == handle && focus.target == connection.target &&
+            imeFocus(keyboardFocus) == focus && !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get() == "FOCUSED"
+
+    private fun sendImeNonTextKey(connection: ImeSessionConnection, focus: ImeSessionFocus, event: KeyEvent): Boolean {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (!imeFocusCurrent(connection, focus) || event.deviceId < 0 || event.isCanceled || event.isSystem ||
+            event.action !in setOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) return false
+        // Text always comes from InputConnection. Only terminal controls/navigation cross this route.
+        val controlLetter = event.isCtrlPressed && !event.isAltPressed && !event.isMetaPressed && event.keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z
+        val nonText = event.keyCode in setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_MOVE_HOME, KeyEvent.KEYCODE_MOVE_END,
+            KeyEvent.KEYCODE_PAGE_UP, KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.KEYCODE_INSERT, KeyEvent.KEYCODE_DEL,
+            KeyEvent.KEYCODE_FORWARD_DEL, KeyEvent.KEYCODE_ESCAPE, KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_CTRL_RIGHT, KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT,
+            KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_ALT_RIGHT)
+        // View permits an up only for its previously accepted down; Ctrl may already have lifted.
+        val ownedControlUp = event.action == KeyEvent.ACTION_UP && event.keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z
+        if (!nonText && !controlLetter && !ownedControlUp) return false
+        val key = JSONObject().put("device", event.deviceId).put("scan_code", event.scanCode).put("key_code", event.keyCode)
+            .put("action", if (event.action == KeyEvent.ACTION_DOWN) "pressed" else "released").put("repeat", event.repeatCount)
+            .put("meta", event.metaState).put("time_ms", event.eventTime and 0xffffffffL)
+        val code = NativeBridge.nativeCommand(focus.runtime, JSONObject().put("schema", 1).put("type", "key")
+            .put("request_id", requests.incrementAndGet().toString()).put("target", imeSdkJson(focus.target))
+            .put("input_epoch", focus.epoch).put("focus_token", focus.token).put("key", key).toString())
+        if (code != NativeBridge.ACCEPTED) connection.close("key_rejected")
+        return code == NativeBridge.ACCEPTED
+    }
+
+    private fun privateImeSnapshot(runtimeHandle: Long): ImeDecodedSnapshot = try {
+        val text = NativeBridge.nativeImeUi(runtimeHandle)
+        if (text.length > 65536) ImeDecodedSnapshot(false, null) else {
+            val root = JSONObject(text)
+            val selected = mutableMapOf<String, Any?>("schema" to root.opt("schema"), "code" to root.opt("code"))
+            if (root.has("ime")) {
+                val value = root.opt("ime")
+                selected["ime"] = when (value) {
+                    JSONObject.NULL -> null
+                    is JSONObject -> {
+                        val target = value.opt("target")
+                        mapOf("edit_revision" to value.opt("edit_revision"), "last_sequence" to value.opt("last_sequence"),
+                            "target" to if (target is JSONObject) listOf("session", "window", "surface", "focus_token", "input_epoch", "activation", "serial")
+                                .associateWith { target.opt(it) } else target)
+                    }
+                    else -> value
+                }
+            }
+            ImePrivateSnapshot.decode(selected)
+        }
+    } catch (_: Exception) { ImeDecodedSnapshot(false, null) }
+
+    private fun pumpIme(runtime: JSONObject, completions: List<ImeSessionCompletion>) {
+        val connection = imeConnection ?: return
+        val focus = imeFocus(keyboardFocus)
+        val available = inputTargets.values.any { it.runtime == connection.runtime && strictImeSdkTarget(JSONObject(it.target)) == connection.target }
+        val frame = ImeSessionFrame(handle, runtime.getLong("input_resets"), available, focus, privateImeSnapshot(handle))
+        val order = ++imeFrameOrder
+        ui.post {
+            if (imeConnection === connection) {
+                connection.observe(order, frame, completions)
+                imeRawBlocked.set(connection.metadata().rawBlocked || !debugImeAndroidReleased())
+            }
+        }
+    }
+
     /** 入口の物理device判定はPhysicalKeyboard。ここは短いnative enqueueだけ。 */
     fun sendPhysicalKey(event: KeyEvent): Boolean {
+        if (imeRawBlocked.get()) return false // Android IME owns physical ingress until reset/disable ACKs.
+        if(BuildHooks.imeProbeActive()) {BuildHooks.imeProbePhysicalKey();return false}
         val focus = keyboardFocus ?: return false
         if (editing.get() || panelTextInputs.isNotEmpty() || focus.runtime != handle || !activityVisible.get() || xrState.get() != "FOCUSED") return false
         val key = JSONObject().put("device", event.deviceId).put("scan_code", event.scanCode).put("key_code", event.keyCode)
@@ -586,6 +783,7 @@ object NativeSessionHost {
             .put("request_id",requests.incrementAndGet().toString()).put("target",target).toString())
     private fun stopRuntime() {
         if (handle == 0L) return
+        invalidateImeConnection()
         keyboardFocus = null
         inputTargets = emptyMap()
         val old = handle
@@ -613,6 +811,8 @@ object NativeSessionHost {
             Thread.sleep(2)
         }
         handle = 0
+        val endedIme = imeConnection
+        ui.post { if (imeConnection === endedIme) { endedIme?.close(); imeConnection = null; imeAndroidReleased = null; imeRawBlocked.set(false) } }
         catalogPending=null;launcherUpdate(LauncherUi(path=launcherState.path))
         poseCompletions.clear();selectedWindow=null;lastFocusedWindow=null;editing.set(false);ui.post { layoutEditing.value=false }
         clearTerminalOpen(); terminalAdding = null; terminalError = null
@@ -640,9 +840,11 @@ object NativeSessionHost {
         val events = JSONObject(NativeBridge.nativePoll(handle, 64))
         check(events.getInt("code") == NativeBridge.ACCEPTED)
         val values = events.getJSONArray("events")
+        val imeCompletions = mutableListOf<ImeSessionCompletion>()
         for (index in 0 until values.length()) {
             val event = values.getJSONObject(index)
             if (event.optString("type") == "command_complete") {
+                imeCompletions.add(ImeSessionCompletion(event.getString("request_id"), imeDeliveryCode(event.getString("code"))))
                 catalogPending?.let { pending ->
                     if(event.getString("request_id")==pending.request && event.getString("code")!="ACCEPTED") {
                         catalogPending=null;launcherUpdate(launcherState.copy(busy=false,message="一覧を操作できません（${event.getString("code")}）"))
@@ -769,12 +971,13 @@ object NativeSessionHost {
         keyboardFocus = if (!editing.get() && runtime.getString("state") == "Ready" && runtime.getBoolean("activity_visible") &&
             runtime.getString("xr_state") == "FOCUSED" && focused != null)
             KeyboardFocus(handle, runtime.getLong("input_resets"), focused.getJSONObject("target").toString(), runtime.getJSONObject("app").getJSONObject("input").getString("focus_token")) else null
+        pumpIme(runtime, imeCompletions)
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else "ターミナルへ入力"
         ui.post { keyboardSummary.value = keyboardLabel }
         val inputConditions=InputConditions(runtime.getBoolean("activity_visible"),runtime.getString("xr_state")=="FOCUSED",
             runtime.getString("state")=="Ready",if(terminalOpen?.startupWaiting==true) "StartingTermux" else runtime.getJSONObject("transport").getString("state"),editing.get(),keyboardCount.get(),
             (runtime.optJSONObject("app")?.optJSONArray("windows")?.length() ?: 0)>0,inputTargets.isNotEmpty(),
-            focusedWindow.takeIf {keyboardFocus!=null},panelEditing=panelTextInputs.isNotEmpty())
+            focusedWindow.takeIf {keyboardFocus!=null},panelEditing=panelTextInputs.isNotEmpty(),imeProbe=BuildHooks.imeProbeActive())
         val status=InputStatus.from(inputConditions)
         ui.post {inputStatus.value=status}
         store?.updateInterface(JSONObject().put("input_reason",status.reason).put("input_action",status.action.name)

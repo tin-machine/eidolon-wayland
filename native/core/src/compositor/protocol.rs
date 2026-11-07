@@ -103,6 +103,11 @@ impl Cacheable for BufferUse {
 
 #[path = "clipboard.rs"]
 mod clipboard;
+#[path = "ime.rs"]
+mod ime;
+#[cfg(any(test, feature = "debug-fixtures"))]
+#[path = "ime_checks.rs"]
+pub mod ime_checks;
 #[path = "input.rs"]
 mod input;
 #[path = "pointer.rs"]
@@ -114,6 +119,7 @@ mod positioner;
 /// 所有済みsnapshot以外はprotocol ownerから持ち出さない。
 #[path = "snapshot.rs"]
 mod snapshot;
+pub use ime::ImeReport;
 pub use input::InputReport;
 pub(crate) use input::monotonic_time_ms;
 pub use pointer::PointerReport;
@@ -127,6 +133,7 @@ pub struct ProtocolState {
     seats: SeatState<Self>,
     _seat: Seat<Self>,
     input: input::InputState,
+    ime: ime::ImeState,
     data_device: DataDeviceState,
     output: Output,
     _globals: Vec<GlobalId>,
@@ -210,6 +217,7 @@ impl ProtocolState {
                 1,
             ),
             data_device.global(),
+            ime::create_global(dh),
         ];
         Self {
             display_handle: dh.clone(),
@@ -219,6 +227,7 @@ impl ProtocolState {
             seats,
             _seat: seat,
             input: Default::default(),
+            ime: Default::default(),
             data_device,
             output,
             _globals: globals,
@@ -460,6 +469,7 @@ impl CompositorHandler for ProtocolState {
         }
     }
     fn destroyed(&mut self, surface: &WlSurface) {
+        self.ime_surface_destroyed(surface);
         let window = self
             .surface_meta
             .get(&surface.id())
@@ -571,6 +581,7 @@ impl SeatHandler for ProtocolState {
         &mut self.seats
     }
     fn focus_changed(&mut self, _: &Seat<Self>, focus: Option<&WlSurface>) {
+        self.ime_new_focus(focus);
         self.clipboard_new_focus(focus);
         self.clipboard_focus(&self.display_handle.clone());
     }

@@ -15,5 +15,7 @@ pub mod state_checks;
 pub(crate) static FIXTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub mod primitives;
 pub mod protocol;
+#[cfg(any(test, feature = "debug-fixtures"))]
+pub use protocol::ime_checks;
 pub mod shm;
 mod shm_budget;

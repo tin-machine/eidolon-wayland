@@ -3,6 +3,7 @@ pub mod build_info;
 pub mod catalog;
 pub mod commands;
 pub mod ids;
+pub mod ime;
 pub mod input;
 pub mod keyboard;
 pub mod layout;
