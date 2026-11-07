@@ -1,6 +1,14 @@
 # Quest 3の端末情報・負荷メトリクスの調査と次期計画
 
 2026-11-07実装追記: NX04では通常APKから電池/充電・RAM空き/総量・既定ネットワークのIPを取得・表示し、実機で値の取得を確認した。残るメトリクスはNX14。
+
+2026-11-08追記: IPと同じactive networkのdefault unicast routeから、明示されたgatewayを最大8件表示する実装を追加した。
+`available`、`no_explicit_gateway`、`unknown`を分け、直結経路や取得失敗をgatewayのIPへ置き換えない。
+IPv4/IPv6を対象とし、APIが返したIPv6 scopeは保持する。これはAPの管理IPや任意宛先への疎通確認ではない。
+新しい権限は追加せず、既存の5秒tickと可視期間の購読を使う。取得中にactive networkが変われば値を採用しない。
+統合APKでの検証結果は次のcheckpointへ追記する。
+[getLinkPropertiesの権限・欠測条件](https://developer.android.com/reference/android/net/ConnectivityManager#getLinkProperties(android.net.Network))と
+[RouteInfoのdefault/next hop/type](https://developer.android.com/reference/android/net/RouteInfo)を確認した。
 [実装・検証記録](extensions-nx01-nx08-20261107.md)と計画段階の記述を区別する。
 
 調査日: 2026-11-07。基準revision: `74555aa`。状態: **計画のみ。製品への実装開始待ち**。

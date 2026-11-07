@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
+import android.net.RouteInfo
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
@@ -27,6 +28,8 @@ data class DeviceMetricsSnapshot(
     val network: String = "unknown",
     val processCpu: ProcessCpuReading = ProcessCpuReading(),
     val details: DeviceDetailSnapshot = DeviceDetailSnapshot(),
+    val gateways: List<String> = emptyList(),
+    val gatewayStatus: String = "unknown",
 ) {
     fun summary(): String {
         val battery = batteryPercent?.let { "$it%" } ?: "不明"
@@ -35,7 +38,12 @@ data class DeviceMetricsSnapshot(
         return "電池 $battery · $charge / RAM空き ${gib(availableRam)} / ${gib(totalRam)} GiB"
     }
     fun networkSummary(): String = when(network) {
-        "connected" -> "Quest IP: ${addresses.joinToString(", ").ifEmpty { "取得待ち" }}"
+        "connected" -> "Quest IP: ${addresses.joinToString(", ").ifEmpty { "取得待ち" }}\n" +
+            when(gatewayStatus) {
+                "available" -> "既定gateway: ${gateways.joinToString(", ")}"
+                "no_explicit_gateway" -> "既定gateway: 明示的な中継先なし"
+                else -> "既定gateway: 取得できません"
+            }
         "disconnected" -> "Questネットワーク: 未接続"
         else -> "Quest IP: 取得できません"
     }
@@ -87,6 +95,8 @@ data class DeviceMetricsSnapshot(
         .put("battery_percent",batteryPercent ?: JSONObject.NULL).put("charging",charging ?: JSONObject.NULL)
         .put("available_ram_bytes",availableRam ?: JSONObject.NULL).put("total_ram_bytes",totalRam ?: JSONObject.NULL)
         .put("network",network).put("addresses",org.json.JSONArray(addresses))
+        .put("default_gateways",org.json.JSONArray(gateways)).put("gateway_status",gatewayStatus)
+        .put("gateway_scope","active_network_default_unicast_routes")
         .put("process_cpu_percent",processCpu.percent ?: JSONObject.NULL)
         .put("process_cpu_status",processCpu.status.wireValue)
         .put("process_cpu_sampled_monotonic_ms",processCpu.sampledMonotonicMs ?: JSONObject.NULL)
@@ -162,17 +172,25 @@ class DeviceMetrics(context: Context, private val publish: (DeviceMetricsSnapsho
         val network=runCatching {
             val manager=app.getSystemService(ConnectivityManager::class.java)
             val current=manager.activeNetwork
-            if(current==null) "disconnected" to emptyList<String>() else {
+            if(current==null) NetworkObservation("disconnected") else {
                 val links=manager.getLinkProperties(current)
-                (if(links==null) "unknown" else "connected") to (links?.linkAddresses?.mapNotNull { link ->
-                    link.address.takeUnless {it.isLoopbackAddress || it.isLinkLocalAddress}?.hostAddress?.substringBefore('%')
-                }?.distinct()?.take(8) ?: emptyList())
+                if(links==null || manager.activeNetwork!=current) NetworkObservation() else {
+                    val addresses=links.linkAddresses.mapNotNull { link ->
+                        link.address.takeUnless {it.isLoopbackAddress || it.isLinkLocalAddress}?.hostAddress?.substringBefore('%')
+                    }.distinct().take(8)
+                    val gateways=links.routes.asSequence()
+                        .filter {it.type==RouteInfo.RTN_UNICAST && it.isDefaultRoute && it.hasGateway()}
+                        .mapNotNull { route -> route.gateway?.takeUnless {it.isAnyLocalAddress || it.isLoopbackAddress || it.isMulticastAddress}?.hostAddress }
+                        .distinct().take(8).toList()
+                    NetworkObservation("connected",addresses,gateways,
+                        if(gateways.isEmpty()) "no_explicit_gateway" else "available")
+                }
             }
-        }.getOrElse {"unknown" to emptyList()}
+        }.getOrElse {NetworkObservation()}
         val now=elapsedMillis()
         latest=DeviceMetricsSnapshot(now,percent,charging,
-            memory?.availMem?.takeIf {it>=0},memory?.totalMem?.takeIf {it>0},network.second,network.first,
-            cpu.sample(now,processCpuMillis),detailState.refresh(now))
+            memory?.availMem?.takeIf {it>=0},memory?.totalMem?.takeIf {it>0},network.addresses,network.state,
+            cpu.sample(now,processCpuMillis),detailState.refresh(now),network.gateways,network.gatewayStatus)
         publish(latest)
         if(detailState.shouldPoll(now)) detailSubscription?.let(detailWorker::poll)
     }
@@ -181,6 +199,9 @@ class DeviceMetrics(context: Context, private val publish: (DeviceMetricsSnapsho
         private val detailWorker=DeviceDetailWorker(SystemClock::elapsedRealtime) {android.util.Log.w("EidolonDeviceMetrics",it)}
     }
 }
+
+private data class NetworkObservation(val state: String = "unknown", val addresses: List<String> = emptyList(),
+    val gateways: List<String> = emptyList(), val gatewayStatus: String = "unknown")
 
 /** Every platform call, including listener registration/removal, runs on the detail worker. */
 private class AndroidDeviceDetailBackend(private val app: Context): DeviceDetailBackend {
