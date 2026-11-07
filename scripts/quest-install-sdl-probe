@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""固定SDL C/runner/manifestだけをTermuxの新しいrun directoryへ配備する。"""
+import argparse
+import datetime
+import json
+import os
+from pathlib import Path
+import secrets
+import shlex
+import subprocess
+
+from quest_device import QuestDevice, package_uid, work_root
+from sdl_probe_install import InstallError, canonical, prepare_bundle, sha256
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--serial", required=True)
+    parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--run-id", default=None, help="省略時はランダムな32桁hex。既存runは再利用しない")
+    args = parser.parse_args()
+    os.umask(0o077)
+    repository = Path(__file__).resolve().parents[1]
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+    dirty = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=repository))
+    try:
+        payload, manifest = prepare_bundle(repository, args.run_id or secrets.token_hex(16), commit, dirty)
+    except InstallError as failure:
+        parser.error(str(failure))
+    root = args.artifact_root or work_root() / "eidolon-sdl-probe-install"
+    if not root.is_absolute():
+        parser.error("artifact rootは絶対pathにしてください")
+    run = root / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S") + "-" + manifest["run_id"])
+    run.mkdir(parents=True, mode=0o700)
+    (run / "payload.json").write_bytes(payload)
+    (run / "manifest.json").write_bytes(canonical(manifest) + b"\n")
+    device = QuestDevice(args.serial, run)
+    identity = device.validate()
+    identity["physical_serial"] = device.adb("shell", "getprop", "ro.serialno").strip()
+    if not identity["physical_serial"]:
+        raise SystemExit("Questの物理serialを取得できませんでした")
+    uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux")
+    # 転送するのは配布物のみ。HOMEはremoteの実Python prefixで照合・導出する。
+    installer = (repository / "scripts/sdl_probe_install.py").read_text()
+    command = ["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python3", "-c", installer, sha256(payload), str(uid)]
+    result = subprocess.run(["adb", "-s", args.serial, "shell", "-T", shlex.join(command)],
+                            input=payload, capture_output=True, timeout=30)
+    (run / "installer.log").write_bytes(result.stdout + result.stderr)
+    if result.returncode:
+        raise SystemExit("SDL source配備失敗。installer.logを確認してください")
+    report = json.loads(result.stdout)
+    if (report.get("status") != "pass" or report.get("uid") != uid or report.get("run_id") != manifest["run_id"] or
+            report.get("manifest_sha256") != sha256(canonical(manifest) + b"\n") or report.get("files") != manifest["files"] or
+            report.get("home_source") != "python_prefix"):
+        raise SystemExit("SDL sourceのUID/hash/manifest照合失敗")
+    (run / "result.json").write_text(json.dumps(dict(device=identity, installed=report, manifest=manifest), indent=2) + "\n")
+    print(json.dumps(report))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
