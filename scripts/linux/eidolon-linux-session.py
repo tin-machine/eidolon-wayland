@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Linux専用固定SHM helper。CLIはprepare/cleanup+nonceのみ、任意argv/pathなし。"""
+"""Linux専用固定SHM/GTK helper。CLIは固定case+nonceのみ、任意argv/pathなし。"""
 import hashlib
 import json
 import os
@@ -19,6 +19,10 @@ REVISION = 'eidolon-linux-shm-v1'
 MAX_LINE = 16384
 FILES = ('eidolon-linux-session.py', 'waypipe', 'eidolon-shm-fixture')
 VERSION = b'waypipe 0.11.3\nfeatures: lz4 zstd\nunavailable: dmabuf video vaapi\n'
+GTK_REVISION = 'eidolon-linux-gtk-v1'
+GTK_FILES = ('gtk3-interaction-fixture.c', 'eidolon-gtk3-fixture')
+GTK_MODES = {'gtk_input': 'input', 'gtk_dialog': 'dialog', 'gtk_resize': 'resize'}
+GROUP_SCAN_SECONDS = .25  # 同時build時のscheduler遅延を許容。件数上限とfinish全体2秒は維持。
 
 
 def require(value, token):
@@ -105,6 +109,62 @@ def environment(home, directory):
     # 既存desktop/SSH-agent/Termux/Python/linker環境は子へ渡さない。
     return {'PATH': '/usr/bin:/bin', 'HOME': str(home), 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
             'XDG_RUNTIME_DIR': str(directory), 'TMPDIR': str(directory), 'SHELL': '/bin/sh'}
+
+
+def gtk_bundle(home):
+    directory, hashes, base_hash = bundle(home)
+    raw = private_read(directory / 'gtk-bundle.json')
+    manifest = decode(raw)
+    require(type(manifest) is dict and set(manifest) == {'schema', 'backend', 'revision', 'base_bundle_sha256',
+            'gtk_version', 'files'} and type(manifest['schema']) is int and manifest['schema'] == 1 and
+            manifest['backend'] == 'linux_posix' and manifest['revision'] == GTK_REVISION and
+            manifest['base_bundle_sha256'] == base_hash and type(manifest['gtk_version']) is str and
+            re.fullmatch(r'3\.24\.[0-9]{1,3}', manifest['gtk_version']) and type(manifest['files']) is dict and
+            set(manifest['files']) == set(GTK_FILES), 'GTK_BUNDLE_INVALID')
+    for name in GTK_FILES:
+        expected = manifest['files'][name]
+        require(type(expected) is str and re.fullmatch('[0-9a-f]{64}', expected), 'GTK_BUNDLE_INVALID')
+        data = private_read(directory / name, 4 * 1024 * 1024, executable=name == GTK_FILES[1])
+        require(hashlib.sha256(data).hexdigest() == expected, 'GTK_BUNDLE_HASH_MISMATCH')
+    return directory, hashes, base_hash, manifest, hashlib.sha256(raw).hexdigest()
+
+
+def gtk_environment(home, directory):
+    private = directory / 'g'; private.mkdir(mode=0o700)
+    for name in ('home', 'config', 'cache', 'data', 'tmp'): (private / name).mkdir(mode=0o700)
+    env = environment(home, directory)
+    env.update(HOME=str(private / 'home'), XDG_CONFIG_HOME=str(private / 'config'),
+               XDG_CACHE_HOME=str(private / 'cache'), XDG_DATA_HOME=str(private / 'data'),
+               XDG_DATA_DIRS='/usr/local/share:/usr/share', TMPDIR=str(private / 'tmp'),
+               GDK_BACKEND='wayland', GDK_GL='disable', GDK_RENDERING='image',
+               GSETTINGS_BACKEND='memory', GTK_USE_PORTAL='0', GIO_USE_VFS='local', NO_AT_BRIDGE='1',
+               GTK_IM_MODULE='gtk-im-context-simple',
+               DBUS_SESSION_BUS_ADDRESS='unix:path=' + str(private / 'no-session-bus'))
+    return env
+
+
+def remove_gtk_state(directory):
+    # 自group回収後のみ呼ぶ。名前・owner・型・depth/件数/総bytesを検査し、linkを辿らない。
+    budget = [256, 16 * 1024 * 1024]
+    def visit(parent, name, depth):
+        require(depth <= 6 and budget[0] > 0, 'GTK_STATE_LIMIT'); budget[0] -= 1
+        info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        require(info.st_uid == os.getuid() and not info.st_mode & 0o022, 'GTK_STATE_INVALID')
+        if stat.S_ISDIR(info.st_mode):
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+            try:
+                actual = os.fstat(fd)
+                require((actual.st_dev, actual.st_ino) == (info.st_dev, info.st_ino), 'GTK_STATE_CHANGED')
+                with os.scandir(fd) as entries:
+                    for entry in entries: visit(fd, entry.name, depth + 1)
+            finally: os.close(fd)
+            os.rmdir(name, dir_fd=parent)
+        else:
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= budget[1], 'GTK_STATE_INVALID')
+            budget[1] -= info.st_size; os.unlink(name, dir_fd=parent)
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try: visit(fd, 'g', 0)
+    finally: os.close(fd)
 
 
 def paths(home, nonce):
@@ -200,7 +260,9 @@ def cleanup(home, nonce, creator=None):
     if (creator is None or current is None or any(creator.get(key) != current[key] for key in ('pid', 'start', 'group', 'uid'))
             or lease['owner'] != creator or same_process(lease.get('child'))):
         return {**marker(nonce), 'cleaned': False, 'pending': True}
-    require({item.name for item in directory.iterdir()} <= {'owner.json', 'lease.json', 'p', 'w'}, 'DIRECTORY_NOT_EMPTY')
+    gtk = lease.get('mode') in GTK_MODES
+    require({item.name for item in directory.iterdir()} <= {'owner.json', 'lease.json', 'p', 'w'} |
+            ({'g'} if gtk else set()), 'DIRECTORY_NOT_EMPTY')
     sockets = []
     for name in ('p', 'w'):
         path = directory / name
@@ -208,6 +270,7 @@ def cleanup(home, nonce, creator=None):
             info = path.lstat()
             require(stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid(), 'SOCKET_INVALID')
             sockets.append(path)
+    if gtk and os.path.lexists(directory / 'g'): remove_gtk_state(directory)
     for path in sockets: path.unlink()
     (directory / 'lease.json').unlink(); (directory / 'owner.json').unlink(); directory.rmdir()
     return {**marker(nonce), 'cleaned': True, 'already_absent': False}
@@ -235,7 +298,7 @@ class Group:
 
     def live(self):
         # leaderをWNOWAITで保持している間だけgroupを検査。曖昧なら回収完了にしない。
-        deadline = time.monotonic() + .05
+        deadline = time.monotonic() + GROUP_SCAN_SECONDS
         with os.scandir('/proc') as entries:
             for count, entry in enumerate(entries):
                 require(count < 16384 and time.monotonic() < deadline, 'GROUP_SCAN_LIMIT')
@@ -308,6 +371,101 @@ def child_command(home, directory):
             str(directory / 'p'), '--display', str(directory / 'w'), 'server', '--', str(tools / 'eidolon-shm-fixture'), '--pattern']
 
 
+def inspect_gtk_tools(home, directory):
+    tools, hashes, base_hash, manifest, gtk_hash = gtk_bundle(home)
+    require(tool_output(tools / 'waypipe', environment(home, directory)) == VERSION, 'WAYPIPE_VERSION_MISMATCH')
+    return {'waypipe_version': '0.11.3', 'fixture_revision': 'eidolon-gtk3-interaction-v1',
+            'bundle_sha256': base_hash, 'files': hashes, 'gtk_bundle_sha256': gtk_hash,
+            'gtk_files': manifest['files'], 'gtk_version': manifest['gtk_version']}
+
+
+def gtk_child_command(home, directory, nonce, mode):
+    require(mode in GTK_MODES, 'MODE_INVALID')
+    tools, _, _, _, _ = gtk_bundle(home)
+    forwarded = (directory / 'p').lstat()
+    require(stat.S_ISSOCK(forwarded.st_mode) and forwarded.st_uid == os.getuid(), 'STREAMLOCAL_MISSING')
+    require(not os.path.lexists(directory / 'w'), 'DISPLAY_REUSED')
+    return [str(tools / 'waypipe'), '--no-gpu', '--compress', 'none', '--threads', '1', '--socket',
+            str(directory / 'p'), '--display', str(directory / 'w'), 'server', '--',
+            str(tools / GTK_FILES[1]), '--case', GTK_MODES[mode], '--run-id', nonce + nonce]
+
+
+GTK_COUNTERS = {'a_down', 'a_up', 'delete_down', 'delete_up', 'other_keys', 'entry_changes', 'button_clicks',
+                'dialog_opened', 'dialog_closed', 'dialog_responses', 'main_configures', 'dialog_configures',
+                'main_draws', 'dialog_draws'}
+GTK_BOOLS = {'complete', 'host_selftest', 'physical_input_verified', 'token_seen', 'delete_seen',
+             'dialog_parent_set', 'dialog_visible', 'resize_large_seen', 'resize_return_seen'}
+GTK_FIELDS = GTK_COUNTERS | GTK_BOOLS | {'schema', 'probe', 'run_id', 'case', 'app_id', 'dialog_app_id', 'pid',
+                                       'uid', 'sequence', 'phase', 'reason', 'logical_size', 'entry_rect', 'button_rect'}
+
+
+def gtk_process(pid, group, executable, saved=None):
+    require(type(pid) is int and pid > 0, 'GTK_PROCESS_INVALID')
+    before = identity(pid)
+    if saved is not None:
+        require(saved['pid'] == pid and (before is None or all(before[key] == saved[key]
+                for key in ('pid', 'start', 'group', 'uid'))), 'GTK_PROCESS_CHANGED')
+        return saved  # 初回のlive照合済み。終了時の報告を別PIDから再採用しない。
+    require(before is not None and before['state'] != 'Z' and before['group'] == group and
+            before['uid'] == os.getuid(), 'GTK_PROCESS_INVALID')
+    actual = Path('/proc', str(pid), 'exe').stat()
+    after = identity(pid)
+    require(stat.S_ISREG(actual.st_mode) and (actual.st_dev, actual.st_ino) == executable and
+            after is not None and all(before[key] == after[key] for key in ('pid', 'start', 'group', 'uid')),
+            'GTK_PROCESS_CHANGED')
+    return before
+
+
+class GtkReports:
+    """本文なしの固定counterのみ。初回PIDはWaypipe leaderではなく実executableに束縛。"""
+    def __init__(self, nonce, mode, verify, emit):
+        require(mode in GTK_MODES, 'MODE_INVALID')
+        self.run_id, self.case, self.verify, self.emit = nonce + nonce, GTK_MODES[mode], verify, emit
+        self.pending, self.bytes, self.count, self.last, self.process = bytearray(), 0, 0, None, None
+        self.ready = False
+
+    def feed(self, data):
+        self.bytes += len(data); require(self.bytes <= 524288, 'GTK_REPORT_LIMIT'); self.pending.extend(data)
+        while b'\n' in self.pending:
+            line, _, rest = self.pending.partition(b'\n'); self.pending = bytearray(rest)
+            value = decode(line)
+            app_id = 'io.github.tinmachine.eidolon.gtkfixture.r' + self.run_id
+            require(type(value) is dict and set(value) == GTK_FIELDS and type(value['schema']) is int and
+                    value['schema'] == 1 and value['probe'] == 'eidolon-gtk3-interaction-v1' and
+                    value['case'] == self.case and value['run_id'] == self.run_id and value['app_id'] == app_id and
+                    value['dialog_app_id'] == app_id + '.dialog' and type(value['uid']) is int and value['uid'] == os.getuid() and
+                    type(value['pid']) is int and value['pid'] > 0, 'GTK_REPORT_IDENTITY')
+            require(all(type(value[key]) is bool for key in GTK_BOOLS) and not value['host_selftest'] and
+                    not value['physical_input_verified'] and all(type(value[key]) is int and 0 <= value[key] <= 2147483647
+                    for key in GTK_COUNTERS), 'GTK_REPORT_TYPE')
+            require(self.count < 256 and type(value['sequence']) is int and value['sequence'] == self.count + 1 and
+                    value['phase'] in {'ready', 'state', 'final'} and value['reason'] in
+                    {'running', 'completed', 'window_closed', 'timeout', 'display_unavailable', 'wayland_required'} and
+                    (value['phase'] == 'final') == (value['reason'] != 'running'), 'GTK_REPORT_PHASE')
+            for key, count in (('logical_size', 2), ('entry_rect', 4), ('button_rect', 4)):
+                require(type(value[key]) is list and len(value[key]) == count and
+                        all(type(item) is int and 0 <= item <= 4096 for item in value[key]), 'GTK_REPORT_GEOMETRY')
+            require(self.last is None or self.last['phase'] != 'final', 'GTK_REPORT_AFTER_FINAL')
+            require(value['phase'] != 'ready' or self.count == 0, 'GTK_REPORT_PHASE')
+            require(value['phase'] != 'state' or self.ready, 'GTK_REPORT_PHASE')
+            require(self.last is None or all(value[key] >= self.last[key] for key in GTK_COUNTERS), 'GTK_REPORT_COUNTER_REGRESSED')
+            self.process = self.verify(value['pid'], self.process)
+            self.count += 1; self.last = value; self.ready |= value['phase'] == 'ready'; self.emit(value)
+        require(len(self.pending) <= MAX_LINE, 'GTK_REPORT_LIMIT')
+
+    def complete(self):
+        row = self.last
+        if not self.ready or self.pending or row is None or row['phase'] != 'final' or row['reason'] != 'completed' or not row['complete']:
+            return False
+        if self.case == 'input':
+            return (all(row[key] == 1 for key in ('a_down', 'a_up', 'delete_down', 'delete_up', 'button_clicks')) and
+                    row['entry_changes'] == 2 and row['other_keys'] == 0 and row['token_seen'] and row['delete_seen'])
+        if self.case == 'dialog':
+            return (all(row[key] == 1 for key in ('dialog_opened', 'dialog_closed', 'dialog_responses')) and
+                    row['dialog_parent_set'] and not row['dialog_visible'])
+        return row['resize_large_seen'] and row['resize_return_seen'] and row['logical_size'] == [640, 360]
+
+
 class Output:
     def __init__(self, descriptor):
         self.descriptor, self.pending = descriptor, bytearray()
@@ -325,24 +483,32 @@ class Output:
 
 
 def serve(home, nonce, control_fd, emit, *, lease_seconds=60.0, maximum_seconds=120.0,
-          inspect=inspect_tools, factory=child_command):
+          inspect=None, factory=None, mode='pattern'):
     """inspect/factory/homeの注入はhost test内部のみ。CLIはaccount_home/bundleに固定。"""
+    require(mode == 'pattern' or mode in GTK_MODES, 'MODE_INVALID')
+    if inspect is None: inspect = inspect_tools if mode == 'pattern' else inspect_gtk_tools
+    if factory is None:
+        factory = child_command if mode == 'pattern' else lambda home, directory: gtk_child_command(home, directory, nonce, mode)
     directory = prepare(home, nonce); owner = identity(os.getpid())
     lease = {**marker(nonce), 'owner': owner, 'child': None}
+    if mode in GTK_MODES: lease['mode'] = mode
     write_record(directory / 'lease.json', lease)
     result = {**marker(nonce), 'type': 'finished', 'reason': None, 'cleaned': False, 'group_alive': False,
               'child_reaped': False, 'pipes_closed': False, 'pattern_verified': False}
     child = None; inspected = False; pending = bytearray(); stopping = None; interrupted = [False]
+    gtk_reports = None; inspected_gtk = None; gtk_error = None; signalled = False
+    if mode in GTK_MODES: result.update(mode=mode, gtk_verified=False, gtk_reports=0, gtk_report_error=None)
     started = last_heartbeat = time.monotonic(); rings = {'stdout': Ring(), 'stderr': Ring()}
     selector = selectors.DefaultSelector(); blocking = os.get_blocking(control_fd); opened = set(); signals = {}
     if threading.current_thread() is threading.main_thread():
         for number in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
             signals[number] = signal.getsignal(number); signal.signal(number, lambda *_: interrupted.__setitem__(0, True))
     def stop(reason):
-        nonlocal stopping
+        nonlocal stopping, signalled
         if stopping is None:
             stopping = time.monotonic(); result['reason'] = reason
-            if child is not None: child.signal(signal.SIGTERM)
+            if child is not None and (mode == 'pattern' or reason != 'Completed'):
+                child.signal(signal.SIGTERM); signalled = True
     def publish(value):
         try: emit(value)
         except (OSError, ValueError): stop('OutputFailed')
@@ -360,7 +526,8 @@ def serve(home, nonce, control_fd, emit, *, lease_seconds=60.0, maximum_seconds=
             if now - started >= maximum_seconds: stop('MaximumDuration')
             if child is not None and child.exited(): stop('Completed')
             if stopping is not None:
-                if child is not None and now - stopping >= 1: child.signal(signal.SIGKILL)
+                if child is not None and now - stopping >= 1:
+                    child.signal(signal.SIGKILL); signalled = True
                 if child is None or (child.exited() and not child.live() and not opened): break
                 if now - stopping > 4: break
             for key, _ in selector.select(.02):
@@ -371,7 +538,18 @@ def serve(home, nonce, control_fd, emit, *, lease_seconds=60.0, maximum_seconds=
                     if key.data == 'control': stop('EOF')
                     else: opened.discard(key.data)
                     continue
-                if key.data != 'control': rings[key.data].push(raw); continue
+                if key.data != 'control':
+                    rings[key.data].push(raw)
+                    if key.data == 'stdout' and gtk_reports is not None and gtk_error is None:
+                        try: gtk_reports.feed(raw)
+                        except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+                            token = str(error)
+                            gtk_error = token if token in {'GTK_REPORT_LIMIT', 'GTK_REPORT_IDENTITY', 'GTK_REPORT_TYPE',
+                                'GTK_REPORT_PHASE', 'GTK_REPORT_GEOMETRY', 'GTK_REPORT_AFTER_FINAL',
+                                'GTK_REPORT_COUNTER_REGRESSED', 'GTK_PROCESS_INVALID', 'GTK_PROCESS_CHANGED',
+                                'JSON_INVALID'} else 'GTK_REPORT_REJECTED'
+                            stop('ReportInvalid')
+                    continue
                 if stopping is not None: continue
                 pending.extend(raw)
                 while b'\n' in pending and stopping is None:
@@ -386,9 +564,22 @@ def serve(home, nonce, control_fd, emit, *, lease_seconds=60.0, maximum_seconds=
                         elif kind == 'stop': stop('Stop')
                         elif kind == 'inspect_tools' and child is None and not inspected:
                             tools = inspect(home, directory); inspected = True
+                            if mode in GTK_MODES:
+                                inspected_gtk = gtk_bundle(home)[2:]
                             publish({**marker(nonce), 'type': 'tools', **tools})
-                        elif kind == 'start' and value['mode'] == 'pattern' and child is None and inspected:
-                            child = Group(factory(home, directory), environment(home, directory))
+                        elif kind == 'start' and value['mode'] == mode and child is None and inspected:
+                            if mode in GTK_MODES:
+                                bundle_path, _, base_hash, manifest, gtk_hash = gtk_bundle(home)
+                                require(inspected_gtk == (base_hash, manifest, gtk_hash), 'GTK_BUNDLE_CHANGED')
+                                binary = (bundle_path / GTK_FILES[1]).lstat()
+                                executable = (binary.st_dev, binary.st_ino)
+                                env = gtk_environment(home, directory)
+                            else: env = environment(home, directory)
+                            child = Group(factory(home, directory), env)
+                            if mode in GTK_MODES:
+                                gtk_reports = GtkReports(nonce, mode,
+                                    lambda pid, saved: gtk_process(pid, child.identity['group'], executable, saved),
+                                    lambda report: publish({**marker(nonce), 'type': 'gtk_report', 'report': report}))
                             lease['child'] = child.identity; write_record(directory / 'lease.json', lease)
                             for name in rings:
                                 pipe = getattr(child.child, name); os.set_blocking(pipe.fileno(), False)
@@ -400,6 +591,10 @@ def serve(home, nonce, control_fd, emit, *, lease_seconds=60.0, maximum_seconds=
     except (OSError, ValueError, TypeError, KeyError):
         stop('InternalFailure')
     finally:
+        natural_group_exit = False
+        if mode in GTK_MODES and child is not None and result['reason'] == 'Completed' and not opened:
+            try: natural_group_exit = child.exited() and not child.live()
+            except (OSError, ValueError): pass
         group_finished = child is None or child.finish()
         result['group_alive'] = not group_finished
         if child is not None:
@@ -409,7 +604,7 @@ def serve(home, nonce, control_fd, emit, *, lease_seconds=60.0, maximum_seconds=
         result['pipes_closed'] = not opened
         selector.close(); os.set_blocking(control_fd, blocking)
         result.update({name: ring.metadata() for name, ring in rings.items()})
-        if child is not None and child.reaped and child.child.returncode == 0:
+        if mode == 'pattern' and child is not None and child.reaped and child.child.returncode == 0:
             try:
                 report = decode(rings['stdout'].data, 65536)
                 protocol = report['protocol']
@@ -424,6 +619,11 @@ def serve(home, nonce, control_fd, emit, *, lease_seconds=60.0, maximum_seconds=
         if group_finished and not opened:
             try: result['cleaned'] = cleanup(home, nonce, owner)['cleaned']
             except (OSError, ValueError): result['reason'] = 'CleanupPending'
+        if mode in GTK_MODES:
+            result.update(gtk_reports=gtk_reports.count if gtk_reports else 0, gtk_report_error=gtk_error, gtk_forced_stop=signalled,
+                          gtk_verified=(gtk_error is None and gtk_reports is not None and gtk_reports.complete() and
+                          child is not None and child.reaped and child.child.returncode == 0 and
+                          not signalled and natural_group_exit and result['reason'] == 'Completed' and result['cleaned'] and result['pipes_closed']))
         if result['cleaned']:
             write_record(directory.parent / ('r-' + nonce + '.json'), result, replace=False)
             receipts = []
@@ -442,13 +642,15 @@ def serve(home, nonce, control_fd, emit, *, lease_seconds=60.0, maximum_seconds=
 def main(argv):
     os.umask(0o077); system_python(); home = account_home()
     require(sys.flags.isolated == 1 and sys.flags.no_site == 1, 'PYTHON_FLAGS_UNSAFE')
-    require(len(argv) == 2 and argv[0] in {'prepare', 'cleanup'}, 'MODE_INVALID')
+    modes = {'prepare': 'pattern', 'prepare-gtk-input': 'gtk_input', 'prepare-gtk-dialog': 'gtk_dialog',
+             'prepare-gtk-resize': 'gtk_resize'}
+    require(len(argv) == 2 and argv[0] in set(modes) | {'cleanup'}, 'MODE_INVALID')
     mode, nonce = argv; paths(home, nonce)
     if mode == 'cleanup': print(json.dumps(cleanup(home, nonce), separators=(',', ':'))); return
-    bundle(home)
+    bundle(home) if mode == 'prepare' else gtk_bundle(home)
     output = Output(sys.stdout.fileno())
     try:
-        serve(home, nonce, sys.stdin.fileno(), output)
+        serve(home, nonce, sys.stdin.fileno(), output, mode=modes[mode])
         deadline = time.monotonic() + 1
         while output.pending and time.monotonic() < deadline: output.flush(); time.sleep(.01)
     finally: output.close()
