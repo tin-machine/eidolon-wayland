@@ -210,6 +210,16 @@ class RuntimeTests(unittest.TestCase):
 
     def validate(self): return egl.validate_runtime(self.home, expected_uid=os.getuid(), pins=self.pins)
 
+    def test_kopper_disabled_variant_adds_exactly_one_env_and_baseline_does_not_inherit_it(self):
+        directory=self.root/'probe'
+        with patch.dict(os.environ,{'LIBGL_KOPPER_DISABLE':'PRIVATE','MESA_LOADER_DRIVER_OVERRIDE':'PRIVATE'}):
+            baseline=egl.fixed_environment(self.home,directory)
+            disabled=egl.fixed_environment(self.home,directory,'kopper-disabled')
+        self.assertEqual(disabled,dict(baseline,LIBGL_KOPPER_DISABLE='1'))
+        self.assertNotIn('LIBGL_KOPPER_DISABLE',baseline);self.assertNotIn('MESA_LOADER_DRIVER_OVERRIDE',baseline)
+        for variant in ('PRIVATE','LIBGL_KOPPER_DISABLE=1',{'env':'PRIVATE'}):
+            with self.assertRaises(InstallError):egl.fixed_environment(self.home,directory,variant)
+
     def test_pins_owner_and_exact_aliases(self):
         checked = self.validate()
         self.assertEqual(set(checked), set(egl.LIBRARIES) | {"vendor_json"})
@@ -366,7 +376,7 @@ class CliTests(unittest.TestCase):
             original = subprocess.Popen
             def spawn(*args, **kwargs):
                 return original([sys.executable, "-c", "import os;os.close(0);raise SystemExit(1)"], **kwargs)
-            with patch.object(cli.argparse.ArgumentParser, "parse_args", return_value=argparse.Namespace(serial="fixture", artifact_root=Path(directory))), \
+            with patch.object(cli.argparse.ArgumentParser, "parse_args", return_value=argparse.Namespace(serial="fixture", artifact_root=Path(directory), variant="baseline")), \
                  patch.object(cli, "QuestDevice", Device), patch.object(cli.subprocess, "Popen", side_effect=spawn), \
                  contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(cli.main(), 1)

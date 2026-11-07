@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """固定Quest EGL子だけの3 NULL分岐を一回診断する。自由PID/address/envは指定しない。"""
 import argparse
+import ast
 import base64
 import datetime
 import hashlib
@@ -26,11 +27,20 @@ SOURCES=("scripts/sdl_probe_install.py","scripts/termux/eidolon-sdl-probe.py","s
 def source_hashes():return {p:hashlib.sha256((ROOT/p).read_bytes()).hexdigest() for p in SOURCES}
 
 
+def installer_support(data):
+    # 全source hashは維持する。固定probeが呼ぶ5定義だけを元ASTから同梱する。
+    names={"InstallError","require","canonical","unique_object","termux_home"}
+    nodes=[v for v in ast.parse(data).body if isinstance(v,(ast.FunctionDef,ast.ClassDef)) and v.name in names]
+    require({v.name for v in nodes}==names and len(nodes)==len(names),"REMOTE_SOURCE_INVALID")
+    return "import json,os,stat\nfrom pathlib import Path\n"+"\n\n".join(ast.get_source_segment(data,v) for v in nodes)+"\n"
+
+
 def remote_program():
     source="import sys,types\n"
     names=("sdl_probe_install","sdl_observation","egl_loaded_identity","egl_surfaceless_probe","ptrace_capability_probe","egl_null_stages")
     for name,path in zip(names,SOURCES):
         data=(ROOT/path).read_text()
+        if name=="sdl_probe_install":data=installer_support(data)
         if name=="sdl_observation":
             require("\nclass WaylandTrace:" in data,"REMOTE_SOURCE_INVALID");data=data.split("\nclass WaylandTrace:",1)[0]
         if name=="ptrace_capability_probe":

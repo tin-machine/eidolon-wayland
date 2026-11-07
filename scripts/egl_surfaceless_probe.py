@@ -24,7 +24,8 @@ if "sdl_observation" not in sys.modules:
 from sdl_observation import EglLogSummary, TRACE_LIMIT
 
 UID = 10158
-OPERATOR = "eidolon-egl-surfaceless-v2-loaded-identity"
+OPERATOR = "eidolon-egl-surfaceless-v3-kopper-variant"
+VARIANTS = ("baseline", "kopper-disabled")
 LIBRARIES = {
     "libEGL.so.1.1.0": "88ccad71e437eadaead1729d43ff8bd0fed9a5a70956d0dcd98532f0558ee6e8",
     "libEGL_mesa.so": "4c07cd55d4d59c4db60035abb2cb517776f50829cac5486de2f5c18ccf72f228",
@@ -123,13 +124,16 @@ def private_run(home, probe_id):
     return directory
 
 
-def fixed_environment(home, directory):
+def fixed_environment(home, directory, variant="baseline"):
+    require(variant in VARIANTS, "REQUEST_INVALID")
     prefix = home.parent / "usr"
-    return dict(PATH=str(prefix / "bin") + ":/system/bin", PREFIX=str(prefix), LANG="C.UTF-8",
+    result = dict(PATH=str(prefix / "bin") + ":/system/bin", PREFIX=str(prefix), LANG="C.UTF-8",
                 HOME=str(directory / "home"), TMPDIR=str(directory / "tmp"),
                 XDG_CONFIG_HOME=str(directory / "config"), XDG_CACHE_HOME=str(directory / "cache"),
                 LIBGL_ALWAYS_SOFTWARE="1", GALLIUM_DRIVER="softpipe", EGL_LOG_LEVEL="debug",
                 __EGL_VENDOR_LIBRARY_FILENAMES=str(prefix / VENDOR))
+    if variant == "kopper-disabled": result["LIBGL_KOPPER_DISABLE"] = "1"
+    return result
 
 
 def egl_error(library):
@@ -400,8 +404,8 @@ def remote_main():
             if byte == b"\n": break
             request.extend(byte)
         value = json.loads(request)
-        require(type(value) is dict and set(value) == {"probe_id"} and type(value["probe_id"]) is str and
-                re.fullmatch(r"[0-9a-f]{32}", value["probe_id"]) is not None, "REQUEST_INVALID")
+        require(type(value) is dict and set(value) == {"probe_id", "variant"} and type(value["probe_id"]) is str and
+                re.fullmatch(r"[0-9a-f]{32}", value["probe_id"]) is not None and value["variant"] in VARIANTS, "REQUEST_INVALID")
         require(type(CHILD_SOURCE) is str and CHILD_SOURCE, "CHILD_SOURCE_MISSING")
         home = termux_home(sys.executable)
         before = validate_runtime(home)
@@ -412,10 +416,10 @@ def remote_main():
             require(not interrupted["signal"] and validate_runtime(home) == before, "RUNTIME_LIBRARY_CHANGED")
         emit = lambda event: print(json.dumps(event), flush=True)
         emit(dict(phase="validated", probe_id=value["probe_id"], uid=UID, libraries={k: v["sha256"] for k, v in before.items()}))
-        report = observe_owned([sys.executable, "-c", CHILD_SOURCE], fixed_environment(home, directory), 0, checker, emit)
+        report = observe_owned([sys.executable, "-c", CHILD_SOURCE], fixed_environment(home, directory, value["variant"]), 0, checker, emit)
         try: checker()
         except (OSError, ValueError): report.update(status="failed", runtime_unchanged=False, error="RUNTIME_LIBRARY_CHANGED")
-        report.update(schema=1, operator=OPERATOR, probe_id=value["probe_id"], uid=UID,
+        report.update(schema=1, operator=OPERATOR, probe_id=value["probe_id"], uid=UID, variant=value["variant"],
                       libraries={k: v["sha256"] for k, v in before.items()}, runtime_origin="libc++30-pinned",
                       wayland="not_run", sdk="not_run", drawing="not_run", input="not_run", hmd="not_run")
         fd = os.open(directory / "report.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

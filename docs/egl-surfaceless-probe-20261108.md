@@ -94,3 +94,36 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_egl_surfaceless_probe.py -v
 実機でptraceの取得能力が成立した後の固定3分岐観測は
 [EGL NULL stage probe](egl-null-stages-probe-20261108.md)に分離した。
 従来の公開APIだけのoperatorは維持し、hardware設定を暗黙に追加しない。
+
+## v3: EGL frontendのKopperを一項だけ無効にする
+
+実mode分類で最初のscreen候補は`kopper`、FD-1と確認できた。`GALLIUM_DRIVER=softpipe`を
+指定していたが、これだけでEGL frontendもSWRASTになるとは確認できていなかった。
+過去のAPI欄`driver=softpipe`は固定envの要求を示し、実frontendの証明ではない。
+
+Termux固定tree `fbdb3c03610c697322ac608e77cea2b553f49ef3`の
+[Mesa recipe](https://github.com/termux/termux-packages/blob/fbdb3c03610c697322ac608e77cea2b553f49ef3/packages/mesa/build.sh)と
+[0017 patch](https://github.com/termux/termux-packages/blob/fbdb3c03610c697322ac608e77cea2b553f49ef3/packages/mesa/0017-preserve-egl-support-in-zink.patch)を
+再確認した。patchはX11だけでなく共通`eglInitialize`のZink選択も変え、
+`MESA_LOADER_DRIVER_OVERRIDE`が無い場合にもZinkを既定にする。
+今回の固定envはoverrideを渡さないため、観測したKopper選択と整合する。
+
+[Mesa26.2.6のEGL共通選択](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/egl/drivers/dri2/egl_dri2.c)の
+`dri2_detect_swrast_kopper`は`LIBGL_KOPPER_DISABLE`を直接読む。GLX限定の設定ではない。
+これをtrueにするとKopperがfalseとなり、ForceSoftwareからswrast/swrast_not_kmsへ進む条件が成立する。
+下流のsoftpipe指定とは別のfrontend選択を分けるため、次の固定対照を用意した。
+
+```sh
+scripts/quest-probe-egl-surfaceless --serial "$EIDOLON_QUEST_SERIAL" \
+  --variant kopper-disabled --artifact-root "$EIDOLON_TASK_ROOT/egl-kopper-disabled"
+```
+
+`eidolon-egl-surfaceless-v3-kopper-variant`は`baseline`（既定）と`kopper-disabled`だけを受け取る。
+後者が足すenvは`LIBGL_KOPPER_DISABLE=1`の一個だけ。baselineのenv、4library pin、
+vendor JSON、loaded identity、初回error保存と回収は維持する。
+variantはrequest/host/remote結果へ固定名で記録し、応答の一致を確認する。任意env、preload、library変更はない。
+新runの元API結果と子終了codeを比較し、成功時にも過去の12289/終了1を上書きしない。
+公開APIが成功しても描画・SDL renderer・GUI・入力・HMDは未実行である。
+
+初期化の一回対照を先に行い、同じ条件を内部mode/3 NULL段階へ接続する。
+その後にSDLの既存load/context/renderer段階へ進む。正常結果を仮定して次段を合格にしない。

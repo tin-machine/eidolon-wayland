@@ -187,6 +187,16 @@ class ImageTests(unittest.TestCase):
 
 
 class HookAndBootstrapTests(unittest.TestCase):
+    def test_minimal_installer_ast_keeps_exact_dependency_closure_and_home_derivation(self):
+        source=cli.installer_support((SCRIPTS/'sdl_probe_install.py').read_text());namespace={};exec(source,namespace)
+        with tempfile.TemporaryDirectory(prefix='null-home-') as td:
+            files=Path(td)/'com.termux/files';binary=files/'usr/bin/python3';binary.parent.mkdir(mode=0o700,parents=True)
+            for p in (files,files/'usr',binary.parent):p.chmod(0o700)
+            binary.write_bytes(b'fixed fixture');home=files/'home';home.mkdir(mode=0o700)
+            self.assertEqual(namespace['termux_home'](binary),home)
+        self.assertEqual(namespace['canonical']({'x':1}),b'{"x":1}')
+        with self.assertRaises(namespace['InstallError']):namespace['unique_object']([('x',1),('x',2)])
+        self.assertNotIn('prepare_bundle',source);self.assertNotIn('install_bundle',source)
     def test_prior_failure_match_is_explicit_and_never_changes_api_result(self):
         api=api_events()[0]['result'];original=copy.deepcopy(api)
         self.assertTrue(n.prior_failure_matches(api,1));self.assertEqual(api,original)
