@@ -29,8 +29,8 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 | NX07 | 固定helper、権限/取消等の自動検証済み | 再起動後を含む実利用の起動・復帰を継続確認 |
 | NX08 | 左下footボタン、ADB起動成功 | ユーザーへ「>_ ターミナル」と案内済み。NX10へ拡張 |
 | NX09 | ユーザー指定で一旦保留 | NX10以降を先行。再開時はAndroid IMEのSpatial probe→共通text-input-v3→実foot、案A固有の不成立ならTermux Fcitx5。新方式は未検証 |
-| NX10 | カタログ・照会契約を実装中 | TOML読込・構造化argv・固定helper照会から開始。UI/登録保存/実foot起動・取消と回収は後続 |
-| NX11 | 未着手 | SDL/SHM小probe、成立後Doom/Freedoomの個別実測 |
+| NX10 | カタログUI・保存・稼働中footへの任意起動を接続 | Build143のPC検査。初回任意起動・個別取消・配置保存とQuest実機確認は残件 |
+| NX11 | SDL/SHM小probeを実装、隔離host成功 | Questで公式SDL2/Mesa経路を検証し、成立後Doom/Freedoomへ |
 | NX12 | 未着手 | 二枚で窓別移動/close/状態、テーマ指定操作部、サイズ/正面復帰 |
 | NX13 | 未着手 | 実UIDのDisk I/O probe、計測契約、内側回転 |
 | NX14 | 未着手 | 自プロセスCPU/PSS、熱/容量等。全体CPU/GPUは取得経路ごとに判断 |
@@ -87,7 +87,7 @@ path/argvをSSH commandへ埋め込まず、照会はprocessを起動しない�
 TOML parserはPython 3.11以降の`tomllib`を使い、未導入なら`CATALOG_UNAVAILABLE`を返す。
 その場合も既存terminalの起動・停止を壊さず、組込み一覧を保持する。
 
-### PC検証と試行錯誤
+### カタログ基盤のPC検証と試行錯誤（前回2b6a380）
 
 - Termux helperのPython testは45件成功（今回のcatalog 12件を含む）。
   実fileの読込、64項目のページ分割、重複ID、未知schema、過大・深い不正TOML、削除・権限・FIFO、
@@ -111,9 +111,63 @@ python3 scripts/check-design
 git diff --check
 ```
 
-残る順序: (1) Android/Rust sessionへの一覧接続、(2) 一時定義をfootへ渡す起動・取消・回収、
-(3) 設定fileへの登録/編集と外部変更検出、(4) 左下の複数アイコン・＋・再読込・位置保存、
-(5) Quest自動検証、最後にユーザーの視認・物理操作。
+### Build143: 画面・保存・起動を接続
+
+ユーザーの明示指示で担当を分け、rootがKotlin/Rustと統合、別agentがTermux保存/起動、
+別agentがNX11、別agentがAndroid IME計画のレビューを進めた。
+作業中のリモート追加`b0b28ec`はfast-forwardで取り込み、利用者の計画変更を維持した。
+
+- 左下をターミナル・カタログの2項目まで・「＋ アプリ」の横並びへ拡張した。
+  メイン操作パネルの「アプリ」からも同じ一覧を開き、設定pathの指定/再読込、8件ずつの一覧を扱う。
+  同じ接続でfootがrunningになったとき、一度だけ保存済みpathを読み込む。読込では起動しない。
+- 「ファイルから起動・登録」は実行path、interpreter、cwd、引数を一項目ずつ保持する。
+  「今回だけ起動」と「設定へ保存」を分離し、同ID保存は置換する。GUIの起動はまだ無効。
+- `catalog_v1/save`は同helperのwriterをflockで排他し、読込revisionと交換直前の内容を照合する。
+  新規fileは作成競合でも上書きせず、既存fileは同じdirectory内で原子的に交換する。
+  lockを守らない外部editorが最終検査とreplaceの間に書く極短時間の競合まで、厳密なCASと主張しない。
+- `open_terminal_v2`は登録ID/revisionまたは一時定義を受け、既存foot serverへ追加する。
+  owned session内の0600定義を固定`terminal-app` wrapperが検査・消費し、cwd/argvでexecする。
+  `footclient --hold`で終了後の画面を残す。footclientの成功はアプリ成功ではなく、窓のmapを別に確認する。
+  起動失敗で共有serverを停止せず、一時file・短命childは失敗/全接続停止時に回収する。
+- カタログのUI応答は専用JNIへ分離し、通常Snapshot/receiptへ表示名・引数を含めない。
+  session/requestの一致、queue上限と古い応答拒否を維持した。
+- 設定欄にfocusがある間はLinuxへの物理キー転送を止め、「入力先: ランチャーの設定欄」を表示する。
+  担当間レビューで、起動後やLinux窓選択後にもCompose focusが残り得る点を見つけた。
+  起動/窓選択から実際のCompose focus解除を要求し、focus変更通知でgateを開けるよう修正した。
+
+検証はmodel 39件、transport 32件、lifecycle 56件、Termux/SDLのPython 65件。
+実SSHで新規保存・追記・古いrevision拒否、実PTYで空白/日本語/空引数/shell記号、
+wrapperからexec後の同じPIDと終了コード7、起動失敗・回収と無関係processの存続を確認した。
+Build143のassembleDebug・lintDebug・JUnit 14件・APK整合検査は成功した。
+最終artifactは`20261107T220727-595639/eidolon-debug.apk`、SHA256は
+`7bc83fcc43a08034956e93508e828d246203539eb8c419b1760ea37a2bfa0bea`。
+build時の基準は`b0b28ec`＋未commit差分、source digestは
+`a392d34163c6395b987e6ef9f35d45b5b42b025e64164db822cc79ce0c6e1711`。
+helperは86,676 bytes、SHA256
+`8bc260278f3e8556cade44c4dd7d6c0b2fe01913432c502be1ae0ae9bbf155cf`。
+後続の文書・独立SDL probe変更はこのAPKの実装を変更しない。
+Wi-Fi ADBは`No route to host`で、実機へ配備していない。Build142の実機確認をBuild143の合格へ流用しない。
+
+再現時は上記Python/Rust検査に加え、`scripts/check-host --suite lifecycle`、`scripts/build-android 143`を使う。
+APKとTermux helperを同じsourceから更新し、最初のfoot→設定path再読込→登録保存→
+空白を含む引数で一時起動→Linux窓を選択して入力→停止・回収の順に実機確認する。
+
+残る作業は、任意アプリを最初の一窓として起動する入口、起動準備中の個別取消、
+既存定義を編集フォームへ読み戻す機能、ランチャーの移動/位置保存、Quest自動検証、最後のHMD/物理操作。
+現段階は普通のターミナルで接続してからカタログ/任意起動を使う。NX10全体は完了ではない。
+
+## NX11と日本語入力計画の並行作業
+
+[SDL/SHM検証記録](sdl-shm-probe-20261107.md)の小C clientと観測runnerを追加した。
+隔離Weston/pixmanとMesa CPU経路で10回ともtoplevelのSHM更新を確認し、warmup後のWeston FDは13→13。
+`SDL_FRAMEBUFFER_ACCELERATION=0`ではrenderer作成に失敗したため、一律のEGL無効化を前提にしない。
+Quest・Eidolon compositor・Doom/Freedoomは未確認で、次は公式SDL2/Mesaを実機で試す。
+
+[Android IME計画](android-ime-wayland-plan-20261107.md)のレビューでは、表示display/Window focus、
+footのsurrounding text非対応、固定protocol版、transaction検査、InputConnection失効と本文ログを具体化した。
+特に固定Smithayはserial確認より前に文字イベントを送るため、不一致`done`を取消として使わず、
+transaction全体を先に検査するgateを追加した。静的読解の懸念を実機再現済みの不具合とは扱わない。
+日本語変換は引き続きユーザー指定で保留し、このレビューだけで再開しない。
 
 ## 記録
 

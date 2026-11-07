@@ -3,7 +3,9 @@
 作成日: 2026-11-07。状態: **計画。案A/Bの新規実装・実機検証は未着手**。
 調査基準: `dde7941f28170b9ba58d3a25f2ab10ef5d549408`。実装開始時にmainとの差分、APK、Quest OS、IMEの版を再確認する。
 作成中のmain更新`2b6a38032bc1d8777644d14dbef96b2843c36bdf`を取り込み、**NX09の実装保留・NX10先行を維持する**。
-今回の依頼は新規計画の保存であり、本書は日本語入力の実装を再開するときの方針とする。
+本書は日本語入力の実装を再開するときの方針とする。
+2026-11-07の実現性レビューは`b0b28ecad8a26b15255e807d7adf404752c724b9`を基準に実施した。
+固定依存とfoot sourceを確認し、IME表示条件・編集能力・古いtransactionの破棄条件を補った。新しい実機検証や日本語入力の実装再開を意味しない。
 
 ## 1. 決定と既存計画との関係
 
@@ -26,9 +28,9 @@
 
 | 対象 | 調査基準で確認したこと | 本計画で必要なこと |
 | --- | --- | --- |
-| foot | [導入記録](termux-wayland-tools.md)では1.28.0、`+ime`、日本語fallback font検出 | 新しい文字入力経路を実footまで通して確認 |
+| foot | [導入記録](termux-wayland-tools.md)では1.28.0、`+ime`、日本語fallback font検出。固定sourceの`ime.c`は周辺テキスト送信・削除に非対応 | 周辺テキストなしで実IMEから確定文字が届くことを確認。再変換は初期受入れに含めない |
 | Rust compositor | [ProtocolState](../native/core/src/compositor/protocol.rs)にIME用globalは未接続 | `text-input-v3`、focusと状態反映の実装 |
-| Smithay | [coreの依存](../native/core/Cargo.toml)は0.7.0固定、`wayland_frontend`/`desktop` | 固定版の公開APIと内部結合を調べ、Android adapterからの接続方法を決める |
+| Smithay | [coreの依存](../native/core/Cargo.toml)は0.7.0固定。text-input managerはinterface version 1。標準input-method dispatchは文字イベントをserial検査前に送る | 接続方法とtransaction全体の事前検査をIME-C1で確定する。不一致`done`を文字の取消に使わない |
 | Waypipe | [依存lock](../native/deps.lock.json)は0.11.3固定 | 実際の両端buildで必要protocolとイベント転送を検査 |
 | 物理キー入口 | [PhysicalKeyboard](../android/app/src/main/java/io/github/tinmachine/eidolon/PhysicalKeyboard.kt)が物理deviceを検査しnativeへ配送 | IME所有のキーとraw配送の排他制御 |
 | Androidの窓 | [MainActivity](../android/app/src/main/java/io/github/tinmachine/eidolon/MainActivity.kt)がActivityに加えPresentationのWindowへhook | IMEのeditor View・Window・display・focusの実測 |
@@ -55,9 +57,10 @@ Androidの[View.onCreateInputConnection](https://developer.android.com/reference
 | IME-B2 | input-method/virtual-keyboard/popupを接続 | IME-B1、IME-C1 | 実footで案A3相当の入力条件がPASS |
 | IME-C2 | 選んだ一方式の二窓・tmux/nvim・障害復帰、GUI一例 | IME-A3またはIME-B2 | 第8節の受入れを完了 |
 
-既存計画の「HMD/物理確認は最後にまとめる」方針に対し、**IME-A1/A2の方式選定に必要な確認は先行ゲート**とする。
-自動で準備・検査できる部分を先に完成させ、装着が必要な具体的な操作だけを確認する。
-ユーザー確認待ちの間はIME-C1など方式に依存しない作業を進められるが、案Aの採用完了とはしない。
+ユーザーの「手動確認はできるだけ最後」という希望を維持し、自動で準備・検査できる部分を先に完成させる。
+**IME-A1/A2の実USキーボード・候補視認は、案Aの採用を確定するためのゲート**であり、NX10等の独立実装を止めるゲートにしない。
+装着確認をまだ行えない場合はBLOCKEDとしてIME-C1や限定したadapter fixtureを進める。
+未確認のまま案Aの本格統合・採用完了へ進めたり、案Bの条件を満たしたと扱ったりしない。
 
 ### 判定を分ける
 
@@ -86,10 +89,16 @@ Androidの[View.onCreateInputConnection](https://developer.android.com/reference
 ### IME-A1: 標準入力欄での確認
 
 同じSpatial SDK/通常XR session内に小さなパネルを一つ置き、`SpatialTextField`または対応する標準Android入力欄を載せる。
+`SpatialTextField`はMeta Horizon OS UI Setのcomponentであり、現行のSpatial SDK 0.15.0依存だけで利用可能とは仮定しない。
+初回は既存依存で動くComposeの標準入力欄またはAndroid `EditText`でもよい。UI Setを選ぶ場合は互換版を固定し、SDK全体の更新をprobeの前提にしない。
 ここではfoot/Waypipe/Rustへの文字送信をまだ接続しない。既存rawキー転送がprobeのキーを先取りしない入力経路を用意する。
 2D Activityだけでの成功は参考結果とし、Eidolonと同じPresentation/display条件で実施する。
 Androidの[複数displayでのIME仕様](https://source.android.com/docs/core/display/multi_display/ime-support)には、
 入力先display・既定display・非表示という配置の違いがある。Horizon側の統合を実測し、一般Androidの制約だけで可否を決めない。
+同仕様にはsystem所有でないvirtual displayへのIME表示制約もある。対象Presentationのdisplay ID、取得可能な所有者・flags・IME policy、
+editorのattach/Window token、View focus、Window focus、実際のIME target/displayを記録する。Spatialパネルの所有者を推測で決めない。
+[InputMethodManager](https://developer.android.com/reference/android/view/inputmethod/InputMethodManager)はViewとWindow双方のfocusを要求する。
+`showSoftInput`の成功返却は表示完了ではないため、取得できるWindowInsets/IME状態とHMDでの候補視認を分けて記録する。
 
 | 検査 | 必須条件 |
 | --- | --- |
@@ -126,6 +135,11 @@ Android公式の[InputConnection契約](https://developer.android.com/reference/
 - 「IME表示でwindow focusが失われる」現象は専用probeで原因を確認する。`VISIBLE`中の無条件キー送信などでgateを外さない。
 - 完全な周辺編集を必須とするIMEや、このhost条件では候補を表示できないIMEは案Aの制約として記録する。
 
+hostは`EditorInfo.initialSelStart/End`と`updateSelection`を整合させ、batch完了時に選択・未確定範囲を通知する。
+`requestCursorUpdates`は第5.5節で実際に通知できる能力だけを返す。
+`closeConnection`時は局所buffer・batch・通知予約を解除するが、このcallbackが来ない失効でも同じ解除を行う。
+Android APIの戻り値は方法ごとの契約に従い、提供不能な周辺テキストを「文書全体が空」として返さない。
+
 ## 5. 共通のWayland入力契約
 
 ### 5.1 所有者と境界
@@ -152,6 +166,10 @@ Rustのtarget/世代情報を各callbackに束縛し、JNI越しには所有済�
 managerの公開、seatとの対応、enter/leave、enable/disable、content type、surrounding text、cursor rectangle、commitを扱う。
 採用するinterface versionは固定Smithay・foot・Waypipeで実際に共通対応する版にする。
 protocol名の`v3`とinterface versionの数値を混同しない。
+[Cargo.lock](../Cargo.lock)の`wayland-protocols 0.32.13`同梱XMLはversion 2だが、
+[Smithay 0.7.0のmanager](https://github.com/Smithay/smithay/blob/v0.7.0/src/wayland/text_input/mod.rs)はversion 1を公開する。
+初期fixtureは実際にbindするversion 1の契約で固定し、XMLの版/hash・広告版・bind版を記録する。
+最新XMLにあるversion 2専用eventやcursor rectangleの適用タイミングを、version 1の実装へ混ぜない。
 
 - クライアントからのrequestはpending/currentを分け、`commit`で反映する。enabledかつ現在focusを持つ対象だけへ送る。
 - `preedit_string`/`commit_string`等を一つの編集transactionとして扱い、対応する`done(serial)`で反映する。
@@ -177,6 +195,20 @@ input-method instanceがないとtext-input requestを破棄する。
 同じseatで案Aのbridgeと案BのFcitxを同時に有効にしない。
 後者で`with_active_text_input`を使う場合は、同じhandleを再lockする`done`をclosure内から呼ばない。
 固定依存への変更は[native/patches](../native/patches/smithay/README.md)とlockへ記録し、展開済みsourceを直接編集しない。
+
+**文字イベント送信前の検査を、内部bridge採用の条件に追加する。**
+固定版の[input_method_handle.rs](https://github.com/Smithay/smithay/blob/v0.7.0/src/wayland/input_method/input_method_handle.rs)は、
+`commit_string`/preedit/削除をclientへ送った後、input-methodの`commit(serial)`で一致を検査し、不一致ならtext-inputへ`done(0)`を送る。
+しかしtext-input仕様の不一致serialは編集文字を破棄する命令ではない。
+また[foot 1.28.0のime.c](https://codeberg.org/dnkl/foot/src/tag/1.28.0/ime.c)は不一致`done`でpending確定文字を残してreturnするため、
+後続の正常`done`へ持ち越す経路がsource上にある。これは静的読解による懸念であり、現行Eidolonで再現済みの不具合とは扱わない。
+
+- IME-C1は「古い確定文字 → 不一致serial → 新しい正常transaction」を検査し、同一対象でも窓切替後でも古い文字が届かないことを確認する。
+- backendの編集要求を所有済みpending transactionに蓄積し、commit時に対象・activation世代・serial・範囲を全体検査してからclientへ送る。
+  既に送った文字を不一致`done`で取り消す設計は禁止する。案Aの信頼されたclientにも遅延・競合はあるため例外にしない。
+- この条件を満たせない標準delegateは無修正で採用しない。bridge API/dispatchのpatchを先に設計し、案Bでも同じ検査を通す。
+- 不正enum、UTF-8境界外のoffset、負の寸法、過大surrounding、同一clientの複数text-input objectをfixtureへ含める。
+  固定版のrequest処理にはenum変換の`unwrap`等があるため、delegateの存在を入力検証済みの根拠にせず、session全体のpanicを防ぐ。
 
 IME-C1は独立text-input clientと入力backend fixtureで、まず同一Display、次に実Waypipe両端を通して検査する。
 registryのglobal/version、focus、preedit/commit/done、順序、切断・再接続とFD/queue回収を比較する。
@@ -204,9 +236,13 @@ AndroidのJava char位置はUTF-16 code unit、WaylandはUTF-8 byte offsetであ
 `deleteSurroundingTextInCodePoints`は別の単位として扱い、補助漢字・絵文字・結合文字を含む範囲変換を試す。
 文字列とoffsetを一緒に変換し、surrogate/UTF-8 code pointの途中を境界にしない。
 Androidに孤立surrogateが来た場合、NUL、過大payloadの扱いも契約化し、黙って切り詰めない。
+surrounding textの仕様上限4000 UTF-8 bytesと、JNI command/queueの上限は別に検査する。
+preedit・commit・局所Editableにも上限を定め、transactionの途中だけを配送して残りを捨てない。
 
-footを含む端末クライアントについて、周辺テキスト提供・削除への対応を実際の固定版で調べる。
-text-input仕様は周辺テキスト非対応を表現できる。表示済み画面を編集可能な全文書とみなさず、
+固定foot 1.28.0の`ime.c`はsurrounding textを送らず、その削除にも対応しない。確定文字は通常入力時にfoot自身がPTYへ渡す。
+したがって初期hostは「現在の局所compositionを編集し、確定時に一度渡す」という能力で試し、確定済み端末文字の再変換・周辺削除を約束しない。
+footを更新した場合はこの能力を再確認する。GTK/Qt入力欄のsurrounding textは別の能力profileとして検査する。
+text-input仕様は周辺テキスト未提供と空文字列を区別する。表示済み画面を編集可能な全文書とみなさず、
 未提供の周辺テキストを捏造したり、削除byte数を同数のBackspaceへ変換したりしない。
 通常の物理BackspaceとIMEの周辺編集要求を区別する。この条件でのIME互換性はA2/A3の受入れ対象にする。
 
@@ -225,8 +261,10 @@ Horizon/Spatialの実経路でcallbackが来る段階と未処理キーの取得
 `ACCEPTED`はenqueue成功であり、確定文字の適用成功とは区別する。
 
 focus変更・surface破棄・scene再生成・配置編集・layout変更・device変更・sleep・XR/Activity喪失・切断・Stopでは、
-旧入力接続を失効させ、未確定を取り消し、必要なkey releaseとtext-input leave/disableを順序付きで処理する。
+旧入力接続を失効させ、未確定を取り消し、必要なkey releaseとbackendの解除を順序付きで処理する。
 新しい窓への自動確定はしない。通常queueが満杯でも、既存urgent reset経路で失効を伝える。
+Waylandの`disable`はclientからのrequestである。compositor/backendの失効、clientのenabled状態、
+keyboard focusのenter/leaveを区別し、同じ窓への復帰でもactivateとeditor状態を再同期する。
 同一世代内の未確定表示更新は置換可能でも、確定transactionを間引かない。BUSY/失敗時に送信済みか不明なcommitを自動再送しない。
 二重確定防止と入力不能の案内を優先し、復帰後は新しい入力接続から再開する。
 
@@ -300,9 +338,9 @@ Fcitxの起動成功やGTK/Qt用の環境変数だけを、native Wayland foot�
 
 | 範囲 | 必須の確認 | 合格に置き換えないもの |
 | --- | --- | --- |
-| Protocol | focus/enable/disable/commit、preedit/commit/done、serial、destroy、再接続 | global名が見えるだけ |
+| Protocol | focus/enable/disable/commit、preedit/commit/done、serial、destroy、再接続。不一致serialの後の正常transaction、複数object、不正入力の隔離 | global名が見えるだけ。不一致`done`を送っただけで破棄成功とすること |
 | 文字列 | 日本語・ASCII混在、補助漢字、絵文字、結合文字、選択と境界、過大入力 | ASCIIのみのfixture |
-| 実foot | 未確定描画、候補選択、確定一回、取消、英数復帰、Enter確定と実行の分離 | clipboard貼付け、既存日本語の表示 |
+| 実foot | surrounding textなしで未確定描画、候補選択、確定一回、取消、英数復帰、Enter確定と実行の分離 | clipboard貼付け、既存日本語の表示。EditTextの全文書bufferだけでの成功 |
 | キー | 変換中/外のSpace/Enter/Esc/Backspace、Ctrl/Alt、矢印、repeat、二device | IME確定とrawキーの両方を配送する動作 |
 | 二窓 | Aで未確定中にBへ移動、Aへ再入、旧callback、窓close、配置編集、resize | 同一入力欄内だけの試験 |
 | tmux/nvim | pane移動、prefix、insert/normal、取消/確定、外側IMEの状態とアプリ状態の関係 | paneやnvim modeを自動認識できるという推測 |
@@ -316,6 +354,10 @@ NX18では、入力先のLinuxへAndroid IMEを入れずに日本語が渡るこ
 
 通常診断はbackend、状態、対象ID/世代、失敗理由、callback/配送/取消件数、所要時間、queue/resourceだけを記録する。
 ユーザーの入力本文・未確定文字・候補・学習辞書は保存しない。固定fixtureの期待値照合と私的な実機artifactは通常診断から分ける。
+foot 1.28.0はdebug levelでpreedit/commit本文を出すため、通常の実入力でfootのIME debug logや`WAYLAND_DEBUG`を有効にしない。
+Androidのeditor dumpやprotocol traceも本文を含み得る。詳細traceは固定fixture専用とし、集約ログから除外する。
+GUIがpassword/PIN/sensitiveの用途を提供する場合はAndroidの入力属性・[学習抑制要求](https://developer.android.com/reference/android/view/inputmethod/EditorInfo#IME_FLAG_NO_PERSONALIZED_LEARNING)へ対応付け、前の窓のsurrounding textを渡さない。
+その要求をIMEが尊重するかは別に検証する。footはterminal用途しか通知しないため、shell内のパスワード入力を自動判別できるとは扱わない。
 HMD画像が必要な場合は室内を含む可能性があるため、既存のprivate artifact方針に従いrepositoryへ追加しない。
 
 ## 9. 実装再開時に残す記録
