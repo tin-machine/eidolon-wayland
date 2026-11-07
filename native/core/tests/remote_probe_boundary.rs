@@ -30,6 +30,14 @@ fn remote_probe_is_rejected_without_the_packaged_debug_feature() {
     };
     assert!(pins_config.validate().is_ok());
     assert!(Runtime::start(pins_config).is_err());
+    let gtk_config = RuntimeConfig {
+        installation: Some("1".repeat(32)),
+        debug_probe_profile_v2: Some(profile_json()),
+        debug_linux_gtk_pins: Some("{}".into()),
+        ..Default::default()
+    };
+    assert!(gtk_config.validate().is_ok());
+    assert!(Runtime::start(gtk_config).is_err());
     let runtime = Runtime::start(RuntimeConfig::default()).unwrap();
     assert_eq!(
         runtime.command(
@@ -54,6 +62,15 @@ fn remote_probe_is_rejected_without_the_packaged_debug_feature() {
             runtime.command(Command::parse(&command.to_string()).unwrap()),
             Status::InvalidArgument
         );
+    }
+    for kind in ["linux_gtk_probe", "linux_gtk_recover"] {
+        for case in ["input", "dialog", "resize"] {
+            let command = serde_json::json!({"schema":1,"type":kind,"request_id":"3","session":"1","nonce":"1234567890abcdef","case":case});
+            assert_eq!(
+                runtime.command(Command::parse(&command.to_string()).unwrap()),
+                Status::InvalidArgument
+            );
+        }
     }
     assert_eq!(
         runtime.provide_credential_for(

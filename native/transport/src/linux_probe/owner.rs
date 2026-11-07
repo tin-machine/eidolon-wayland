@@ -5,15 +5,49 @@ use tokio_util::sync::CancellationToken;
 
 // shell argvは固定codeと検査済みhexだけ。account HOMEを環境変数/remote応答からexecへ挿入しない。
 pub(super) fn command(pins: &Pins, nonce: &str) -> Result<String, &'static str> {
-    bootstrap(pins, nonce, "prepare")
+    bootstrap(pins, nonce, "prepare", None)
 }
 pub(super) fn cleanup_command(pins: &Pins, nonce: &str) -> Result<String, &'static str> {
-    bootstrap(pins, nonce, "cleanup")
+    bootstrap(pins, nonce, "cleanup", None)
 }
-fn bootstrap(pins: &Pins, nonce: &str, mode: &str) -> Result<String, &'static str> {
-    if !crate::forward_probe::valid_nonce(nonce) || !pins.valid() {
+pub(super) fn gtk_command(
+    pins: &Pins,
+    nonce: &str,
+    gtk: Option<&super::GtkBinding>,
+    cleanup: bool,
+) -> Result<String, &'static str> {
+    bootstrap(
+        pins,
+        nonce,
+        if cleanup {
+            "cleanup"
+        } else {
+            gtk.map_or("prepare", |gtk| gtk.case.prepare_mode())
+        },
+        gtk,
+    )
+}
+fn bootstrap(
+    pins: &Pins,
+    nonce: &str,
+    mode: &str,
+    gtk: Option<&super::GtkBinding>,
+) -> Result<String, &'static str> {
+    if !crate::forward_probe::valid_nonce(nonce)
+        || !pins.valid()
+        || gtk.is_some_and(|gtk| !gtk.valid(pins))
+    {
         return Err("INVALID_ARGUMENT");
     }
+    let extra = gtk.map_or_else(String::new, |gtk| format!(r#"
+assert hashlib.sha256(read(b/'gtk-bundle.json',16384)).hexdigest()=='{}'
+original_gtk=m['gtk_bundle']
+def pinned_gtk(home):
+ value=original_gtk(home)
+ assert value[4]=='{}' and value[3]['files']['gtk3-interaction-fixture.c']=='{}' and value[3]['files']['eidolon-gtk3-fixture']=='{}' and value[3]['gtk_version']=='{}'
+ return value
+m['gtk_bundle']=pinned_gtk
+"#, gtk.pins.gtk_bundle_sha256, gtk.pins.gtk_bundle_sha256, gtk.pins.source_sha256, gtk.pins.binary_sha256, gtk.pins.gtk_version));
     let source = format!(
         r#"import os,pwd,stat,hashlib,sys
 from pathlib import Path
@@ -42,6 +76,7 @@ def pinned(home):
  assert value[2]=='{}' and value[1]['waypipe']=='{}' and value[1]['eidolon-shm-fixture']=='{}'
  return value
 m['bundle']=pinned
+{}
 m['main'](['{}','{}'])
 "#,
         pins.bundle_sha256,
@@ -49,6 +84,7 @@ m['main'](['{}','{}'])
         pins.bundle_sha256,
         pins.waypipe_sha256,
         pins.fixture_sha256,
+        extra,
         mode,
         nonce
     );
@@ -76,7 +112,11 @@ impl Owner {
         cancel: CancellationToken,
         before_exec: impl FnOnce() -> Result<(), &'static str>,
     ) -> Result<Self, &'static str> {
-        let text = command(request.pins, request.nonce)?;
+        let text = if request.gtk.is_some() {
+            gtk_command(request.pins, request.nonce, request.gtk, false)?
+        } else {
+            command(request.pins, request.nonce)?
+        };
         let channel = tokio::select! {biased;
             _=cancel.cancelled()=>return Err("CANCELLED"),
             channel=timeout(Duration::from_secs(5),client.channel_open_session())=>channel,
@@ -99,13 +139,10 @@ impl Owner {
             let _ = timeout(Duration::from_secs(1), channel.close()).await;
             return Err("SSH_IO_FAILED");
         }
-        Ok(Self::from_channel(
-            channel,
-            request.nonce,
-            request.uid,
-            request.pins,
-            cancel,
-        ))
+        let mut owner =
+            Self::from_channel(channel, request.nonce, request.uid, request.pins, cancel);
+        owner.protocol = owner.protocol.with_gtk(request.gtk);
+        Ok(owner)
     }
     pub(super) fn from_channel(
         channel: Channel<client::Msg>,
@@ -129,7 +166,7 @@ impl Owner {
     async fn control(&self, kind: &str) -> Result<(), &'static str> {
         let mut value = serde_json::json!({"schema":1,"nonce":self.nonce,"type":kind});
         if kind == "start" {
-            value["mode"] = "pattern".into();
+            value["mode"] = self.protocol.mode().into();
         }
         timeout(
             Duration::from_secs(2),
@@ -166,6 +203,9 @@ impl Owner {
     pub fn pattern_pass(&self) -> bool {
         self.protocol.pattern_pass()
     }
+    pub fn gtk_pass(&self) -> bool {
+        self.protocol.gtk_pass()
+    }
     pub async fn inspect(&mut self) -> Result<(), &'static str> {
         self.protocol.inspect()?;
         self.deadline = Instant::now() + Duration::from_secs(10);
@@ -173,7 +213,12 @@ impl Owner {
     }
     pub async fn start(&mut self) -> Result<(), &'static str> {
         self.protocol.start()?;
-        self.deadline = Instant::now() + Duration::from_secs(30);
+        self.deadline = Instant::now()
+            + Duration::from_secs(if self.protocol.mode() == "pattern" {
+                30
+            } else {
+                90
+            });
         self.control("start").await
     }
     pub async fn stop(&mut self) -> Result<(), &'static str> {
@@ -207,7 +252,13 @@ impl Owner {
                         .report
                         .stdout_bytes
                         .saturating_add(data.len() as u64);
-                    if self.protocol.report.stdout_bytes > 256 * 1024 {
+                    if self.protocol.report.stdout_bytes
+                        > if self.protocol.mode() == "pattern" {
+                            256 * 1024
+                        } else {
+                            1024 * 1024
+                        }
+                    {
                         return Err("LINUX_OUTPUT_LIMIT");
                     }
                     for byte in data {

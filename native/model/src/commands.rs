@@ -24,6 +24,8 @@ pub struct RuntimeConfig {
     pub debug_probe_profile_v2: Option<String>,
     #[serde(default)]
     pub debug_linux_shm_pins: Option<String>,
+    #[serde(default)]
+    pub debug_linux_gtk_pins: Option<String>,
 }
 impl Default for RuntimeConfig {
     fn default() -> Self {
@@ -36,6 +38,7 @@ impl Default for RuntimeConfig {
             profiles: Vec::new(),
             debug_probe_profile_v2: None,
             debug_linux_shm_pins: None,
+            debug_linux_gtk_pins: None,
         }
     }
 }
@@ -92,9 +95,14 @@ impl RuntimeConfig {
         {
             return Err(Status::InvalidArgument);
         }
-        if self.debug_linux_shm_pins.as_ref().is_some_and(|json| {
-            json.is_empty() || json.len() > 4096 || self.debug_probe_profile_v2.is_none()
-        }) {
+        if [
+            self.debug_linux_shm_pins.as_ref(),
+            self.debug_linux_gtk_pins.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|json| json.is_empty() || json.len() > 4096 || self.debug_probe_profile_v2.is_none())
+        {
             return Err(Status::InvalidArgument);
         }
         if let Some(json) = &self.debug_probe_profile_v2 {
@@ -144,6 +152,47 @@ pub enum AppMode {
     Pattern,
     Foot,
     FootFixture,
+    LinuxGtkInput,
+    LinuxGtkDialog,
+    LinuxGtkResize,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LinuxGtkCase {
+    Input,
+    Dialog,
+    Resize,
+}
+impl LinuxGtkCase {
+    pub fn mode(self) -> AppMode {
+        match self {
+            Self::Input => AppMode::LinuxGtkInput,
+            Self::Dialog => AppMode::LinuxGtkDialog,
+            Self::Resize => AppMode::LinuxGtkResize,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Input => "input",
+            Self::Dialog => "dialog",
+            Self::Resize => "resize",
+        }
+    }
+    pub fn helper_mode(self) -> &'static str {
+        match self {
+            Self::Input => "gtk_input",
+            Self::Dialog => "gtk_dialog",
+            Self::Resize => "gtk_resize",
+        }
+    }
+    pub fn prepare_mode(self) -> &'static str {
+        match self {
+            Self::Input => "prepare-gtk-input",
+            Self::Dialog => "prepare-gtk-dialog",
+            Self::Resize => "prepare-gtk-resize",
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -162,11 +211,22 @@ pub enum PanelAction {
     Destroy,
 }
 impl AppMode {
+    pub fn linux_gtk_case(self) -> Option<LinuxGtkCase> {
+        match self {
+            Self::LinuxGtkInput => Some(LinuxGtkCase::Input),
+            Self::LinuxGtkDialog => Some(LinuxGtkCase::Dialog),
+            Self::LinuxGtkResize => Some(LinuxGtkCase::Resize),
+            _ => None,
+        }
+    }
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pattern => "pattern",
             Self::Foot => "foot",
             Self::FootFixture => "foot_fixture",
+            Self::LinuxGtkInput => "linux_gtk_input",
+            Self::LinuxGtkDialog => "linux_gtk_dialog",
+            Self::LinuxGtkResize => "linux_gtk_resize",
         }
     }
 }
@@ -468,6 +528,20 @@ pub enum Command {
         session: crate::ids::SessionId,
         nonce: String,
     },
+    LinuxGtkProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        nonce: String,
+        case: LinuxGtkCase,
+    },
+    LinuxGtkRecover {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        nonce: String,
+        case: LinuxGtkCase,
+    },
     LinuxShmRecover {
         schema: u32,
         request_id: CommandSeq,
@@ -573,6 +647,8 @@ impl Command {
             | Self::LinuxShmProbe { schema, .. }
             | Self::LinuxShmSdkProbe { schema, .. }
             | Self::LinuxShmRecover { schema, .. }
+            | Self::LinuxGtkProbe { schema, .. }
+            | Self::LinuxGtkRecover { schema, .. }
             | Self::Connect { schema, .. }
             | Self::Disconnect { schema, .. }
             | Self::CancelConnect { schema, .. }
@@ -609,6 +685,8 @@ impl Command {
         | Self::LinuxShmProbe { nonce, .. }
         | Self::LinuxShmSdkProbe { nonce, .. }
         | Self::LinuxShmRecover { nonce, .. }
+        | Self::LinuxGtkProbe { nonce, .. }
+        | Self::LinuxGtkRecover { nonce, .. }
         | Self::CompositorProbe { nonce, .. } = &command
             && (nonce.len() != 16
                 || !nonce
@@ -721,6 +799,8 @@ impl Command {
             | Self::LinuxShmProbe { request_id, .. }
             | Self::LinuxShmSdkProbe { request_id, .. }
             | Self::LinuxShmRecover { request_id, .. }
+            | Self::LinuxGtkProbe { request_id, .. }
+            | Self::LinuxGtkRecover { request_id, .. }
             | Self::Connect { request_id, .. }
             | Self::Disconnect { request_id, .. }
             | Self::CancelConnect { request_id, .. }
@@ -949,6 +1029,43 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+    #[test]
+    fn linux_gtk_probe_has_fixed_cases_and_no_free_host_path_or_argv() {
+        for kind in ["linux_gtk_probe", "linux_gtk_recover"] {
+            for case in ["input", "dialog", "resize"] {
+                let good = serde_json::json!({"schema":1,"type":kind,"request_id":"9007199254740993","session":"2","nonce":"1234567890abcdef","case":case});
+                assert!(Command::parse(&good.to_string()).is_ok());
+                for (key, value) in [
+                    ("case", serde_json::json!("foot")),
+                    ("host", serde_json::json!("192.0.2.1")),
+                    ("path", serde_json::json!("/fixture")),
+                    ("argv", serde_json::json!(["/bin/sh"])),
+                    ("session", serde_json::json!(2)),
+                ] {
+                    let mut bad = good.clone();
+                    bad[key] = value;
+                    assert!(Command::parse(&bad.to_string()).is_err());
+                }
+            }
+        }
+        assert!(
+            RuntimeConfig {
+                debug_linux_gtk_pins: Some("{}".into()),
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        for case in [
+            LinuxGtkCase::Input,
+            LinuxGtkCase::Dialog,
+            LinuxGtkCase::Resize,
+        ] {
+            assert_eq!(case.mode().linux_gtk_case(), Some(case));
+            assert_ne!(case.mode(), AppMode::Pattern);
+            assert_ne!(case.mode(), AppMode::Foot);
+        }
     }
     #[test]
     fn profile_shape_installation_and_fixed_profile_id_are_validated_without_crypto() {

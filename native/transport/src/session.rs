@@ -142,6 +142,7 @@ struct LinuxWork {
     local_socket: Option<PathBuf>,
     nonce: String,
     pins: crate::linux_probe::Pins,
+    gtk: Option<crate::linux_probe::GtkBinding>,
 }
 /// UI専用。通常Snapshot/receiptへのserialize経路から分離する。
 #[derive(Clone, Default, Serialize)]
@@ -459,7 +460,7 @@ impl Controller {
         nonce: &str,
         mode: AppMode,
     ) -> Status {
-        if mode != AppMode::Foot && !cfg!(debug_assertions) {
+        if mode.linux_gtk_case().is_some() || mode != AppMode::Foot && !cfg!(debug_assertions) {
             return Status::NotReady;
         }
         if !local_socket.is_absolute()
@@ -516,6 +517,36 @@ impl Controller {
         nonce: &str,
         pins: crate::linux_probe::Pins,
     ) -> Status {
+        self.linux_work(session, files, local_socket, nonce, pins, None)
+    }
+    #[cfg(any(test, feature = "debug-fixtures"))]
+    pub fn linux_gtk_probe(
+        &self,
+        session: SessionId,
+        files: &Path,
+        local_socket: Option<&Path>,
+        nonce: &str,
+        binding: crate::linux_probe::GtkBinding,
+    ) -> Status {
+        self.linux_work(
+            session,
+            files,
+            local_socket,
+            nonce,
+            binding.base_pins(),
+            Some(binding),
+        )
+    }
+    #[cfg(any(test, feature = "debug-fixtures"))]
+    fn linux_work(
+        &self,
+        session: SessionId,
+        files: &Path,
+        local_socket: Option<&Path>,
+        nonce: &str,
+        pins: crate::linux_probe::Pins,
+        gtk: Option<crate::linux_probe::GtkBinding>,
+    ) -> Status {
         if !files.is_absolute()
             || !forward_probe::valid_nonce(nonce)
             || local_socket.is_some_and(|p| !p.is_absolute() || p.as_os_str().len() > 103)
@@ -545,6 +576,9 @@ impl Controller {
                 state: "queued",
                 session: Some(session),
                 nonce: nonce.into(),
+                gtk: gtk
+                    .as_ref()
+                    .map(|gtk| crate::linux_probe::GtkReport::initial(gtk.case)),
                 ..Default::default()
             });
         } else {
@@ -555,6 +589,7 @@ impl Controller {
             local_socket: local_socket.map(Path::to_path_buf),
             nonce: nonce.into(),
             pins,
+            gtk,
         });
         self.signals.notify.notify_one();
         Status::Accepted
@@ -1083,6 +1118,7 @@ async fn connection(
                         nonce: &work.nonce,
                         uid,
                         pins: &work.pins,
+                        gtk: work.gtk.as_ref(),
                     },
                     &connect.cancel,
                     |value| signals.update(|s| s.report.linux_forward = Some(value.clone())),
@@ -1103,6 +1139,7 @@ async fn connection(
                         nonce: &work.nonce,
                         uid,
                         pins: &work.pins,
+                        gtk: work.gtk.as_ref(),
                     },
                     &connect.cancel,
                 )

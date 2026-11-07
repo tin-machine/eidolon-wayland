@@ -36,6 +36,7 @@ pub struct Report {
     pub releases: u64,
     pub callbacks: u64,
     pub verified_hashes: u32,
+    pub remote_gui_verified: bool,
     pub non_uniform: bool,
     pub last_size: Option<LogicalSize>,
     pub window_ids: Vec<WindowId>,
@@ -448,6 +449,7 @@ impl Session {
         self.report.mode = Some(mode);
         self.report.forward_sent = false;
         self.report.verified_hashes = 0;
+        self.report.remote_gui_verified = false;
         self.report.non_uniform = false;
         self.report.last_size = None;
         self.report.state = "preparing";
@@ -481,6 +483,17 @@ impl Session {
         {
             return;
         }
+        let expected = self.mode().linux_gtk_case();
+        if forward.gtk.as_ref().map(|gtk| gtk.case) != expected {
+            // 実report前はNone。異なるcaseの結果を取り込まず、running到達後は失敗へ。
+            if forward.gtk.is_some() || forward.state == "pass" {
+                self.fail("LINUX_GTK_SCOPE_MISMATCH");
+            }
+            return;
+        }
+        self.report.remote_gui_verified = forward.error.is_none()
+            && forward.state == "pass"
+            && forward.gtk.as_ref().is_some_and(|gtk| gtk.helper_verified);
         if let Some(error) = forward.error {
             self.fail(error);
         } else if forward.state == "pass" {

@@ -122,7 +122,9 @@ impl Runtime {
     ) -> std::io::Result<Self> {
         let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "CONFIG_INVALID");
         config.validate().map_err(|_| invalid())?;
-        if (config.debug_probe_profile_v2.is_some() || config.debug_linux_shm_pins.is_some())
+        if (config.debug_probe_profile_v2.is_some()
+            || config.debug_linux_shm_pins.is_some()
+            || config.debug_linux_gtk_pins.is_some())
             && !cfg!(any(test, feature = "debug-fixtures"))
         {
             return Err(invalid());
@@ -145,6 +147,13 @@ impl Runtime {
             .debug_linux_shm_pins
             .as_deref()
             .map(eidolon_transport::linux_probe::Pins::parse)
+            .transpose()
+            .map_err(|_| invalid())?;
+        #[cfg(any(test, feature = "debug-fixtures"))]
+        let linux_gtk_pins = config
+            .debug_linux_gtk_pins
+            .as_deref()
+            .map(eidolon_transport::linux_probe::GtkPins::parse)
             .transpose()
             .map_err(|_| invalid())?;
         let mut profiles = std::collections::BTreeMap::new();
@@ -410,8 +419,12 @@ impl Runtime {
                             if !close && report.ready && !report.forward_sent {
                                 let code = if app_linux {
                                     #[cfg(any(test, feature = "debug-fixtures"))]
-                                    {if let (Some(pins),Some(paths))=(linux_pins.as_ref(),config.paths.as_ref()) {
-                                        io.linux_probe(current.session(),std::path::Path::new(&paths.files_dir),current.socket().as_deref(),current.nonce(),pins.clone())
+                                    {if let Some(paths)=config.paths.as_ref() {
+                                        if let Some(case)=current.mode().linux_gtk_case() {
+                                            if let Some(pins)=linux_gtk_pins.as_ref() {io.linux_gtk_probe(current.session(),std::path::Path::new(&paths.files_dir),current.socket().as_deref(),current.nonce(),pins.binding(case))}else{Status::NotReady}
+                                        } else if let Some(pins)=linux_pins.as_ref() {
+                                            io.linux_probe(current.session(),std::path::Path::new(&paths.files_dir),current.socket().as_deref(),current.nonce(),pins.clone())
+                                        }else{Status::NotReady}
                                     }else{Status::NotReady}}
                                     #[cfg(not(any(test, feature = "debug-fixtures")))]
                                     {Status::InvalidArgument}
@@ -1312,7 +1325,7 @@ impl Runtime {
                                         .forward_probe
                                         .as_ref()
                                         .is_none_or(|r| matches!(r.state, "pass" | "fail"));
-                                    if (virtual_clock && !cfg!(debug_assertions))
+                                    if mode.linux_gtk_case().is_some() || (virtual_clock && !cfg!(debug_assertions))
                                         || config.paths.is_none()
                                         || (!virtual_clock
                                             && *mode != eidolon_model::commands::AppMode::Foot
@@ -1491,6 +1504,33 @@ impl Runtime {
                                     }
                                     #[cfg(not(any(test, feature = "debug-fixtures")))]
                                     {let _=(session,nonce);Status::InvalidArgument}
+                                }
+                                Command::LinuxGtkProbe {session,nonce,case,..} => {
+                                    #[cfg(any(test, feature = "debug-fixtures"))]
+                                    {
+                                        if linux_gtk_pins.is_none() || config.paths.is_none() {Status::NotReady}
+                                        else if ssh.session!=Some(*session) {Status::Stale}
+                                        else if ssh.state!=eidolon_transport::session::State::ProbeReady {Status::NotReady}
+                                        else if pending_app.is_some() || app.is_some() || helper.is_some() || dependencies.is_some() || compositor.is_some() || ssh.linux_forward.is_some() {Status::Busy}
+                                        else {
+                                            pending_app=Some((*session,nonce.clone(),case.mode(),false,true));
+                                            state.snapshot.app=Some(crate::session::Report{state:"queued",session:Some(*session),nonce:nonce.clone(),mode:Some(case.mode()),callback_clock:"target-driven",..Default::default()});
+                                            Status::Accepted
+                                        }
+                                    }
+                                    #[cfg(not(any(test, feature = "debug-fixtures")))]
+                                    {let _=(session,nonce,case);Status::InvalidArgument}
+                                }
+                                Command::LinuxGtkRecover {session,nonce,case,..} => {
+                                    #[cfg(any(test, feature = "debug-fixtures"))]
+                                    {
+                                        if app_busy || helper.is_some() || dependencies.is_some() || compositor.is_some() {Status::Busy}
+                                        else if let (Some(pins),Some(paths))=(linux_gtk_pins.as_ref(),config.paths.as_ref()) {
+                                            io.linux_gtk_probe(*session,std::path::Path::new(&paths.files_dir),None,nonce,pins.binding(*case))
+                                        }else{Status::NotReady}
+                                    }
+                                    #[cfg(not(any(test, feature = "debug-fixtures")))]
+                                    {let _=(session,nonce,case);Status::InvalidArgument}
                                 }
                                 Command::LinuxShmRecover {session,nonce,..} => {
                                     #[cfg(any(test, feature = "debug-fixtures"))]
@@ -1780,6 +1820,8 @@ impl Runtime {
                 | Command::LinuxShmProbe { .. }
                 | Command::LinuxShmSdkProbe { .. }
                 | Command::LinuxShmRecover { .. }
+                | Command::LinuxGtkProbe { .. }
+                | Command::LinuxGtkRecover { .. }
         ) && !cfg!(any(test, feature = "debug-fixtures"))
         {
             return Status::InvalidArgument;

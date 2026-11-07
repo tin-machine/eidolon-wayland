@@ -14,36 +14,38 @@ pub struct Report {
     pub child_reaped: Option<bool>,
     pub pipes_closed: Option<bool>,
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk: Option<super::GtkReport>,
+}
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Identity {
+    pub(super) pid: u32,
+    pub(super) start: String,
+    pub(super) group: u32,
+    pub(super) uid: u32,
+    pub(super) state: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Identity {
-    pid: u32,
-    start: String,
-    group: u32,
-    uid: u32,
-    state: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Metrics {
+pub(super) struct Metrics {
     bytes: u64,
     retained: u64,
     truncated: bool,
 }
 impl Metrics {
-    fn valid(&self) -> bool {
+    pub(super) fn valid(&self) -> bool {
         self.retained == self.bytes.min(65536) && self.truncated == (self.bytes > 65536)
     }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Files {
+pub(super) struct Files {
     #[serde(rename = "eidolon-linux-session.py")]
-    helper: String,
-    waypipe: String,
+    pub(super) helper: String,
+    pub(super) waypipe: String,
     #[serde(rename = "eidolon-shm-fixture")]
-    fixture: String,
+    pub(super) fixture: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -114,10 +116,12 @@ pub(super) struct Protocol {
     pins: Pins,
     pub socket: Option<String>,
     pub report: Report,
-    child_started: bool,
-    cleaned: bool,
+    pub(super) child_started: bool,
+    pub(super) child: Option<Identity>,
+    gtk: Option<super::gtk::GtkState>,
+    pub(super) cleaned: bool,
     pattern: bool,
-    stopping: bool,
+    pub(super) stopping: bool,
 }
 impl Protocol {
     pub fn new(nonce: &str, uid: u32, pins: &Pins) -> Self {
@@ -131,12 +135,21 @@ impl Protocol {
                 ..Default::default()
             },
             child_started: false,
+            child: None,
+            gtk: None,
             cleaned: false,
             pattern: false,
             stopping: false,
         }
     }
-    fn common(&self, schema: u32, backend: &str, revision: &str, nonce: &str, uid: u32) -> bool {
+    pub(super) fn common(
+        &self,
+        schema: u32,
+        backend: &str,
+        revision: &str,
+        nonce: &str,
+        uid: u32,
+    ) -> bool {
         schema == 1
             && backend == "linux_posix"
             && revision == REVISION
@@ -146,6 +159,23 @@ impl Protocol {
     pub fn line(&mut self, line: &[u8]) -> Result<(), &'static str> {
         if line.is_empty() || line.len() > 16384 || self.report.finished_received {
             return Err("LINUX_PROTOCOL_ERROR");
+        }
+        if self.gtk.is_some() {
+            #[derive(Deserialize)]
+            struct Header {
+                #[serde(rename = "type")]
+                kind: String,
+            }
+            let header: Header =
+                serde_json::from_slice(line).map_err(|_| "LINUX_PROTOCOL_ERROR")?;
+            if matches!(header.kind.as_str(), "tools" | "gtk_report" | "finished") {
+                let frame = serde_json::from_slice(line).map_err(|_| "LINUX_PROTOCOL_ERROR")?;
+                let mut gtk = self.gtk.take().unwrap();
+                let result = gtk.frame(frame, self, false);
+                self.report.gtk = Some(gtk.report.clone());
+                self.gtk = Some(gtk);
+                return result;
+            }
         }
         let frame: Frame = serde_json::from_slice(line).map_err(|_| "LINUX_PROTOCOL_ERROR")?;
         self.frame(frame)
@@ -220,6 +250,7 @@ impl Protocol {
                     return Err("LINUX_CHILD_INVALID");
                 }
                 self.child_started = true;
+                self.child = Some(child);
                 self.report.phase = "running";
             }
             Frame::Finished {
@@ -243,19 +274,7 @@ impl Protocol {
                     || self.report.phase == "opening"
                     || !stdout.valid()
                     || !stderr.valid()
-                    || !matches!(
-                        reason.as_str(),
-                        "Completed"
-                            | "Stop"
-                            | "EOF"
-                            | "Signal"
-                            | "LeaseExpired"
-                            | "MaximumDuration"
-                            | "OutputFailed"
-                            | "ControlInvalid"
-                            | "InternalFailure"
-                            | "CleanupPending"
-                    )
+                    || !valid_reason(&reason, false)
                 {
                     return Err("LINUX_FINISHED_INVALID");
                 }
@@ -289,6 +308,22 @@ impl Protocol {
             }
         }
         Ok(())
+    }
+    pub fn with_gtk(mut self, binding: Option<&super::GtkBinding>) -> Self {
+        self.gtk = binding.map(super::gtk::GtkState::new);
+        self
+    }
+    pub fn mode(&self) -> &'static str {
+        self.gtk
+            .as_ref()
+            .map_or("pattern", |gtk| gtk.binding.case.helper_mode())
+    }
+    pub fn gtk_pass(&self) -> bool {
+        self.cleaned()
+            && self
+                .gtk
+                .as_ref()
+                .is_some_and(|gtk| gtk.report.helper_verified)
     }
     pub fn inspect(&mut self) -> Result<(), &'static str> {
         if self.report.phase != "prepared" || self.stopping {
@@ -394,4 +429,31 @@ pub(super) fn valid_socket(path: &str, nonce: &str) -> bool {
             .skip(1)
             .any(|part| part.is_empty() || part == "." || part == "..")
         && !path.starts_with("/data/data/com.termux/")
+}
+
+impl Identity {
+    pub(super) fn valid(&self) -> bool {
+        self.pid != 0
+            && self.group != 0
+            && !self.start.is_empty()
+            && self.start.len() <= 32
+            && self.start.bytes().all(|b| b.is_ascii_digit())
+            && self.state.len() == 1
+            && self.state.bytes().all(|b| b.is_ascii_alphabetic())
+    }
+}
+pub(super) fn valid_reason(reason: &str, gtk: bool) -> bool {
+    matches!(
+        reason,
+        "Completed"
+            | "Stop"
+            | "EOF"
+            | "Signal"
+            | "LeaseExpired"
+            | "MaximumDuration"
+            | "OutputFailed"
+            | "ControlInvalid"
+            | "InternalFailure"
+            | "CleanupPending"
+    ) || gtk && reason == "ReportInvalid"
 }

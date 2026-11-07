@@ -579,7 +579,7 @@ def serve(home, nonce, control_fd, emit, *, lease_seconds=60.0, maximum_seconds=
                             if mode in GTK_MODES:
                                 gtk_reports = GtkReports(nonce, mode,
                                     lambda pid, saved: gtk_process(pid, child.identity['group'], executable, saved),
-                                    lambda report: publish({**marker(nonce), 'type': 'gtk_report', 'report': report}))
+                                    lambda report: publish({**marker(nonce), 'type': 'gtk_report', 'process': gtk_reports.process, 'report': report}))
                             lease['child'] = child.identity; write_record(directory / 'lease.json', lease)
                             for name in rings:
                                 pipe = getattr(child.child, name); os.set_blocking(pipe.fileno(), False)

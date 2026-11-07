@@ -72,6 +72,7 @@ fn request<'a>(dir: &'a Path, socket: &'a Path, pins: &'a Pins) -> Request<'a> {
         nonce: "1234567890abcdef",
         uid: 1000,
         pins,
+        gtk: None,
     }
 }
 
@@ -463,6 +464,7 @@ fn recovery<'a>(dir: &'a Path, pins: &'a Pins) -> Recovery<'a> {
         nonce: "1234567890abcdef",
         uid: unsafe { libc::getuid() },
         pins,
+        gtk: None,
     }
 }
 #[test]

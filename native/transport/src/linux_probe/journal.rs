@@ -1,7 +1,7 @@
 //! Linux専用の未回収owner。旧Termux journalは読まない・照合しない・削除しない。
 use super::Request;
 use eidolon_model::ids::SessionId;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     ffi::CString,
     fs::{File, OpenOptions},
@@ -34,6 +34,35 @@ struct Stored {
     bundle_sha256: String,
     waypipe_sha256: String,
     fixture_sha256: String,
+    #[serde(default)]
+    gtk: Option<GtkStored>,
+}
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct GtkStored {
+    case: super::GtkCase,
+    bundle_sha256: String,
+    source_sha256: String,
+    binary_sha256: String,
+    gtk_version: String,
+}
+impl GtkStored {
+    fn from(binding: &super::GtkBinding) -> Self {
+        Self {
+            case: binding.case,
+            bundle_sha256: binding.pins.gtk_bundle_sha256.clone(),
+            source_sha256: binding.pins.source_sha256.clone(),
+            binary_sha256: binding.pins.binary_sha256.clone(),
+            gtk_version: binding.pins.gtk_version.clone(),
+        }
+    }
+}
+fn directory_name(gtk: Option<&super::GtkBinding>) -> &'static str {
+    if gtk.is_some() {
+        "linux-gtk-probe-state"
+    } else {
+        "linux-probe-state"
+    }
 }
 fn check_directory(path: &Path, private: bool) -> Result<(), &'static str> {
     let m = std::fs::symlink_metadata(path).map_err(|_| "LINUX_JOURNAL_INVALID")?;
@@ -137,7 +166,7 @@ impl Journal {
         request: &super::Recovery<'_>,
     ) -> Result<Option<(Self, SessionId)>, &'static str> {
         check_directory(request.files, false)?;
-        let directory = request.files.join("linux-probe-state");
+        let directory = request.files.join(directory_name(request.gtk));
         match std::fs::symlink_metadata(&directory) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             _ => check_directory(&directory, true)?,
@@ -149,7 +178,8 @@ impl Journal {
         }
         let (file, bytes) = read(&path)?;
         let stored: Stored = serde_json::from_slice(&bytes).map_err(|_| "LINUX_JOURNAL_INVALID")?;
-        if stored.schema != 1
+        if stored.schema != if request.gtk.is_some() { 2 } else { 1 }
+            || stored.gtk != request.gtk.map(GtkStored::from)
             || stored.backend != "linux_posix"
             || stored.profile_binding != request.profile_binding
             || stored.profile_revision != request.profile_revision
@@ -176,7 +206,7 @@ impl Journal {
     }
     pub fn reserve(request: &Request<'_>) -> Result<Self, &'static str> {
         check_directory(request.files, false)?;
-        let directory = request.files.join("linux-probe-state");
+        let directory = request.files.join(directory_name(request.gtk));
         match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
             Ok(()) => sync(request.files).map_err(|_| "LINUX_JOURNAL_PARENT_SYNC_FAILED")?,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
@@ -189,10 +219,15 @@ impl Journal {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
             Err(_) => return Err("LINUX_JOURNAL_INVALID"),
         }
-        let bytes=serde_json::to_vec(&serde_json::json!({"schema":1,"backend":"linux_posix","profile_binding":request.profile_binding,
+        let mut value = serde_json::json!({"schema":if request.gtk.is_some(){2}else{1},"backend":"linux_posix","profile_binding":request.profile_binding,
             "profile_revision":request.profile_revision,"session":request.session,"uid":request.uid,"nonce":request.nonce,
             "helper_sha256":request.pins.helper_sha256(),"bundle_sha256":request.pins.bundle_sha256,
-            "waypipe_sha256":request.pins.waypipe_sha256,"fixture_sha256":request.pins.fixture_sha256})).map_err(|_|"LINUX_JOURNAL_FAILED")?;
+            "waypipe_sha256":request.pins.waypipe_sha256,"fixture_sha256":request.pins.fixture_sha256});
+        if let Some(gtk) = request.gtk {
+            value["gtk"] =
+                serde_json::to_value(GtkStored::from(gtk)).map_err(|_| "LINUX_JOURNAL_FAILED")?;
+        }
+        let bytes = serde_json::to_vec(&value).map_err(|_| "LINUX_JOURNAL_FAILED")?;
         let temporary = directory.join(format!(".pending-{:016x}", rand::random::<u64>()));
         let publish = (|| -> Result<(), &'static str> {
             let mut file = OpenOptions::new()

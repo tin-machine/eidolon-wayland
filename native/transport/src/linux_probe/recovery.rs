@@ -15,6 +15,7 @@ pub struct Recovery<'a> {
     pub nonce: &'a str,
     pub uid: u32,
     pub pins: &'a Pins,
+    pub gtk: Option<&'a super::GtkBinding>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct RecoveryReport {
@@ -27,6 +28,8 @@ pub struct RecoveryReport {
     pub receipt_verified: bool,
     pub channel_closed: bool,
     pub error: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk_case: Option<super::GtkCase>,
 }
 
 pub async fn recover<H: client::Handler>(
@@ -44,13 +47,14 @@ pub async fn recover<H: client::Handler>(
         receipt_verified: false,
         channel_closed: false,
         error: None,
+        gtk_case: request.gtk.map(|gtk| gtk.case),
     };
     let result=async {
-        if request.uid==0||!hex(request.profile_binding,64)||!crate::forward_probe::valid_nonce(request.nonce)||!request.pins.valid()||request.profile_revision.parse::<u64>().is_err()||request.profile_revision.starts_with('0')||!request.profile_revision.bytes().all(|b|b.is_ascii_digit()) {return Err("INVALID_ARGUMENT");}
+        if request.uid==0||!hex(request.profile_binding,64)||!crate::forward_probe::valid_nonce(request.nonce)||!request.pins.valid()||request.gtk.is_some_and(|gtk|!gtk.valid(request.pins))||request.profile_revision.parse::<u64>().is_err()||request.profile_revision.starts_with('0')||!request.profile_revision.bytes().all(|b|b.is_ascii_digit()) {return Err("INVALID_ARGUMENT");}
         if cancel.is_cancelled(){return Err("CANCELLED");}
         let Some((mut journal,origin))=journal::Journal::matching(&request)? else{report.pending=false;return Ok(());};
         report.origin_session=Some(origin);
-        let command=owner::cleanup_command(request.pins,request.nonce)?;
+        let command=if request.gtk.is_some(){owner::gtk_command(request.pins,request.nonce,request.gtk,true)?}else{owner::cleanup_command(request.pins,request.nonce)?};
         let mut channel=tokio::select!{biased;_=cancel.cancelled()=>return Err("CANCELLED"),v=timeout(Duration::from_secs(5),client.channel_open_session())=>v}.map_err(|_|"LINUX_AUDIT_TIMEOUT")?.map_err(|_|"SSH_IO_FAILED")?;
         let exchange=async {
             if cancel.is_cancelled(){return Err("CANCELLED");}
@@ -72,7 +76,7 @@ pub async fn recover<H: client::Handler>(
             }
             report.channel_closed=true;
             if !eof||status!=Some(0)||signal{return Err("LINUX_REMOTE_EXIT");}
-            protocol::audit(&bytes,request.nonce,request.uid,request.pins)
+            if let Some(gtk)=request.gtk {super::gtk::audit(&bytes,request.nonce,request.uid,gtk)}else{protocol::audit(&bytes,request.nonce,request.uid,request.pins)}
         };
         let outcome=tokio::select!{biased;_=cancel.cancelled()=>Err("CANCELLED"),v=timeout(Duration::from_secs(10),exchange)=>v.map_err(|_|"LINUX_AUDIT_TIMEOUT").and_then(|v|v)};
         report.channel_closed|=matches!(timeout(Duration::from_secs(1),channel.close()).await,Ok(Ok(())));

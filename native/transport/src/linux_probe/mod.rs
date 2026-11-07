@@ -1,5 +1,7 @@
 //! NX18固定Linux SHM専用。通常GUI/Termux Launcher/Journalとは独立しdebug featureだけで公開。
+mod gtk;
 mod journal;
+pub use gtk::{GtkBinding, GtkCase, GtkPins, GtkReport};
 mod owner;
 mod protocol;
 mod recovery;
@@ -79,6 +81,7 @@ pub struct Request<'a> {
     pub nonce: &'a str,
     pub uid: u32,
     pub pins: &'a Pins,
+    pub gtk: Option<&'a GtkBinding>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -95,6 +98,8 @@ pub struct Report {
     pub channel_closed: bool,
     pub journal_pending: bool,
     pub pattern_verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gtk: Option<GtkReport>,
     pub frames: u32,
     pub cancelled: bool,
     pub elapsed_ms: u64,
@@ -117,6 +122,8 @@ pub async fn run<H: client::Handler>(
         session: Some(request.session),
         nonce: request.nonce.into(),
         uid: request.uid,
+        // exec/owner生成前の拒否も捕捉済みcaseへ束縛し、coreが失敗を見落とさない。
+        gtk: request.gtk.map(|gtk| GtkReport::initial(gtk.case)),
         ..Default::default()
     };
     let mut journal = None;
@@ -131,6 +138,7 @@ pub async fn run<H: client::Handler>(
             || request.profile_revision.starts_with('0')
             || !request.profile_revision.bytes().all(|b| b.is_ascii_digit())
             || !request.pins.valid()
+            || request.gtk.is_some_and(|gtk| !gtk.valid(request.pins))
             || !request.local_socket.is_absolute()
             || request.local_socket.as_os_str().len() > 103
         {
@@ -158,12 +166,14 @@ pub async fn run<H: client::Handler>(
         while !active.prepared() {
             active.next().await?;
             report.remote = active.report();
+            report.gtk = report.remote.gtk.clone();
             publish(&report);
         }
         active.inspect().await?;
         while !active.tools_ready() {
             active.next().await?;
             report.remote = active.report();
+            report.gtk = report.remote.gtk.clone();
             publish(&report);
         }
         report.tools_verified = true;
@@ -188,6 +198,7 @@ pub async fn run<H: client::Handler>(
         while !active.closed() {
             active.next().await?;
             report.remote = active.report();
+            report.gtk = report.remote.gtk.clone();
             if active.running() {
                 report.state = "running";
             }
@@ -196,7 +207,11 @@ pub async fn run<H: client::Handler>(
         if cancel.is_cancelled() {
             return Err("CANCELLED");
         }
-        if !active.pattern_pass() {
+        if request.gtk.is_some() {
+            if !active.gtk_pass() {
+                return Err("LINUX_GTK_FAILED");
+            }
+        } else if !active.pattern_pass() {
             return Err("LINUX_PATTERN_FAILED");
         }
         Ok(())
@@ -214,6 +229,7 @@ pub async fn run<H: client::Handler>(
         report.remote = active.report();
         report.remote_cleaned = active.cleaned();
         report.pattern_verified = active.pattern_pass();
+        report.gtk = report.remote.gtk.clone();
         report.frames = if report.pattern_verified { 100 } else { 0 };
         report.channel_closed = active.close().await;
     }
@@ -284,3 +300,6 @@ pub async fn run<H: client::Handler>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod gtk_tests;

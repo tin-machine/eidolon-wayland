@@ -6,6 +6,101 @@ use russh::{
 use tokio::net::TcpListener;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gtk_mailbox_captures_case_without_upgrading_probe_ready_or_normal_routes() {
+    use sha2::{Digest, Sha256};
+    let controller = Controller::start().unwrap();
+    let session = SessionId::new(7).unwrap();
+    let source: String = Sha256::digest(include_bytes!(
+        "../../../../scripts/fixtures/gtk3-interaction-fixture.c"
+    ))
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect();
+    let pins=crate::linux_probe::GtkPins::parse(&serde_json::json!({"schema":1,"base":{"schema":1,"bundle_sha256":"b".repeat(64),"waypipe_sha256":"c".repeat(64),"fixture_sha256":"d".repeat(64)},
+        "gtk_bundle_sha256":"e".repeat(64),"source_sha256":source,"binary_sha256":"f".repeat(64),"gtk_version":"3.24.52"}).to_string()).unwrap();
+    controller.signals.update(|s| {
+        s.report.state = State::Ready;
+        s.report.session = Some(session);
+        s.cancel = Some(CancellationToken::new());
+    });
+    assert_eq!(
+        controller.linux_gtk_probe(
+            session,
+            Path::new("/fixture"),
+            None,
+            "1234567890abcdef",
+            pins.binding(crate::linux_probe::GtkCase::Input)
+        ),
+        Status::NotReady
+    );
+    assert_eq!(
+        controller.start_app(
+            session,
+            Path::new("/fixture/p"),
+            "1234567890abcdef",
+            AppMode::LinuxGtkInput
+        ),
+        Status::NotReady
+    );
+    controller
+        .signals
+        .update(|s| s.report.state = State::ProbeReady);
+    assert_eq!(
+        controller.linux_gtk_probe(
+            SessionId::new(8).unwrap(),
+            Path::new("/fixture"),
+            None,
+            "1234567890abcdef",
+            pins.binding(crate::linux_probe::GtkCase::Input)
+        ),
+        Status::Stale
+    );
+    assert_eq!(
+        controller.linux_gtk_probe(
+            session,
+            Path::new("/fixture"),
+            Some(Path::new("/fixture/p")),
+            "1234567890abcdef",
+            pins.binding(crate::linux_probe::GtkCase::Dialog)
+        ),
+        Status::Accepted
+    );
+    assert_eq!(
+        controller.linux_gtk_probe(
+            session,
+            Path::new("/fixture"),
+            None,
+            "1234567890abcdef",
+            pins.binding(crate::linux_probe::GtkCase::Input)
+        ),
+        Status::Busy
+    );
+    assert_eq!(controller.snapshot().state, State::ProbeReady);
+    let queued = controller.snapshot().linux_forward.unwrap();
+    let gtk = queued.gtk.unwrap();
+    assert_eq!(gtk.case, crate::linux_probe::GtkCase::Dialog);
+    assert_eq!(gtk.reports, 0);
+    assert!(!gtk.process_bound && !gtk.helper_verified);
+    assert_eq!(
+        controller.open_terminal(session, request(1)),
+        Status::NotReady
+    );
+    {
+        let shared = controller.signals.shared.lock().unwrap();
+        assert_eq!(
+            shared.linux.as_ref().unwrap().gtk.as_ref().unwrap().case,
+            crate::linux_probe::GtkCase::Dialog
+        );
+    }
+    assert!(
+        !serde_json::to_string(&controller.snapshot())
+            .unwrap()
+            .contains(&"f".repeat(64))
+    );
+    stop(&controller).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn linux_mailbox_requires_probe_ready_and_never_enables_normal_app_routes() {
     let controller = Controller::start().unwrap();
     let session = SessionId::new(7).unwrap();

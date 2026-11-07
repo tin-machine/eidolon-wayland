@@ -54,6 +54,15 @@ class IdentityTests(unittest.TestCase):
         helper.write_text("# fixed Linux helper version two\n")
         self.assertNotEqual(first["source_digest"], self.info()["source_digest"])
 
+    def test_embedded_linux_gtk_source_changes_build_identity(self):
+        source = self.root / "scripts/fixtures/gtk3-interaction-fixture.c"
+        source.parent.mkdir(parents=True)
+        source.write_text("/* fixed GTK source one */\n")
+        first = self.info()
+        self.assertIn(source, native.source_files(self.root))
+        source.write_text("/* fixed GTK source two */\n")
+        self.assertNotEqual(first["source_digest"], self.info()["source_digest"])
+
     def test_gitless_archive_accepts_explicit_identity_and_rejects_bad_input(self):
         with patch.dict(os.environ, {"EIDOLON_SOURCE_DIGEST": "b" * 64, "EIDOLON_SOURCE_DIRTY": "false"}):
             first = self.info()
