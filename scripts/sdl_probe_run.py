@@ -16,6 +16,17 @@ from sdl_lease_capture import (CaptureError, canonical, capture_remote, decode, 
 
 MAX_FILE = 8 * 1024 * 1024
 MAX_OUTPUT = 65536
+VARIANTS = ("baseline", "egl-wayland")
+
+
+def variant_environment(request):
+    """一項だけの固定対照。requestから自由envを取り込まない。"""
+    variant = request.get("variant")
+    need(type(variant) is str and variant in VARIANTS, "VARIANT_INVALID")
+    graphics = dict(LIBGL_ALWAYS_SOFTWARE="1")
+    if variant == "egl-wayland":
+        graphics["EGL_PLATFORM"] = "wayland"
+    return variant, graphics
 
 
 def checked_file(directory_fd, name, uid, mode, maximum):
@@ -115,6 +126,7 @@ def group_live(group):
 
 def run_operator(request, home, control_fd, emit, *, capture=capture_remote, checker=live_binding, timeout=20.0):
     """capture/checker/短いtimeoutの差替えはlocalhost fixtureだけ。CLIへ露出しない。"""
+    variant, graphics = variant_environment(request)
     captured = capture(request["binding"], home)
     directory = validate_artifacts(request, home)
     checker(request["binding"], home, captured)
@@ -126,10 +138,11 @@ def run_operator(request, home, control_fd, emit, *, capture=capture_remote, che
          not (directory / report_name).exists() and not (directory / report_name).is_symlink(), "RESULT_EXISTS")
     prefix = home.parent / "usr"
     environment = dict(PATH=str(prefix / "bin") + ":/system/bin", PREFIX=str(prefix), HOME=str(home),
-                       TMPDIR=str(prefix / "tmp"), LANG="C.UTF-8", LIBGL_ALWAYS_SOFTWARE="1", **captured["environment"])
+                       TMPDIR=str(prefix / "tmp"), LANG="C.UTF-8", **captured["environment"], **graphics)
     command = [sys.executable, str(directory / "eidolon-sdl-probe.py"), "--binary", str(directory / "eidolon-sdl-probe"),
                "--result", str(result_path), "--driver", "wayland", "--frames", "120", "--timeout", "15"]
-    emit(dict(phase="validated", run_id=request["run_id"], session=request["binding"]["session"]))
+    emit(dict(phase="validated", run_id=request["run_id"], session=request["binding"]["session"], variant=variant,
+              graphics_environment=graphics))
     blocking = os.get_blocking(control_fd)
     selector = selectors.DefaultSelector()
     try:
@@ -159,7 +172,7 @@ def run_operator(request, home, control_fd, emit, *, capture=capture_remote, che
             pipe = getattr(child, name)
             os.set_blocking(pipe.fileno(), False)
             selector.register(pipe, selectors.EVENT_READ, name)
-        emit(dict(phase="started", run_id=request["run_id"], runner_pid=child.pid, runner_group=child.pid))
+        emit(dict(phase="started", run_id=request["run_id"], runner_pid=child.pid, runner_group=child.pid, variant=variant))
         while True:
             now = time.monotonic()
             exited = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
@@ -258,6 +271,7 @@ def run_operator(request, home, control_fd, emit, *, capture=capture_remote, che
     success = (cleanup and cancelled is None and failure is None and child.returncode == 0 and
                probe.get("graphics_client") == "completed" and probe.get("shm_gate") == "pass")
     result = dict(schema=1, operator="eidolon-sdl-live-v1", status="completed" if success else "failed",
+                  variant=variant, graphics_environment=graphics,
                   run_id=request["run_id"], session=request["binding"]["session"], nonce=request["binding"]["nonce"],
                   binary_sha256=request["binary_sha256"], manifest_sha256=request["manifest_sha256"],
                   runner_returncode=child.returncode, runner_reaped=True, runner_group_reclaimed=reclaimed,

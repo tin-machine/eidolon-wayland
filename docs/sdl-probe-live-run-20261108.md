@@ -19,6 +19,26 @@ Termuxの固定`.local/state/eidolon/nx11/<run-id>`から、manifest/source/runn
 binaryはAArch64 ELFだけを受け、既存resultは再利用しない。
 
 実行引数は固定の`--driver wayland --frames 120 --timeout 15`、`LIBGL_ALWAYS_SOFTWARE=1`とする。
+`--variant baseline`（既定）は追加のgraphics envを持たず、`--variant egl-wayland`は
+`EGL_PLATFORM=wayland`だけを追加する固定対照である。選択値とこの固定graphics envを
+host request/result・remote events/reportへ記録し、返却された条件との不一致は失敗にする。
+親processの`EGL_PLATFORM`や自由envを継承しない。
+
+Build152の最初の自然終了runでは、OpenGL rendererの失敗復元中にWayland windowのNULL破棄でSIGSEGVとなった。
+Termux MesaはX11をbuild時のnative platformにする一方、native displayのWayland自動判定もあるため、
+これだけでplatform選択が原因とは断定しない。同じbinary/manifestで次の一項対照を行える。
+
+```bash
+scripts/quest-run-sdl-probe --serial "$EIDOLON_QUEST_SERIAL" \
+  --run-id "$SDL_RUN_ID" --binary-sha256 "$SDL_BINARY_SHA256" \
+  --manifest-sha256 "$SDL_MANIFEST_SHA256" --variant egl-wayland
+```
+
+この対照はC・配備runner・manifestを変更しないので、既知hashの同じrun IDを使用できる。
+実行ごとに新しいprobe IDでresult/reportを排他的に作り、元の失敗結果を上書きしない。
+今後これらの配備物を変更する場合は、新run IDへ配備・compileしてhostの既知hashを取り直す。
+大きなSDL/Mesa rebuildや通常設定の永続変更は、この対照に含めない。
+
 remote wrapperは実際にspawnしたrunner handleを保持し、lease変更・stdin EOF・operator期限・signal時にrunnerへTERMを伝える。
 runnerが自身のSDL groupを回収する猶予を設け、強制runner KILLが必要ならcleanupを確認済みにしない。
 観測したshell/foot/Waypipe PIDへsignalを送らない。wrapperの結果は同run内の新規`operator-<probe-id>-report.json`にも保存する。

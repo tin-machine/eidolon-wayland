@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sdl_lease_capture import CaptureError, canonical
@@ -58,7 +59,7 @@ class SdlOperatorTests(unittest.TestCase):
                    f"probe={probe!r}\n"
                    "owned=None\n"
                    + ("owned=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],start_new_session=True)\n" if hold else "")
-                   + f"Path({str(self.directory / 'ready.json')!r}).write_text(json.dumps(dict(argv=sys.argv[1:],environment_keys=sorted(os.environ),owned=owned.pid if owned else None)))\n"
+                   + f"Path({str(self.directory / 'ready.json')!r}).write_text(json.dumps(dict(argv=sys.argv[1:],environment_keys=sorted(os.environ),graphics={{key:os.environ.get(key) for key in ['EGL_PLATFORM','LIBGL_ALWAYS_SOFTWARE']}},owned=owned.pid if owned else None)))\n"
                    + ("until=time.monotonic()+10\nwhile not stop[0] and time.monotonic()<until:time.sleep(.01)\n" if hold else "time.sleep(.05)\n")
                    + "if owned is not None:\n owned.terminate();owned.wait(timeout=2)\n"
                    "if stop[0]:probe.update(graphics_client='failed',shm_gate='fail')\n"
@@ -76,7 +77,8 @@ class SdlOperatorTests(unittest.TestCase):
         (self.directory / "manifest.json").write_bytes(data)
         (self.directory / "manifest.json").chmod(0o600)
         return dict(binding=self.binding, probe_id="c" * 32, run_id=self.run_id,
-                    binary_sha256=self.binary_hash, manifest_sha256=hashlib.sha256(data).hexdigest(), sources=sources)
+                    binary_sha256=self.binary_hash, manifest_sha256=hashlib.sha256(data).hexdigest(), sources=sources,
+                    variant="baseline")
 
     def execute(self, request, **kwargs):
         read_fd, write_fd = os.pipe()
@@ -88,7 +90,8 @@ class SdlOperatorTests(unittest.TestCase):
 
     def test_fixed_command_success_and_separate_sdk_status(self):
         request = self.prepare()
-        report = self.execute(request)
+        with patch.dict(os.environ, {"EGL_PLATFORM": "parent-must-not-leak"}):
+            report = self.execute(request)
         self.assertEqual(report["status"], "completed")
         self.assertTrue(report["cleanup_confirmed"])
         self.assertTrue(report["runner_group_reclaimed"])
@@ -98,6 +101,9 @@ class SdlOperatorTests(unittest.TestCase):
         self.assertEqual(ready["argv"], ["--binary", str(self.directory / "eidolon-sdl-probe"), "--result",
                          str(self.directory / report["result_file"]), "--driver", "wayland", "--frames", "120", "--timeout", "15"])
         self.assertNotIn("PRIVATE_SECRET", ready["environment_keys"])
+        self.assertEqual(ready["graphics"], dict(EGL_PLATFORM=None, LIBGL_ALWAYS_SOFTWARE="1"))
+        self.assertEqual(report["variant"], "baseline")
+        self.assertEqual(report["graphics_environment"], dict(LIBGL_ALWAYS_SOFTWARE="1"))
         saved = self.directory / ("operator-" + request["probe_id"] + "-report.json")
         self.assertEqual(json.loads(saved.read_text()), report)
         self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
@@ -117,15 +123,56 @@ class SdlOperatorTests(unittest.TestCase):
             validate_artifacts(request, self.home)
 
     def test_renderer_error_and_original_exit_are_preserved(self):
-        report = self.execute(self.prepare(original_failure=True))
+        request = self.prepare(original_failure=True)
+        request["variant"] = "egl-wayland"
+        report = self.execute(request)
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["runner_returncode"], 1)
         self.assertEqual(report["probe_result"]["returncode"], 7)
         self.assertEqual(report["probe_result"]["error"], "ORIGINAL_RENDERER")
         self.assertTrue(report["cleanup_confirmed"])
+        self.assertEqual(report["variant"], "egl-wayland")
+
+    def test_egl_variant_changes_only_fixed_graphics_condition(self):
+        request = self.prepare()
+        baseline = self.execute(request)
+        first = json.loads((self.directory / "ready.json").read_text())
+        original_result = (self.directory / baseline["result_file"]).read_bytes()
+        request.update(probe_id="d" * 32, variant="egl-wayland", environment={"LD_PRELOAD": "not-accepted"})
+        with patch.dict(os.environ, {"EGL_PLATFORM": "parent-must-not-leak", "PRIVATE_SECRET": "private"}):
+            report = self.execute(request)
+        second = json.loads((self.directory / "ready.json").read_text())
+        self.assertEqual(report["status"], "completed")
+        self.assertTrue(report["cleanup_confirmed"])
+        self.assertEqual(second["graphics"], dict(EGL_PLATFORM="wayland", LIBGL_ALWAYS_SOFTWARE="1"))
+        self.assertEqual(set(second["environment_keys"]) - set(first["environment_keys"]), {"EGL_PLATFORM"})
+        self.assertNotIn("LD_PRELOAD", second["environment_keys"])
+        self.assertNotIn("PRIVATE_SECRET", second["environment_keys"])
+        self.assertEqual(first["argv"][:3] + first["argv"][4:], second["argv"][:3] + second["argv"][4:])
+        self.assertEqual((self.directory / baseline["result_file"]).read_bytes(), original_result)
+        self.assertEqual(report["graphics_environment"], dict(LIBGL_ALWAYS_SOFTWARE="1", EGL_PLATFORM="wayland"))
+        self.assertEqual(self.events[-2]["variant"], "egl-wayland")
+
+    def test_invalid_or_missing_variant_is_rejected_before_spawn(self):
+        request = self.prepare()
+        for value in ("EGL_PLATFORM=x11", "wayland", {}, None):
+            with self.subTest(value=value), self.assertRaisesRegex(CaptureError, "VARIANT_INVALID"):
+                self.execute(dict(request, variant=value))
+        request.pop("variant")
+        with self.assertRaisesRegex(CaptureError, "VARIANT_INVALID"):
+            self.execute(request)
+        self.assertFalse((self.directory / "ready.json").exists())
+
+    def test_cli_rejects_free_environment_variant(self):
+        completed = subprocess.run([sys.executable, cli.__file__, "--serial", "unused", "--run-id", self.run_id,
+                                    "--binary-sha256", "1" * 64, "--manifest-sha256", "2" * 64,
+                                    "--variant", "EGL_PLATFORM=x11"], capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("invalid choice", completed.stderr)
 
     def test_cancel_reclaims_only_owned_runner_and_child(self):
         request = self.prepare(hold=True)
+        request["variant"] = "egl-wayland"
         unrelated = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"], start_new_session=True)
         read_fd, write_fd = os.pipe()
         failures = []

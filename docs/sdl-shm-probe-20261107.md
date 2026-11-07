@@ -78,7 +78,42 @@ runner自身へのTERM/HUPで別sessionの子・孫が残る問題もPCで再現
 
 記録は作業rootの`eidolon-ime-implementation-20261107/`内の`nx11-device/`、`sdl-install/`、`nx11-runner-evidence/`。
 C/runnerの各SHA-256、配備manifest、compiler argv、package追加前後、404と条件変更を含む。
-次は認証済みの現行footのWayland環境で自然終了を1回試し、二枚目のpanel更新を別途観測する。
+
+## 2026-11-08: Quest Build152での初回Wayland実行
+
+認証済みの現行footのlease・同UIDの登録root・現在APKのsourceを照合し、
+固定operatorで`LIBGL_ALWAYS_SOFTWARE=1`、software renderer、120 frames/15秒の自然終了を一度試した。
+SDL_CreateWindowは成功したが、続くSDL_CreateRenderer中にSIGSEGV（client returncode `-11`）となり、
+クライアントの完了reportは出なかった。
+
+| 観測 | 結果 |
+| --- | --- |
+| Wayland registry bind | compositor/xdg-shell/SHM/seat等は成立 |
+| toplevelのcontent SHM commit | 0、描画不合格 |
+| SDKの追加mapped window | 0、`not_verified` |
+| 元のfoot window | 維持 |
+| 所有runner/SDL process group | reap・回収を確認 |
+| HMD視認・物理入力 | `not_run` |
+
+保存したSDL2 ELFをNDKのobjdumpで調べると、最上位frameは
+[Wayland_DestroyWindow](https://github.com/libsdl-org/SDL/blob/release-2.32.10/src/video/wayland/SDL_waylandwindow.c)で
+NULLのwindow driverdataからegl_surfaceを読む命令（fault address `0x80`）と一致した。
+[SW_CreateRenderer](https://github.com/libsdl-org/SDL/blob/release-2.32.10/src/render/software/SDL_render_sw.c)は
+SDL_GetWindowSurfaceを使い、[window framebuffer生成](https://github.com/libsdl-org/SDL/blob/release-2.32.10/src/video/SDL_video.c)では
+software指定でも内部の加速rendererを試せる。今回の別frameはOpenGL driverの
+[失敗復元SDL_RecreateWindow](https://github.com/libsdl-org/SDL/blob/release-2.32.10/src/render/opengl/SDL_render_gl.c)へ一致する。
+最初の再作成が旧windowを破棄してから失敗し、復元時にもう一度破棄する経路が有力である。
+最初のGL library/EGL初期化失敗の理由はまだ取得していない。
+
+次はC/binary/配備runner/manifestを変えず、
+[固定operator](sdl-probe-live-run-20261108.md)の`--variant egl-wayland`で
+`EGL_PLATFORM=wayland`だけを追加する一項対照を行う。
+[Termux Mesa recipe](https://github.com/termux/termux-packages/blob/fbdb3c03610c697322ac608e77cea2b553f49ef3/packages/mesa/build.sh)は
+native platformをX11にしているが、[Mesa 26.2.6の選択処理](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/egl/main/egldisplay.c)は
+環境値・native displayの自動判定・build時defaultの順に選ぶ。
+従って「未設定なら必ずX11になる」とは断定しない。対照の成功も別途SHM/SDK観測で判定し、
+元のSIGSEGV・終了code・回収結果を上書きしない。同じ失敗ならwindow作成前の固定GL load stageを小probeで調べ、
+SDL/Mesaの大きなrebuildはその結果を待つ。
 
 ## Termuxへ持ち込む前の確認
 
@@ -121,8 +156,8 @@ python3 scripts/check-sdl-probe-host \
 
 実機で次に行う順序:
 
-1. Termuxの同UIDで導入済み版・apt候補・SDL2/SDL2-compat・Mesa/EGLを確認し、必要なpackageだけ導入する。
-2. 同C sourceをTermuxでbuildし、Eidolonのfoot一枚から既存`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`を継承してrunnerを実行する。
-   `LIBGL_ALWAYS_SOFTWARE=1`の条件を記録し、二枚目のSDL窓・SHM更新・入力・終了を製品経路で検証する。
+1. 上記の配備・Bionic buildの既知hashを保持し、現行APK/leaseでfoot一枚を準備する。
+2. `--variant egl-wayland`の固定一項対照で自然終了を一回実行し、同じjobで二枚目のSDL窓・SHM更新・退役を観測する。
+   成立しない場合は最初のGL/EGL failureを小probeで分ける。描画成立後に製品経路と入力を検証する。
 3. 焦点移動・取消・10回の停止回収を追加し、成立後にChocolate Doom＋Freedoomへ進む。
    Doom成功と一般GUI対応は別に確認する。HMD/物理キーボードの受入れは最後に残す。
