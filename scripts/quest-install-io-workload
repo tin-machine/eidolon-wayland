@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""指定Questのdebug TermuxへNX13固定sourceを配備。実行は別の固定debug case。"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+from quest_device import QuestDevice, work_root
+
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--serial',required=True)
+parser.add_argument('--artifact-root',type=Path)
+args=parser.parse_args()
+os.umask(0o077)
+root=args.artifact_root or work_root()/'eidolon-ime-implementation-20261107/nx13-fixture-install'
+if not root.is_absolute():parser.error('artifact root must be absolute')
+run=root/(datetime.datetime.now().strftime('%Y%m%dT%H%M%S')+f'-{os.getpid()}');run.mkdir(parents=True,mode=0o700)
+QuestDevice(args.serial,run).validate()
+source=(Path(__file__).parent/'termux/eidolon-io-workload.py').read_bytes()
+expected=hashlib.sha256(source).hexdigest()
+module=(Path(__file__).parent/'io_workload_artifact.py').read_text()
+remote=module+'\nimport json,sys\nprint(json.dumps(install(sys.stdin.buffer.read(65537),sys.argv[1])))\n'
+command=['run-as','com.termux','/data/data/com.termux/files/usr/bin/python3','-I','-c',remote,expected]
+result=subprocess.run(['adb','-s',args.serial,'shell','-T',shlex.join(command)],input=source,capture_output=True,timeout=30)
+(run/'installer.log').write_bytes(result.stdout+result.stderr)
+if result.returncode:raise SystemExit('IO_FIXTURE_INSTALL_FAILED')
+value=json.loads(result.stdout)
+if value.get('sha256')!=expected or value.get('status')!='installed':raise SystemExit('IO_FIXTURE_PIN_MISMATCH')
+(run/'result.json').write_text(json.dumps(value,indent=2)+'\n')
+print(json.dumps(value))

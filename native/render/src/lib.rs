@@ -93,6 +93,7 @@ pub struct TargetReport {
     pub canvas: Option<theme_state::Canvas>,
     pub content_size: Option<eidolon_model::window::LogicalSize>,
     pub decoration_frames: u64,
+    pub io_draw: Option<theme_state::IoDraw>,
     pub frame_timing: FrameTiming,
     #[serde(flatten)]
     pub gpu: GpuInfo,
@@ -741,6 +742,7 @@ fn owner(state: &State) {
                                     canvas: None,
                                     content_size: None,
                                     decoration_frames: 0,
+                                    io_draw: None,
                                     frame_timing: FrameTiming::default(),
                                     gpu: gpu.info(),
                                 },
@@ -909,20 +911,20 @@ fn owner(state: &State) {
                 if mode == RenderMode::Windows && image.is_none() {
                     continue;
                 }
+                let key = (target.report.key.session, target.report.key.window);
+                let drawing_semantic = semantic
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, s)| s.clone())
+                    .unwrap_or_default();
                 let drawing = if let (Some(theme), Some(image)) = (&theme, &image) {
-                    let key = (target.report.key.session, target.report.key.window);
-                    let semantic = semantic
-                        .iter()
-                        .find(|(k, _)| *k == key)
-                        .map(|(_, s)| s.clone())
-                        .unwrap_or_default();
                     match players.draw(
                         key,
                         theme,
                         clock.elapsed(),
                         image.snapshot.logical_size,
                         reduced_motion,
-                        &semantic,
+                        &drawing_semantic,
                     ) {
                         Ok(drawing) => Some(drawing),
                         Err(error) => {
@@ -967,6 +969,9 @@ fn owner(state: &State) {
                         target.report.content_size =
                             image.as_ref().map(|i| i.snapshot.logical_size);
                         target.report.decoration_frames += u64::from(drawing.is_some());
+                        target.report.io_draw = drawing
+                            .as_ref()
+                            .map(|d| d.io_draw(&drawing_semantic, theme_revision));
                         target.report.frames += 1;
                         target.report.content_frame =
                             image.as_ref().map(|image| image.snapshot.frame_seq);
@@ -1690,5 +1695,94 @@ mod tests {
             generations.attach(TargetKey::from_raw(1, 100, 1, 1).unwrap()),
             Status::Busy
         );
+    }
+    #[test]
+    fn io_draw_reports_only_successful_target_draw_not_pending_semantic() {
+        let renderer = Controller::start().unwrap();
+        renderer.use_windows();
+        let theme = Arc::new(
+            eidolon_theme::raster::compile(
+                &eidolon_theme::cyan_orbit(),
+                &Default::default(),
+                &renderer.pixel_budget(),
+                &Default::default(),
+            )
+            .unwrap(),
+        );
+        renderer.set_theme(Some(theme), false);
+        let key = TargetKey::from_raw(71, 81, 91, 101).unwrap();
+        renderer.windows(key.session, &[key.window]);
+        let state = theme_state::SemanticState {
+            workload_identity: Some("fixed-scope".into()),
+            io_bytes_per_second: Some(1048576.),
+            ..Default::default()
+        };
+        renderer.set_semantic_state(key.session, key.window, state.clone());
+        let (image, probes) = fixtures::make(16, 1, key, 64, 64).unwrap();
+        renderer.submit(image, probes);
+        renderer.attach_window(key, PlatformWindow::default(), 64, 64);
+        renderer.set_visible(true);
+        wait(|| {
+            renderer
+                .snapshot()
+                .targets
+                .first()
+                .is_some_and(|t| t.frames > 2 && t.io_draw.is_some())
+        });
+        let before = renderer.snapshot().targets[0].clone();
+        assert_eq!(
+            before.io_draw.as_ref().unwrap().bytes_per_second,
+            Some(1048576.)
+        );
+        assert_eq!(
+            before
+                .io_draw
+                .as_ref()
+                .unwrap()
+                .workload_identity
+                .as_deref(),
+            Some("fixed-scope")
+        );
+        assert!(
+            before
+                .io_draw
+                .as_ref()
+                .unwrap()
+                .inner_rotation_degrees
+                .is_some()
+        );
+        renderer.set_visible(false);
+        wait(|| renderer.snapshot().paused);
+        renderer.set_semantic_state(
+            key.session,
+            key.window,
+            theme_state::SemanticState {
+                io_bytes_per_second: None,
+                ..state
+            },
+        );
+        thread::sleep(FRAME * 3);
+        assert_eq!(
+            renderer.snapshot().targets[0]
+                .io_draw
+                .as_ref()
+                .unwrap()
+                .bytes_per_second,
+            Some(1048576.)
+        );
+        renderer.set_visible(true);
+        wait(|| {
+            renderer.snapshot().targets[0]
+                .io_draw
+                .as_ref()
+                .unwrap()
+                .bytes_per_second
+                .is_none()
+        });
+        assert!(renderer.snapshot().targets[0].frames > before.frames);
+        renderer.detach(key);
+        wait(|| renderer.snapshot().targets.is_empty());
+        renderer.request_stop();
+        wait(|| renderer.is_finished());
     }
 }

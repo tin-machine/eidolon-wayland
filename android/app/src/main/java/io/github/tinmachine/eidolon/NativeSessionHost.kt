@@ -173,10 +173,10 @@ object NativeSessionHost {
     }
     fun launchRegistered(session: String, revision: String, id: String) { launchCatalogTerminal(session,
         JSONObject().put("kind","registered").put("revision",revision).put("id",id)) }
-    fun launchFile(form: LauncherForm) {
-        if(form.valid()) launchCatalogTerminal(launcherUi.value.session,JSONObject().put("kind","temporary").put("definition",form.definition()))
+    fun launchFile(form: LauncherForm, requested: ((String, Int) -> Unit)? = null) {
+        if(form.valid()) launchCatalogTerminal(launcherUi.value.session,JSONObject().put("kind","temporary").put("definition",form.definition()), requested)
     }
-    private fun launchCatalogTerminal(expectedSession: String, target: JSONObject) {
+    private fun launchCatalogTerminal(expectedSession: String, target: JSONObject, requested: ((String, Int) -> Unit)? = null) {
         val payload=target.toString()
         worker.execute { safely {
             if(handle==0L || terminalAdding!=null || terminalOpen!=null || pendingDisconnect!=null) return@safely
@@ -196,6 +196,7 @@ object NativeSessionHost {
                 terminalAdding=TerminalAdding(expectedSession,(0 until windows.length()).map {windows.getJSONObject(it).getString("window")}.toSet(),request)
                 launcherUpdate(launcherState.copy(message="起動中"))
             } else launcherUpdate(launcherState.copy(message="起動できません（$code）"))
+            requested?.invoke(request, code) // enqueue受理。起動完了/登録/描画のACKではない。
         } }
     }
     private var termuxRequests=0L

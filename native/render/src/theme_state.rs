@@ -107,7 +107,36 @@ pub struct Drawing {
     pub frame: Frame,
     slots: BTreeMap<Slot, Rect>,
 }
+/// 最後の成功drawへ使ったI/Oだけ。受信予定値や室内/入力本文は含めない。
+#[derive(Clone, Debug, Serialize)]
+pub struct IoDraw {
+    pub workload_identity: Option<String>,
+    pub bytes_per_second: Option<f64>,
+    pub inner_rotation_degrees: Option<f64>,
+    pub theme_revision: u64,
+}
 impl Drawing {
+    pub fn io_draw(&self, state: &SemanticState, theme_revision: u64) -> IoDraw {
+        use eidolon_theme::style::{Property, Transform, Value};
+        let angle = self
+            .frame
+            .parts
+            .get("ring-inner")
+            .and_then(|part| part.get(&Property::Transform))
+            .and_then(|value| match value {
+                Value::Transform(items) => items.iter().rev().find_map(|item| match item {
+                    Transform::Rotate(angle) => Some(*angle),
+                    _ => None,
+                }),
+                _ => None,
+            });
+        IoDraw {
+            workload_identity: state.workload_identity.clone(),
+            bytes_per_second: state.io_bytes_per_second,
+            inner_rotation_degrees: angle,
+            theme_revision,
+        }
+    }
     pub fn composition<'a>(&'a self, theme: &'a CompiledTheme) -> Composition<'a> {
         Composition {
             theme,
