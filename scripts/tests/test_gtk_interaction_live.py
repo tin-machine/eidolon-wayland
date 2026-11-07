@@ -409,4 +409,56 @@ class ReceiptLedgerTests(unittest.TestCase):
             with self.assertRaises(CaptureError):self.ledger().observe(sdk(),row,1.0)
 
 
+
+
+class OwnedResizeReceiptTests(unittest.TestCase):
+    def row(self):
+        target=dict(session="2",window="5",scene="3",generation="4")
+        steps=[dict(stage="captured",target=target,input_epoch=1,delivered=4)]
+        for stage,generation,epoch,size,request in (("large","6",3,(800,500),"100"),("returned","8",5,(640,360),"101")):
+            old=steps[-1]["target"]
+            steps.append(dict(stage=stage,target=dict(target,generation=generation),input_epoch=epoch,delivered=4,
+                resize_request=request,old_target=":".join(old[n] for n in ("session","window","scene","generation")),replacement=True,
+                configured_serial=0,acknowledged_serial=2**32-1,committed_serial=3,width=size[0],height=size[1]))
+        steps.append(dict(stage="retired",target=steps[-1]["target"],input_epoch=7,delivered=4))
+        return dict(case="gtk-resize",nonce=NONCE,result="completed",phase="COMPLETE",reason=None,scope="target_bound_synthetic_native",
+            physical_input_verified=False,ime_verified=False,host_physical_filter_verified=False,runtime="9",session="2",scene="3",main_window="5",
+            target=steps[-1]["target"],input_epoch=5,foot_windows=["1"],steps=steps,
+            resize_replacement=dict(request_id=None,pending=False,readiness=None,acknowledged=False,old_retirement_seen=False,reason="RESIZE_IDLE"))
+
+    def validate(self,row):return proof.android_receipt(dict(check=row),NONCE,"resize")
+
+    def test_request_old_target_size_opaque_serial_and_two_bounded_epoch_changes_are_linked(self):
+        row=self.row();self.assertEqual(self.validate(row),row)
+
+    def test_reused_request_wrong_old_generation_size_and_extra_body_are_rejected(self):
+        for field,value in (("resize_request","100"),("old_target","2:5:3:4"),("width",800),("committed_serial",True),("private_body","PRIVATE")):
+            row=self.row();row["steps"][2][field]=value
+            with self.assertRaises(CaptureError):self.validate(row)
+
+    def test_other_window_scene_generation_reuse_and_unexplained_epoch_are_rejected(self):
+        for field,value in (("window","6"),("scene","4"),("generation","4")):
+            row=self.row();row["steps"][1]["target"][field]=value
+            with self.assertRaises(CaptureError):self.validate(row)
+        for epoch in (1,4):
+            row=self.row();row["steps"][1]["input_epoch"]=epoch
+            with self.assertRaisesRegex(CaptureError,"GTK_ANDROID_RESIZE_EPOCH"):self.validate(row)
+
+    def test_same_canvas_path_requires_identical_target_and_epoch(self):
+        row=self.row();first=row["steps"][1];first.update(target=row["steps"][0]["target"],input_epoch=1,replacement=False)
+        second=row["steps"][2];second.update(old_target="2:5:3:4",input_epoch=3)
+        self.validate(row)
+        first["input_epoch"]=2
+        with self.assertRaisesRegex(CaptureError,"GTK_ANDROID_RESIZE_EPOCH"):self.validate(row)
+
+    def test_pending_fixed_diagnostics_cannot_contain_text_or_coerce_flags(self):
+        row=self.row();status=row["resize_replacement"]
+        status.update(request_id="102",pending=True,reason="RESIZE_WAITING",readiness={n:False for n in proof.RESIZE_READY_FLAGS})
+        status["readiness"].update(epoch=5,candidate_generation="8");self.validate(row)
+        status["readiness"]["producer_advanced"]=1
+        with self.assertRaisesRegex(CaptureError,"GTK_ANDROID_RESIZE_STATUS"):self.validate(row)
+        status["readiness"]["producer_advanced"]=True;status["readiness"]["body"]="PRIVATE"
+        with self.assertRaisesRegex(CaptureError,"GTK_ANDROID_RESIZE_STATUS"):self.validate(row)
+
+
 if __name__=="__main__":unittest.main()

@@ -138,11 +138,51 @@ def ready(sample, row, case):
     return True
 
 
+RESIZE_STEP_FIELDS = {"resize_request", "old_target", "replacement", "configured_serial", "acknowledged_serial", "committed_serial", "width", "height"}
+RESIZE_READY_FLAGS = {"receipt_matches", "command_ack", "sizes_applied", "serials_present", "producer_advanced", "input_unchanged",
+    "old_owner_released", "focus_unchanged_or_owned_reset", "focus_ready", "physical_applied", "pose_applied", "sdk_and_input_ready"}
+
+
+def resize_status(row):
+    if row is None:return
+    need(type(row) is dict and set(row)=={"request_id","pending","readiness","acknowledged","old_retirement_seen","reason"},"GTK_ANDROID_RESIZE_STATUS")
+    need(all(type(row[n]) is bool for n in ("pending","acknowledged","old_retirement_seen")) and row["reason"] in {
+        "RESIZE_IDLE","RESIZE_WAITING","RESIZE_INTENT_LOST","RESIZE_DEADLINE","RESIZE_COMMAND_REJECTED","RESIZE_REQUEST_CHANGED",
+        "RESIZE_OTHER_INPUT","RESIZE_TARGET_CHANGED","RESIZE_GENERATION_REUSED","RESIZE_EPOCH_CHANGED"},"GTK_ANDROID_RESIZE_STATUS")
+    need((row["pending"] and decimal(row["request_id"]) and row["reason"]!="RESIZE_IDLE") or
+         (not row["pending"] and row["request_id"] is None and row["readiness"] is None and not row["acknowledged"] and
+          not row["old_retirement_seen"] and row["reason"]=="RESIZE_IDLE"),"GTK_ANDROID_RESIZE_STATUS")
+    ready=row["readiness"]
+    need(ready is None or type(ready) is dict and set(ready)==RESIZE_READY_FLAGS|{"epoch","candidate_generation"} and
+         all(type(ready[n]) is bool for n in RESIZE_READY_FLAGS) and type(ready["epoch"]) is int and ready["epoch"]>=0 and
+         decimal(ready["candidate_generation"]),"GTK_ANDROID_RESIZE_STATUS")
+
+
+def resize_step(step, previous, request):
+    need(previous is not None and step["target"] is not None and previous["target"] is not None and
+         decimal(step["resize_request"]) and int(step["resize_request"])>request and type(step["replacement"]) is bool and
+         all(type(step[n]) is int and 0<=step[n]<=2**32-1 for n in ("configured_serial","acknowledged_serial","committed_serial")) and
+         all(type(step[n]) is int for n in ("width","height")) and
+         (step["width"],step["height"])==((800,500) if step["stage"]=="large" else (640,360)),"GTK_ANDROID_RESIZE_PROOF")
+    old=step["old_target"]
+    need(type(old) is str and old==":".join(previous["target"][n] for n in ("session","window","scene","generation")),"GTK_ANDROID_RESIZE_OLD_TARGET")
+    before=previous["target"];after=step["target"]
+    need(all(before[n]==after[n] for n in ("session","window","scene")) and step["delivered"]==previous["delivered"],"GTK_ANDROID_RESIZE_PROOF")
+    if step["replacement"]:
+        need(int(after["generation"])>int(before["generation"]) and 1<=step["input_epoch"]-previous["input_epoch"]<=2,"GTK_ANDROID_RESIZE_EPOCH")
+    else:
+        need(after==before and step["input_epoch"]==previous["input_epoch"],"GTK_ANDROID_RESIZE_EPOCH")
+    return int(step["resize_request"])
+
+
 def android_receipt(value, nonce, case):
     row = value.get("check")
     if type(row) is not dict or row.get("case") != "gtk-"+case or row.get("nonce") != nonce: return None
-    need(set(row) == {"case", "nonce", "result", "phase", "reason", "scope", "physical_input_verified", "ime_verified",
-                      "host_physical_filter_verified", "runtime", "session", "scene", "main_window", "target", "input_epoch", "foot_windows", "steps"}, "GTK_ANDROID_SCHEMA")
+    fields={"case", "nonce", "result", "phase", "reason", "scope", "physical_input_verified", "ime_verified",
+            "host_physical_filter_verified", "runtime", "session", "scene", "main_window", "target", "input_epoch", "foot_windows", "steps"}
+    if case=="resize":fields.add("resize_replacement")
+    need(set(row)==fields,"GTK_ANDROID_SCHEMA")
+    if case=="resize":resize_status(row["resize_replacement"])
     need(row["scope"] == "target_bound_synthetic_native" and all(row[k] is False for k in
          ("physical_input_verified", "ime_verified", "host_physical_filter_verified")) and row["result"] in
          {"running", "completed", "failed", "unsupported", "cancelled"}, "GTK_ANDROID_SCOPE")
@@ -155,10 +195,15 @@ def android_receipt(value, nonce, case):
          type(row["foot_windows"]) is list and all(decimal(v) for v in row["foot_windows"]), "GTK_ANDROID_BINDING")
     for target in [row["target"], *[step.get("target") for step in row["steps"]]]:
         need(target is None or type(target) is dict and set(target) == {"session", "window", "scene", "generation"} and all(decimal(v) for v in target.values()), "GTK_ANDROID_TARGET")
+    previous=None;request=0
     for step in row["steps"]:
-        need(type(step) is dict and set(step) == {"stage", "target", "input_epoch", "delivered"} and
+        resize=case=="resize" and step.get("stage") in {"large","returned"}
+        fields={"stage", "target", "input_epoch", "delivered"} | (RESIZE_STEP_FIELDS if resize else set())
+        need(type(step) is dict and set(step) == fields and
              step["stage"] in {"captured", "focused", "typed", "clicked", "dialog_mapped", "dialog_focused", "dialog_escape", "dialog_retired", "large", "returned", "retired"} and
              type(step["input_epoch"]) is int and step["input_epoch"] >= 0 and type(step["delivered"]) is int and step["delivered"] >= 0, "GTK_ANDROID_STEP")
+        if resize:request=resize_step(step,previous,request)
+        previous=step
     stages=[step["stage"] for step in row["steps"]]
     need(stages==STAGES[case][:len(stages)] and (row["result"]!="completed" or row["phase"]=="COMPLETE" and stages==STAGES[case]),"GTK_ANDROID_SEQUENCE")
     return row

@@ -25,7 +25,7 @@ inputとresizeは独立に実行できる。dialogは baseline foot + fixture ma
 - Cのstdoutは固定schemaのみ受け、実spawn PID/UID、実行nonce、case、専用app_idと一致させる。入力本文やrawログは保存しない。GTKのcallback counter/flagsとgeometry、Androidの固定case受領、SDKのMapped window/target key/first frame/configureを同じhost loopで観測する。
 - Entryは論理座標 `(width/2,84)`、固定buttonは `(width/2,height-68)` のみ。hostはCが報告した矩形とSDK logical sizeの一致、およびその固定点が矩形内にあることを確認してからAndroidへ開始を送る。未知の配置を推測してクリックしない。inputのclose前には操作開始前より進んだSDK content frameも要求する。
 - Android intentはDUMP権限付きdebug receiverへ `case` と32hex `nonce` のみ。`gtk-input/gtk-dialog/gtk-resize/gtk-dialog-dismiss/gtk-close/gtk-cancel` 以外を受け付けない。MainActivityは変更せず、Hostにはdebug capture/conditional-dispatchと通常入力の共通直列化境界、SDK Adapterには回収receiptを追加する。
-- Androidはruntime/scene/session/nonce/remote childのPID/start/groupを固定し、専用app_idが一意なwindowだけを選ぶ。pointer/key/resizeはHostの不変InputTargetとinput intent trialを使用する。通常pointer/key/resetおよび遅延focusの最終照合からnative enqueueまでを同じmonitorで直列化し、snapshotが古い場合も通常操作の後から検証入力がfocusを奪わない。captureは以前の遅延focus ticketを失効させ、自分のpointer downだけ明示的にtrialのcounterを進める。通常操作・focus/epoch/owner喪失は終端まで失効を保持し、resizeで現在epoch/世代を再採用しない。keyはfocus tokenも固定する。
+- Androidはruntime/scene/session/nonce/remote childのPID/start/groupを固定し、専用app_idが一意なwindowだけを選ぶ。pointer/key/resizeはHostの不変InputTargetとinput intent trialを使用する。通常pointer/key/resetおよび遅延focusの最終照合からnative enqueueまでを同じmonitorで直列化し、snapshotが古い場合も通常操作の後から検証入力がfocusを奪わない。captureは以前の遅延focus ticketを失効させ、自分のpointer downだけ明示的にtrialのcounterを進める。通常操作・focus/epoch/owner喪失は終端まで失効を保持し、現在epoch/世代への盲追従は行わない。resize自身による交換は後述の一回tokenで限定する。keyはfocus tokenも固定する。
 - 最後の入力後にtrialをsealし、それ以降pointer/key/resizeを送れなくする。seal後は事前指定した自分のfull targetがSDK retirementへ入ったresetのみ自己cleanupとして数え、入力を再開しない。別targetの退役や通常reset/キーは失効させる。closeは捕捉済みmain targetだけを対象とする。非同期focusTerminal、自動retry、元footへの自動focus復帰は行わない。異なるfocus/epoch/ownerや余分な入力を検出したら失敗し、自分のpointer sourceだけを取消する。
 - dialogは専用app_idの別toplevelとし、SHM commit、Wayland `set_parent`、追加SDK target/first frame、Cの親設定/open/response/destroyを確認する。popupとは区別する。AndroidはDIALOG_READYで待ち、hostがCとSDKのdialog描画を採取してから固定dismissを許可する。
 
@@ -66,3 +66,37 @@ GTK3.24.52の `gdk_wayland_window_set_application_id` はxdg toplevel生成前�
 失敗やtimeout後の遅い完了を成功へ昇格せず、footer欠落を回収成功にしない。
 full targetの保存順/期限/別owner拒否と、取消後footer・部分行・出力上限を含むhost24件が成功した。
 物理controller/keyboard、かな漢字変換、HMD視認は未検証として維持する。
+
+
+## resize自身によるSDK producer交換
+
+Build169で通常のlogical resizeでもproducer canvasが変わり、旧SDK bindingの退役resetがtrialを失効させた。
+この実測失敗を保存したまま、固定resize caseだけに一回の交換権限を追加する。通常UIのgeometry操作はtrialを取り消す。
+共有の直列化境界で通常のpose/physical/logical size操作を失効させ、scene/visibility/XR喪失も同じ境界へ置く。
+旧runtimeのSDK退役は現在runtimeへresetを送らない。runtimeとfull targetが一致した退役だけを照合する。
+
+1. `debugBeginInputResize` は捕捉runtime/session/window/scene/generation、input epoch、入力counter、
+   leaseのnonce/PID/start/group、theme revision、physical sizeとposeを固定し、通常の `resize_logical` を一度enqueueする。
+   nativeの `app.windows[].resize.request` はそのrequest IDと元のfull targetを保持する。
+   tokenは各10秒、trial内で最大2個、同時には1個とし、BUSYや期限切れを再送しない。
+2. pending中はpointer/keyのdispatchとsealを禁止する。捕捉した旧runtime/full targetの退役resetだけを一回消費し、
+   外部key/pointer/focus/reset、別target退役、二度目の旧退役、scene交換は永久取消のままにする。
+3. native command ACKに加え、同request/元target、要求・configure・commit・actual logical size、applied phase、
+   configure/ACK/commit serial、進んだproducer frameを確認する。serialは不透明なu32であり、
+   alias configureや後続repaintのため3値の数値順・相互一致を要求しない。適用世代の成立はnative ResizeStateが判定する。
+4. 新世代は同runtime/session/window/sceneだけで、旧世代より大きいIDを要求する。IDは他commandと共有するため隣接番号とは限らない。
+   旧native panel/render、旧SDK bindingの消滅と成功回収receipt、新SDK listener/controlとframe、content pixels、
+   pose/physical geometry ACK、既存Host inputTargetの最新epochを照合する。旧SDK退役resetとSurfaceLostによるepoch差1〜2だけを許し、
+   raw focusを送り直したり入力gateを解除したりしない。同canvasで交換不要の場合は同じtarget/epochだけを許す。
+5. Hostが返したimmutableな受領だけからcaseのtarget/epochを更新する。800×500の採用後に640×360を一度要求し、
+   2回目の採用後にsealする。operatorは旧target→新target、epoch差、単調なrequest ID、固定sizeとserial型を独立に検査し、
+   全full targetの観測・最終回収、Cのconfigure/size counter、元foot継続を従来どおり要求する。
+
+checkの `resize_replacement` は固定reason、request ID、boolによるreadiness、epoch/generationだけを公開する。
+入力本文、raw key、trace、画像、自由なエラー文字列を加えない。`large` / `returned` の受領は
+元target・request・実serial・固定sizeを含む。input/dialogのcheck schemaは変更しない。
+
+hostではResizeStateのrequest/alias/無効要求3回帰を含む8件、既存InputIntentSerial9件と置換token14件、
+operatorの既存24件と新しい受領検査5件が成功した。実SDKを使う限定Kotlin型検査も成功した。
+このcheckpoint単独ではQuest resize、Linux leaseへの転用、物理keyboard/controller、IME、HMD視認の合格とはしない。
+同じsourceでAPKを再build/installし、固定resize operatorの全gateと回収を実機で再確認する。
