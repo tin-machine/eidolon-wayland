@@ -8,7 +8,7 @@ Phase 5の未完了受入れやPhase 6全体を、この拡張の実装だけで
 
 | 項目 | 変更 | 検証範囲 |
 | --- | --- | --- |
-| NX01 | Cyan Orbitの線幅を2→6へ。三つのリングの直径は維持 | 素材・描画検査、HMDの見やすさは最後 |
+| NX01 | Cyan Orbitの線幅を2→6へ、手動確認後のBuild142でさらに6→30・平らな端へ | 素材・描画検査、最新のHMDの見やすさは最後 |
 | NX02 | 背景、準備、切断、編集、キーボード未検出、対象未準備、未選択を固定上部へ表示。窓別の入力先ボタン | 純粋な優先順位テストと通常SDK `extensions` case |
 | NX03 | ターミナル起動と入力復帰を上部へ。接続・配置・テーマ等は「設定と詳細」 | コンパイル・lint・実UI確認 |
 | NX04 | 電池/充電、RAM空き/総量、既定ネットワークのIP。可視時5秒間隔 | 通常APKのAPIとdiagnostics `interface.device`。ADB値だけで合格にしない |
@@ -21,7 +21,9 @@ Phase 5の未完了受入れやPhase 6全体を、この拡張の実装だけで
 
 manifest `format_version=2`に`[[rotations]]`を追加。v1テーマは従来どおり読み込む。
 CPUは既存の平滑値とbusy判定を使い、0〜4 coresを0〜60°/秒へ写す。
-RSSは0〜1 GiBを0〜−40°/秒へ写す。範囲外はclampする。
+RSSは0〜64 MiBを0〜−40°/秒へ写す。範囲外はclampする。
+Build141までの上限1 GiBでは、通常shellの実測約5.4 MBが約0.2°/秒にしかならなかった。
+Build142で上限を64 MiBへ変更し、同じ使用量で約3.2°/秒とした。対象process群や計測方法は変えていない。
 250msの速度遷移を積分するため、負荷変化やfocus変更で角度が飛ばない。
 窓ごとに位相を持ち、Surface再生成・サイズ変更では保持する。
 別workloadへの対応変更では前の計測値を捨て、位相を保持する。
@@ -87,6 +89,42 @@ tmux/nvimとの全組合せ、窓間の未確定文字、GUIのIMEはNX09以降�
 [Termux RUN_COMMAND](https://github.com/termux/termux-app/wiki/RUN_COMMAND-Intent)。
 
 ## 試行錯誤と確認状況
+
+### Build141の手動確認からBuild142への修正
+
+ユーザーは「窓がアクティブでも英字が入力できない」「ランチャーが見つからない」と報告した。
+リングは後から視認できたと訂正し、さらに線幅を現在の5倍、切れ端を平らにするよう依頼した。
+回転は停止ではなく、上記の小さいRSSで非常に遅かった。CPU低負荷の外側とI/O欠測の内側は仕様どおり停止する。
+
+- 物理キー試行後、`keyboard_count=3`、`input_reason=READY`、`focus_window=5`でも配送数は0だった。
+  三件はAndroidの入力device数であり、三台のキーボードを意味しない。
+- `dumpsys input`では主操作パネルのvirtual displayに焦点があり、display0のActivityは`NOT_FOCUSABLE`だった。
+  `MainActivity.dispatchKeyEvent`だけでは、別WindowのSpatial Presentationに届く入力を受け取れない。
+- SDK 0.15.0の公開`PanelDisplayBase.presentation.window`を確認し、主操作とランチャーの
+  `Window.Callback`から同じPhysicalKeyboardへ渡す。未選択・編集・system/仮想deviceなど従来のgateは維持する。
+  View detach/scene終了時にcallbackを解除し、処理しない入力は元のcallbackへ返す。
+- 診断`interface.keyboard_ingress`に入口別件数、物理判定件数、native enqueue件数を追加した。
+  文字・keycode・scanCode・入力列は保存しない。enqueueと実配送の件数は別に照合する。
+- SVG線幅6→30、`stroke-linecap=butt`。外縁の切れを防ぐため半径のみ5px縮めた。
+  ランチャー中心は床上0.65mから1.05mへ上げ、奥行きも1.35mから1.75mへ変更した。
+- 最初のtheme testは存在しない`native/Cargo.toml`指定で失敗。workspace rootでやり直し22件成功。
+  インストール直後はQuestがAsleepでパネル待機がtimeout。`KEYCODE_WAKEUP`後に二つのcallback設置を確認した。
+  Guardianと近接センサー設定はこの修正で変更していない。
+- ADBの仮想キーdown/upは`control_received=2`、`not_physical_keyboard`、enqueue0になった。
+  新しい入口への到達と従来の仮想device拒否を確認したもので、物理キーボードの成功とは区別する。
+
+Build142のdebug build・lint・JUnit・APK検査が成功。APK SHA256:
+`7303b5839fa2f8564ef2238422e60e70b14538d2efe6a75a5675f6c6ab91697f`。
+基準`806c99c` + dirty、source digest
+`58920189ea6b87af38600c56f47e87936f9969557eab4a4a3a66b0d17443b053`。
+通常SDK keyboard検査`20261107T210825-1ba96af8`は8段階pass。物理入力は未確認。
+theme-sdk検査`20261107T210849-5c04b43d`もpass。二窓・性能比較・Activity再生成・製品設定復帰を確認した。
+再生成後のcallbackは二つ。ADBのキーは主操作・ランチャー両方の入口に届き、仮想deviceとして拒否された。
+通常画面へ戻し、ランチャーのADB tapからfootを一枚開けた。HMDでの位置・見た目と物理文字入力はユーザー確認待ち。
+詳細artifactは設定済みwork rootの`eidolon-nx-manual-regression-20261107/`へ保存する。
+室内を含むHMD screenshotはprivateな調査用に限定し、repositoryへ含めない。
+
+### 初回実装の記録
 
 - Kotlinの`IntArray.mapNotNull`がコンパイル不可だったため、device IDをListへ変換してから判定した。
 - 初回Rust検査は生成済みSmithayがなく失敗。既存`build-native-deps --target host`で固定sourceから生成した。

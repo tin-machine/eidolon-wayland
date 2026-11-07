@@ -1,3 +1,3 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 880">
-  <circle cx="440" cy="440" r="429" fill="none" stroke="#ffffff" stroke-width="6" stroke-dasharray="510 110 280 170 780 845"/>
+  <circle cx="440" cy="440" r="424" fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="butt" stroke-dasharray="510 110 280 170 780 845"/>
 </svg>

@@ -35,6 +35,7 @@ import com.meta.spatial.vr.VRFeature
 class MainActivity : AppSystemActivity() {
     private var panel: Entity? = null
     private var launcher: Entity? = null
+    private val keyboardPanels = mutableListOf<PanelKeyboardBridge>()
     private val deviceMetrics by lazy { DeviceMetrics(applicationContext,NativeSessionHost::publishDeviceMetrics) }
     private var sceneEpoch=0L
     private fun ownsScene(): Boolean = !isDestroyed && (sceneEpoch==0L || sceneEpoch==NativeSessionHost.currentSceneEpoch())
@@ -74,7 +75,7 @@ class MainActivity : AppSystemActivity() {
         }
         if(launcher==null) {
             launcher=Entity.create(listOf(
-                Panel(R.id.terminal_launcher_panel),Transform(Pose(Vector3(-.75f,.65f,1.35f))),
+                Panel(R.id.terminal_launcher_panel),Transform(Pose(Vector3(-.80f,1.05f,1.75f))),
             ))
         }
         nativePanels.sceneReady(epoch, scene)
@@ -102,6 +103,11 @@ class MainActivity : AppSystemActivity() {
                     style = PanelStyleOptions(themeResourceId = R.style.EidolonTheme),
                 )
             },
+            panelSetupWithComposeView = { view, obj, _ -> view.post {
+                if(ownsScene()) obj.display?.presentation?.window?.let { window ->
+                    keyboardPanels.add(PanelKeyboardBridge(view,window) {event -> ownsScene() && keyboard.dispatch(event,"control")})
+                }
+            } },
         ),
         ComposeViewPanelRegistration(
             R.id.terminal_launcher_panel,
@@ -117,6 +123,11 @@ class MainActivity : AppSystemActivity() {
             }}},
             settingsCreator={UIPanelSettings(shape=QuadShapeOptions(width=.52f,height=.18f),
                 display=DpPerMeterDisplayOptions(),style=PanelStyleOptions(themeResourceId=R.style.EidolonTheme))},
+            panelSetupWithComposeView = { view, obj, _ -> view.post {
+                if(ownsScene()) obj.display?.presentation?.window?.let { window ->
+                    keyboardPanels.add(PanelKeyboardBridge(view,window) {event -> ownsScene() && keyboard.dispatch(event,"launcher")})
+                }
+            } },
         ),
     ) + nativePanels.registration + nativePanels.decorationRegistration + BuildHooks.additionalPanels()
 
@@ -202,6 +213,7 @@ class MainActivity : AppSystemActivity() {
 
     override fun onSpatialShutdown() {
         BuildHooks.sceneClosing()
+        keyboardPanels.forEach {it.close()};keyboardPanels.clear()
         nativePanels.close()
         launcher?.destroy();launcher=null
         panel?.destroy()

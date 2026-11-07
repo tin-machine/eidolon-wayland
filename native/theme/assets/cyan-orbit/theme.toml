@@ -47,5 +47,5 @@ degrees_per_second = 60.0
 [[rotations]]
 part = "ring-middle"
 metric = "workload.memory.rss_bytes"
-input_max = 1073741824.0
+input_max = 67108864.0
 degrees_per_second = -40.0

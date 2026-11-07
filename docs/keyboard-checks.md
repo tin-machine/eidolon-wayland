@@ -1,5 +1,16 @@
 # キーボード・seatの検証記録
 
+## Spatialパネルの入力入口（Build142）
+
+Build141の物理キー試行では、READY・窓選択済みでも配送数0だった。
+Androidの焦点はActivityとは別Windowの主操作Presentationにあり、Activityだけのhookでは受け取れなかった。
+Build142で主操作とランチャーの`Window.Callback`を同じPhysicalKeyboardへ接続した。
+入口別件数と判定結果を`interface.keyboard_ingress`へ出し、文字やキーの列は記録しない。
+View detach/scene終了でcallbackを戻す。詳細は[NX手動確認後の修正](extensions-nx01-nx08-20261107.md#build141の手動確認からbuild142への修正)。
+
+ADBの仮想キーはパネル入口への到達後に従来どおり拒否された。通常SDKの合成入力8段階も成功した。
+この二つだけでは物理キーの受入れ完了とせず、更新後に実キーボードからの入力を確認する。
+
 ## 入力状態表示と復帰（Build141）
 
 主画面の上部に入力停止の理由を表示し、「窓Nへ入力」で対象を明示する。
@@ -38,12 +49,13 @@ VR操作パネルは`dumpsys display`のlogical display IDと、`dumpsys Surface
 
 ## 入力の経路
 
-Android `dispatchKeyEvent` → `PhysicalKeyboard` →短いJNI enqueue → protocol owner →
+Android ActivityまたはPresentationの`dispatchKeyEvent` → `PhysicalKeyboard` →短いJNI enqueue → protocol owner →
 Smithay seat → APKのWaypipe → SSH → TermuxのWaypipe → Wayland client。
 文字列/Unicodeをkeycodeの代わりに送らない。
 
 Android入口は物理device、`SOURCE_KEYBOARD`、down/up、system keyを確認する。
-操作パネルに焦点がある間は通常のAndroid/Compose配送を使う。
+terminal未選択・編集中など入力gateが閉じている間は、通常のAndroid/Compose配送を使う。
+Androidの操作パネルに焦点があっても、terminalが入力先に選択されていればその窓へ送る。
 「窓Nへ入力」で表示済みパネルを選び、「操作パネルへ戻る」で解除する。
 controller clickによるwindow選択はI03で接続する。
 

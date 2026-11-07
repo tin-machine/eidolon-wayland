@@ -664,6 +664,7 @@ object NativeSessionHost {
         store?.updateInterface(JSONObject().put("input_reason",status.reason).put("input_action",status.action.name)
             .put("editing",editing.get()).put("keyboard_count",keyboardCount.get() ?: JSONObject.NULL)
             .put("focus_window",focusedWindow ?: JSONObject.NULL).put("device",latestMetrics.get().json())
+            .put("keyboard_ingress",KeyboardIngress.json())
             .put("termux_start",JSONObject().put("requests",termuxRequests).put("successes",termuxSuccesses).put("failures",termuxFailures)))
         val workspace=runtime.getJSONObject("workspace");val storage=workspace.getJSONObject("storage")
         val observing=workspace.getBoolean("workload_observation")

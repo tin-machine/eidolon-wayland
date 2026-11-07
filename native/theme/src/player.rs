@@ -404,7 +404,7 @@ mod tests {
         let idle = BTreeSet::new();
         let metrics = Metrics {
             cpu_cores: Some(4.),
-            rss_bytes: Some(1073741824),
+            rss_bytes: Some(67108864),
         };
         let angle = |frame: &Frame, id: &str| match &frame.parts[id][&Property::Transform] {
             Value::Transform(t) => match t.last().unwrap() {
@@ -423,7 +423,7 @@ mod tests {
         assert_eq!(angle(&running, "ring-middle"), 325.);
         assert_eq!(angle(&running, "ring-inner"), 0.); // I/O未計測を動きで偽らない。
         let half = Metrics {
-            rss_bytes: Some(536870912),
+            rss_bytes: Some(33554432),
             ..metrics
         };
         player
