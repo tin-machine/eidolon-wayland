@@ -16,3 +16,5 @@ pub mod surface;
 pub mod window;
 pub mod workload;
 pub mod workspace;
+
+pub mod window_controls;

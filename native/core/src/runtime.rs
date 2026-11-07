@@ -827,6 +827,46 @@ impl Runtime {
                                     }
                                 }
 
+                                Command::CloseWindowTarget {
+                                    target,
+                                    controls_revision,
+                                    ..
+                                } => {
+                                    let render = gl.snapshot();
+                                    let live = state.snapshot.scene == Some(target.scene)
+                                        && state.panels.snapshot().iter().any(|p| {
+                                            p.target == *target
+                                                && p.action
+                                                    == eidolon_model::commands::PanelAction::Create
+                                                && p.applied
+                                                && p.error.is_none()
+                                        });
+                                    if !live
+                                        || render.theme_revision != *controls_revision
+                                        || !render
+                                            .targets
+                                            .iter()
+                                            .any(|t| t.key == *target && t.frames > 0)
+                                    {
+                                        Status::Stale
+                                    } else if !state.render_visibility.iter().all(|v| *v)
+                                        || !state.snapshot.activity_visible
+                                        || state.snapshot.xr_state != XrState::Focused
+                                    {
+                                        Status::NotReady
+                                    } else if let Some(current) = app.as_mut().filter(|current| {
+                                        current.session() == target.session && !current.closed()
+                                    }) {
+                                        current.reset_input();
+                                        current
+                                            .close_window(target.window)
+                                            .map(|_| Status::Accepted)
+                                            .unwrap_or(Status::Stale)
+                                    } else {
+                                        Status::Stale
+                                    }
+                                }
+
                                 Command::SetPose { target, .. }
                                 | Command::PoseApplied { target, .. }
                                 | Command::ResizeLogical { target, .. }
@@ -931,6 +971,11 @@ impl Runtime {
                                     input_epoch,
                                     ..
                                 }
+                                | Command::FocusWindowControl {
+                                    target,
+                                    input_epoch,
+                                    ..
+                                }
                                 | Command::Key {
                                     target,
                                     input_epoch,
@@ -950,7 +995,14 @@ impl Runtime {
                                         .targets
                                         .iter()
                                         .any(|t| t.key == *target && t.frames > 0);
-                                    if *input_epoch != state.snapshot.input_resets
+                                    let controls_current = match &command {
+                                        Command::FocusWindowControl {
+                                            controls_revision, ..
+                                        } => gl.snapshot().theme_revision == *controls_revision,
+                                        _ => true,
+                                    };
+                                    if !controls_current
+                                        || *input_epoch != state.snapshot.input_resets
                                         || state.snapshot.scene != Some(target.scene)
                                         || !live
                                     {
@@ -962,7 +1014,8 @@ impl Runtime {
                                         Status::NotReady
                                     } else if let Some(current) = current {
                                         let result = match &command {
-                                            Command::FocusWindow { .. } => {
+                                            Command::FocusWindow { .. }
+                                            | Command::FocusWindowControl { .. } => {
                                                 current.focus_window(target.window)
                                             }
                                             Command::Key {

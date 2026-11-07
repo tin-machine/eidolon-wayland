@@ -291,6 +291,12 @@ pub enum Command {
         scene: SceneEpoch,
         window: crate::ids::WindowId,
     },
+    CloseWindowTarget {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        controls_revision: u64,
+    },
     ResizeLogical {
         schema: u32,
         request_id: CommandSeq,
@@ -323,6 +329,13 @@ pub enum Command {
         request_id: CommandSeq,
         target: crate::surface::TargetKey,
         input_epoch: u64,
+    },
+    FocusWindowControl {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        input_epoch: u64,
+        controls_revision: u64,
     },
     Key {
         schema: u32,
@@ -480,11 +493,13 @@ impl Command {
             | Self::LaunchTerminal { schema, .. }
             | Self::ShowWindow { schema, .. }
             | Self::CloseWindow { schema, .. }
+            | Self::CloseWindowTarget { schema, .. }
             | Self::ResizeLogical { schema, .. }
             | Self::SetPhysicalSize { schema, .. }
             | Self::PhysicalSizeApplied { schema, .. }
             | Self::Pointer { schema, .. }
             | Self::FocusWindow { schema, .. }
+            | Self::FocusWindowControl { schema, .. }
             | Self::Key { schema, .. }
             | Self::SetImeBackend { schema, .. }
             | Self::Ime { schema, .. }
@@ -614,11 +629,13 @@ impl Command {
             | Self::LaunchTerminal { request_id, .. }
             | Self::ShowWindow { request_id, .. }
             | Self::CloseWindow { request_id, .. }
+            | Self::CloseWindowTarget { request_id, .. }
             | Self::ResizeLogical { request_id, .. }
             | Self::SetPhysicalSize { request_id, .. }
             | Self::PhysicalSizeApplied { request_id, .. }
             | Self::Pointer { request_id, .. }
             | Self::FocusWindow { request_id, .. }
+            | Self::FocusWindowControl { request_id, .. }
             | Self::Key { request_id, .. }
             | Self::SetImeBackend { request_id, .. }
             | Self::Ime { request_id, .. }
@@ -652,6 +669,7 @@ impl Command {
                 | Self::SetKeyboardLayout { .. }
                 | Self::ShowWindow { .. }
                 | Self::CloseWindow { .. }
+                | Self::CloseWindowTarget { .. }
                 | Self::Disconnect { .. }
                 | Self::SurfaceLost { .. }
                 | Self::SceneReady { .. }
@@ -667,6 +685,32 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn window_control_close_requires_full_positive_sdk_target_and_urgent_reset() {
+        let source = r#"{"schema":1,"request_id":"1","type":"close_window_target","controls_revision":0,"target":{"session":"2","window":"3","scene":"4","generation":"5"}}"#;
+        assert!(Command::parse(source).unwrap().needs_input_reset());
+        for field in ["session", "window", "scene", "generation"] {
+            let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+            value["target"][field] = "0".into();
+            assert!(Command::parse(&value.to_string()).is_err());
+        }
+        let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+        value["target"]
+            .as_object_mut()
+            .unwrap()
+            .remove("generation");
+        assert!(Command::parse(&value.to_string()).is_err());
+    }
+    #[test]
+    fn window_control_focus_uses_the_tracked_reset_epoch_and_theme_revision() {
+        let source = r#"{"schema":1,"request_id":"2","type":"focus_window_control","controls_revision":3,"input_epoch":4,"target":{"session":"2","window":"3","scene":"4","generation":"5"}}"#;
+        assert!(!Command::parse(source).unwrap().needs_input_reset());
+        for field in ["input_epoch", "controls_revision"] {
+            let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+            value.as_object_mut().unwrap().remove(field);
+            assert!(Command::parse(&value.to_string()).is_err());
+        }
+    }
     #[test]
     fn ime_envelope_rejects_cross_window_payload_and_hides_text_in_debug() {
         let value = serde_json::json!({"schema":1,"type":"ime","request_id":"1",

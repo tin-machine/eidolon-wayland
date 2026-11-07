@@ -17,6 +17,8 @@ pub struct Manifest {
     pub bindings: Vec<Binding>,
     #[serde(default)]
     pub rotations: Vec<RotationBinding>,
+    #[serde(default)]
+    pub controls: Option<eidolon_model::window_controls::WindowControls>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -105,6 +107,13 @@ impl Manifest {
             || self.format_version == 1 && !self.rotations.is_empty()
         {
             return fail("unsupported format_version");
+        }
+        if self
+            .controls
+            .as_ref()
+            .is_some_and(|c| self.format_version != 2 || !c.valid())
+        {
+            return fail("invalid controls layout or format_version");
         }
         if !identifier(&self.id)
             || self.name.trim().is_empty()
@@ -246,6 +255,27 @@ missing = "hold-last"
                 "{before}"
             );
         }
+    }
+    #[test]
+    fn optional_controls_are_v2_only_and_old_themes_keep_defaults() {
+        assert!(Manifest::parse(SOURCE).unwrap().controls.is_none());
+        let source = include_str!("../assets/cyan-orbit/theme.toml");
+        let configured = format!(
+            "{source}\n[controls]\nanchor='bottom-left'\ndiameter_m=0.1\ngap_m=0.03\noffset_m=[0.1,0.0]\n"
+        );
+        let controls = Manifest::parse(&configured).unwrap().controls.unwrap();
+        assert_eq!(
+            controls.anchor,
+            eidolon_model::window_controls::ControlAnchor::BottomLeft
+        );
+        for (from, to) in [
+            ("diameter_m=0.1", "diameter_m=0.01"),
+            ("offset_m=[0.1,0.0]", "offset_m=[nan,0.0]"),
+            ("[controls]", "[controls]\nscript='run'"),
+        ] {
+            assert!(Manifest::parse(&configured.replace(from, to)).is_err());
+        }
+        assert!(Manifest::parse(&format!("{SOURCE}\n[controls]\nanchor='top-left'\n")).is_err());
     }
     #[test]
     fn manifest_and_binding_keep_missing_distinct_from_zero() {

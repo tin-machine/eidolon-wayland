@@ -74,7 +74,8 @@ object NativeSessionHost {
     fun publishDeviceMetrics(value: DeviceMetricsSnapshot) { latestMetrics.set(value);deviceMetrics.value=value }
     private val inputIntents=AtomicLong(0)
     private data class PendingInputFocus(val target: String, val runtime: Long, val ticket: Long, val deadline: Long,
-        var resetRequest: String? = null, var resetCompleted: Boolean = false, var focusRequest: String? = null)
+        var resetRequest: String? = null, var resetCompleted: Boolean = false, var focusRequest: String? = null,
+        val waitForIme: Boolean = false, val controlsRevision: Long? = null)
     private var pendingInputFocus: PendingInputFocus? = null
     val layoutSummary = mutableStateOf("ターミナルを開くとサイズを変更できます")
     val layoutAvailable = mutableStateOf(false)
@@ -357,6 +358,31 @@ object NativeSessionHost {
         if(slot!=null) command.put("slot",slot)
         NativeBridge.nativeCommand(handle,command.toString())
     } } }
+    data class WindowControlTicket(val runtime: Long, val target: String, val intent: Long, val revision: Long)
+    /** SDK button down owns one immutable target; reset also releases any Linux-held key. */
+    fun beginWindowControl(target: JSONObject, runtime: Long, revision: Long): WindowControlTicket? {
+        check(Looper.myLooper()==Looper.getMainLooper())
+        val current=inputTarget(target.toString()) ?: return null
+        if(current.runtime!=runtime || runtime!=handle || revision<0) return null
+        resetInput()
+        return WindowControlTicket(runtime,target.toString(),inputIntents.get(),revision)
+    }
+    fun windowControl(ticket: WindowControlTicket, action: String) { worker.execute { safely {
+        if(action !in setOf("focus","close") || handle!=ticket.runtime || inputIntents.get()!=ticket.intent || editing.get() ||
+            !activityVisible.get() || xrState.get()!="FOCUSED") return@safely
+        val target=JSONObject(ticket.target)
+        val runtime=snapshot().getJSONObject("runtime")
+        val plans=runtime.getJSONArray("panels")
+        val valid=(0 until plans.length()).any { i -> plans.getJSONObject(i).let {p ->
+            p.optString("action")=="create" && p.optBoolean("applied") && p.isNull("error") && targetIdentity(p.getJSONObject("target"))==targetIdentity(target)
+        }}
+        if(!valid || runtime.optString("scene")!=target.optString("scene") || runtime.getJSONObject("render").optLong("theme_revision",0)!=ticket.revision) return@safely
+        if(action=="focus") {
+            selectedWindow=target.getString("session") to target.getString("window")
+            pendingInputFocus=PendingInputFocus(ticket.target,ticket.runtime,ticket.intent,SystemClock.elapsedRealtime()+10000,waitForIme=true,controlsRevision=ticket.revision)
+        } else NativeBridge.nativeCommand(ticket.runtime,JSONObject().put("schema",1).put("type","close_window_target")
+            .put("request_id",requests.incrementAndGet().toString()).put("target",target).put("controls_revision",ticket.revision).toString())
+    } } }
     fun requestSnapshot() { worker.execute { safely { publish() } } }
     fun currentHandle(): Long = handle
     fun keyboardFocused(): Boolean = keyboardFocus != null
@@ -418,6 +444,7 @@ object NativeSessionHost {
     fun setKeyboardLayout(layout: String) { if(layout in setOf("us","jis")) worker.execute { resetInput();send("set_keyboard_layout","layout",layout) } }
     private fun themeCommand(command: JSONObject, done: (String) -> Unit = {}) {
         if (handle == 0L || themeRequests.size >= 8) { done("NOT_READY"); return }
+        if(command.optString("type") in setOf("set_theme","begin_theme_import","apply_theme_import")) resetInput()
         val request = requests.incrementAndGet().toString()
         command.put("schema", 1).put("request_id", request)
         val code = NativeBridge.nativeCommand(handle, command.toString())
@@ -985,11 +1012,14 @@ object NativeSessionHost {
             }?.getJSONObject("target")
             if(SystemClock.elapsedRealtime()>request.deadline || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" ||
                 request.runtime!=handle || request.ticket!=inputIntents.get() ||
-                current==null || targetIdentity(current)!=targetIdentity(target)) {
+                current==null || targetIdentity(current)!=targetIdentity(target) ||
+                request.controlsRevision?.let {runtime.getJSONObject("render").optLong("theme_revision",0)!=it}==true) {
                 if (BuildConfig.DEBUG) Log.i(TAG,"focus_cancel expired=${SystemClock.elapsedRealtime()>request.deadline} editing=${editing.get()} visible=${activityVisible.get()} xr=${xrState.get()} runtime=${request.runtime==handle} ticket=${request.ticket==inputIntents.get()} target=${current!=null}")
                 pendingInputFocus=null
             }
-            else if(request.resetRequest==null) {
+            else if(request.waitForIme && imeRawBlocked.get()) {
+                // A window control may dismiss IME ownership, but never races its reset/disable cleanup.
+            } else if(request.resetRequest==null) {
                 val reset=requests.incrementAndGet().toString()
                 when(enqueueInputReset(reset)) {
                     NativeBridge.ACCEPTED -> {request.resetRequest=reset;if (BuildConfig.DEBUG) Log.i(TAG,"focus_reset request=$reset")}
@@ -1006,8 +1036,10 @@ object NativeSessionHost {
                 }}
                 if(ready) {
                     val focusRequest=requests.incrementAndGet().toString()
-                    val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","focus_window")
-                        .put("request_id",focusRequest).put("target",target).put("input_epoch",runtime.getLong("input_resets")).toString())
+                    val envelope=JSONObject().put("schema",1).put("type",if(request.controlsRevision==null) "focus_window" else "focus_window_control")
+                        .put("request_id",focusRequest).put("target",target).put("input_epoch",runtime.getLong("input_resets"))
+                    request.controlsRevision?.let {envelope.put("controls_revision",it)}
+                    val code=NativeBridge.nativeCommand(handle,envelope.toString())
                     when(code) {
                         NativeBridge.ACCEPTED -> {request.focusRequest=focusRequest;if (BuildConfig.DEBUG) Log.i(TAG,"focus_enqueue request=$focusRequest epoch=${runtime.getLong("input_resets")}")}
                         NativeBridge.BUSY -> Unit

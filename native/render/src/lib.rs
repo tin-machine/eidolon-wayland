@@ -120,6 +120,7 @@ pub struct Snapshot {
     pub theme_attempted_revision: u64,
     pub theme_discarded: u64,
     pub theme_id: Option<String>,
+    pub window_controls: eidolon_model::window_controls::WindowControls,
     pub theme_error: Option<&'static str>,
     pub error: Option<&'static str>,
 }
@@ -816,6 +817,10 @@ fn owner(state: &State) {
                     shared.snapshot.theme_attempted_revision = requested_revision;
                     shared.snapshot.theme_id =
                         requested_theme.as_ref().map(|t| t.manifest.id.clone());
+                    shared.snapshot.window_controls = requested_theme
+                        .as_ref()
+                        .and_then(|t| t.manifest.controls.clone())
+                        .unwrap_or_default();
                     shared.snapshot.theme_error = None;
                 }
                 current
@@ -853,6 +858,10 @@ fn owner(state: &State) {
                     if result.is_ok() {
                         s.snapshot.theme_revision = theme_revision;
                         s.snapshot.theme_id = theme.as_ref().map(|t| t.manifest.id.clone());
+                        s.snapshot.window_controls = theme
+                            .as_ref()
+                            .and_then(|t| t.manifest.controls.clone())
+                            .unwrap_or_default();
                     }
                 });
             }
@@ -1205,6 +1214,48 @@ mod tests {
         assert_eq!(snapshot.theme_attempted_revision, off);
         assert_eq!(snapshot.theme_discarded, 1);
         assert!(snapshot.theme_id.is_none());
+        renderer.request_stop();
+        wait(|| renderer.is_finished());
+    }
+    #[test]
+    fn control_layout_changes_only_with_adopted_theme_and_off_restores_defaults() {
+        use eidolon_model::window_controls::{ControlAnchor, WindowControls};
+        use std::sync::atomic::Ordering;
+        let renderer = Controller::start().unwrap();
+        let hook = Arc::new(platform::TestControl::default());
+        hook.blocked.store(true, Ordering::Release);
+        renderer.state.0.lock().unwrap().theme_hook = Some(hook.clone());
+        let mut theme = eidolon_theme::raster::compile(
+            &eidolon_theme::cyan_orbit(),
+            &Default::default(),
+            &renderer.pixel_budget(),
+            &Default::default(),
+        )
+        .unwrap();
+        let controls = WindowControls {
+            anchor: ControlAnchor::BottomLeft,
+            diameter_m: 0.1,
+            ..Default::default()
+        };
+        theme.manifest.controls = Some(controls.clone());
+        let revision = renderer
+            .request_theme(Some(Arc::new(theme)), false)
+            .unwrap();
+        wait(|| hook.entered.load(Ordering::Acquire));
+        assert_eq!(
+            renderer.snapshot().window_controls,
+            WindowControls::default()
+        );
+        assert_eq!(renderer.snapshot().theme_revision, 0);
+        hook.blocked.store(false, Ordering::Release);
+        wait(|| renderer.snapshot().theme_revision == revision);
+        assert_eq!(renderer.snapshot().window_controls, controls);
+        let off = renderer.request_theme(None, false).unwrap();
+        wait(|| renderer.snapshot().theme_revision == off);
+        assert_eq!(
+            renderer.snapshot().window_controls,
+            WindowControls::default()
+        );
         renderer.request_stop();
         wait(|| renderer.is_finished());
     }
