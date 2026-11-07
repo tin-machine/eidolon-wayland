@@ -9,5 +9,6 @@ pub mod shutdown;
 pub mod theme;
 mod theme_store;
 pub mod waypipe;
+pub mod window_slots;
 pub mod workload;
 pub mod workspace;

@@ -32,13 +32,16 @@ impl Registry {
         }
         let id = entries.next.ok_or(Status::Failed)?;
         entries.next = id.checked_add(1);
-        let runtime = Arc::new(Runtime::start(config).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::InvalidInput {
-                Status::InvalidArgument
-            } else {
-                Status::Failed
-            }
-        })?);
+        let runtime = Arc::new(
+            Runtime::start_registered(config, RuntimeHandle::new(id).map_err(|_| Status::Failed)?)
+                .map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::InvalidInput {
+                        Status::InvalidArgument
+                    } else {
+                        Status::Failed
+                    }
+                })?,
+        );
         entries.runtimes.insert(id, runtime);
         Ok(id)
     }

@@ -134,3 +134,37 @@ CARGO_INCREMENTAL=0 cargo test --locked -p eidolon-core compositor:: -- --test-t
 ```
 
 これは同じWayland client内の保護の検査であり、九つの独立client、SDK九枚、HMD表示の合格ではない。
+
+## NX16b後半の前提: Runtime予約台帳
+
+純粋Boardを通常のtarget-driven Runtimeへ接続した。JNI registryの実handleをleaseへ渡し、
+追加要求はworker上で予約→transport受付→enqueuedの順に進む。受付されなかった予約だけを直ちに戻す。
+同じrequestを再enqueueしない。相関済み窓をBoundへ結び、receipt前にmapしたnonce付きfoot窓を
+自発窓として別の位置へ先取りしない。最初の窓を観測するまでは追加を待ち、全窓close後の再追加は可能。
+
+`runtime.window_slots`には予約容量、現在の表示上限、occupied、各lease/state、
+未割当窓、終了確認待ちを記録する。**この段階では台帳を接続しただけで、panelの表示先は従来の二枠である。**
+次segmentで同じlease位置をpanel割当へ使い、上限と初期gridを同期する。
+現時点の`capacity: 9`は予約モデル容量で、`display_limit: 2`や実機九枚合格を置き換えない。
+
+BoundはUnmappedでも保持する。toplevelの消滅後、同session/windowのactive render targetがなくなったことと、
+全世代のSDK bindingおよびpanel commandの回収を別々に確認して枠を解放する。
+runtime停止では通常panel ACKが受理されなくなるため、render所有thread/contextの終了とSDK所有解除を確認する。
+この観測は入力先/Surface所有の回収であり、ドライバ内部全メモリ量の測定ではない。
+
+受付済み起動の失敗/取消には、現在のhelperからterminal単位の終了ACKがない。
+タイムアウトやnegative receiptだけで予約を空けず、remote/forward/local/protocol/SHM/directoryを
+回収した`Session::closed`を待つ。接続を閉じ直す必要がある状態は`cleanup_required`で区別する。
+別nonce/別sessionへ切り替える前にも旧台帳が空くことを待ち、同sessionのrequest/token floorは維持する。
+SDKの回収が失敗した場合に予約だけを初期化して先へ進まない。
+
+adapterの追加8件は、逆完了、dialogによる予約位置の先取り防止、receipt前map、Unmapped、
+native先/SDK先の回収、失敗起動の保守的保持、enqueue拒否、九枠にpendingを加えた上限、旧scopeを検査した。
+core全体は61件成功・1件前提不足・1件既存ignoreとなり、前提を整えた実waypipe 100frameの1件再試験も成功した
+（合計62件成功・1件ignore）。`eidolon-android`のhost cargo checkも成功。
+
+再現時は、実sessionテストのproducerがcheckout内`target/debug/eidolon-shm-fixture`に必要である。
+`CARGO_TARGET_DIR`で共有targetを指定した隔離checkoutでは、そのbinaryだけをignored directoryから参照する。
+別worktreeの同名crateをshared targetへbuildした後は古いmtimeによる誤cache採用があり得るため、
+作業用owner lock内で自checkoutのworkspace crate entrypointのmtimeを更新し、Cargoとfixture実行を連続させる。
+cache全消去や新しい巨大target複製は不要である。Android/SDK/Quest検証はrootの後続gate。

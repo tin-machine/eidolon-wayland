@@ -95,8 +95,29 @@ impl Runtime {
         Self::start_with_hook(config, || {})
     }
 
+    /// JNI registryが採番した実handleを予約leaseのownerへ伝える。
+    pub fn start_registered(
+        config: RuntimeConfig,
+        handle: eidolon_model::ids::RuntimeHandle,
+    ) -> std::io::Result<Self> {
+        Self::start_owned_with_hook(config, handle, || {})
+    }
     fn start_with_hook(
         config: RuntimeConfig,
+        ready_hook: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<Self> {
+        // Android以外のstandalone fixture owner。registry経路はstart_registeredを使う。
+        static NEXT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+        let value = NEXT
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| std::io::Error::other("ID_EXHAUSTED"))?;
+        let handle = eidolon_model::ids::RuntimeHandle::new(value)
+            .map_err(|_| std::io::Error::other("ID_EXHAUSTED"))?;
+        Self::start_owned_with_hook(config, handle, ready_hook)
+    }
+    fn start_owned_with_hook(
+        config: RuntimeConfig,
+        runtime_handle: eidolon_model::ids::RuntimeHandle,
         ready_hook: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<Self> {
         let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "CONFIG_INVALID");
@@ -170,6 +191,7 @@ impl Runtime {
                     JoinHandle<serde_json::Value>,
                 )> = None;
                 let mut app: Option<crate::session::Session> = None;
+                let mut slots = crate::window_slots::Controller::new(runtime_handle);
                 // server ACKだけで枠の予約を解かない。新windowがmapするまで追加を直列化する。
                 let mut opening_window: Option<(
                     eidolon_model::ids::SessionId,
@@ -246,6 +268,7 @@ impl Runtime {
                             .theme = themes.report();
                         let ssh = io.snapshot();
                         if !stopping.load(Ordering::Acquire)
+                            && pending_app.as_ref().is_none_or(|(session, nonce, _, _)| slots.can_begin(*session, nonce))
                             && let Some((session, nonce, mode, virtual_clock)) = pending_app.take()
                         {
                             let started = (|| {
@@ -260,7 +283,9 @@ impl Runtime {
                                     if current.virtual_clock() != virtual_clock {
                                         return Err("NOT_READY");
                                     }
-                                    return current.select_app(&nonce, mode);
+                                    current.select_app(&nonce, mode)?;
+                                    if !virtual_clock { slots.begin(session, &nonce).map_err(|_| "NOT_READY")?; }
+                                    return Ok(());
                                 }
                                 if app.as_ref().is_some_and(|a| !a.closed()) {
                                     return Err("BUSY");
@@ -285,6 +310,7 @@ impl Runtime {
                                     },
                                 )?);
                                 if !virtual_clock {
+                                    slots.begin(session, &nonce).map_err(|_| "NOT_READY")?;
                                     gl.use_windows();
                                 }
                                 Ok(())
@@ -337,6 +363,9 @@ impl Runtime {
                                 state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.window_launch = Some(Report {
                                     session: *session, request_id: *request, outcome,
                                 });
+                                if !current.virtual_clock() && slots.outcome(*session, *request, outcome).is_err() {
+                                    current.fail("SLOT_STATE_INVALID");
+                                }
                                 if outcome.completed() { opening_window = None; }
                             }
 
@@ -411,8 +440,23 @@ impl Runtime {
                                     },
                                 );
                             }
-                            state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.app =
-                                Some(snapshot);
+                            if !current.virtual_clock() {
+                                let windows = snapshot.windows.iter().map(|w| crate::window_slots::Window {
+                                    id: w.window, app_id: w.app_id.as_deref(), life: w.life,
+                                }).collect::<Vec<_>>();
+                                let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                                let native = render.targets.iter().map(|t| t.key).collect::<Vec<_>>();
+                                let panels = if stopping.load(Ordering::Acquire) && render.workers == 0 && render.contexts == 0 && render.targets.is_empty() {
+                                    // owner終了後の通常panel ACKは受付されない。render thread終了＋SDK所有解除を用いる。
+                                    vec![]
+                                } else { shared.panels.snapshot().iter().map(|p| p.target).collect::<Vec<_>>() };
+                                if slots.observe(crate::window_slots::Observation {
+                                    session: current.session(), nonce: current.nonce(), windows: &windows,
+                                    session_closed: current.closed(), native: &native, sdk: &shared.sdk_bindings, panels: &panels,
+                                }).is_err() { shared.fail("SLOT_STATE_INVALID"); }
+                                shared.snapshot.window_slots = slots.report();
+                            }
+                            state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.app = Some(snapshot);
                         }
                         {
                             let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -801,16 +845,21 @@ impl Runtime {
                                         })
                                     {
                                         Status::Busy
+                                    } else if !slots.has_mapped_initial(*session) {
+                                        // 最初の窓がmapして中央を確保するまでは追加を受け付けない。
+                                        Status::NotReady
                                     } else {
+                                        let lease = slots.reserve(*session, *request_id);
                                         let target = match &command {
-                                            Command::LaunchTerminal { target, .. } => {
-                                                Some(target.clone())
-                                            }
+                                            Command::LaunchTerminal { target, .. } => Some(target.clone()),
                                             _ => None,
                                         };
-                                        let code =
-                                            io.launch_terminal(*session, *request_id, target);
+                                        let code = match lease {
+                                            Ok(_) => io.launch_terminal(*session, *request_id, target),
+                                            Err(code) => code,
+                                        };
                                         if code == Status::Accepted {
+                                            if slots.enqueued(lease.unwrap()).is_err() { state.fail("SLOT_STATE_INVALID"); }
                                             state.snapshot.window_launch = Some(eidolon_model::window_launch::Report {
                                                 session: *session, request_id: *request_id,
                                                 outcome: eidolon_model::window_launch::Outcome::Queued,
@@ -827,7 +876,8 @@ impl Runtime {
                                                     .map(|w| w.window)
                                                     .collect(),
                                             ));
-                                        }
+                                        } else if let Ok(lease) = lease { slots.not_enqueued(lease); }
+                                        state.snapshot.window_slots = slots.report();
                                         code
                                     }
                                 }
