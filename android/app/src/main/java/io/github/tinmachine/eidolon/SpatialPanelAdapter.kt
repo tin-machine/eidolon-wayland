@@ -179,7 +179,7 @@ class SpatialPanelAdapter {
         .put("pending", pendingSurfaces.size + pendingObjects.size)
         .put("background_api", backgroundApi?.let { JSONObject(it.toString()) })
         .put("decoration_entities", visuals.size).put("window_controls",WindowControls.resources()).put("window_mode_badges",WindowModeBadge.resources())
-        .put("targets", JSONArray(bindings.values.map { JSONObject().put("entity",it.entity.id.toString()).put("target",JSONObject(it.key.toString())).put("role",it.role)
+        .put("targets", JSONArray(bindings.values.map { JSONObject().put("runtime",it.handle.toString()).put("entity",it.entity.id.toString()).put("target",JSONObject(it.key.toString())).put("role",it.role)
             .put("retiring",it.retire).put("sdk_disposed",it.sdkDisposed).put("disposal_failed",it.disposalFailed)
             .put("listener_owned",it.listener!=null).put("input_owned",it.input!=null)
             .put("decoration",it.decoration).put("visual_entity",it.visual?.id?.toString()).put("controls",it.controls?.metadata()).put("move",it.move?.metadata()).put("mode_badge",it.modeBadge?.metadata())

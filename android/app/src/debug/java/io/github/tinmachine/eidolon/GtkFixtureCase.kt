@@ -49,7 +49,9 @@ object GtkFixtureCase {
                 .put("runtime",binding?.handle?.toString() ?: JSONObject.NULL).put("session",binding?.session ?: JSONObject.NULL)
                 .put("scene",binding?.scene ?: JSONObject.NULL).put("main_window",mainWindow.ifEmpty {null} ?: JSONObject.NULL)
                 .put("target",currentTarget?.json() ?: JSONObject.NULL).put("input_epoch",epoch)
-                .put("foot_windows",JSONArray(foot.sorted())).put("steps",rows))
+                .put("foot_windows",JSONArray(foot.sorted())).put("steps",rows).also {
+                    if(name=="resize") it.put("resize_replacement",trial?.let {captured->NativeSessionHost.debugInputResizeStatus(captured)} ?: JSONObject.NULL)
+                })
         }
         fun record(stage:String,runtime:JSONObject,target:GtkFixtureBinding.Target?=currentTarget) {
             check(rows.length()<24) {"GTK_STEP_LIMIT"}
@@ -97,14 +99,22 @@ object GtkFixtureCase {
                 .put("time_ms",SystemClock.uptimeMillis() and 0xffffffffL)
             command("key",target,JSONObject().put("input_epoch",epoch).put("focus_token",token).put("key",key),focusToken=token)
         }
-        fun resize(target:GtkFixtureBinding.Target,width:Int,height:Int) =
-            command("resize_logical",target,JSONObject().put("width",width).put("height",height))
-        fun resized(runtime:JSONObject,width:Int,height:Int):Boolean {
-            val row=GtkFixtureBinding.window(runtime,appId) ?: return false
-            val size=row.optJSONObject("logical_size") ?: return false
-            val resize=row.optJSONObject("resize") ?: return false
-            return size.optInt("width")==width && size.optInt("height")==height && resize.optString("phase")=="applied" &&
-                GtkFixtureBinding.targetFor(runtime,mainWindow)!=null
+        fun resize(target:GtkFixtureBinding.Target,width:Int,height:Int) {
+            val captured=checkNotNull(trial);val ticket=checkNotNull(NativeSessionHost.debugInputTarget(captured,target.json())) {"GTK_INPUT_UNAVAILABLE"}
+            check(NativeSessionHost.debugBeginInputResize(captured,ticket,requests.incrementAndGet().toString(),width,height)) {"GTK_RESIZE_REJECTED"}
+        }
+        fun adoptResize(stage:String):Boolean {
+            val captured=checkNotNull(trial);val receipt=NativeSessionHost.debugAdoptInputResize(captured) ?: return false
+            val target=GtkFixtureBinding.target(JSONObject(receipt.target.target))
+            check(target.session==checkNotNull(owner).session && target.window==mainWindow && target.scene==checkNotNull(owner).scene) {"GTK_TARGET_CHANGED"}
+            epoch=receipt.target.epoch;mainTarget=target;currentTarget=target;ownedTargets.add(target)
+            check(rows.length()<24) {"GTK_STEP_LIMIT"}
+            rows.put(JSONObject().put("stage",stage).put("target",target.json()).put("input_epoch",epoch)
+                .put("delivered",receipt.delivered)
+                .put("resize_request",receipt.request).put("old_target",receipt.oldTarget).put("replacement",receipt.replaced)
+                .put("configured_serial",receipt.configuredSerial).put("acknowledged_serial",receipt.acknowledgedSerial)
+                .put("committed_serial",receipt.committedSerial).put("width",receipt.width).put("height",receipt.height))
+            publish();return true
         }
         fun transition(value:String) {phase=value;stageStarted=SystemClock.elapsedRealtime();publish()}
         fun finish(requestedResult:String,requestedReason:String?=null) {
@@ -153,7 +163,7 @@ object GtkFixtureCase {
                     }
                 } else {
                     check(NativeSessionHost.debugInputCurrent(checkNotNull(trial))) {"GTK_INTENT_LOST"}
-                    if(phase!="CLOSING" && !(name=="dialog" && phase in setOf("WAIT_DIALOG_CLOSED","OPERATIONS_COMPLETE"))) check(runtime.getLong("input_resets")==epoch) {"GTK_EPOCH_CHANGED"}
+                    if(phase !in setOf("CLOSING","WAIT_LARGE","WAIT_RETURN") && !(name=="dialog" && phase in setOf("WAIT_DIALOG_CLOSED","OPERATIONS_COMPLETE"))) check(runtime.getLong("input_resets")==epoch) {"GTK_EPOCH_CHANGED"}
                     check(binding==owner && runtime.getJSONObject("render").optLong("theme_revision",0)==theme) {"GTK_OWNER_CHANGED"}
                     check(windows(runtime).containsAll(foot)) {"GTK_BASELINE_LOST"}
                     val dialog=GtkFixtureBinding.window(runtime,dialogId)
@@ -211,13 +221,11 @@ object GtkFixtureCase {
                             }
                         }
                         "WAIT_DIALOG_CLOSED" -> if(dialog==null) {record("dialog_retired",runtime);transition("OPERATIONS_COMPLETE")}
-                        "WAIT_LARGE" -> if(resized(runtime,800,500)) {
-                            check(GtkFixtureBinding.targetFor(runtime,mainWindow)==mainTarget) {"GTK_TARGET_CHANGED"}
-                            record("large",runtime);resize(checkNotNull(mainTarget),640,360);seal();transition("WAIT_RETURN")
+                        "WAIT_LARGE" -> if(adoptResize("large")) {
+                            resize(checkNotNull(mainTarget),640,360);transition("WAIT_RETURN")
                         }
-                        "WAIT_RETURN" -> if(resized(runtime,640,360)) {
-                            check(GtkFixtureBinding.targetFor(runtime,mainWindow)==mainTarget) {"GTK_TARGET_CHANGED"}
-                            record("returned",runtime);transition("OPERATIONS_COMPLETE")
+                        "WAIT_RETURN" -> if(adoptResize("returned")) {
+                            seal();transition("OPERATIONS_COMPLETE")
                         }
                         "OPERATIONS_COMPLETE" -> if(closeRequested) {
                             check(GtkFixtureBinding.window(runtime,appId)?.getString("window")==mainWindow) {"GTK_WINDOW_CHANGED"}

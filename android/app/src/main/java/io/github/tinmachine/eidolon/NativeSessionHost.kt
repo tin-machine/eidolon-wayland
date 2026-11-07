@@ -77,7 +77,7 @@ object NativeSessionHost {
     private val latestMetrics = AtomicReference(DeviceMetricsSnapshot())
     fun setKeyboardCount(value: Int?) { keyboardCount.set(value) }
     fun publishDeviceMetrics(value: DeviceMetricsSnapshot) { latestMetrics.set(value);deviceMetrics.value=value }
-    private val inputIntents=InputIntentSerial()
+    private val inputIntents=InputIntentSerial(SystemClock::elapsedRealtime)
     private val adapterSnapshot=AtomicReference<String?>(null)
     private data class PendingInputFocus(val target: String, val runtime: Long, val ticket: Long, val deadline: Long,
         var resetRequest: String? = null, var resetCompleted: Boolean = false, var focusRequest: String? = null,
@@ -269,7 +269,7 @@ object NativeSessionHost {
         } }
     }
     fun sceneReady(): Long = inputIntents.serial {
-        inputIntents.invalidate()
+        inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()
         val scene = scenes.incrementAndGet()
         send("scene_ready", "scene", scene.toString())
         scene
@@ -607,28 +607,40 @@ object NativeSessionHost {
         if (code !in setOf(NativeBridge.ACCEPTED,NativeBridge.INVALID_ARGUMENT)) resetInput()
         return code!=NativeBridge.INVALID_ARGUMENT
     }
-    class DebugInputTrial internal constructor(internal val ticket:InputIntentSerial.Trial,val runtime:Long,val epoch:Long) {
+    class DebugInputTrial internal constructor(internal val ticket:InputIntentSerial.Trial,val runtime:Long,epoch:Long) {
+        var epoch:Long=epoch;internal set
         internal val targets=mutableSetOf<String>()
+        internal var resize:DebugPendingResize?=null
     }
+    internal data class DebugPendingResize(val token:InputResizeReplacement,val theme:Long,val frame:Long,val delivered:Long,
+        val buttons:Long,val lease:String,val appId:String,val physical:String,val placement:String,val focus:String,var readiness:JSONObject?=null)
+    private var debugInputActive:DebugInputTrial?=null
+    data class DebugInputResizeReceipt(val request:String,val oldTarget:String,val target:InputTarget,val configuredSerial:Long,
+        val acknowledgedSerial:Long,val committedSerial:Long,val width:Int,val height:Int,val replaced:Boolean,val delivered:Long)
     fun debugCaptureInput(target:InputTarget):DebugInputTrial? = inputIntents.serial {
-        if(!BuildConfig.DEBUG || !debugImeCanRequestFocus() || inputTarget(target.target)!=target) null
-        else DebugInputTrial(inputIntents.capture(),target.runtime,target.epoch).also {it.targets.add(target.identity)}
+        if(!BuildConfig.DEBUG || !debugImeCanRequestFocus() || inputTarget(target.target)!=target ||
+            JSONObject(target.target).optString("scene")!=scenes.get().toString()) null
+        else DebugInputTrial(inputIntents.capture(),target.runtime,target.epoch).also {it.targets.add(target.identity);debugInputActive=it}
+    }
+    /** 通常runtimeのtarget lookup。固定Linux leaseは同じtrial専用のcontextへ分岐する。 */
+    fun debugInputTarget(trial:DebugInputTrial,target:JSONObject):InputTarget? = inputIntents.serial {
+        inputTarget(target.toString())?.takeIf {it.runtime==trial.runtime && target.optString("scene")==scenes.get().toString()}
     }
     fun debugInputCurrent(trial:DebugInputTrial):Boolean = inputIntents.serial {
-        val valid=BuildConfig.DEBUG && handle==trial.runtime && debugImeCanRequestFocus()
-        if(!valid) inputIntents.invalidate()
+        val valid=BuildConfig.DEBUG && debugInputActive===trial && handle==trial.runtime && debugImeCanRequestFocus()
+        if(!valid && debugInputActive===trial) inputIntents.invalidate()
         valid && inputIntents.current(trial.ticket)
     }
     fun debugInputDispatch(trial:DebugInputTrial,target:InputTarget,focusToken:String?=null,pointerDown:Boolean=false,enqueue:()->Int):Boolean = inputIntents.serial {
         val result=inputIntents.dispatch(trial.ticket,{
-            debugInputCurrent(trial) && target.runtime==trial.runtime && target.epoch==trial.epoch && inputTarget(target.target)==target &&
+            debugInputCurrent(trial) && target.runtime==trial.runtime && target.epoch==trial.epoch && debugInputTarget(trial,JSONObject(target.target))==target &&
                 (focusToken==null || keyboardFocus?.let {it.runtime==trial.runtime && it.epoch==trial.epoch && targetIdentity(JSONObject(it.target))==target.identity && it.token==focusToken}==true)
         }) {
             trial.targets.add(target.identity)
             if(pointerDown) {inputIntents.ownedIncrement(trial.ticket);releasePanelTextFocus()}
             enqueue()
         }
-        if(result!=NativeBridge.ACCEPTED) inputIntents.invalidate()
+        if(result!=NativeBridge.ACCEPTED && debugInputActive===trial) inputIntents.invalidate()
         result==NativeBridge.ACCEPTED
     }
     fun debugSealInput(trial:DebugInputTrial):Boolean=inputIntents.serial {debugInputCurrent(trial) && inputIntents.seal(trial.ticket)}
@@ -644,9 +656,128 @@ object NativeSessionHost {
     }
     fun debugFinishInput(trial:DebugInputTrial):Boolean=inputIntents.serial {
         val valid=debugInputCurrent(trial) && inputIntents.isSealed(trial.ticket)
-        inputIntents.release(trial.ticket);valid
+        debugReleaseInput(trial);valid
     }
-    fun debugReleaseInput(trial:DebugInputTrial)=inputIntents.release(trial.ticket)
+    fun debugReleaseInput(trial:DebugInputTrial)=inputIntents.serial {
+        inputIntents.release(trial.ticket)
+        if(debugInputActive===trial) {trial.resize=null;debugInputActive=null}
+    }
+    private fun debugResizeKey(runtime:Long,target:JSONObject):InputWindowKey {
+        val values=listOf("session","window","scene","generation").map {key->target.getString(key).also {
+            check(it.matches(Regex("[1-9][0-9]{0,18}")) && it.toLongOrNull()!=null)
+        }}
+        check(target.keys().asSequence().toSet()==setOf("session","window","scene","generation"))
+        return InputWindowKey(runtime,values[0],values[1],values[2],values[3])
+    }
+    private fun debugResizeRows(value:JSONArray):List<JSONObject> = (0 until value.length()).map {value.getJSONObject(it)}
+    private fun debugResizeWindow(runtime:JSONObject,key:InputWindowKey):JSONObject? =
+        debugResizeRows(runtime.getJSONObject("app").getJSONArray("windows")).singleOrNull {it.optString("window")==key.window && it.optString("life")=="Mapped"}
+    private fun debugResizePlacement(runtime:JSONObject,key:InputWindowKey):JSONObject? =
+        debugResizeRows(runtime.getJSONObject("workspace").getJSONArray("windows")).singleOrNull {
+            it.optString("session")==key.session && it.optString("window")==key.window
+        }?.optJSONObject("placement")
+    private fun debugResizeLease(runtime:JSONObject):String {
+        val app=runtime.getJSONObject("app");val transport=runtime.getJSONObject("transport")
+        val forward=transport.getJSONObject("app_forward");val remote=forward.getJSONObject("remote");val child=remote.getJSONObject("child")
+        check(app.getString("state")=="running" && app.isNull("error") && transport.getString("state")=="Ready" &&
+            forward.getString("state")=="running" && remote.getString("phase")=="running" && remote.isNull("error"))
+        return listOf(app.getString("session"),app.getString("nonce"),transport.getString("session"),forward.getString("nonce"),
+            child.getInt("pid").toString(),child.getString("start"),child.getInt("group").toString()).joinToString(":")
+    }
+    private fun debugResizeFocus(input:JSONObject):String=JSONObject().put("window",input.opt("focus_window") ?: JSONObject.NULL)
+        .put("token",input.opt("focus_token") ?: JSONObject.NULL).toString()
+    /** 一つの要求だけを登録してからenqueueする。BUSYを同条件で再送しない。 */
+    fun debugBeginInputResize(trial:DebugInputTrial,target:InputTarget,request:String,width:Int,height:Int):Boolean=inputIntents.serial {
+        if(!debugInputCurrent(trial) || trial.resize!=null || target.epoch!=trial.epoch ||
+            debugInputTarget(trial,JSONObject(target.target))!=target || width !in 320..2048 || height !in 200..2048) return@serial false
+        try {
+            val key=debugResizeKey(trial.runtime,JSONObject(target.target));val runtime=snapshot().getJSONObject("runtime")
+            check(runtime.getString("scene")==key.scene && runtime.getJSONObject("app").getString("session")==key.session &&
+                runtime.getLong("input_resets")==trial.epoch && key.scene==scenes.get().toString())
+            val window=checkNotNull(debugResizeWindow(runtime,key));val placement=checkNotNull(debugResizePlacement(runtime,key))
+            val input=runtime.getJSONObject("app").getJSONObject("input");val pointer=input.getJSONObject("pointer")
+            check(input.getInt("pressed")==0 && pointer.getInt("pressed")==0)
+            val replacement=InputResizeReplacement(request.toLong(),key,trial.epoch,width,height,SystemClock.elapsedRealtime()+10000)
+            val pending=DebugPendingResize(replacement,runtime.getJSONObject("render").getLong("theme_revision"),window.getString("frame").toLong(),
+                input.getLong("delivered"),pointer.getLong("buttons"),debugResizeLease(runtime),window.getString("app_id"),
+                window.getJSONObject("sizing").getJSONObject("physical_size_m").toString(),placement.getJSONObject("pose").toString(),debugResizeFocus(input))
+            if(!inputIntents.beginReplacement(trial.ticket,replacement)) return@serial false
+            trial.resize=pending
+            val code=NativeBridge.nativeCommand(trial.runtime,JSONObject().put("schema",1).put("type","resize_logical")
+                .put("request_id",request).put("target",JSONObject(target.target)).put("width",width).put("height",height).toString())
+            if(code!=NativeBridge.ACCEPTED) {inputIntents.invalidate();false} else true
+        } catch(_:Exception) {inputIntents.invalidate();false}
+    }
+    /** 各gateは最新native snapshotと既存SDK/input gateから確認する。raw入力を有効化し直さない。 */
+    fun debugAdoptInputResize(trial:DebugInputTrial):DebugInputResizeReceipt?=inputIntents.serial {
+        if(!debugInputCurrent(trial)) return@serial null
+        val pending=trial.resize ?: return@serial null;val token=pending.token;val old=token.old
+        try {
+            val runtime=snapshot().getJSONObject("runtime")
+            check(runtime.getString("state")=="Ready" && runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED" &&
+                runtime.getString("scene")==old.scene && old.scene==scenes.get().toString() && runtime.getJSONObject("app").getString("session")==old.session &&
+                runtime.getJSONObject("render").getLong("theme_revision")==pending.theme && debugResizeLease(runtime)==pending.lease)
+            val window=checkNotNull(debugResizeWindow(runtime,old));val resize=window.getJSONObject("resize")
+            check(window.getString("app_id")==pending.appId && window.getJSONObject("sizing").getJSONObject("physical_size_m").toString()==pending.physical)
+            val placement=checkNotNull(debugResizePlacement(runtime,old));check(placement.getJSONObject("pose").toString()==pending.placement)
+            val request=resize.optJSONObject("request")
+            val matches=request?.optString("request_id")==token.request.toString() && request.optJSONObject("target")?.let {debugResizeKey(trial.runtime,it)==old}==true
+            val plans=debugResizeRows(runtime.getJSONArray("panels"))
+            val plan=plans.filter {it.optString("action")=="create" && it.isNull("error")}.singleOrNull {
+                val key=debugResizeKey(trial.runtime,it.getJSONObject("target"));old.sameWindow(key)
+            }
+            val target=plan?.getJSONObject("target");val next=target?.let {debugResizeKey(trial.runtime,it)} ?: old
+            val input=runtime.getJSONObject("app").getJSONObject("input");val pointer=input.getJSONObject("pointer")
+            val frame=window.getString("frame").toLong();val epoch=runtime.getLong("input_resets")
+            fun size(value:JSONObject?):Boolean=value?.optInt("width")==token.width && value.optInt("height")==token.height
+            fun serial(name:String):Long?=(resize.opt(name) as? Number)?.toLong()?.takeIf {it in 0..0xffffffffL}
+            val serials=listOf("configured_serial","acknowledged_serial","committed_serial").map(::serial)
+            val applied=resize.optString("phase")=="applied" && resize.isNull("error") && size(window.optJSONObject("logical_size")) &&
+                size(resize.optJSONObject("requested_logical_size")) && size(resize.optJSONObject("configured_logical_size")) && size(resize.optJSONObject("committed_size"))
+            val frames=debugResizeRows(runtime.getJSONObject("render").getJSONArray("targets"))
+            val rendered=frames.singleOrNull {debugResizeKey(trial.runtime,it.getJSONObject("key"))==next}
+            val adapter=debugAdapterSnapshot();val sdk=adapter?.optJSONArray("targets")?.let(::debugResizeRows) ?: emptyList()
+            val bound=sdk.singleOrNull {debugResizeKey(trial.runtime,it.getJSONObject("target"))==next}
+            val receipts=adapter?.optJSONArray("retired")?.let(::debugResizeRows) ?: emptyList()
+            val oldReleased=next==old || (plans.none {debugResizeKey(trial.runtime,it.getJSONObject("target"))==old} &&
+                frames.none {debugResizeKey(trial.runtime,it.getJSONObject("key"))==old} && sdk.none {debugResizeKey(trial.runtime,it.getJSONObject("target"))==old} &&
+                receipts.any {it.optString("runtime")==trial.runtime.toString() && debugResizeKey(trial.runtime,it.getJSONObject("target"))==old &&
+                    it.optBoolean("sdk_disposed") && it.optBoolean("sdk_binding_released") && !it.optBoolean("disposal_failed")})
+            val sizing=window.getJSONObject("sizing");val physical=sizing.optJSONObject("applied_physical_size_m")?.toString()==pending.physical
+            val pose=placement.optJSONObject("applied_pose")
+            val poseReady=pose?.optJSONObject("target")?.let {debugResizeKey(trial.runtime,it)==next}==true &&
+                pose.optJSONObject("pose")?.let {PanelPoseCodec.near(it,placement.getJSONObject("pose"))}==true
+            val ticket=target?.let {debugInputTarget(trial,it)}
+            val controls=bound?.optJSONObject("controls");val controlButtons=controls?.optJSONArray("buttons")?.let(::debugResizeRows) ?: emptyList()
+            val buttonsReady=controlButtons.map {it.optString("action")}.containsAll(listOf("move","focus","close")) &&
+                controlButtons.all {it.optBoolean("ready") && debugResizeKey(trial.runtime,it.getJSONObject("target"))==next}
+            val focusOriginal=debugResizeFocus(input)==pending.focus
+            val focusCleared=input.isNull("focus_window") && input.isNull("focus_token")
+            val focusAllowed=focusOriginal || (focusCleared && epoch-token.epoch in 1L..2L)
+            val focusReady=if(next==old) focusOriginal else focusCleared
+            val ready=focusReady && plan?.optBoolean("applied")==true && rendered?.getLong("frames")?.let {it>0}==true && size(rendered.optJSONObject("content_size")) &&
+                rendered.optString("content_frame").toLongOrNull()?.let {it>=frame}==true && adapter?.optString("scene")==old.scene &&
+                bound!=null && bound.optString("runtime")==trial.runtime.toString() && !bound.optBoolean("retiring") && !bound.optBoolean("sdk_disposed") && !bound.optBoolean("disposal_failed") && bound.optBoolean("listener_owned") &&
+                controls?.optLong("revision")==pending.theme && controls.optBoolean("enabled") && buttonsReady && oldReleased && physical && poseReady &&
+                ticket?.runtime==trial.runtime && ticket.epoch==epoch && runtime.getJSONObject("shutdown").getInt("sdk_bindings")==sdk.size
+            val unchanged=input.getLong("delivered")==pending.delivered && pointer.getLong("buttons")==pending.buttons && input.getInt("pressed")==0 && pointer.getInt("pressed")==0 && focusAllowed
+            pending.readiness=JSONObject().put("receipt_matches",matches).put("command_ack",token.acknowledged).put("sizes_applied",applied)
+                .put("serials_present",serials.all {it!=null}).put("producer_advanced",frame>pending.frame).put("input_unchanged",unchanged)
+                .put("old_owner_released",oldReleased).put("focus_unchanged_or_owned_reset",focusAllowed).put("focus_ready",focusReady).put("physical_applied",physical).put("pose_applied",poseReady).put("sdk_and_input_ready",ready)
+                .put("epoch",epoch).put("candidate_generation",next.generation)
+            val proof=InputResizeReplacement.Proof(next,epoch,matches,applied,serials.all {it!=null},frame>pending.frame,unchanged,ready)
+            if(!inputIntents.completeReplacement(trial.ticket,token,proof)) return@serial null
+            val adopted=checkNotNull(ticket);trial.epoch=epoch;trial.targets.add(adopted.identity);trial.resize=null
+            DebugInputResizeReceipt(token.request.toString(),old.identity,adopted,checkNotNull(serials[0]),checkNotNull(serials[1]),checkNotNull(serials[2]),token.width,token.height,next!=old,pending.delivered)
+        } catch(_:Exception) {inputIntents.invalidate();null}
+    }
+    fun debugInputResizeStatus(trial:DebugInputTrial):JSONObject=inputIntents.serial {
+        val token=trial.resize?.token
+        JSONObject().put("request_id",token?.request?.toString() ?: JSONObject.NULL).put("pending",token!=null)
+            .put("readiness",trial.resize?.readiness?.let {JSONObject(it.toString())} ?: JSONObject.NULL)
+            .put("acknowledged",token?.acknowledged ?: false).put("old_retirement_seen",token?.retirementSeen ?: false)
+            .put("reason",token?.failure ?: if(token==null) "RESIZE_IDLE" else if(!debugInputCurrent(trial)) "RESIZE_INTENT_LOST" else "RESIZE_WAITING")
+    }
     private fun focusTarget(runtime: JSONObject, choice: WindowChoice? = null, requireApplied: Boolean = true): JSONObject? {
         val plans=runtime.getJSONArray("panels")
         val live=(0 until plans.length()).map {plans.getJSONObject(it)}
@@ -1203,6 +1334,10 @@ object NativeSessionHost {
             val event = values.getJSONObject(index)
             if (event.optString("type") == "command_complete") {
                 imeCompletions.add(ImeSessionCompletion(event.getString("request_id"), imeDeliveryCode(event.getString("code"))))
+                inputIntents.serial {
+                    debugInputActive?.takeIf {it.runtime==handle}?.resize?.token?.takeIf {it.request.toString()==event.getString("request_id")}
+                        ?.acknowledge(event.getString("code")=="ACCEPTED",SystemClock.elapsedRealtime())
+                }
                 catalogPending?.let { pending ->
                     if(event.getString("request_id")==pending.request && event.getString("code")!="ACCEPTED") {
                         catalogPending=null;launcherUpdate(launcherState.copy(busy=false,message="一覧を操作できません（${event.getString("code")}）"))
