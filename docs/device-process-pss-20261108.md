@@ -13,3 +13,14 @@ kBを1024倍してbytesへ変換し、共通の「設定と詳細」にMiBで表
 diagnosticsの`process_pss_*`はstatus/bytes/sample time/固定reason/scopeだけを持つ。
 process名やmemory mappingの本文は収集・保存しない。
 単位・範囲・停止/復帰・期限・workerの失敗分離をhostで検査し、実API値と更新・停止/復帰は次の統合APKで確認する。
+
+## Build154の確認
+
+debug build・lint・APK検査・JUnit 107件成功後、同じhelper版でQuestへ導入した。
+製品UIDからPSSを取得でき、異なる二つの採取時刻で更新した。
+Homeへ移動すると`stopped/null`、復帰後はそれ以前より新しい時刻の`available`へ戻り、
+CPU・熱状態・保存先容量も継続した。表示のHMD可読性と計測負荷の比較は未受入れ。
+
+導入直後は前版のdiagnostics fileが最初のpublishまで残るため、検証側はAPK版の一致を待ってから採取する。
+初回は旧版を拒否して終了した記録を保存し、新版writerの待機を追加して再検証した。
+保存先は作業rootの`eidolon-ime-implementation-20261107/pss154-observations.json`と`builds/20261108T015521-811286/`。
