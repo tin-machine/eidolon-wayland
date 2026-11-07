@@ -324,7 +324,8 @@ class HostJobTests(unittest.TestCase):
                 state["spawned"]=True
                 ready=client(phase="ready");complete=client();complete["phase"]="state";complete["reason"]="running";complete["sequence"]=2
                 final=client(sequence=3)
-                remote=dict(schema=1,operator=gui.OPERATOR,status="observed",nonce=NONCE,binary_sha256="c"*64,manifest_sha256="d"*64)
+                remote=dict(schema=1,operator=gui.OPERATOR,status="observed",nonce=NONCE,binary_sha256="c"*64,manifest_sha256="d"*64,
+                            cleanup_confirmed=True,reaped=True,group_reclaimed=True,pipes_drained=True)
                 source=("import sys,json,os,time\nfrom pathlib import Path\nr=json.loads(sys.stdin.readline())\n"
                     f"marker=Path({str(marker)!r})\n"
                     "def emit(v):print(json.dumps(v),flush=True)\n"
@@ -345,6 +346,67 @@ class HostJobTests(unittest.TestCase):
             report=json.loads(next((root/"artifacts").glob("*/result.json")).read_text())
             self.assertEqual(report["status"],"observed");self.assertTrue(report["evidence"]["all_retired"])
             self.assertEqual(report["physical_input"],"not_run")
+
+
+class CancelDrainTests(unittest.TestCase):
+    def drain(self, source):
+        import selectors
+        child=subprocess.Popen([sys.executable,"-c",source],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        selector=selectors.DefaultSelector();pending=bytearray();sizes=dict(stdout=0,stderr=0);events=[]
+        for name in ("stdout","stderr"):
+            pipe=getattr(child,name);os.set_blocking(pipe.fileno(),False);selector.register(pipe,selectors.EVENT_READ,name)
+        child.stdin.close()
+        try:
+            cli.drain_remote(selector,pending,sizes,events.append,timeout=2)
+            child.wait(timeout=2)
+            return events,sizes,child.returncode
+        finally:
+            if child.poll() is None:child.kill();child.wait(timeout=2)
+            selector.close();child.stdout.close();child.stderr.close()
+
+    def test_late_cleanup_footer_after_cancel_is_drained_without_rewriting_failed_exit(self):
+        events,sizes,code=self.drain("import sys,time,json;sys.stdin.read();time.sleep(.02);print(json.dumps(dict(phase='finished',cleanup_confirmed=True)),flush=True);sys.exit(23)")
+        self.assertEqual(events,[dict(phase="finished",cleanup_confirmed=True)])
+        self.assertGreater(sizes["stdout"],0);self.assertEqual(code,23)
+
+    def test_partial_footer_and_oversize_error_stream_are_not_cleanup_proof(self):
+        for source in ("import sys;sys.stdout.write('{\"phase\":\"finished\"}')",
+                       "import sys;sys.stderr.write('x'*70000)"):
+            with self.assertRaises(CaptureError):self.drain(source)
+
+
+class ReceiptLedgerTests(unittest.TestCase):
+    def row(self):
+        return dict(runtime="9",session="2",scene="3",foot_windows=["1"],main_window="5",
+                    target=dict(session="2",window="6",scene="3",generation="4"),steps=[],result="running")
+
+    def ledger(self):
+        return proof.ReceiptLedger(dict(handle="9",session="2"),"3",{"1"})
+
+    def test_dialog_receipt_waits_for_same_full_target_in_later_persisted_snapshot(self):
+        ledger=self.ledger();row=self.row()
+        self.assertEqual(ledger.observe(sdk(),row,1.0),[])
+        self.assertEqual(ledger.observe(sdk(),row,1.1),[])
+        self.assertEqual(len(ledger.pending),1)
+        self.assertEqual(ledger.observe(sdk(dialog=True),row,1.2),[row])
+        self.assertEqual(ledger.pending,[])
+
+    def test_unseen_or_wrong_generation_never_becomes_owned_and_expires(self):
+        for generation in ("4","7"):
+            ledger=self.ledger();row=self.row();row["target"]["generation"]=generation
+            sample=sdk(dialog=generation=="7")
+            self.assertEqual(ledger.observe(sample,row,1.0),[])
+            with self.assertRaisesRegex(CaptureError,"GTK_ANDROID_TARGET_UNOBSERVED"):
+                ledger.observe(sample,row,3.0)
+        ledger=self.ledger();row=self.row();ledger.observe(sdk(),row,1.0)
+        with self.assertRaisesRegex(CaptureError,"GTK_ANDROID_TARGET_UNOBSERVED"):
+            ledger.observe(sdk(dialog=True),row,3.0)
+
+    def test_other_runtime_scene_or_baseline_is_rejected_before_quarantine(self):
+        for mutate in (lambda r:r.update(runtime="10"),lambda r:r["target"].update(scene="8"),
+                       lambda r:r["target"].update(window="1")):
+            row=self.row();mutate(row)
+            with self.assertRaises(CaptureError):self.ledger().observe(sdk(),row,1.0)
 
 
 if __name__=="__main__":unittest.main()

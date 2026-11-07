@@ -1,4 +1,5 @@
 """GTK固定caseの本文を含まないSDK/Android受領の選択と独立判定。"""
+import copy
 from gtk_interaction_run import app_ids, completed
 from sdl_lease_capture import decimal, need
 STAGES = {"input": ["captured", "focused", "typed", "clicked", "retired"],
@@ -174,17 +175,62 @@ def current_frame(sample, role):
     return None
 
 
-def receipt_binding(row, binding, scene, baseline, observed_main, observed_dialog):
+def receipt_scope(row, binding, scene, baseline, observed_main):
     if row["runtime"] is None:
         need(row["result"] in {"failed", "cancelled"} and row["target"] is None and not row["steps"] and
              (row["main_window"] is None or row["main_window"] in observed_main), "GTK_ANDROID_OWNER_CHANGED")
-        return  # owner取得前の失敗理由を残す。合格判定には使わない。
+        return False  # owner取得前の失敗理由を残す。合格判定には使わない。
     need(row["runtime"] == binding["handle"] and row["session"] == binding["session"] and row["scene"] == scene and
          set(row["foot_windows"]) == baseline and row["main_window"] in observed_main, "GTK_ANDROID_OWNER_CHANGED")
     for target in [row["target"], *[step["target"] for step in row["steps"]]]:
         if target is not None:
             need(target["session"] == binding["session"] and target["scene"] == scene and
-                 target["window"] in observed_main | observed_dialog, "GTK_ANDROID_TARGET_CHANGED")
+                 target["window"] not in baseline, "GTK_ANDROID_TARGET_CHANGED")
+    return True
+
+
+def receipt_binding(row, binding, scene, baseline, observed_main, observed_dialog):
+    if not receipt_scope(row, binding, scene, baseline, observed_main):return
+    for target in [row["target"], *[step["target"] for step in row["steps"]]]:
+        if target is not None:
+            need(target["window"] in observed_main | observed_dialog, "GTK_ANDROID_TARGET_CHANGED")
+
+
+class ReceiptLedger:
+    """checkはruntimeより先に保存され得る。未観測targetを採用せず有限時間だけ保留する。"""
+    def __init__(self, binding, scene, baseline):
+        self.binding=dict(binding);self.scene=scene;self.baseline=set(baseline)
+        self.main=set();self.dialog=set();self.targets=set();self.pending=[];self.last=None
+
+    @staticmethod
+    def identity(value):
+        value=key(value)
+        return tuple(value[name] for name in ("session","window","scene","generation"))
+
+    def observe(self, sample, receipt, now):
+        self.main.update(w["window"] for w in sample["windows"] if w["role"]=="main")
+        self.dialog.update(w["window"] for w in sample["windows"] if w["role"]=="dialog")
+        for row in sample["targets"]:
+            if row["key"]["window"] in self.main | self.dialog and row["frames"]>=1 and row["content_frame"] is not None:
+                self.targets.add(self.identity(row["key"]))
+        need(len(self.targets)<=16,"GTK_ANDROID_TARGET_LIMIT")
+        if receipt is not None:
+            receipt_scope(receipt,self.binding,self.scene,self.baseline,self.main)
+            if receipt!=self.last and not any(row==receipt for row,_ in self.pending):
+                need(len(self.pending)<32,"GTK_ANDROID_RECEIPT_LIMIT")
+                self.pending.append((copy.deepcopy(receipt),now))
+        accepted=[];pending=[]
+        for row,started in self.pending:
+            need(now-started<2,"GTK_ANDROID_TARGET_UNOBSERVED")
+            targets=[t for t in [row["target"],*[step["target"] for step in row["steps"]]] if t is not None]
+            if all(self.identity(t) in self.targets for t in targets):
+                receipt_binding(row,self.binding,self.scene,self.baseline,self.main,self.dialog)
+                accepted.append(row)
+            else:
+                pending.append((row,started))
+        self.pending=pending
+        if accepted:self.last=accepted[-1]
+        return accepted
 
 
 def summarize(samples, baseline, case, fixture, android):

@@ -43,3 +43,26 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_gtk_probe.py -v
 Android側は `GtkFixtureBindingTest` でowner/UID/世代/重複app_id/欠けたtarget/回収receipt/Board残存を、`InputIntentSerialTest` で通常操作と遅いdebug dispatchの両順序・seal後入力禁止・自己退役と外部resetの区別を確認する。APK/SDK/Quest検証は実機operatorが別途行う。
 
 8b547ddの静的レビューで通常footクリック後にGTKの古いfocus snapshotから遅いpointerをenqueueできる競合と、Mapped消滅だけの回収判定が見つかった。実機へ採用する前に共通直列化と資源gateを補った。C/source/binary/manifestは変更していないため既知の配備pinを維持する。ここで記したfixture結果はホストでの検査であり、GTK input/dialog/resizeのQuest合格は別途必要である。
+
+## Build169の実機結果と保存順の扱い
+
+GTK3.24.52の `gdk_wayland_window_set_application_id` はxdg toplevel生成前には値を保持しなかった。
+初回実行ではCが報告するIDとwire上の既定IDが異なり、入力開始前に35秒timeoutとなった。
+`g_set_prgname` をGTK初期化前へ置き、main/dialogの明示setterをshow後へ移して、
+実Waylandで初回SHM前のID/parent順序を確認した。新source/manifest/binaryを新runへ配備し、旧runを上書きしていない。
+
+- input: nonce `ff2319c0f4ced0c3eaca267f4fecf9c4` はobserved。Entryへの固定入力/削除、
+  button callback、SHM/SDK draw、検査窓のSDK退役、元foot継続を確認した。
+- dialog: 初回 `1d44d4ce15161a591ed0d71d01503ead` はホストが未観測targetとして拒否した。
+  Android checkの保存がruntime snapshotより先行し得るため、同scopeの受領を最大2秒/32件だけ保留する。
+  実SDK drawを伴う同一full targetを別snapshotで観測してから採用し、世代違い・別scope・期限切れは拒否する。
+  修正後 `1317b6924c000a1b71c2e2806c78cbae` はobservedで、別dialog/parent/合成focus/Escape/退役を確認した。
+- resize: `0d228a8e9200f5a5dbcf4cf2aa9248df` はGTK_INTENT_LOST。
+  自分のlogical resizeでもSDK producerの交換と退役resetが発生した。epochを盲追従せず、
+  command ACKと一回だけのowned replacementを照合する後続修正が必要。
+  この失敗でも検査窓/remote子group/pipeの回収と元foot継続は確認した。
+
+取消後は有限時間pipeをdrainし、remoteのreaped/group/pipes/cleanup受領を保存する。
+失敗やtimeout後の遅い完了を成功へ昇格せず、footer欠落を回収成功にしない。
+full targetの保存順/期限/別owner拒否と、取消後footer・部分行・出力上限を含むhost24件が成功した。
+物理controller/keyboard、かな漢字変換、HMD視認は未検証として維持する。

@@ -1,7 +1,7 @@
 # NX16c: 九枠と表示・SDKの接続
 
 2026-11-08。NX16a/bの[予約台帳と回収境界](nx16a-slot-reservations-20261108.md)を通常表示へ接続するcheckpoint。
-コードとhost検証の段階であり、Quest九枚の表示/性能、九つの独立client、HMDの合格は別に確認する。
+Build169で単一foot serverの九窓を実SDKまで確認した。九つの独立client、継続性能、HMDの合格は別に確認する。
 
 ## 表示と配置
 
@@ -141,3 +141,20 @@ pool単体の追加回帰は、九つの約3MiB poolの同時保持、16件を�
 同じprocess内のfixture lockがpoisonして後続検査へ波及した。
 17poolを保持して超過を要求する固定wireへ更新した後、compositor20件が成功した。
 検査をskipしたり、poisonを無視して成功へ読み替えたりしていない。
+
+## Build169: 九窓の固定SDK caseが成功
+
+source `39ae43d`、nonce `0bec06ae40fb9240e6858661976c604e`、fixture `window-slots-v3` がPASS。
+builtin選択後、三→六→九枚の指定slot/pose、全panel適用、各targetのSDK bindingとdraw、
+controls/MODE所有数、入力targetが成立した。九枚時はsurface91/pool9、SHM27,353,088bytes、
+pixel42,217,280bytesで、surface/pool拒否counterは共に0。
+
+十枚目をBusyで拒否して既存窓を維持し、一枚を閉じた後のnative/SDK/panel drain、
+空きslotへの再追加、残窓のpose不変と合成キー配送を確認した。
+停止後はBoard entries/occupiedと九窓のSDK ownerがゼロになり、通常設定不変・別runtime復帰も成功した。
+通常診断SDKの復帰bindingと、停止した九窓の回収を混同していない。
+
+debug build/lint/package/JUnit167件、release build/lint/package/JUnit141件、
+91surfaceの実wire/byte上限回帰を含むcompositor20件、feature付きworkspace clippyが成功。
+これは単一foot client・固定寸法・合成入力の受入れで、独立九client、検索overlay/同時resize、
+HMDの高さ/視野/読みやすさ、持続FPS/メモリの合格には広げない。

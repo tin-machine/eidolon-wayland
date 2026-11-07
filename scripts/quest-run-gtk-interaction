@@ -16,7 +16,7 @@ import zlib
 
 from gui_probe_sdk import digest_sources
 from gtk_interaction_run import CASES, OPERATOR, completed
-from gtk_interaction_evidence import baseline_resources, android_receipt, current_frame, ready, receipt_binding, sample, summarize
+from gtk_interaction_evidence import ReceiptLedger, baseline_resources, android_receipt, current_frame, ready, sample, summarize
 from native_build import ROOT
 from quest_device import PACKAGE, QuestDevice, package_uid, work_root
 from sdl_lease_capture import CaptureError, MAX_SNAPSHOT, binding_key, canonical, decode, hexadecimal, need, select_snapshot
@@ -48,6 +48,23 @@ def remote_source():
     return f"import base64,zlib;exec(zlib.decompress(base64.b64decode({encoded!r})))"
 
 
+def drain_remote(selector, pending, sizes, receive, *, timeout=8):
+    """取消後も有限時間pipeを読み、remoteが返す回収証拠をwait前に受け取る。"""
+    until=time.monotonic()+timeout
+    while selector.get_map() and time.monotonic()<until:
+        for key,_ in selector.select(.03):
+            data=os.read(key.fd,8192)
+            if not data:selector.unregister(key.fd);continue
+            sizes[key.data]+=len(data)
+            need(sizes[key.data]<=(1048576 if key.data=="stdout" else 65536),"REMOTE_OUTPUT_LIMIT")
+            if key.data=="stderr":continue
+            pending.extend(data)
+            while b"\n" in pending:
+                line,_,rest=pending.partition(b"\n");pending[:]=rest
+                receive(decode(line,524288))
+    need(not selector.get_map() and not pending,"GTK_REMOTE_DRAIN_INCOMPLETE")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", required=True);parser.add_argument("--case", choices=sorted(CASES), required=True)
@@ -64,6 +81,7 @@ def main():
     result = dict(schema=1,operator=OPERATOR,status="failed",case=args.case,nonce=nonce,run_id=args.run_id,
                   sdk_samples=[],fixture_reports=[],android_receipts=[],events=[],physical_input="not_run",ime="not_run",hmd="not_run")
     child=selector=None;cancelled=started_android=closed_android=dismissed_android=False;initial_content=None
+    pending=bytearray();sizes=dict(stdout=0,stderr=0);finished=ended=None
     def control_cancel():
         nonlocal cancelled
         if child is not None and not cancelled and not child.stdin.closed:
@@ -79,6 +97,20 @@ def main():
     def snapshot():
         p=subprocess.run(["adb","-s",args.serial,"exec-out","run-as",PACKAGE,"head","-c",str(MAX_SNAPSHOT+1),"no_backup/diagnostics/latest.json"],capture_output=True,timeout=5)
         need(p.returncode==0,"DIAGNOSTICS_UNAVAILABLE");return decode(p.stdout)
+    def receive(event):
+        nonlocal finished,ended
+        need(type(event) is dict and event.get("phase") in {"validated","started","fixture","finished","blocked"},"REMOTE_EVENT_INVALID")
+        if event["phase"]=="fixture":
+            row=event["report"];need(row.get("run_id")==nonce and row.get("case")==args.case,"GTK_CLIENT_OWNER_CHANGED")
+            need(len(result["fixture_reports"])<256,"GTK_REPORT_LIMIT");result["fixture_reports"].append(row)
+        elif event["phase"]=="finished":
+            need(finished is None,"REMOTE_EVENT_INVALID")
+            value=event["result"]
+            need(value.get("operator")==OPERATOR and value.get("nonce")==nonce and
+                 value.get("binary_sha256")==args.binary_sha256 and value.get("manifest_sha256")==args.manifest_sha256,"GTK_RESULT_MISMATCH")
+            finished=value;ended=time.monotonic();close_input()
+        elif event["phase"]=="blocked":result["blocked_reason"]=event.get("reason");ended=time.monotonic();close_input()
+        else:need(len(result["events"])<2,"REMOTE_EVENT_INVALID");result["events"].append(event)
     try:
         source_pins=operator_hashes();result["operator_source_sha256"]=source_pins
         result["device"]=device.validate();need(package_uid(device.adb("shell","pm","list","packages","-U","com.termux"),"com.termux")==10158,"GTK_UID_MISMATCH")
@@ -101,8 +133,8 @@ def main():
         selector=selectors.DefaultSelector()
         for name in ("stdout","stderr"):
             pipe=getattr(child,name);os.set_blocking(pipe.fileno(),False);selector.register(pipe,selectors.EVENT_READ,name)
-        begin=time.monotonic();last_poll=0.;pending=bytearray();sizes=dict(stdout=0,stderr=0);finished=None;latest_android=None
-        latest=None;ended=None;observed_main=set();observed_dialog=set()
+        begin=time.monotonic();last_poll=0.;latest_android=None
+        latest=None;ended=None;receipts=ReceiptLedger(binding,scene,baseline)
         while time.monotonic()-begin<45:
             now=time.monotonic()
             if now-last_poll>=.1:
@@ -111,19 +143,15 @@ def main():
                 need(value["runtime"]["runtime"]["scene"]==scene,"GTK_SCENE_CHANGED")
                 latest=sample(value,nonce,baseline)
                 need(baseline<={t["key"]["window"] for t in latest["targets"] if t["frames"]>=1 and t["content_frame"] is not None},"GTK_BASELINE_TARGET_LOST")
-                observed_main.update(w["window"] for w in latest["windows"] if w["role"]=="main")
-                observed_dialog.update(w["window"] for w in latest["windows"] if w["role"]=="dialog")
                 if not result["sdk_samples"] or result["sdk_samples"][-1]["sequence"]!=latest["sequence"]:
                     need(len(result["sdk_samples"])<512,"SDK_SAMPLE_LIMIT");result["sdk_samples"].append(latest)
                 receipt=android_receipt(value,nonce,args.case)
                 if receipt is not None:
                     if receipt["result"] in {"failed","cancelled","unsupported"}:
                         result["android_failure"]=receipt["reason"] or receipt["result"];control_cancel()
-                    receipt_binding(receipt,binding,scene,baseline,observed_main,observed_dialog)
-                    latest_android=receipt
-                    if not result["android_receipts"] or receipt!=result["android_receipts"][-1]: result["android_receipts"].append(receipt)
-                    if receipt["result"] in {"failed","cancelled","unsupported"}:
-                        result["android_failure"]=receipt["reason"] or receipt["result"];control_cancel()
+                for verified in receipts.observe(latest,receipt,now):
+                    latest_android=verified
+                    if not result["android_receipts"] or verified!=result["android_receipts"][-1]:result["android_receipts"].append(verified)
             for key,_ in selector.select(.02):
                 data=os.read(key.fd,8192)
                 if not data:selector.unregister(key.fd);continue
@@ -133,18 +161,7 @@ def main():
                     continue
                 need(sizes["stdout"]<=1048576,"REMOTE_OUTPUT_LIMIT");pending.extend(data)
                 while b"\n" in pending:
-                    line,_,rest=pending.partition(b"\n");pending=bytearray(rest);event=decode(line,524288)
-                    need(type(event) is dict and event.get("phase") in {"validated","started","fixture","finished","blocked"},"REMOTE_EVENT_INVALID")
-                    if event["phase"]=="fixture":
-                        # remoteは固定C schemaを検査済み。hostでもnonce/caseを照合する。
-                        row=event["report"];need(row.get("run_id")==nonce and row.get("case")==args.case,"GTK_CLIENT_OWNER_CHANGED")
-                        need(len(result["fixture_reports"])<256,"GTK_REPORT_LIMIT");result["fixture_reports"].append(row)
-                    elif event["phase"]=="finished":
-                        finished=event["result"];need(finished.get("operator")==OPERATOR and finished.get("nonce")==nonce and
-                            finished.get("binary_sha256")==args.binary_sha256 and finished.get("manifest_sha256")==args.manifest_sha256,"GTK_RESULT_MISMATCH")
-                        ended=time.monotonic();close_input()
-                    elif event["phase"]=="blocked": result["blocked_reason"]=event.get("reason");ended=time.monotonic();close_input()
-                    else: need(len(result["events"])<2,"REMOTE_EVENT_INVALID");result["events"].append(event)
+                    line,_,rest=pending.partition(b"\n");pending[:]=rest;receive(decode(line,524288))
             rows=result["fixture_reports"];last_row=rows[-1] if rows else None
             if not cancelled and finished is None and not started_android and latest and last_row and ready(latest,last_row,args.case) and current_frame(latest,"main") is not None:
                 initial_content=current_frame(latest,"main")
@@ -172,12 +189,26 @@ def main():
             except (OSError,RuntimeError,subprocess.SubprocessError):result["android_cancel_unconfirmed"]=True
         if child is not None:
             close_input()
+            if selector is not None:
+                try:drain_remote(selector,pending,sizes,receive)
+                except (OSError,ValueError,TypeError,KeyError,RuntimeError):
+                    result["remote_drain_failure"]=True
             try:child.wait(timeout=6)
             except (OSError,subprocess.SubprocessError):
                 result["remote_cleanup_unconfirmed"]=True;child.terminate()
                 try:child.wait(timeout=2)
                 except (OSError,subprocess.SubprocessError):pass
-            result.setdefault("remote_returncode",child.returncode);child.stdout.close();child.stderr.close()
+            result.setdefault("remote_returncode",child.returncode)
+            if finished is not None:result["remote_result"]=finished
+            else:result.setdefault("remote_result",None)
+            result.setdefault("output_bytes",sizes)
+            confirmed=finished is not None and not result.get("remote_drain_failure") and not result.get("remote_cleanup_unconfirmed") and all(finished.get(k) is True for k in
+                ("cleanup_confirmed","reaped","group_reclaimed","pipes_drained"))
+            result["remote_cleanup_confirmed"]=confirmed
+            if not confirmed:
+                result["remote_cleanup_unconfirmed"]=True
+                if result["status"]=="observed":result.update(status="failed",reason="GTK_REMOTE_CLEANUP_UNCONFIRMED")
+            child.stdout.close();child.stderr.close()
         if selector is not None:selector.close()
         (run/"result.json").write_text(json.dumps(result,indent=2)+"\n")
     print(json.dumps(dict(status=result["status"],artifact=str(run),case=args.case,nonce=nonce,reason=result.get("android_failure") or result.get("reason"))))

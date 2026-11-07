@@ -30,3 +30,10 @@ CARGO_INCREMENTAL=0 cargo clean --dry-run --profile dev --target aarch64-linux-a
 
 今後も`CARGO_INCREMENTAL=0`を使い、3GiB未満では重い追加compileを始めず容量を調整する。
 これは検証済みAPKや再開記録の保存期間を短くする運用ではない。
+
+Build168後にも同じNDK/dev/package範囲で整理した。dry79file/325.9MiB→実77file/325.9MiB。
+Build169の新規compile中に空きが約2.9GiBになったため、追加heavy compileを止め、
+host Cargo owner lockを取得してworkspace自身の8packageのhost dev成果物だけも整理した。
+dry877file/2.0GiB→実867file/1.8GiBで空き約4.5GiBへ回復。
+Android native/release/第三者依存cache、source、APK、JUnitと試行ログを保持した。
+別checkoutのagentへ停止/再開を通知し、共有targetへ別のcleanやcompileを重ねていない。
