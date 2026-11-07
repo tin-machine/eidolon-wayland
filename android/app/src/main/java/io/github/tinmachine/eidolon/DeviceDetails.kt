@@ -45,16 +45,35 @@ data class DataFilesystemReading(val status: DeviceDetailStatus = DeviceDetailSt
     }
 }
 
+/** Own-process Android PSS only; GPU/Termux/child-process memory is not added. */
+data class ProcessPssReading(val status: DeviceDetailStatus = DeviceDetailStatus.STOPPED,
+    val bytes: Long? = null, val sampledMs: Long? = null, val reason: String? = null) {
+    init {
+        require((status == DeviceDetailStatus.AVAILABLE) == (bytes != null))
+        require(bytes == null || bytes >= 0)
+        require(sampledMs == null || sampledMs >= 0)
+        require(status != DeviceDetailStatus.AVAILABLE || sampledMs != null)
+    }
+    companion object {
+        fun measured(kib: Long, now: Long): ProcessPssReading =
+            if(kib in 0..Int.MAX_VALUE.toLong() && now>=0)
+                ProcessPssReading(DeviceDetailStatus.AVAILABLE,kib*1024L,now)
+            else ProcessPssReading(DeviceDetailStatus.UNAVAILABLE,reason="invalid_value")
+    }
+}
+
 data class DeviceDetailSnapshot(val thermal: ThermalReading = ThermalReading(),
-    val filesystem: DataFilesystemReading = DataFilesystemReading(), val listener: String = "stopped") {
+    val filesystem: DataFilesystemReading = DataFilesystemReading(), val listener: String = "stopped",
+    val pss: ProcessPssReading = ProcessPssReading()) {
     fun freshAt(now: Long): DeviceDetailSnapshot {
         fun stale(time: Long?) = time!=null && (now<time || now-time>DeviceDetailLifecycle.STALE_MS)
         return copy(thermal=if(stale(thermal.sampledMs)) ThermalReading(DeviceDetailStatus.STALE,reason="sample_expired") else thermal,
-            filesystem=if(stale(filesystem.sampledMs)) DataFilesystemReading(DeviceDetailStatus.STALE,reason="sample_expired") else filesystem)
+            filesystem=if(stale(filesystem.sampledMs)) DataFilesystemReading(DeviceDetailStatus.STALE,reason="sample_expired") else filesystem,
+            pss=if(stale(pss.sampledMs)) ProcessPssReading(DeviceDetailStatus.STALE,reason="sample_expired") else pss)
     }
     companion object {
         fun pending() = DeviceDetailSnapshot(ThermalReading(DeviceDetailStatus.PENDING),
-            DataFilesystemReading(DeviceDetailStatus.PENDING),"pending")
+            DataFilesystemReading(DeviceDetailStatus.PENDING),"pending",ProcessPssReading(DeviceDetailStatus.PENDING))
     }
 }
 
@@ -87,6 +106,7 @@ class DeviceDetailLifecycle {
 interface DeviceDetailBackend {
     fun thermal(now: Long): ThermalReading
     fun filesystem(now: Long): DataFilesystemReading
+    fun pss(now: Long): ProcessPssReading = ProcessPssReading(DeviceDetailStatus.UNSUPPORTED,reason="api_unavailable")
     fun listen(executor: Executor, changed: (Int) -> Unit): AutoCloseable
 }
 
@@ -176,7 +196,8 @@ class DeviceDetailWorker(private val clock: () -> Long, private val failed: (Str
                 val now=clock()
                 val thermal=try {owner.backend.thermal(now)} catch(_:UnsupportedOperationException) {ThermalReading(DeviceDetailStatus.UNSUPPORTED,reason="api_unavailable")} catch(_:Exception) {ThermalReading(DeviceDetailStatus.UNAVAILABLE,reason="read_failed")}
                 val filesystem=try {owner.backend.filesystem(now)} catch(_:UnsupportedOperationException) {DataFilesystemReading(DeviceDetailStatus.UNSUPPORTED,reason="api_unavailable")} catch(_:Exception) {DataFilesystemReading(DeviceDetailStatus.UNAVAILABLE,reason="read_failed")}
-                value=value.copy(thermal=thermal,filesystem=filesystem)
+                val pss=try {owner.backend.pss(clock())} catch(_:UnsupportedOperationException) {ProcessPssReading(DeviceDetailStatus.UNSUPPORTED,reason="api_unavailable")} catch(_:Exception) {ProcessPssReading(DeviceDetailStatus.UNAVAILABLE,reason="read_failed")}
+                value=value.copy(thermal=thermal,filesystem=filesystem,pss=pss)
                 emit(owner)
             }
         }

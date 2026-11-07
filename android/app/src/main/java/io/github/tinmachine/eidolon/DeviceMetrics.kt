@@ -74,6 +74,15 @@ data class DeviceMetricsSnapshot(
         DeviceDetailStatus.STALE -> "Eidolon保存先の空き 欠測・再取得中"
         DeviceDetailStatus.STOPPED -> "Eidolon保存先の空き 計測停止"
     }
+    fun processPssSummary(): String = when(details.pss.status) {
+        DeviceDetailStatus.AVAILABLE -> String.format(Locale.ROOT,"Eidolon PSS %.1f MiB（共有メモリを按分）",
+            checkNotNull(details.pss.bytes)/1048576.0)
+        DeviceDetailStatus.PENDING -> "Eidolon PSS 取得待ち"
+        DeviceDetailStatus.UNSUPPORTED -> "Eidolon PSS API非対応"
+        DeviceDetailStatus.UNAVAILABLE -> "Eidolon PSS 取得できません"
+        DeviceDetailStatus.STALE -> "Eidolon PSS 欠測・再取得中"
+        DeviceDetailStatus.STOPPED -> "Eidolon PSS 計測停止"
+    }
     fun json(): JSONObject = JSONObject().put("sampled_monotonic_ms",sampledMs)
         .put("battery_percent",batteryPercent ?: JSONObject.NULL).put("charging",charging ?: JSONObject.NULL)
         .put("available_ram_bytes",availableRam ?: JSONObject.NULL).put("total_ram_bytes",totalRam ?: JSONObject.NULL)
@@ -92,9 +101,13 @@ data class DeviceMetricsSnapshot(
         .put("data_fs_total_bytes",details.filesystem.totalBytes ?: JSONObject.NULL)
         .put("data_fs_sampled_monotonic_ms",details.filesystem.sampledMs ?: JSONObject.NULL)
         .put("data_fs_reason",details.filesystem.reason ?: JSONObject.NULL)
+        .put("process_pss_status",details.pss.status.wire).put("process_pss_scope","eidolon_process_only")
+        .put("process_pss_bytes",details.pss.bytes ?: JSONObject.NULL)
+        .put("process_pss_sampled_monotonic_ms",details.pss.sampledMs ?: JSONObject.NULL)
+        .put("process_pss_reason",details.pss.reason ?: JSONObject.NULL)
 }
 
-/** 可視期間だけ購読する。CPUは既存5秒tick、熱/容量は専用workerで30秒周期。PSSは扱わない。 */
+/** 可視期間だけ購読する。CPUは既存5秒tick、熱/容量/PSSは専用workerで30秒周期。 */
 class DeviceMetrics(context: Context, private val publish: (DeviceMetricsSnapshot) -> Unit,
     private val elapsedMillis: () -> Long = SystemClock::elapsedRealtime,
     private val processCpuMillis: () -> Long? = { android.os.Process.getElapsedCpuTime() },
@@ -186,6 +199,13 @@ private class AndroidDeviceDetailBackend(private val app: Context): DeviceDetail
         DataFilesystemReading.measured(filesystem.availableBytes,filesystem.totalBytes,now)
     } catch(_:SecurityException) {DataFilesystemReading(DeviceDetailStatus.UNAVAILABLE,reason="access_denied")}
     catch(_:Exception) {DataFilesystemReading(DeviceDetailStatus.UNAVAILABLE,reason="read_failed")}
+
+    override fun pss(now: Long): ProcessPssReading = try {
+        val info=android.os.Debug.MemoryInfo()
+        android.os.Debug.getMemoryInfo(info)
+        ProcessPssReading.measured(info.totalPss.toLong(),now)
+    } catch(_:SecurityException) {ProcessPssReading(DeviceDetailStatus.UNAVAILABLE,reason="access_denied")}
+    catch(_:Exception) {ProcessPssReading(DeviceDetailStatus.UNAVAILABLE,reason="read_failed")}
 
     override fun listen(executor: Executor, changed: (Int) -> Unit): AutoCloseable {
         val manager=power()
