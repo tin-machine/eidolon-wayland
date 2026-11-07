@@ -87,4 +87,3 @@ SDKは追加window7で最大118frameと12個の異なるcontent frameを観測�
 rendererはsoftware、SDLはcompile/linkとも2.32.10。元のFD counter3→7と`kill_sent=true`も結果へそのまま保存した。
 子process/group/reap/pipe回収は確認済みであり、process内のsteady FD balanceや無信号終了を確認した結果にはしない。
 物理入力・IME・HMD視認・Doom/Freedoomは別の検証として残る。旧libc++/Kopper初期化失敗の記録は保持する。
-
