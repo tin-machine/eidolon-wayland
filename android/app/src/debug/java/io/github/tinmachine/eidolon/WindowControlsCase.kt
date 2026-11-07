@@ -23,7 +23,7 @@ object WindowControlsCase {
         check(active==null)
         Check(nonce,adapter,scene,complete).also {active=it;it.start()}
     }
-    fun commandComplete(request:String,code:String) {active?.let {if(request in it.requests || request in PROBES) it.completions[request]=code}}
+    fun commandComplete(request:String,code:String) {active?.let {if(it.requests.containsKey(request) || request in PROBES) it.completions[request]=code}}
     fun requested(action:String,runtime:Long,target:String,revision:Long,request:String,code:Int) {
         active?.let {if(runtime==it.handle && it.requests.size<32) it.requests[request]=JSONObject()
             .put("action",action).put("runtime",runtime.toString()).put("target",JSONObject(target)).put("revision",revision)

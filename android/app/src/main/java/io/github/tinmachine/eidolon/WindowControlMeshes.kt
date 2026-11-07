@@ -14,7 +14,7 @@ object WindowControlMeshes {
     const val CLOSE="mesh://eidolon-control-close"
     const val FOCUS_ICON="mesh://eidolon-control-focus-icon"
     const val CLOSE_ICON="mesh://eidolon-control-close-icon"
-    private fun material(color: Int)=SceneMaterial(null,AlphaMode.OPAQUE,SceneMaterial.UNLIT_SHADER).apply {
+    private fun material(color: Int)=SceneMaterial(SceneTexture(Color.valueOf(Color.WHITE)),AlphaMode.OPAQUE,SceneMaterial.UNLIT_SHADER).apply {
         setAlbedoColor(Color.valueOf(color));setUnlit(true);setSidedness(MaterialSidedness.DOUBLE_SIDED)
     }
     fun register(activity: AppSystemActivity) {
