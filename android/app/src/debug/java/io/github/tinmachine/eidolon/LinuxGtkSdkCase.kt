@@ -62,6 +62,9 @@ object LinuxGtkSdkCase {
         val lastFrames=linkedMapOf<String,Long>()
         val contentFrames=linkedMapOf<String,Long>()
         var trial:NativeSessionHost.DebugInputTrial?=null
+        var preparation:NativeSessionHost.DebugSdkInputPreparation?=null
+        var preparationPublished=0L
+        var preparationReason=""
         var mainWindow=""
         var mainTarget:JSONObject?=null
         var currentTarget:JSONObject?=null
@@ -231,11 +234,27 @@ object LinuxGtkSdkCase {
             if(inputPhase !in setOf("WAIT_MAIN","WAIT_DIALOG_CLOSED","WAIT_RETIRED")) check(s.getLong("input_resets")==epoch) {"PROBE_INPUT_EPOCH_CHANGED"}
             when(inputPhase) {
                 "WAIT_MAIN" -> {
-                    val key=target(s,appId) ?: return; if(row==null || row.getString("phase") !in setOf("ready","state")) return
+                    // 準備開始後はproducer frameの一時的先行でtargetForを失敗させない。
+                    // 固定targetの構造/owner喪失はHostの同monitor内で永久取消し、frameだけを待つ。
+                    val key=if(preparation==null) target(s,appId) else mainTarget
+                    if(key==null || row==null || row.getString("phase") !in setOf("ready","state")) {
+                        check(preparation==null) {"PROBE_INPUT_OWNER_CHANGED"};return
+                    }
                     check(targets.size==1 && nativeInput.getInt("pressed")==0 && pointer.getInt("pressed")==0) {"PROBE_INPUT_HELD"}
-                    mainWindow=key.getString("window");mainTarget=key;currentTarget=key
-                    trial=checkNotNull(NativeSessionHost.debugCaptureSdkInput(ownerToken,key)) {"PROBE_INPUT_UNAVAILABLE"}
-                    epoch=checkNotNull(trial).epoch;baseKeys=nativeInput.getLong("delivered");baseButtons=pointer.getLong("buttons")
+                    if(preparation==null) {
+                        mainWindow=key.getString("window");mainTarget=JSONObject(key.toString());currentTarget=key
+                        epoch=s.getLong("input_resets");baseKeys=nativeInput.getLong("delivered");baseButtons=pointer.getLong("buttons")
+                        preparation=checkNotNull(NativeSessionHost.debugPrepareSdkInput(ownerToken,key,epoch,baseKeys,baseButtons)) {"PROBE_INPUT_BASELINE_INVALID"}
+                    }
+                    val polled=NativeSessionHost.debugPollSdkInput(checkNotNull(preparation))
+                    result.put("input_preparation",polled.metadata)
+                    val reason=polled.metadata.getString("reason");val now=SystemClock.elapsedRealtime()
+                    if(reason!=preparationReason || now-preparationPublished>=250 || polled.trial!=null) {
+                        preparationReason=reason;preparationPublished=now;publish()
+                    }
+                    check(polled.metadata.getString("state")!="cancelled") {reason}
+                    trial=polled.trial ?: return
+                    check(checkNotNull(trial).epoch==epoch) {"PROBE_INPUT_EPOCH_CHANGED"}
                     check(s.getLong("input_resets")==epoch) {"PROBE_INPUT_EPOCH_CHANGED"};record("captured",s)
                     clickRect(s,key,row,if(name=="input") "entry_rect" else "button_rect")
                     inputPhase=if(name=="input") "WAIT_FOCUS" else "WAIT_DIALOG"

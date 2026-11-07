@@ -114,6 +114,27 @@ resizeは既存GTKのowned replacement APIへ接続する後続segmentとする�
 request_id/旧full target、configure/ACK/commit serial、サイズ、旧SDK回収、新描画・geometryを確認した
 一回の交換だけでepoch/targetを更新する。同じ処理を別実装したり、最新epochへ盲目的に追従したりしない。
 
+## Build171の初回入力準備と有限待機
+
+Build171の実Linux GTK inputは最初のSDK draw/poseを観測した後、入力trialを取得できず終了した。
+この実行ではGTK入力の成功は未確認。失敗後のStopはremote receiptのcleaned/pipes closedで回収を確認し、
+同じprofile/pins/nonceの明示recoverはjournal無しの `not_required` だった。
+成功経路専用の `remote_cleanup_confirmed=false` と、Stop後の回収状態を区別する。
+
+caseは `adapter.metrics()` の現在値を読んでいた一方、Hostの入力gateは最大1秒間隔で公開する
+adapter cacheと、producer最新frameまでの描画を要求していた。初回drawの直後はこのgateが未成立でもよい。
+当時の証拠には拒否predicate別の情報がなく、実際にどのgateが拒否したかまでは断定しない。
+
+修正後は初回full target/runtime/session/scene/input epoch/intent/native key・button数/focusを固定する。
+InputIntentSerialのprovisional Trialを先に作るため、counterを増やさない物理キーのinvalidateも失効として検出する。
+adapter cacheとproducer frameだけを最大3秒・512pollで待ち、owner/target/inputの変化や期限切れは永久取消する。
+待機のために新targetや新epochへ付け替えない。Hostの同じmonitor内で最終検査した後だけ、
+scopeの一回claimと有効なDebugInputTrialへの移行を行う。
+
+`input_preparation` は固定reason、adapter/frame readiness、待機を観測したbool、poll件数、上限付き経過時間のみ。
+正常なcache遅延、producer frame待ち、外部intent、counterを変えないinvalidate、exact deadline、
+旧target/epoch/counter/focusの再採用拒否をpure fixturesで確認する。新しい実APKでの成功は別の受入れ条件である。
+
 ## 旧bundleからの更新順序と通常GUIの残り
 
 1. 旧版の実行ownerとpending journalを先に確認する。pendingがあれば旧APK/helper/bundle/pinsと

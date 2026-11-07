@@ -668,6 +668,10 @@ object NativeSessionHost {
     internal data class DebugPendingResize(val token:InputResizeReplacement,val theme:Long,val frame:Long,val delivered:Long,
         val buttons:Long,val lease:String,val appId:String,val physical:String,val placement:String,val focus:String,var readiness:JSONObject?=null)
     private var debugInputActive:DebugInputTrial?=null
+    class DebugSdkInputPreparation internal constructor(internal val scope:DebugSdkInputScope,internal val key:String,
+        internal val ticket:InputIntentSerial.Trial,internal val readiness:DebugSdkInputReadiness)
+    class DebugSdkInputPoll(val trial:DebugInputTrial?,val metadata:JSONObject)
+    private var debugSdkInputPreparation:DebugSdkInputPreparation?=null
     data class DebugInputResizeReceipt(val request:String,val oldTarget:String,val target:InputTarget,val configuredSerial:Long,
         val acknowledgedSerial:Long,val committedSerial:Long,val width:Int,val height:Int,val replaced:Boolean,val delivered:Long)
     fun debugCaptureInput(target:InputTarget):DebugInputTrial? = inputIntents.serial {
@@ -676,11 +680,34 @@ object NativeSessionHost {
         else DebugInputTrial(inputIntents.capture(),target.runtime,target.epoch).also {it.targets.add(target.identity);debugInputActive=it}
     }
     /** 通常targetを公開せず、固定GTK leaseにだけInputIntentSerial上の能力を渡す。 */
-    fun debugCaptureSdkInput(owner:Any,target:JSONObject):DebugInputTrial? = inputIntents.serial {
+    fun debugPrepareSdkInput(owner:Any,target:JSONObject,expectedEpoch:Long,expectedKeys:Long,expectedButtons:Long):DebugSdkInputPreparation? = inputIntents.serial {
+        if(debugSdkInputPreparation!=null || debugInputActive!=null) return@serial null
         val scope=debugSdkInputScope?.takeIf {it.owner===owner} ?: return@serial null
-        val captured=debugSdkInputTarget(scope,target.toString()) ?: return@serial null
-        if(!scope.claimTrial()) return@serial null
-        DebugInputTrial(inputIntents.capture(),captured.runtime,captured.epoch,scope).also {it.targets.add(captured.identity);debugInputActive=it}
+        val observed=debugSdkInputObservation(scope,target.toString()) ?: return@serial null
+        if(!observed.unpressed || observed.stamp.epoch!=expectedEpoch || observed.stamp.keys!=expectedKeys || observed.stamp.buttons!=expectedButtons) return@serial null
+        // provisional Trialはinvalidate()だけの物理入力も検知する。scopeの一回claimはREADYまで保留。
+        val ticket=inputIntents.capture()
+        DebugSdkInputPreparation(scope,target.toString(),ticket,DebugSdkInputReadiness(observed.stamp.copy(intent=ticket.expected),SystemClock.elapsedRealtime()))
+            .also {debugSdkInputPreparation=it}
+    }
+    fun debugPollSdkInput(prepared:DebugSdkInputPreparation):DebugSdkInputPoll = inputIntents.serial {
+        val gate=prepared.readiness
+        if(gate.state==DebugSdkInputReadiness.State.CAPTURED || gate.state==DebugSdkInputReadiness.State.CANCELLED)
+            return@serial DebugSdkInputPoll(null,JSONObject(gate.metadata()))
+        val owned=debugSdkInputPreparation===prepared && debugSdkInputScope===prepared.scope
+        val observed=if(owned) debugSdkInputObservation(prepared.scope,prepared.key) else null
+        val state=gate.observe(SystemClock.elapsedRealtime(),observed?.stamp,owned && observed!=null,
+            inputIntents.current(prepared.ticket),observed?.unpressed==true,observed?.adapterReady==true,observed?.frameReady==true)
+        var trial:DebugInputTrial?=null
+        if(state==DebugSdkInputReadiness.State.READY) {
+            if(prepared.scope.claimTrial() && gate.capture()) {
+                val target=checkNotNull(observed).target
+                trial=DebugInputTrial(prepared.ticket,target.runtime,target.epoch,prepared.scope)
+                    .also {it.targets.add(target.identity);debugInputActive=it}
+            } else gate.cancel("PROBE_INPUT_ALREADY_CLAIMED")
+        }
+        if(gate.state==DebugSdkInputReadiness.State.CANCELLED) inputIntents.release(prepared.ticket)
+        DebugSdkInputPoll(trial,JSONObject(gate.metadata()))
     }
     private fun debugSdkInputState(scope:DebugSdkInputScope):JSONObject? = try {
         check(BuildConfig.DEBUG && debugSdkInputScope===scope && debugSdkLease.owns(scope.owner) &&
@@ -698,7 +725,9 @@ object NativeSessionHost {
             gtk.getString("case")==scope.case && gtk.getBoolean("process_bound") && gtk.isNull("report_error"))
         value
     } catch(_:Exception) {null}
-    private fun debugSdkInputTarget(scope:DebugSdkInputScope,target:String):InputTarget? { return try {
+    private class DebugSdkInputObservation(val target:InputTarget,val stamp:DebugSdkInputReadiness.Stamp,
+        val unpressed:Boolean,val adapterReady:Boolean,val frameReady:Boolean)
+    private fun debugSdkInputObservation(scope:DebugSdkInputScope,target:String):DebugSdkInputObservation? { return try {
         val key=JSONObject(target);val value=debugSdkInputState(scope) ?: return null
         val identity=targetIdentity(key)
         check(key.keys().asSequence().toSet()==setOf("session","window","scene","generation") && key.getString("session")==scope.session && key.getString("scene")==scope.scene.toString())
@@ -706,13 +735,22 @@ object NativeSessionHost {
         val row=rows(value.getJSONObject("app").getJSONArray("windows")).single {it.getString("window")==key.getString("window") && it.getString("life")=="Mapped"}
         check(scope.permitsApp(row.getString("app_id")))
         check(rows(value.getJSONArray("panels")).any {it.optString("action")=="create" && it.optBoolean("applied") && it.isNull("error") && targetIdentity(it.getJSONObject("target"))==identity})
-        check(rows(value.getJSONObject("render").getJSONArray("targets")).any {targetIdentity(it.getJSONObject("key"))==identity && it.getLong("frames")>0 &&
-            it.optString("content_frame").toLongOrNull()?.let {frame->frame>=row.getString("frame").toLong()}==true})
-        val adapter=checkNotNull(debugAdapterSnapshot());check(adapter.optString("scene")==scope.scene.toString())
-        check(rows(adapter.getJSONArray("targets")).any {targetIdentity(it.getJSONObject("target"))==identity && it.optString("runtime")==scope.runtime.toString() && !it.optBoolean("retiring") &&
-            !it.optBoolean("sdk_disposed") && !it.optBoolean("disposal_failed") && it.optBoolean("listener_owned") && it.optBoolean("input_owned")})
-        InputTarget(scope.runtime,value.getLong("input_resets"),identity,key.toString())
+        val drawn=rows(value.getJSONObject("render").getJSONArray("targets")).single {targetIdentity(it.getJSONObject("key"))==identity}
+        val frameReady=drawn.getLong("frames")>0 && drawn.optString("content_frame").toLongOrNull()?.let {frame->frame>=row.getString("frame").toLong()}==true
+        val adapter=debugAdapterSnapshot()
+        val sdk=adapter?.takeIf {it.optString("scene")==scope.scene.toString()}?.getJSONArray("targets")?.let(::rows)?.singleOrNull {
+            targetIdentity(it.getJSONObject("target"))==identity && it.optString("runtime")==scope.runtime.toString()}
+        // 同targetの退役は単なるcache未公開として待たない。
+        check(sdk==null || (!sdk.optBoolean("retiring") && !sdk.optBoolean("sdk_disposed") && !sdk.optBoolean("disposal_failed")))
+        val input=value.getJSONObject("app").getJSONObject("input");val pointer=input.getJSONObject("pointer")
+        val captured=InputTarget(scope.runtime,value.getLong("input_resets"),identity,key.toString())
+        val stamp=DebugSdkInputReadiness.Stamp(scope.runtime,identity,captured.epoch,inputIntents.get(),input.getLong("delivered"),pointer.getLong("buttons"),
+            if(input.isNull("focus_window")) null else input.getString("focus_window"),if(input.isNull("focus_token")) null else input.getString("focus_token"))
+        DebugSdkInputObservation(captured,stamp,input.getInt("pressed")==0 && pointer.getInt("pressed")==0,
+            sdk!=null && sdk.optBoolean("listener_owned") && sdk.optBoolean("input_owned"),frameReady)
     } catch(_:Exception) {null} }
+    private fun debugSdkInputTarget(scope:DebugSdkInputScope,target:String):InputTarget? = debugSdkInputObservation(scope,target)
+        ?.takeIf {it.adapterReady && it.frameReady}?.target
     fun debugInputTarget(trial:DebugInputTrial,target:JSONObject):InputTarget? = inputIntents.serial {
         if(!debugInputCurrent(trial) || target.optString("scene")!=scenes.get().toString()) null
         else if(trial.sdkScope!=null) debugSdkInputTarget(trial.sdkScope,target.toString())
@@ -1317,7 +1355,10 @@ object NativeSessionHost {
             }
             var error: String? = null
             try {
-                inputIntents.serial {debugSdkInputScope=null;inputIntents.invalidate()}
+                inputIntents.serial {
+                    debugSdkInputPreparation?.let {it.readiness.cancel("PROBE_INPUT_OWNER_CHANGED");inputIntents.release(it.ticket)}
+                    debugSdkInputPreparation=null;debugSdkInputScope=null;inputIntents.invalidate()
+                }
                 debugSdkCapture?.close(); debugSdkCapture = null
                 val before = debugSdkLease.metadata()
                 if (before.phase != DebugSdkRuntimeLease.Phase.RESTORING || before.runtime != 0L) {
