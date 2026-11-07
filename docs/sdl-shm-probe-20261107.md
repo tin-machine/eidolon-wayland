@@ -117,6 +117,15 @@ native platformをX11にしているが、[Mesa 26.2.6の選択処理](https://g
 次は[固定GL/EGL stage probe](sdl-egl-stage-probe-20261108.md)を新runへ配備し、
 window作成前のGL loadから別processごとに調べる。SDL/Mesaの大きなrebuildはその結果を待つ。
 
+Build154でstage probeを実行し、GL/GLESの両方が最初のload段階で
+`egl_display_unavailable`（client終了code 1）になることを確認した。
+初回のエラーとcleanupの固定結果を取得でき、所有process/groupを回収した。
+vendor JSONと実libEGLの探索先は一致したが、固定Mesa vendorの実dlopenは未解決symbolで失敗した。
+`libgallium-26.2.6.so`がLLVM 21で追加されたlibc++の`std::__ndk1::__hash_memory`を参照する一方、
+導入済みruntimeは27cだった。版固定のsimulate後、`libc++=30`だけを更新するとsymbolのexportと
+別の短命processでMesa vendorのdlopen成功を確認できた。
+この依存解決の修復をSDL描画成功へ数えず、描画・SHM・HMD/物理入力は未合格のままとする。
+
 ## Termuxへ持ち込む前の確認
 
 Termux公式tree `fbdb3c03610c697322ac608e77cea2b553f49ef3`（recursive tree、truncated=false）で確認した。
@@ -158,8 +167,8 @@ python3 scripts/check-sdl-probe-host \
 
 実機で次に行う順序:
 
-1. GL/EGL stage対応C/runnerを新runへ配備・Bionic buildし、新しい既知hashを固定する。
-2. 現行APK/leaseでfoot一枚を準備し、`gl-load`と`gles-load`から最初の失敗を別processで分ける。
-   成功する条件を選んだ後に通常renderで二枚目のSDL窓・SHM更新・退役を観測し、製品経路と入力を検証する。
+1. 更新した共有runtimeの版/SHAと当該symbolのexportを記録し、新しいprocessで固定probeを起動する。
+2. `gl-load`/`gles-load`を再検証し、成功したAPIだけwindow/contextへ進める。
+   その後に通常renderで二枚目のSDL窓・SHM更新・退役を観測し、製品経路と入力を検証する。
 3. 焦点移動・取消・10回の停止回収を追加し、成立後にChocolate Doom＋Freedoomへ進む。
    Doom成功と一般GUI対応は別に確認する。HMD/物理キーボードの受入れは最後に残す。

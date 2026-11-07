@@ -61,6 +61,40 @@ loadが成功したAPIだけwindow、さらにcontextへ一段ずつ進める。
 同じjobのSDK監視とlease変更時の所有runner取消を維持し、foot/shellへsignalを送らない。
 原因が分かって条件を選んだ後に、既定`--stage render`でSHM・SDK更新・退役を改めて検証する。
 
+## Build154の実機結果と次の切り分け
+
+新runへ配備・Bionic compileした固定probeを、現行APK/leaseを照合した別processで実行した。
+`gl-load`と`gles-load`の両方がload段階で`completed=false`、固定分類
+`egl_display_unavailable`、client終了code 1となった。API結果とcleanup結果の両方を取得し、
+所有process/groupは回収した。各process内のFDは3→7で、その後processが終了している。
+この短い観測から長期のFD増加を断定しない。従来のRenderer rollback SIGSEGVを避けて、
+最初のEGL display取得失敗を分離できたが、描画は未合格である。
+
+Termuxの`share/glvnd/egl_vendor.d/50_mesa.json`と指定`libEGL_mesa.so.0`は存在し、
+実libEGLの既定探索先もこのdirectoryに一致した。
+[libglvnd 1.7.0のvendor読込み](https://gitlab.freedesktop.org/glvnd/libglvnd/-/blob/v1.7.0/src/EGL/libeglvendor.c)は
+JSONの存在だけでなく、vendorのdlopen、`__egl_Main`の呼出し、必要callbackの検査まで行う。
+同UIDの短命な別processで固定Mesa vendorのdlopenを試すと、未解決symbolの固定分類で失敗した。
+error本文は保存せず、processの終了・回収を確認している。
+追加の固定計装で、参照元`libgallium-26.2.6.so`に対して
+`_ZNSt6__ndk113__hash_memoryEPKvm`が欠けていることを特定した。
+これは`std::__ndk1::__hash_memory(void const*, unsigned long)`で、
+[LLVM 21のavailability定義](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/libcxx/include/__configuration/availability.h)と
+[実装](https://github.com/llvm/llvm-project/blob/llvmorg-21.1.8/libcxx/src/functional.cpp)に共有runtimeの追加APIとして存在する。
+
+導入済みTermux `libc++`は27c、候補は30だった。版を固定したsimulateが更新1件・追加0件・削除0件になることを確認し、
+`libc++=30`だけを更新した。新しい実runtimeで当該symbolのexportを確認し、
+新しい短命processでMesa vendorのdlopenと`__egl_Main`の取得が成功した。
+[Termuxの固定recipe](https://github.com/termux/termux-packages/blob/fbdb3c03610c697322ac608e77cea2b553f49ef3/packages/libc%2B%2B/build.sh)も
+NDKr30の`libc++_shared.so`を配布する構成で、この結果と整合する。
+これはloaderの修復確認であり、SDL/EGL window・SHM・SDK描画は次の別検証である。
+
+[libglvndのeglGetDisplay](https://gitlab.freedesktop.org/glvnd/libglvnd/-/blob/v1.7.0/src/EGL/libegl.c)は
+`EGL_PLATFORM=wayland`を既に明示Wayland platformへ変換するため、
+同じ条件でeglGetPlatformDisplayへ置き換えるだけの比較は後回しにする。
+固定vendor JSON指定も、正しい探索先とvendorの実dlopen失敗が分かった現段階では第一選択にしない。
+SDK/Waylandの描画を変更したり、大きなSDL/Mesa rebuildへ進む前にloader失敗を分ける。
+
 ## PCでの検査範囲
 
 stageのC関数をfake SDL APIとともにcompileし、6 stageの停止位置、固定GL属性、初回エラー分類、
