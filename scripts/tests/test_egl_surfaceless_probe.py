@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import egl_surfaceless_probe as egl
+import egl_loaded_identity as loaded
 from sdl_probe_install import InstallError
 
 loader = importlib.machinery.SourceFileLoader("egl_cli", str(Path(__file__).resolve().parents[1] / "quest-probe-egl-surfaceless"))
@@ -66,9 +67,14 @@ class FakeEgl:
         return 1
 
 
-def api_events(*, initialize=False):
+def loaded_event(verified=True):
+    rows=[dict(name=n,canonical_path="/data/data/com.termux/files/usr/lib/"+n,device_major=1,device_minor=2,inode=3,bytes=100,sha256=egl.LIBRARIES[n],uid=egl.UID,mode=0o700) for n in loaded.NAMES]
+    return dict(phase="loaded_libraries",result=dict(profile=loaded.PROFILE,status="verified" if verified else "not_verified",reason=None if verified else "LOADED_MAPS_MISMATCH",libraries=rows))
+
+
+def api_events(*, initialize=False, verified=True):
     events = []
-    egl.perform_api(FakeEgl(initialize=initialize), events.append)
+    egl.perform_api(FakeEgl(initialize=initialize), events.append,lambda:events.append(loaded_event(verified)))
     events.append(dict(phase="runtime", unchanged=True))
     return events
 
@@ -86,6 +92,15 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual(library.eglGetError.restype, ctypes.c_int)
         self.assertEqual(library.eglGetPlatformDisplay.argtypes[-1], ctypes.POINTER(ctypes.c_ssize_t))
         self.assertEqual(library.calls[library.calls.index("initialize") + 1], "error")
+
+    def test_loaded_capture_happens_after_first_error_flush_before_terminate(self):
+        library=FakeEgl();events=[]
+        def capture():
+            self.assertEqual(events[-1]["phase"],"api");self.assertEqual(library.calls[-1],"error")
+            self.assertNotIn("terminate",library.calls);events.append(loaded_event())
+        self.assertEqual(egl.perform_api(library,events.append,capture),1)
+        self.assertEqual([e["phase"] for e in events],["api","loaded_libraries","egl_cleanup"])
+        self.assertEqual(events[0]["result"]["initialize"]["error"]["value"],0x3001)
 
     def test_ext_signature_and_core_success(self):
         for core in (True, False):
@@ -122,6 +137,61 @@ class PublicApiTests(unittest.TestCase):
         bad["result"]["private"] = "PRIVATE"
         for value in (b"PRIVATE /path", json.dumps(bad).encode(), b'{"phase":"blocked","reason":"PRIVATE"}'):
             with self.assertRaises(InstallError): egl.decode_event(value)
+
+
+class LoadedIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory(prefix="egl-loaded-");self.addCleanup(self.temporary.cleanup)
+        self.directory=Path(self.temporary.name);self.pins={};self.before={};self.paths={};self.maps=[]
+        for i,name in enumerate(loaded.NAMES):
+            path=self.directory/name;data=(name+" fixture").encode();path.write_bytes(data);path.chmod(0o600);info=path.stat()
+            self.pins[name]=hashlib.sha256(data).hexdigest();self.before[name]=dict(identity=list(loaded.file_identity(info)))
+            self.paths[name]=[os.fsencode(path)]
+            self.maps.append(f"{65536+i*8192:x}-{69632+i*8192:x} r-xp 00000000 {os.major(info.st_dev):x}:{os.minor(info.st_dev):x} {info.st_ino} {path}\n".encode())
+        self.maps.append(b"1234-5678 rw-p 0000 00:00 0 PRIVATE /unrelated\n")
+    def capture(self,**kwargs):
+        return loaded.capture(self.directory,self.before,self.pins,expected_uid=os.getuid(),enumerator=lambda _:self.paths,maps_reader=lambda:b"".join(self.maps),**kwargs)
+    def test_fixed_images_match_linker_mapping_inode_owner_and_hash_without_addresses(self):
+        report=self.capture();self.assertEqual(report["status"],"verified");self.assertEqual([r["name"] for r in report["libraries"]],list(loaded.NAMES))
+        self.assertNotIn("PRIVATE",json.dumps(report));self.assertNotIn("address",json.dumps(report))
+        self.assertEqual(report["libraries"][0]["inode"],(self.directory/loaded.NAMES[0]).stat().st_ino)
+    def test_wrong_mapping_inode_and_duplicate_linker_image_are_not_verified(self):
+        row=self.maps[0].split();row[4]=b"1";original=self.maps[0];self.maps[0]=b" ".join(row)+b"\n"
+        self.assertEqual(self.capture()["reason"],"LOADED_MAPS_MISMATCH");self.maps[0]=original
+        self.paths[loaded.NAMES[0]]*=2;self.assertEqual(self.capture()["reason"],"LOADED_LIBRARY_DUPLICATE")
+    def test_deleted_relative_unknown_path_and_missing_image_never_use_expected_path_as_fallback(self):
+        self.paths[loaded.NAMES[0]]=[b"PRIVATE/"+loaded.NAMES[0].encode()]
+        report=self.capture();self.assertEqual(report["reason"],"LOADED_LIBRARY_PATH_CHANGED");self.assertNotIn("PRIVATE",json.dumps(report))
+        self.paths[loaded.NAMES[0]]=[os.fsencode(self.directory/loaded.NAMES[0])];original=self.maps[0]
+        self.maps[0]=original[:-1]+b" (deleted)\n";self.assertEqual(self.capture()["reason"],"LOADED_LIBRARY_DELETED")
+        self.maps[0]=original;self.paths[loaded.NAMES[1]]=[];report=self.capture()
+        self.assertEqual(report["reason"],"LOADED_LIBRARY_MISSING");self.assertEqual(len(report["libraries"]),1)
+    def test_hash_identity_mode_uid_and_symlink_fail_closed(self):
+        name=loaded.NAMES[0];target=self.directory/name
+        self.pins[name]="f"*64;self.assertEqual(self.capture()["reason"],"LOADED_FILE_CHANGED")
+        self.pins[name]=hashlib.sha256(target.read_bytes()).hexdigest();target.chmod(0o666)
+        self.assertEqual(self.capture()["reason"],"LOADED_FILE_UNSAFE");target.chmod(0o600)
+        report=loaded.capture(self.directory,self.before,self.pins,expected_uid=os.getuid()+1,enumerator=lambda _:self.paths,maps_reader=lambda:b"".join(self.maps))
+        self.assertEqual(report["reason"],"LOADED_FILE_UNSAFE")
+        target.unlink();target.symlink_to(self.directory/loaded.NAMES[1]);self.assertEqual(self.capture()["status"],"not_verified")
+    def test_truncated_huge_and_invalid_maps_are_not_complete(self):
+        for raw in (b"".join(self.maps)[:-1],b"x"*(loaded.MAX_MAPS+1),self.maps[0].replace(b"r-xp",b"INVALID")):
+            with self.assertRaises(InstallError):loaded.select_maps(raw)
+    def test_mapping_change_during_hash_cannot_pass(self):
+        calls=[]
+        def read():
+            calls.append(True);return b"".join(self.maps) if len(calls)==1 else b""
+        result=loaded.capture(self.directory,self.before,self.pins,expected_uid=os.getuid(),enumerator=lambda _:self.paths,maps_reader=read)
+        self.assertEqual(result["reason"],"LOADED_MAPS_MISMATCH")
+    def test_actual_public_phdr_prefix_enumeration_is_bounded_and_selective(self):
+        result=loaded.enumerate_loaded(("libc.so.6",))
+        self.assertEqual(set(result),{"libc.so.6"});self.assertEqual(len(result["libc.so.6"]),1)
+    def test_wire_schema_rejects_arbitrary_path_address_hash_and_extra_library(self):
+        for change in (lambda r:r.update(address=1234),lambda r:r.update(canonical_path="PRIVATE"),lambda r:r.update(sha256="f"*64),lambda r:r.update(name="PRIVATE")):
+            value=loaded_event();change(value["result"]["libraries"][0])
+            with self.assertRaises(InstallError):egl.decode_event(json.dumps(value))
+        value=loaded_event();value["result"]["libraries"].pop()
+        with self.assertRaises(InstallError):egl.decode_event(json.dumps(value))
 
 
 class RuntimeTests(unittest.TestCase):
@@ -208,6 +278,13 @@ class OwnedProcessTests(unittest.TestCase):
         self.assertEqual(result["egl_log"]["known"], {"dri_config_generation_failed": 1})
         self.assertEqual(result["egl_log"]["unmatched_lines"], 1)
         self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_loaded_mismatch_keeps_original_egl_error_return_code_and_cleanup(self):
+        data=b"\n".join(json.dumps(v).encode() for v in api_events(verified=False))+b"\n"
+        result=self.observe([sys.executable,"-c",f"import os;os.write(1,{data!r});raise SystemExit(1)"])
+        self.assertEqual(result["status"],"failed");self.assertEqual(result["child_returncode"],1)
+        self.assertEqual(result["api"]["initialize"]["error"]["value"],0x3001)
+        self.assertEqual(result["loaded_libraries"]["reason"],"LOADED_MAPS_MISMATCH");self.assertTrue(result["cleanup_confirmed"])
 
     def test_original_failure_and_invalid_stdout_are_not_hidden(self):
         result = self.observe(self.command(exit_code=7))

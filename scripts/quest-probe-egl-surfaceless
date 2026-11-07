@@ -19,7 +19,7 @@ from native_build import ROOT
 from quest_device import QuestDevice, package_uid, work_root
 from sdl_probe_install import InstallError, canonical, require
 
-SOURCES = ("scripts/sdl_probe_install.py", "scripts/termux/eidolon-sdl-probe.py", "scripts/egl_surfaceless_probe.py")
+SOURCES = ("scripts/sdl_probe_install.py", "scripts/termux/eidolon-sdl-probe.py", "scripts/egl_loaded_identity.py", "scripts/egl_surfaceless_probe.py")
 
 
 def source_hashes():
@@ -28,7 +28,7 @@ def source_hashes():
 
 def remote_program():
     source = "import sys,types\n"
-    for name, path in zip(("sdl_probe_install", "sdl_observation", "egl_probe"), SOURCES):
+    for name, path in zip(("sdl_probe_install", "sdl_observation", "egl_loaded_identity", "egl_probe"), SOURCES):
         data = (ROOT / path).read_text()
         if name == "sdl_observation":
             # stderr既知分類だけを再利用。Wayland parser/runner本体は送らず実行もしない。

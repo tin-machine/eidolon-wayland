@@ -14,6 +14,7 @@ import sys
 import time
 
 from sdl_probe_install import InstallError, canonical, require, termux_home, unique_object
+from egl_loaded_identity import capture as capture_loaded, NAMES as LOADED_NAMES, PROFILE as LOADED_PROFILE, REASONS as LOADED_REASONS
 
 if "sdl_observation" not in sys.modules:
     _spec = importlib.util.spec_from_file_location("sdl_observation", Path(__file__).parent / "termux/eidolon-sdl-probe.py")
@@ -23,15 +24,16 @@ if "sdl_observation" not in sys.modules:
 from sdl_observation import EglLogSummary, TRACE_LIMIT
 
 UID = 10158
-OPERATOR = "eidolon-egl-surfaceless-v1"
+OPERATOR = "eidolon-egl-surfaceless-v2-loaded-identity"
 LIBRARIES = {
     "libEGL.so.1.1.0": "88ccad71e437eadaead1729d43ff8bd0fed9a5a70956d0dcd98532f0558ee6e8",
     "libEGL_mesa.so": "4c07cd55d4d59c4db60035abb2cb517776f50829cac5486de2f5c18ccf72f228",
+    "libgallium-26.2.6.so": "2684bf73cd4cec80f40c19ffd4e787af4680b9c03912650e1bdc7320670934f1",
     "libc++_shared.so": "05bef9d3901910c3ff8ab450b03bc8b28383d363a2290f2f7b9aed7331ea6ff7",
 }
 ALIASES = {"libEGL.so.1": "libEGL.so.1.1.0", "libEGL_mesa.so.0": "libEGL_mesa.so"}
 VENDOR = "share/glvnd/egl_vendor.d/50_mesa.json"
-MAX_LIBRARY = 4 * 1024 * 1024
+MAX_LIBRARY = 32 * 1024 * 1024
 MAX_STDOUT = 16384
 TIMEOUT = 12.0
 CHILD_SOURCE = None  # hostが同じrepositoryの固定sourceだけを埋め込む。requestでは受け取らない。
@@ -135,7 +137,7 @@ def egl_error(library):
     return dict(value=value, name=ERRORS.get(value, "unknown"))
 
 
-def perform_api(library, emit):
+def perform_api(library, emit, after_api=None):
     """公開EGLだけ。API結果をflushしてからterminateし、初回errorを保持する。"""
     require(ctypes.sizeof(ctypes.c_int) == ctypes.sizeof(ctypes.c_uint) == 4 and
             ctypes.sizeof(ctypes.c_ssize_t) == ctypes.sizeof(ctypes.c_void_p), "CTYPES_WIDTH_INVALID")
@@ -174,6 +176,7 @@ def perform_api(library, emit):
                                          major=major.value if initialized else None,
                                          minor=minor.value if initialized else None)
         emit(dict(phase="api", result=api))
+        if after_api is not None:after_api()
     finally:
         if display:
             terminated = bool(library.eglTerminate(display))
@@ -193,7 +196,7 @@ def child_main():
             library = ctypes.CDLL(str(home.parent / "usr/lib/libEGL.so.1.1.0"), mode=os.RTLD_NOW | os.RTLD_LOCAL)
         except OSError:
             raise InstallError("EGL_DLOPEN_FAILED") from None
-        status = perform_api(library, emit)
+        status = perform_api(library, emit, lambda:emit(dict(phase="loaded_libraries",result=capture_loaded(home.parent/"usr/lib",before,LIBRARIES))))
         emit(dict(phase="runtime", unchanged=validate_runtime(home) == before))
         return status
     except (OSError, ValueError, AttributeError, TypeError) as error:
@@ -238,6 +241,22 @@ def decode_event(line):
                 set(cleanup) == {"called", "returned", "error"} and type(cleanup["called"]) is bool and
                 ((cleanup["called"] and type(cleanup["returned"]) is bool and error_valid(cleanup["error"])) or
                  (not cleanup["called"] and cleanup["returned"] is None and cleanup["error"] is None)), "CHILD_OUTPUT_INVALID")
+    elif phase == "loaded_libraries":
+        loaded=value.get("result")
+        require(set(value)=={"phase","result"} and type(loaded) is dict and set(loaded)=={"profile","status","reason","libraries"} and
+                loaded["profile"]==LOADED_PROFILE and loaded["status"] in {"verified","not_verified"} and
+                (loaded["reason"] is None if loaded["status"]=="verified" else loaded["reason"] in LOADED_REASONS) and
+                type(loaded["libraries"]) is list and len(loaded["libraries"])<=len(LOADED_NAMES),"CHILD_OUTPUT_INVALID")
+        names=[]
+        for row in loaded["libraries"]:
+            require(type(row) is dict and set(row)=={"name","canonical_path","device_major","device_minor","inode","bytes","sha256","uid","mode"} and
+                    row["name"] in LOADED_NAMES and row["name"] not in names and row["canonical_path"] in
+                    {"/data/data/com.termux/files/usr/lib/"+row["name"],"/data/user/0/com.termux/files/usr/lib/"+row["name"]} and
+                    row["sha256"]==LIBRARIES[row["name"]] and row["uid"]==UID and
+                    all(type(row[k]) is int and 0<=row[k]<=2**64-1 for k in ("device_major","device_minor","inode","bytes","mode")) and
+                    row["inode"]>0 and 0<row["bytes"]<=MAX_LIBRARY and row["mode"]<=0o7777 and not row["mode"]&0o022,"CHILD_OUTPUT_INVALID")
+            names.append(row["name"])
+        require(loaded["status"]!="verified" or names==list(LOADED_NAMES),"CHILD_OUTPUT_INVALID")
     elif phase == "runtime":
         require(set(value) == {"phase", "unchanged"} and type(value["unchanged"]) is bool, "CHILD_OUTPUT_INVALID")
     elif phase == "blocked":
@@ -361,8 +380,8 @@ def observe_owned(command, environment, control_fd, checker, emit, *, timeout=TI
                    1 if api and api["supported"] else 2)
     cleanup = reaped and reclaimed and drained
     diagnosed = (cleanup and cancel_reason is None and failure is None and child.returncode == expected_rc and
-                 set(events) == {"api", "egl_cleanup", "runtime"} and events["runtime"]["unchanged"] and summary["complete"])
-    return dict(status="diagnosed" if diagnosed else "failed", api=api, egl_cleanup=events.get("egl_cleanup", {}).get("result"),
+                 set(events) == {"api", "loaded_libraries", "egl_cleanup", "runtime"} and events["loaded_libraries"]["result"]["status"]=="verified" and events["runtime"]["unchanged"] and summary["complete"])
+    return dict(status="diagnosed" if diagnosed else "failed", api=api, loaded_libraries=events.get("loaded_libraries",{}).get("result"), egl_cleanup=events.get("egl_cleanup", {}).get("result"),
                 child_blocked=events.get("blocked", {}).get("reason"), runtime_unchanged=events.get("runtime", {}).get("unchanged"),
                 child_returncode=child.returncode, termination="unreaped" if child.returncode is None else
                 "signal" if child.returncode < 0 else "natural", term_sent=term_sent, kill_sent=kill_sent,

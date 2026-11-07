@@ -63,3 +63,26 @@ surfacelessも失敗するなら共有CPU screen/config/runtime側を優先し�
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_egl_surfaceless_probe.py -v
 ```
+
+
+## v2: 実loaded imageと固定ファイルを照合する
+
+Build161のsurfaceless+softpipeも `EGL_NOT_INITIALIZED` / `dri2_screen_failed` となった。実ELFのsoftware descriptorはsoftpipe/llvmpipe両分岐を含み、単純な未組込み説を否定できる。一方、`dri_fill_in_modes` の詳細messageは `MESA_DEBUG` 有効buildだけの `debug_printf` であり、今回のrelease ELFには当該message自体が無い。log分類に現れないことからconfig生成失敗を除外しない。環境変数だけの同条件retryは増やさない。
+
+`eidolon-egl-surfaceless-v2-loaded-identity` は同じ固定の非描画初期化へ、loaded imageの照合を加える。EGL API/errorをflushした直後、terminate前に既知の `libEGL_mesa.so` / `libgallium-26.2.6.so` / `libc++_shared.so` の3個だけを採取する。既存のlibEGL file pinも保持し、file検査は4個になる。
+
+- 公開 `dl_iterate_phdr` のLP64共通prefixとcallback sizeを使い、固定名だけ選ぶ。追加fieldや全library名、ASLRアドレスは記録しない。既知名が複数imageにあれば失敗とする。
+- `/proc/self/maps` は最大1MiBをメモリ内で読み、既知3名だけを選ぶ。全maps、アドレス、他library/pathは保存・出力しない。選択したmappingのdevice major/minorとinodeを、固定canonical pathを開いたfdのfstatへ照合する。deleted、別path、inode違い、実行mapping無しを拒否する。
+- UID10158・mode・size・hashと、load前に検証したdev/inode/mtime/ctimeを照合する。hash読取り後もlinker列挙とmappingが同一であることを再検査する。結果のpathはTermuxの既知prefixだけである。これはfile-backed imageのidentity確認であり、実行中メモリ全体のhashや内部のNULL分岐の証明ではない。
+- libgalliumの追加pinは `2684bf73cd4cec80f40c19ffd4e787af4680b9c03912650e1bdc7320670934f1`（17,669,920 bytes）。既知のlibEGL/libEGL_mesa/libc++30 pinも維持する。期待値を現在の実ファイルから自動生成しない。
+- 初回EGL結果・元child終了code・terminate・group/reap/pipe回収は従来どおり残す。identity未確認は別 `loaded_libraries` のfixed reasonで記録し、初回API failureを上書きしない。`diagnosed` はこの診断の完了を表す。描画、SDK、入力、HMDは未実行のままである。
+
+CLI引数は既存のserial/artifact-rootだけ。新probe ID/新runを作り、旧失敗を上書きしない。remote sourceの4 SHA（新identity moduleを含む）とoperator v2を記録する。C/SDL binaryや配布manifestの更新は不要である。
+
+```sh
+scripts/quest-probe-egl-surfaceless --serial "$EIDOLON_QUEST_SERIAL" \
+  --artifact-root "$EIDOLON_TASK_ROOT/egl-loaded-identity"
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_egl_surfaceless_probe.py -v
+```
+
+一次資料: [AOSP Bionic link.h](https://android.googlesource.com/platform/bionic/+/331070e41ddd0e3669b8fc2625fd71a26045f0a3/libc/include/link.h)、[dl_iterate_phdr manual](https://man7.org/linux/man-pages/man3/dl_iterate_phdr.3.html)、[proc_pid_maps manual](https://man7.org/linux/man-pages/man5/proc_pid_maps.5.html)、[Mesa26.2.6 u_debug.h](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/util/u_debug.h)、[software driver helper](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/gallium/auxiliary/target-helpers/sw_helper.h)。
