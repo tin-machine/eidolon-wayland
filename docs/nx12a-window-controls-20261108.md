@@ -1,5 +1,22 @@
 # NX12a: 各窓のfocus・closeボタンとテーマ配置
 
+## Build157の実SDK検証
+
+debug/releaseのbuild・lint・APK検査・JUnit各113件が成功した。
+Questの固定`window-controls` caseでは、実sphereへのray交差から通常listener、Host、native ACKへ通し、
+二窓のfocus、保持した合成Shiftの解除、cancel、古いtheme revision/generationの拒否、
+片側だけのclose、旧sphereの非hit、残った窓への合成キー配送を確認した。
+停止後はentity 12作成/12破棄、listener 4登録/4解除、各owner 0、旧runtime破棄、通常設定への復帰を確認した。
+`product_settings_untouched=true`。HMDでの視認・物理操作は未受入れ。
+
+最初の統合ではSDK 0.15のmaterial constructorがnull textureを受け付けず、1×1の白いtextureへ修正した。
+ConcurrentHashMapのkey判定も`containsKey`へ明示した。Build156では操作は最後まで進んだが、
+最終停止時のregistry退役とHost handle解除の間をfixtureが読み、runtime未存在をJSON例外にしてしまった。
+明示した停止段階に限ってSTALEを待つよう修正し、Build157で総合成功した。操作gateや回収条件は緩めていない。
+
+識別・試行・資源値は作業rootの`window-controls156/`・`window-controls157/`とAPK/source archiveに保存した。
+後続の3ボタン・move/MODEは別caseの受入れとし、この二ボタンの確定結果と混同しない。
+
 2026-11-08。基準revisionは`a688281`。これは[NX12計画](next-phase-termux-startup-linux-gui-plan-20261107.md)の最初の実装区切りで、NX12全体の完了ではない。
 Android/Questでのビルド・描画・ray routingの受入れは統合後に行う。以下のテスト成功はHMDでの操作成功を意味しない。
 

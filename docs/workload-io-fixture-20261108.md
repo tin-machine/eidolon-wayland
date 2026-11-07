@@ -1,5 +1,23 @@
 # NX13: 登録terminal内の固定I/O fixture
 
+## Build159の実機結果
+
+debug build・lint・APK検査・JUnit 124件成功後、同版helperと固定fixtureで再検証した。
+18個の新しいsampleでbaseline→正のwrite→zombie/集合変化のpartial→baseline→available zeroを観測し、
+同じ登録terminal/windowのnative Displayと成功drawのI/O値が一致した。`verified_scope=metrics_and_draw`。
+今回のwrite rate×intervalの合計は1,048,576 bytesだったが、厳密一致を一般の保証にはしない。
+内側の成功draw角度は0から約29.96度へ進み、zero/partialではその角度を保持した。
+観測OFFでnative/drawの値がnull、専用窓だけの消失、観測ONへの復帰も確認した。
+
+初回Build156は登録反映待ちの`scope_changed`で失敗し、sampleは0だった。
+最新transportとcached app snapshotに時間差があることをsourceで確認したが、そのrunの不一致値は未保存のため、
+三つの比較条件のどれが失敗したかは断定していない。初回採用待ちと採用後の失効を分離した後に上記を確認した。
+失敗結果は保持し、成功へ書き換えていない。
+
+`fixture_cleanup_verified=false`は維持した。今回のhost観測では専用子identityを採取できず、
+窓消失だけから子group全体の回収を確認済みにはしていない。HMD視認・物理disk完了量、
+thread終了・共有tmuxの実機条件も別途残る。作業rootの`io156/`・`io159/`へmetadataと試行を保存した。
+
 2026-11-08。通常のfootが1枚開いた状態から、既存のtemporary definition APIで**専用の2枚目**を起動する。既存shellへのキー・文字注入、任意PID/pathの指定、既存配置の移動は行わない。Quest実機での受入れはこの変更の取り込み後に行う。
 
 ## 所有範囲と固定動作
