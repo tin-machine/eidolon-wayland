@@ -48,3 +48,20 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_sdl_probe_install.py -v
 ```
 
 hostはGTK3 dev、pkg-config、C compiler、Xvfbを使用する。`EIDOLON_GTK_FIXTURE_SELFTEST` を付けた別binaryで固定key counterと実GTK Entry/button/dialog callback、X11 configureを検査し、`host_selftest=true` を出す。production binaryはX11を拒否する。これらはQuest Wayland、Android入力経路、物理キーボード、HMD視認の合格ではない。
+
+
+## Build167: app_id設定時期の修正
+
+最初の実機input試験は35秒で停止し、Cのready/SHM2 commitはあっても専用main app_idとして認識されず、Android caseは開始しなかった。SDK/Boardには追加windowのbound/create/frameがあり、未知窓の排除とは断定できない。元のTERM終了と回収結果を保存した。
+
+[GTK3.24.52のWayland実装](https://github.com/GNOME/gtk/blob/3.24.52/gdk/wayland/gdkwindow-wayland.c#L2138) では `gdk_wayland_window_set_application_id` はxdg_toplevel生成前に呼ぶと何も保持せずreturnする。GtkWidgetのrealizeだけでは足りず、show/mapでxdg_toplevelを作ったときにprogram name由来の初期IDを送る。このためCは `gtk_init_check` 前にmainの固定IDを `g_set_prgname` で設定し、main/dialogのsetterを `gtk_widget_show_all` 後へ移した。mappedでないwidgetは成功としない。
+
+ダイアログは初期mainIDから専用dialogIDへ遷移できるが、最初のSHM buffer commit時には専用dialogIDであること、別toplevel・set_parentがあることを要求する。未知IDを許すgate変更はしていない。縦boxの最後のbuttonは余白を受けて高さ88以上に広がる設計であり、固定pointが報告矩形内にあるかを従来どおり照合する。
+
+PCのreal Wayland検証は既設KWinのvirtual backendを、私有runtime/HOME/config/cache/dataと私有D-Busで起動する。full trace/画像を保存せず、既知IDの遷移・最初のSHM時のrole・別toplevel/parent・SHM commit数だけを集計する。host selftestのinput callback自体は合成であり、この検証をQuest入力/HMDの合格にはしない。KWin/dbus-run-sessionが無い環境ではこの1検査をskipする。
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_gtk_interaction_fixture.py -v
+```
+
+Cが変わったため、実機ではinstallerで新run-idを作り、source/manifest/binary SHAを新たに固定する。既存runへCやbinaryを上書きしない。Android sourceや通常GUI catalogは変更不要である。

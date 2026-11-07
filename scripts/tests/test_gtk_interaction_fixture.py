@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import select
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -199,6 +200,24 @@ class HostGtkTests(unittest.TestCase):
         self.assertEqual(process.returncode, 0)
         self.assertTrue(rows[-1]["complete"] and rows[-1]["resize_large_seen"] and rows[-1]["resize_return_seen"])
         self.assertEqual(rows[-1]["logical_size"], [640, 360])
+
+    @unittest.skipUnless(shutil.which("kwin_wayland") and shutil.which("dbus-run-session"),"isolated KWin virtual backend unavailable")
+    def test_real_wayland_ids_precede_first_shm_and_dialog_keeps_parent(self):
+        from gtk_wayland_identity_fixture import VirtualWayland
+        with VirtualWayland() as display:
+            for i,case in enumerate(("input","dialog","resize")):
+                with self.subTest(case=case):
+                    report=display.run(self.binary,case,format(i+1,"032x"));trace=report["trace"];identity=trace["identity"]
+                    self.assertEqual(report["client_returncode"],0);self.assertFalse(report["timed_out"])
+                    self.assertTrue(report["reports"][-1]["complete"]);self.assertEqual(trace["unknown_app_ids"],0)
+                    self.assertTrue(identity["initial_ids_known"] and identity["first_shm_has_final_role"])
+                    self.assertGreater(trace["fixture_shm_commits"]["main"],0)
+                    if case=="dialog":
+                        self.assertEqual(identity["final_toplevels"],dict(main=1,dialog=1))
+                        self.assertTrue(identity["known_dialog_transition"] and trace["dialog_parent_observed"])
+                        self.assertGreater(trace["fixture_shm_commits"]["dialog"],0)
+                    else:self.assertEqual(identity["final_toplevels"],dict(main=1,dialog=0))
+                    self.assertEqual(trace["protocol_errors"],0)
 
     def test_production_refuses_x11_and_arbitrary_cli_input(self):
         process, rows = self.run_case("input", production=True)

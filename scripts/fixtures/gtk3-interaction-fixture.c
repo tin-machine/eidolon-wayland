@@ -126,7 +126,7 @@ static gboolean draw_cb(GtkWidget *widget, cairo_t *context, gpointer data) {
 }
 
 static gboolean set_app_id(GtkWidget *widget, const char *app_id) {
-    gtk_widget_realize(widget);
+    if (!gtk_widget_get_mapped(widget)) return FALSE;
     GdkWindow *window = gtk_widget_get_window(widget);
     if (GDK_IS_WAYLAND_WINDOW(window)) {
         gdk_wayland_window_set_application_id(window, app_id);
@@ -162,10 +162,11 @@ static void click_cb(GtkButton *button, gpointer data) {
     g_signal_connect(f->dialog, "destroy", G_CALLBACK(dialog_destroyed), f);
     g_signal_connect(f->dialog, "configure-event", G_CALLBACK(configure_cb), f);
     g_signal_connect(f->dialog, "draw", G_CALLBACK(draw_cb), f);
-    if (!set_app_id(f->dialog, f->dialog_id)) { finish(f, "wayland_required", 2); return; }
     f->value.parent_set = gtk_window_get_transient_for(GTK_WINDOW(f->dialog)) == GTK_WINDOW(f->window);
     f->value.opened++; f->value.dialog_visible = TRUE;
     gtk_widget_show_all(f->dialog);
+    /* Gdkのxdg_toplevelはmapで作られる。GtkWidget.realizeだけではsetterがno-op。 */
+    if (!set_app_id(f->dialog, f->dialog_id)) { finish(f, "wayland_required", 2); return; }
 }
 
 static gboolean publish_cb(gpointer data) {
@@ -213,7 +214,11 @@ int main(int argc, char **argv) {
     f.case_name = argv[2]; memcpy(f.run_id, argv[4], 33);
     snprintf(f.app_id, sizeof f.app_id, "io.github.tinmachine.eidolon.gtkfixture.r%s", f.run_id);
     snprintf(f.dialog_id, sizeof f.dialog_id, "%s.dialog", f.app_id);
+    g_set_prgname(f.app_id); /* Wayland backendが最初に送るdefault app_idも固定する。 */
     if (!gtk_init_check(NULL, NULL)) { report(&f, "final", "display_unavailable"); return 2; }
+#ifndef EIDOLON_GTK_FIXTURE_SELFTEST
+    if (!GDK_IS_WAYLAND_DISPLAY(gdk_display_get_default())) { report(&f, "final", "wayland_required"); return 2; }
+#endif
     f.window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(f.window), "Eidolon GTK3 interaction fixture");
     gtk_window_set_decorated(GTK_WINDOW(f.window), FALSE);
@@ -236,8 +241,9 @@ int main(int argc, char **argv) {
     g_signal_connect(f.window, "configure-event", G_CALLBACK(configure_cb), &f);
     g_signal_connect(f.window, "draw", G_CALLBACK(draw_cb), &f);
     g_signal_connect(f.window, "delete-event", G_CALLBACK(close_cb), &f);
+    gtk_widget_show_all(f.window);
     if (!set_app_id(f.window, f.app_id)) { report(&f, "final", "wayland_required"); gtk_widget_destroy(f.window); return 2; }
-    gtk_widget_show_all(f.window); gtk_widget_grab_focus(f.entry);
+    gtk_widget_grab_focus(f.entry);
     g_timeout_add(50, publish_cb, &f); g_timeout_add_seconds(60, timeout_cb, &f);
 #ifdef EIDOLON_GTK_FIXTURE_SELFTEST
     g_timeout_add(100, selftest_cb, &f);
