@@ -203,7 +203,7 @@ async fn byte_hash_sizes_four_channels_half_close_and_slow_reader() {
     assert!(report.peak >= 4 && report.peak <= MAX_CHANNELS);
     assert_eq!(report.remote_to_local, 1 + 65536 + 5 * 8 * 1024 * 1024);
     assert_eq!(report.local_to_remote, report.remote_to_local + 7 * 9);
-    assert_eq!(report.copy_buffer_limit, 512 * 1024);
+    assert_eq!(report.copy_buffer_limit, 768 * 1024);
     assert_eq!(report.failed, 0);
     f.client
         .cancel_streamlocal_forward(f.remote.clone())

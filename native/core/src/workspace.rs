@@ -177,7 +177,7 @@ impl Controller {
             let state = &mut self.windows[index.unwrap()];
             let changed_id = state.app_id != window.app_id;
             if let Some(slot) = slot {
-                if state.last_slot != Some(slot) || changed_id || ambiguous && !state.ambiguous {
+                if state.last_slot != Some(slot) || changed_id {
                     let saved = window
                         .app_id
                         .as_ref()
@@ -338,7 +338,7 @@ mod tests {
         }
     }
     #[test]
-    fn duplicate_app_restores_default_once_and_stale_target_cannot_move_live_window() {
+    fn duplicate_app_keeps_existing_pose_and_stale_target_cannot_move_live_window() {
         let mut c = Controller::load(None);
         c.scene(Some(scene()));
         let a = window(1);
@@ -361,8 +361,8 @@ mod tests {
             &[a.clone(), b.clone()],
             &[pa.clone(), pb.clone()],
         );
-        assert_eq!(restored.len(), 2);
-        assert_eq!(c.windows[0].placement.pose, PanelPose::at_slot(0));
+        assert_eq!(restored.len(), 1);
+        assert_eq!(c.windows[0].placement.pose, moved);
         assert!(c.windows.iter().all(|w| w.ambiguous));
         c.set_pose(pa.target, request, moved).unwrap();
         c.remember(&a);

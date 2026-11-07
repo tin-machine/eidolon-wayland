@@ -194,17 +194,17 @@ class SpatialPanelAdapter {
     }
     private fun key(): JSONObject = JSONObject().put("session", "1").put("window", "1").put("scene", scene.toString())
         .put("generation", generations.incrementAndGet().toString())
-    private fun create(handle: Long, plan: JSONObject? = null) {
+    private fun create(handle: Long, plan: JSONObject? = null, initialPose: JSONObject? = null) {
+        val pose = if(plan==null) Pose(Vector3(0f,1.4f,1.6f)) else initialPose?.takeIf {PanelPoseCodec.valid(it)}?.let {PanelPoseCodec.toSdk(it)} ?: return
         creating = true
         attempting = plan
         val ownerKey = if(plan==null) key() else JSONObject(plan.getJSONObject("target").toString())
         if(NativeSessionHost.sdkBinding(ownerKey,handle,true)!=NativeBridge.ACCEPTED) { creating=false;return }
         var entity: Entity? = null
         try {
-            val position = if (plan == null) Vector3(0f, 1.4f, 1.6f) else Vector3(plan.optInt("slot",0)*1.3f, 1.4f, 1.5f)
             val decoration = plan?.optJSONObject("decoration")
-            val createdEntity = if (decoration == null) Entity.create(listOf(Panel(R.id.native_panel), Transform(Pose(position))))
-                else Entity.create(listOf(Mesh(android.net.Uri.parse(ThemeHitMesh.URI), ThemeHitMesh.COLLISION), Transform(Pose(position))))
+            val createdEntity = if (decoration == null) Entity.create(listOf(Panel(R.id.native_panel), Transform(pose)))
+                else Entity.create(listOf(Mesh(android.net.Uri.parse(ThemeHitMesh.URI), ThemeHitMesh.COLLISION), Transform(pose)))
             entity = createdEntity
             val entity = createdEntity
             if(plan!=null) entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
@@ -248,7 +248,7 @@ class SpatialPanelAdapter {
     private fun surfaceReady(entity: Long, surface: Surface) {
         val current = bindings[entity]
         if (current == null) {
-            if (creating && pendingSurfaces.size < 2) { pendingSurfaces[entity] = surface; pendingUntil = SystemClock.elapsedRealtime() + 5000 }
+            if (creating && pendingSurfaces.size < WindowBudget.MAX_WINDOWS) { pendingSurfaces[entity] = surface; pendingUntil = SystemClock.elapsedRealtime() + 5000 }
             else event("surface_discarded", entity)
             return
         }
@@ -274,7 +274,7 @@ class SpatialPanelAdapter {
     private fun objectReady(entity: Long, obj: SceneObject) {
         val current = bindings[entity]
         if (current == null) {
-            if (creating && pendingObjects.size < 2) { pendingObjects[entity] = obj; pendingUntil = SystemClock.elapsedRealtime() + 5000 }
+            if (creating && pendingObjects.size < WindowBudget.MAX_WINDOWS) { pendingObjects[entity] = obj; pendingUntil = SystemClock.elapsedRealtime() + 5000 }
             else event("object_discarded", entity)
             return
         }
@@ -418,9 +418,18 @@ class SpatialPanelAdapter {
         if (!closed && scene > 0 && host?.optString("state") == "Ready" && host.optString("scene") == scene.toString()) {
             if (windows && bindings.values.none { it.role == "diagnostic" }) {
                 for (plan in desired) {
-                    if (bindings.size >= 2) break
+                    if (bindings.size >= WindowBudget.MAX_WINDOWS) break
                     if (BuildHooks.holdPanelCreation(plan.getJSONObject("target").getString("window"))) continue
-                    if (bindings.values.none { sameKey(it.key,plan.getJSONObject("target")) }) create(handle,plan)
+                    if (bindings.values.none { sameKey(it.key,plan.getJSONObject("target")) }) {
+                        val target=plan.getJSONObject("target")
+                        val placements=host.getJSONObject("workspace").getJSONArray("windows")
+                        val initial=(0 until placements.length()).map {placements.getJSONObject(it)}.firstOrNull {
+                            it.optString("session")==target.optString("session") && it.optString("window")==target.optString("window") &&
+                                !it.isNull("slot") && it.optInt("slot",-1)==plan.optInt("slot",-2)
+                        }?.optJSONObject("placement")?.optJSONObject("pose")
+                        // 最初のpose正本が来るまで待つ。旧横並び位置でEntityだけを先に作らない。
+                        if(initial!=null && PanelPoseCodec.valid(initial)) create(handle,plan,initial)
+                    }
                 }
             } else if (!windows && bindings.isEmpty()) create(handle)
         }

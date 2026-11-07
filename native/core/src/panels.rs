@@ -78,12 +78,6 @@ impl Controller {
         may_create: bool,
         layouts: &[(SessionId, WindowId, DecorationLayout)],
     ) -> Result<(), &'static str> {
-        let layout = |session, window| {
-            layouts
-                .iter()
-                .find(|(s, w, _)| *s == session && *w == window)
-                .map(|(_, _, l)| l.clone())
-        };
         for slot in &mut self.visible {
             if slot.is_some_and(|key| !mapped.contains(&key)) {
                 *slot = None;
@@ -96,6 +90,46 @@ impl Controller {
                 *slot = Some(*key);
             }
         }
+        self.reconcile_selected(scene, mapped, may_create, layouts)
+    }
+    /// 通常RuntimeはBoardのBound位置を渡す。空きslotを他窓で自動的に埋め直さない。
+    pub fn reconcile_assigned(
+        &mut self,
+        scene: Option<SceneEpoch>,
+        mapped: &[(SessionId, WindowId)],
+        may_create: bool,
+        layouts: &[(SessionId, WindowId, DecorationLayout)],
+        assignments: &[(usize, SessionId, WindowId)],
+    ) -> Result<(), &'static str> {
+        let mut visible = [None; limits::VISIBLE_PANELS];
+        for (index, &(slot, session, window)) in assignments.iter().enumerate() {
+            if slot >= visible.len()
+                || assignments[..index]
+                    .iter()
+                    .any(|(s, owner, id)| *s == slot || (*owner == session && *id == window))
+            {
+                return Err("SLOT_STATE_INVALID");
+            }
+            if mapped.contains(&(session, window)) {
+                visible[slot] = Some((session, window));
+            }
+        }
+        self.visible = visible;
+        self.reconcile_selected(scene, mapped, may_create, layouts)
+    }
+    fn reconcile_selected(
+        &mut self,
+        scene: Option<SceneEpoch>,
+        mapped: &[(SessionId, WindowId)],
+        may_create: bool,
+        layouts: &[(SessionId, WindowId, DecorationLayout)],
+    ) -> Result<(), &'static str> {
+        let layout = |session, window| {
+            layouts
+                .iter()
+                .find(|(s, w, _)| *s == session && *w == window)
+                .map(|(_, _, l)| l.clone())
+        };
         self.failed.retain(|(session, window, failed_scene)| {
             scene == Some(*failed_scene)
                 && mapped.contains(&(*session, *window))
@@ -297,23 +331,26 @@ mod tests {
         assert_eq!(panels.snapshot()[0].action, Action::Destroy);
     }
     #[test]
-    fn two_slots_keep_third_logical_and_wait_for_destroy_before_reuse() {
+    fn nine_slots_keep_tenth_logical_and_wait_for_destroy_before_reuse() {
         let session = SessionId::new(7).unwrap();
         let scene = Some(SceneEpoch::new(4).unwrap());
-        let mapped: Vec<_> = (1..=3)
+        let mapped: Vec<_> = (1..=(limits::VISIBLE_PANELS as i64 + 1))
             .map(|id| (session, WindowId::new(id).unwrap()))
             .collect();
         let mut panels = Controller::default();
         panels.reconcile(scene, &mapped, true).unwrap();
         let first = panels.snapshot();
-        assert_eq!(first.len(), 2);
-        assert_eq!(panels.visible(), mapped[..2]);
-        assert_eq!(panels.show(session, mapped[2].1, 0), Status::Accepted);
+        assert_eq!(first.len(), limits::VISIBLE_PANELS);
+        assert_eq!(panels.visible(), mapped[..limits::VISIBLE_PANELS]);
+        assert_eq!(
+            panels.show(session, mapped[limits::VISIBLE_PANELS].1, 0),
+            Status::Accepted
+        );
         panels.reconcile(scene, &mapped, true).unwrap();
         let retiring = panels.snapshot().into_iter().find(|p| p.slot == 0).unwrap();
         assert_eq!(retiring.action, Action::Destroy);
         assert!(!panels.accepts(first[0].target));
-        assert_eq!(panels.snapshot().len(), 2);
+        assert_eq!(panels.snapshot().len(), limits::VISIBLE_PANELS);
         assert_eq!(
             panels.acknowledge(first[0].command_seq, first[0].target, Action::Create, true),
             Status::Stale
@@ -324,17 +361,20 @@ mod tests {
         );
         panels.reconcile(scene, &mapped, true).unwrap();
         let next = panels.snapshot().into_iter().find(|p| p.slot == 0).unwrap();
-        assert_eq!(next.target.window, mapped[2].1);
+        assert_eq!(next.target.window, mapped[limits::VISIBLE_PANELS].1);
         assert!(next.target.generation > first[0].target.generation);
         // hidden first window remains logical and is not automatically reselected.
         panels.reconcile(scene, &mapped, true).unwrap();
-        assert_eq!(panels.visible(), [mapped[2], mapped[1]]);
+        assert_eq!(panels.visible()[0], mapped[limits::VISIBLE_PANELS]);
+        assert_eq!(&panels.visible()[1..], &mapped[1..limits::VISIBLE_PANELS]);
         assert_eq!(
-            panels.show(session, mapped[0].1, 2),
+            panels.show(session, mapped[0].1, limits::VISIBLE_PANELS),
             Status::InvalidArgument
         );
-        panels.reconcile(scene, &mapped[..2], true).unwrap();
-        assert_eq!(panels.visible(), mapped[..2]);
+        panels
+            .reconcile(scene, &mapped[..limits::VISIBLE_PANELS], true)
+            .unwrap();
+        assert_eq!(panels.visible(), mapped[..limits::VISIBLE_PANELS]);
     }
     fn mapped() -> [(SessionId, WindowId); 1] {
         [(SessionId::new(1).unwrap(), WindowId::new(1).unwrap())]
@@ -412,5 +452,84 @@ mod tests {
             exhausted.reconcile(Some(SceneEpoch::new(1).unwrap()), &mapped(), true),
             Err("ID_EXHAUSTED")
         );
+    }
+}
+
+#[cfg(test)]
+mod assigned_tests {
+    use super::*;
+    #[test]
+    fn reservation_positions_survive_reverse_mapping_unmap_and_holes_without_retargeting_old_ack() {
+        let session = SessionId::new(1).unwrap();
+        let scene = Some(SceneEpoch::new(1).unwrap());
+        let one = WindowId::new(1).unwrap();
+        let two = WindowId::new(2).unwrap();
+        let mut c = Controller::default();
+        let assignments = [(1, session, one), (2, session, two)];
+        c.reconcile_assigned(scene, &[(session, two)], true, &[], &assignments)
+            .unwrap();
+        let left = c.snapshot()[0].clone();
+        assert_eq!(left.slot, 2);
+        assert_eq!(left.target.window, two);
+        c.reconcile_assigned(
+            scene,
+            &[(session, two), (session, one)],
+            true,
+            &[],
+            &assignments,
+        )
+        .unwrap();
+        let right = c
+            .snapshot()
+            .into_iter()
+            .find(|p| p.target.window == one)
+            .unwrap();
+        assert_eq!(right.slot, 1);
+        c.reconcile_assigned(scene, &[(session, two)], true, &[], &assignments)
+            .unwrap();
+        assert_eq!(
+            c.snapshot()
+                .iter()
+                .find(|p| p.target.window == one)
+                .unwrap()
+                .action,
+            Action::Destroy
+        );
+        assert_eq!(
+            c.snapshot()
+                .iter()
+                .find(|p| p.target.window == two)
+                .unwrap()
+                .target,
+            left.target
+        );
+        assert_eq!(
+            c.acknowledge(right.command_seq, right.target, Action::Create, true),
+            Status::Stale
+        );
+        assert_eq!(c.visible(), [(session, two)]);
+        let prior = c.snapshot();
+        assert!(
+            c.reconcile_assigned(
+                scene,
+                &[],
+                true,
+                &[],
+                &[(0, session, one), (0, session, two)]
+            )
+            .is_err()
+        );
+        assert!(
+            c.reconcile_assigned(
+                scene,
+                &[],
+                true,
+                &[],
+                &[(0, session, one), (1, session, one)]
+            )
+            .is_err()
+        );
+        assert_eq!(c.snapshot().len(), prior.len());
+        assert_eq!(c.snapshot()[0].target, prior[0].target);
     }
 }

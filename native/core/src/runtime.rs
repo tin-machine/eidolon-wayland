@@ -192,6 +192,7 @@ impl Runtime {
                 )> = None;
                 let mut app: Option<crate::session::Session> = None;
                 let mut slots = crate::window_slots::Controller::new(runtime_handle);
+                let mut slot_refused = Vec::new();
                 // server ACKだけで枠の予約を解かない。新windowがmapするまで追加を直列化する。
                 let mut opening_window: Option<(
                     eidolon_model::ids::SessionId,
@@ -454,7 +455,15 @@ impl Runtime {
                                     session: current.session(), nonce: current.nonce(), windows: &windows,
                                     session_closed: current.closed(), native: &native, sdk: &shared.sdk_bindings, panels: &panels,
                                 }).is_err() { shared.fail("SLOT_STATE_INVALID"); }
-                                shared.snapshot.window_slots = slots.report();
+                                let slot_report = slots.report();
+                                slot_refused.retain(|(session,window)| *session==current.session() && snapshot.windows.iter().any(|w|w.window==*window));
+                                for window in &slot_report.unassigned {
+                                    let key=(current.session(),*window);
+                                    if !slot_refused.contains(&key) {
+                                        if current.close_window(*window).is_ok() { slot_refused.push(key); }
+                                    }
+                                }
+                                shared.snapshot.window_slots = slot_report;
                             }
                             state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.app = Some(snapshot);
                         }
@@ -671,10 +680,10 @@ impl Runtime {
                                 })
                             })
                             .collect::<Vec<_>>();
-                        if let Err(code) = state
-                            .panels
-                            .reconcile_layouts(scene, &mapped, may_create, &layouts)
-                        {
+                        let panel_result = if app.as_ref().is_some_and(|a| !a.virtual_clock()) {
+                            state.panels.reconcile_assigned(scene, &mapped, may_create, &layouts, &slots.assignments())
+                        } else { state.panels.reconcile_layouts(scene, &mapped, may_create, &layouts) };
+                        if let Err(code) = panel_result {
                             state.fail(code);
                         }
                         state.snapshot.panels = state.panels.snapshot();
@@ -912,7 +921,9 @@ impl Runtime {
                                         current.reset_input();
                                         match &command {
                                             Command::ShowWindow { slot, .. } => {
-                                                state.panels.show(*session, *window, *slot)
+                                                if current.virtual_clock() { state.panels.show(*session, *window, *slot) }
+                                                else if slots.assignments().contains(&(*slot,*session,*window)) { Status::Accepted }
+                                                else { Status::InvalidArgument }
                                             }
                                             Command::CloseWindow { .. } => current
                                                 .close_window(*window)
@@ -1743,7 +1754,7 @@ impl Runtime {
                 Status::Stale
             } else if state.sdk_bindings.contains(target) {
                 Status::Accepted
-            } else if state.sdk_bindings.len() == 8 {
+            } else if state.sdk_bindings.len() >= limits::SDK_BINDINGS {
                 Status::Busy
             } else {
                 state.sdk_bindings.push(*target);

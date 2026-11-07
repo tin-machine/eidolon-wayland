@@ -67,12 +67,11 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
                 Button(onClick=openTermux) {Text("Termuxを開く")}
             }
             for (window in NativeSessionHost.windowChoices.value) {
-                Text("ウィンドウ ${window.window} · ${window.slot?.let { "表示枠 ${it+1}" } ?: "一覧に保持"}",color=Color.White)
+                Text("ウィンドウ ${window.window} · 初期枠: ${WindowBudget.position(window.slot)}",color=Color.White)
                 if(window.ambiguous) Text("同じアプリを複数開いているため、配置は今回の接続中に保持します",color=Color.White)
                 Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                     Button(onClick={NativeSessionHost.selectWindow(window)}) { Text("配置の対象にする") }
-                    Button(onClick={NativeSessionHost.showWindow(window,0)}) { Text("枠1へ表示") }
-                    Button(onClick={NativeSessionHost.showWindow(window,1)}) { Text("枠2へ表示") }
+                    Button(onClick={NativeSessionHost.focusTerminal(window)}) { Text("ここへ入力") }
                     Button(onClick={NativeSessionHost.closeWindow(window)}) { Text("閉じる") }
                 }
             }

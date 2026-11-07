@@ -25,7 +25,13 @@ pub struct PanelPose {
 impl PanelPose {
     pub fn at_slot(slot: usize) -> Self {
         Self {
-            position_m: [slot as f32 * 1.3, 1.4, 1.5],
+            position_m: crate::window_slots::Position::ORDER.get(slot).map_or(
+                [f32::NAN; 3],
+                |position| {
+                    let [x, y] = position.grid();
+                    [f32::from(x) * 1.8, 2.0 + f32::from(y) * 1.8, 1.5]
+                },
+            ),
             rotation_xyzw: [0., 0., 0., 1.],
         }
     }
@@ -340,5 +346,88 @@ mod tests {
         assert!(p.acknowledge(target(2), Some(command), near));
         near.position_m[0] += 0.02;
         assert!(!p.acknowledge(target(2), Some(command), near));
+    }
+}
+
+#[cfg(test)]
+mod nine_grid_tests {
+    use super::*;
+    use crate::{
+        window_controls::{ControlAnchor, WindowControls},
+        window_slots::Envelope,
+    };
+    #[test]
+    fn nine_defaults_follow_priority_and_fit_pose_range_with_body_controls_and_default_terminal_canvas()
+     {
+        let poses = (0..crate::window_slots::CAPACITY)
+            .map(PanelPose::at_slot)
+            .collect::<Vec<_>>();
+        assert!(poses.iter().all(|p| p.valid()));
+        let center = poses[0].position_m;
+        for (index, [dx, dy]) in [
+            [0, 0],
+            [1, 0],
+            [-1, 0],
+            [0, 1],
+            [0, -1],
+            [-1, 1],
+            [1, 1],
+            [-1, -1],
+            [1, -1],
+        ]
+        .iter()
+        .enumerate()
+        {
+            let p = poses[index].position_m;
+            let direction = |delta: f32| {
+                if delta > 0. {
+                    1
+                } else if delta < 0. {
+                    -1
+                } else {
+                    0
+                }
+            };
+            assert_eq!(direction(p[0] - center[0]), *dx);
+            assert_eq!(direction(p[1] - center[1]), *dy);
+            assert_eq!(p[2], center[2]);
+        }
+        for anchor in [
+            ControlAnchor::TopLeft,
+            ControlAnchor::TopRight,
+            ControlAnchor::BottomLeft,
+            ControlAnchor::BottomRight,
+        ] {
+            let controls = WindowControls {
+                anchor,
+                diameter_m: 0.12,
+                gap_m: 0.08,
+                offset_m: [0.2, 0.2],
+            };
+            let e = Envelope::for_window(1.2, 0.9, &controls)
+                .unwrap()
+                .with_canvas(
+                    PhysicalSize::default(),
+                    LogicalSize::new(1024, 768).unwrap(),
+                    LogicalSize::new(1280, 1280).unwrap(),
+                    [128, 256],
+                )
+                .unwrap();
+            for (i, a) in poses.iter().enumerate() {
+                for b in &poses[i + 1..] {
+                    let ax = f64::from(a.position_m[0]);
+                    let ay = f64::from(a.position_m[1]);
+                    let bx = f64::from(b.position_m[0]);
+                    let by = f64::from(b.position_m[1]);
+                    assert!(
+                        ax + e.right < bx + e.left
+                            || bx + e.right < ax + e.left
+                            || ay + e.top < by + e.bottom
+                            || by + e.top < ay + e.bottom
+                    );
+                }
+            }
+        }
+        assert!(!PanelPose::at_slot(crate::window_slots::CAPACITY).valid());
     }
 }

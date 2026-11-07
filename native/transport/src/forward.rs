@@ -13,7 +13,7 @@ use std::{
 use tokio::{net::UnixStream, sync::Semaphore};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-pub const MAX_CHANNELS: usize = 8;
+pub const MAX_CHANNELS: usize = eidolon_model::limits::FORWARD_CHANNELS;
 pub const COPY_BUFFER: usize = 32 * 1024;
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {

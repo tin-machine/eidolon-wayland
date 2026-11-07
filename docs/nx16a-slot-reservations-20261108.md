@@ -15,10 +15,11 @@ host Cargo所有lockと自checkoutのentrypoint mtime更新を行ってから検
 三→六→九枚、逆順map/穴再利用、独立client、予算、光学/HMDの受入れは後続に残る。
 
 以下は初期model checkpointと段階的な接続記録。基準`7d00288`では通常APKの窓数上限を変更していない。
+最新の九枠表示接続は[NX16c](nx16c-nine-window-integration-20261108.md)を参照する。
 [最大9枚の計画](next-phase-termux-startup-linux-gui-plan-20261107.md)を段階化する。
 `native/model/src/window_slots.rs`を追加し、受付と描画完了、窓消滅と資源回収を分けて扱う。
 
-## 現在の境界と統合前の課題
+## 初回調査時の境界と統合前の課題
 
 | 層 | 現状 | 次の統合で確認すること |
 | --- | --- | --- |

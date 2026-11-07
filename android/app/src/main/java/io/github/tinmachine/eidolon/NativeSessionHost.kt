@@ -187,7 +187,7 @@ object NativeSessionHost {
                 launcherUpdate(launcherState.copy(message="接続後に一覧を再読込してください"));return@safely
             }
             val windows=app.getJSONArray("windows")
-            if(windows.length()>=8) {launcherUpdate(launcherState.copy(message="ウィンドウ上限です。不要な窓を閉じてください"));return@safely}
+            if(windows.length()>=WindowBudget.MAX_WINDOWS) {launcherUpdate(launcherState.copy(message="ウィンドウ上限です。不要な窓を閉じてください"));return@safely}
             releasePanelTextFocus()
             val request=requests.incrementAndGet().toString()
             val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","launch_terminal").put("request_id",request)
@@ -299,7 +299,7 @@ object NativeSessionHost {
         val app = runtime.optJSONObject("app")
         if (app != null && app.optString("session") == transport.optString("session") && app.isNull("error") && app.optString("state") != "stopped") {
             val windows=app.getJSONArray("windows")
-            if(app.optString("mode")!="foot" || app.optString("state")!="running" || windows.length()>=8 || terminalAdding!=null) return@safely
+            if(app.optString("mode")!="foot" || app.optString("state")!="running" || windows.length()>=WindowBudget.MAX_WINDOWS || terminalAdding!=null) return@safely
             val request=requests.incrementAndGet().toString()
             val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","open_terminal").put("request_id",request).put("session",app.getString("session")).toString())
             if(code==NativeBridge.ACCEPTED) {
@@ -608,7 +608,7 @@ object NativeSessionHost {
         selectedWindow=target.getString("session") to target.getString("window")
         keyboardFocus=null;inputTargets=emptyMap()
         val ticket=inputIntents.incrementAndGet()
-        pendingInputFocus=PendingInputFocus(target.toString(),handle,ticket,SystemClock.elapsedRealtime()+2000)
+        pendingInputFocus=PendingInputFocus(target.toString(),handle,ticket,SystemClock.elapsedRealtime()+2000,waitForIme=true)
         if (BuildConfig.DEBUG && requested!=null) strictImeSdkTarget(target)?.let {
             requested(DebugImeFocusReceipt(handle,it,ticket,runtime.getLong("input_resets"),runtime.optJSONObject("app")?.optJSONObject("input")?.optString("focus_token")))
         }
