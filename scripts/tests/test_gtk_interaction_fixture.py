@@ -7,7 +7,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import select
 import shlex
 import shutil
 import subprocess
@@ -15,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from gtk_xvfb_startup import StderrCount, wait_ready
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 ROOT = SCRIPTS.parent
@@ -158,24 +158,43 @@ class HostGtkTests(unittest.TestCase):
                                        str(SCRIPTS / "fixtures/gtk3-interaction-fixture.c"), "-o", str(target), *flags], capture_output=True)
             if compiled.returncode: raise RuntimeError("host C compile failed: " + str(compiled.returncode))
         read_fd, write_fd = os.pipe()
-        cls.xvfb = subprocess.Popen(["Xvfb", "-displayfd", str(write_fd), "-screen", "0", "1024x768x24", "-nolisten", "tcp"],
-                                    pass_fds=(write_fd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.xvfb = subprocess.Popen(["Xvfb", "-displayfd", str(write_fd), "-screen", "0", "1024x768x24", "-nolisten", "tcp", "-noreset"],
+                                    pass_fds=(write_fd,), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         os.close(write_fd)
+        cls.xvfb_stderr = StderrCount(cls.xvfb.stderr)
         try:
-            if not select.select([read_fd], [], [], 5)[0]: raise RuntimeError("Xvfb startup timeout")
-            cls.display = ":" + os.read(read_fd, 32).decode("ascii").strip()
+            def probe(display, remaining):
+                env = dict(os.environ, DISPLAY=display, GDK_BACKEND="x11", GDK_GL="disable", GDK_RENDERING="image",
+                           HOME=str(cls.root), GTK_IM_MODULE="gtk-im-context-simple")
+                env.pop("WAYLAND_DISPLAY", None)
+                # Production rejects X11 immediately after gtk_init_check, before any widget/map.
+                return subprocess.run([str(cls.production), "--case", "input", "--run-id", "f" * 32],
+                                      stdin=subprocess.DEVNULL, capture_output=True, timeout=remaining, env=env)
+            cls.display, cls.xvfb_ready = wait_ready(read_fd, cls.xvfb, probe, cls.xvfb_stderr)
+        except Exception:
+            cls.stop_xvfb();cls.temporary.cleanup();raise
         finally: os.close(read_fd)
 
     @classmethod
     def tearDownClass(cls):
-        cls.xvfb.terminate();cls.xvfb.wait(timeout=3);cls.temporary.cleanup()
+        try: cls.stop_xvfb()
+        finally: cls.temporary.cleanup()
+
+    @classmethod
+    def stop_xvfb(cls):
+        cls.xvfb_stderr.drain();cls.xvfb.terminate()
+        try: cls.xvfb.wait(timeout=3)
+        except subprocess.TimeoutExpired: cls.xvfb.kill();cls.xvfb.wait(timeout=3)
+        cls.xvfb_stderr.drain();cls.xvfb.stderr.close()
 
     def run_case(self, case, *, production=False, run_id="a" * 32):
+        self.xvfb_stderr.drain()
         env = dict(os.environ, DISPLAY=self.display, GDK_BACKEND="x11", GDK_GL="disable", GDK_RENDERING="image",
                    HOME=str(self.root), GTK_IM_MODULE="gtk-im-context-simple")
         env.pop("WAYLAND_DISPLAY", None)
         process = subprocess.run([str(self.production if production else self.binary), "--case", case, "--run-id", run_id],
                                  capture_output=True, timeout=8, env=env)
+        self.xvfb_stderr.drain()
         return process, [json.loads(line) for line in process.stdout.splitlines()]
 
     def test_input_callbacks_count_fixed_token_delete_and_button_without_text(self):
