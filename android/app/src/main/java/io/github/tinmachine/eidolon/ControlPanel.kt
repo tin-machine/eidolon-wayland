@@ -54,6 +54,8 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
             verticalArrangement=Arrangement.spacedBy(12.dp),horizontalAlignment=Alignment.CenterHorizontally) {
             Text(device.summary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
             Text(device.processCpuSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
+            Text(device.thermalSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
+            Text(device.dataFilesystemSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
             Text(device.networkSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
             Text("接続先: このQuestのTermux · ${NativeSessionHost.connectionSummary.value}",color=Color.White,style=MaterialTheme.typography.bodySmall)
             Text("Runtime: ${NativeSessionHost.summary.value}",color=Color.White)
