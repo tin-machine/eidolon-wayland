@@ -4,6 +4,8 @@
 [次フェーズ計画](next-phase-termux-startup-linux-gui-plan-20261107.md)第9節の詳細。
 ユーザーは、左下の数個のアイコンからfoot以外も起動できるランチャーを希望した。
 追加確認により、**実行ファイル・スクリプトの指定**と、**設定ファイルによる登録**の両方を要件とする。
+追加相談の[remote Linux GUI拡張案](remote-linux-gui-plan-20261107.md)では、これらをUbuntu等の接続先profileにも結び付ける。
+本書のTermux用path例は初期段階のもの。将来のremote起動では選択したマシン上のpathとして扱う。
 
 ## 使い方と初期配置
 

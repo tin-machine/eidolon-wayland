@@ -14,6 +14,7 @@
 2026-11-07時点では相談段階で、実装開始待ち。既存taskの受入れ条件と状態は変更しない。
 [Quest全体のメトリクス・IP取得の調査](../quest-device-metrics-plan-20261107.md)も同計画の補足として参照する。
 [左下のアプリランチャー・file指定・設定fileの計画](../application-launcher-plan-20261107.md)も相談段階の拡張として参照する。
+[Ubuntu等のremote Linux GUI拡張案](../remote-linux-gui-plan-20261107.md)では、接続先profile・Linux helper・LAN性能の検証方針を扱う。
 
 1. 本書で到達点とタスク順を確認する。
 2. [共通契約](contracts.md)で識別子・thread・JNI・エラー・上限を読む。
