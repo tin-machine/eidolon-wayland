@@ -42,7 +42,11 @@ fn remote_probe_is_rejected_without_the_packaged_debug_feature() {
         runtime.credential_scope(),
         Err(Status::InvalidArgument)
     ));
-    for kind in ["linux_shm_probe", "linux_shm_recover"] {
+    for kind in [
+        "linux_shm_probe",
+        "linux_shm_sdk_probe",
+        "linux_shm_recover",
+    ] {
         let command = serde_json::json!({
             "schema": 1, "type": kind, "request_id": "2", "session": "1", "nonce": "1234567890abcdef"
         });

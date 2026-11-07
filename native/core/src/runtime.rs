@@ -1474,7 +1474,7 @@ impl Runtime {
                                         Status::NotReady
                                     }
                                 }
-                                Command::LinuxShmProbe {session,nonce,..} => {
+                                Command::LinuxShmProbe {session,nonce,..} | Command::LinuxShmSdkProbe {session,nonce,..} => {
                                     #[cfg(any(test, feature = "debug-fixtures"))]
                                     {
                                         if linux_pins.is_none() || config.paths.is_none() {Status::NotReady}
@@ -1482,8 +1482,9 @@ impl Runtime {
                                         else if ssh.state!=eidolon_transport::session::State::ProbeReady {Status::NotReady}
                                         else if pending_app.is_some() || app.is_some() || helper.is_some() || dependencies.is_some() || compositor.is_some() || ssh.linux_forward.is_some() {Status::Busy}
                                         else {
-                                            pending_app=Some((*session,nonce.clone(),eidolon_model::commands::AppMode::Pattern,true,true));
-                                            state.snapshot.app=Some(crate::session::Report{state:"queued",session:Some(*session),nonce:nonce.clone(),mode:Some(eidolon_model::commands::AppMode::Pattern),callback_clock:"virtual",..Default::default()});
+                                            let virtual_clock = matches!(&command, Command::LinuxShmProbe {..});
+                                            pending_app=Some((*session,nonce.clone(),eidolon_model::commands::AppMode::Pattern,virtual_clock,true));
+                                            state.snapshot.app=Some(crate::session::Report{state:"queued",session:Some(*session),nonce:nonce.clone(),mode:Some(eidolon_model::commands::AppMode::Pattern),callback_clock:if virtual_clock {"virtual"} else {"target-driven"},..Default::default()});
                                             Status::Accepted
                                         }
                                     }
@@ -1776,6 +1777,7 @@ impl Runtime {
             command,
             Command::ConnectSavedProbe { .. }
                 | Command::LinuxShmProbe { .. }
+                | Command::LinuxShmSdkProbe { .. }
                 | Command::LinuxShmRecover { .. }
         ) && !cfg!(any(test, feature = "debug-fixtures"))
         {

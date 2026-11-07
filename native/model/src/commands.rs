@@ -462,6 +462,12 @@ pub enum Command {
         session: crate::ids::SessionId,
         nonce: String,
     },
+    LinuxShmSdkProbe {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        nonce: String,
+    },
     LinuxShmRecover {
         schema: u32,
         request_id: CommandSeq,
@@ -565,6 +571,7 @@ impl Command {
             | Self::ForwardProbe { schema, .. }
             | Self::ConnectSavedProbe { schema, .. }
             | Self::LinuxShmProbe { schema, .. }
+            | Self::LinuxShmSdkProbe { schema, .. }
             | Self::LinuxShmRecover { schema, .. }
             | Self::Connect { schema, .. }
             | Self::Disconnect { schema, .. }
@@ -600,6 +607,7 @@ impl Command {
         | Self::AppProbe { nonce, .. }
         | Self::StartApp { nonce, .. }
         | Self::LinuxShmProbe { nonce, .. }
+        | Self::LinuxShmSdkProbe { nonce, .. }
         | Self::LinuxShmRecover { nonce, .. }
         | Self::CompositorProbe { nonce, .. } = &command
             && (nonce.len() != 16
@@ -711,6 +719,7 @@ impl Command {
             | Self::ForwardProbe { request_id, .. }
             | Self::ConnectSavedProbe { request_id, .. }
             | Self::LinuxShmProbe { request_id, .. }
+            | Self::LinuxShmSdkProbe { request_id, .. }
             | Self::LinuxShmRecover { request_id, .. }
             | Self::Connect { request_id, .. }
             | Self::Disconnect { request_id, .. }
@@ -914,7 +923,11 @@ mod tests {
     }
     #[test]
     fn linux_shm_probe_wire_has_only_fixed_scope_and_nonce() {
-        for kind in ["linux_shm_probe", "linux_shm_recover"] {
+        for kind in [
+            "linux_shm_probe",
+            "linux_shm_sdk_probe",
+            "linux_shm_recover",
+        ] {
             let value = serde_json::json!({"schema":1,"type":kind,"request_id":"9007199254740993","session":"1","nonce":"1234567890abcdef"});
             assert!(Command::parse(&value.to_string()).is_ok());
             for (key, bad) in [

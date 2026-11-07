@@ -46,6 +46,10 @@ object NativeSessionHost {
     private var themeImportMessage: String? = null
     private var credentials: CredentialStore? = null
     private val probeRecovery = ProbeRuntimeRecovery()
+    private val debugSdkLease = DebugSdkRuntimeLease()
+    private val productWorker = DebugSdkProductExecutor(debugSdkLease, worker)
+    private var debugSdkCapture: ProbeCredentialCapture? = null
+    @Volatile private var debugSdkFailure: String? = null
     private var identity: CredentialStore.Identity? = null
     private var profiles = JSONArray()
     private var lastConnectRequest: String? = null // connectとcancelをworker上の順序で束縛する。
@@ -114,13 +118,13 @@ object NativeSessionHost {
     }
     private fun launcherUpdate(value: LauncherUi) { launcherState=value;ui.post {launcherUi.value=value} }
     fun showLauncher() { launcherExpanded.value=true }
-    fun reloadLauncher(path: String) { worker.execute { safely {
+    fun reloadLauncher(path: String) { productWorker.execute { safely {
         requestCatalog(JSONObject().put("kind","reload").put("path",path),path)
     } } }
-    fun launcherPage(offset: Int) { worker.execute { safely {
+    fun launcherPage(offset: Int) { productWorker.execute { safely {
         requestCatalog(JSONObject().put("kind","page").put("revision",launcherState.revision).put("offset",offset))
     } } }
-    fun saveLauncher(form: LauncherForm, path: String) { worker.execute { safely {
+    fun saveLauncher(form: LauncherForm, path: String) { productWorker.execute { safely {
         if(!form.valid()) return@safely
         requestCatalog(JSONObject().put("kind","save").put("path",path).put("definition",form.definition())
             .put("expected_revision",if(path==launcherState.path && !launcherState.builtin) launcherState.revision else JSONObject.NULL),path)
@@ -180,7 +184,7 @@ object NativeSessionHost {
     }
     private fun launchCatalogTerminal(expectedSession: String, target: JSONObject, requested: ((String, Int) -> Unit)? = null) {
         val payload=target.toString()
-        worker.execute { safely {
+        productWorker.execute { safely {
             if(handle==0L || terminalAdding!=null || terminalOpen!=null || pendingDisconnect!=null) return@safely
             val runtime=snapshot().getJSONObject("runtime");val app=runtime.optJSONObject("app")
             if(app?.optString("session")!=expectedSession || runtime.getJSONObject("transport").optString("session")!=expectedSession ||
@@ -220,13 +224,14 @@ object NativeSessionHost {
         ui.post {connectionUi.value=ConnectionUi(publicKey,profile?.username ?: "",profile?.hostKey ?: "",profile?.token ?: "",editable,message)}
     }
     private fun canChangeConnection(runtime:JSONObject):Boolean {
+        if (debugSdkLease.blocksProduct()) return false
         val transport=runtime.getJSONObject("transport")
         return runtime.getString("state")=="Ready" && !connectPending && pendingDisconnect==null && terminalOpen==null &&
             transport.getString("state") in setOf("Idle","Disconnected","Failed") && transport.getInt("owned_connections")==0 &&
             transport.getJSONArray("pending_cleanup").length()==0 && (runtime.optJSONObject("app")?.optString("state") ?: "stopped")=="stopped"
     }
     fun saveConnection(username:String,hostKey:String,expected:String,confirmed:Boolean) {
-        worker.execute {
+        productWorker.execute {
             try {
                 check(handle!=0L && canChangeConnection(snapshot().getJSONObject("runtime"))) {"CONNECTION_BUSY"}
                 val previous=profiles.optJSONObject(0)?.let {ConnectionProfile.parse(it.getString("username"),it.getString("host_key"))}
@@ -287,12 +292,12 @@ object NativeSessionHost {
         connectPending = true
         return request
     }
-    fun connect() { worker.execute { safely {
+    fun connect() { productWorker.execute { safely {
         if (handle == 0L || pendingDisconnect != null || connectPending) return@safely
         val transport = snapshot().getJSONObject("runtime").getJSONObject("transport")
         if (transport.getString("state") in setOf("Idle", "Disconnected", "Failed")) enqueueConnect()
     } } }
-    fun openTerminal() { worker.execute { safely {
+    fun openTerminal() { productWorker.execute { safely {
         releasePanelTextFocus()
         if (handle == 0L || terminalOpen != null || pendingDisconnect != null || connectPending) return@safely
         val runtime = snapshot().getJSONObject("runtime")
@@ -325,7 +330,7 @@ object NativeSessionHost {
         }
         terminalOpen = operation
     } } }
-    fun disconnect() { worker.execute { safely {
+    fun disconnect() { productWorker.execute { safely {
         pendingInputFocus=null
         clearTerminalOpen(); terminalAdding=null; terminalError = null
         resetInput()
@@ -353,7 +358,7 @@ object NativeSessionHost {
     }
     fun showWindow(choice: WindowChoice, slot: Int) { windowCommand(choice,"show_window",slot) }
     fun closeWindow(choice: WindowChoice) { windowCommand(choice,"close_window",null) }
-    private fun windowCommand(choice: WindowChoice, type: String, slot: Int?) { worker.execute { safely {
+    private fun windowCommand(choice: WindowChoice, type: String, slot: Int?) { productWorker.execute { safely {
         if(handle==0L) return@safely
         resetInput()
         val command=JSONObject().put("schema",1).put("request_id",requests.incrementAndGet().toString()).put("type",type)
@@ -370,7 +375,7 @@ object NativeSessionHost {
         resetInput()
         return WindowControlTicket(runtime,target.toString(),inputIntents.get(),revision)
     }
-    fun windowControl(ticket: WindowControlTicket, action: String) { worker.execute { inputIntents.serial { safely {
+    fun windowControl(ticket: WindowControlTicket, action: String) { productWorker.execute { inputIntents.serial { safely {
         if(action !in setOf("focus","close") || handle!=ticket.runtime || inputIntents.get()!=ticket.intent || editing.get() ||
             !activityVisible.get() || xrState.get()!="FOCUSED") return@safely
         val target=JSONObject(ticket.target)
@@ -448,7 +453,7 @@ object NativeSessionHost {
     private fun enqueueInputReset(request: String): Int = NativeBridge.nativeCommand(handle,
         JSONObject().put("schema",1).put("request_id",request).put("type","reset_input").toString())
     fun inputTarget(target: String): InputTarget? {
-        if (editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || movingTarget(target)) return null
+        if (debugSdkLease.blocksProduct() || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || movingTarget(target)) return null
         return inputTargets[targetIdentity(JSONObject(target))]?.takeIf { it.runtime==handle }
     }
     private fun selectedTarget(runtime: JSONObject): JSONObject? {
@@ -459,9 +464,10 @@ object NativeSessionHost {
     }
     fun isLayoutEditing(): Boolean = editing.get()
     fun setLayoutEditing(value: Boolean) {
+        if (debugSdkLease.blocksProduct()) return
         editing.set(value); resetInput(); ui.post { layoutEditing.value=value }
     }
-    fun finishLayoutEditing() { worker.execute { inputIntents.serial { safely {
+    fun finishLayoutEditing() { productWorker.execute { inputIntents.serial { safely {
         if(handle==0L) return@safely
         val runtime=snapshot().getJSONObject("runtime")
         val target=focusTarget(runtime,requireApplied=false)
@@ -472,11 +478,11 @@ object NativeSessionHost {
         if (BuildConfig.DEBUG) Log.i(TAG,"focus_begin editing target=${target?.let {targetIdentity(it)}} ticket=$ticket")
         if(target==null) resetInput()
     } } } }
-    fun selectWindow(choice: WindowChoice) { worker.execute { safely {
+    fun selectWindow(choice: WindowChoice) { productWorker.execute { safely {
         selectedWindow=choice.session to choice.window; resetInput()
     } } }
-    fun setBackground(mode: String) { if(mode in setOf("passthrough","virtual")) worker.execute { send("set_background","background",mode) } }
-    fun setKeyboardLayout(layout: String) { if(layout in setOf("us","jis")) worker.execute { resetInput();send("set_keyboard_layout","layout",layout) } }
+    fun setBackground(mode: String) { if(mode in setOf("passthrough","virtual")) productWorker.execute { send("set_background","background",mode) } }
+    fun setKeyboardLayout(layout: String) { if(layout in setOf("us","jis")) productWorker.execute { resetInput();send("set_keyboard_layout","layout",layout) } }
     private fun themeCommand(command: JSONObject, done: (String) -> Unit = {}) {
         if (handle == 0L || themeRequests.size >= 8) { done("NOT_READY"); return }
         if(command.optString("type") in setOf("set_theme","begin_theme_import","apply_theme_import")) resetInput()
@@ -486,18 +492,18 @@ object NativeSessionHost {
         if (code == NativeBridge.ACCEPTED) themeRequests[request] = done else done("REJECTED")
     }
     fun setWorkloadObservation(enabled: Boolean) {
-        worker.execute { safely { themeCommand(JSONObject().put("type","set_workload_observation").put("enabled",enabled)) } }
+        productWorker.execute { safely { themeCommand(JSONObject().put("type","set_workload_observation").put("enabled",enabled)) } }
     }
     fun setTheme(selection: String, reduced: Boolean = themeUi.value.reduced) {
         if (selection !in setOf("off", "builtin", "imported")) return
-        worker.execute { safely {
+        productWorker.execute { safely {
             themeImportToken = null; themeImportMessage = null
             themeCommand(JSONObject().put("type", "set_theme").put("selection", selection).put("reduced_motion", reduced)) {
                 if (it != "ACCEPTED") themeImportMessage = "テーマの変更を開始できませんでした"
             }
         } }
     }
-    fun beginThemeImport(ready: (String) -> Unit) { worker.execute { safely {
+    fun beginThemeImport(ready: (String) -> Unit) { productWorker.execute { safely {
         val token = java.util.UUID.randomUUID().toString().replace("-", "")
         themeImportToken = token; themeImportMessage = null
         themeCommand(JSONObject().put("type", "begin_theme_import").put("token", token)) { code ->
@@ -507,15 +513,18 @@ object NativeSessionHost {
             }
         }
     } } }
-    fun cancelThemeImport(token: String) { worker.execute { safely {
+    fun cancelThemeImport(token: String) { productWorker.execute { safely {
         if (themeImportToken == token) {
             themeImportToken = null; themeImportMessage = null
             themeCommand(JSONObject().put("type", "cancel_theme_import").put("token", token))
         }
     } } }
     fun readTheme(context: Context, uri: android.net.Uri, token: String) {
+        val ticket = debugSdkLease.metadata().generation
+        if (!debugSdkLease.permitsProduct(ticket)) return
         ThemeImporter.read(context, uri, token, { themeImportToken == token }) { file, error ->
             worker.execute { safely {
+                if (!debugSdkLease.permitsProduct(ticket)) { file?.delete(); return@safely }
                 if (themeImportToken != token || handle == 0L) { file?.delete(); return@safely }
                 if (file == null) {
                     themeImportToken = null; themeImportMessage = error
@@ -550,7 +559,7 @@ object NativeSessionHost {
     fun ackBackground(scene: Long, command: String?, background: String, runtime: Long): Int = NativeBridge.nativeCommand(runtime,
         JSONObject().put("schema",1).put("type","background_applied").put("request_id",requests.incrementAndGet().toString()).put("scene",scene.toString())
             .put("background_command",command ?: JSONObject.NULL).put("background",background).toString())
-    fun nudgePose(x: Double=0.0,y: Double=0.0,z: Double=0.0,yaw: Double=0.0) { worker.execute { safely {
+    fun nudgePose(x: Double=0.0,y: Double=0.0,z: Double=0.0,yaw: Double=0.0) { productWorker.execute { safely {
         if(handle==0L) return@safely
         val runtime=snapshot().getJSONObject("runtime");val target=selectedTarget(runtime) ?: return@safely
         val windows=runtime.getJSONObject("workspace").getJSONArray("windows")
@@ -558,13 +567,13 @@ object NativeSessionHost {
         val pose=PanelPoseCodec.nudge(window.getJSONObject("placement").getJSONObject("pose"),x,y,z,yaw)
         if(PanelPoseCodec.valid(pose)) NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","set_pose").put("request_id",requests.incrementAndGet().toString()).put("target",target).put("pose",pose).toString())
     } } }
-    fun resizeTerminal(width: Int, height: Int) { worker.execute { safely {
+    fun resizeTerminal(width: Int, height: Int) { productWorker.execute { safely {
         if(handle==0L) return@safely
         val target=selectedTarget(snapshot().getJSONObject("runtime")) ?: return@safely
         NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","resize_logical")
             .put("request_id",requests.incrementAndGet().toString()).put("target",target).put("width",width).put("height",height).toString())
     } } }
-    fun setPhysicalSize(width: Double, height: Double) { worker.execute { safely {
+    fun setPhysicalSize(width: Double, height: Double) { productWorker.execute { safely {
         if(handle==0L) return@safely
         val target=selectedTarget(snapshot().getJSONObject("runtime")) ?: return@safely
         NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","set_physical_size")
@@ -645,7 +654,7 @@ object NativeSessionHost {
         return live.singleOrNull()
     }
     data class DebugImeFocusReceipt(val runtime: Long, val target: ImeSdkTarget, val ticket: Long, val beforeEpoch: Long, val beforeToken: String?)
-    fun focusTerminal(choice: WindowChoice? = null, requested: ((DebugImeFocusReceipt) -> Unit)? = null) { worker.execute { inputIntents.serial { safely {
+    fun focusTerminal(choice: WindowChoice? = null, requested: ((DebugImeFocusReceipt) -> Unit)? = null) { productWorker.execute { inputIntents.serial { safely {
         pendingInputFocus=null
         if (handle == 0L) return@safely
         if(editing.get()) return@safely
@@ -723,10 +732,10 @@ object NativeSessionHost {
         updateImeGate(connection)
     }
     fun debugImeRawReturnStatus(): ImeRawReturnMetadata? = if (BuildConfig.DEBUG) imeRawReturn?.metadata() else null
-    fun debugImeReady(): Boolean = BuildConfig.DEBUG && !imeRawBlocked.get() && keyboardFocus?.let {
+    fun debugImeReady(): Boolean = BuildConfig.DEBUG && !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && keyboardFocus?.let {
         it.runtime == handle && !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get() == "FOCUSED"
     } == true
-    fun debugImeCanRequestFocus(): Boolean = BuildConfig.DEBUG && handle!=0L && !imeRawBlocked.get() &&
+    fun debugImeCanRequestFocus(): Boolean = BuildConfig.DEBUG && !debugSdkLease.blocksProduct() && handle!=0L && !imeRawBlocked.get() &&
         !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get()=="FOCUSED"
     fun debugImeFocusObserved(request: DebugImeFocusReceipt): Boolean {
         if(!debugImeReady() || inputIntents.get()!=request.ticket) return false
@@ -917,6 +926,7 @@ object NativeSessionHost {
         sendPhysicalKeyLocked(event)
     }
     private fun sendPhysicalKeyLocked(event: KeyEvent): Boolean {
+        if (debugSdkLease.blocksProduct()) return false
         if (imeRawBlocked.get()) return false // Android IME owns physical ingress until reset/disable ACKs.
         if(BuildHooks.imeProbeActive()) {BuildHooks.imeProbePhysicalKey();return false}
         val focus = keyboardFocus ?: return false
@@ -948,6 +958,10 @@ object NativeSessionHost {
             ui.post { summary.value = "検証runtimeの停止を確認できません。検証を停止してください" }; return
         }
         handle = NativeBridge.nativeCreate(runtimeConfigJson())
+        finishRuntimeStart()
+    }
+    private fun finishRuntimeStart() {
+        check(handle > 0L) { "RUNTIME_CREATE_FAILED" }
         val deadline = SystemClock.elapsedRealtime() + 5000
         while (snapshot().getJSONObject("runtime").getString("state") == "Starting") {
             check(SystemClock.elapsedRealtime() < deadline) { "RUNTIME_START_TIMEOUT" }
@@ -963,6 +977,9 @@ object NativeSessionHost {
     /** withStoppedRuntimeの同じworkerから同期呼出し。通常Host/設定への切替は行わない。 */
     fun provideDebugProbeCredential(runtime: Long, capture: ProbeCredentialCapture, event: JSONObject): Int {
         check(BuildConfig.DEBUG && handle == 0L && runtime == capture.runtime) { "PROBE_OWNER_INVALID" }
+        return provideCapturedProbeCredential(runtime, capture, event)
+    }
+    private fun provideCapturedProbeCredential(runtime: Long, capture: ProbeCredentialCapture, event: JSONObject): Int {
         val envelope = JSONObject(NativeBridge.nativeCredentialScope(runtime))
         val fields = envelope.keys().asSequence().associateWith { key ->
             val value = envelope.get(key)
@@ -971,6 +988,135 @@ object NativeSessionHost {
         val supply = capture.claim(runtime, event.opt("session"), event.opt("request_id"), event.opt("profile_id"), fields)
         return checkNotNull(credentials).withPrivateKey { key ->
             NativeBridge.nativeProvideCredentialFor(runtime, supply.session, supply.request, supply.binding, key)
+        }
+    }
+
+    /** private configはdebug sourceSetの固定準備処理からだけ渡し、通常config/prefsへ保存しない。 */
+    class DebugSdkProbeConfig(val configuration: String, val profile: ConnectionProfileV2.Value) {
+        override fun toString() = "DebugSdkProbeConfig(<private>)"
+    }
+    data class DebugSdkProbeReceipt(val runtime: Long, val connectRequest: String?, val phase: DebugSdkRuntimeLease.Phase, val error: String?)
+    data class DebugSdkCommandReceipt(val runtime: Long, val request: String?, val code: Int)
+    fun debugSdkProbeCommand(owner: Any, type: String, session: String, nonce: String?, completed: (DebugSdkCommandReceipt) -> Unit) {
+        val captured = debugSdkLease.metadata()
+        if (!BuildConfig.DEBUG || !debugSdkLease.owns(owner) || captured.phase != DebugSdkRuntimeLease.Phase.ACTIVE ||
+            type !in setOf("linux_shm_sdk_probe", "disconnect") || !session.matches(Regex("[1-9][0-9]{0,18}")) ||
+            session.toLongOrNull() == null || (type == "linux_shm_sdk_probe" && nonce?.matches(Regex("[0-9a-f]{16}")) != true) ||
+            (type == "disconnect" && nonce != null)) {
+            completed(DebugSdkCommandReceipt(captured.runtime,null,NativeBridge.STALE)); return
+        }
+        worker.execute {
+            if (!debugSdkLease.owns(owner) || debugSdkLease.metadata().let { it.phase != DebugSdkRuntimeLease.Phase.ACTIVE || it.runtime != captured.runtime } || handle != captured.runtime) {
+                ui.post { completed(DebugSdkCommandReceipt(captured.runtime,null,NativeBridge.STALE)) }; return@execute
+            }
+            val request = requests.incrementAndGet().toString()
+            val command = JSONObject().put("schema",1).put("type",type).put("request_id",request).put("session",session)
+            nonce?.let { command.put("nonce",it) }
+            val code = NativeBridge.nativeCommand(handle,command.toString())
+            ui.post { completed(DebugSdkCommandReceipt(captured.runtime,request,code)) }
+        }
+    }
+    fun debugSdkProbeStatus(owner: Any): DebugSdkProbeReceipt? = if (BuildConfig.DEBUG && debugSdkLease.owns(owner))
+        debugSdkLease.metadata().let { DebugSdkProbeReceipt(it.runtime, null, it.phase, debugSdkFailure) } else null
+    private fun registryEmpty(): Boolean = try {
+        JSONObject(NativeBridge.nativeSnapshot(0)).getJSONObject("registry").let { ProbeRuntimeRecovery.registryEmpty(it.opt("runtimes"), it.opt("workers")) }
+    } catch (_: Exception) { false }
+    fun debugBeginSdkProbe(owner: Any, prepare: (String) -> DebugSdkProbeConfig, completed: (DebugSdkProbeReceipt) -> Unit) {
+        if (!BuildConfig.DEBUG) { completed(DebugSdkProbeReceipt(0,null,DebugSdkRuntimeLease.Phase.IDLE,"PROBE_DISABLED")); return }
+        worker.execute {
+            var request: String? = null
+            var error: String? = null
+            if (!probeRecovery.permits(owner) || !debugSdkLease.claim(owner, handle)) {
+                ui.post { completed(DebugSdkProbeReceipt(0,null,DebugSdkRuntimeLease.Phase.IDLE,"PROBE_BUSY")) }; return@execute
+            }
+            probeRecovery.retain(owner)
+            debugSdkFailure = null
+            try {
+                val previous = handle
+                inputIntents.incrementAndGet(); pendingInputFocus = null
+                stopRuntime()
+                check(debugSdkLease.normalRetired(owner, previous, registryEmpty())) { "PROBE_NORMAL_NOT_RETIRED" }
+                val prepared = prepare(runtimeConfigJson())
+                check(prepared.profile.backend == ConnectionProfileV2.Backend.LINUX_SSH && prepared.profile.profileId == "linux-probe") { "PROBE_PROFILE_INVALID" }
+                handle = NativeBridge.nativeCreate(prepared.configuration)
+                if (handle == 0L) {
+                    debugSdkLease.createFailed(owner, registryEmpty())
+                    throw IllegalStateException("PROBE_CREATE_FAILED")
+                }
+                check(debugSdkLease.created(owner, handle)) { "PROBE_OWNER_INVALID" }
+                request = requests.incrementAndGet().toString()
+                debugSdkCapture = ProbeCredentialCapture(handle, checkNotNull(request), prepared.profile)
+                finishRuntimeStart()
+                check(snapshot().getJSONObject("runtime").getString("state") == "Ready") { "PROBE_START_FAILED" }
+                check(NativeBridge.nativeCommand(handle, JSONObject().put("schema",1).put("type","connect_saved_probe")
+                    .put("request_id",request).toString()) == NativeBridge.ACCEPTED) { "PROBE_CONNECT_REJECTED" }
+            } catch (failure: Exception) {
+                error = failure.message?.takeIf { it.matches(Regex("PROBE_[A-Z_]+")) } ?: "PROBE_START_FAILED"
+                debugSdkFailure = error
+                if (debugSdkLease.metadata().phase == DebugSdkRuntimeLease.Phase.CREATING && handle == 0L)
+                    debugSdkLease.createFailed(owner, registryEmpty())
+                if (debugSdkLease.metadata().phase != DebugSdkRuntimeLease.Phase.RESTORING) debugSdkLease.cleanupRequired(owner)
+            }
+            val metadata = debugSdkLease.metadata()
+            val receipt = DebugSdkProbeReceipt(metadata.runtime, request, metadata.phase, error)
+            ui.post { completed(receipt) }
+        }
+    }
+    fun debugEndSdkProbe(owner: Any, verifyRestoration: () -> Boolean = {true}, completed: (DebugSdkProbeReceipt) -> Unit) {
+        if (!BuildConfig.DEBUG) { completed(DebugSdkProbeReceipt(0,null,DebugSdkRuntimeLease.Phase.IDLE,"PROBE_DISABLED")); return }
+        worker.execute {
+            if (!debugSdkLease.owns(owner)) {
+                ui.post { completed(DebugSdkProbeReceipt(0,null,DebugSdkRuntimeLease.Phase.IDLE,"PROBE_STALE")) }; return@execute
+            }
+            var error: String? = null
+            try {
+                debugSdkCapture?.close(); debugSdkCapture = null
+                val before = debugSdkLease.metadata()
+                if (before.phase != DebugSdkRuntimeLease.Phase.RESTORING || before.runtime != 0L) {
+                    val retiring = checkNotNull(debugSdkLease.beginClose(owner))
+                    check(handle == retiring) { "PROBE_OWNER_INVALID" }
+                    stopRuntime()
+                    check(debugSdkLease.retired(owner, retiring, registryEmpty())) { "PROBE_CLEANUP_UNCONFIRMED" }
+                } else check(handle == 0L && registryEmpty()) { "PROBE_CLEANUP_UNCONFIRMED" }
+                handle = NativeBridge.nativeCreate(runtimeConfigJson())
+                check(debugSdkLease.restoreCreated(owner, handle)) { "PROBE_RESTORE_CREATE_FAILED" }
+                finishRuntimeStart()
+                val normal = snapshot().getJSONObject("runtime")
+                check(verifyRestoration()) { "PROBE_CONFIGURATION_CHANGED" }
+                check(normal.getString("state") == "Ready" && normal.getJSONObject("transport").getString("state") == "Idle") { "PROBE_RESTORE_NOT_READY" }
+                // SDKの可視draw証拠をUIが捕捉するまでRESTORING/ownerを保持する。
+            } catch (failure: Exception) {
+                error = failure.message?.takeIf { it.matches(Regex("PROBE_[A-Z_]+")) } ?: "PROBE_CLEANUP_UNCONFIRMED"
+                debugSdkFailure = error; debugSdkLease.cleanupRequired(owner)
+            }
+            val receipt = DebugSdkProbeReceipt(handle, null, debugSdkLease.metadata().phase, error)
+            ui.post { completed(receipt) }
+        }
+    }
+    fun debugFinalizeSdkProbe(owner: Any, runtime: Long, scene: String, target: JSONObject, completed: (DebugSdkProbeReceipt) -> Unit) {
+        val capturedTarget = target.toString()
+        if (!BuildConfig.DEBUG) { completed(DebugSdkProbeReceipt(0,null,DebugSdkRuntimeLease.Phase.IDLE,"PROBE_DISABLED")); return }
+        worker.execute {
+            var error: String? = null
+            try {
+                check(debugSdkLease.owns(owner) && debugSdkLease.metadata().let {it.phase==DebugSdkRuntimeLease.Phase.RESTORING && it.runtime==runtime} && handle==runtime) {"PROBE_STALE"}
+                check(activityVisible.get() && xrState.get()=="FOCUSED" && scenes.get().toString()==scene) {"PROBE_RESTORE_NOT_VISIBLE"}
+                val normal=snapshot().getJSONObject("runtime")
+                val wanted=JSONObject(capturedTarget)
+                val frames=normal.getJSONObject("render").getJSONArray("targets")
+                check(normal.getString("state")=="Ready" && normal.getJSONObject("transport").getString("state")=="Idle" &&
+                    normal.getBoolean("activity_visible") && normal.getString("xr_state")=="FOCUSED" && normal.optString("scene")==scene &&
+                    wanted.getString("scene")==scene && frames.length()==1 && frames.getJSONObject(0).getString("role")=="diagnostic" &&
+                    targetIdentity(frames.getJSONObject(0).getJSONObject("key"))==targetIdentity(wanted) && frames.getJSONObject(0).getLong("frames")>=3 &&
+                    normal.getJSONObject("shutdown").getInt("sdk_bindings")==1) {"PROBE_RESTORE_NOT_READY"}
+                check(debugSdkLease.restored(owner,runtime,true)) {"PROBE_STALE"}
+                probeRecovery.release(owner);debugSdkFailure=null
+            } catch(failure:Exception) {
+                error=failure.message?.takeIf {it.matches(Regex("PROBE_[A-Z_]+"))} ?: "PROBE_RESTORE_FAILED"
+                if(debugSdkLease.owns(owner)) {debugSdkFailure=error;debugSdkLease.cleanupRequired(owner)}
+            }
+            val receipt=DebugSdkProbeReceipt(handle,null,debugSdkLease.metadata().phase,error)
+            ui.post {completed(receipt)}
         }
     }
     fun sdkBinding(target: JSONObject, runtime: Long, owned: Boolean): Int = NativeBridge.nativeCommand(runtime,
@@ -1104,7 +1250,13 @@ object NativeSessionHost {
                     }
                 }
             }
-            if (event.optString("type") == "credential_required" && event.optString("profile_id") == "termux-local" &&
+            if (event.optString("type") == "credential_required" && debugSdkLease.blocksProduct()) {
+                try {
+                    val capture = checkNotNull(debugSdkCapture)
+                    check(debugSdkLease.metadata().phase == DebugSdkRuntimeLease.Phase.ACTIVE && capture.runtime == handle)
+                    check(provideCapturedProbeCredential(handle, capture, event) == NativeBridge.ACCEPTED)
+                } catch (_: Exception) { debugSdkFailure = "PROBE_CREDENTIAL_REJECTED" }
+            } else if (event.optString("type") == "credential_required" && event.optString("profile_id") == "termux-local" &&
                 event.getString("request_id").toLong() > cancelledThrough) {
                 val code = checkNotNull(credentials).provide(handle, event.getString("session").toLong(), event.getString("request_id").toLong())
                 if (code != NativeBridge.ACCEPTED) Log.w(TAG, "credential_rejected code=$code")
@@ -1166,7 +1318,7 @@ object NativeSessionHost {
         lastFocusedWindow=focusedWindow
         val plans = runtime.getJSONArray("panels")
         val renderTargets=runtime.getJSONObject("render").getJSONArray("targets")
-        inputTargets=if (!editing.get() && runtime.getString("state")=="Ready" && runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED")
+        inputTargets=if (!debugSdkLease.blocksProduct() && !editing.get() && runtime.getString("state")=="Ready" && runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED")
             (0 until plans.length()).map { plans.getJSONObject(it) }.filter { plan ->
                 plan.optString("action")=="create" && plan.optBoolean("applied") && plan.isNull("error") && !movingTarget(plan.getJSONObject("target").toString()) &&
                     (0 until renderTargets.length()).any { index ->
@@ -1182,7 +1334,7 @@ object NativeSessionHost {
                 it.getJSONObject("target").getString("window") == focusedWindow &&
                 it.getJSONObject("target").optString("session") == runtime.optJSONObject("app")?.optString("session")
         }
-        keyboardFocus = if (!editing.get() && runtime.getString("state") == "Ready" && runtime.getBoolean("activity_visible") &&
+        keyboardFocus = if (!debugSdkLease.blocksProduct() && !editing.get() && runtime.getString("state") == "Ready" && runtime.getBoolean("activity_visible") &&
             runtime.getString("xr_state") == "FOCUSED" && focused != null && !movingTarget(focused.getJSONObject("target").toString()))
             KeyboardFocus(handle, runtime.getLong("input_resets"), focused.getJSONObject("target").toString(), runtime.getJSONObject("app").getJSONObject("input").getString("focus_token")) else null
         pumpIme(runtime, imeCompletions)
@@ -1192,7 +1344,8 @@ object NativeSessionHost {
             runtime.getString("state")=="Ready",if(terminalOpen?.startupWaiting==true) "StartingTermux" else runtime.getJSONObject("transport").getString("state"),editing.get(),keyboardCount.get(),
             (runtime.optJSONObject("app")?.optJSONArray("windows")?.length() ?: 0)>0,inputTargets.isNotEmpty(),
             focusedWindow.takeIf {keyboardFocus!=null},panelEditing=panelTextInputs.isNotEmpty(),imeProbe=BuildHooks.imeProbeActive())
-        val status=if(inputConditions.visible && inputConditions.xrFocused) {
+        val status=if(debugSdkLease.blocksProduct()) InputStatus("FIXED_LINUX_PROBE","Linux描画の固定検査中 · 通常操作と文字入力を停止")
+        else if(inputConditions.visible && inputConditions.xrFocused) {
             val move=windowMove.get()
             if(move!=null) InputStatus("WINDOW_MOVING","窓 ${JSONObject(move.control.target).getString("window")} を移動中 · その窓の文字入力を停止")
             else imeInputMessage ?: InputStatus.from(inputConditions)
