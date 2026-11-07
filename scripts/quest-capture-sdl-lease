@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""現行APK/lease/登録rootの2環境値を読取り専用で照合し、private artifactへ保存する。"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import time
+
+from native_build import ROOT, source_files
+from quest_device import PACKAGE, QuestDevice, package_uid, work_root
+from sdl_lease_capture import (CaptureError, MAX_SNAPSHOT, canonical, decode, need,
+                               select_snapshot, verify_following)
+
+
+def source_digest():
+    digest = hashlib.sha256()
+    for path in source_files(ROOT):
+        digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--serial", required=True)
+    parser.add_argument("--artifact-root", type=Path)
+    args = parser.parse_args()
+    os.umask(0o077)
+    root = args.artifact_root or work_root() / "eidolon-sdl-lease-capture"
+    if not root.is_absolute():
+        parser.error("artifact rootは絶対pathにしてください")
+    run = root / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f") + f"-{os.getpid()}")
+    run.mkdir(mode=0o700, parents=True)
+    result = dict(schema=1, status="blocked", read_only=True, probe_executed=False)
+    device = QuestDevice(args.serial, run)
+
+    def snapshot():
+        # 本文を含むIME private APIやlogcatは読まない。raw snapshotも保存しない。
+        process = subprocess.run(["adb", "-s", args.serial, "exec-out", "run-as", PACKAGE,
+                                  "head", "-c", str(MAX_SNAPSHOT + 1), "no_backup/diagnostics/latest.json"],
+                                 capture_output=True, timeout=10)
+        need(process.returncode == 0, "DIAGNOSTICS_UNAVAILABLE")
+        return decode(process.stdout)
+
+    try:
+        result["device"] = device.validate()
+        result["device"]["physical_serial"] = device.adb("shell", "getprop", "ro.serialno").strip()
+        uid = package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux")
+        current_digest = source_digest()
+        before = select_snapshot(snapshot(), current_digest, uid)
+        need(device.adb("shell", "pidof", PACKAGE).strip() == str(before["process_id"]), "APK_PROCESS_NOT_CURRENT")
+        result["binding_before"] = before
+        installer = (ROOT / "scripts/sdl_probe_install.py").read_text()
+        observer = (ROOT / "scripts/sdl_lease_capture.py").read_text()
+        # remote側は検査・読取りだけ。共有helperやsourceを配備・更新しない。
+        remote = ("import sys,types\nmodule=types.ModuleType('sdl_probe_install')\n"
+                  f"exec({installer!r},module.__dict__)\nsys.modules[module.__name__]=module\nexec({observer!r})\n")
+        command = ["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python3", "-c", remote]
+        process = subprocess.run(["adb", "-s", args.serial, "shell", "-T", shlex.join(command)],
+                                 input=canonical(before), capture_output=True, timeout=12)
+        report = decode(process.stdout, 16384)
+        need(type(report) is dict, "REMOTE_REPORT_INVALID")
+        if process.returncode or report.get("status") != "captured":
+            reason = report.get("reason")
+            raise CaptureError(reason if isinstance(reason, str) and reason.isupper() and len(reason) <= 64 else "REMOTE_READ_UNAVAILABLE")
+        need(set(report.get("environment", {})) == {"WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"} and
+             report.get("uid") == uid and report.get("session") == before["session"] and report.get("nonce") == before["nonce"] and
+             report.get("binding_sha256") == hashlib.sha256(canonical(before)).hexdigest(), "REMOTE_REPORT_MISMATCH")
+        # 即時の同じdiagnosticsを新snapshot扱いせず、短い期限で実際の更新を待つ。
+        deadline = time.monotonic() + 3
+        after = select_snapshot(snapshot(), current_digest, uid)
+        while int(after["diagnostics_sequence"]) <= int(before["diagnostics_sequence"]) and time.monotonic() < deadline:
+            time.sleep(.2)
+            after = select_snapshot(snapshot(), current_digest, uid)
+        verify_following(before, after)
+        need(source_digest() == current_digest and
+             device.adb("shell", "pidof", PACKAGE).strip() == str(before["process_id"]), "SOURCE_OR_APK_CHANGED")
+        result.update(status="captured", binding_after=after, capture=report)
+        code = 0
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError) as failure:
+        if isinstance(failure, CaptureError):
+            result.update(status=failure.status, reason=failure.reason, **failure.details)
+        else:
+            result.update(reason="CAPTURE_UNAVAILABLE", failure_class=type(failure).__name__)
+        code = 2
+    (run / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(dict(status=result["status"], reason=result.get("reason"), artifact=str(run),
+                          read_only=True, probe_executed=False)))
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
