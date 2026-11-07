@@ -8,7 +8,8 @@ NX01〜NX18を対象とするゴールを再設定した。開始基準は`4ea69
 
 **日本語入力の実装は保留し、再開時の方針を[Android IME先行の新計画](android-ime-wayland-plan-20261107.md)へ更新した。**
 再開後は案Aの小さなSpatial入力probeを先行し、固有の制約で成立しなければ案BのTermux Fcitx5へ進む。
-方式選定に必要なHMD/物理確認は先行ゲートとする。以下のFcitx/ttyskk調査は履歴として保持し、新方式の検証は未着手。
+方式選定に必要なHMD/物理確認は採用ゲートとする。標準欄・独自editorの試作と自動検査は先に準備し、装着確認をまとめる。
+以下のFcitx/ttyskk調査は履歴として保持し、新方式の検証は未着手。
 
 ## 引き継ぐ証拠と未完了条件
 
@@ -146,6 +147,8 @@ build時の基準は`b0b28ec`＋未commit差分、source digestは
 helperは86,676 bytes、SHA256
 `8bc260278f3e8556cade44c4dd7d6c0b2fe01913432c502be1ae0ae9bbf155cf`。
 後続の文書・独立SDL probe変更はこのAPKの実装を変更しない。
+統合commit `8b0fcb4`の[GitHub Actions run 42376143943](https://github.com/tin-machine/eidolon-wayland/actions/runs/42376143943)も
+host/Androidとも成功した。CIのAPKはversionCode 1であり、ローカルBuild143と区別する。
 Wi-Fi ADBは`No route to host`で、実機へ配備していない。Build142の実機確認をBuild143の合格へ流用しない。
 
 再現時は上記Python/Rust検査に加え、`scripts/check-host --suite lifecycle`、`scripts/build-android 143`を使う。
@@ -168,6 +171,26 @@ footのsurrounding text非対応、固定protocol版、transaction検査、Input
 特に固定Smithayはserial確認より前に文字イベントを送るため、不一致`done`を取消として使わず、
 transaction全体を先に検査するgateを追加した。静的読解の懸念を実機再現済みの不具合とは扱わない。
 日本語変換は引き続きユーザー指定で保留し、このレビューだけで再開しない。
+
+### 日本語入力計画の追加独立レビュー
+
+ユーザーの追加依頼で`8b0fcb4`を基準に、Quest/SDK、protocol、実装費用・順序を三担当で再確認した。
+大筋のAndroid IME再利用→共通text-input→foot、案A固有の不成立時にTermux Fcitxを検証する方針は維持した。
+実装や実機操作を再開せず、次の改善を計画へ反映した。
+
+- SDK 0.15.0にはIMMの文字編集状態によりパネルのMotionEvent配送前にreturnする処理がある。
+  鍵盤の非表示と入力接続の終了を区別し、入力後のcontroller/hand操作と再開までprobeへ追加した。
+  固定AARのbytecodeで確認した分岐であり、Questでの操作不能を再現したわけではない。
+- 初回のSmithay先送出・foot pending残留の指摘は別担当も確認した。
+  後続の新commitでは残留が上書きされるため、preedit-only/空doneを使う反例に具体化した。
+  複数text-input object・active object破棄・enable前pendingの初期化も最初の小fixtureへ含めた。
+- 標準bridgeとbridge API patch/小さな自前dispatchを、必要修正量・所有範囲・停止契約で比較する。
+  周辺テキストが読めることを任意カーソル移動や再変換の対応済み根拠にしない。
+- A1/A2の試作準備と方式採用を分離し、同じdebug APKで比較して装着機会をまとめる。
+  端末のC2-TをNX09、GUI固有のC2-GをNX15へ分け、全体計画の古い先行ゲート表現もそろえた。
+
+再現調査・固定source/hash・各担当の報告は、作業rootの`eidolon-ime-extra-review-20261107/`に保存した。
+文書検査は実装・IME互換性・実機成功の証拠ではない。NX09の保留と最後の手動受入れは維持する。
 
 ## 記録
 

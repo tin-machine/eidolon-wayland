@@ -6,6 +6,8 @@
 本書は日本語入力の実装を再開するときの方針とする。
 2026-11-07の実現性レビューは`b0b28ecad8a26b15255e807d7adf404752c724b9`を基準に実施した。
 固定依存とfoot sourceを確認し、IME表示条件・編集能力・古いtransactionの破棄条件を補った。新しい実機検証や日本語入力の実装再開を意味しない。
+追加の独立レビューは`8b0fcb4`を基準に、Quest/SDK・protocol・実装費用の三担当で実施した。
+以下へSDKの操作復帰、固定Smithayの具体的な反例、試作準備と採用判定の分離を反映した。
 
 ## 1. 決定と既存計画との関係
 
@@ -50,17 +52,21 @@ Androidの[View.onCreateInputConnection](https://developer.android.com/reference
 | --- | --- | --- | --- |
 | IME-00 | 現行版・実機・入力経路の棚卸し、固定テキストの検証準備 | NX09の実装再開時 | 記録と再現入口がそろう |
 | IME-A1 | 小さなSpatialパネルの標準入力欄で日本語を試す | IME-00 | 日本語変換・実キーボード・候補視認の必須条件がPASS |
-| IME-A2 | 独自editor host / InputConnectionとキー経路のprobe | IME-A1 | 端末相当の編集契約とMRのfocus条件でPASS |
+| IME-A2 | 独自editor host / InputConnectionとキー経路のprobe | IME-00後、A1と同じdebug APKへ準備可 | A1と比較し、端末相当の編集契約とMRのfocus条件でPASS |
 | IME-C1 | 共通text-input-v3とWaypipeのwire fixture | IME-00。Aの検証待ちに独立して進行可 | 両端でprotocol・状態・文字列・回収を確認 |
-| IME-A3 | Android adapterから一枚の実footへ接続 | IME-A2、IME-C1 | 未確定表示・確定一回・取消・英数復帰がPASS |
+| IME-A3 | Android adapterから一枚の実footへ接続 | IME-A1/A2の採用ゲート、IME-C1 | 未確定表示・確定一回・取消・英数復帰がPASS |
 | IME-B1 | TermuxのFcitx5＋日本語エンジンの成立性probe | 案A固有のFAILを記録した場合 | 専用環境でWayland frontendとかな漢字変換が成立 |
 | IME-B2 | input-method/virtual-keyboard/popupを接続 | IME-B1、IME-C1 | 実footで案A3相当の入力条件がPASS |
-| IME-C2 | 選んだ一方式の二窓・tmux/nvim・障害復帰、GUI一例 | IME-A3またはIME-B2 | 第8節の受入れを完了 |
+| IME-C2-T | 選んだ一方式の二窓・foot/tmux/nvim・障害復帰 | IME-A3またはIME-B2 | 第8節の端末受入れを完了。NX09の初期範囲 |
+| IME-C2-G | GTK/Qt等の対応GUI一例で編集能力を検証 | IME-C2-T、NX15の描画・通常入力 | 第8節のGUI固有受入れ。端末版NX09の完了待ちにしない |
 
 ユーザーの「手動確認はできるだけ最後」という希望を維持し、自動で準備・検査できる部分を先に完成させる。
 **IME-A1/A2の実USキーボード・候補視認は、案Aの採用を確定するためのゲート**であり、NX10等の独立実装を止めるゲートにしない。
 装着確認をまだ行えない場合はBLOCKEDとしてIME-C1や限定したadapter fixtureを進める。
 未確認のまま案Aの本格統合・採用完了へ進めたり、案Bの条件を満たしたと扱ったりしない。
+「試作を準備できる」と「方式を採用できる」を分ける。A1の標準欄とA2の局所composition hostを
+同じdebug APKの比較caseとして先に用意し、自動検査後に一度の装着機会で順に比較できるようにする。
+ここでA1不合格ならA2の結果を案A全体の成功に使わない。GUIへの能力拡張はC2-Gへ分離する。
 
 ### 判定を分ける
 
@@ -75,6 +81,8 @@ Androidの[View.onCreateInputConnection](https://developer.android.com/reference
 端末で利用できる対応IME・subtypeと選択方法を調べる。Gboard等が導入・選択可能とは事前に仮定しない。
 限定probeで端末制約を解消できず、OSの保護や入力focus契約を破る回避策が必要になる場合はFAIL-Aの理由にする。
 一般的な実装バグは修正して再試験し、原因・変更・結果のない反復を続けない。
+標準欄だけ成功し独自hostだけ失敗した場合は、まずcallback・EditorInfo・局所編集能力の差を調べる。
+adapterの実装不備を案A固有の制約に数えず、対応不能な編集能力などを切り分けてから判定する。
 
 ## 4. 案Aの先行probe
 
@@ -108,6 +116,7 @@ editorのattach/Window token、View focus、Window focus、実際のIME target/d
 | 英数復帰 | US配列で再現可能な切替があり、英数字・記号・Ctrl/Alt/Esc・矢印へ戻れる |
 | 物理キーボード | 通常の実外部キーボードで上記が成立する。ソフト入力のみでは合格にしない |
 | focus | 入力欄・操作ボタン・別パネルへ移動しても、文字を誤配送しない |
+| パネル操作の復帰 | IME接続中・確定後・ソフト鍵盤非表示後にcontroller/handで別欄・ボタン・別パネルを操作し、英数入力と日本語入力へ戻れる |
 | XR状態 | キーボード/候補表示前後のActivity、Window、XR session状態を観測でき、既存の入力停止条件と両立する |
 
 画面キーボードによる操作は補助検査。物理キーボードを使うと候補まで消える、候補が別displayに出る、
@@ -115,10 +124,30 @@ editorのattach/Window token、View focus、Window focus、実際のIME target/d
 ソフトウェアキーボード本体を畳んでも候補が使えるか確認し、不可の場合は必須条件の成否と操作上の制約を分ける。
 候補の厳密なカーソル追従は後段で評価できるが、候補が読めない・選べない状態をPASSにしない。
 
+#### 固定Spatial SDKのポインター配送を独立に確認する
+
+SDK 0.15.0の元AARを`javap`で確認すると、`PanelDisplayBase.dispatchEvent(MotionEvent, boolean)`は
+保持する`InputMethodManager.isAcceptingText()`がtrueの場合、後続のMotionEvent配送前にreturnする。
+[isAcceptingTextの契約](https://developer.android.com/reference/android/view/inputmethod/InputMethodManager#isAcceptingText())は
+文字編集を受け付ける状態の判定であり、ソフト鍵盤の可視性判定ではない。
+この内部処理の根拠は公開API説明ではなく固定AAR（SHA256
+`f409e9b9dfda689df2fa6a574e6857b41e2f1aff7c1a56c7ba80c6d60370a873`）のbytecodeである。
+Viewパネルconstructorのcontextから取得したIMMとeditor/Presentation側IMMの関係は実測待ちで、
+すべてのパネルや物理キーが停止すると断定しない。この静的所見だけではFAIL-Aにしない。
+
+- 未接続・composition中・確定後・鍵盤だけ非表示を分け、controller/handのclick/hover/scroll件数を確認する。
+  constructor相当とeditor側のdisplay、IMM状態、View/Window focusを入力本文なしで記録する。
+- 鍵盤closeのみ、`clearFocus`と非editorへのfocus移動、host接続失効・局所取消・再同期を別々に試す。
+  native resetや`hideSoftInput`だけでAndroid入力接続が終了したとは扱わない。
+- クリックが止まってもprobeを終了できる独立したdebug制御を用意する。
+  新しい復帰ボタンも、この配送経路で押せると確認できるまでは脱出手段に数えない。
+- 同じ操作をA2でも確認し、接続を再作成した後に日本語入力を再開できることまで一巡とする。
+
 ### IME-A2: 独自入力Viewと端末に近い契約
 
-標準入力欄の成功後、attachされたViewと正しいWindow tokenを持つeditor hostを用意し、
+標準入力欄と比較するため、attachされたViewと正しいWindow tokenを持つeditor hostを用意し、
 `onCreateInputConnection`、`onCheckIsTextEditor`、`EditorInfo`を設定する。
+試作準備はA1と並行してよいが、採用判定はA1→A2の順を守る。
 ゼロ寸法・未attach・任意の不可視ViewでもIMEが利用できるとは仮定しない。
 初期probeは見える検査用Viewで行い、製品で必要なhostの配置に変えて同じ試験を通す。
 
@@ -190,7 +219,9 @@ input-method instanceがないとtext-input requestを破棄する。
 | APK内の信頼されたinput-method-v2 bridge client | 標準の状態機械を再利用し、Androidとの間でactivate/deactivate・編集transactionを変換する。専用event loop・serial・停止処理を含めてprobeする |
 | 明示したbridge APIのpatch、または自前text-input dispatch | Android backendを直接接続する。enable/disable、pending/current、serial、focusの所有範囲を定義し、標準delegateを無修正で使えるとは見積もらない |
 
-前者を最初の比較用spikeとし、成立性と停止契約を確認してから選ぶ。内部bridgeだけへglobalを見せる
+前者を小さな比較用spikeとして試してよいが、標準状態機械を無修正で再利用できる優位は未確定である。
+下記fixtureを共通基準とし、必要patchの範囲・停止契約・公開APIを後者と同等に比較してから一方式を選ぶ。
+両方式を製品レベルまで作ったり、案Aのために案Bのpopup/keyboard grab全体を先に作ったりしない。内部bridgeだけへglobalを見せる
 [Smithayのclient filter](https://github.com/Smithay/smithay/blob/v0.7.0/src/wayland/input_method/mod.rs)を利用し、
 同じseatで案Aのbridgeと案BのFcitxを同時に有効にしない。
 後者で`with_active_text_input`を使う場合は、同じhandleを再lockする`done`をclosure内から呼ばない。
@@ -203,12 +234,26 @@ input-method instanceがないとtext-input requestを破棄する。
 また[foot 1.28.0のime.c](https://codeberg.org/dnkl/foot/src/tag/1.28.0/ime.c)は不一致`done`でpending確定文字を残してreturnするため、
 後続の正常`done`へ持ち越す経路がsource上にある。これは静的読解による懸念であり、現行Eidolonで再現済みの不具合とは扱わない。
 
-- IME-C1は「古い確定文字 → 不一致serial → 新しい正常transaction」を検査し、同一対象でも窓切替後でも古い文字が届かないことを確認する。
+- IME-C1は「古い確定文字 → 不一致serial → 正常なpreedit-onlyまたは空のdone」を同じ対象で検査する。
+  次の`commit_string`はfootの古いpendingを上書きするため、それだけでは残留を検出できない。
+  footは通常のleave/enterでpendingを消す。窓切替は、古いbackend要求が切替後に送出される別の競合として検査する。
 - backendの編集要求を所有済みpending transactionに蓄積し、commit時に対象・activation世代・serial・範囲を全体検査してからclientへ送る。
   既に送った文字を不一致`done`で取り消す設計は禁止する。案Aの信頼されたclientにも遅延・競合はあるため例外にしない。
 - この条件を満たせない標準delegateは無修正で採用しない。bridge API/dispatchのpatchを先に設計し、案Bでも同じ検査を通す。
 - 不正enum、UTF-8境界外のoffset、負の寸法、過大surrounding、同一clientの複数text-input objectをfixtureへ含める。
   固定版のrequest処理にはenum変換の`unwrap`等があるため、delegateの存在を入力検証済みの根拠にせず、session全体のpanicを防ぐ。
+
+固定版の[text_input_handle.rs](https://github.com/Smithay/smithay/blob/v0.7.0/src/wayland/text_input/text_input_handle.rs)にも
+静的監査による懸念がある。通知loopが最初の同一client objectで打ち切られ、destroy処理はactive IDを消さず、
+enable処理は以前のpending属性を初期化しない。一般的な「destroy/複数object」の項目だけで済ませず、C1冒頭で次を試す。
+
+- 同一clientで二つ作成→両方enter→Aをenable→Aをdestroy→Bをenable/commit→Bへ正常入力。
+  単一objectの破棄・再作成も確認する。
+- 以前の編集欄のsurrounding/content typeを未commitのpendingへ設定→新しいenable→commit。
+  新しい欄がsurroundingを提供しなくても、以前の文字・属性が新activationへ渡らないことを確認する。
+
+これは現行Eidolonでは未接続のIME処理に対するsource上の指摘であり、実機で再現済みとは扱わない。
+必要修正量を上の接続案比較へ戻し、active ID・pending/current・focusの所有者を一つに保つ。
 
 IME-C1は独立text-input clientと入力backend fixtureで、まず同一Display、次に実Waypipe両端を通して検査する。
 registryのglobal/version、focus、preedit/commit/done、順序、切断・再接続とFD/queue回収を比較する。
@@ -231,6 +276,14 @@ source上の転送機構と、このAPK helper/Termux packageでの成立を分�
 `finishComposingText`を取消へ対応付けないことは[Android公式仕様](https://developer.android.com/reference/android/view/inputmethod/InputConnection#finishComposingText())に基づく。
 一対一のcallback置換では不十分なため、Android側の編集結果とWayland側の既送信状態からtransactionを作る。
 確定直後に`finishComposingText`が続く場合や、同じbatchで確定と次のpreeditが発生する場合も検査する。
+同じbatch内の複数`commitText`も検査する。複数の`commit_string`を一つの`done`までに送るだけでは
+footのpendingが上書きされるため、前半の確定文字を失わない編集結果を生成する。
+
+周辺テキストの読取り能力と、確定済み範囲の選択・カーソル移動能力を分ける。
+text-input-v3には任意の確定済み位置へカーソルを移動するeventがないため、GUIがsurroundingを提供しても
+Androidの任意`setSelection`や再変換まで対応できるとは扱わない。
+A2で`commitText(..., 0)`、composition外の`setSelection`、確定済み範囲への`setComposingRegion`を試し、
+表現不能な要求への返却・局所状態の再同期を固定する。初期footの編集能力は局所composition内に限定する。
 
 AndroidのJava char位置はUTF-16 code unit、WaylandはUTF-8 byte offsetである。
 `deleteSurroundingTextInCodePoints`は別の単位として扱い、補助漢字・絵文字・結合文字を含む範囲変換を試す。
@@ -331,10 +384,17 @@ Fcitxの起動成功やGTK/Qt用の環境変数だけを、native Wayland foot�
 | 受入れ | 既存`check-host`/`quest-check`へ専用caseを追加、NX09/15/18記録 | 自動結果とHMD/物理結果の分離 |
 
 ファイル名やcase名は実装前に現行構造へ合わせる。上記の未実装caseを既存コマンドとして案内しない。
+debugパネルは既存の[BuildHooks](../android/app/src/debug/java/io/github/tinmachine/eidolon/BuildHooks.kt)の入口を優先して再利用する。
+[NativeCheckInstrumentation](../android/app/src/debug/java/io/github/tinmachine/eidolon/NativeCheckInstrumentation.kt)は
+sceneを起動しないため、共通protocol/寿命の検査とSpatial IME表示の検査を分ける。前者の成功を後者へ流用しない。
 先行probe、共通protocol、案A接続、選択後の統合受入れを別commit/PRに分け、失敗段階を局所化する。
 案Bのpackage移植を案Aの成功待ちなしに大規模着手しない。既存調査・少量のread-only確認は再利用できる。
 
 ## 8. 受入れと証拠
+
+NX09の初期完了はC2-Tの端末受入れまでとする。以下のGTK/Qt固有の編集能力と候補位置、
+GUI向けsurrounding対応はC2-G/NX15、remote Linuxの受入れはNX18で追加する。
+初期端末版でも誤配送防止・通常英数への復帰・操作不能からの復帰は省略しない。
 
 | 範囲 | 必須の確認 | 合格に置き換えないもの |
 | --- | --- | --- |
@@ -342,6 +402,7 @@ Fcitxの起動成功やGTK/Qt用の環境変数だけを、native Wayland foot�
 | 文字列 | 日本語・ASCII混在、補助漢字、絵文字、結合文字、選択と境界、過大入力 | ASCIIのみのfixture |
 | 実foot | surrounding textなしで未確定描画、候補選択、確定一回、取消、英数復帰、Enter確定と実行の分離 | clipboard貼付け、既存日本語の表示。EditTextの全文書bufferだけでの成功 |
 | キー | 変換中/外のSpace/Enter/Esc/Backspace、Ctrl/Alt、矢印、repeat、二device | IME確定とrawキーの両方を配送する動作 |
+| パネル操作 | IME接続中/確定後/鍵盤非表示後のcontroller・hand操作、接続失効と再開 | SDKの鍵盤表示ログだけ。操作できない復帰ボタンを置いただけ |
 | 二窓 | Aで未確定中にBへ移動、Aへ再入、旧callback、窓close、配置編集、resize | 同一入力欄内だけの試験 |
 | tmux/nvim | pane移動、prefix、insert/normal、取消/確定、外側IMEの状態とアプリ状態の関係 | paneやnvim modeを自動認識できるという推測 |
 | 一般GUI | text-input-v3対応の小さなGTK/Qt入力欄一つ。readonly/編集欄切替、surrounding text、dialog | foot成功だけで全GUI対応とすること |
@@ -366,6 +427,6 @@ HMD画像が必要な場合は室内を含む可能性があるため、既存�
 回収結果と次の作業を[NX09以降の継続記録](extensions-nx09-nx18-20261107.md)へ追記する。
 詳細artifactの保存先は作業開始時の`codex-work-root`設定から取得する。
 
-初期状態は、IME-00/A1/A2/C1/A3/B1/B2/C2すべて未着手。案Bは条件付きであり、A採用時にBを実装する必要はない。
+初期状態は、IME-00/A1/A2/C1/A3/B1/B2/C2-T/C2-Gすべて未着手。案Bは条件付きであり、A採用時にBを実装する必要はない。
 文書追加、Android標準入力欄の成功、共通wire試験の成功、実foot成功、HMD受入れを別々の到達点として記録する。
 再開後に最初に実装するのはIME-00とIME-A1の小さなSpatial入力probeである。
