@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """専用SDL子のWayland traceを集計する。入力本文・生traceは保存しない。"""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import selectors
 import signal
 import stat
 import subprocess
+import threading
 import time
 
 STDOUT_LIMIT = 16384
@@ -158,8 +160,8 @@ def probe_report(data):
     return value
 
 
-def assess(client, trace, returncode, *, driver, timed_out=False, reclaimed=False):
-    graphics = (client is not None and client['completed'] and returncode == 0 and not timed_out and reclaimed
+def assess(client, trace, returncode, *, driver, timed_out=False, reclaimed=False, cancelled=False):
+    graphics = (client is not None and client['completed'] and returncode == 0 and not timed_out and not cancelled and reclaimed
                 and client['exit_reason'] != 'signal' and client['video_driver'] == driver
                 and client['renderer_flags'] & 1 and client['frames'] >= 2 and client['pixel_checks'] == client['frames'])
     shm = (graphics and driver == 'wayland' and trace['complete'] and trace['protocol_errors'] == 0
@@ -188,7 +190,32 @@ def group_live(group):
     return False
 
 
-def run(binary, *, driver='wayland', frames=120, timeout=15, inject=False, disable_acceleration=False):
+@contextmanager
+def cancellation_signals():
+    """所有子のspawn前から結果保存まで取消を保持し、signal handlerではI/Oしない。"""
+    if threading.current_thread() is not threading.main_thread():
+        raise ValueError('PROBE_REQUIRES_MAIN_THREAD')
+    cancellation, previous = {'signal': None}, {}
+
+    def interrupted(number, frame):
+        if cancellation['signal'] is None:
+            cancellation['signal'] = number
+
+    try:
+        for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            previous[number] = signal.signal(number, interrupted)
+        yield cancellation
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def run(binary, *, driver='wayland', frames=120, timeout=15, inject=False, disable_acceleration=False,
+        _cancellation=None):
+    if _cancellation is None:
+        with cancellation_signals() as cancellation:
+            return run(binary, driver=driver, frames=frames, timeout=timeout, inject=inject,
+                       disable_acceleration=disable_acceleration, _cancellation=cancellation)
     binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
     environment = os.environ.copy()
     environment.update(SDL_VIDEODRIVER=driver, SDL_RENDER_DRIVER='software')
@@ -205,6 +232,7 @@ def run(binary, *, driver='wayland', frames=120, timeout=15, inject=False, disab
         os.set_blocking(stream.fileno(), False)
         selector.register(stream, selectors.EVENT_READ, name)
     reaped, reclaimed, term_sent, kill_sent = False, False, False, False
+    stopping_at = None
 
     def signal_group(number):
         nonlocal term_sent, kill_sent
@@ -218,16 +246,18 @@ def run(binary, *, driver='wayland', frames=120, timeout=15, inject=False, disab
     try:
         while True:
             now = time.monotonic()
-            if now >= deadline or overflow or trace.bytes > TRACE_LIMIT:
+            if _cancellation['signal'] is not None or now >= deadline or overflow or trace.bytes > TRACE_LIMIT:
                 timed_out |= now >= deadline
+                if stopping_at is None:
+                    stopping_at = now
                 if not term_sent:
                     signal_group(signal.SIGTERM)
-                if now >= deadline + 1 or overflow or trace.bytes > TRACE_LIMIT:
+                if now >= stopping_at + 1 or overflow or trace.bytes > TRACE_LIMIT:
                     signal_group(signal.SIGKILL)
             exited = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
             if exited and not selector.get_map():
                 break
-            if now >= deadline + 2:
+            if stopping_at is not None and now >= stopping_at + 2:
                 break
             for key, _ in selector.select(0.05):
                 data = os.read(key.fd, 65536)
@@ -258,12 +288,15 @@ def run(binary, *, driver='wayland', frames=120, timeout=15, inject=False, disab
     except (ValueError, TypeError, UnicodeError): client, error = None, 'PROBE_REPORT_INVALID'
     observation = trace.summary()
     observation['complete'] &= pipes_drained
-    gates = assess(client, observation, child.returncode, driver=driver, timed_out=timed_out, reclaimed=reclaimed and reaped)
+    cancelled = _cancellation['signal'] is not None
+    gates = assess(client, observation, child.returncode, driver=driver, timed_out=timed_out,
+                   reclaimed=reclaimed and reaped, cancelled=cancelled)
     return dict(schema=1, probe='eidolon-sdl-observation-v1', driver=driver,
                 binary_sha256=binary_hash,
                 disable_framebuffer_acceleration=disable_acceleration, elapsed_ms=int((time.monotonic() - started) * 1000),
                 client=client, trace=observation, error=error, returncode=child.returncode,
-                timed_out=timed_out, output_overflow=overflow, term_sent=term_sent, kill_sent=kill_sent,
+                timed_out=timed_out, cancelled=cancelled, cancel_signal=_cancellation['signal'],
+                output_overflow=overflow, term_sent=term_sent, kill_sent=kill_sent,
                 reaped=reaped, group_reclaimed=reclaimed, pipes_drained=pipes_drained, **gates)
 
 
@@ -285,13 +318,21 @@ def main():
     if args.result.exists() or args.result.is_symlink():
         parser.error('result path already exists; choose a new run path')
     os.umask(0o077)
-    result = run(args.binary, driver=args.driver, frames=args.frames, timeout=args.timeout,
-                 inject=args.inject_events, disable_acceleration=args.disable_framebuffer_acceleration)
-    with args.result.open('x') as stream:
-        json.dump(result, stream, indent=2)
-        stream.write('\n')
-    print(json.dumps({key: result[key] for key in ['graphics_client', 'shm_gate', 'input_gate', 'quest_sdk', 'group_reclaimed', 'error']}))
-    return 0 if result['graphics_client'] == 'completed' and (args.driver == 'dummy' or result['shm_gate'] == 'pass') else 1
+    with cancellation_signals() as cancellation:
+        result = run(args.binary, driver=args.driver, frames=args.frames, timeout=args.timeout,
+                     inject=args.inject_events, disable_acceleration=args.disable_framebuffer_acceleration,
+                     _cancellation=cancellation)
+        # 元のclient/error/timeout証拠を保持する。取消は独立metadataであり成功へ昇格しない。
+        if cancellation['signal'] is not None:
+            result.update(cancelled=True, cancel_signal=cancellation['signal'], graphics_client='failed')
+            if args.driver == 'wayland': result['shm_gate'] = 'fail'
+        with args.result.open('x') as stream:
+            json.dump(result, stream, indent=2)
+            stream.write('\n')
+        print(json.dumps({key: result[key] for key in ['graphics_client', 'shm_gate', 'input_gate', 'quest_sdk',
+                                                      'group_reclaimed', 'error', 'cancelled', 'cancel_signal']}))
+        return 0 if (cancellation['signal'] is None and result['graphics_client'] == 'completed'
+                     and (args.driver == 'dummy' or result['shm_gate'] == 'pass')) else 1
 
 
 if __name__ == '__main__':

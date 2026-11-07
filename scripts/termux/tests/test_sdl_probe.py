@@ -2,8 +2,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 spec = importlib.util.spec_from_file_location('sdl_probe', Path(__file__).resolve().parents[1] / 'eidolon-sdl-probe.py')
@@ -37,6 +40,77 @@ def content_trace(buffer_kind='shm', marker='@'):
 
 
 class SdlProbeTests(unittest.TestCase):
+    def run_cancelled_cli(self, number, original_failure):
+        with tempfile.TemporaryDirectory(prefix='eidolon-sdl-cancel-') as value:
+            root = Path(value)
+            child, ready, result_path = root / 'probe', root / 'ready.json', root / 'result.json'
+            client = report('dummy')
+            if original_failure:
+                client.update(completed=False, stage='renderer', exit_reason='error', frames=0, pixel_checks=0,
+                              error='FIXTURE_RENDERER_FAILURE')
+            child.write_text(f'#!{sys.executable}\nimport json,os,signal,sys,time\nfrom pathlib import Path\n'
+                             'signal.signal(signal.SIGTERM,signal.SIG_IGN)\n'
+                             'signal.signal(signal.SIGHUP,signal.SIG_IGN)\n'
+                             f'print({json.dumps(json.dumps(client))},flush=True)\n'
+                             'descendant=os.fork()\n'
+                             'if descendant==0: time.sleep(30); os._exit(0)\n'
+                             'signal.signal(signal.SIGTERM,lambda number,frame: sys.exit(0))\n'
+                             f'Path({str(ready)!r}).write_text(json.dumps(dict(leader=os.getpid(),descendant=descendant)))\n'
+                             + ('sys.exit(7)\n' if original_failure else 'time.sleep(30)\n'))
+            child.chmod(0o700)
+            unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
+            runner = subprocess.Popen([sys.executable, probe.__file__, '--binary', str(child), '--result', str(result_path),
+                                       '--driver', 'dummy', '--frames', '3', '--timeout', '30'],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            owned_group = None
+            try:
+                deadline = time.monotonic() + 3
+                while not ready.exists() and time.monotonic() < deadline:
+                    if runner.poll() is not None: break
+                    time.sleep(.01)
+                self.assertTrue(ready.exists(), 'fixture did not start')
+                owned_group = json.loads(ready.read_text())['leader']
+                runner.send_signal(number)
+                time.sleep(.1)
+                if runner.poll() is None:
+                    runner.send_signal(signal.SIGHUP if number == signal.SIGTERM else signal.SIGTERM)
+                stdout, stderr = runner.communicate(timeout=5)
+                self.assertFalse(probe.group_live(owned_group), 'cancelled runner left its child/descendant group alive')
+                self.assertIsNone(unrelated.poll(), 'cancellation touched a non-owned process')
+                self.assertEqual(runner.returncode, 1, (stdout, stderr))
+                result = json.loads(result_path.read_text())
+                self.assertTrue(result['cancelled'])
+                self.assertEqual(result['cancel_signal'], number)
+                self.assertFalse(result['timed_out'])
+                self.assertTrue(result['term_sent'])
+                self.assertTrue(result['kill_sent'])  # TERMを無視する所有groupも期限内に回収する。
+                self.assertTrue(result['group_reclaimed'])
+                self.assertTrue(result['reaped'])
+                self.assertTrue(result['pipes_drained'])
+                self.assertEqual(result['graphics_client'], 'failed')
+                self.assertEqual(result['client'], client)  # 取消で先行したrenderer失敗/JSONを上書きしない。
+                self.assertEqual(result['returncode'], 7 if original_failure else 0)
+                self.assertIsNone(result['error'])
+            finally:
+                # baseline失敗でもこのfixtureだけを回収する。親runner PIDをreap後にgroup signalしない。
+                if runner.poll() is None:
+                    runner.kill()
+                    runner.communicate(timeout=3)
+                if owned_group is not None and probe.group_live(owned_group):
+                    os.killpg(owned_group, signal.SIGKILL)
+                    deadline = time.monotonic() + 2
+                    while probe.group_live(owned_group) and time.monotonic() < deadline: time.sleep(.01)
+                unrelated.terminate()
+                unrelated.wait(timeout=3)
+
+    def test_cli_sigterm_and_sighup_reclaim_owned_group_and_preserve_renderer_failure(self):
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=number): self.run_cancelled_cli(number, original_failure=True)
+
+    def test_cli_cancellation_never_promotes_already_emitted_success_to_completed(self):
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=number): self.run_cancelled_cli(number, original_failure=False)
+
     def test_fragmented_trace_accepts_real_content_shm_and_counts_callbacks(self):
         for marker in ['@', '#']:
             trace = probe.WaylandTrace()
