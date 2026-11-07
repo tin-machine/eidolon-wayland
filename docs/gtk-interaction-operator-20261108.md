@@ -75,6 +75,15 @@ Build169で通常のlogical resizeでもproducer canvasが変わり、旧SDK bin
 共有の直列化境界で通常のpose/physical/logical size操作を失効させ、scene/visibility/XR喪失も同じ境界へ置く。
 旧runtimeのSDK退役は現在runtimeへresetを送らない。runtimeとfull targetが一致した退役だけを照合する。
 
+Build170（source `f5721f3`、digest `d3b8e9f32b51a9504c096bdb12851c999782fd7908fba566416cfd6563bd0b8a`）で実機を再検証した。
+resize `d376b75c9a6cc143379f76af7a11a4b8` はobservedで、session519/window2のgeneration4→6→8、
+epoch11→12→13をそれぞれ要求9400001/9400002へ対応付けた。800×500と640×360の両方でconfigure/ACK/commit、
+進んだSHM/SDK描画と旧targetの退役が成立し、入力配送counterは0のままだった。
+Cは自然終了0、子group/reap/pipe回収、全検査targetのSDK dispose/binding releaseとBoard解放、元footの同一資源への復帰を確認した。
+同APKのinput `12288fa5c5b580ed782ab4b0aeada96d`、dialog `46c06183617e9d16b0afc97cfaba108e` もobservedだった。
+debugのbuild/lint/packageと単体182件、releaseのbuild/lint/packageと単体141件が成功した。
+物理入力・IME・HMDはこの結果に含めない。Build169のresize失敗と回収記録は保持する。
+
 1. `debugBeginInputResize` は捕捉runtime/session/window/scene/generation、input epoch、入力counter、
    leaseのnonce/PID/start/group、theme revision、physical sizeとposeを固定し、通常の `resize_logical` を一度enqueueする。
    nativeの `app.windows[].resize.request` はそのrequest IDと元のfull targetを保持する。

@@ -132,3 +132,9 @@ variantはrequest/host/remote結果へ固定名で記録し、応答の一致を
 terminate、runtime不変、reap/group/pipe回収も成立し、同じ4library/vendor pinとloaded identityを維持した。
 Kopper無効で公開EGL初期化が成立した一方、baselineのKopper/12289/終了1は記録を保持する。
 この時点ではcontext作成、SDL描画、GUI、入力、HMDをまだ受け入れていない。
+
+続く同条件の内部観測 `9c038c971947deff4d546e297d5b572d` では `dri_type=swrast`、FD=-1の条件が一致し、
+screen allocation、pipe screen、DRI configsの3段階すべてが非NULLだった。固定library/instruction/mapping照合と
+hardware breakpointの3hit・解除、公開APIのEGL1.5初期化・terminate・自然終了0・全回収も成立した。
+`prior_initialize_failure_matches=false` をそのまま残し、baselineのKopper失敗との相違を記録した。
+観測は型と真偽値だけで、実アドレスやregister dump、入力本文は保存しない。
