@@ -33,6 +33,8 @@ signal先を付け替えない。[Linux man-pages: pidfd_open](https://man7.org/
   連続2回確認し、Popen rootも終了を取得してからcompleteにする。
 - timeout・scan上限・所有不一致ならpending。fdとlive ownerを保持し、同ownerの明示的な次の回収だけを許す。
   pendingになったownerで新processを起動しない。helperが失われた場合は未知ownerとしてjournalを残す。
+- process内active ownerも一つに固定する。子が自然終了して一時的に空でも、pending ownerを別objectで
+  置き換えない。回収完了後に新ownerを作った場合、古いobjectのcallbackは新しい子を検査・signalできない。
 - forkしたprocessにコピーされたowner objectは現在PID/starttimeが違うため使えない。
 
 上限は子孫1,024、scan全体のtask 4,096、1scan 250 ms、spawn root 16件。
@@ -50,12 +52,13 @@ adapterはpipeのEOF/close、remote socket/receipt、native/SDK資源の回収�
 python3 -B scripts/test_linux_process_owner.py -v
 ```
 
-8件で、通常group、setsid、PTY、二重fork、非leader threadのfork、scan欠測後の同owner再回収、
+9件で、通常group、setsid、PTY、二重fork、非leader threadのfork、scan欠測後の同owner再回収、
 既存childとfork後objectの拒否、PID/starttime/UID変更、無関係な同UID siblingが存続することを確認した。
+pending中のowner再生成と、新owner作成後の古いcallbackも拒否する。
 子は固定Python処理だけで最大4秒後に自然終了する。任意PID/path/argv、既存shellへの入力、
 実foot/GUI、device/SSH設定は扱わない。出力は件数・status・固定tokenのみである。
 
-host実行では8件すべてPASS。`pending=true` の試行がlive pidfdを保持し、後続の明示回収で
+host実行では9件すべてPASS。`pending=true` の試行がlive pidfdを保持し、後続の明示回収で
 `complete=true/open_pidfds=0/descendants_empty=true` となることも確認した。
 これはhost kernel/Python上の結果であり、Linux bundle配備・APK実UIDからの端末実行の合格ではない。
 

@@ -10,6 +10,7 @@ import time
 MAX_PROCESSES = 1024
 MAX_TASKS = 4096
 SCAN_SECONDS = .25
+_active_owner = None
 
 
 class OwnershipError(RuntimeError):
@@ -89,7 +90,10 @@ def descendant_snapshot(owner, deadline=None):
 class ProcessOwner:
     """新規single-thread helperだけでenable。pending時はこのlive ownerを保持する。"""
     def __init__(self):
+        global _active_owner
         require(sys.platform == 'linux' and os.getuid() == os.geteuid() != 0, 'PLATFORM_UNSUPPORTED')
+        require(_active_owner is None or _active_owner.owner['pid'] != os.getpid() or
+                _active_owner.result is not None, 'OWNER_ALREADY_ACTIVE')
         require(hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal'), 'PIDFD_UNSUPPORTED')
         require(signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL, 'SIGCHLD_UNSUPPORTED')
         self.owner = identity(os.getpid())
@@ -109,9 +113,11 @@ class ProcessOwner:
         self.closing = False
         self.result = None
         self.term_signals = self.kill_signals = self.reaped = 0
+        _active_owner = self
 
     def _current(self):
-        require(os.getpid() == self.owner['pid'] and same_process(self.owner, identity(os.getpid())), 'OWNER_CHANGED')
+        require(_active_owner is self and os.getpid() == self.owner['pid'] and
+                same_process(self.owner, identity(os.getpid())), 'OWNER_CHANGED')
         require(len(list(Path('/proc/self/task').iterdir())) == 1, 'HELPER_NOT_DEDICATED')
 
     def spawn(self, command, *, env, cwd=None):

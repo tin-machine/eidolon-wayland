@@ -15,7 +15,7 @@ SOURCE = Path(__file__).resolve().parent / 'linux/eidolon_linux_process_owner.py
 SPEC = importlib.util.spec_from_file_location('eidolon_linux_process_owner', SOURCE)
 OWNER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(OWNER)
-CASES = {'plain', 'setsid', 'doublefork', 'pty', 'threadfork', 'pending', 'borrowed', 'existing'}
+CASES = {'plain', 'setsid', 'doublefork', 'pty', 'threadfork', 'pending', 'borrowed', 'existing', 'owner_reuse'}
 ENV = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'}
 
 
@@ -80,6 +80,26 @@ def worker(mode):
             process.kill();process.communicate(timeout=2)
             return dict(case=mode, existing_rejected=True)
         owner = OWNER.ProcessOwner()
+        if mode == 'owner_reuse':
+            original_scan = OWNER.descendant_snapshot
+            def unknown(*_args, **_kwargs): raise OWNER.OwnershipError('PROCESS_SCAN_LIMIT')
+            OWNER.descendant_snapshot = unknown
+            try: pending = owner.finish(timeout=.03, grace=0)
+            finally: OWNER.descendant_snapshot = original_scan
+            if not pending['pending']: raise RuntimeError('PENDING_NOT_OBSERVED')
+            try: OWNER.ProcessOwner()
+            except OWNER.OwnershipError as error:
+                if str(error) != 'OWNER_ALREADY_ACTIVE': raise
+            else: raise RuntimeError('PENDING_OWNER_REPLACED')
+            owner.finish()
+            old = owner;owner = OWNER.ProcessOwner()
+            try: old.finish()
+            except OWNER.OwnershipError as error:
+                if str(error) != 'OWNER_CHANGED': raise
+            else: raise RuntimeError('OLD_OWNER_STILL_ACTIVE')
+            process = owner.spawn(fixed_child('plain'), env=ENV);ready(process)
+            result = owner.finish(grace=.05)
+            return dict(case=mode, pending_owner_rejected=True, old_owner_rejected=True, result=result)
         if mode == 'borrowed':
             read, write = os.pipe()
             pid = os.fork()
@@ -185,6 +205,11 @@ class ProcessOwnerTest(unittest.TestCase):
         self.assertTrue(self.run_case('existing')['existing_rejected'])
         value = self.run_case('borrowed')
         self.assertTrue(value['borrowed_rejected']);self.assertTrue(value['result']['complete'])
+
+    def test_pending_owner_cannot_be_replaced_and_old_callback_cannot_touch_new_owner(self):
+        value = self.run_case('owner_reuse')
+        self.assertTrue(value['pending_owner_rejected']);self.assertTrue(value['old_owner_rejected'])
+        self.assertTrue(value['result']['complete'])
 
     def test_unrelated_same_uid_sibling_survives_fixture_cleanup(self):
         sibling = subprocess.Popen(fixed_child('plain'), env=ENV, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
