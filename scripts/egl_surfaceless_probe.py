@@ -137,7 +137,7 @@ def egl_error(library):
     return dict(value=value, name=ERRORS.get(value, "unknown"))
 
 
-def perform_api(library, emit, after_api=None):
+def perform_api(library, emit, after_api=None, before_initialize=None):
     """公開EGLだけ。API結果をflushしてからterminateし、初回errorを保持する。"""
     require(ctypes.sizeof(ctypes.c_int) == ctypes.sizeof(ctypes.c_uint) == 4 and
             ctypes.sizeof(ctypes.c_ssize_t) == ctypes.sizeof(ctypes.c_void_p), "CTYPES_WIDTH_INVALID")
@@ -170,6 +170,7 @@ def perform_api(library, emit, after_api=None):
             api["display"] = dict(returned=bool(display), error=egl_error(library))
             if display:
                 major, minor = ctypes.c_int(), ctypes.c_int()
+                if before_initialize is not None:before_initialize()
                 initialized = bool(library.eglInitialize(display, ctypes.byref(major), ctypes.byref(minor)))
                 error = egl_error(library)  # terminate/他のEGL呼出しより必ず先。
                 api["initialize"] = dict(returned=initialized, error=error,
@@ -187,7 +188,7 @@ def perform_api(library, emit, after_api=None):
     return 0 if api["initialize"] and api["initialize"]["returned"] else 1 if supported else 2
 
 
-def child_main():
+def child_main(before_initialize=None):
     emit = lambda value: print(json.dumps(value, separators=(",", ":")), flush=True)
     try:
         home = termux_home(sys.executable)
@@ -196,7 +197,7 @@ def child_main():
             library = ctypes.CDLL(str(home.parent / "usr/lib/libEGL.so.1.1.0"), mode=os.RTLD_NOW | os.RTLD_LOCAL)
         except OSError:
             raise InstallError("EGL_DLOPEN_FAILED") from None
-        status = perform_api(library, emit, lambda:emit(dict(phase="loaded_libraries",result=capture_loaded(home.parent/"usr/lib",before,LIBRARIES))))
+        status = perform_api(library, emit, lambda:emit(dict(phase="loaded_libraries",result=capture_loaded(home.parent/"usr/lib",before,LIBRARIES))),before_initialize)
         emit(dict(phase="runtime", unchanged=validate_runtime(home) == before))
         return status
     except (OSError, ValueError, AttributeError, TypeError) as error:

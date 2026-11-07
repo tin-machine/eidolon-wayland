@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""固定Quest EGL子だけの3 NULL分岐を一回診断する。自由PID/address/envは指定しない。"""
+import argparse
+import base64
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import selectors
+import shlex
+import subprocess
+import time
+import zlib
+import egl_null_stages as stages
+import egl_surfaceless_probe as egl
+from native_build import ROOT
+from quest_device import QuestDevice,package_uid,work_root
+from sdl_probe_install import InstallError,canonical,require,unique_object
+
+SOURCES=("scripts/sdl_probe_install.py","scripts/termux/eidolon-sdl-probe.py","scripts/egl_loaded_identity.py",
+         "scripts/egl_surfaceless_probe.py","scripts/ptrace_capability_probe.py","scripts/egl_null_stages.py","scripts/quest-probe-egl-null-stages")
+
+
+def source_hashes():return {p:hashlib.sha256((ROOT/p).read_bytes()).hexdigest() for p in SOURCES}
+
+
+def remote_program():
+    source="import sys,types\n"
+    names=("sdl_probe_install","sdl_observation","egl_loaded_identity","egl_surfaceless_probe","ptrace_capability_probe","egl_null_stages")
+    for name,path in zip(names,SOURCES):
+        data=(ROOT/path).read_text()
+        if name=="sdl_observation":
+            require("\nclass WaylandTrace:" in data,"REMOTE_SOURCE_INVALID");data=data.split("\nclass WaylandTrace:",1)[0]
+        if name=="ptrace_capability_probe":
+            require("\ndef child_main():" in data,"REMOTE_SOURCE_INVALID");data=data.split("\ndef child_main():",1)[0]
+        if name=="egl_surfaceless_probe":
+            require("\ndef observe_owned(" in data,"REMOTE_SOURCE_INVALID");data=data.split("\ndef observe_owned(",1)[0]
+        source+=f"m=types.ModuleType({name!r});exec({data!r},m.__dict__);sys.modules[m.__name__]=m\n"
+    child=source+"raise SystemExit(sys.modules['egl_null_stages'].child_main())\n"
+    return source+f"sys.modules['egl_null_stages'].CHILD_SOURCE={child!r}\nraise SystemExit(sys.modules['egl_null_stages'].remote_main())\n"
+
+
+def remote_source():
+    data=base64.b64encode(zlib.compress(remote_program().encode(),9)).decode()
+    return f"import base64,zlib;exec(zlib.decompress(base64.b64decode({data!r})))"
+
+
+def validated_internal(value):
+    template=stages.Trace(None,1,None).report()
+    require(type(value) is dict and set(value)==set(template) and value["profile"]==template["profile"] and
+        value["status"] in {"observed","unsupported"} and value["reason"] in stages.REASONS|{None} and
+        (value["errno"] is None or type(value["errno"]) is int and 0<=value["errno"]<4096),"REMOTE_RESULT_INVALID")
+    for name in ("initial_stop","initialize_stop","exitkill_set","library_verified","instructions_verified","mapping_verified","breakpoints_armed","breakpoints_cleared"):
+        require(type(value[name]) is bool,"REMOTE_RESULT_INVALID")
+    require(value["mode_expected"] is None or type(value["mode_expected"]) is bool,"REMOTE_RESULT_INVALID")
+    require(type(value["hits"]) is int and 0<=value["hits"]<=3 and type(value["stages"]) is dict and
+        set(value["stages"])=={p[0] for p in stages.POINTS} and all(v is None or type(v) is bool for v in value["stages"].values()),"REMOTE_RESULT_INVALID")
+    r=value["capability"]
+    if r is not None:
+        require(type(r) is dict and set(r)=={"gpr_bytes","hardware_bytes","hardware_slots","debug_arch","state_clean"} and
+            r["gpr_bytes"]==272 and r["hardware_bytes"]==264 and type(r["hardware_slots"]) is int and 0<=r["hardware_slots"]<=16 and
+            type(r["debug_arch"]) is int and 0<=r["debug_arch"]<=255 and type(r["state_clean"]) is bool,"REMOTE_RESULT_INVALID")
+    values=[value["stages"][p[0]] for p in stages.POINTS]
+    if value["status"]=="observed":
+        allowed=([False,None,None],[True,False,None],[True,True,False],[True,True,True])
+        require(values in allowed and value["reason"] is None and r is not None and r["hardware_slots"]>=3 and r["state_clean"] and
+            value["mode_expected"] is True and value["hits"]==sum(v is not None for v in values) and
+            all(value[k] for k in ("initial_stop","initialize_stop","exitkill_set","library_verified","instructions_verified","mapping_verified","breakpoints_armed","breakpoints_cleared")),"REMOTE_RESULT_INVALID")
+    else:require(value["reason"] in stages.REASONS,"REMOTE_RESULT_INVALID")
+    return value
+
+
+def validated_result(value,nonce):
+    fields={"status","loading_profile","prior_initialize_failure_matches","api_observation","api","loaded_libraries","egl_cleanup","runtime_unchanged","child_blocked","internal","child_pid","child_group",
+        "child_returncode","termination","term_sent","term_forwarded","kill_sent","timed_out","cancel_reason","error","reaped","group_reclaimed",
+        "pipes_drained","cleanup_confirmed","output_bytes","egl_log","schema","operator","probe_id","uid","libraries","wayland","sdk","drawing","input","hmd"}
+    require(type(value) is dict and set(value)==fields and type(value["schema"]) is int and value["schema"]==1 and value["operator"]==stages.OPERATOR and
+        value["probe_id"]==nonce and value["uid"]==egl.UID and value["libraries"]==egl.LIBRARIES and
+        all(value[k]=="not_run" for k in ("wayland","sdk","drawing","input","hmd")),"REMOTE_RESULT_INVALID")
+    require(value["status"] in {"diagnosed","unsupported","failed"} and value["api_observation"] in {"diagnosed","failed"},"REMOTE_RESULT_INVALID")
+    require(value["loading_profile"]==stages.LOADING_PROFILE and (value["prior_initialize_failure_matches"] is None or
+        type(value["prior_initialize_failure_matches"]) is bool),"REMOTE_RESULT_INVALID")
+    validated_internal(value["internal"])
+    for name in ("api","loaded_libraries","egl_cleanup"):
+        if value[name] is not None:egl.decode_event(canonical(dict(phase=name,result=value[name])))
+    require(value["prior_initialize_failure_matches"]==stages.prior_failure_matches(value["api"],value["child_returncode"]),"REMOTE_RESULT_INVALID")
+    require(value["child_blocked"] in egl.BLOCKED|{None} and (value["runtime_unchanged"] is None or type(value["runtime_unchanged"]) is bool) and
+        value["error"] in {None,"CHILD_OUTPUT_INVALID","STOP_TIMEOUT","OPERATOR_IO_FAILED","CLEANUP_UNCONFIRMED","RUNTIME_LIBRARY_CHANGED"} and
+        value["cancel_reason"] in {None,"HOST_CANCEL","CONTROL_EOF","CONTROL_INVALID","TIMEOUT","OUTPUT_LIMIT","RUNTIME_CHANGED","DISARM_UNCONFIRMED","PTRACE_UNSUPPORTED","CLEANUP_UNCONFIRMED","OPERATOR_ERROR"},"REMOTE_RESULT_INVALID")
+    for name in ("term_sent","term_forwarded","kill_sent","timed_out","reaped","group_reclaimed","pipes_drained","cleanup_confirmed"):
+        require(type(value[name]) is bool,"REMOTE_RESULT_INVALID")
+    require(type(value["child_pid"]) is int and 0<value["child_pid"]<2**31 and value["child_group"]==value["child_pid"] and
+        (value["child_returncode"] is None or type(value["child_returncode"]) is int and -255<=value["child_returncode"]<=255) and
+        value["termination"]==("unreaped" if value["child_returncode"] is None else "signal" if value["child_returncode"]<0 else "natural"),"REMOTE_RESULT_INVALID")
+    require(type(value["output_bytes"]) is dict and set(value["output_bytes"])=={"stdout","stderr"} and
+        all(type(v) is int and 0<=v<2**63 for v in value["output_bytes"].values()),"REMOTE_RESULT_INVALID")
+    log=value["egl_log"];template=egl.InitLogSummary(True).summary()
+    require(type(log) is dict and set(log)==set(template) and type(log["schema"]) is int and log["schema"]==1 and log["profile"]==template["profile"] and
+        log["enabled"] is True and type(log["complete"]) is bool and all(type(log[k]) is int and 0<=log[k]<2**63 for k in
+        ("bytes","lines","unmatched_lines","truncated_lines")) and type(log["known"]) is dict and
+        set(log["known"])<=set(egl.InitLogSummary.PATTERNS) and all(type(v) is int and 0<v<2**63 for v in log["known"].values()) and
+        log["first_failure"] in set(egl.InitLogSummary.PATTERNS)|{None},"REMOTE_RESULT_INVALID")
+    if value["status"]!="failed":
+        api=value["api"]
+        require(value["api_observation"]=="diagnosed" and api is not None and value["egl_cleanup"] is not None and
+            value["loaded_libraries"] is not None and value["loaded_libraries"]["status"]=="verified" and value["runtime_unchanged"] is True and
+            value["error"] is None and value["cancel_reason"] is None and value["cleanup_confirmed"] and value["reaped"] and value["group_reclaimed"] and
+            value["pipes_drained"] and log["complete"] and not any(value[k] for k in ("term_sent","kill_sent","timed_out")) and
+            value["child_returncode"]==(0 if api["initialize"] and api["initialize"]["returned"] else 1 if api["supported"] else 2) and
+            (value["internal"]["status"]=="observed" if value["status"]=="diagnosed" else value["internal"]["status"]=="unsupported"),"REMOTE_RESULT_INVALID")
+    return value
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument("--serial",required=True);parser.add_argument("--artifact-root",type=Path)
+    args=parser.parse_args();os.umask(0o077);root=args.artifact_root or work_root()/"eidolon-egl-null-stages"
+    if not root.is_absolute():parser.error("artifact rootは絶対pathです")
+    nonce=secrets.token_hex(16);run=root/(datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f")+"-"+nonce);run.mkdir(mode=0o700,parents=True)
+    result=dict(schema=1,operator=stages.OPERATOR,probe_id=nonce,status="failed",drawing="not_run");child=selector=None;sent=False
+    def close_input():
+        if child is not None and not child.stdin.closed:
+            try:child.stdin.close()
+            except (OSError,ValueError):pass
+    def cancel():
+        nonlocal sent
+        if child is not None and not sent and not child.stdin.closed:
+            try:child.stdin.write(b'{"type":"cancel"}\n');child.stdin.flush();sent=True
+            except (OSError,ValueError):pass
+    try:
+        device=QuestDevice(args.serial,run);result["device"]=device.validate()
+        require(package_uid(device.adb("shell","pm","list","packages","-U","com.termux"),"com.termux")==egl.UID,"UID_MISMATCH")
+        pins=source_hashes();source=remote_source();require(source_hashes()==pins,"SOURCE_CHANGED")
+        command=shlex.join(["run-as","com.termux","/data/data/com.termux/files/usr/bin/python3","-c",source])
+        require(len(command.encode())<=49*1024,"REMOTE_COMMAND_LIMIT");result.update(source_sha256=pins,remote_command_bytes=len(command.encode()))
+        child=subprocess.Popen(["adb","-s",args.serial,"shell","-T",command],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        child.stdin.write(canonical(dict(probe_id=nonce))+b"\n");child.stdin.flush()
+        selector=selectors.DefaultSelector()
+        for name in ("stdout","stderr"):
+            pipe=getattr(child,name);os.set_blocking(pipe.fileno(),False);selector.register(pipe,selectors.EVENT_READ,name)
+        started=time.monotonic();pending=bytearray();sizes=dict(stdout=0,stderr=0);finished=None;terminal=False
+        while time.monotonic()-started<35:
+            for key,_ in selector.select(.03):
+                data=os.read(key.fd,8192)
+                if not data:selector.unregister(key.fd);continue
+                sizes[key.data]+=len(data)
+                if key.data=="stderr":
+                    if sizes["stderr"]>65536:cancel()
+                    continue
+                require(sizes["stdout"]<=65536,"REMOTE_OUTPUT_INVALID");pending.extend(data)
+                while b"\n" in pending:
+                    line,_,rest=pending.partition(b"\n");pending=bytearray(rest);event=json.loads(line,object_pairs_hook=unique_object)
+                    require(type(event) is dict and event.get("phase") in {"finished","blocked"} and not terminal,"REMOTE_OUTPUT_INVALID");terminal=True
+                    if event["phase"]=="finished":
+                        require(set(event)=={"phase","result"},"REMOTE_OUTPUT_INVALID");finished=validated_result(event["result"],nonce)
+                        result["remote_result"]=finished # 後続transport failureでも元API結果を保持する。
+                    else:
+                        require(set(event)=={"phase","reason"} and event["reason"] in stages.BLOCKED,"REMOTE_OUTPUT_INVALID");result["reason"]=event["reason"]
+                    close_input()
+            if child.poll() is not None and not selector.get_map():break
+        if child.poll() is None:cancel()
+        close_input();child.wait(timeout=6);result.update(remote_result=finished,remote_returncode=child.returncode,output_bytes=sizes)
+        require(terminal and not pending and source_hashes()==pins,"SOURCE_CHANGED_OR_OUTPUT_INVALID")
+        if finished and child.returncode=={"diagnosed":0,"unsupported":2,"failed":1}[finished["status"]]:result["status"]=finished["status"]
+    except (OSError,ValueError,TypeError,KeyError,RuntimeError,subprocess.SubprocessError) as error:
+        allowed=stages.BLOCKED|{"REMOTE_COMMAND_LIMIT","REMOTE_OUTPUT_INVALID","REMOTE_RESULT_INVALID","SOURCE_CHANGED","SOURCE_CHANGED_OR_OUTPUT_INVALID"}
+        result["reason"]=str(error) if isinstance(error,InstallError) and str(error) in allowed else "HOST_OPERATOR_UNAVAILABLE";cancel()
+    finally:
+        if child is not None:
+            close_input()
+            try:child.wait(timeout=6)
+            except (OSError,subprocess.SubprocessError):
+                result["remote_cleanup_unconfirmed"]=True;child.terminate()
+                try:child.wait(timeout=2)
+                except (OSError,subprocess.SubprocessError):pass
+            result.setdefault("remote_returncode",child.returncode);child.stdout.close();child.stderr.close()
+        if selector is not None:selector.close()
+        (run/"result.json").write_text(json.dumps(result,indent=2)+"\n")
+    print(json.dumps(dict(status=result["status"],artifact=str(run),probe_id=nonce,reason=result.get("reason"),drawing="not_run")))
+    return {"diagnosed":0,"unsupported":2,"failed":1}[result["status"]]
+
+
+if __name__=="__main__":raise SystemExit(main())

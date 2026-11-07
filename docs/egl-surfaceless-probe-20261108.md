@@ -90,3 +90,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test_egl_surfaceless_probe.py -v
 実loaded imageの一致を確認した後も同じ初期化失敗だった。内部NULL分岐へ進む前段は、
 [非EGLの固定子ptrace能力probe](ptrace-capability-probe-20261108.md)で分ける。
 この前段も診断専用であり、EGL/SDL描画の合格にはしない。
+
+実機でptraceの取得能力が成立した後の固定3分岐観測は
+[EGL NULL stage probe](egl-null-stages-probe-20261108.md)に分離した。
+従来の公開APIだけのoperatorは維持し、hardware設定を暗黙に追加しない。
