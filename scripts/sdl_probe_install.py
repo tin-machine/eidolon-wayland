@@ -1,4 +1,4 @@
-"""固定SDL source bundleの作成・同UIDの新規directoryへの検査付き配備。stdlibのみ。"""
+"""固定probe source bundleの作成・同UIDの新規directoryへの検査付き配備。stdlibのみ。"""
 import base64
 import hashlib
 import json
@@ -34,18 +34,18 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def prepare_bundle(repository, run_id, source_commit, source_dirty):
+def prepare_bundle(repository, run_id, source_commit, source_dirty, *, source_paths=SOURCE_PATHS, kind="eidolon-sdl-source-v1"):
     require(RUN_ID.fullmatch(run_id) is not None, "RUN_ID_INVALID")
     require(re.fullmatch(r"[0-9a-f]{40}", source_commit) is not None and type(source_dirty) is bool, "PROVENANCE_INVALID")
     files = {}
-    for name, relative in SOURCE_PATHS.items():
+    for name, relative in source_paths.items():
         source = repository / relative
         require(stat.S_ISREG(source.lstat().st_mode) and not source.is_symlink(), "SOURCE_NOT_REGULAR")
         require(0 < source.stat().st_size <= MAX_SOURCE, "SOURCE_SIZE_INVALID")
         data = source.read_bytes()
         require(0 < len(data) <= MAX_SOURCE, "SOURCE_SIZE_INVALID")
         files[name] = data
-    manifest = dict(schema=1, kind="eidolon-sdl-source-v1", run_id=run_id,
+    manifest = dict(schema=1, kind=kind, run_id=run_id,
                     source_commit=source_commit, source_dirty=source_dirty,
                     files={name: dict(bytes=len(data), sha256=sha256(data)) for name, data in files.items()})
     payload = canonical(dict(manifest=manifest, files={name: base64.b64encode(data).decode("ascii") for name, data in files.items()}))
@@ -61,7 +61,7 @@ def unique_object(pairs):
     return result
 
 
-def decode_bundle(payload, expected_hash):
+def decode_bundle(payload, expected_hash, *, source_paths=SOURCE_PATHS, kind="eidolon-sdl-source-v1"):
     require(0 < len(payload) <= MAX_PAYLOAD, "PAYLOAD_SIZE_INVALID")
     require(sha256(payload) == expected_hash, "PAYLOAD_HASH_MISMATCH")
     try:
@@ -73,14 +73,14 @@ def decode_bundle(payload, expected_hash):
     require(type(manifest) is dict and set(manifest) == {
         "schema", "kind", "run_id", "source_commit", "source_dirty", "files"}, "MANIFEST_INVALID")
     require(type(manifest["schema"]) is int and manifest["schema"] == 1 and
-            manifest["kind"] == "eidolon-sdl-source-v1", "MANIFEST_INVALID")
+            manifest["kind"] == kind, "MANIFEST_INVALID")
     require(type(manifest["run_id"]) is str and RUN_ID.fullmatch(manifest["run_id"]) is not None, "RUN_ID_INVALID")
     require(type(manifest["source_commit"]) is str and re.fullmatch(r"[0-9a-f]{40}", manifest["source_commit"]) is not None and
             type(manifest["source_dirty"]) is bool, "PROVENANCE_INVALID")
-    require(type(encoded) is dict and set(encoded) == set(SOURCE_PATHS) and
-            type(manifest["files"]) is dict and set(manifest["files"]) == set(SOURCE_PATHS), "SOURCE_NAMES_INVALID")
+    require(type(encoded) is dict and set(encoded) == set(source_paths) and
+            type(manifest["files"]) is dict and set(manifest["files"]) == set(source_paths), "SOURCE_NAMES_INVALID")
     files = {}
-    for name in SOURCE_PATHS:
+    for name in source_paths:
         info = manifest["files"][name]
         require(type(info) is dict and set(info) == {"bytes", "sha256"} and type(info["bytes"]) is int and
                 0 < info["bytes"] <= MAX_SOURCE and type(info["sha256"]) is str and
@@ -102,16 +102,20 @@ def check_directory(fd, expected_uid):
     require(stat.S_ISDIR(info.st_mode) and info.st_uid == expected_uid and not info.st_mode & 0o022, "DIRECTORY_UNSAFE")
 
 
-def install_bundle(payload, expected_hash, home, expected_uid):
+def install_bundle(payload, expected_hash, home, expected_uid, *, source_paths=SOURCE_PATHS,
+                   kind="eidolon-sdl-source-v1", scope="nx11"):
     """内容検査を先に終え、openat/O_NOFOLLOWで既存fileを置換せず配備する。"""
     require(expected_uid == os.getuid(), "UID_MISMATCH")
-    manifest, files = decode_bundle(payload, expected_hash)
+    require((kind, scope) in {("eidolon-sdl-source-v1", "nx11"),
+                             ("eidolon-gtk3-fixture-source-v1", "nx15-fixture")}, "SOURCE_SCOPE_INVALID")
+    require(all(Path(name).name == name and name not in {".", "..", "manifest.json"} for name in source_paths), "SOURCE_NAMES_INVALID")
+    manifest, files = decode_bundle(payload, expected_hash, source_paths=source_paths, kind=kind)
     require(home.is_absolute(), "HOME_INVALID")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     fd = os.open(home, flags)
     try:
         check_directory(fd, expected_uid)
-        for part in (".local", "state", "eidolon", "nx11"):
+        for part in (".local", "state", "eidolon", scope):
             try:
                 os.mkdir(part, mode=0o700, dir_fd=fd)
             except FileExistsError:
@@ -152,7 +156,7 @@ def install_bundle(payload, expected_hash, home, expected_uid):
     finally:
         os.close(fd)
     return dict(status="pass", uid=expected_uid, run_id=manifest["run_id"],
-                directory=str(home / ".local/state/eidolon/nx11" / manifest["run_id"]),
+                directory=str(home / ".local/state/eidolon" / scope / manifest["run_id"]),
                 manifest_sha256=sha256(files["manifest.json"]), files=manifest["files"])
 
 

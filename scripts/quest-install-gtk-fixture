@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""固定GTK3 C/build sourceを新runへ配備する。buildやGUI実行は行わない。"""
+import argparse
+import base64
+import datetime
+import json
+import os
+from pathlib import Path
+import secrets
+import shlex
+import subprocess
+import zlib
+
+from quest_device import QuestDevice, package_uid, work_root
+from sdl_probe_install import InstallError, canonical, prepare_bundle, require, sha256
+
+SOURCE_PATHS = {"gtk3-interaction-fixture.c": "scripts/fixtures/gtk3-interaction-fixture.c",
+                "build-gtk3-fixture.py": "scripts/termux/build-gtk3-fixture.py"}
+KIND, SCOPE, UID = "eidolon-gtk3-fixture-source-v1", "nx15-fixture", 10158
+
+
+def remote_source(repository, expected_hash):
+    source = (repository / "scripts/sdl_probe_install.py").read_text().split('\nif __name__ == "__main__":', 1)[0]
+    source += ("\nos.umask(0o077)\ntry:\n"
+               f" report=install_bundle(sys.stdin.buffer.read(MAX_PAYLOAD+1),{expected_hash!r},termux_home(sys.executable),{UID},"
+               f"source_paths={SOURCE_PATHS!r},kind={KIND!r},scope={SCOPE!r})\n"
+               " report['home_source']='python_prefix'\n print(json.dumps(report))\n"
+               "except (OSError,ValueError,TypeError):\n print(json.dumps(dict(status='fail',error='GTK_SOURCE_INSTALL_REJECTED')))\n sys.exit(1)\n")
+    payload = base64.b64encode(zlib.compress(source.encode(), 9)).decode("ascii")
+    return f"import base64,zlib;exec(zlib.decompress(base64.b64decode({payload!r})))"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--serial", required=True)
+    parser.add_argument("--artifact-root", type=Path)
+    args = parser.parse_args()
+    os.umask(0o077)
+    repository = Path(__file__).resolve().parents[1]
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+    dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=repository))
+    payload, manifest = prepare_bundle(repository, secrets.token_hex(32 // 2), revision, dirty, source_paths=SOURCE_PATHS, kind=KIND)
+    root = args.artifact_root or work_root() / "eidolon-gtk-fixture-install"
+    if not root.is_absolute(): parser.error("artifact rootは絶対pathにしてください")
+    run = root / (datetime.datetime.now().strftime("%Y%m%dT%H%M%S-%f") + "-" + manifest["run_id"])
+    run.mkdir(mode=0o700, parents=True)
+    result = dict(schema=1, status="blocked", manifest=manifest, executed=False, compiled=False)
+    try:
+        device = QuestDevice(args.serial, run);result["device"] = device.validate()
+        require(package_uid(device.adb("shell", "pm", "list", "packages", "-U", "com.termux"), "com.termux") == UID, "UID_MISMATCH")
+        command = shlex.join(["run-as", "com.termux", "/data/data/com.termux/files/usr/bin/python3", "-c", remote_source(repository, sha256(payload))])
+        require(len(command.encode()) <= 49 * 1024, "REMOTE_COMMAND_LIMIT")
+        completed = subprocess.run(["adb", "-s", args.serial, "shell", "-T", command], input=payload, capture_output=True, timeout=30)
+        result["remote_returncode"] = completed.returncode
+        result["remote_output_bytes"] = dict(stdout=len(completed.stdout), stderr=len(completed.stderr))
+        require(completed.returncode == 0 and len(completed.stdout) <= 16384 and not completed.stderr, "GTK_INSTALL_FAILED")
+        installed = json.loads(completed.stdout)
+        require(installed.get("status") == "pass" and installed.get("uid") == UID and installed.get("run_id") == manifest["run_id"] and
+                installed.get("files") == manifest["files"] and installed.get("home_source") == "python_prefix" and
+                installed.get("manifest_sha256") == sha256(canonical(manifest) + b"\n"), "GTK_INSTALL_MISMATCH")
+        result.update(status="installed", installed=installed)
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+        result["reason"] = str(error) if isinstance(error, InstallError) else "GTK_INSTALL_UNAVAILABLE"
+    (run / "manifest.json").write_bytes(canonical(manifest) + b"\n")
+    (run / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(result))
+    return 0 if result["status"] == "installed" else 1
+
+
+if __name__ == "__main__": raise SystemExit(main())
