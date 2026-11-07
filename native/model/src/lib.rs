@@ -2,6 +2,7 @@
 pub mod build_info;
 pub mod catalog;
 pub mod commands;
+pub mod connection_profile;
 pub mod ids;
 pub mod ime;
 pub mod input;
