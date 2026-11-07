@@ -25,6 +25,8 @@ host request/result・remote events/reportへ記録し、返却された条件�
 親processの`EGL_PLATFORM`や自由envを継承しない。
 `--variant egl-wayland-debug`は固定診断stage専用で、さらに`EGL_LOG_LEVEL=debug`だけを追加する。
 この場合もstderr本文を保存せず、[既知のEGLログ分類](sdl-egl-stage-probe-20261108.md#egl初期化の既知ログ分類)だけを集計する。
+`egl-wayland-softpipe-debug`はその条件へ`GALLIUM_DRIVER=softpipe`だけを加えるstage専用対照である。
+成立後の描画用に、同じdriverを指定しdebugを外した`egl-wayland-softpipe`も用意している。
 
 Build152の最初の自然終了runでは、OpenGL rendererの失敗復元中にWayland windowのNULL破棄でSIGSEGVとなった。
 Termux MesaはX11をbuild時のnative platformにする一方、native displayのWayland自動判定もあるため、

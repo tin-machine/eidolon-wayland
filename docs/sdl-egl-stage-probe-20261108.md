@@ -133,6 +133,31 @@ stderrは全体8MiB・一行8KiB以内で分類し、超過・不完全行のcov
 [`GALLIUM_DRIVER=softpipe`](https://docs.mesa3d.org/envvars.html#envvar-GALLIUM_DRIVER)を別の一項対照で検討する。
 現時点でこのdriver切替を自動実行したり、大きなrebuildはしない。
 
+## screen作成失敗に対するsoftpipe一項対照
+
+Build157のdebug `gl-load`では、元の`egl_initialize_failed`と所有process回収を維持しつつ、
+既知分類`dri2_screen_failed`を1件取得した。stderrは127 bytes/2行、coverage完全、未一致1行、切詰め0行だった。
+screen作成の失敗を分けるため、同じdebug条件へ`GALLIUM_DRIVER=softpipe`だけを加える固定variantを用意する。
+
+```bash
+scripts/quest-run-sdl-probe --serial "$EIDOLON_QUEST_SERIAL" \
+  --run-id "$SDL_RUN_ID" --binary-sha256 "$SDL_BINARY_SHA256" \
+  --manifest-sha256 "$SDL_MANIFEST_SHA256" --variant egl-wayland-softpipe-debug --stage gl-load
+```
+
+[`GALLIUM_DRIVER`](https://docs.mesa3d.org/envvars.html#envvar-GALLIUM_DRIVER)はsoftware rendererの選択に使える。
+[Mesa 26.2.6の選択処理](https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.2.6/src/gallium/auxiliary/target-helpers/sw_helper.h)は、
+明示driverのscreen作成が失敗した場合に即NULLを返し、他driverへfallbackしない。
+従ってこの対照はLLVM/JITを使うllvmpipeのscreen作成と分ける根拠がある。
+shared LLVMへのlibrary依存自体を消す対照ではなく、根本原因の断定や描画成功とは分ける。
+
+`egl-wayland-softpipe-debug`もstage専用で、renderとの併用を拒否する。
+load/window/contextが成立してから描画へ進む場合は、
+非debugの`egl-wayland-softpipe`を使える。こちらは同じsoftpipe指定で`EGL_LOG_LEVEL`を付けない。
+この改修はhost/operatorの固定env定義だけでC・配備runnerは不変のため、
+現在のrunと既知binary/manifest pinを再利用できる。実行結果は毎回新probe IDへ排他的に保存する。
+通常のGUI許可・HMD/物理入力・製品Stop/反復の判定を変更しない。
+
 ## PCでの検査範囲
 
 stageのC関数をfake SDL APIとともにcompileし、6 stageの停止位置、固定GL属性、初回エラー分類、

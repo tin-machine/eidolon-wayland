@@ -63,7 +63,7 @@ class SdlOperatorTests(unittest.TestCase):
                    f"probe={probe!r}\n"
                    "owned=None\n"
                    + ("owned=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],start_new_session=True)\n" if hold else "")
-                   + f"Path({str(self.directory / 'ready.json')!r}).write_text(json.dumps(dict(argv=sys.argv[1:],environment_keys=sorted(os.environ),egl_log_level=os.environ.get('EGL_LOG_LEVEL'),graphics={{key:os.environ.get(key) for key in ['EGL_PLATFORM','LIBGL_ALWAYS_SOFTWARE']}},owned=owned.pid if owned else None)))\n"
+                   + f"Path({str(self.directory / 'ready.json')!r}).write_text(json.dumps(dict(argv=sys.argv[1:],environment_keys=sorted(os.environ),egl_log_level=os.environ.get('EGL_LOG_LEVEL'),gallium_driver=os.environ.get('GALLIUM_DRIVER'),graphics={{key:os.environ.get(key) for key in ['EGL_PLATFORM','LIBGL_ALWAYS_SOFTWARE']}},owned=owned.pid if owned else None)))\n"
                    + ("until=time.monotonic()+10\nwhile not stop[0] and time.monotonic()<until:time.sleep(.01)\n" if hold else "time.sleep(.05)\n")
                    + "if owned is not None:\n owned.terminate();owned.wait(timeout=2)\n"
                    "if stop[0]:probe.update(graphics_client='failed',shm_gate='fail')\n"
@@ -198,10 +198,39 @@ class SdlOperatorTests(unittest.TestCase):
 
     def test_debug_requires_non_render_stage_before_spawn(self):
         request = self.prepare()
-        request["variant"] = "egl-wayland-debug"
-        with self.assertRaisesRegex(CaptureError, "DEBUG_STAGE_REQUIRED"):
-            self.execute(request)
+        for variant in ("egl-wayland-debug", "egl-wayland-softpipe-debug"):
+            request["variant"] = variant
+            with self.subTest(variant=variant), self.assertRaisesRegex(CaptureError, "DEBUG_STAGE_REQUIRED"):
+                self.execute(request)
         self.assertFalse((self.directory / "ready.json").exists())
+
+    def test_softpipe_debug_adds_only_driver_and_keeps_prior_failure(self):
+        request = self.prepare(stage="gl-load")
+        request["variant"] = "egl-wayland-debug"
+        before = self.execute(request)
+        ready_before = json.loads((self.directory / "ready.json").read_text())
+        original = (self.directory / before["result_file"]).read_bytes()
+        request.update(probe_id="f" * 32, variant="egl-wayland-softpipe-debug")
+        result = self.execute(request)
+        ready_after = json.loads((self.directory / "ready.json").read_text())
+        self.assertEqual(result["status"], "diagnosed")
+        self.assertEqual(result["probe_result"], before["probe_result"])
+        self.assertEqual(ready_after["gallium_driver"], "softpipe")
+        self.assertEqual(ready_after["egl_log_level"], "debug")
+        self.assertEqual(set(ready_after["environment_keys"]) - set(ready_before["environment_keys"]), {"GALLIUM_DRIVER"})
+        self.assertEqual((self.directory / before["result_file"]).read_bytes(), original)
+        self.assertEqual(result["graphics_environment"], dict(LIBGL_ALWAYS_SOFTWARE="1", EGL_PLATFORM="wayland",
+                                                             EGL_LOG_LEVEL="debug", GALLIUM_DRIVER="softpipe"))
+
+    def test_softpipe_non_debug_twin_keeps_fixed_driver_without_log_level(self):
+        request = self.prepare()
+        request["variant"] = "egl-wayland-softpipe"
+        result = self.execute(request)
+        ready = json.loads((self.directory / "ready.json").read_text())
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(ready["gallium_driver"], "softpipe")
+        self.assertIsNone(ready["egl_log_level"])
+        self.assertEqual(result["graphics_environment"], dict(LIBGL_ALWAYS_SOFTWARE="1", EGL_PLATFORM="wayland", GALLIUM_DRIVER="softpipe"))
 
     def test_free_or_missing_stage_is_rejected_before_spawn(self):
         request = self.prepare()
