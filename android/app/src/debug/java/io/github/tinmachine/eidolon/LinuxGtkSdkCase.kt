@@ -65,6 +65,8 @@ object LinuxGtkSdkCase {
         var preparation:NativeSessionHost.DebugSdkInputPreparation?=null
         var preparationPublished=0L
         var preparationReason=""
+        var dialogTargetWait:GtkDialogTargetWait?=null
+        var dialogWaitingKey:JSONObject?=null
         var mainWindow=""
         var mainTarget:JSONObject?=null
         var currentTarget:JSONObject?=null
@@ -287,9 +289,40 @@ object LinuxGtkSdkCase {
                     if(target(s,appId)!=null) closeMain(s)
                 }
                 "WAIT_DIALOG" -> {
-                    val key=target(s,dialogId) ?: return
+                    val key=dialogWaitingKey ?: target(s,dialogId) ?: return
                     if(!counters || row?.optBoolean("dialog_parent_set")!=true || !allInputAccepted()) return
                     check(row.getInt("dialog_opened")==1) {"PROBE_OTHER_INPUT"}
+                    val mapped=GtkFixtureBinding.window(s,dialogId)
+                    val live= mapped?.getString("window")==key.getString("window") &&
+                        objects(s.getJSONArray("panels")).any {it.optString("action")=="create" && it.optBoolean("applied") &&
+                            it.isNull("error") && same(it.getJSONObject("target"),key)}
+                    check(live) {"PROBE_DIALOG_OWNER_CHANGED"}
+                    val window=checkNotNull(mapped);val logical=window.getJSONObject("logical_size")
+                    val physical=window.getJSONObject("sizing").getJSONObject("physical_size_m")
+                    val draw=objects(s.getJSONObject("render").getJSONArray("targets")).single {same(it.getJSONObject("key"),key)}
+                    val pose=objects(s.getJSONObject("workspace").getJSONArray("windows")).single {
+                        it.getString("session")==key.getString("session") && it.getString("window")==key.getString("window")}.getJSONObject("placement").getJSONObject("pose")
+                    val geometry=DebugSdkInputContinuity.Geometry(logical.getInt("width"),logical.getInt("height"),draw.getInt("width"),draw.getInt("height"),
+                        physical.getDouble("width_m"),physical.getDouble("height_m"),
+                        (0..2).map {pose.getJSONArray("position_m").getDouble(it)}+(0..3).map {pose.getJSONArray("rotation_xyzw").getDouble(it)},s.getJSONObject("render").getLong("theme_revision"))
+                    val stamp=GtkDialogTargetWait.Stamp(InputWindowKey(handle,key.getString("session"),key.getString("window"),
+                        key.getString("scene"),key.getString("generation")),s.getLong("input_resets"),nativeInput.getLong("delivered"),pointer.getLong("buttons"),
+                        if(nativeInput.isNull("focus_window")) null else nativeInput.getString("focus_window"),
+                        if(nativeInput.isNull("focus_token")) null else nativeInput.getString("focus_token"),geometry)
+                    val now=SystemClock.elapsedRealtime()
+                    if(dialogTargetWait==null) {
+                        dialogWaitingKey=JSONObject(key.toString());dialogTargetWait=GtkDialogTargetWait(stamp,now)
+                    }
+                    val captured=checkNotNull(trial)
+                    val ticket=NativeSessionHost.debugInputTarget(captured,key)
+                    val continuity=checkNotNull(NativeSessionHost.debugInputContinuityStatus(captured))
+                    val wait=checkNotNull(dialogTargetWait)
+                    val ready=wait.observe(now,stamp,live && NativeSessionHost.debugInputCurrent(captured),
+                        nativeInput.getInt("pressed")==0 && pointer.getInt("pressed")==0,ticket!=null,continuity.getBoolean("failed"))
+                    val status=JSONObject(wait.metadata()).put("target",key).put("continuity_reason",continuity.getString("reason"))
+                    result.put("dialog_input_preparation",status)
+                    check(!status.getBoolean("cancelled")) {status.getString("reason")}
+                    if(!ready) {publish();return}
                     result.put("dialog_parent_reported",true).put("native_parent_verified",false)
                     click(s,key,.5,.3);inputPhase="WAIT_DIALOG_FOCUS";record("dialog_visible",s)
                 }

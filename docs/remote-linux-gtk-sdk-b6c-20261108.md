@@ -1,5 +1,17 @@
 # NX18 B6c: 固定Linux GTKのSDK表示と合成入力
 
+Build173のinput `73e4afc891ff8327ae9c69ed405f28f2` はPASSした。固定文字/削除/button、SHM/SDK描画、
+全target退役、remote journal/子group回収、通常SDK復帰とlease解放を同jobで確認した。
+dialog `ad6dc53590ea7a77988b35056dc834c6` は新dialogへ入力する前の `PROBE_INPUT_TARGET_LOST` で停止した。
+SDK bindingは2件、counterは期待0key/2button、epochも不変で、continuityは `WAIT_TARGET_READY/failed=false` だった。
+既存trialに追加するdialogにも、Host側の最初の入力準備を待つ必要がある。
+
+後続修正は、初回に観測したdialogのfull target/geometry/epoch/counter/focusを固定し、最大3秒/512pollで待つ。
+同じnative Mapped windowと適用panel、同じtrialの所有を毎回確認し、target/geometry/入力/focus変更と
+恒久的なcontinuity失敗は取消とする。新targetのSDK/geometry/frame条件がそろってから一度だけclickへ進む。
+待機を理由に別targetへ追従したり、通常raw/Product gateやnative最終配送条件を変えたりしない。
+純粋48件（新dialog待機6件を含む）と実SDK19sourceの限定型検査を行い、APKの実機結果は別途記録する。
+
 Build172では初回adapter cache待ちを17poll・438ms観測してcaptureに成功した。
 `wait_adapter_observed=true`、producer frame待ちはfalseで、初回準備待ちの修正は実機で成立した。
 次の `WAIT_FOCUS` では `PROBE_OTHER_INPUT` で停止した。失敗時の実counter値が当時は記録されていないため、
