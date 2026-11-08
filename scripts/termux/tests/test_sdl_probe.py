@@ -55,7 +55,10 @@ class SdlProbeTests(unittest.TestCase):
                              'descendant=os.fork()\n'
                              'if descendant==0: time.sleep(30); os._exit(0)\n'
                              'signal.signal(signal.SIGTERM,lambda number,frame: sys.exit(0))\n'
-                             f'Path({str(ready)!r}).write_text(json.dumps(dict(leader=os.getpid(),descendant=descendant)))\n'
+                             f'ready=Path({str(ready)!r})\n'
+                             'pending=ready.with_suffix(".pending")\n'
+                             'pending.write_text(json.dumps(dict(leader=os.getpid(),descendant=descendant)))\n'
+                             'pending.replace(ready)\n'
                              + ('sys.exit(7)\n' if original_failure else 'time.sleep(30)\n'))
             child.chmod(0o700)
             unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
