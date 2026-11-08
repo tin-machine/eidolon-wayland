@@ -665,8 +665,11 @@ NX04の基本値は実装済み。追加値はNX14で取得可否を個別に検
 2026-11-08追記: 固定SSH/SHMに続き、Build174でLinux GTKのinput/dialogと資源回収が成功した。
 通常接続設定C1はmainに保存APIまで実装し、通常GTKのC2 helper/型付きprotocolは未統合branchへ保存済み。
 SSH actor・lease/journal・runtime・通常UI/launcherの接続は残っている。
-現在の実装順は、既に成立したGTKを足場に通常GUI一種を完成させ、その後remote foot/任意アプリへ広げる。
-下記の当初案に対する更新、L1〜L8の作業単位・課題・受入れは
+2026-11-08レビュー反映: 対象hostの事前確認→C2の非同期終了eventと通常寿命の契約修正→通常GTK demoのUI統合→
+既存実用アプリ一種の固定登録・ファイルを開く／保存する・設定保持・基本物理入力（L7a）→
+継続稼働・切断/スリープ・helper喪失/host再起動・性能（L7b）→remote foot/任意アプリ（L8）の順とする。
+SSH・Waypipe・Eidolon compositorの方式は維持する。今回の計画更新はコード修正・実機受入れ・開発再開の記録ではない。
+下記の当初案に対する更新、事前確認とL1〜L8の作業単位・課題・受入れは
 [通常GUIの詳細追記・第2節](nx11-nx18-normal-gui-followup-plan-20261108.md#linux-normal)を参照する。
 
 2026-11-07の技術相談。詳細は[remote Linux GUI拡張案](remote-linux-gui-plan-20261107.md)を参照する。

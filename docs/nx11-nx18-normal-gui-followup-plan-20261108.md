@@ -4,6 +4,8 @@
 記録基準はmain `2eeff89`、導入済みdebug APKはBuild176/source `f09a3b4`。
 検証版・digest・APK hashは[Build176の記録](build-176-integration-20261108.md)を正本とする。
 実装・実機検証・goalは相談のため一時停止中。本追記は開発再開を意味しない。
+2026-11-08レビュー反映: 第2節をmain `ea068ba`と未統合C2 `43767a4`の静的レビューに基づき改訂した。
+今回追加した修正・受入項目は計画であり、上記Build176や既存host検査へ新しい実装・実機成功を合算しない。
 
 <a id="freedoom-normal"></a>
 ## 1. ランチャーからのFreedoom起動（NX10・NX11）
@@ -79,7 +81,7 @@ F2の固定キーは「メニューから終了できる」検証であり、ゲ
 | SSH認証・StreamLocal・固定SHM | 実APKから隔離Linux検証環境へ接続、固定SHM100frameと通常SDK表示・復帰・lease解放が成立 | 任意のUbuntuホストや既存desktop全体への対応 |
 | 固定GTK B6 | Build174のinput/dialogが成功。文字・削除・button、追加窓、SHM/SDK、全退役、remote journal/所有process回収、通常復帰を同jobで確認 | 通常ランチャー、終了しない通常アプリ、任意GTK/Qt、物理入力、remote IME |
 | 通常接続設定 C1 | mainに専用保存モデル/Store/CASを実装。profile ID `remote-linux`、backend `linux_ssh`、revision/bindingとpinを分離 | 接続設定UI・Hostへの採用、device filesystemでの中断復旧、保存後の通常SSH接続 |
-| process owner C2a | live pidfdでsetsid子孫を含む所有・回収・pipe EOFを扱う部品を実装・host検査 | 通常remote foot/GUIの接続完成。C2aという名称だけでterminal対応済みとはしない |
+| process owner C2a | subreaperとlive pidfdでsetsid子孫を含む所有・回収を扱う部品を実装・host検査。pipe EOFはadapterで別判定 | 通常remote foot/GUIの接続完成、helper自身が失われた後の回収保証。C2aという名称だけでterminal対応済みとはしない |
 | 通常GTK C2 | 作業branch `43767a4`に通常demo/helper/builderと型付きprotocolを保存。Python13件・Rust8件・Cビルド・限定clippy成功 | main統合、実配備、SSH actor/wire loop/lease/journal/runtime/Host/UIへの接続、実描画・入力 |
 
 固定GTKの詳細は[Build174](build-174-integration-20261108.md)。C1は[保存設計](normal-linux-profile-c1-20261108.md)、
@@ -92,50 +94,235 @@ Quest APKから一台のLinuxへ直接SSH接続し、Linuxで実行する個別W
 Termux中継は必須にしない。remoteの実行file/cwd/dataはremoteに残し、Questへコピーして実行しない。
 
 従来の「固定SHM→remote foot→一般GUI」の案に対し、直近の再開順は
-**固定GTKの成功を使い、通常GTK一種を接続してからremote foot/任意アプリへ広げる**。
+**対象hostを事前確認し、固定GTKの成功を使って通常GTK demoを接続した後、既存の実用アプリ一種を固定登録して確認する**。
 足場は、自動入力や期限による自己終了を持たないGTK desktop demo（Entry、Dialog、Close）とする。
 新たな端末PTY経路とGUIの寿命管理を同時に解放しない。remote footは削除せず後続の独立項目として残す。
+実用アプリ一種の確認を、remote foot/PTYや任意exec・自由argv・任意catalogの全面開放の完了待ちにしない。
+
+到達点は「通常経路の統合成立」と「限定した実用接続成立」の二段階に分ける。
+前者は固定GTK demoを通常UI/launcherから操作できること、後者は対象Linuxにある既存アプリ一種をQuestから起動し、
+remoteファイルを開く／保存する・設定を保持する・終了するところまで使えることとする。
+固定demoの成功を後者へ読み替えず、詳細な[完了判定](#linux-acceptance)で記録する。
 
 接続先のprofileは「どこへ接続するか」、capabilityは「その接続で何を起動できるか」を表す別の契約とする。
 SSH成功やprofile保存だけでcatalogやGUIReadyを公開しない。
 初版はTermuxまたはLinux一台のどちらか一接続先、通常GTKは一instance。
+実用アプリ一種の検証でも同時instance数は増やさず、検証済みの固定entry/capabilityを明示的に追加する。
 Dialogなど追加toplevelも全体の9窓予算へ含め、別hostごとに予算を増やさない。
 
 ### 接続する実装単位と受入れ
 
 以下の段階名は計画上の単位であり、実装済みenumや画面状態の名称を保証するものではない。
+従来のL1〜L8は維持し、L7を実用アプリ確認のL7aと、継続稼働・障害・性能のL7bへ分ける。
 
 | 順 | 変更する層 | 実装・受入れ条件 |
 | --- | --- | --- |
-| L1 | branch reviewと配備 | C2をmain基準でreviewし、APK source digest入力に含む3sourceとbundle hashを照合。既存base/Waypipe/B6 bundleを変更せず、通常GTKの独立bundleを明示配備。未配備・改変・重複fileは拒否 |
-| L2 | helper wire loop・lease | 既存の内部adapterに固定bootstrap/inspect/start/heartbeat/stopを接続。session/profile revision/binding/nonce/UIDとscopeを固定し、有限leaseと期限切れ時の所有回収を実装。`.eidolon-desktop`の専用receiptを使う |
-| L3 | transport SSH actor | 一つの認証済みhandleとStreamLocal routerでprotocolを扱う。request/sequence/ACK、上限size、deadlineを照合。送信とremote ACKを分離し、応答不明を自動再実行しない。protocolの既存fixtureを実actorにも適用 |
-| L4 | durable journal・復旧 | 通常Linux用の独立journalへ接続。process/pidfd/pipe、remote directory/socket/receipt、channel/routerの回収を別に確認。接続断後は同じprofile/binding/ownerの証拠で復旧し、別profileから見えないことを回収済み扱いしない |
+| 事前確認 | 対象Linuxの実行条件 | L1前に対象OS/arch、SSH認証・StreamLocalの実効許可、Waypipe実装/版/feature、Pythonのpidfd API・Linux subreaper、GTK/runtimeを確認する。実ホスト固有の前提をUI統合後まで先送りしない |
+| L1 | branch reviewと配備 | C2の[非同期終了event競合](#linux-protocol)を修正する契約とfixtureを確定。APK source digest入力の3sourceとbundle hashを照合し、通常GTKの独立bundleを明示配備。既存base/Waypipe/B6 bundleと証拠を保持し、未配備・改変・重複fileは拒否 |
+| L2 | helper wire loop・lease | 固定bootstrap/inspect/start/heartbeat/stopを接続。session/profile revision/binding/nonce/UIDとscopeを固定。[寿命と出力](#linux-lifetime)を分離し、更新可能な有限lease、所有回収、`.eidolon-desktop`専用receipt、helper喪失時の扱いを定義する |
+| L3 | transport SSH actor | 一つの認証済みhandleとStreamLocal routerを使い、要求ACKと非同期終端eventの相関規則を分離する。上限size/deadline、event順序、bindingを検査。応答不明を自動再実行せず、自然終了・Stop・heartbeat・lease切れの交差fixtureを実actorにも適用 |
+| L4 | durable journal・復旧 | 通常Linux用journalへ起動前にbinding/ownerとremote boot identityを記録。process/pidfd/pipe、directory/socket/receipt、channel/routerを別判定する。通信断・helper死亡・host再起動を区別し、unknown ownerの明示解消手順と新規起動条件を定義する |
 | L5 | native・Host・SDK | AppMode/GUI receipt/cookie/slotを接続。実inspectとversion/capability照合後だけ一項目catalogを公開。Mapped→SDK初frameと更新→直接入力→Dialog→Close→全target退役を同じsessionで観測する |
-| L6 | 接続設定UI・launcher | C1を通常workerへ接続し、接続先名と現在の起動可能項目を表示。profile/catalog revisionを要求へcapture。旧接続の入力ownerと資源を回収してから明示切替。起動ボタンが黙ってTermuxや別hostへ切り替わらない |
-| L7 | 回帰・実ホスト・性能 | 固定B4/B6と通常Termux、通常GTKの切断/再接続/Stop/起動失敗/再起動、窓予算、設定保存復旧を確認。次に対象Ubuntu等のOS/arch/package/sshd実効値を確認して移植検証し、遅延・転送量・CPU/圧縮を測る |
-| L8 | 利用範囲の拡張 | remote foot/PTY、構造化した任意アプリ定義・遠隔fileの一時実行/保存、Qt等を個別追加。物理/HMD/remoteかな漢字は最後。複数host同時・desktop全体共有・音・任意3Dは別設計 |
+| L6 | 接続設定UI・launcher | C1を通常workerへ接続し、host key pinとclient identityの[認証契約](#linux-credentials)を採用。profile/catalog revisionを要求へcaptureし、接続先・capability・切断時の作業終了条件を表示。旧owner回収後に明示切替し、起動操作で別hostへ暗黙に切り替えない |
+| L7a | 既存実用アプリ一種 | [固定登録した実アプリ](#linux-real-app)の独立起動、D-Bus/session bus、portalを含むファイル選択、remoteファイルの開く/保存、設定保持、resize/focus/Close、基本物理入力を確認。任意exec全面開放を前提にしない |
+| L7b | 継続稼働・回帰・障害・性能 | 固定B4/B6・通常Termuxを回帰確認。probe期限を超える通常GUIの稼働、少量継続出力、切断/スリープ/Stop/起動失敗、helper死亡/host再起動、保存復旧と窓予算を確認。圧縮・遅延・転送量・CPU・総pixel面積・buffer/メモリを測る |
+| L8 | 利用範囲の拡張 | remote foot/PTY、構造化した任意アプリ定義・遠隔fileの一時実行/登録、Qt等を個別追加。HMD総合受入れ・remoteかな漢字は独立して残す。複数host同時・desktop全体共有・音・任意3Dは別設計 |
 
 L2〜L5が揃うまで、通常GUI経路は利用可能と表示しない。
+固定demoだけのcapabilityを一般アプリ対応として表示しない。L7aの基本物理確認は、HMD/IMEの総合受入れの代用にはしない。
 通信・helper待機は描画/入力threadで行わず、queueと保持frameを有界にする。
 未知ownerや回収pendingを自動的にIdleへ戻さず、同じownerの明示回収を残す。
 
-### 特に残る課題
+<a id="linux-protocol"></a>
+### 要求ACKと非同期終了eventの相関（L1・L3）
 
-- **常駐寿命:** B6の有限fixtureと異なり、通常アプリはユーザーが閉じるまで続く。heartbeat喪失、Quest停止、SSH断でも孤児を残さないleaseと復旧が必要。
-- **認証と設定変更:** pin/endpoint/user/revisionを含むimmutable bindingを使う。credentialはcaptureした要求へ一度だけ渡し、遅い認証結果を新接続へ流さない。既存Termux鍵やpinを別hostへ流用しない。
-- **DNS:** C1はDNS名を保存できるが現transportでは`DNS_UNSUPPORTED`。最初は検証可能なIP接続を使い、DNS対応は名前解決の取消/期限/宛先照合を設計して別実装する。
-- **独立窓の対応:** app_idだけで起動成功や親子関係を決めない。追加Dialog、full targetの世代、同一instance、close時の入力解除、全世代のSDK退役を確認する。
-- **通常UI:** 「設定保存」「認証成功」「起動可能catalog」「アプリ起動待ち」「表示」「回収待ち」を区別する。profile切替や再読込でアプリを自動再実行しない。
-- **入力と計測:** GTK英数の合成検査を物理入力やremote IMEの成功へ広げない。remote workloadの未実装値はunknownとし、Quest全体やTermuxの値を代用しない。
-- **LAN・他ホスト:** 隔離環境の成功を任意Ubuntuの成功にしない。Waypipe 0.11.3と実feature、SSH転送の許可、GTK/Wayland backendを対象ごとに確認する。圧縮は両端対応と実測後に選ぶ。
+未統合C2の[protocol実装](https://github.com/tin-machine/eidolon-wayland/blob/43767a437b5deab94156f5550846c1a0456dbe73/native/transport/src/linux_desktop/protocol.rs#L194-L322)は、
+`command()`でwire bytesを生成した時点でrequest sequenceを進め、全受信eventに最新送信番号との一致を要求する。
+自然終了・lease失効・入力EOFの`Stopped`も同じ検査を受けるため、次の交差で正しい終了通知を拒否し得る。
 
+1. 起動ACK後、双方のrequest sequenceが`2`になる。
+2. Linuxが自然終了を観測し、`Stopped(ProcessExited, request_sequence=2)`を生成する。
+3. Questがその通知を受け取る前にheartbeat `3`を生成する。
+4. 正しい終了通知も`2 != 3`で`DESKTOP_PROTOCOL_SCOPE`となり、`Failed`へ移る。
+
+これはコードから確認した静的指摘で、実機発生や修正済みを意味しない。L3の通常actorへ配線する前に、
+Python/Rust共通のwire契約として、要求ACKの対応番号と非同期eventの最終処理request番号を分離する。
+
+- ACKは対象requestと厳密に対応付ける。非同期終端eventではremoteが処理済みのrequestと未処理requestの関係を確認する。
+  一律に最新送信番号との一致を要求せず、無条件に古い番号を受け入れる変更にもしない。
+- session/profile revision/binding相当のscope/nonce/UID、event sequence、合法な状態遷移は厳密に検査する。
+  自然終了や回収pendingが新しいsession・別instanceへ適用されないことを維持する。
+- command生成、送信、remote ACKを別状態として扱い、送信/応答不明のstartを自動再送しない。
+  終端と行き違ったACKの処理・破棄条件を定義し、終了済みアプリを復活させたり終了を二重計上したりしない。
+- heartbeatと自然終了、Stopと自然終了、未ACK要求とlease失効/入力EOF/回収pendingを、双方の順序で検査する。
+  未送信のcommand生成直後に終了eventが到着するcaseも含める。順番どおりACKを待つfixtureだけで合格にしない。
+
+wireの意味やschema/revisionを変更した場合は、helperとRustの相互fixture、source/bundle pinsも同じ変更へ束縛する。
+
+<a id="linux-lifetime"></a>
+### 常駐寿命・期限・出力量の分離（L2・L3・L7b）
+
+既存probeの[transport owner](https://github.com/tin-machine/eidolon-wayland/blob/ea068ba28051f441d28698730b4b18056ba59ae5/native/transport/src/linux_probe/owner.rs#L209-L245)は
+GTK起動から90秒の総期限を持ち、heartbeatではその期限を更新しない。
+[Linux probe helper](https://github.com/tin-machine/eidolon-wayland/blob/ea068ba28051f441d28698730b4b18056ba59ae5/scripts/linux/eidolon-linux-session.py#L480-L530)も
+leaseと120秒の最大時間を分けている。これは有限probeの契約であり、通常GUIへ既に混入していると判断したものではない。
+通常経路では次を別々に定義する。
+
+| 制限 | 通常GUIでの契約 |
+| --- | --- |
+| 起動期限 | process生成・表示準備・最初のframeのどこで停止したかを識別して取消可能にする |
+| request/ACK期限 | 個々の操作の応答待ちを有限にする。応答不明と未実行を同一視しない |
+| heartbeat lease | 生存中の同ownerが更新する有限期限。更新間隔・猶予・停止条件を両端で一致させる |
+| 停止期限 | 子孫回収、pipe EOF、remote state、native/SDK退役を別々に判定し、未証明ならpendingを残す |
+| アプリ総稼働時間 | 通常用途にprobeの短い最大時間を引き継がない。テスト自体の実行上限は製品寿命と分離する |
+
+C2の[Prepared契約](https://github.com/tin-machine/eidolon-wayland/blob/43767a437b5deab94156f5550846c1a0456dbe73/native/transport/src/linux_desktop/protocol.rs#L271-L315)は
+`lease_ms=15000`を固定している。採用または改訂の際にheartbeat間隔と猶予を定め、既存probeの10秒間隔を無検討で流用しない。
+描画・圧縮・SSH送信の待ちがheartbeatへ与える影響と、Questの実際の停止条件をL7bで測る。
+
+C2の[adapterのdrain](https://github.com/tin-machine/eidolon-wayland/blob/43767a437b5deab94156f5550846c1a0456dbe73/scripts/linux/eidolon_linux_desktop.py#L145-L155)は
+stdout/stderrそれぞれの起動からの累積64KiB超を`OUTPUT_LIMIT`にする。本文保持量の制限ではない。
+固定demoの限定出力契約としては保持できるが、実用アプリ用adapterでは次を分離する。
+
+- 制御protocolの1メッセージ上限と未知field/不正JSON拒否。
+- 未処理queue、記録するログ、保持bufferの上限。
+- アプリstdout/stderrの継続drainと、時間窓内の異常な出力速度への対処。本文の通常保存は行わない。
+- 起動からの累積出力counter。観測値を暗黙のアプリ寿命にせず、少量のwarningが長時間続くだけで終了させない。
+
+制御protocolをアプリのログと同じ読み捨て処理へ通さない。
+L7bでは旧probeの90/120秒を十分超える継続稼働後の入力・Closeと、少量出力の累積が旧閾値を超えても
+所定の資源上限内で操作できるcaseを確認する。この検査をPhase6の長時間受入れ全体の代用にしない。
+
+<a id="linux-real-app"></a>
+### 既存実用アプリ一種の受入れ（L7a）
+
+通常demoの次に、対象Ubuntu等にある軽量なエディタなどを一種選び、package/版、実行file、固定argv/cwd、
+Wayland backend/renderer、独立instance条件をversion付きcapabilityへ結び付ける。
+対象は事前確認で決め、未検証の具体的なアプリを対応済みと記載しない。自由shell/argv/任意catalogの解放はL8に残す。
+既存アプリは固定demoの自己申告counterを持つと仮定せず、起動receipt・instance・Wayland client/target・実描画の対応を確認する。
+
+**D-Bus/session bus:** [GApplicationの登録仕様](https://docs.gtk.org/gio/method.Application.register.html)では、
+同一session bus上のapplication IDにより既存primary instanceへ要求が渡り得る。
+対象アプリの独立起動方法、既存busを利用する範囲、専用busの必要性を定義する。
+[dbus-run-session](https://dbus.freedesktop.org/doc/dbus-run-session.1.html)はSSH等から専用busを作る候補だが、
+それだけでdesktop service一式が利用可能になるとはしない。
+
+**Portalと追加画面:** [portalはsession busのサービス](https://flatpak.github.io/xdg-desktop-portal/docs/api-reference)であり、
+[FileChooser backend](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.impl.portal.FileChooser.html)が
+ファイル選択画面を表示する。仕様上、本体の`WAYLAND_DISPLAY`変更だけではその画面のQuest到達は保証できない。
+対象アプリがportalを使うかを確認し、利用するbus/backend・表示先・所有/終了の範囲を固定する。
+既存desktop serviceをhelperの子孫として回収せず、専用に起動するserviceの監督方法も定義する。
+これは対象hostで誤表示を観測済みという意味ではない。
+
+**HOMEと永続設定:** 検証用nonce directoryの一時HOME/XDG設定を、そのまま実用アプリの永続設定にしない。
+対象hostの既存HOMEを使うか、アプリ用の永続HOME/XDG directoryを用意するかを決める。
+sessionのsocket/temp/receiptと保存対象の設定・データを分け、通常回収で後者を削除しない。
+
+L7aでは、同じsource/profile/app版・instanceを識別して次を確認する。
+
+1. 同じユーザーの既存desktop instanceとは独立してQuestへ起動する。既存窓への転送や正常exitだけを成功にしない。
+2. 開く/保存ダイアログがQuestで操作でき、remote側の検証用ファイルを実際に読み書きできる。
+   portal未使用のアプリならその条件を記録し、portal対応済みへ広げない。
+3. アプリ再起動後の設定保持と、session資源だけの回収が決めたHOME/XDG方針に従う。
+4. resize、focus往復、基本の物理英数入力、Closeを確認し、生成した全targetと所有資源を回収する。
+5. 取得できないremote CPU/RSS/Disk I/O等はunknownとし、Quest全体やTermuxの値で代用しない。
+
+HMD内の可読性・長時間の使い勝手・remoteかな漢字変換・任意toolkitは、それぞれ別の受入れを残す。
+
+<a id="linux-failure-recovery"></a>
+### 通信・スリープ・helper喪失・host再起動（L2・L4・L6・L7b）
+
+初版は、SSH切断後に同じGUIを復元せず、既存の所有資源回収を経て新しいsessionとして再接続する。
+スリープ等でheartbeatがleaseを超えて停止する場合は、未保存のGUI作業も終了し得ることを通常UIへ表示する。
+Questの脱着・スリープが実際にどの通信/workerを停止させるかは実機確認事項であり、必ず切断すると仮定しない。
+
+| 障害・操作 | 初版の扱いと確認条件 |
+| --- | --- |
+| 同じSSH接続内の一時的な通信停滞 | lease内の回復と期限切れを区別する。期限後の遅いheartbeatで退役済みownerを復活させない |
+| SSH接続断・Quest終了・heartbeat喪失 | remote helperが生存する場合のEOF/lease回収を検査する。入力を解除し、復帰時に無断再起動しない |
+| 明示Stop・接続先切替 | 旧入力ownerと資源の回収を確認し、保存が必要な作業の終了を案内してから切り替える |
+| 同一bootでのremote helper SIGKILL/OOM/crash | live pidfdを失ったunknown ownerとして扱う。保存PIDへの後日signalや、状態が見えないことによる完了解釈をしない |
+| remote host再起動 | 同じ認証済host・実行環境のboot identityを起動前のjournalと照合する。旧processの不存続と、残るsocket/directory/receiptの所有・退役を別々に検証する |
+
+[C2a owner契約](linux-terminal-process-owner-c2a-20261108.md)は生存する専用helperによるsubreaperとpidfdの管理である。
+[subreaper](https://man7.org/linux/man-pages/man2/PR_SET_CHILD_SUBREAPER.2const.html)は生存している祖先へ孤児を引き取り、
+[pidfd](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)は特定taskを参照するFDである。
+helper死亡後までこの仕組みだけで回収が継続する保証はないため、通信断時の成功とhelper死亡時の成功を分ける。
+
+L4ではunknown ownerの明示解消手順を実装前に定義する。最低限、同一binding/UID・実行環境・bootの確認、
+live ownerがあればそのownerによる回収、owner喪失時の管理者による対象確認と解消結果、残る私有stateの照合、
+新規起動を許す終端条件を記録する。取得不能・矛盾時はunknownを保持する。
+boot identity変更だけでsocket/receiptまで自動回収済みにせず、別profileから不可視なことも解消の証拠にしない。
+
+Ubuntu用adapterの発展案として、外側に[systemd user transient service](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html)と
+cgroupによる監督を置く方式を比較できる。
+[`KillMode=control-group`](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html)はunit停止時の残存process回収に使えるが、
+採用する場合はuser managerの可用性、helperとunitの寿命、unit identityとjournal、環境の引渡しを別途検証する。
+固定GTK初版の必須依存にせず、helper喪失後まで保証する範囲を広げる際の選択肢とする。
+スリープ後も同じGUI作業を保持する機能も、lease延長だけで達成したとせず、表示接続とアプリ寿命を分ける後続設計にする。
+
+<a id="linux-rendering"></a>
+### Waypipe・renderer・性能の固定条件（事前確認・L7）
+
+初回は[deps.lock.json](../native/deps.lock.json)のWaypipe C 0.11.3と実featureを揃え、SHMの相互接続を確認する。
+通常の実行名や版番号だけでC/Rustやfeatureを同一と判断しない。
+[作者のRust移植記録](https://mstoeckl.com/notes/code/waypipe_to_rust.html)には元のC実装との接続検査もあるため、
+C/Rustが全面的に非互換とも、任意の組合せが互換とも断定しない。
+[Ubuntu配布manpage](https://manpages.ubuntu.com/manpages/stonking/man1/waypipe.1.html)の版・実装は固定C版と異なり得るので、
+新しいCLI optionを無検証で固定C版へ持ち込まず、選んだsource/buildのhelp・同梱文書と実featureを照合する。
+
+`--no-gpu`はGPUアクセスを必要とするprotocolを遮断する指定であり、任意アプリの描画を必ずSHMへ変換する機能ではない。
+アプリのWayland backendとrendererを別の条件として、検証したpackage/版・環境をcapabilityへ束縛する。
+
+| 対象 | 初期の検証条件・境界 |
+| --- | --- |
+| GTK3標準widget demo | B6で成立した条件を利用する。GTK4やGtkGLAreaの動作保証へ広げない |
+| GTK4 | [GTK公式の実行時設定](https://docs.gtk.org/gtk4/running.html)に従い、`GDK_BACKEND=wayland`と`GSK_RENDERER=cairo`等を別に確認する。環境指定は対象版の検証条件であり、全アプリ共通の保証にはしない |
+| Qt Widgets | Wayland QPA backendとraster/SHM経路を対象アプリで確認する |
+| Qt Quick | [公式scene graph設定](https://doc.qt.io/qt-6/qtquick-visualcanvas-adaptations.html)の`QT_QUICK_BACKEND=software`を候補とし、software側の機能制限も確認する |
+
+L7bでは、静止画面・文字入力・scroll/resize等の更新を分け、none/lz4/zstdを両端の対応確認後に比較する。
+解像度・窓数・更新条件・thread設定を揃えて、転送量、両端CPU、入力から描画までの遅延を記録する。
+[Waypipe作者の説明](https://mstoeckl.com/notes/code/waypipe_to_rust.html)にあるbuffer複製・差分処理も考慮し、
+総pixel面積、buffer数/bytes、Waypipeプロセスのメモリ、compositor copy、SDK側の保持量を測る。
+取得できない内訳はunknownとして、既存の窓数/pixel予算・queue上限と合わせて総メモリ圧力を判断する。
+PC側GPUの有無や一度のSHM表示だけを、動画・高解像度・高更新頻度の快適性の証拠にしない。
+
+<a id="linux-credentials"></a>
+### host key pinとclient identity（L6前に確定）
+
+host key pinは接続先の認証、client identityはAPK側の公開鍵認証として区別する。
+pin/endpoint/user/revisionを含むimmutable bindingを使い、別hostのpinを流用しない。
+credentialはcaptureした要求へ一度だけ渡し、遅い認証結果を新接続へ流さない。
+
+現行の[CredentialStore](https://github.com/tin-machine/eidolon-wayland/blob/ea068ba28051f441d28698730b4b18056ba59ae5/android/app/src/main/java/io/github/tinmachine/eidolon/CredentialStore.kt#L20-L27)は
+単一identityを保存する。L6前に、次の一方を製品契約として選び、UI・保存・要求へのcaptureを揃える。
+
+- **APK identityを共有:** 利用するclient公開鍵を対象Linuxユーザーへ明示登録する。共有をhost key pinやprofile scopeの共有と混同しない。
+- **host別client鍵:** credential ID、鍵の生成/保存、公開鍵登録、profileとの対応と変更時のrevisionを追加する。
+
+client鍵の共有自体を禁止する根拠にhost pinの取り違えを用いず、どちらを選んでもcredential変更後の遅い要求や
+古いjournalのownerを新しいidentityへ付け替えない。
+
+### その他の継続条件
+
+- **DNS:** C1はDNS名を保存できるが、現[transport](../native/transport/src/connect_profile.rs)はIPv4接続のみで、名前を接続に使うと`DNS_NOT_IMPLEMENTED`となる。
+  初回は検証可能なIPv4を使い、DNS/IPv6は期限・取消・宛先照合を含む別実装にする。
+- **独立窓の対応:** app_idだけで起動成功や親子関係を決めない。追加Dialog、full target世代、同一instance、close時の入力解除、全世代SDK退役を確認する。
+- **通常UI:** 設定保存、認証成功、起動可能catalog、起動待ち、表示、回収待ちを区別する。profile切替やreloadだけでアプリを自動再実行しない。
+- **証拠の境界:** 合成英数入力を物理入力/remote IMEの成功へ広げない。隔離環境の成功を任意Ubuntuの成功にしない。
+
+<a id="linux-acceptance"></a>
 ### 通常Linux GUIの完了判定
 
-通常UIで接続先を明示選択し、そのhostのcatalogから一つ起動できることを最小到達点とする。
-同じsource/job/profile/instanceで、描画進行・英数入力・追加Dialog・Close・停止・切断後の回収と通常復帰を記録する。
+| 到達点 | 完了条件 | 残す境界 |
+| --- | --- | --- |
+| 通常経路の統合成立（L1〜L6） | 通常UIで接続先を明示選択し、固定GTK demoをcatalogから起動。同じsource/job/profile/instanceで描画進行・英数入力・追加Dialog・Close・停止・切断後回収・通常復帰を記録 | 既存実用アプリ・物理/HMD・remote IMEは未受入れ |
+| 限定した実用接続成立（L7a・L7b） | 固定登録した既存アプリ一種で独立起動・remoteファイルの開く/保存・設定保持・基本物理入力・終了が成立。継続稼働、定義した障害/unknown-owner復旧、回帰と性能の条件を確認 | 対象host/app版/backend/rendererの範囲に限定。HMD総合・remote IME・任意アプリ・複数hostは別受入れ |
+
 host fixture、helperの`complete`、catalogの表示、Mapped消失だけでは合格にしない。
-物理キーとHMD、remote IME、任意アプリ、複数hostはそれぞれ独立した受入れを残す。
+「未確認」「失敗したが回収成功」「通常操作成功」を分け、未回収は同ownerのpendingを維持する。
+今回のレビュー・計画更新だけでは、上記いずれの新しい完了条件も達成済みにしない。
 
 ## 3. 記録と再開の約束
 
