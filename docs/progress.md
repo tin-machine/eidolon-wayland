@@ -1,5 +1,13 @@
 # 製品実装の進捗
 
+## 通常GUIの配線と視点姿勢（2026-11-08、Build175）
+
+固定Freedoom用GUI worker/cookie/receiptとgroupのnative入力境界を統合し、debug/releaseのbuild・lint・packageと
+JVM265/175件が成功した。新helperで通常footを起動でき、公開SDKのviewer poseを20回読んで有効な正面候補を計算できた。
+通常IME検査のactive情報に参照違いを見つけ、修正を分離した。通常入口の成功とは扱わない。
+catalog登録にもTermuxのAPI差があり、非上書き条件を保つ別APIを実測した。
+詳細と未完了範囲は[Build175記録](build-175-integration-20261108.md)。
+
 ## 拡張の統合検証（2026-11-08、Build174）
 
 通常footから明示的にIMEへ切り替える入口を共通controllerへ接続し、debug/releaseのbuild・lint・package検査、
