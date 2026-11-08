@@ -41,9 +41,15 @@ import hashlib
 import sys
 import zipfile
 source, output = map(Path, sys.argv[1:])
+sys.path.insert(0, str(source / 'scripts'))
+from launcher_bundle import prepare
+prepare(source)  # APKと組にするhelper/worker/ownerの固定hash鎖も検査する。
 bundle = output / 'eidolon-termux-tools.zip'
 with zipfile.ZipFile(bundle, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-    for name in ['scripts/pairing.py', 'scripts/termux/eidolon-pair', 'scripts/termux/eidolon-session.py', 'scripts/termux/eidolon-start', 'scripts/termux/eidolon-japanese', 'scripts/termux-bootstrap.sh', 'docs/usage.md', 'docs/extensions-nx01-nx08-20261107.md']:
+    for name in ['scripts/pairing.py', 'scripts/termux/eidolon-pair',
+                 'scripts/termux/eidolon-session.py', 'scripts/termux/eidolon-gui.py', 'scripts/termux/eidolon_gui_owner.py',
+                 'scripts/termux/eidolon-start', 'scripts/termux/eidolon-japanese', 'scripts/termux-bootstrap.sh',
+                 'docs/usage.md', 'docs/termux-wayland-tools.md', 'docs/extensions-nx01-nx08-20261107.md', 'THIRD_PARTY_NOTICES.md']:
         archive.write(source / name, name)
 (output / 'termux-tools.sha256').write_text(hashlib.sha256(bundle.read_bytes()).hexdigest() + '  ' + bundle.name + '\n')
 PY

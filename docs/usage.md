@@ -87,6 +87,9 @@ sshd -p 8022 -o ListenAddress=127.0.0.1 \
   -o AllowStreamLocalForwarding=yes
 
 install -d -m 700 "$HOME/.local/lib/eidolon"
+# 依存先を先に、hash鎖を持つ主helperを最後に更新する。同じbuildの3fileを組で使う。
+install -m 700 scripts/termux/eidolon_gui_owner.py "$HOME/.local/lib/eidolon/eidolon_gui_owner.py"
+install -m 700 scripts/termux/eidolon-gui.py "$HOME/.local/lib/eidolon/eidolon-gui.py"
 install -m 700 scripts/termux/eidolon-session.py "$HOME/.local/lib/eidolon/eidolon-session.py"
 waypipe --version
 foot --version
@@ -95,6 +98,9 @@ foot --version
 固定版packageがrepositoryに無い場合はこの手順を止め、[toolsの版契約](termux-wayland-tools.md)を再確認する。
 違うWaypipe版やfeaturesを黙って使用しない。launcherはAPK同梱のSHA256と一致しなければ起動を拒否する。
 通常のfoot利用には開発用SHM fixtureの導入は不要。
+GUI workerとownerも同じ配布物に含め、主helperが固定SHAを照合する。
+固定Freedoom GUIは別途engine/asset/runtimeの照合と明示登録が必要で、この初回手順だけではゲームを起動しない。
+bootstrapはSSH/serviceの設定用であり、通常更新では再実行せず、接続を閉じて上の3fileを更新する。
 
 ## 公開鍵をペアリングする
 
