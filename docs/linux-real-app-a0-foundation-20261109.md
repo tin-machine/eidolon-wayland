@@ -63,6 +63,19 @@ inspectorの将来manifest検証と実Wayland controllerは、共有する `WIND
 これは固定CI構成の観測であり、別版packageのA0や、native originによるinstance由来の証明を代替しない。
 失敗時の診断は固定phase、bounded ID/parent/lifecycle/frame、入力countだけを保存し、本文・title・pixelsを含めない。
 
+## File chooserの非同期処理に合わせる
+
+[GTK 3.24.41のlocation更新](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkfilechooserwidget.c#L2570-L2613)
+は入力のたびに[150msのtimer](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkfilechooserwidget.c#L115)を設定し直し、
+その後のselection変更が[accept buttonのsensitivityを更新](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkfilechooserdialog.c#L384-L399)する。
+[実行記録](https://github.com/tin-machine/eidolon-wayland/actions/runs/42503959636)では、正しいmain/parentと
+150件のnative入力配送を観測した後もOpen dialogが残った。入力直後のEnterは、このaccept有効化より早く到着し得る。
+[GtkEntryのactivate](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkentry.c#L6038-L6061)も、
+フォーカス中のentryのdefault buttonがinsensitiveならactivationを行わない。
+controllerはpathの最終文字の後に250ms、Wayland dispatchとtopology検査を継続してからEnterを一度送る。
+その後もdialogが実際にunmapすること、Open/編集/Save/Save Asの出力bytesが独立oracleと一致することを必須とする。
+この待機だけでは、GUI成功やA0成立を認定しない。
+
 ## 設定policyの実装
 
 専用GIO module名は `eidolon-keyfile-v1`、実GTypeは `EidolonKeyfileV1Backend`。

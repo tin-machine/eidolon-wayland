@@ -60,6 +60,8 @@ Unobserved or unsupported UI steps remain false in `checks` and listed in `pendi
 
 The driver returns `state=partial`, `feasibility_verified=false` even if every Open/Save check succeeds. Its fixed `remaining_checks` are `independent_existing_mousepad_instance`, `normal_close_restart`, `preferences_widgets_read_only`, `preferences_transient_parent`, `settings_persist_after_restart`, and `restart_after_forced_stop_has_one_main`. A settings API probe cannot clear the widget item. An aggregate owner additionally needs Waypipe/package provenance and reaped external process groups; the adapter's successful return does not certify those. Unsupported chooser shortcuts or timing fail a bounded step instead of silently downgrading it to pass.
 
+The driver dispatches for 250 ms after typing each chooser path before sending its single Enter. GTK 3.24.41 [delays location `selection-changed` by 150 ms](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkfilechooserwidget.c#L2570-L2613), and the dialog [updates its accept button sensitivity on that signal](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkfilechooserdialog.c#L384-L399). Enter while the button is insensitive is not queued. This settling interval is input synchronization only; dialog disappearance and the independent file bytes remain the evidence of acceptance.
+
 ## Aggregate owner API
 
 `scripts/linux_real_app_wayland.py` exports:

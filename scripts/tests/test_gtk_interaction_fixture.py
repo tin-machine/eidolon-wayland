@@ -170,7 +170,10 @@ class HostGtkTests(unittest.TestCase):
                 # Production rejects X11 immediately after gtk_init_check, before any widget/map.
                 return subprocess.run([str(cls.production), "--case", "input", "--run-id", "f" * 32],
                                       stdin=subprocess.DEVNULL, capture_output=True, timeout=remaining, env=env)
-            cls.display, cls.xvfb_ready = wait_ready(read_fd, cls.xvfb, probe, cls.xvfb_stderr)
+            # CI can reach the displayfd deadline before Xvfb emits any readiness
+            # or stderr. Give only server startup 15s; GTK still gets its own 5s.
+            cls.display, cls.xvfb_ready = wait_ready(
+                read_fd, cls.xvfb, probe, cls.xvfb_stderr, startup_timeout=15)
         except Exception:
             cls.stop_xvfb();cls.temporary.cleanup();raise
         finally: os.close(read_fd)

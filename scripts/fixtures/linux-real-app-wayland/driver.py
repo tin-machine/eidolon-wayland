@@ -420,6 +420,10 @@ def exercise_open_edit_save(control: Control, input_path: Path, output_path: Pat
     control.settle()
     chord(control, dialog, CTRL, 30)
     type_ascii(control, dialog, str(input_path))
+    # GTK 3.24.41 debounces location selection-changed by 150 ms; that
+    # callback enables the accept button. Dispatch after the last character
+    # before sending its single activation (gtkfilechooserwidget.c:2570-2613).
+    control.settle(0.25)
     chord(control, dialog, ENTER)
     control.wait_closed(dialog)
     control.phase = "edit_file"
@@ -441,6 +445,7 @@ def exercise_open_edit_save(control: Control, input_path: Path, output_path: Pat
     control.settle()
     chord(control, save_dialog, CTRL, 30)
     type_ascii(control, save_dialog, str(output_path))
+    control.settle(0.25)
     chord(control, save_dialog, ENTER)
     control.wait_closed(save_dialog)
     wait_file_bytes(output_path, expected, pump=control.pump)

@@ -89,5 +89,48 @@ class XvfbStartupTests(unittest.TestCase):
             os.close(read_fd)
             if write_fd is not None:os.close(write_fd)
 
+    def test_separate_startup_budget_gives_late_displayfd_a_fresh_five_second_gtk_budget(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, b"123\n");os.close(write_fd);write_fd = None
+            now = [0.0];budgets = []
+            def select_ready(*_):
+                now[0] = 14.5
+                return [read_fd], [], []
+            def probe(display, remaining):
+                self.assertEqual(display, ":123")
+                budgets.append(remaining);now[0] += 4.0
+                return subprocess.CompletedProcess([], 2,
+                    json.dumps(dict(phase="final", reason="wayland_required", host_selftest=False)).encode(), b"")
+            with patch("gtk_xvfb_startup.select.select", side_effect=select_ready):
+                display, metadata = wait_ready(read_fd, Child(), probe, Counter(), timeout=5,
+                                               startup_timeout=15, clock=lambda: now[0])
+            self.assertEqual(display, ":123");self.assertEqual(metadata["probe_attempts"], 1)
+            self.assertEqual(budgets, [5.0]);self.assertEqual(now[0], 18.5)
+        finally:
+            os.close(read_fd)
+            if write_fd is not None:os.close(write_fd)
+
+    def test_no_displayfd_fails_at_separate_startup_deadline_before_any_gtk_probe(self):
+        read_fd, write_fd = os.pipe()
+        try:
+            now = [0.0]
+            def select_not_ready(_reads, _writes, _errors, remaining):
+                now[0] += remaining
+                return [], [], []
+            def probe(*_):
+                self.fail("GTK probe must not run without displayfd readiness")
+            with patch("gtk_xvfb_startup.select.select", side_effect=select_not_ready), \
+                 self.assertRaises(RuntimeError) as caught:
+                wait_ready(read_fd, Child(), probe, Counter(), timeout=5, startup_timeout=15,
+                           clock=lambda: now[0])
+            self.assertEqual(now[0], 15.0)
+            diagnostic = json.loads(str(caught.exception))
+            self.assertEqual(diagnostic["reason"], "XVFB_DISPLAYFD_TIMEOUT")
+            self.assertEqual(diagnostic["probe_attempts"], 0)
+            self.assertIsNone(diagnostic["xvfb_returncode"])
+        finally:
+            os.close(read_fd);os.close(write_fd)
+
 
 if __name__ == "__main__": unittest.main()

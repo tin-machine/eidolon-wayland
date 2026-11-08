@@ -115,6 +115,57 @@ class WindowEvidenceTests(unittest.TestCase):
 
 
 class InputAndOracleTests(unittest.TestCase):
+    def test_chooser_accept_waits_for_location_debounce_and_preserves_file_oracle(self):
+        # Model GTK's 150 ms selection debounce: Enter while insensitive is
+        # lost, not queued. A compositor delivery acknowledgement is not an
+        # application acknowledgement. This is a sequencing regression only;
+        # the actual GTK/Waypipe run remains the feasibility evidence.
+        for dispatches, writes in [(False, True), (True, False), (True, True)]:
+            with self.subTest(dispatches=dispatches, writes=writes), tempfile.TemporaryDirectory() as temporary:
+                source, destination = (Path(temporary) / name for name in ("input.txt", "output.txt"))
+                initial, appended = b"opened\n", "saved\n"
+                expected = initial + appended.encode("ascii")
+                source.write_bytes(initial)
+                clock, changed, closed = [0.0], {}, set()
+                control = mock.Mock(spec=driver.Control)
+                control.main, control.phase = "1", "main_ready"
+                control.pump = lambda: None
+                control.snapshot.side_effect = lambda: dict(snapshot(window()), input={
+                    "delivered": 0 if control.phase == "main_ready" else 100, "pressed": 0})
+                control.wait_dialog.side_effect = ["2", "3"]
+                control.settle.side_effect = lambda seconds=.15: clock.__setitem__(
+                    0, clock[0] + (seconds if dispatches else 0))
+                def entered(_, window_id, text):
+                    if control.phase in ("open_file", "save_as_file"):
+                        changed[window_id] = clock[0]
+                def keys(_, window_id, *codes):
+                    if codes == (driver.ENTER,) and clock[0] - changed[window_id] >= .150:
+                        closed.add(window_id)
+                        if writes and control.phase == "save_as_file":
+                            destination.write_bytes(expected)
+                    if writes and control.phase == "save_file" and codes == (driver.CTRL, 31):
+                        source.write_bytes(expected)
+                def wait_closed(window_id):
+                    if window_id not in closed:
+                        raise driver.ProbeError("DIALOG_CLOSE_TIMEOUT")
+                control.wait_closed.side_effect = wait_closed
+                original_oracle = driver.wait_file_bytes
+                def fast_oracle(path, expected_bytes, timeout=5.0, pump=None):
+                    return original_oracle(path, expected_bytes, .025, pump)
+                with mock.patch.object(driver, "type_ascii", side_effect=entered), \
+                     mock.patch.object(driver, "chord", side_effect=keys), \
+                     mock.patch.object(driver, "wait_file_bytes", side_effect=fast_oracle):
+                    if not dispatches or not writes:
+                        code = "DIALOG_CLOSE_TIMEOUT" if not dispatches else "FILE_ORACLE_TIMEOUT"
+                        with self.assertRaisesRegex(driver.ProbeError, code):
+                            driver.exercise_open_edit_save(control, source, destination, initial, appended)
+                    else:
+                        result = driver.exercise_open_edit_save(control, source, destination, initial, appended)
+                        self.assertEqual(result["state"], "partial")
+                        self.assertFalse(result["feasibility_verified"])
+                        self.assertEqual(source.read_bytes(), expected)
+                        self.assertEqual(destination.read_bytes(), expected)
+
     def test_failed_chord_releases_already_pressed_modifiers(self):
         events = []
         class Fault:
