@@ -69,3 +69,6 @@ Build174までをpushした`74f1134`のGitHub Actions `42427524852`はhost/andro
 Build175以降のmain変更は、続く統合実機検証とfetch後にpushする。
 次は通常IMEの修正確認、正面配置の単独成立、groupのSDK case、固定Freedoomの通常起動・入力・二段階close・Stopである。
 重なる複数窓の正面配置、通常Linux GUI、物理/HMD、既存Phase5/6の残る条件も別に保持する。
+
+後続の通常IME ON/OFF・単独窓正面配置・catalog登録の成功と、group caseの失敗・中断点は
+[Build176の記録](build-176-integration-20261108.md)へ追記した。

@@ -1,5 +1,16 @@
 # 製品実装の進捗
 
+## 通常IME・正面配置と中断点（2026-11-08、Build176）
+
+debug/releaseのbuild・lint・package、JVM294/196件が成功した。
+通常入口のIME ON/OFFと直接入力への復帰、単独窓の正面配置・入力復帰・資源回収は実機自動検証で成功した。
+グループ化caseは初期段階の`GROUP_OWNER_CHANGED`で失敗し、個別の失効原因は未確定。設定と通常runtimeの復帰は確認した。
+Freedoomは既存項目を保持して登録済みで、通常ゲームの起動・操作はまだ検証していない。
+
+ユーザーの相談のため、開発を中断する。未統合のgroupメニュー・Linux GUI・複数窓recenter準備は作業ブランチへ保存する。
+検証結果・失敗・保存範囲・再開順は[Build176の中断記録](build-176-integration-20261108.md)を参照する。
+NX01〜18と、既存Phase5/6の未受入れは残る。物理Ctrl+Space・かな漢字変換・HMDは未確認。
+
 ## 通常GUIの配線と視点姿勢（2026-11-08、Build175）
 
 固定Freedoom用GUI worker/cookie/receiptとgroupのnative入力境界を統合し、debug/releaseのbuild・lint・packageと
