@@ -324,12 +324,14 @@ object TerminalImeController {
             val metadata=editorOwner?.let {NativeSessionHost.imeStatus(it)} ?: lastMetadata;val returning=NativeSessionHost.imeRawReturnStatus();val view=editor
             val imm=view?.context?.getSystemService(InputMethodManager::class.java)
             val rawTarget=NativeSessionHost.debugImeFocusedTarget()
+            // Capture the Run receiver before JSONObject.apply changes the implicit `this`.
+            val productActive=active===this && !stopped
             return JSONObject().put("result",if(stopped) "completed" else "running")
                 .put("scope",if(probe==null) "normal_terminal_ime" else "debug_terminal_ime").put("phase",phase).put("reason",reason)
                 .apply {if(probe==null) {
                     put("run",productRun ?: JSONObject.NULL).put("runtime",productRuntime?.toString() ?: JSONObject.NULL)
                     put("target",productTarget?.let {JSONObject().put("session",it.session).put("window",it.window).put("scene",it.scene).put("generation",it.generation)} ?: JSONObject.NULL)
-                    put("active",active===this && !stopped).put("stopped",stopped).put("owner_claimed",editorOwner!=null)
+                    put("active",productActive).put("stopped",stopped).put("owner_claimed",editorOwner!=null)
                     put("owner_before_view",editorOwner!=null && editor==null && entity==null)
                     put("connection_phase",metadata?.phase?.name ?: JSONObject.NULL)
                     put("raw_focus_same_target",productTarget!=null && productRuntime==NativeSessionHost.currentHandle() && rawTarget==productTarget)

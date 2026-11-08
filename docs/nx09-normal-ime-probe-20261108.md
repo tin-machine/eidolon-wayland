@@ -41,3 +41,17 @@ adb -s "$EIDOLON_QUEST_SERIAL" exec-out run-as io.github.tinmachine.eidolon \
 ## PC 検証
 
 判定モデル 9 fixtures、既存 operator schema 7 fixtures が PASS。保存済み Build174 の共通 IME ON/OFF metadata も strict schema で再読込できることを確認した。実 SDK Kotlin の型検査、manifest の DUMP/明示登録、release class 除外を別々に確認する。この通常初期 owner 経路の実機動作は次 APK の確認事項であり、共通 debug harness の既存成功から推測しない。
+
+## Build175: ONの受理と観測metadataの失敗
+
+Build175 の通常経路では `accepted=true`、`owner_claimed=true`、`owner_before_view=true`、
+`connection_phase=ENABLING` を観測したが、`initial.active=false` のため probe は
+`initial_owner_unconfirmed` で失敗した。製品 Run は ON の処理を始めており、この結果を
+「IME を起動できなかった」とは判定しない。次の操作で反転させることを避け、operator は Stop で所有回収する手順とした。
+
+原因は `debugReport()` の `JSONObject.apply` 内で `active === this` を評価したことだった。
+この `this` は Run ではなく JSONObject の receiver なので、正常な active Run でも常に false になる。
+Run の receiver が確定している JSON 構築前に `productActive` を捕捉し、その bool を report へ入れる。
+既存 pure 判定テストは metadata を入力として与えるため、この JSON 生成の scope 不具合を捕捉していなかった。
+修正の型検査と、次 APK の実際の通常 ON/OFF の再観測を別の検証とする。
+先行 owner の取得まで進んだ証拠は維持し、BOUND・正常 OFF・かな漢字変換の成功へ読み替えない。
