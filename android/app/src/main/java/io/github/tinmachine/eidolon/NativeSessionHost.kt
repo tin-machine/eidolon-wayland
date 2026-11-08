@@ -719,6 +719,7 @@ object NativeSessionHost {
             state.optString("scene")!=target.optString("scene") || state.optJSONObject("render")?.optLong("theme_revision",-1)!=ticket.control.revision ||
             !windowGroupInputAllowed(ticket.control.runtime,target)) return@serial null
         val geometry=WindowRecenterWire.read(state,target) ?: return@serial null
+        if(capture.scene?.matches(state,target)!=true) return@serial null
         if(!capture.readyToSubmit(capture.identity,SystemClock.elapsedRealtime(),geometry,state.getLong("input_resets"))) return@serial null
         val request=requests.incrementAndGet().toString();windowOperationCompletions[request]="pending"
         val code=NativeBridge.nativeCommand(ticket.control.runtime,JSONObject().put("schema",1).put("type","set_pose_control")

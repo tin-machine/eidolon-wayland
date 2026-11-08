@@ -130,6 +130,7 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
         lastAction="recenter";var stage="baseline_unavailable"
         try {
             val baseline=WindowRecenterWire.read(before,key) ?: error("recenter_baseline_unavailable")
+            val occupied=WindowRecenterScene.read(before,key) ?: error("recenter_scene_unavailable")
             check(WindowRecenterWire.applied(before,key,baseline.poseCommand,baseline.pose) &&
                 WindowMoveController.motion(getAbsoluteTransform(parent))?.near(baseline.pose)==true) {"recenter_geometry_pending"}
             stage="viewer_read_unavailable"
@@ -138,7 +139,8 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
             val value=WindowMotionPose(listOf(viewer.t.x.toDouble(),viewer.t.y.toDouble(),viewer.t.z.toDouble()),
                 listOf(viewer.q.x.toDouble(),viewer.q.y.toDouble(),viewer.q.z.toDouble(),viewer.q.w.toDouble()))
             stage="viewer_pose_unavailable"
-            val desired=WindowRecenterPose.candidate(value) ?: error("viewer_pose_unavailable")
+            val choice=occupied.choose(value)
+            val desired=choice.pose ?: error(choice.reason)
             val sampledAt=SystemClock.elapsedRealtime();stage="viewer_owner_changed"
             val after=JSONObject(NativeBridge.nativeSnapshot(runtime)).getJSONObject("runtime")
             val fresh=WindowRecenterWire.read(after,key) ?: error("recenter_baseline_unavailable")
@@ -146,7 +148,8 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
             check(now>=started && now-started<=100 && sdk.handle==sceneHandle && current(ticket,after) &&
                 NativeSessionHost.currentSceneEpoch().toString()==key.getString("scene") &&
                 baseline.sameDimensions(fresh) && baseline.samePlacement(fresh) && after.getLong("input_resets")==before.getLong("input_resets")) {"viewer_owner_changed"}
-            recenter=WindowRecenterCapture(identity(ticket),baseline,desired,after.getLong("input_resets"),sampledAt)
+            check(occupied.matches(after,key)) {"recenter_scene_changed"}
+            recenter=WindowRecenterCapture(identity(ticket),baseline,desired,after.getLong("input_resets"),sampledAt,occupied)
             recenterReadReason="captured"
         } catch(_:Exception) {recenterReadReason=stage;capture?.cancel(stage);rejected++}
     }

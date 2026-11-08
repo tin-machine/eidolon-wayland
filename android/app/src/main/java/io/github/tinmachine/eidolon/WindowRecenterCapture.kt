@@ -11,7 +11,7 @@ data class WindowRecenterGeometry(val pose:WindowMotionPose,val poseCommand:Stri
 
 /** One explicit placement after the menu's reset/Android-release gate. Never retries or resamples the viewer. */
 class WindowRecenterCapture(val identity:WindowSizeIdentity,val initial:WindowRecenterGeometry,
-    val desired:WindowMotionPose,val initialEpoch:Long,now:Long) {
+    val desired:WindowMotionPose,val initialEpoch:Long,now:Long,val scene:WindowRecenterScene?=null) {
     enum class Phase { NEEDS_SUBMIT, COMMITTING, GEOMETRY, RETURNING, COMPLETE, CANCELLED }
     var phase=Phase.NEEDS_SUBMIT;private set
     var reason="recenter_submit_pending";private set
