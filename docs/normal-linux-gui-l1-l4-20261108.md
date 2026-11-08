@@ -132,5 +132,12 @@ Rust 1.95.0でmodel+transportの隔離workspaceを作り、元Cargo.lockと同�
 実Linuxの非root環境では既存 `scripts/check-host --suite all` が追加testsを含めて実行する。
 PRのGitHub Actionsでhost全検査とAndroid buildの結果を記録する。
 
+初回commit `5983cf4` の [CI run 42437779626](https://github.com/tin-machine/eidolon-wayland/actions/runs/42437779626) では、
+host全検査が成功した。transportは102件（通常Linuxの36件を含む）すべて成功し、
+通常Python sessionも非root実process5件を含む27件すべて成功。GTK builder、clipboard/IME回帰も通過した。
+Android APK・lint・ELF/版/同梱検査も成功したが、後続のPython全502件で、既存Linux probe fixtureが
+作成直後の空のready fileを読み `int('')` に失敗した。この待ち合わせはfixture内のtemp write→atomic renameへ修正する。
+通常helperのproduction codeはこの修正で変更しない。修正後headのCI結果はPRに記録する。
+
 L5/L6のHost/SDK/UI配線、実機GUI・Dialog・入力、対象Ubuntuの事前確認と配備、実用アプリL7a、
 長時間・障害・性能のL7bは未受入れ。認証成功、catalogやreceiptの検査だけでGUIReadyにはしない。
