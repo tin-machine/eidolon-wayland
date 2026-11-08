@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""選択済み通常Linux設定から固定GTKを起動し、手動の入力/Dialog/Closeと同jobの回収を採取する。"""
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import signal
+import subprocess
+import time
+from native_build import ROOT
+from gui_probe_sdk import digest_sources
+from quest_device import PACKAGE, QuestDevice, work_root
+from sdl_lease_capture import MAX_SNAPSHOT, decode, need
+import normal_linux_evidence as evidence
+
+SOURCES=('scripts/quest-observe-normal-linux-gui','scripts/normal_linux_evidence.py','scripts/gui_probe_sdk.py',
+    'scripts/gtk_interaction_evidence.py','scripts/gtk_interaction_run.py','scripts/sdl_lease_capture.py','scripts/quest_device.py','scripts/native_build.py')
+
+
+def source_hashes():return {name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in SOURCES}
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--serial',required=True);parser.add_argument('--artifact-root',type=Path)
+    parser.add_argument('--timeout-seconds',type=int,default=240,help='手動操作の採取期限。60〜280秒。期限後は同runへ通常Stopを要求する')
+    args=parser.parse_args()
+    if not 60<=args.timeout_seconds<=280:parser.error('timeoutは60〜280秒です')
+    root=args.artifact_root or work_root()/'eidolon-normal-linux-gui'
+    if not root.is_absolute():parser.error('artifact rootは絶対pathです')
+    os.umask(0o077);nonce=secrets.token_hex(16)
+    run=root/(datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S-%fZ')+'-'+nonce);run.mkdir(parents=True,mode=0o700)
+    result=dict(schema=1,status='blocked',nonce=nonce,case='normal-linux-gtk',checks=[],samples=[],stop_sent=False,
+        physical_input='not_verified',visual_input='not_verified',close_action='not_verified',hmd='not_run',ime='not_run')
+    device=QuestDevice(args.serial,run);started=False;owner=None;digest=None;sources=None;last=None;last_check=None;failure_check=None
+    interrupted=[False];previous={kind:signal.signal(kind,lambda *_:interrupted.__setitem__(0,True)) for kind in (signal.SIGINT,signal.SIGTERM)}
+    def snapshot():
+        row=subprocess.run(['adb','-s',args.serial,'exec-out','run-as',PACKAGE,'head','-c',str(MAX_SNAPSHOT+1),'no_backup/diagnostics/latest.json'],capture_output=True,timeout=5)
+        need(row.returncode==0 and not row.stderr,'LINUX_DIAGNOSTICS_UNAVAILABLE');return decode(row.stdout)
+    def command(stop=False):
+        device.adb('shell','am','broadcast','-n',PACKAGE+'/.NormalLinuxGtkCommandReceiver','-a',PACKAGE+'.NORMAL_LINUX_GTK_COMMAND',
+            '--es','case','normal-linux-gtk-stop' if stop else 'normal-linux-gtk','--es','nonce',nonce,timeout=5)
+    def poll():
+        nonlocal last,last_check
+        value=snapshot();need(evidence.binding(value,digest)==owner,'LINUX_APK_CHANGED')
+        observed=evidence.check(value,nonce,owner,last_check)
+        if observed is not None:
+            if observed!=last_check:
+                need(len(result['checks'])<2048,'LINUX_CHECK_LIMIT');result['checks'].append(observed)
+            last_check=observed
+        current=evidence.sample(value)
+        if last is not None:need(int(current['sequence'])>=int(last['sequence']),'LINUX_SNAPSHOT_REGRESSED')
+        if last is None or current['sequence']!=last['sequence']:
+            need(len(result['samples'])<2048,'LINUX_SAMPLE_LIMIT');result['samples'].append(current)
+        last=current;return observed
+    try:
+        result['device']=device.validate();digest=digest_sources();sources=source_hashes();initial=snapshot()
+        owner=evidence.binding(initial,digest);result.update(apk_binding=owner,operator_sources=sources)
+        need(device.adb('shell','pidof',PACKAGE).strip()==str(owner['process_id']),'LINUX_APK_CHANGED')
+        need(initial.get('check',{}).get('result')!='running','OTHER_DEBUG_CASE_RUNNING')
+        baseline=evidence.sample(initial);runtime=initial['runtime']['runtime']
+        need(runtime['state']=='Ready' and runtime['activity_visible'] is True and runtime['xr_state']=='FOCUSED' and evidence.empty(baseline) and
+            baseline['state'] in {'Idle','Disconnected','Failed'} and baseline['owned_connections']==0 and not baseline['desktop_pending'] and not baseline['termux_pending'],'LINUX_BASELINE_NOT_IDLE')
+        poll();need(not interrupted[0],'LINUX_HOST_CANCELLED');started=True;command()
+        print('通常LinuxのGTKデモで英数を入力し、Dialogを開いて閉じ、最後にmainをCloseしてください。画像・入力本文は採取しません。',flush=True)
+        deadline=time.monotonic()+args.timeout_seconds
+        while time.monotonic()<deadline:
+            need(not interrupted[0],'LINUX_HOST_CANCELLED');row=poll()
+            if row is not None and row['result']!='running':break
+            time.sleep(.2)
+        need(last_check is not None and last_check['result']!='running','LINUX_OBSERVATION_TIMEOUT')
+        failure_check=last_check
+        need(last_check['result']=='completed' and last_check['trace'] is not None,'LINUX_CASE_NOT_COMPLETED')
+        summary=evidence.summarize(result['samples'],last_check['trace'],last_check['session'],last_check['scene'],last_check['launch_request_id']);result['observation']=summary
+        need(summary['status']=='observed','LINUX_OBSERVATIONS_NOT_VERIFIED')
+        need(digest_sources()==digest and source_hashes()==sources,'SOURCE_CHANGED')
+        need(device.adb('shell','pidof',PACKAGE).strip()==str(owner['process_id']),'LINUX_APK_CHANGED')
+        result['status']='observed'
+    except (OSError,ValueError,RuntimeError,KeyError,TypeError,subprocess.SubprocessError) as error:
+        result['status']='failed' if started else 'blocked'
+        token=str(error);result['reason']=token if __import__('re').fullmatch('[A-Z][A-Z0-9_]{0,79}',token) else 'LINUX_OPERATOR_FAILED'
+        failure_check=last_check
+    finally:
+        if failure_check is not None:result['original_check']=failure_check
+        if started and result['status']!='observed':
+            try:
+                command(True);result['stop_sent']=True;deadline=time.monotonic()+30
+                while time.monotonic()<deadline:
+                    row=poll()
+                    owned=(row or {}).get('trace') or {}
+                    if owned and evidence.reclaimed(last,owned['targets'],row['session'],owned['remote_nonce'],row['launch_request_id']):result['failure_cleanup_complete']=True;break
+                    if row is not None and row['result']!='running' and row['stop_requested']:break
+                    time.sleep(.2)
+            except (OSError,ValueError,RuntimeError,KeyError,TypeError,subprocess.SubprocessError):pass
+            result.setdefault('failure_cleanup_complete',False)
+        if sources is not None:
+            try:result['source_unchanged']=source_hashes()==sources and digest_sources()==digest
+            except OSError:result['source_unchanged']=False
+            if not result['source_unchanged']:result['status']='failed';result.setdefault('reason','SOURCE_CHANGED')
+        for kind,handler in previous.items():signal.signal(kind,handler)
+        (run/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+    print(json.dumps(dict(status=result['status'],artifact=str(run),reason=result.get('reason'),physical_input='not_verified',visual_input='not_verified')))
+    return 0 if result['status']=='observed' else 1
+
+
+if __name__=='__main__':raise SystemExit(main())

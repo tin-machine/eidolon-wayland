@@ -23,10 +23,38 @@ SOURCES = {'eidolon_linux_desktop.py':ROOT / 'scripts/linux/eidolon_linux_deskto
            'gtk3-desktop-demo.c':ROOT / 'scripts/fixtures/gtk3-desktop-demo.c'}
 
 
-def build(directory):
+def checked_home(directory):
     helper.require(sys.platform == 'linux' and os.getuid() == os.geteuid() != 0 and directory.is_absolute() and
                    directory.resolve() == directory and directory.parts[-3:] == ('.local','lib','eidolon-linux'), 'BUILD_LOCATION_INVALID')
     home = directory.parents[2];helper.checked_directory(home,private=False)
+    return home
+
+
+def pins(bundle):
+    return dict(schema=1,backend='linux_desktop',base_bundle_sha256=bundle.base_hash,
+                desktop_bundle_sha256=bundle.manifest_hash,waypipe_sha256=bundle.base_hashes['waypipe'],
+                shm_fixture_sha256=bundle.base_hashes['eidolon-shm-fixture'],
+                desktop_binary_sha256=bundle.hashes['eidolon-gtk3-desktop'])
+
+
+def print_pins(directory):
+    """Read-only export for the normal settings UI; current checkout sources must match."""
+    home = checked_home(directory)
+    inputs = {name:path.read_bytes() for name,path in SOURCES.items()}
+    helper.require(all(0 < len(data) <= 65536 for data in inputs.values()),'BUILD_SOURCE_INVALID')
+    hashes = {name:hashlib.sha256(data).hexdigest() for name,data in inputs.items()}
+    manifest_hash = hashlib.sha256(helper.private_read(directory/'desktop-bundle.json')).hexdigest()
+    bundle = desktop.Bundle(helper,home,manifest_hash,hashes['eidolon_linux_desktop.py'],
+                            hashes['eidolon_linux_process_owner.py'],hashes['gtk3-desktop-demo.c'],
+                            hashes['eidolon_linux_desktop_session.py'])
+    helper.require(bundle.directory == directory,'BUILD_LOCATION_INVALID')
+    bundle.recheck()
+    helper.require(all(SOURCES[name].read_bytes()==data for name,data in inputs.items()),'BUILD_INPUT_CHANGED')
+    return pins(bundle)
+
+
+def build(directory):
+    home = checked_home(directory)
     verified, _, base_hash = helper.bundle(home);helper.require(verified == directory,'BUILD_LOCATION_INVALID')
     for name in (*desktop.FILES,'desktop-bundle.json','desktop-build'):
         helper.require(not os.path.lexists(directory/name),'BUILD_ALREADY_EXISTS')
@@ -50,20 +78,25 @@ def build(directory):
     for name,data in contents.items():tools.exclusive_file(directory/name,data,0o700 if name=='eidolon-gtk3-desktop' else 0o600)
     helper.write_record(directory/'desktop-bundle.json',manifest,replace=False)
     manifest_hash=hashlib.sha256(helper.private_read(directory/'desktop-bundle.json')).hexdigest()
-    desktop.Bundle(helper,home,manifest_hash,hashes['eidolon_linux_desktop.py'],hashes['eidolon_linux_process_owner.py'],
-                   hashes['gtk3-desktop-demo.c'],hashes['eidolon_linux_desktop_session.py'])
+    verified_bundle = desktop.Bundle(helper,home,manifest_hash,hashes['eidolon_linux_desktop.py'],hashes['eidolon_linux_process_owner.py'],
+                                     hashes['gtk3-desktop-demo.c'],hashes['eidolon_linux_desktop_session.py'])
     result=dict(schema=1,status='built',executed=False,desktop_bundle_sha256=manifest_hash,source_hashes=hashes,
-                base_bundle_sha256=base_hash,gtk_version=version,compiler_output_bytes=counts,compiler_reaped=True)
+                base_bundle_sha256=base_hash,gtk_version=version,compiler_output_bytes=counts,compiler_reaped=True,
+                pins=pins(verified_bundle))
     helper.write_record(scratch/'build.json',result,replace=False);return result
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--bundle-directory',type=Path,required=True)
+    parser.add_argument('--print-pins',action='store_true',help='既存bundleと現在のsourceを検証し、通常設定用pins JSONだけを出力する（変更・実行なし）')
     args=parser.parse_args();os.umask(0o077)
-    try:result=build(args.bundle_directory)
+    success=False
+    try:
+        result=print_pins(args.bundle_directory) if args.print_pins else build(args.bundle_directory)
+        success=True
     except (OSError,ValueError,TypeError,KeyError,UnicodeError) as error:
         token=str(error)
         result=dict(schema=1,status='failed',executed=False,reason=token if re.fullmatch(r'(BUILD|GTK|BUNDLE|HELPER|FILE|DIRECTORY|DESKTOP|PIN)_[A-Z_]{1,48}',token) else 'BUILD_UNAVAILABLE')
-    print(json.dumps(result,separators=(',',':')));return 0 if result['status']=='built' else 1
+    print(json.dumps(result,separators=(',',':')));return 0 if success else 1
 
 if __name__=='__main__':raise SystemExit(main())

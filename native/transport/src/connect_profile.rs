@@ -1,8 +1,11 @@
 //! 接続開始時のimmutable owner。保存用v2の受理と実行可能backendを分離する。
-use crate::{host_key, journal};
+use crate::{host_key, journal, linux_desktop};
 use eidolon_model::connection_profile::{Backend, Profile};
 use russh::keys::PublicKey;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrepareError {
@@ -27,6 +30,15 @@ pub struct ConnectSpec {
     pub(crate) pin: PublicKey,
     pub(crate) binding: String,
     pub(crate) helper_supported: bool,
+    pub(crate) desktop: Option<DesktopConfig>,
+}
+/// Captured once at Connect. Neither profile saves nor later UI requests can
+/// change the authenticated endpoint, identity, bundle or journal destination.
+#[derive(Clone)]
+pub(crate) struct DesktopConfig {
+    pub profile: Profile,
+    pub pins: linux_desktop::Pins,
+    pub files: PathBuf,
 }
 impl std::fmt::Debug for ConnectSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -48,6 +60,7 @@ impl ConnectSpec {
                 .map_err(|_| PrepareError::InvalidProfile)?,
             binding: journal::binding(&profile),
             helper_supported: true,
+            desktop: None,
         })
     }
 
@@ -66,7 +79,25 @@ impl ConnectSpec {
                 .map_err(|_| PrepareError::InvalidProfile)?,
             binding: profile.binding(),
             helper_supported: profile.backend() == Backend::TermuxLocal,
+            desktop: None,
         })
+    }
+
+    pub(crate) fn linux_desktop(
+        profile: Profile,
+        pins: linux_desktop::Pins,
+        files: PathBuf,
+    ) -> Result<Self, PrepareError> {
+        if profile.backend() != Backend::LinuxSsh || !files.is_absolute() {
+            return Err(PrepareError::InvalidProfile);
+        }
+        let mut spec = Self::from_v2(&profile)?;
+        spec.desktop = Some(DesktopConfig {
+            profile,
+            pins,
+            files,
+        });
+        Ok(spec)
     }
 }
 

@@ -133,7 +133,11 @@ async fn ssh_immediate_exit_keeps_started_ack_even_when_events_share_a_chunk() {
                 local_socket: &local,
             },
             &CancellationToken::new(),
-            |_| {},
+            |report| {
+                if report.remote.terminal_event {
+                    assert_ne!(report.state, "running");
+                }
+            },
         ),
     )
     .await

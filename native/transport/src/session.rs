@@ -1,7 +1,9 @@
 //! SSHはI/O ownerが作るTokio runtime上だけで実行する。再接続前に旧runtimeを回収する。
 use crate::{
-    connect_profile::ConnectSpec, exec, forward, forward_app, forward_probe, host_key::Profile,
-    journal, launcher,
+    connect_profile::{ConnectSpec, DesktopConfig},
+    exec, forward, forward_app, forward_probe,
+    host_key::Profile,
+    journal, launcher, linux_desktop,
 };
 use eidolon_model::{
     commands::{AppMode, CleanupScenario},
@@ -45,6 +47,7 @@ pub enum State {
     AwaitingCredential,
     Authenticating,
     ProbeReady,
+    DesktopReady,
     Ready,
     Recovering,
     CleanupPending,
@@ -69,6 +72,10 @@ pub struct Snapshot {
     pub forward: forward::Report,
     pub forward_probe: Option<forward_probe::Report>,
     pub app_forward: Option<forward_app::Report>,
+    pub desktop: Option<linux_desktop::Report>,
+    pub desktop_recovery: Option<linux_desktop::RecoveryReport>,
+    /// Dedicated normal Linux owner; independent from Termux pending_cleanup.
+    pub desktop_pending: bool,
     #[cfg(any(test, feature = "debug-fixtures"))]
     pub linux_forward: Option<crate::linux_probe::Report>,
     #[cfg(any(test, feature = "debug-fixtures"))]
@@ -128,6 +135,11 @@ struct Shared {
     router: Option<Arc<forward::Router>>,
     forward: Option<(PathBuf, String, Option<CleanupScenario>)>,
     app: Option<(PathBuf, String, AppMode)>,
+    desktop_profile: Option<DesktopConfig>,
+    desktop_pending: Result<Option<linux_desktop::Pending>, &'static str>,
+    desktop_work: Option<DesktopWork>,
+    desktop_launches: Option<tokio::sync::mpsc::Sender<linux_desktop::Launch>>,
+    desktop_launch_queued: bool,
     #[cfg(any(test, feature = "debug-fixtures"))]
     linux: Option<LinuxWork>,
     forward_busy: bool,
@@ -135,6 +147,11 @@ struct Shared {
         Option<tokio::sync::mpsc::Sender<(CommandSeq, Option<crate::catalog::Target>)>>,
     catalog_requests: Option<tokio::sync::mpsc::Sender<(CommandSeq, crate::catalog::Operation)>>,
     catalog: CatalogUi,
+}
+#[derive(Clone, Copy)]
+enum DesktopWork {
+    Inspect(CommandSeq),
+    Recover(CommandSeq),
 }
 #[cfg(any(test, feature = "debug-fixtures"))]
 struct LinuxWork {
@@ -152,6 +169,15 @@ pub struct CatalogUi {
     pub pending: bool,
     pub reply: Option<crate::catalog::Reply>,
     pub error: Option<&'static str>,
+    pub desktop: Option<DesktopCatalogUi>,
+}
+#[derive(Clone, Serialize)]
+pub struct DesktopCatalogUi {
+    pub namespace: &'static str,
+    pub selection: linux_desktop::Selection,
+    pub label: &'static str,
+    pub mode: &'static str,
+    pub instance_limit: u32,
 }
 struct Signals {
     shared: Mutex<Shared>,
@@ -160,6 +186,7 @@ struct Signals {
     stop: AtomicBool,
     tokio_workers: AtomicUsize,
     observation: tokio::sync::watch::Sender<bool>,
+    files: Option<PathBuf>,
 }
 impl Signals {
     fn update(&self, action: impl FnOnce(&mut Shared)) {
@@ -210,11 +237,25 @@ impl Controller {
         root: Option<PathBuf>,
         before_owner: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<Self> {
+        // Read the normal barrier before a caller can queue its first Connect.
+        // An invalid record remains pending; it must not become an empty state
+        // merely because the app/Controller was restarted.
+        let desktop_pending = root
+            .as_deref()
+            .map(linux_desktop::pending)
+            .unwrap_or(Ok(None));
+        let has_desktop_pending = !matches!(desktop_pending, Ok(None));
         let signals = Arc::new(Signals {
             shared: Mutex::new(Shared {
                 report: Snapshot {
                     workers: 1,
                     journal_ready: root.is_none(),
+                    desktop_pending: has_desktop_pending,
+                    state: if has_desktop_pending {
+                        State::CleanupPending
+                    } else {
+                        State::Idle
+                    },
                     ..Default::default()
                 },
                 connect: None,
@@ -226,6 +267,11 @@ impl Controller {
                 router: None,
                 forward: None,
                 app: None,
+                desktop_profile: None,
+                desktop_pending,
+                desktop_work: None,
+                desktop_launches: None,
+                desktop_launch_queued: false,
                 #[cfg(any(test, feature = "debug-fixtures"))]
                 linux: None,
                 forward_busy: false,
@@ -238,6 +284,7 @@ impl Controller {
             stop: AtomicBool::new(false),
             tokio_workers: AtomicUsize::new(0),
             observation: tokio::sync::watch::channel(true).0,
+            files: root.clone(),
         });
         let owned = signals.clone();
         let worker = thread::Builder::new()
@@ -265,7 +312,13 @@ impl Controller {
                             s.report.error = Some(error);
                             s.report.state = State::Failed;
                         }
-                        Ok(Ok(())) => s.report.state = State::Stopped,
+                        Ok(Ok(())) => {
+                            s.report.state = if s.report.desktop_pending {
+                                State::CleanupPending
+                            } else {
+                                State::Stopped
+                            }
+                        }
                     }
                 });
             })?;
@@ -288,6 +341,31 @@ impl Controller {
         };
         self.connect_spec(profile, request)
     }
+    /// Normal Linux uses its captured C1 profile and bundle on this Controller's
+    /// persistent files root. Authentication alone grants no helper capability.
+    pub fn connect_linux(
+        &self,
+        profile: eidolon_model::connection_profile::Profile,
+        pins: linux_desktop::Pins,
+        files: &Path,
+        request: CommandSeq,
+    ) -> Status {
+        if self.signals.files.as_deref() != Some(files) {
+            return Status::InvalidArgument;
+        }
+        let spec = match ConnectSpec::linux_desktop(profile, pins, files.into()) {
+            Ok(spec) => spec,
+            Err(error) => {
+                self.signals.update(|s| {
+                    if !s.busy {
+                        s.report.error = Some(error.code());
+                    }
+                });
+                return Status::InvalidArgument;
+            }
+        };
+        self.connect_spec(spec, request)
+    }
     pub fn connect_spec(&self, profile: ConnectSpec, request: CommandSeq) -> Status {
         let mut s = self
             .signals
@@ -300,6 +378,26 @@ impl Controller {
         if s.busy {
             return Status::Busy;
         }
+        match &s.desktop_pending {
+            Ok(None) => (),
+            Ok(Some(pending)) => {
+                if profile
+                    .desktop
+                    .as_ref()
+                    .is_none_or(|config| !pending.matches(&config.profile, &config.pins))
+                {
+                    s.report.state = State::CleanupPending;
+                    s.report.error = Some("DESKTOP_CLEANUP_SCOPE_MISMATCH");
+                    return Status::NotReady;
+                }
+            }
+            Err(error) => {
+                let error = *error;
+                s.report.state = State::CleanupPending;
+                s.report.error = Some(error);
+                return Status::NotReady;
+            }
+        }
         s.busy = true;
         s.active_connect_request = Some(request);
         s.report = Snapshot {
@@ -311,12 +409,18 @@ impl Controller {
             credential_requests: s.report.credential_requests,
             journal_ready: s.report.journal_ready,
             pending_cleanup: s.report.pending_cleanup.clone(),
+            desktop_pending: s.report.desktop_pending,
             ..Default::default()
         };
         let cancel = CancellationToken::new();
         s.credential_scope = None;
         s.cancel = Some(cancel.clone());
         s.router = None;
+        s.desktop_profile = profile.desktop.clone();
+        s.desktop_work = None;
+        s.desktop_launches = None;
+        s.desktop_launch_queued = false;
+        s.catalog = CatalogUi::default();
         s.connect = Some(PendingConnect {
             profile,
             request,
@@ -333,6 +437,11 @@ impl Controller {
             .unwrap_or_else(|e| e.into_inner());
         if s.busy {
             return Status::Busy;
+        }
+        if s.report.desktop_pending {
+            s.report.state = State::CleanupPending;
+            s.report.error = Some("DESKTOP_CLEANUP_PENDING");
+            return Status::NotReady;
         }
         s.report.state = State::Failed;
         s.report.error = Some("HOST_KEY_UNKNOWN");
@@ -460,7 +569,10 @@ impl Controller {
         nonce: &str,
         mode: AppMode,
     ) -> Status {
-        if mode.linux_gtk_case().is_some() || mode != AppMode::Foot && !cfg!(debug_assertions) {
+        if mode == AppMode::LinuxDesktop
+            || mode.linux_gtk_case().is_some()
+            || mode != AppMode::Foot && !cfg!(debug_assertions)
+        {
             return Status::NotReady;
         }
         if !local_socket.is_absolute()
@@ -506,6 +618,164 @@ impl Controller {
                 true
             }
         });
+    }
+
+    pub fn inspect_linux_desktop(&self, session: SessionId, request: CommandSeq) -> Status {
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Status::Stale;
+        }
+        if s.desktop_profile.is_none()
+            || s.report.state != State::ProbeReady
+            || s.report.desktop_pending
+            || !s.report.pending_cleanup.is_empty()
+            || s.cancel.as_ref().is_none_or(|c| c.is_cancelled())
+        {
+            return Status::NotReady;
+        }
+        if s.forward_busy || s.desktop_work.is_some() {
+            return Status::Busy;
+        }
+        s.forward_busy = true;
+        s.desktop_work = Some(DesktopWork::Inspect(request));
+        s.catalog = CatalogUi {
+            session: Some(session),
+            request_id: Some(request),
+            pending: true,
+            ..Default::default()
+        };
+        self.signals.notify.notify_one();
+        Status::Accepted
+    }
+
+    /// Native prepares the local display, Waypipe and target reservation before
+    /// Start enqueue. This is a read of a live inspected catalog, not permission
+    /// to replay a selection against another helper/session.
+    pub fn desktop_launch_nonce(
+        &self,
+        session: SessionId,
+        selection: &linux_desktop::Selection,
+    ) -> Result<String, Status> {
+        let s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        Self::desktop_selection(&s, session, selection)?;
+        Ok(s.report
+            .desktop
+            .as_ref()
+            .ok_or(Status::NotReady)?
+            .nonce
+            .clone())
+    }
+
+    fn desktop_selection(
+        s: &Shared,
+        session: SessionId,
+        selection: &linux_desktop::Selection,
+    ) -> Result<(), Status> {
+        if !selection.valid() {
+            return Err(Status::InvalidArgument);
+        }
+        if s.report.session != Some(session) {
+            return Err(Status::Stale);
+        }
+        if s.desktop_launch_queued {
+            return Err(Status::Busy);
+        }
+        if s.desktop_profile.is_none()
+            || s.report.state != State::DesktopReady
+            || s.cancel.as_ref().is_none_or(|c| c.is_cancelled())
+            || s.desktop_launches.is_none()
+            || s.report.desktop.as_ref().is_none_or(|r| {
+                !r.tools_verified
+                    || r.start_requested
+                    || r.finished
+                    || r.state != "catalog"
+                    || r.remote.terminal_event
+                    || r.remote.channel_closed
+            })
+        {
+            return Err(Status::NotReady);
+        }
+        if s.catalog
+            .desktop
+            .as_ref()
+            .is_none_or(|catalog| &catalog.selection != selection)
+        {
+            return Err(Status::Stale);
+        }
+        Ok(())
+    }
+
+    pub fn start_linux_desktop(
+        &self,
+        session: SessionId,
+        request: CommandSeq,
+        local_socket: &Path,
+        selection: linux_desktop::Selection,
+    ) -> Status {
+        if !local_socket.is_absolute() || local_socket.as_os_str().len() > 103 {
+            return Status::InvalidArgument;
+        }
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Err(status) = Self::desktop_selection(&s, session, &selection) {
+            return status;
+        }
+        let Some(sender) = s.desktop_launches.as_ref() else {
+            return Status::NotReady;
+        };
+        match sender.try_send(linux_desktop::Launch {
+            request_id: Some(request),
+            local_socket: local_socket.into(),
+            selection,
+        }) {
+            Ok(()) => {
+                s.desktop_launch_queued = true;
+                s.catalog.desktop = None;
+                Status::Accepted
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Status::Busy,
+            Err(_) => Status::NotReady,
+        }
+    }
+
+    pub fn recover_linux_desktop(&self, session: SessionId, request: CommandSeq) -> Status {
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Status::Stale;
+        }
+        if s.desktop_profile.is_none()
+            || s.report.state != State::CleanupPending
+            || !s.report.desktop_pending
+            || s.report.owned_connections != 1
+            || s.report.desktop.is_some()
+            || !s.report.pending_cleanup.is_empty()
+            || s.cancel.as_ref().is_none_or(|c| c.is_cancelled())
+        {
+            return Status::NotReady;
+        }
+        if s.forward_busy || s.desktop_work.is_some() || s.desktop_launches.is_some() {
+            return Status::Busy;
+        }
+        s.forward_busy = true;
+        s.report.state = State::Recovering;
+        s.desktop_work = Some(DesktopWork::Recover(request));
+        self.signals.notify.notify_one();
+        Status::Accepted
     }
     /// debug固定SHMと明示receipt回収だけ。ProbeReadyの通常app/catalog能力は変えない。
     #[cfg(any(test, feature = "debug-fixtures"))]
@@ -563,6 +833,7 @@ impl Controller {
         }
         if self.signals.stop.load(Ordering::Acquire)
             || shared.report.state != State::ProbeReady
+            || shared.desktop_profile.is_some()
             || shared.cancel.as_ref().is_none_or(|c| c.is_cancelled())
         {
             return Status::NotReady;
@@ -640,6 +911,15 @@ impl Controller {
             .shared
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        if s.desktop_profile.is_some() {
+            return if matches!(s.report.state, State::ProbeReady | State::DesktopReady)
+                && s.cancel.as_ref().is_some_and(|c| !c.is_cancelled())
+            {
+                s.catalog.clone()
+            } else {
+                CatalogUi::default()
+            };
+        }
         if s.report.state != State::Ready
             || s.cancel.as_ref().is_none_or(|c| c.is_cancelled())
             || s.catalog_requests.is_none()
@@ -796,7 +1076,11 @@ fn owner(
                 s.cancel = None;
                 s.active_connect_request = None;
                 s.busy = false;
-                s.report.state = State::Disconnected;
+                s.report.state = if s.report.desktop_pending {
+                    State::CleanupPending
+                } else {
+                    State::Disconnected
+                };
             });
             continue;
         }
@@ -854,6 +1138,7 @@ fn owner(
             }
             Err(_) => Err("SSH_IO_FAILED"),
         };
+        let desktop_pending = root.map(linux_desktop::pending).unwrap_or(Ok(None));
         signals.update(|s| {
             s.credential = None;
             s.credential_scope = None;
@@ -862,6 +1147,18 @@ fn owner(
             s.active_connect_request = None;
             s.forward = None;
             s.app = None;
+            s.desktop_work = None;
+            s.desktop_launches = None;
+            s.desktop_launch_queued = false;
+            s.catalog = CatalogUi::default();
+            s.desktop_pending = if s.report.desktop_pending && matches!(desktop_pending, Ok(None)) {
+                // A file disappearing without the actor/recovery's proof must
+                // not turn Unknown into Clean at connection retirement.
+                Err("DESKTOP_JOURNAL_OWNER_CHANGED")
+            } else {
+                desktop_pending
+            };
+            s.report.desktop_pending = !matches!(s.desktop_pending, Ok(None));
             #[cfg(any(test, feature = "debug-fixtures"))]
             {
                 s.linux = None;
@@ -871,7 +1168,16 @@ fn owner(
             s.router = None;
             s.report.owned_connections = 0;
             s.report.credential_request = None;
-            if result == Err("CANCELLED") {
+            if s.report.desktop_pending {
+                s.report.state = State::CleanupPending;
+                s.report.error = s
+                    .desktop_pending
+                    .as_ref()
+                    .err()
+                    .copied()
+                    .or_else(|| result.err().filter(|error| *error != "CANCELLED"))
+                    .or(Some("DESKTOP_CLEANUP_PENDING"));
+            } else if result == Err("CANCELLED") || result.is_ok() {
                 s.report.state = State::Disconnected;
                 s.report.error = None;
             } else {
@@ -1070,6 +1376,11 @@ async fn connection(
         .probe
         .uid
         .ok_or("PROTOCOL_ERROR")?;
+    if connect.profile.desktop.is_some() && uid == 0 {
+        // The normal GUI lease is a non-root capability. Reject the verified
+        // UID before exposing Inspect; debug probe/legacy semantics stay intact.
+        return Err("DESKTOP_BINDING_INVALID");
+    }
     reconcile(signals, &client, connect, journal, &binding, uid).await?;
     loop {
         if connect.cancel.is_cancelled() {
@@ -1088,6 +1399,139 @@ async fn connection(
             .unwrap_or_else(|e| e.into_inner())
             .app
             .take();
+        let desktop_work = signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .desktop_work
+            .take();
+        if let Some(work) = desktop_work {
+            let config = connect
+                .profile
+                .desktop
+                .as_ref()
+                .ok_or("DESKTOP_BACKEND_MISMATCH")?;
+            match work {
+                DesktopWork::Inspect(request) => {
+                    let nonce = format!("{:016x}", rand::random::<u64>());
+                    let captured = linux_desktop::Binding::capture(
+                        &config.profile,
+                        connect.session,
+                        uid,
+                        &nonce,
+                        config.pins.clone(),
+                    )?;
+                    let (sender, requests) = tokio::sync::mpsc::channel(1);
+                    signals.update(|s| s.desktop_launches = Some(sender));
+                    let report = linux_desktop::serve(
+                        &client,
+                        &connect.router,
+                        linux_desktop::Inspection {
+                            binding: &captured,
+                            files: &config.files,
+                        },
+                        requests,
+                        &connect.cancel,
+                        |report| {
+                            signals.update(|s| {
+                                s.report.desktop = Some(report.clone());
+                                s.report.desktop_pending = report.journal_pending;
+                                if matches!(
+                                    report.state,
+                                    "stopping" | "cleanup_pending" | "failed" | "stopped"
+                                ) {
+                                    s.catalog.desktop = None;
+                                    s.catalog.pending = false;
+                                    s.catalog.error = report.error;
+                                    if report.journal_pending && report.finished {
+                                        s.report.state = State::CleanupPending;
+                                    } else {
+                                        s.report.state = State::Disconnecting;
+                                    }
+                                }
+                            })
+                        },
+                        |selection| {
+                            signals.update(|s| {
+                                if s.report.session == Some(connect.session)
+                                    && s.catalog.request_id == Some(request)
+                                    && !connect.cancel.is_cancelled()
+                                {
+                                    s.catalog.pending = false;
+                                    s.catalog.desktop = Some(DesktopCatalogUi {
+                                        namespace: "linux-desktop",
+                                        selection: selection.clone(),
+                                        label: "Linux アプリ",
+                                        mode: "gui",
+                                        instance_limit: 1,
+                                    });
+                                    s.report.state = State::DesktopReady;
+                                }
+                            })
+                        },
+                    )
+                    .await;
+                    signals.update(|s| {
+                        s.forward_busy = false;
+                        s.desktop_launches = None;
+                        s.catalog.desktop = None;
+                    });
+                    // A helper is single use. Retire its SSH runtime before a
+                    // new Connect/Inspect or explicit recovery can be accepted.
+                    return if connect.cancel.is_cancelled() {
+                        Err("CANCELLED")
+                    } else if let Some(error) = report.error {
+                        Err(error)
+                    } else {
+                        Ok(())
+                    };
+                }
+                DesktopWork::Recover(_request) => {
+                    let mut report = linux_desktop::recover(
+                        &client,
+                        &connect.router,
+                        linux_desktop::Recovery {
+                            profile: &config.profile,
+                            session: connect.session,
+                            uid,
+                            files: &config.files,
+                            pins: &config.pins,
+                            // A pending helper always ended connection() above.
+                            // owner() dropped that runtime before accepting this
+                            // new Connect, and no helper is active on this one.
+                            previous_connection_closed: true,
+                        },
+                        &connect.cancel,
+                    )
+                    .await;
+                    if !report.pending && report.origin_session.is_none() {
+                        // We entered through a persisted pending barrier. A
+                        // missing file is not a receipt for that known owner.
+                        report.pending = true;
+                        report.error = Some("DESKTOP_JOURNAL_OWNER_CHANGED");
+                    }
+                    let pending = linux_desktop::pending(&config.files);
+                    signals.update(|s| {
+                        s.forward_busy = false;
+                        s.desktop_pending = if report.pending && matches!(pending, Ok(None)) {
+                            Err("DESKTOP_JOURNAL_OWNER_CHANGED")
+                        } else {
+                            pending
+                        };
+                        s.report.desktop_pending =
+                            report.pending || !matches!(s.desktop_pending, Ok(None));
+                        s.report.state = if s.report.desktop_pending {
+                            State::CleanupPending
+                        } else {
+                            State::ProbeReady
+                        };
+                        s.report.error = report.error;
+                        s.report.desktop_recovery = Some(report);
+                    });
+                    continue;
+                }
+            }
+        }
         #[cfg(any(test, feature = "debug-fixtures"))]
         let linux_work = signals
             .shared
@@ -1311,7 +1755,7 @@ async fn reconcile<H: client::Handler>(
     signals.update(|s| {
         s.report.pending_cleanup = journal.pending();
         s.report.cleanup_audits = audits;
-        if journal.is_empty() {
+        if journal.is_empty() && !s.report.desktop_pending {
             s.report.state = if connect.profile.helper_supported {
                 State::Ready
             } else {
@@ -1320,7 +1764,11 @@ async fn reconcile<H: client::Handler>(
             s.report.error = None;
         } else {
             s.report.state = State::CleanupPending;
-            s.report.error = Some("CLEANUP_PENDING");
+            s.report.error = Some(if s.report.desktop_pending {
+                "DESKTOP_CLEANUP_PENDING"
+            } else {
+                "CLEANUP_PENDING"
+            });
         }
     });
     Ok(())

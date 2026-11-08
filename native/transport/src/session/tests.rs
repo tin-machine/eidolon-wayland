@@ -42,6 +42,15 @@ async fn gtk_mailbox_captures_case_without_upgrading_probe_ready_or_normal_route
         ),
         Status::NotReady
     );
+    assert_eq!(
+        controller.start_app(
+            session,
+            Path::new("/fixture/p"),
+            "1234567890abcdef",
+            AppMode::LinuxDesktop
+        ),
+        Status::NotReady
+    );
     controller
         .signals
         .update(|s| s.report.state = State::ProbeReady);

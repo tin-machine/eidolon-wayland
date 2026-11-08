@@ -89,6 +89,58 @@ fn remote_probe_is_rejected_without_the_packaged_debug_feature() {
     }
 }
 #[cfg(not(feature = "debug-fixtures"))]
+#[test]
+fn normal_linux_enables_scoped_credentials_without_connecting_or_starting_on_config_load() {
+    use eidolon_core::runtime::Runtime;
+    use eidolon_model::{
+        commands::{Command, RuntimeConfig},
+        ids::{CommandSeq, SessionId},
+        state::Status,
+    };
+    let mut profile: serde_json::Value = serde_json::from_str(&profile_json()).unwrap();
+    profile["profile_id"] = serde_json::json!("remote-linux");
+    let pins = serde_json::json!({"schema":1,"backend":"linux_desktop", "base_bundle_sha256":"a".repeat(64), "desktop_bundle_sha256":"b".repeat(64), "waypipe_sha256":"c".repeat(64), "shm_fixture_sha256":"d".repeat(64), "desktop_binary_sha256":"e".repeat(64)});
+    let runtime = Runtime::start(RuntimeConfig {
+        installation: Some("1".repeat(32)),
+        linux_profile_v2: Some(profile.to_string()),
+        linux_desktop_pins: Some(pins.to_string()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(runtime.credential_scope().unwrap().is_none());
+    assert_eq!(
+        runtime.provide_credential_for(
+            SessionId::new(1).unwrap(),
+            CommandSeq::new(1).unwrap(),
+            &"0".repeat(64),
+            vec![].into()
+        ),
+        Status::Stale
+    );
+    assert_eq!(
+        runtime.command(
+            Command::parse(r#"{"schema":1,"type":"connect_saved_probe","request_id":"2"}"#)
+                .unwrap()
+        ),
+        Status::InvalidArgument
+    );
+    let snapshot = runtime.snapshot();
+    assert_eq!(
+        snapshot.transport.state,
+        eidolon_transport::session::State::Idle
+    );
+    assert!(snapshot.transport.desktop.is_none());
+    assert!(runtime.catalog_ui().desktop.is_none());
+    assert!(snapshot.app.is_none());
+    assert_eq!(snapshot.window_slots.occupied, 0);
+    runtime.request_stop();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !runtime.can_destroy() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+#[cfg(not(feature = "debug-fixtures"))]
 fn profile_json() -> String {
     let key = include_str!("../../../android/app/src/test/resources/connection-profiles-v2.tsv")
         .lines()

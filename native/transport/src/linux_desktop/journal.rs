@@ -1,7 +1,7 @@
 //! Normal Linux ownership only. A record is never adopted by a new Profile or
 //! source revision. No stored PID is needed or used to signal a process.
-use super::{Binding, Pins, REVISION, Recovery, boot_identity};
-use eidolon_model::ids::SessionId;
+use super::{Binding, Pins, REVISION, Recovery, boot_identity, decimal, hex};
+use eidolon_model::{connection_profile::Profile, ids::SessionId};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::CString,
@@ -75,6 +75,60 @@ struct Record {
     stage: Stage,
     boot_id: Option<String>,
     cleanup: Cleanup,
+}
+
+/// Private owner descriptor for the Controller's cross-backend barrier. It is
+/// never serialized into ordinary diagnostics. Reading it grants no recovery
+/// authority: matching() still checks the authenticated UID and locks the file.
+#[derive(Clone)]
+pub(crate) struct Pending(Record);
+impl Pending {
+    pub(crate) fn matches(&self, profile: &Profile, expected: &Pins) -> bool {
+        self.0.profile_binding == profile.binding()
+            && self.0.profile_revision == profile.revision()
+            && self.0.pins == pins(expected)
+            && self.0.sources == sources(expected)
+            && self.0.protocol_revision == REVISION
+    }
+}
+
+/// Read without changing, clearing or adopting a pending owner. A malformed or
+/// inaccessible record is an error, not an empty journal. The active actor holds
+/// the write lock; all replacements are atomic and become a conservative barrier.
+pub(crate) fn pending(files: &Path) -> Result<Option<Pending>, &'static str> {
+    check_directory(files, false)?;
+    let directory = files.join(DIRECTORY);
+    match std::fs::symlink_metadata(&directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        _ => check_directory(&directory, true)?,
+    }
+    let path = directory.join("pending.json");
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        _ => (),
+    }
+    let (_, bytes) = read(&path)?;
+    let record: Record = serde_json::from_slice(&bytes).map_err(|_| "DESKTOP_JOURNAL_INVALID")?;
+    if record.schema != 1
+        || record.backend != "linux_desktop"
+        || !hex(&record.profile_binding, 64)
+        || decimal(&record.profile_revision, false).is_none()
+        || !hex(&record.nonce, 16)
+        || record.uid == 0
+        || record
+            .pins
+            .iter()
+            .chain(record.sources.iter())
+            .any(|value| !hex(value, 64))
+        || record
+            .boot_id
+            .as_deref()
+            .is_some_and(|boot| !boot_identity(boot))
+        || (record.boot_id.is_none() && !matches!(record.stage, Stage::Reserved | Stage::Unknown))
+    {
+        return Err("DESKTOP_JOURNAL_INVALID");
+    }
+    Ok(Some(Pending(record)))
 }
 fn pins(p: &Pins) -> [String; 5] {
     [

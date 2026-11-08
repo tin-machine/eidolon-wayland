@@ -341,6 +341,7 @@ pub(crate) mod tests {
             app.windows.push(crate::compositor::protocol::WindowReport {
                 window,
                 app_id: Some(terminal_app_id(NONCE, terminal_id).unwrap()),
+                parent: None,
                 life: WindowLife::Mapped,
                 frame: Some(FrameSeq::new(1).unwrap()),
                 logical_size: Some(LogicalSize::new(640, 360).unwrap()),

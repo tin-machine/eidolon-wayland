@@ -5,7 +5,7 @@ use eidolon_model::{
     connection_profile::{Backend, Profile},
     ids::SessionId,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 mod protocol;
@@ -14,8 +14,11 @@ mod journal;
 mod owner;
 mod recovery;
 mod runtime;
+pub use eidolon_model::linux_desktop::Selection;
+pub(crate) use journal::{Pending, pending};
 pub use owner::RemoteReport;
 pub use recovery::{Recovery, RecoveryReport, recover};
+pub(crate) use runtime::{Inspection, Launch, serve};
 pub use runtime::{Report, Request, run};
 
 pub const REVISION: &str = "eidolon-linux-desktop-v2";
@@ -177,25 +180,16 @@ impl Binding {
     pub fn session(&self) -> SessionId {
         self.session
     }
-}
-
-/// 一度検証した catalog だけから作る選択。UI の任意 JSON / argv は受けない。
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Selection {
-    scope: String,
-    revision: String,
-    app_id: String,
-}
-impl std::fmt::Debug for Selection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("LinuxDesktopSelection(<private>)")
+    pub(crate) fn nonce(&self) -> &str {
+        &self.nonce
     }
 }
 
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod controller_tests;
 #[cfg(test)]
 mod owner_tcp_tests;
 #[cfg(test)]

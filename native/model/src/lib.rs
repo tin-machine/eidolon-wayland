@@ -9,6 +9,7 @@ pub mod input;
 pub mod keyboard;
 pub mod layout;
 pub mod limits;
+pub mod linux_desktop;
 pub mod pixels;
 pub mod pointer;
 pub mod resize;

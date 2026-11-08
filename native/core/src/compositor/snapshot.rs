@@ -59,6 +59,8 @@ pub(super) struct WindowRecord {
 pub struct WindowReport {
     pub window: WindowId,
     pub app_id: Option<String>,
+    /// xdg_toplevel.set_parent の同じ Display 内の実親。title / app_id から推測しない。
+    pub parent: Option<WindowId>,
     pub life: WindowLife,
     pub frame: Option<FrameSeq>,
     pub logical_size: Option<LogicalSize>,
@@ -839,29 +841,32 @@ impl ProtocolState {
     }
 
     pub fn windows(&self) -> Vec<WindowReport> {
-        let mut windows = self
-            .toplevels
-            .values()
-            .map(|window| WindowReport {
-                window: window.id,
-                app_id: with_states(window.surface.wl_surface(), |states| {
-                    states
-                        .data_map
-                        .get::<XdgToplevelSurfaceData>()
-                        .unwrap()
-                        .lock()
-                        .unwrap()
-                        .app_id
-                        .clone()
-                }),
-                life: window.life,
-                frame: window.frame,
-                logical_size: window.snapshot.as_ref().map(|s| s.logical_size),
-                layers: window.snapshot.as_ref().map_or(0, |s| s.layers.len()),
-                resize: window.resize.report(),
-                sizing: window.sizing.clone(),
-            })
-            .collect::<Vec<_>>();
+        let mut windows =
+            self.toplevels
+                .values()
+                .map(|window| WindowReport {
+                    window: window.id,
+                    parent: window.surface.parent().and_then(|parent| {
+                        self.toplevels.get(&parent.id()).map(|record| record.id)
+                    }),
+                    app_id: with_states(window.surface.wl_surface(), |states| {
+                        states
+                            .data_map
+                            .get::<XdgToplevelSurfaceData>()
+                            .unwrap()
+                            .lock()
+                            .unwrap()
+                            .app_id
+                            .clone()
+                    }),
+                    life: window.life,
+                    frame: window.frame,
+                    logical_size: window.snapshot.as_ref().map(|s| s.logical_size),
+                    layers: window.snapshot.as_ref().map_or(0, |s| s.layers.len()),
+                    resize: window.resize.report(),
+                    sizing: window.sizing.clone(),
+                })
+                .collect::<Vec<_>>();
         windows.sort_by_key(|window| window.window);
         windows
     }

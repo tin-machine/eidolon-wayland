@@ -55,6 +55,22 @@ object NativeSessionHost {
     @Volatile private var debugSdkInputScope: DebugSdkInputScope? = null
     private var identity: CredentialStore.Identity? = null
     private var profiles = JSONArray()
+    private var selectedProfileId = "termux-local" // 保存された選択だけ。接続/起動時の暗黙切替は禁止。
+    private var linuxCredentials: CredentialStore? = null
+    private var linuxIdentity: CredentialStore.Identity? = null
+    private var linuxProfileStore: LinuxProfileStore? = null
+    private var linuxPinsStore: LinuxDesktopPinsStore? = null
+    private var linuxProfile: ConnectionProfileV2.Value? = null
+    private var linuxSavedPins: LinuxDesktopPinsRepository.Saved? = null
+    private var linuxCredentialCapture: LinuxCredentialCapture? = null
+    private var linuxCatalog: LinuxDesktopCatalog? = null
+    private data class LinuxAction(val kind: String, val session: String, val request: String,
+        val deadline: Long = SystemClock.elapsedRealtime()+30000)
+    private var linuxAction: LinuxAction? = null
+    private var linuxMessage: String? = null
+    val selectedConnection = mutableStateOf("termux-local")
+    val connectionTarget = mutableStateOf("このQuestのTermux")
+    val canSelectLinuxRecovery = mutableStateOf(false)
     private var lastConnectRequest: String? = null // connectとcancelをworker上の順序で束縛する。
     private var connectPending = false
     private var cancelledThrough = 0L
@@ -143,7 +159,7 @@ object NativeSessionHost {
             .put("expected_revision",if(path==launcherState.path && !launcherState.builtin) launcherState.revision else JSONObject.NULL),path)
     } } }
     private fun requestCatalog(operation: JSONObject, path: String? = null) {
-        if(handle==0L || catalogPending!=null) return
+        if(handle==0L || catalogPending!=null || selectedProfileId!="termux-local") return
         val runtime=snapshot().getJSONObject("runtime")
         val app=runtime.optJSONObject("app")
         val session=runtime.getJSONObject("transport").optString("session")
@@ -159,6 +175,7 @@ object NativeSessionHost {
         } else launcherUpdate(launcherState.copy(message="操作を開始できません（$code）"))
     }
     private fun pumpCatalog(runtime: JSONObject) {
+        if(selectedProfileId==LinuxConnectionProfile.ID) { pumpLinuxCatalog(runtime); return }
         val transport=runtime.getJSONObject("transport")
         val app=runtime.optJSONObject("app")
         val session=transport.optString("session").takeIf { transport.optString("state")=="Ready" &&
@@ -190,15 +207,17 @@ object NativeSessionHost {
             }},message=if(error=="PATH_MISSING" && reply.getBoolean("builtin")) "設定ファイルは未作成です。標準のアプリ一覧を表示します"
                 else if(error!=null) LauncherMessages.error(error) else if(pending.kind=="save") "登録しました" else "アプリを選んで起動できます"))
     }
-    fun launchRegistered(session: String, revision: String, id: String, requested: ((String, Int) -> Unit)? = null) { launchCatalogTerminal(session,
-        JSONObject().put("kind","registered").put("revision",revision).put("id",id),requested) }
+    fun launchRegistered(session: String, revision: String, id: String, requested: ((String, Int) -> Unit)? = null) {
+        if(launcherUi.value.linux) launchLinuxDesktop(session,revision,id,requested)
+        else launchCatalogTerminal(session,JSONObject().put("kind","registered").put("revision",revision).put("id",id),requested)
+    }
     fun launchFile(form: LauncherForm, requested: ((String, Int) -> Unit)? = null) {
         if(form.valid()) launchCatalogTerminal(launcherUi.value.session,JSONObject().put("kind","temporary").put("definition",form.definition()), requested)
     }
     private fun launchCatalogTerminal(expectedSession: String, target: JSONObject, requested: ((String, Int) -> Unit)? = null) {
         val payload=target.toString()
         productWorker.execute { safely {
-            if(handle==0L || terminalAdding!=null || terminalOpen!=null || pendingDisconnect!=null) return@safely
+            if(handle==0L || selectedProfileId!="termux-local" || terminalAdding!=null || terminalOpen!=null || pendingDisconnect!=null) return@safely
             val runtime=snapshot().getJSONObject("runtime");val app=runtime.optJSONObject("app")
             if(app?.optString("session")!=expectedSession || runtime.getJSONObject("transport").optString("session")!=expectedSession ||
                 app.optString("state")!="running" || app.optString("mode")!="foot") {
@@ -228,6 +247,12 @@ object NativeSessionHost {
     data class ConnectionUi(val publicKey:String="",val username:String="",val hostKey:String="",val savedToken:String="",
         val canSave:Boolean=false,val message:String="設定を読み込み中")
     val connectionUi=mutableStateOf(ConnectionUi())
+    data class LinuxConnectionUi(val publicKey:String="",val displayName:String="Linux desktop",val host:String="",val port:String="22",
+        val username:String="",val hostKey:String="",val savedBinding:String="",val pinsJson:String="",val pinsToken:String="",
+        val pinsReady:Boolean=false,val canSave:Boolean=false,val message:String="設定を読み込み中") {
+        override fun toString() = "LinuxConnectionUi(<private>)"
+    }
+    val linuxConnectionUi=mutableStateOf(LinuxConnectionUi())
     private var connectionEditable=false
 
     private fun refreshConnection(message:String) {
@@ -241,8 +266,15 @@ object NativeSessionHost {
         val transport=runtime.getJSONObject("transport")
         return runtime.getString("state")=="Ready" && !connectPending && pendingDisconnect==null && terminalOpen==null &&
             transport.getString("state") in setOf("Idle","Disconnected","Failed") && transport.getInt("owned_connections")==0 &&
-            transport.getJSONArray("pending_cleanup").length()==0 && (runtime.optJSONObject("app")?.optString("state") ?: "stopped")=="stopped"
+            transport.getJSONArray("pending_cleanup").length()==0 && !transport.optBoolean("desktop_pending") &&
+            linuxAction==null && localTargetsRetired(runtime)
     }
+    private fun localTargetsRetired(runtime:JSONObject):Boolean =
+        (runtime.optJSONObject("app")?.optString("state") ?: "stopped")=="stopped" &&
+            runtime.getJSONObject("shutdown").getInt("sdk_bindings")==0 && runtime.getJSONArray("panels").length()==0 &&
+            runtime.getJSONObject("render").getJSONArray("targets").length()==0 && runtime.getJSONObject("window_slots").let {board ->
+                board.getInt("occupied")==0 && !board.getBoolean("cleanup_required") && board.getJSONArray("entries").length()==0 && board.getJSONArray("unassigned").length()==0
+            }
     fun saveConnection(username:String,hostKey:String,expected:String,confirmed:Boolean) {
         productWorker.execute {
             try {
@@ -257,6 +289,173 @@ object NativeSessionHost {
                 refreshConnection("保存できませんでした。切断状態と公開鍵を確認し、設定を開き直してください。")
             } finally {safely {if(handle==0L) startRuntime()}}
         }
+    }
+
+    private fun linuxPins(): LinuxDesktopPins? = linuxSavedPins?.forProfile(linuxProfile)
+    private fun canSelectRecovery(runtime:JSONObject):Boolean {
+        val transport=runtime.getJSONObject("transport")
+        return !debugSdkLease.blocksProduct() && selectedProfileId!=LinuxConnectionProfile.ID && linuxProfile!=null && linuxPins()!=null &&
+            runtime.getString("state")=="Ready" && !connectPending && pendingDisconnect==null && terminalOpen==null &&
+            transport.optBoolean("desktop_pending") && transport.optInt("owned_connections")==0 &&
+            transport.optString("state") in setOf("Idle","Disconnected","Failed","CleanupPending") && transport.getJSONArray("pending_cleanup").length()==0 &&
+            localTargetsRetired(runtime)
+    }
+    private fun refreshLinuxConnection(message:String) {
+        val profile=linuxProfile
+        val value=LinuxConnectionUi(linuxIdentity?.publicKey ?: "",profile?.displayName ?: "Linux desktop",profile?.host ?: "",
+            profile?.port?.toString() ?: "22",profile?.username ?: "",profile?.hostKey ?: "",profile?.binding() ?: "",
+            linuxSavedPins?.pins?.json() ?: "",linuxSavedPins?.token ?: "",linuxPins()!=null,connectionEditable,message)
+        val target=if(selectedProfileId==LinuxConnectionProfile.ID) profile?.let {"${it.displayName} · ${it.host}:${it.port}"} ?: "別のLinux（未設定）" else "このQuestのTermux"
+        val selected=selectedProfileId
+        ui.post {linuxConnectionUi.value=value;selectedConnection.value=selected;connectionTarget.value=target}
+    }
+    fun selectConnection(profileId:String) { productWorker.execute { safely {
+        if(profileId !in setOf("termux-local",LinuxConnectionProfile.ID) || profileId==selectedProfileId) return@safely
+        val runtime=if(handle!=0L) snapshot().getJSONObject("runtime") else null
+        if(runtime==null || !(canChangeConnection(runtime) || profileId==LinuxConnectionProfile.ID && canSelectRecovery(runtime))) {
+            refreshLinuxConnection("前の接続とウィンドウの終了を確認してから切り替えてください。");return@safely
+        }
+        // 保存・起動・再接続は行わず、次の明示操作で使う接続先だけを変更する。
+        check(checkNotNull(application).getSharedPreferences("connections",Context.MODE_PRIVATE).edit().putString("selected",profileId).commit())
+        selectedProfileId=profileId;linuxCatalog=null;linuxMessage=null;catalogPending=null
+        launcherUpdate(LauncherUi(path=launcherState.path,linux=profileId==LinuxConnectionProfile.ID))
+        refreshLinuxConnection("接続先を選択しました。設定を確認して接続してください。")
+    } } }
+    fun saveLinuxConnection(draft:LinuxConnectionDraft,expectedBinding:String,confirmed:Boolean) { productWorker.execute {
+        try {
+            check(handle!=0L && canChangeConnection(snapshot().getJSONObject("runtime"))) {"CONNECTION_BUSY"}
+            require(linuxProfile?.binding()==expectedBinding.ifEmpty {null}) {"PROFILE_CHANGED"}
+            LinuxConnectionProfile.propose(draft,checkNotNull(identity).installation,linuxProfile)
+            require(confirmed) {"PIN_CONFIRMATION_REQUIRED"}
+            stopRuntime()
+            linuxProfile=checkNotNull(linuxProfileStore).save(draft,expectedBinding.ifEmpty {null},confirmed)
+            linuxCatalog=null
+            refreshLinuxConnection("接続先を保存しました。転送用ファイルの確認情報も、この接続先に対して確認・保存してください。")
+        } catch(_:Exception) {
+            // publish後のreadback失敗も古いbindingに戻さず、保存済み状態を読み直す。
+            linuxProfile=null;runCatching {linuxProfile=checkNotNull(linuxProfileStore).load()}
+            refreshLinuxConnection("保存できませんでした。終了状態と接続先・ホスト鍵を確認し、設定を開き直してください。")
+        } finally {safely {if(handle==0L) startRuntime()}}
+    } }
+    fun saveLinuxPins(raw:String,expectedBinding:String,expectedToken:String,confirmed:Boolean) { productWorker.execute {
+        try {
+            check(handle!=0L && canChangeConnection(snapshot().getJSONObject("runtime"))) {"CONNECTION_BUSY"}
+            val profile=checkNotNull(linuxProfile)
+            require(profile.binding()==expectedBinding) {"PROFILE_CHANGED"}
+            LinuxDesktopPins.parse(raw);require(confirmed) {"PIN_CONFIRMATION_REQUIRED"}
+            stopRuntime()
+            linuxSavedPins=checkNotNull(linuxPinsStore).save(profile,raw,expectedToken.ifEmpty {null},confirmed)
+            linuxCatalog=null
+            refreshLinuxConnection("転送用ファイルの確認情報を保存しました。明示的に接続して、利用できるアプリを確認できます。")
+        } catch(_:Exception) {
+            linuxSavedPins=null;runCatching {linuxSavedPins=checkNotNull(linuxPinsStore).load()}
+            refreshLinuxConnection("保存できませんでした。接続先と、固定builderから取得した確認情報を確認してください。")
+        } finally {safely {if(handle==0L) startRuntime()}}
+    } }
+    fun inspectLinuxDesktop(requested:((String,Int)->Unit)?=null) { linuxDesktopAction("inspect",requested) }
+    fun recoverLinuxDesktop() { linuxDesktopAction("recover") }
+    private fun linuxDesktopAction(kind:String,requested:((String,Int)->Unit)?=null) { productWorker.execute { safely {
+        if(handle==0L || selectedProfileId!=LinuxConnectionProfile.ID || linuxAction!=null || pendingDisconnect!=null) {
+            requested?.invoke("",NativeBridge.NOT_READY);return@safely
+        }
+        val transport=snapshot().getJSONObject("runtime").getJSONObject("transport")
+        if(transport.optString("profile_id")!=LinuxConnectionProfile.ID || transport.optInt("owned_connections")!=1) {
+            requested?.invoke("",NativeBridge.NOT_READY);return@safely
+        }
+        val permitted=when(kind) {
+            "inspect" -> transport.optString("state")=="ProbeReady" && !transport.optBoolean("desktop_pending")
+            "recover" -> transport.optString("state")=="CleanupPending" && transport.optBoolean("desktop_pending") && transport.isNull("desktop")
+            else -> false
+        }
+        if(!permitted) {requested?.invoke("",NativeBridge.NOT_READY);return@safely}
+        val session=transport.getString("session");val request=requests.incrementAndGet().toString()
+        val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","linux_desktop_$kind")
+            .put("request_id",request).put("session",session).toString())
+        if(code==NativeBridge.ACCEPTED) {
+            linuxAction=LinuxAction(kind,session,request);linuxCatalog=null;linuxMessage=null
+        } else linuxMessage="操作を開始できません。接続状態を確認してください。"
+        requested?.invoke(request,code)
+    } } }
+    private fun launchLinuxDesktop(session:String,revision:String,id:String,requested:((String,Int)->Unit)?) { productWorker.execute { safely {
+        if(handle==0L || selectedProfileId!=LinuxConnectionProfile.ID || linuxAction!=null || pendingDisconnect!=null || connectPending) {
+            requested?.invoke("",NativeBridge.NOT_READY);return@safely
+        }
+        val catalog=linuxCatalog
+        val runtime=snapshot().getJSONObject("runtime");val transport=runtime.getJSONObject("transport")
+        if(catalog?.accepts(session,revision,id)!=true || transport.optString("session")!=session ||
+            transport.optString("profile_id")!=LinuxConnectionProfile.ID || transport.optString("state")!="DesktopReady" ||
+            (runtime.optJSONObject("app")?.optString("state") ?: "stopped")!="stopped") {
+            linuxMessage="接続先とアプリ一覧を確認してから起動してください。";requested?.invoke("",NativeBridge.STALE);return@safely
+        }
+        releasePanelTextFocus()
+        val request=requests.incrementAndGet().toString()
+        val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","linux_desktop_launch")
+            .put("request_id",request).put("session",session).put("selection",catalog.selection()).toString())
+        if(code==NativeBridge.ACCEPTED) {linuxAction=LinuxAction("launch",session,request);linuxMessage=null}
+        else linuxMessage="起動を開始できません。接続と前回の終了状態を確認してください。"
+        requested?.invoke(request,code)
+    } } }
+    private fun pumpLinuxCatalog(runtime:JSONObject) {
+        val transport=runtime.getJSONObject("transport");val phase=transport.optString("state")
+        val session=transport.optString("session").takeIf {transport.optString("profile_id")==LinuxConnectionProfile.ID} ?: ""
+        val owned=transport.optInt("owned_connections");val pending=transport.optBoolean("desktop_pending")
+        val app=runtime.optJSONObject("app")?.takeIf {it.optString("mode")=="linux_desktop" && it.optString("session")==session}
+        val running=app?.optString("state")=="running"
+        val appActive=app!=null && app.optString("state")!="stopped"
+        if(linuxCatalog?.session!=session || phase!="DesktopReady") linuxCatalog=null
+        val envelope=JSONObject(NativeBridge.nativeCatalogUi(handle)) // 設定/UIのみ。通常snapshotへ本文を入れない。
+        val catalog=envelope.optJSONObject("catalog")?.takeIf {envelope.optInt("code")==NativeBridge.ACCEPTED && it.optString("session")==session}
+        linuxCatalog=if(phase=="DesktopReady" && catalog!=null && !catalog.optBoolean("pending") && catalog.isNull("error"))
+            catalog.optJSONObject("desktop")?.let {runCatching {LinuxDesktopCatalog.decode(session,it)}.getOrNull()} else null
+        linuxAction?.let { action ->
+            val completed=when(action.kind) {
+                "inspect" -> linuxCatalog!=null
+                "launch" -> running
+                "recover" -> !pending && phase=="ProbeReady"
+                else -> false
+            }
+            val catalogFailed=action.kind=="inspect" && catalog?.optString("request_id")==action.request &&
+                !catalog.optBoolean("pending") && !catalog.isNull("error")
+            if(completed) {linuxAction=null;linuxMessage=null}
+            else if(action.session!=session || phase in setOf("Disconnected","Failed") || catalogFailed || SystemClock.elapsedRealtime()>action.deadline) {
+                linuxAction=null
+                linuxMessage=if(pending) "終了を確認できていません。同じ接続先へ接続し、前回の回収を実行してください。"
+                    else "操作の完了を確認できません。接続状態を確認して明示的にやり直してください。"
+            }
+        }
+        val busy=connectPending || pendingDisconnect!=null || linuxAction!=null
+        val configured=linuxIdentity!=null && linuxProfile?.let {LinuxConnectionProfile.endpointSupport(it)==LinuxConnectionProfile.EndpointSupport.IPV4}==true && linuxPins()!=null
+        val canConnect=configured && !busy && localTargetsRetired(runtime) && owned==0 && phase in setOf("Idle","Disconnected","Failed","CleanupPending")
+        val canInspect=!busy && owned==1 && phase=="ProbeReady" && !pending
+        val canRecover=!busy && owned==1 && phase=="CleanupPending" && pending && !appActive && transport.isNull("desktop")
+        val canStop=pendingDisconnect==null && (owned>0 || connectPending || appActive)
+        val shown=running && app?.optBoolean("remote_gui_verified")==true && runtime.getJSONArray("panels").let {plans -> (0 until plans.length()).any {i ->
+            val plan=plans.getJSONObject(i)
+            plan.optString("action")=="create" && plan.optBoolean("applied") && plan.isNull("error") &&
+                plan.getJSONObject("target").optString("session")==session && runtime.getJSONObject("render").getJSONArray("targets").let {targets ->
+                    (0 until targets.length()).any {j -> val target=targets.getJSONObject(j)
+                        targetIdentity(target.getJSONObject("key"))==targetIdentity(plan.getJSONObject("target")) && target.optLong("frames")>0 }
+                }
+        } }
+        val message=linuxMessage ?: when {
+            linuxAction?.kind=="recover" -> "前回のLinuxアプリと転送処理の終了を確認中"
+            linuxAction?.kind=="inspect" -> "転送用ファイルと固定GTKデモを接続先で確認中"
+            linuxAction?.kind=="launch" || appActive && !shown -> "GTKデモの画面を準備中"
+            shown -> "GTKデモを表示中 · 英数入力・Dialog・Closeを使えます"
+            pending && phase=="CleanupPending" -> "前回の終了が未確認です。同じ接続先へ接続して回収してください。"
+            linuxCatalog!=null -> "確認済み: 固定GTKデモ（Wayland・1アプリ）· 選択すると起動します"
+            phase=="ProbeReady" -> "SSH認証済み · 「アプリを確認」で利用できる機能を照合してください"
+            !configured -> "接続設定でIPv4接続先・ホスト鍵・転送用ファイルを確認してください"
+            pending && owned==0 -> "前回の終了が未確認です。同じ接続先へ接続して回収してください。"
+            phase in setOf("Connecting","AwaitingCredential","Authenticating") -> "Linuxへ接続中"
+            else -> "接続してアプリを確認してください。起動や再接続は自動では行いません。"
+        }
+        val selection=linuxCatalog
+        val value=LauncherUi(session=session,connected=phase=="DesktopReady" && selection!=null,busy=busy,
+            revision=selection?.revision ?: "",builtin=true,total=if(selection!=null) 1 else 0,path=launcherState.path,
+            entries=if(selection!=null) listOf(LauncherEntry(LinuxDesktopCatalog.APP_ID,"GTKデモ","builtin:script",!busy && !appActive,null)) else emptyList(),
+            message=message,linux=true,canConnect=canConnect,canInspect=canInspect,canRecover=canRecover,canStop=canStop,running=running)
+        if(value!=launcherState) launcherUpdate(value)
     }
 
     init { worker.scheduleAtFixedRate({ safely { tick() } }, 0, 16, TimeUnit.MILLISECONDS) }
@@ -275,8 +474,22 @@ object NativeSessionHost {
                 identity = checkNotNull(credentials).ensureIdentity()
                 profiles = JSONArray()
                 checkNotNull(credentials).profile(checkNotNull(identity))?.let { profiles.put(it) }
+                val linuxLoaded=runCatching {
+                    if(linuxCredentials==null) linuxCredentials=CredentialStore(application,"eidolon.identity.remote-linux.aes.v1",
+                        java.io.File(application.noBackupFilesDir,"credentials-remote-linux"))
+                    linuxIdentity=null;linuxProfile=null;linuxSavedPins=null
+                    linuxIdentity=checkNotNull(linuxCredentials).ensureIdentity()
+                    if(linuxProfileStore==null) linuxProfileStore=LinuxProfileStore(application,checkNotNull(identity).installation)
+                    if(linuxPinsStore==null) linuxPinsStore=LinuxDesktopPinsStore(application)
+                    linuxProfile=checkNotNull(linuxProfileStore).load();linuxSavedPins=checkNotNull(linuxPinsStore).load()
+                }.isSuccess
+                selectedProfileId=application.getSharedPreferences("connections",Context.MODE_PRIVATE).getString("selected","termux-local") ?: "termux-local"
+                require(selectedProfileId in setOf("termux-local",LinuxConnectionProfile.ID)) {"PROFILE_SELECTION_INVALID"}
                 refreshConnection(if(profiles.length()==0) "初回は公開鍵のペアリングを行ってください。" else "保存済みの接続設定を読み込みました。")
-                ui.post { credentialSummary.value = "APK専用鍵を暗号化して保存済み" }
+                refreshLinuxConnection(if(linuxLoaded) "保存済みの設定を読み込みました。接続先を選択して接続してください。"
+                    else "Linux用の鍵または設定を読み込めません。保存データを確認してください。")
+                val credentialMessage=if(linuxIdentity!=null) "Termuxと別Linux用の公開鍵認証を個別に保存済み" else "Termux用の公開鍵認証を保存済み · Linux用の鍵を確認できません"
+                ui.post { credentialSummary.value = credentialMessage }
                 startRuntime()
             }
         } }
@@ -298,22 +511,33 @@ object NativeSessionHost {
         if(!value) {inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()}
         activityVisible.set(value);send("set_activity_state","visible",value);true
     }
-    private fun enqueueConnect(): String? {
+    private fun enqueueConnect(requested:((String,Int)->Unit)?=null): String? {
+        if(selectedProfileId==LinuxConnectionProfile.ID && (linuxIdentity==null || linuxProfile==null || linuxPins()==null ||
+                LinuxConnectionProfile.endpointSupport(checkNotNull(linuxProfile))!=LinuxConnectionProfile.EndpointSupport.IPV4)) {
+            linuxMessage="IPv4接続先・ホスト鍵・転送用ファイルを設定で確認してください。";requested?.invoke("",NativeBridge.NOT_READY);return null
+        }
         val request = requests.incrementAndGet().toString()
-        val command = JSONObject().put("schema", 1).put("type", "connect").put("request_id", request).put("profile_id", "termux-local")
-        if (NativeBridge.nativeCommand(handle, command.toString()) != NativeBridge.ACCEPTED) return null
+        val command = JSONObject().put("schema", 1).put("type", "connect").put("request_id", request).put("profile_id", selectedProfileId)
+        val code=NativeBridge.nativeCommand(handle,command.toString())
+        requested?.invoke(request,code)
+        if (code != NativeBridge.ACCEPTED) return null
+        linuxCredentialCapture?.close()
+        linuxCredentialCapture=if(selectedProfileId==LinuxConnectionProfile.ID) LinuxCredentialCapture(handle,request,checkNotNull(linuxProfile)) else null
+        linuxCatalog=null;linuxMessage=null
         lastConnectRequest = request
         connectPending = true
         return request
     }
-    fun connect() { productWorker.execute { safely {
-        if (handle == 0L || pendingDisconnect != null || connectPending) return@safely
+    fun connect(requested:((String,Int)->Unit)?=null) { productWorker.execute { safely {
+        if (handle == 0L || pendingDisconnect != null || connectPending || linuxAction!=null) {requested?.invoke("",NativeBridge.NOT_READY);return@safely}
         val transport = snapshot().getJSONObject("runtime").getJSONObject("transport")
-        if (transport.getString("state") in setOf("Idle", "Disconnected", "Failed")) enqueueConnect()
+        if (transport.getString("state") in setOf("Idle", "Disconnected", "Failed") ||
+            selectedProfileId==LinuxConnectionProfile.ID && transport.getString("state")=="CleanupPending" && transport.optInt("owned_connections")==0) enqueueConnect(requested)
+        else requested?.invoke("",NativeBridge.NOT_READY)
     } } }
     fun openTerminal() { productWorker.execute { safely {
         releasePanelTextFocus()
-        if (handle == 0L || terminalOpen != null || pendingDisconnect != null || connectPending) return@safely
+        if (handle == 0L || selectedProfileId!="termux-local" || terminalOpen != null || pendingDisconnect != null || connectPending) return@safely
         val runtime = snapshot().getJSONObject("runtime")
         val transport = runtime.getJSONObject("transport")
         val app = runtime.optJSONObject("app")
@@ -348,10 +572,15 @@ object NativeSessionHost {
     fun debugDisconnectSession(runtime:Long,session:String) {
         if(BuildConfig.DEBUG && runtime>0 && session.matches(Regex("[1-9][0-9]{0,18}"))) disconnectExpected(runtime,session)
     }
-    private fun disconnectExpected(expectedRuntime:Long?,expectedSession:String?) { productWorker.execute { safely {
-        if(expectedRuntime!=null && (handle!=expectedRuntime || snapshot().getJSONObject("runtime").getJSONObject("transport").optString("session")!=expectedSession)) return@safely
+    fun debugCancelConnect(runtime:Long,request:String) {
+        if(BuildConfig.DEBUG && runtime>0 && request.matches(Regex("[1-9][0-9]{0,18}"))) disconnectExpected(runtime,null,request)
+    }
+    private fun disconnectExpected(expectedRuntime:Long?,expectedSession:String?,expectedConnectRequest:String?=null) { productWorker.execute { safely {
+        if(expectedRuntime!=null && (handle!=expectedRuntime || expectedSession!=null && snapshot().getJSONObject("runtime").getJSONObject("transport").optString("session")!=expectedSession)) return@safely
+        if(expectedConnectRequest!=null && lastConnectRequest!=expectedConnectRequest) return@safely
         pendingInputFocus=null
         clearTerminalOpen(); terminalAdding=null; terminalError = null
+        linuxCredentialCapture?.close();linuxCredentialCapture=null;linuxAction=null;linuxCatalog=null;linuxMessage=null
         resetInput()
         if (handle == 0L || pendingDisconnect != null) return@safely
         val session = snapshot().getJSONObject("runtime").getJSONObject("transport").optString("session").takeIf { it.toLongOrNull() != null }
@@ -1361,8 +1590,15 @@ object NativeSessionHost {
         send("set_activity_state", "visible", activityVisible.get())
         tick()
     }
-    fun runtimeConfigJson(): String = BuildHooks.runtimeConfiguration(JSONObject().put("schema", 1).put("paths", checkNotNull(paths))
-        .put("installation", checkNotNull(identity).installation).put("profiles", profiles).put("preferences_dir",checkNotNull(preferencesDir)).toString())
+    fun runtimeConfigJson(): String {
+        val config=JSONObject().put("schema",1).put("paths",checkNotNull(paths)).put("installation",checkNotNull(identity).installation)
+            .put("profiles",profiles).put("preferences_dir",checkNotNull(preferencesDir))
+        linuxPins()?.let {pins ->
+            config.put("linux_profile_v2",ConnectionProfileV2Codec.encode(checkNotNull(linuxProfile)).toString(Charsets.UTF_8))
+                .put("linux_desktop_pins",pins.json())
+        }
+        return BuildHooks.runtimeConfiguration(config.toString())
+    }
     /** withStoppedRuntimeの同じworkerから同期呼出し。通常Host/設定への切替は行わない。 */
     fun provideDebugProbeCredential(runtime: Long, capture: ProbeCredentialCapture, event: JSONObject): Int {
         check(BuildConfig.DEBUG && handle == 0L && runtime == capture.runtime) { "PROBE_OWNER_INVALID" }
@@ -1561,6 +1797,7 @@ object NativeSessionHost {
         val endedIme = imeConnection
         ui.post { if (imeConnection === endedIme) { endedIme?.close(); imeConnection = null; imeOwner = null; imeAndroidReleased = null; imeRawReturn = null; imeInputMessage = null; imeRawBlocked.set(false) } }
         catalogPending=null;launcherUpdate(LauncherUi(path=launcherState.path))
+        linuxCredentialCapture?.close();linuxCredentialCapture=null;linuxAction=null;linuxCatalog=null;linuxMessage=null
         poseCompletions.clear();groupGeometryCompletions.clear();selectedWindow=null;lastFocusedWindow=null;editing.set(false);ui.post { layoutEditing.value=false }
         clearTerminalOpen(); terminalAdding = null; terminalError = null
         lastConnectRequest = null; pendingDisconnect = null; connectPending = false
@@ -1634,7 +1871,14 @@ object NativeSessionHost {
                 windowOperationCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
                 if (event.getString("request_id") == lastConnectRequest) {
                     connectPending = false
-                    if (event.getString("code") != "ACCEPTED") lastConnectRequest = null
+                    if (event.getString("code") != "ACCEPTED") {
+                        lastConnectRequest = null;linuxCredentialCapture?.close();linuxCredentialCapture=null
+                    }
+                }
+                linuxAction?.let {operation ->
+                    if(event.getString("request_id")==operation.request && event.getString("code")!="ACCEPTED") {
+                        linuxAction=null;linuxMessage="操作を受け付けられませんでした。接続と回収の状態を確認してください。"
+                    }
                 }
                 pendingDisconnect?.let { operation ->
                     if (event.getString("request_id") == operation.request) {
@@ -1667,6 +1911,18 @@ object NativeSessionHost {
                     check(debugSdkLease.metadata().phase == DebugSdkRuntimeLease.Phase.ACTIVE && capture.runtime == handle)
                     check(provideCapturedProbeCredential(handle, capture, event) == NativeBridge.ACCEPTED)
                 } catch (_: Exception) { debugSdkFailure = "PROBE_CREDENTIAL_REJECTED" }
+            } else if(event.optString("type")=="credential_required" && event.optString("profile_id")==LinuxConnectionProfile.ID) {
+                try {
+                    require(event.getString("request_id").toLong()>cancelledThrough)
+                    val envelope=JSONObject(NativeBridge.nativeCredentialScope(handle))
+                    val fields=envelope.keys().asSequence().associateWith {key -> val value=envelope.get(key)
+                        if(value is JSONObject) value.keys().asSequence().associateWith {value.get(it)} else value }
+                    val supply=checkNotNull(linuxCredentialCapture).claim(handle,event.opt("session"),event.opt("request_id"),event.opt("profile_id"),fields)
+                    val code=checkNotNull(linuxCredentials).withPrivateKey {key ->
+                        NativeBridge.nativeProvideCredentialFor(handle,supply.session,supply.request,supply.binding,key)
+                    }
+                    check(code==NativeBridge.ACCEPTED)
+                } catch(_:Exception) {linuxMessage="接続要求と認証鍵の対応を確認できません。接続を閉じて再試行してください。"}
             } else if (event.optString("type") == "credential_required" && event.optString("profile_id") == "termux-local" &&
                 event.getString("request_id").toLong() > cancelledThrough) {
                 val code = checkNotNull(credentials).provide(handle, event.getString("session").toLong(), event.getString("request_id").toLong())
@@ -1753,12 +2009,13 @@ object NativeSessionHost {
             !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && !editing.get() && panelTextInputs.isEmpty() && !BuildHooks.imeProbeActive()
         ui.post {imeAvailable.value=eligibleIme}
         pumpIme(runtime, imeCompletions)
-        val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else "ターミナルへ入力"
+        val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else if(selectedProfileId==LinuxConnectionProfile.ID) "Linuxアプリへ入力" else "ターミナルへ入力"
         ui.post { keyboardSummary.value = keyboardLabel }
         val inputConditions=InputConditions(runtime.getBoolean("activity_visible"),runtime.getString("xr_state")=="FOCUSED",
             runtime.getString("state")=="Ready",if(terminalOpen?.startupWaiting==true) "StartingTermux" else runtime.getJSONObject("transport").getString("state"),editing.get(),keyboardCount.get(),
             (runtime.optJSONObject("app")?.optJSONArray("windows")?.length() ?: 0)>0,inputTargets.isNotEmpty(),
-            focusedWindow.takeIf {keyboardFocus!=null},panelEditing=panelTextInputs.isNotEmpty(),imeProbe=BuildHooks.imeProbeActive())
+            focusedWindow.takeIf {keyboardFocus!=null},panelEditing=panelTextInputs.isNotEmpty(),imeProbe=BuildHooks.imeProbeActive(),
+            linuxDesktop=selectedProfileId==LinuxConnectionProfile.ID)
         val status=if(debugSdkLease.blocksProduct()) InputStatus("FIXED_LINUX_PROBE","Linux描画の固定検査中 · 通常操作と文字入力を停止")
         else if(inputConditions.visible && inputConditions.xrFocused) {
             val move=windowOperation.get()
@@ -1883,6 +2140,8 @@ object NativeSessionHost {
             "Idle", "Disconnected" -> "未接続"
             "Connecting", "AwaitingCredential", "Authenticating" -> "接続中（切断ボタンで取消）"
             "Ready" -> "接続済み"
+            "ProbeReady" -> "SSH認証済み · アプリ未確認"
+            "DesktopReady" -> "Linuxアプリ接続済み"
             "Failed" -> "接続が終了しました"
             "Disconnecting" -> "終了を確認中"
             "Recovering" -> "前回の終了を確認中"
@@ -1895,7 +2154,7 @@ object NativeSessionHost {
             (0 until plans.length()).map { plans.getJSONObject(it) }.firstOrNull { !it.isNull("error") }?.getString("error")
         }
         val error = terminalError ?: panelError ?: appError
-        val connectionError=when(transport.optString("error")) {
+        val connectionError=if(selectedProfileId==LinuxConnectionProfile.ID) LinuxDesktopMessages.error(transport.optString("error")) else when(transport.optString("error")) {
             "HOST_KEY_UNKNOWN" -> "初回の接続設定が必要です"
             "HOST_KEY_MISMATCH" -> "Termuxのホスト鍵が保存済みの鍵と違います。接続設定で指紋を照合してください"
             "AUTH_FAILED" -> "公開鍵認証に失敗しました。TermuxへAPK公開鍵を登録してください"
@@ -1904,13 +2163,18 @@ object NativeSessionHost {
             else -> transport.optString("error").takeUnless {it.isEmpty() || it=="null"}
         }
         val ssh = phase + (if (pending > 0 && transport.getString("state")!="Ready") " · 未確認の回収 ${pending}件" else "") +
-            ((error ?: connectionError)?.let {" · $it"} ?: "")
+            (if(transport.optBoolean("desktop_pending") && transport.getString("state") in setOf("Idle","Disconnected","Failed","CleanupPending")) " · 前回のLinuxアプリの終了が未確認" else "") +
+            ((if(selectedProfileId==LinuxConnectionProfile.ID) linuxMessage ?: connectionError ?: error?.let {"アプリまたは画面の処理を完了できませんでした"} else error ?: connectionError)?.let {" · $it"} ?: "")
         if (ssh != sshState) { sshState = ssh; ui.post { connectionSummary.value = ssh } }
-        val busy=terminalOpen!=null || terminalAdding!=null || connectPending || pendingDisconnect!=null
+        val busy=terminalOpen!=null || terminalAdding!=null || connectPending || pendingDisconnect!=null || linuxAction!=null
         ui.post {terminalBusy.value=busy}
         val next = snapshot.getJSONObject("runtime").getString("state")
         val editable=canChangeConnection(snapshot.getJSONObject("runtime"))
-        if(editable!=connectionEditable) {connectionEditable=editable;ui.post {connectionUi.value=connectionUi.value.copy(canSave=editable)}}
+        val recoverySelection=canSelectRecovery(snapshot.getJSONObject("runtime"))
+        if(canSelectLinuxRecovery.value!=recoverySelection) ui.post {canSelectLinuxRecovery.value=recoverySelection}
+        if(editable!=connectionEditable) {connectionEditable=editable;ui.post {
+            connectionUi.value=connectionUi.value.copy(canSave=editable);linuxConnectionUi.value=linuxConnectionUi.value.copy(canSave=editable)
+        }}
         val now = SystemClock.elapsedRealtime()
         if (next != state) {
             state = next

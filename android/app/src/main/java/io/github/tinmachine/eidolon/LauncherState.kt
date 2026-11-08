@@ -9,6 +9,8 @@ data class LauncherUi(
     val revision: String = "", val builtin: Boolean = true, val total: Int = 0, val offset: Int = 0,
     val entries: List<LauncherEntry> = emptyList(), val path: String = ".config/eidolon/launcher.toml",
     val message: String = "ターミナルを開くとアプリ一覧を読み込めます",
+    val linux: Boolean = false, val canConnect: Boolean = false, val canInspect: Boolean = false,
+    val canRecover: Boolean = false, val canStop: Boolean = false, val running: Boolean = false,
 )
 
 object LauncherMessages {

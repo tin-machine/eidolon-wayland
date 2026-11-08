@@ -41,38 +41,61 @@ pub(crate) struct RuntimeDirectory {
     inode: u64,
     device: u64,
 }
+pub(crate) struct DirectoryCreateFailure {
+    pub(crate) error: Error,
+    /// No nonce allocation was attempted, or the attempted target is confirmed absent.
+    pub(crate) allocation_absent: bool,
+}
 impl RuntimeDirectory {
     pub(crate) fn create(files: &Path, nonce: &str) -> Result<Self, Error> {
+        Self::create_tracked(files, nonce).map_err(|failure| failure.error)
+    }
+    pub(crate) fn create_tracked(
+        files: &Path,
+        nonce: &str,
+    ) -> Result<Self, DirectoryCreateFailure> {
+        let absent = |error| DirectoryCreateFailure {
+            error,
+            allocation_absent: true,
+        };
         if nonce.len() != 16
             || !nonce
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         {
-            return Err("CONFIG_INVALID");
+            return Err(absent("CONFIG_INVALID"));
         }
-        let files = files.canonicalize().map_err(|_| "CONFIG_INVALID")?;
+        let files = files.canonicalize().map_err(|_| absent("CONFIG_INVALID"))?;
         let parent = files.join("rt");
         match fs::DirBuilder::new().mode(0o700).create(&parent) {
             Ok(()) => (),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
-            Err(_) => return Err("HELPER_EXEC_FAILED"),
+            Err(_) => return Err(absent("HELPER_EXEC_FAILED")),
         }
-        let meta = fs::symlink_metadata(&parent).map_err(|_| "CONFIG_INVALID")?;
+        let meta = fs::symlink_metadata(&parent).map_err(|_| absent("CONFIG_INVALID"))?;
         if !meta.is_dir()
             || meta.file_type().is_symlink()
             || meta.permissions().mode() & 0o777 != 0o700
         {
-            return Err("CONFIG_INVALID");
+            return Err(absent("CONFIG_INVALID"));
         }
         let path = parent.join(nonce);
         if path.join("s9").as_os_str().as_bytes().len() > 103 {
-            return Err("RESOURCE_LIMIT");
+            return Err(absent("RESOURCE_LIMIT"));
         }
         fs::DirBuilder::new()
             .mode(0o700)
             .create(&path)
-            .map_err(|_| "CONFIG_INVALID")?;
-        let meta = fs::symlink_metadata(&path).map_err(|_| "CONFIG_INVALID")?;
+            .map_err(|_| DirectoryCreateFailure {
+                error: "CONFIG_INVALID",
+                // A collision or inaccessible target has an unknown owner. Do not remove it
+                // or turn a failed mkdir alone into an assertion that the path is absent.
+                allocation_absent: matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
+            })?;
+        let meta = fs::symlink_metadata(&path).map_err(|_| DirectoryCreateFailure {
+            error: "CONFIG_INVALID",
+            allocation_absent: false,
+        })?;
         Ok(Self {
             path,
             inode: meta.ino(),

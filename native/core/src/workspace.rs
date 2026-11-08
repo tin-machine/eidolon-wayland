@@ -313,6 +313,7 @@ mod tests {
         WindowReport {
             window: WindowId::new(id).unwrap(),
             app_id: Some("terminal".into()),
+            parent: None,
             life: WindowLife::Mapped,
             frame: Some(FrameSeq::new(1).unwrap()),
             logical_size: Some(LogicalSize::new(1024, 768).unwrap()),

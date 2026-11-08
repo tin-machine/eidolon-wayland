@@ -19,14 +19,21 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
     var details by remember { mutableStateOf(false) }
     val input=NativeSessionHost.inputStatus.value
     val device=NativeSessionHost.deviceMetrics.value
+    val linux=NativeSessionHost.selectedConnection.value==LinuxConnectionProfile.ID
+    val launcher=NativeSessionHost.launcherUi.value
     Column(Modifier.fillMaxSize().background(Color(0xFF102331)).padding(16.dp),
         verticalArrangement=Arrangement.spacedBy(6.dp), horizontalAlignment=Alignment.CenterHorizontally) {
         Text("Eidolon · Build ${BuildConfig.VERSION_CODE}",color=Color(0xFF67E8C3),style=MaterialTheme.typography.titleMedium)
         Text(input.message,color=if(input.reason=="READY") Color(0xFF67E8C3) else Color(0xFFFFD59E),style=MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            Button(onClick={NativeSessionHost.openTerminal()}) {Text("ターミナルを開く")}
+            if(linux) {
+                if(launcher.canInspect) Button(onClick={NativeSessionHost.inspectLinuxDesktop()}) {Text("アプリを確認")}
+                else if(launcher.canRecover) Button(onClick={NativeSessionHost.recoverLinuxDesktop()}) {Text("前回の回収")}
+                else Button(enabled=launcher.canConnect,onClick={NativeSessionHost.connect()}) {Text("Linuxへ接続")}
+                if(launcher.canStop) Button(onClick={NativeSessionHost.disconnect()}) {Text("停止・切断")}
+            } else Button(onClick={NativeSessionHost.openTerminal()}) {Text("ターミナルを開く")}
             Button(onClick={NativeSessionHost.showLauncher()}) {Text("アプリ")}
-            if(NativeSessionHost.terminalBusy.value) Button(onClick={NativeSessionHost.disconnect()}) {Text("取消")}
+            if(!linux && NativeSessionHost.terminalBusy.value) Button(onClick={NativeSessionHost.disconnect()}) {Text("取消")}
             when(input.action) {
                 InputStatus.Action.FINISH_EDITING -> Button(onClick={NativeSessionHost.finishLayoutEditing()}) {Text(input.actionLabel)}
                 else -> Unit
@@ -36,7 +43,7 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
             onClick={TerminalImeController.toggle()}) {
             Text(if(TerminalImeController.activeState.value) "IME入力を終了 · Ctrl+Space" else "IME入力 · Ctrl+Space")
         }
-        if(NativeSessionHost.termuxHelp.value) Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        if(!linux && NativeSessionHost.termuxHelp.value) Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(onClick=allowTermux) {Text("Termux連携を許可")}
             Button(onClick=openTermux) {Text("Termuxを開く")}
         }
@@ -50,7 +57,8 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
             Text(device.summary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
             Text(device.networkSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall,maxLines=2,
                 overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-            Text("接続先: このQuestのTermux · ${NativeSessionHost.connectionSummary.value}",color=Color.White,style=MaterialTheme.typography.bodySmall,maxLines=2)
+            Text("接続先: ${NativeSessionHost.connectionTarget.value} · ${NativeSessionHost.connectionSummary.value}",color=Color.White,style=MaterialTheme.typography.bodySmall,maxLines=2)
+            if(linux) Text("固定GTKデモ · 切断・lease失効で未保存の作業も終了します",color=Color(0xFFFFD59E),style=MaterialTheme.typography.bodySmall)
         }
         if(NativeSessionHost.launcherExpanded.value) LauncherSettings(Modifier.weight(1f))
         else Button(onClick={details=!details}) {Text(if(details) "設定と詳細を閉じる" else "設定と詳細")}
@@ -62,11 +70,11 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
             Text(device.thermalSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
             Text(device.dataFilesystemSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
             Text(device.networkSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
-            Text("接続先: このQuestのTermux · ${NativeSessionHost.connectionSummary.value}",color=Color.White,style=MaterialTheme.typography.bodySmall)
+            Text("接続先: ${NativeSessionHost.connectionTarget.value} · ${NativeSessionHost.connectionSummary.value}",color=Color.White,style=MaterialTheme.typography.bodySmall)
             Text("Runtime: ${NativeSessionHost.summary.value}",color=Color.White)
             Text(NativeSessionHost.credentialSummary.value,color=Color.White)
             ConnectionSettings()
-            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            if(!linux) Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 Button(onClick=allowTermux) {Text("Termux連携を許可")}
                 Button(onClick=openTermux) {Text("Termuxを開く")}
             }
