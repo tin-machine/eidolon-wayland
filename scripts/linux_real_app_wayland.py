@@ -303,7 +303,7 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id="org.xfce.
         recovery = inspect_api.guard_recovery_state(artifact / "profile")
         require(recovery.get("clear") is True, "APP_STATE_RECOVERY_REQUIRED")
         result["recovery_guard"] = {**recovery, "profile_lock_held": True}
-        server = run.spawn("waypipe_server", [*common, "--display", "wayland-r", "server", dbus_run,
+        server = run.spawn("waypipe_server", [*common, "--display", "wayland-r", "server", "--", dbus_run,
                            "--dbus-daemon=" + dbus_daemon, "--config-file=" + str(bus_config),
                            "--", mousepad, "--disable-server"], env)
         main = control.wait_main(expected_app_id)

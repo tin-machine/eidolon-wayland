@@ -227,6 +227,15 @@ class PackageInspectionTest(unittest.TestCase):
             with self.subTest(case=sha(bad)), self.assertRaisesRegex(M.InspectionError, "APP_SETTINGS_UNVERIFIED"):
                 M._check_schema(bad)
 
+    def test_schema_fixture_is_exact_immutable_upstream_git_blob(self):
+        # Independent upstream Git object ID, not derived from SOURCE_HASHES.
+        # Prevent an added trailing LF in both fixture and SHA256 pin from
+        # making synthetic tests pass while the real source checkout fails.
+        # https://github.com/xfce-mirror/mousepad/blob/65fbfe0459259f820fcc8b9c4dd454228304842a/mousepad/org.xfce.mousepad.gschema.xml
+        header = b"blob " + str(len(SCHEMA)).encode("ascii") + b"\0"
+        self.assertEqual(hashlib.sha1(header + SCHEMA, usedforsecurity=False).hexdigest(),
+                         "269f74813d1bb1529ecd323e7b608218e0c6422d")
+
     def test_wrong_compiled_schema_magic_fails_even_when_descriptor_hash_matches(self):
         dependency = next(item for item in self.fixture.descriptor["dependencies"] if item["role"] == "schema_compiled")
         self.fixture.path(M.COMPILED_SCHEMA_PATH).write_bytes(b"not-a-compiled-schema")
