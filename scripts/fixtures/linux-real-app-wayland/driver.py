@@ -14,6 +14,12 @@ import time
 from typing import Any, Callable
 
 MAX_REPLY = 128 * 1024
+PHASES = frozenset({"startup", "initial_main", "main_ready", "open_dialog", "open_file",
+                    "edit_file", "save_file", "save_as_dialog", "save_as_file",
+                    "file_oracle_complete", "normal_close", "waypipe_cleanup", "compositor_shutdown"})
+OPERATIONS = frozenset({"snapshot", "focus", "key", "click", "close", "shutdown"})
+NATIVE_ERRORS = frozenset({"STALE", "NOT_READY", "INPUT_NOT_FOCUSED", "INPUT_NOT_MAPPED",
+                          "INPUT_SOURCE", "CLIENTS_REMAIN"})
 PENDING_CHECKS = (
     "independent_existing_mousepad_instance",
     "normal_close_restart",
@@ -84,6 +90,48 @@ def transient_to(window: str, main: str, windows: list[dict[str, Any]]) -> bool:
     return window != main
 
 
+def diagnostic_metadata(control: Any) -> dict[str, Any]:
+    """Bounded fixed metadata only; never copy arbitrary snapshot properties."""
+    def identifier(value: Any) -> str | None:
+        return value if _window_id(value) else None
+    def count(value: Any) -> int | None:
+        return value if type(value) is int and 0 <= value <= 18446744073709551615 else None
+    phase, operation = getattr(control, "phase", None), getattr(control, "last_operation", None)
+    result = {"phase": phase if isinstance(phase, str) and phase in PHASES else "unknown",
+              "operation": operation if isinstance(operation, str) and operation in OPERATIONS else None,
+              "native_error": None, "windows": [], "window_count": None, "windows_truncated": False}
+    error = getattr(control, "last_error", None)
+    if error is not None:
+        result["native_error"] = error if isinstance(error, str) and error in NATIVE_ERRORS else "REJECTED"
+    snapshot = getattr(control, "last_snapshot", None)
+    if not isinstance(snapshot, dict):
+        return result
+    windows = snapshot.get("windows")
+    if isinstance(windows, list) and len(windows) <= 32:
+        result["window_count"] = len(windows)
+        result["windows_truncated"] = len(windows) > 8
+        for window in windows[:8]:
+            if not isinstance(window, dict):
+                continue
+            app_id = window.get("app_id")
+            safe_id = (app_id is None or isinstance(app_id, str) and len(app_id) <= 128
+                       and app_id.isascii() and all(c.isalnum() or c in "._-" for c in app_id))
+            life = window.get("life")
+            result["windows"].append({
+                "window": identifier(window.get("window")), "parent": identifier(window.get("parent")),
+                "app_id": app_id if safe_id else None,
+                "app_id_valid": safe_id and window.get("app_id_valid") is True,
+                "life": life if life in ("Created", "AwaitingInitialCommit", "Configured", "Mapped", "Unmapped", "Destroyed") else None,
+                "frame": identifier(window.get("frame")), "layers": count(window.get("layers")),
+            })
+    input_state = snapshot.get("input")
+    if isinstance(input_state, dict):
+        result["input"] = {"focus_window": identifier(input_state.get("focus_window")),
+                           "focus_token": identifier(input_state.get("focus_token")),
+                           "pressed": count(input_state.get("pressed")), "delivered": count(input_state.get("delivered"))}
+    return result
+
+
 class Control:
     def __init__(self, process: Any, timeout: float = 4.0, pump: Callable[[], None] | None = None):
         if process.stdin is None or process.stdout is None or not 0 < timeout <= 10:
@@ -96,6 +144,9 @@ class Control:
         self.main: str | None = None
         self.expected_app_id: str | None = None
         self.last_snapshot: dict[str, Any] | None = None
+        self.phase = "startup"
+        self.last_operation: str | None = None
+        self.last_error: str | None = None
         os.set_blocking(process.stdin.fileno(), False)
         os.set_blocking(process.stdout.fileno(), False)
         ready = self._read(time.monotonic() + timeout)
@@ -137,6 +188,8 @@ class Control:
             self.buffer.extend(chunk)
 
     def request(self, operation: str, **fields: Any) -> dict[str, Any]:
+        self.last_operation = operation if operation in OPERATIONS else None
+        self.last_error = None
         self.next_id += 1
         if self.next_id > 4294967295:
             raise ProbeError("CONTROL_SEQUENCE")
@@ -163,14 +216,16 @@ class Control:
         reply = self._read(deadline)
         if type(reply.get("id")) is not int or reply["id"] != self.next_id:
             raise ProbeError("CONTROL_REPLY_SEQUENCE")
-        if reply.get("ok") is not True:
-            # The native error is deliberately not propagated as arbitrary text.
-            raise ProbeError("CONTROL_OPERATION_FAILED")
         snapshot = reply.get("snapshot")
         if not isinstance(snapshot, dict):
             raise ProbeError("CONTROL_SNAPSHOT")
         mapped(snapshot)
         self.last_snapshot = snapshot
+        if reply.get("ok") is not True:
+            # Preserve only known fixed codes; never propagate arbitrary text.
+            error = reply.get("error")
+            self.last_error = error if isinstance(error, str) and error in NATIVE_ERRORS else "REJECTED"
+            raise ProbeError("CONTROL_OPERATION_FAILED")
         return snapshot
 
     def snapshot(self) -> dict[str, Any]:
@@ -217,6 +272,7 @@ class Control:
     def wait_main(self, expected_app_id: str, timeout: float = 20.0) -> str:
         if self.main is not None:
             raise ProbeError("MAIN_ALREADY_LATCHED")
+        self.phase = "initial_main"
         def initial(snapshot: dict[str, Any]) -> str | None:
             windows = mapped(snapshot)
             if not windows:
@@ -235,6 +291,7 @@ class Control:
         self.expected_app_id = expected_app_id
         self.focus(self.main)
         self.settle()
+        self.phase = "main_ready"
         return self.main
 
     def assert_topology(self, snapshot: dict[str, Any]) -> None:
@@ -353,9 +410,11 @@ def exercise_open_edit_save(control: Control, input_path: Path, output_path: Pat
     control.assert_topology(before)
     delivered = before["input"]["delivered"]
     previous = {w["window"] for w in mapped(before)}
+    control.phase = "open_dialog"
     control.focus(main)
     chord(control, main, CTRL, 24)  # Ctrl+O
     dialog = control.wait_dialog(previous)
+    control.phase = "open_file"
     control.focus(dialog)
     chord(control, dialog, CTRL, 38)  # chooser Location, Ctrl+L
     control.settle()
@@ -363,16 +422,20 @@ def exercise_open_edit_save(control: Control, input_path: Path, output_path: Pat
     type_ascii(control, dialog, str(input_path))
     chord(control, dialog, ENTER)
     control.wait_closed(dialog)
+    control.phase = "edit_file"
     control.focus(main)
     control.settle()
     chord(control, main, CTRL, END)
     type_ascii(control, main, appended)
+    control.phase = "save_file"
     chord(control, main, CTRL, 31)  # Ctrl+S
     expected = initial + appended.encode("ascii")
     wait_file_bytes(input_path, expected, pump=control.pump)
     previous = {w["window"] for w in mapped(control.snapshot())}
+    control.phase = "save_as_dialog"
     chord(control, main, CTRL, SHIFT, 31)  # Ctrl+Shift+S
     save_dialog = control.wait_dialog(previous)
+    control.phase = "save_as_file"
     control.focus(save_dialog)
     chord(control, save_dialog, CTRL, 38)
     control.settle()
@@ -385,6 +448,7 @@ def exercise_open_edit_save(control: Control, input_path: Path, output_path: Pat
     control.assert_topology(after)
     if after["input"]["delivered"] <= delivered or after["input"]["pressed"] != 0:
         raise ProbeError("INPUT_DELIVERY_OR_RELEASE")
+    control.phase = "file_oracle_complete"
     return {"schema": 1, "state": "partial", "scope": "waypipe-mousepad-seat-file-io",
             "checks": {"initial_single_main": True, "main_app_id": True,
                        "initial_shm_frame": True, "open_dialog_parent": True,

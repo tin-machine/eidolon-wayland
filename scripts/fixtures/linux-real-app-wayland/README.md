@@ -90,3 +90,11 @@ The resulting `wayland.json` contains `status` (`failed` or `incomplete` at this
 A successful implemented sequence has five true checks and four pending checks. Its status remains `incomplete`, with `feasibility_verified=false`. The driver's more detailed observations are nested under `evidence`; a successfully launched fresh instance alone does not prove behavior in the presence of an existing ordinary instance. Failure to build or run dependencies yields `failed`, with no passing skip. The A0 parent must require all nine booleans and a successful status before opening the next gate.
 
 Cleanup uses bounded TERM/KILL/reap attempts on the same live `ProcessOwner`, drains output pipes, closes pidfds, then removes only this run's temporary runtime directory. It makes one bounded retry if the first owner cleanup cannot be verified. If cleanup still cannot be verified, `CleanupPending` carries the live `run` and failed `receipt`; the caller must retain it and call `retry_cleanup` in the same process. It must not discard the owner or recover from stored numeric PIDs. Application stdout/stderr is bounded and drained without retaining its content.
+
+Failure diagnostics in the owner receipt use a fixed whitelist: driver phase,
+last operation, known native error codes, up to eight windows' IDs/parent IDs,
+bounded app_id/validity, lifecycle/frame/layer count, and native focus/key counts.
+Unknown properties and free-form strings are excluded. An `INITIAL_APP_ID`
+failure also records metadata after 250 ms of read-only dispatch to distinguish
+an initial metadata value from a later GTK update; this does not admit the
+window, send application input, or change that failed result.

@@ -42,6 +42,42 @@ def controller(*snapshots):
 
 
 class WindowEvidenceTests(unittest.TestCase):
+    def test_identity_failure_keeps_observed_id_without_admitting_window(self):
+        observed = snapshot(window(app_id="mousepad"))
+        value = controller(observed)
+        value.last_snapshot = observed
+        with self.assertRaisesRegex(driver.ProbeError, "INITIAL_APP_ID"):
+            value.wait_main(APP_ID)
+        self.assertIsNone(value.main)
+        metadata = driver.diagnostic_metadata(value)
+        self.assertEqual(metadata["phase"], "initial_main")
+        self.assertEqual(metadata["windows"][0]["app_id"], "mousepad")
+        self.assertEqual(metadata["windows"][0]["life"], "Mapped")
+
+    def test_diagnostics_are_bounded_and_exclude_payloads_and_unknown_fields(self):
+        value = controller(snapshot(window()))
+        value.phase, value.last_operation, value.last_error = {"secret": "text"}, "private/path", "private error"
+        windows = [dict(window(str(n)), title="private title", text="private payload", pixels=[1, 2, 3])
+                   for n in range(1, 17)]
+        windows[0]["app_id"] = "private /path"
+        value.last_snapshot = snapshot(*windows)
+        value.last_snapshot["input"].update(text="private text", pressed=True)
+        metadata = driver.diagnostic_metadata(value)
+        encoded = json.dumps(metadata)
+        self.assertNotIn("private", encoded)
+        self.assertNotIn("pixels", encoded)
+        self.assertNotIn("title", encoded)
+        self.assertEqual(metadata["phase"], "unknown")
+        self.assertIsNone(metadata["operation"])
+        self.assertEqual(metadata["native_error"], "REJECTED")
+        self.assertEqual(metadata["window_count"], 16)
+        self.assertEqual(len(metadata["windows"]), 8)
+        self.assertTrue(metadata["windows_truncated"])
+        self.assertIsNone(metadata["windows"][0]["app_id"])
+        self.assertFalse(metadata["windows"][0]["app_id_valid"])
+        self.assertIsNone(metadata["input"]["pressed"])
+        self.assertLess(len(encoded), 4096)
+
     def test_main_requires_owned_frame_and_latches_identity(self):
         value = controller(snapshot(window(frame=None)), snapshot(window()))
         self.assertEqual(value.wait_main(APP_ID), "1")

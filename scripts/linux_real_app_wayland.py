@@ -236,6 +236,7 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id="org.xfce.
               "payload_logged": False, "titles_logged": False, "pixels_logged": False,
               "production_ready": False}
     run = None
+    control = None
     try:
         require(sys.platform == "linux" and os.getuid() == os.geteuid() != 0,
                 "APP_WAYLAND_NONROOT_REQUIRED")
@@ -313,13 +314,16 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id="org.xfce.
             os.chmod(source, 0o600)
             stream.write(initial)
         evidence = driver.exercise_open_edit_save(control, source, destination, initial)
+        control.phase = "normal_close"
         control.close(main)
         control.wait(lambda snapshot: not driver.mapped(snapshot), 5, "APP_WAYLAND_MAIN_CLOSE")
+        control.phase = "waypipe_cleanup"
         require(run.wait_child(server, 5) == 0, "APP_WAYLAND_SERVER_EXIT")
         run.signal_root("waypipe_client")
         run.wait_child(client, 5)
         control.wait(lambda snapshot: all(v == 0 for v in snapshot["counts"].values()), 5,
                      "APP_WAYLAND_CLIENT_CLEANUP")
+        control.phase = "compositor_shutdown"
         control.shutdown()
         require(run.wait_child(compositor, 5) == 0, "APP_WAYLAND_COMPOSITOR_EXIT")
         receipt = _json(artifact / "compositor/result.json")
@@ -338,10 +342,22 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id="org.xfce.
     except (WaylandError, driver.ProbeError, owner_api.OwnershipError) as exc:
         result["error"] = str(exc) if re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", str(exc)) else "APP_WAYLAND_FAILED"
         result["state"] = "fail"
+        if control is not None and result["error"] == "INITIAL_APP_ID":
+            result["diagnostics"] = driver.diagnostic_metadata(control)
+            # Observe whether GTK changes metadata after the first mapped
+            # frame, without admitting it or sending any application input.
+            # The initial identity failure remains the result in either case.
+            try:
+                control.settle(.25)
+                result["identity_after_settle"] = driver.diagnostic_metadata(control)
+            except (WaylandError, driver.ProbeError, OSError, ValueError):
+                pass
     except (OSError, ValueError, KeyError, TypeError) as exc:
         result["error"] = "APP_WAYLAND_DEPENDENCY_OR_IO"
         result["state"] = "fail"
     finally:
+        if control is not None:
+            result.setdefault("diagnostics", driver.diagnostic_metadata(control))
         if run is not None:
             try:
                 try:
