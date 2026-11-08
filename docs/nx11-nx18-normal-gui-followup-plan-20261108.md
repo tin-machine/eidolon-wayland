@@ -203,7 +203,8 @@ L7bでは旧probeの90/120秒を十分超える継続稼働後の入力・Close�
 2026-11-09に[実装単位まで分解した詳細設計](linux-real-app-l7a-design-20261109.md)を追加した。
 第一候補はMousepadのGTK3版。専用bus、永続HOME/XDG、version付き固定catalog、
 nonce markerを持たない実用アプリ用のnative origin/admission、旧版Recoverの維持、host検査を定義する。
-同日の実装レビューを反映済みだが、対象packageの成立性を確かめるA0・実装・実機受入れは未実施である。
+同日の実装レビューを反映し、最初のPRで[A/A0検査基盤とsettings module](linux-real-app-a0-foundation-20261109.md)を追加する。
+対象packageのA0全項目、v3通常起動への組込み、実機受入れは未完了である。
 read-only事前検査Aの後、実Mousepadと試作settings moduleを合成profileで検査するA0を置き、
 対応版・窓の順序・設定policyを確定してからv3 bundle/transport/UIを実装する。
 

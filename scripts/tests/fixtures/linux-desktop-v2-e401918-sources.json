@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "source_revision": "e401918fa657fa91c2256353b7992c4376d47f43",
+  "source_sha256": {
+    "scripts/fixtures/gtk3-desktop-demo.c": "a43d2ec199755afa3e9c22fdb435f5a186615d1f3404eeb6ec8d7af8b09e9a41",
+    "scripts/linux/eidolon-linux-session.py": "519ce299c9f3e8738a842b007fb25c28e12d12f3fb5174328759bdb0df57cdfc",
+    "scripts/linux/eidolon_linux_desktop.py": "80614cad3f24d3f5a5394272366122b31047440b6a73b3b0b00f00494f35df10",
+    "scripts/linux/eidolon_linux_desktop_session.py": "fa8ded7aacf31dab08471dbe80dfd7f4c33486be43cd139ad75f6c545df14452",
+    "scripts/linux/eidolon_linux_process_owner.py": "df1b2d8e475a01b5c986fb7420746d5e7162f65c52bf78ce6f34c326435313ae"
+  }
+}

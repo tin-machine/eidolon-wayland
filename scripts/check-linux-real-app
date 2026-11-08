@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Run explicit synthetic A0 checks and preserve incomplete/failed outcomes."""
+from linux_real_app_check import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())

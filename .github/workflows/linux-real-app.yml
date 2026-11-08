@@ -1,0 +1,99 @@
+name: L7a foundation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eidolon-real-app-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  settings:
+    name: GIO policy and recovery guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: GIO development dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libglib2.0-dev
+      - name: Actual GIO module tests (missing dependencies fail)
+        env:
+          EIDOLON_REQUIRE_GIO_TESTS: '1'
+        run: python3 -m unittest discover -s scripts/tests -p 'test_linux_settings_backend.py' -v
+      - name: Read-only package and recovery-data tests
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_inspect.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_check.py' -v
+
+  mousepad:
+    name: Pinned Mousepad and real Waypipe foundation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-real-app-rust1.95.0-${{ hashFiles('Cargo.lock', 'scripts/fixtures/linux-real-app-wayland/Cargo.lock', 'rust-toolchain.toml') }}
+      - name: Explicit CI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool gettext xfce4-dev-tools \
+            libgtk-3-dev libgtksourceview-4-dev pkg-config dbus ninja-build bison perl patch cmake
+          rustup toolchain install 1.95.0 --profile minimal
+      - name: Build the unmodified pinned Mousepad test package
+        run: python3 scripts/ci/prepare-linux-real-app-fixture --stage build --work-directory "$RUNNER_TEMP/mousepad-a0"
+      - name: Install only on the ephemeral CI runner and record reviewed inputs
+        run: |
+          sudo dpkg --install "$RUNNER_TEMP/mousepad-a0/mousepad-a0.deb"
+          sudo ldconfig
+          sudo glib-compile-schemas --strict /usr/share/glib-2.0/schemas
+          python3 scripts/ci/prepare-linux-real-app-fixture --stage inventory --work-directory "$RUNNER_TEMP/mousepad-a0"
+          scripts/inspect-linux-real-app --reviewed-package "$RUNNER_TEMP/mousepad-a0/reviewed-package.json" \
+            --artifact-root "$RUNNER_TEMP/mousepad-inspection"
+      - name: Build the existing fixed Waypipe and production compositor dependencies
+        run: |
+          scripts/build-native-deps --target host
+          scripts/build-waypipe --target host
+          cargo test --locked --manifest-path scripts/fixtures/linux-real-app-wayland/Cargo.toml --target-dir target
+      - name: Observe the implemented A0 foundation (full A0 remains explicit)
+        run: |
+          python3 scripts/ci/check-linux-real-app-foundation \
+            --reviewed-package "$RUNNER_TEMP/mousepad-a0/reviewed-package.json" \
+            --artifact-root "$RUNNER_TEMP/real-app-foundation"
+      - name: Fixed-source compiler diagnostics on failure
+        if: ${{ failure() }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          base = pathlib.Path(os.environ['RUNNER_TEMP']) / 'real-app-foundation'
+          for relative in ('settings-bundle/build.log', 'compositor-build.log'):
+              path = base / relative
+              if path.is_file():
+                  text = path.read_bytes()[-16384:].decode('utf-8', errors='replace')
+                  print(relative)
+                  print(text.replace(str(base), '<artifact>').replace(os.environ['GITHUB_WORKSPACE'], '<source>'))
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ always() }}
+        with:
+          name: linux-real-app-foundation-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/mousepad-inspection/inspection.json
+            ${{ runner.temp }}/real-app-foundation/feasibility.json
+          if-no-files-found: warn
+          retention-days: 3

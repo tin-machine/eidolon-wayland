@@ -1,5 +1,14 @@
 # Third-party components
 
+## L7a host test fixture
+
+`scripts/tests/fixtures/mousepad-0.6.3.gschema.xml` は Mousepad 0.6.3 の
+[固定source](https://github.com/xfce-mirror/mousepad/blob/65fbfe0459259f820fcc8b9c4dd454228304842a/mousepad/org.xfce.mousepad.gschema.xml)
+を変更せずに検査用として保存する。Mousepad は GPL-2.0-or-later で配布され、
+[COPYING](scripts/tests/fixtures/licenses/mousepad-0.6.3-COPYING) を併記する。
+専用CIでは同じcommitから未改変Mousepadを一時的な検査packageとしてbuildする。
+Mousepad本体やこのschemaをAndroid APKへ同梱する変更ではない。
+
 ## 固定native依存
 
 版・公式archive SHA256・build条件は[`native/deps.lock.json`](native/deps.lock.json)に記録する。

@@ -1,14 +1,16 @@
 # L7a: 別Linuxの実用アプリ一種の詳細設計
 
-状態: **詳細設計レビュー反映済み・A0成立性検査待ち・実装未着手・対象Linux/Questでの実用アプリ受入れ前**。2026-11-09作成・改訂。
+状態: **詳細設計レビュー反映済み・A/A0検査基盤を実装中・A0全体は未完了・対象Linux/Questでの実用アプリ受入れ前**。2026-11-09作成・改訂。
 基準revisionはPR #2/#3マージ後の `3bcd6cfb44dd21e8c9979a106f93434b52fa396c`。
 改訂ではmain `1a92b5c6864f38f7901419d1d93de3d004c9051d` の実装とMousepad 0.6.3の上流sourceを照合した。
 本文の実装根拠はこのrevision/tagへ固定する。新しい対策の動作確認済みという意味ではない。
-本書の新設API、schema、コマンドは実装契約案であり、現在利用可能という意味ではない。
+本書のv3 API/schemaは実装契約案である。追加した検査CLIとsettings moduleの範囲は
+[A/A0実装記録](linux-real-app-a0-foundation-20261109.md)を参照し、通常GUIへの組込み済みと解釈しない。
 
 [L7aの要求](nx11-nx18-normal-gui-followup-plan-20261108.md#linux-real-app)を、
 [通常GTKデモのL5/L6](normal-linux-gui-l5-l6-20261108.md)から実装できる単位へ分解する。
-今回は設計とpushまでを行い、実用アプリの実装・対象hostへのpackage導入・配備は次の作業に残す。
+最初の実装PRでread-only事前検査、settings module/probe、復元データguard、実Waylandの検査基盤を追加する。
+対象hostへのpackage導入・配備とB〜Fは、A0全項目の成立後に進める。
 
 ## 採用案と成立条件
 
@@ -486,7 +488,8 @@ fixture起動timeoutはstderr長・process状態・probe段階を本文なしで
 
 ### 再現手順とQuestの最終確認
 
-以下は**実装後の順番**。現時点では `inspect-linux-real-app` / `check-linux-real-app` は存在しない。
+以下は**v3実装後の順番**。`inspect-linux-real-app` / `check-linux-real-app` は最初のPRで追加するが、
+feasibilityの未確認項目と未実装acceptanceを成功にはしない。
 
 1. 対象Linuxをread-only事前検査し、OS/arch/package版/hash・GTK/backend・schema・dbus toolのreceiptを保存する。
 2. A0の実package/settings module検査後、v3実装のhost acceptanceを成功させ、そのreceiptに対応するmanifest/pinsをbuilderから出力する。
@@ -512,7 +515,7 @@ HMD/物理入力/remote IME/長時間/L7bの未実施をhost成功で埋めな�
 ## 設計時点の未確定事項
 
 - 対象LinuxとMousepad/GLib package版は未固定。参照0.6.3/2.80.5との差、既定backend利用、main app_id、追加dialogのparentをA/A0で確定する。
-- 専用GIO settings module・固定probeは未実装。公開APIの委譲/通知、実GUIの設定変更不可、復元データ保護がA0で成立するまで対応済みにしない。
+- 専用GIO settings module・固定probeはA0検査基盤として追加する。公開APIの委譲/通知、実GUIの設定変更不可、復元データ保護がA0全体で成立するまで対応済みにしない。
 - Mousepad独自keyfile backendを使うbuildはL7aでは未対応。別経路への対応は別設計とし、未知pathをmanifestから許可しない。
 - 専用busの最小configとWaypipeの終了連鎖は実host試験で確定する。想定外serviceが必要ならcatalogを有効化せず設計を見直す。
 - native origin・固定main役割・SDK表示watchdogは未実装。20秒/10秒は初期設計値で、対象Questで検証する。
