@@ -179,6 +179,7 @@ def inspect(apk):
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ImeTerminalCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ViewerPoseCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/WindowRecenterCase;")
+        debug_classes.append(b"Lio/github/tinmachine/eidolon/WindowGroupsCase;")
         debug_classes.append(b"Lio/github/tinmachine/eidolon/ImeProductCommandReceiver;")
         debug_classes.extend([b"Lio/github/tinmachine/eidolon/FreedoomGuiCase;",
                               b"Lio/github/tinmachine/eidolon/FreedoomGuiCommandReceiver;"])
