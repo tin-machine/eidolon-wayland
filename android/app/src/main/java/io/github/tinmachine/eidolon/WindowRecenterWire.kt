@@ -3,7 +3,7 @@ package io.github.tinmachine.eidolon
 import org.json.JSONObject
 
 /** Activation follows the Quest viewer sampling gate; preparation alone does not expose a new action. */
-object WindowRecenterPolicy { const val ENABLED=false }
+object WindowRecenterPolicy { const val ENABLED=true }
 
 object WindowRecenterWire {
     fun sameTarget(a:JSONObject,b:JSONObject)=listOf("session","window","scene","generation").all {key ->

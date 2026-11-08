@@ -42,8 +42,8 @@ class WindowRecenterWireTest {
         s.getJSONArray("panels").getJSONObject(0).getJSONObject("decoration").getJSONObject("canvas").put("width",1300)
         val after=checkNotNull(WindowRecenterWire.read(s,target()));assertFalse(before.sameDimensions(after))
     }
-    @Test fun preparationDoesNotExposeProductActionAndModeDescribesOperation() {
-        assertFalse(WindowRecenterPolicy.ENABLED)
+    @Test fun enabledAfterViewerProbeAndModeDescribesOperation() {
+        assertTrue(WindowRecenterPolicy.ENABLED)
         assertEquals(WindowMode.RECENTERING,WindowMode.from(false,true,false,null,"READY",false,WindowSizeCapture.Phase.GEOMETRY,true))
         assertEquals(WindowMode.RETURNING,WindowMode.from(false,true,false,null,"READY",false,WindowSizeCapture.Phase.RETURNING,true))
         assertEquals(WindowMode.CLEANUP,WindowMode.from(false,true,false,null,"READY",false,WindowSizeCapture.Phase.CANCELLED,true))

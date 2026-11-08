@@ -45,7 +45,7 @@ object WindowControlsCase {
         val requests=ConcurrentHashMap<String,String>()
         val completions=ConcurrentHashMap<String,String>()
         val rows=JSONArray()
-        val result=JSONObject().put("case",name).put("fixture_revision",when(name) {"window-size"->"window-size-v1";"window-move"->"window-move-v2-four-controls";else->"window-controls-v3-four-controls"}).put("nonce",nonce).put("result","running")
+        val result=JSONObject().put("case",name).put("fixture_revision",when(name) {"window-size"->"window-size-v2-four-menu-items";"window-move"->"window-move-v2-four-controls";else->"window-controls-v3-four-controls"}).put("nonce",nonce).put("result","running")
             .put("consumer","SDK").put("synthetic_input",true).put("synthetic_visibility",false)
             .put("physical_input_verified",false).put("hmd_verified",false).put("text_verified",false)
             .put("dispatch","Scene.onInput").put("raycast","Scene.lineSegmentIntersect")
@@ -186,7 +186,7 @@ object WindowControlsCase {
         }
         fun menu(window:String)=row(window).getJSONObject("menu")
         fun menuReady(window:String)=menu(window).let {it.optString("phase")=="MENU" && it.optJSONObject("view")?.let {v ->
-            v.optInt("listeners_ready")==3 && v.optBoolean("label_ready") && v.optLong("failures")==0L && v.getJSONArray("button_targets").length()==3
+            v.optInt("listeners_ready")==4 && v.optBoolean("label_ready") && v.optLong("failures")==0L && v.getJSONArray("button_targets").length()==4
         }==true}
         fun menuHit(window:String,action:String):HitInfo {
             val button=items(menu(window).getJSONObject("view").getJSONArray("button_targets")).single {it.getString("action")==action}

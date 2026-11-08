@@ -1,6 +1,6 @@
-# NX12: 窓を正面へ戻す操作の接続準備
+# NX12: 窓を正面へ戻す操作
 
-既存の窓メニューに「正面へ」を追加するコードを用意する。viewer pose の実機読み取りと通常操作の受入れを分けるため、この checkpoint の `WindowRecenterPolicy.ENABLED` は **false** である。メニューと Host の両方で入口を拒否し、既存の「大きく・小さく・戻る」を維持する。
+既存の窓メニューに「正面へ」を追加する。準備 checkpoint `e557861` では `WindowRecenterPolicy.ENABLED=false` とし、Build 175 の読み取り専用 viewer probe が実機で成立した後の変更で **true** にした。読み取り成功と正面配置の完了は別条件であり、固定 SDK case と重なった窓の検証結果は [専用記録](nx12-recenter-sdk-case-20261108.md) へ分ける。
 
 ## 一回の操作
 
@@ -23,7 +23,7 @@ SDK menu の回収に失敗した場合は、view と操作 owner を保持し�
 
 ## 表示と資源
 
-有効化後は既存テーマの anchor/offset/diameter/gap に従うメニューに一項目を追加し、MODE は「正面配置を確認中」「入力復帰待ち」を分ける。独立の Surface/Android Display は作らない。メニュー label の固定 512×256 texture/bitmap/direct-buffer slot を再用し、四項目の場合だけ物理高を広げる。増分は一つのボタンの 3 entity/1 listener で、常時 controls の四ボタン数は変わらない。
+既存テーマの anchor/offset/diameter/gap に従うメニューに一項目を追加し、MODE は「正面配置を確認中」「入力復帰待ち」を分ける。独立の Surface/Android Display は作らない。メニュー label の固定 512×256 texture/bitmap/direct-buffer slot を再用し、四項目の場合だけ物理高を広げる。増分は一つのボタンの 3 entity/1 listener で、常時 controls の四ボタン数は変わらない。
 
 位置更新は既存 one-shot pose 適用であり、新しい移動アニメーションを追加しない。reduced motion でも追加の補間はない。500ms の group collapse/expand とは別の機能である。
 
@@ -31,4 +31,4 @@ SDK menu の回収に失敗した場合は、view と操作 owner を保持し�
 
 純粋な配置候補・操作状態・native JSON・既存サイズ capture の検査 27 件と、実 SDK を参照する Kotlin 11 source の型検査が成功した。誤った owner/target、旧 ACK、寸法変更、余計な epoch、時刻逆行、期限境界、epoch overflow、古い viewer sample、取消後の再実行を拒否する。
 
-このコードの型検査と pure test は、Quest の viewer sampling、メニューへの実 SDK hit、正面配置・他窓不変・raw 入力復帰・全 owner 回収の実機成功を意味しない。viewer probe の実測を確認した後で有効化と固定 SDK case を別に進める。HMD の見やすさと物理操作は最終段階に残す。
+このコードの型検査と pure test は、Quest の viewer sampling、メニューへの実 SDK hit、正面配置・他窓不変・raw 入力復帰・全 owner 回収の実機成功を意味しない。Build 175 の viewer probe は成立した。固定 SDK case と複数窓の重なり時の受入れは別に進める。HMD の見やすさと物理操作は最終段階に残す。
