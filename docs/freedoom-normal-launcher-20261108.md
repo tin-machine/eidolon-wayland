@@ -29,6 +29,13 @@ exclusive linkで採用する。検査後に別fileが作られた場合も上�
 設定先はTermuxの検証済みHOME配下 `.config/eidolon/launcher.toml`だけであり、
 親symlink・他UID・group/world writeを拒否する。
 
+Termux Python3.14.8では`os.link`が公開されていないことをBuild175の初回登録で確認した。
+この失敗ではcatalogも同run stagingも残らず、親directoryだけが作られた。失敗記録は保持する。
+Android/aarch64/LP64に限定し、固定2basenameと同じ検査済み親dirfdだけをBionic公開
+[`linkat(2)`](https://android.googlesource.com/platform/bionic/+/refs/heads/main/libc/include/unistd.h)へ渡す。
+EEXISTは従来どおり競合拒否し、`replace`への代用はしない。他platform/ABI/未提供symbolはunsupportedで止める。
+これはkernel hardlinkとPython wrapperの違いの補完であり、既存設定の上書き許可を広げない。
+
 結果はprivate artifactの`result.json`へ残る。`registered`も`execution=not_run`である。
 登録後の通常GUI検証ではproduction `launchRegistered`と現行lease/launch receipt/cookieを対応させ、
 SHM/SDK初frame、元foot継続、GUI子の自然exitとTERM/KILL、全full-target/Board/controls/MODE回収を分けて確認する。

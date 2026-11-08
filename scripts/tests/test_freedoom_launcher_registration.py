@@ -61,7 +61,9 @@ class RegistrationTests(unittest.TestCase):
     def test_first_creation_race_preserves_foreign_file_and_cleans_only_own_staging(self):
         real_link=os.link
         def raced(source,target,**kwargs):
-            Path(target).write_bytes(b'concurrent editor data');return real_link(source,target,**kwargs)
+            fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600,dir_fd=kwargs['dst_dir_fd'])
+            with os.fdopen(fd,'wb') as out:out.write(b'concurrent editor data')
+            return real_link(source,target,**kwargs)
         with patch.object(registration.os,'link',side_effect=raced),self.assertRaisesRegex(InstallError,'CATALOG_CHANGED'):
             self.invoke(action='register')
         self.assertEqual((self.home/registration.CATALOG).read_bytes(),b'concurrent editor data')
@@ -98,6 +100,27 @@ class RegistrationTests(unittest.TestCase):
         process=subprocess.run([sys.executable,'-I','-S','-B','-c',cli.remote_source()],input=b'{}',capture_output=True,timeout=5)
         self.assertEqual(process.returncode,2);self.assertEqual(process.stderr,b'')
         self.assertIn(b'REQUEST_INVALID',process.stdout)
+    def test_android_no_python_link_uses_owned_dirfd_libc_linkat_without_overwrite(self):
+        parent=registration.config_parent(self.home);stage=parent/('.freedoom-'+self.request['run_id']+'.toml');stage.write_bytes(b'own fixed stage')
+        fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW);self.addCleanup(os.close,fd)
+        # 同じ公開libc ABIをlocalhost owned directoryだけで実callする。既存fileへreplaceしない。
+        real_hasattr=hasattr
+        def without_link(obj,name):return False if obj is os and name=='link' else real_hasattr(obj,name)
+        with patch('builtins.hasattr',side_effect=without_link),patch.object(registration.sys,'platform','android'),patch.object(registration.platform,'machine',return_value='aarch64'):
+            self.assertEqual(registration.exclusive_link(fd,stage.name,'launcher.toml'),'android_bionic_linkat')
+            self.assertEqual((parent/'launcher.toml').read_bytes(),b'own fixed stage')
+            with self.assertRaises(FileExistsError):registration.exclusive_link(fd,stage.name,'launcher.toml')
+            self.assertEqual((parent/'launcher.toml').read_bytes(),b'own fixed stage')
+            with self.assertRaisesRegex(InstallError,'STAGING_UNSAFE'):registration.exclusive_link(fd,'../outside','launcher.toml')
+            with patch.object(registration.platform,'machine',return_value='x86_64'),self.assertRaisesRegex(InstallError,'PLATFORM_UNSUPPORTED'):
+                registration.exclusive_link(fd,stage.name,'launcher.toml')
+    def test_android_linkat_failure_preserves_errno_and_first_creation_staging_is_removed(self):
+        real_hasattr=hasattr
+        def without_link(obj,name):return False if obj is os and name=='link' else real_hasattr(obj,name)
+        with patch('builtins.hasattr',side_effect=without_link),patch.object(registration.sys,'platform','android'),patch.object(registration.platform,'machine',return_value='aarch64'):
+            result=self.invoke(action='register');self.assertEqual(result['status'],'registered')
+            self.assertFalse(list((self.home/'.config/eidolon').glob('.freedoom-*')))
+            self.assertEqual((self.home/registration.CATALOG).stat().st_nlink,1)
 
 
 if __name__=='__main__':unittest.main()

@@ -1,8 +1,11 @@
 """固定Freedoom一項目だけのcatalog CAS登録。exec/任意path/envを受け取らない。"""
 import hashlib
+import ctypes
+import errno
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import stat
 import sys
@@ -15,12 +18,27 @@ APP_ID='freedoom'
 CATALOG='.config/eidolon/launcher.toml'
 REASONS={'REQUEST_INVALID','UID_MISMATCH','HELPER_SOURCE_CHANGED','HELPER_SOURCE_UNSAFE','SOURCE_NAMES_INVALID','GUI_NOT_VERIFIED','CATALOG_CHANGED',
     'CATALOG_INVALID','CATALOG_SCHEMA','CATALOG_LIMIT','CATALOG_DUPLICATE_ID','CATALOG_FILE_UNSAFE','CATALOG_UNAVAILABLE','PATH_MISSING','PATH_UNAVAILABLE',
-    'LAUNCHER_ID_CONFLICT','REGISTRATION_UNAVAILABLE','STAGING_UNSAFE','CATALOG_PRESERVATION_FAILED'}
+    'LAUNCHER_ID_CONFLICT','REGISTRATION_UNAVAILABLE','STAGING_UNSAFE','CATALOG_PRESERVATION_FAILED','PLATFORM_UNSUPPORTED'}
 
 
 def hexstr(value,size):return type(value) is str and re.fullmatch('[0-9a-f]{'+str(size)+'}',value) is not None
 def sha(data):return hashlib.sha256(data).hexdigest()
 def identity(row):return row.st_dev,row.st_ino,row.st_size,row.st_mtime_ns,row.st_ctime_ns
+
+
+def exclusive_link(parent,source,target):
+    """固定basenameを同じowned dirfdでlink。Android Pythonのos.link欠落だけを公開libc ABIで補う。"""
+    require(re.fullmatch(r'\.freedoom-[0-9a-f]{32}\.toml',source) is not None and target=='launcher.toml','STAGING_UNSAFE')
+    row=os.fstat(parent);require(stat.S_ISDIR(row.st_mode) and row.st_uid==os.getuid() and not row.st_mode&0o022,'STAGING_UNSAFE')
+    if hasattr(os,'link'):
+        os.link(source,target,src_dir_fd=parent,dst_dir_fd=parent,follow_symlinks=False);return 'python_os_link'
+    require(sys.platform=='android' and platform.machine()=='aarch64' and ctypes.sizeof(ctypes.c_void_p)==8 and ctypes.sizeof(ctypes.c_int)==4,'PLATFORM_UNSUPPORTED')
+    library=ctypes.CDLL(None,use_errno=True);function=getattr(library,'linkat',None);require(function is not None,'PLATFORM_UNSUPPORTED')
+    function.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_int];function.restype=ctypes.c_int
+    ctypes.set_errno(0)
+    if function(parent,source.encode('ascii'),parent,target.encode('ascii'),0)!=0:
+        code=ctypes.get_errno();raise OSError(code,errno.errorcode.get(code,'LINKAT_FAILED'))
+    return 'android_bionic_linkat'
 
 
 def directories(home,parts,*,missing=False):
@@ -81,10 +99,11 @@ def create_with_builtins(home,helper,app,run_id):
         created=os.fstat(fd)
         with os.fdopen(fd,'wb') as stream:stream.write(data);stream.flush();os.fsync(stream.fileno())
         require(sha(helper.catalog_read(stage))==sha(data),'CATALOG_CHANGED')
-        try:os.link(stage,parent/'launcher.toml',follow_symlinks=False)
-        except FileExistsError:raise InstallError('CATALOG_CHANGED') from None
         fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-        try:os.fsync(fd)
+        try:
+            try:exclusive_link(fd,stage.name,'launcher.toml')
+            except FileExistsError:raise InstallError('CATALOG_CHANGED') from None
+            os.fsync(fd)
         finally:os.close(fd)
     finally:
         if stage.exists() or stage.is_symlink():
@@ -124,6 +143,6 @@ def remote_main():
         require(type(request) is dict and type(request.get('sources')) is dict,'REQUEST_INVALID');require(os.getuid()==UID,'UID_MISMATCH')
         home=termux_home(sys.executable);helper=load_helper(home,request['sources'])
         result=register(request,home,helper);load_helper(home,request['sources']);print(json.dumps(result));return 0
-    except (OSError,ValueError,RuntimeError,KeyError,TypeError) as error:
+    except Exception as error:
         text=str(error);reason=text if text in REASONS else 'REGISTRATION_UNAVAILABLE'
         print(json.dumps(dict(schema=1,status='blocked',reason=reason,execution='not_run')));return 2
