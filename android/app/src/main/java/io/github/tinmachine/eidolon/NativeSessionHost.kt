@@ -80,6 +80,7 @@ object NativeSessionHost {
     private var imeAndroidReleased: (() -> Boolean)? = null // UI only; captures a WeakReference, never an Activity.
     data class InputTarget(val runtime: Long, val epoch: Long, val identity: String, val target: String)
     @Volatile private var inputTargets: Map<String, InputTarget> = emptyMap()
+    private val groupInputGate=AtomicReference(WindowGroupInputGate.unavailable())
     private fun targetIdentity(target: JSONObject): String = listOf("session","window","scene","generation").joinToString(":") { target.getString(it) }
     val keyboardSummary = mutableStateOf("操作パネルへ入力")
     val inputStatus = mutableStateOf(InputStatus("PREPARING","画面を準備中"))
@@ -516,9 +517,15 @@ object NativeSessionHost {
     }
     private fun enqueueInputReset(request: String): Int = NativeBridge.nativeCommand(handle,
         JSONObject().put("schema",1).put("request_id",request).put("type","reset_input").toString())
+    /** workerで捕捉した群metadataだけを見る。最終native gateはenqueue後にも照合する。 */
+    fun windowGroupInputAllowed(runtime:Long,target:JSONObject):Boolean = runCatching {
+        runtime==handle && groupInputGate.get().allows(WindowGroupWire.key(runtime,target))
+    }.getOrDefault(false)
     fun inputTarget(target: String): InputTarget? {
         if (debugSdkLease.blocksProduct() || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || movingTarget(target)) return null
-        return inputTargets[targetIdentity(JSONObject(target))]?.takeIf { it.runtime==handle }
+        val key=JSONObject(target)
+        if(!windowGroupInputAllowed(handle,key)) return null
+        return inputTargets[targetIdentity(key)]?.takeIf { it.runtime==handle }
     }
     private fun selectedTarget(runtime: JSONObject): JSONObject? {
         val plans=runtime.getJSONArray("panels")
@@ -981,7 +988,8 @@ object NativeSessionHost {
         val focus = keyboardFocus ?: return@serial null
         val target = strictImeSdkTarget(JSONObject(focus.target)) ?: return@serial null
         val fresh=runCatching {snapshot().getJSONObject("runtime")}.getOrNull() ?: return@serial null
-        if(fresh.optLong("input_resets",-1)!=focus.epoch || !ImeTerminalEligibility.allows(fresh,target)) return@serial null
+        if(fresh.optLong("input_resets",-1)!=focus.epoch || !ImeTerminalEligibility.allows(fresh,target) ||
+            !WindowGroupWire.decode(focus.runtime,fresh.optJSONObject("window_groups")).allows(WindowGroupWire.key(focus.runtime,imeSdkJson(target)))) return@serial null
         val actual=fresh.getJSONObject("app").getJSONObject("input")
         if(actual.optString("focus_window")!=target.window || actual.optString("focus_token")!=focus.token) return@serial null
         lateinit var owner:ImeEditorOwner
@@ -1058,7 +1066,7 @@ object NativeSessionHost {
     fun imeRawReturnStatus():ImeRawReturnMetadata?=imeRawReturn?.metadata()
     fun debugImeRawReturnStatus(): ImeRawReturnMetadata? = if (BuildConfig.DEBUG) imeRawReturn?.metadata() else null
     fun imeReady(): Boolean = !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && !BuildHooks.imeProbeActive() && keyboardFocus?.let {
-        it.runtime == handle && !movingTarget(it.target) && !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get() == "FOCUSED"
+        it.runtime == handle && !movingTarget(it.target) && windowGroupInputAllowed(it.runtime,JSONObject(it.target)) && !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get() == "FOCUSED"
     } == true
     fun debugImeReady():Boolean=BuildConfig.DEBUG && imeReady()
     fun debugImeCanRequestFocus(): Boolean = BuildConfig.DEBUG && !debugSdkLease.blocksProduct() && handle!=0L && !imeRawBlocked.get() &&
@@ -1072,7 +1080,7 @@ object NativeSessionHost {
     /** Only an already captured, still live terminal may own an internal window handoff. */
     fun imeCaptureCurrent(): Boolean {
         val connection = imeConnection ?: return false
-        return !debugSdkLease.blocksProduct() && !movingTarget(imeSdkJson(connection.target).toString()) &&
+        return !debugSdkLease.blocksProduct() && !movingTarget(imeSdkJson(connection.target).toString()) && windowGroupInputAllowed(connection.runtime,imeSdkJson(connection.target)) &&
             connection.runtime == handle && inputIntents.get() == imeCaptureTicket && activityVisible.get() &&
             xrState.get() == "FOCUSED" && !editing.get() && panelTextInputs.isEmpty() &&
             inputTargets.values.any { it.runtime == connection.runtime && strictImeSdkTarget(JSONObject(it.target)) == connection.target }
@@ -1168,7 +1176,7 @@ object NativeSessionHost {
         if (imeConnection !== connection || connection.runtime != handle || handle == 0L) return@serial ImeEnqueueResult.UNAVAILABLE
         if(command is ImeSessionCommand.Focus || command is ImeSessionCommand.Transaction || command is ImeSessionCommand.Backend && command.enabled) {
             val owner=imeOwner ?: return@serial ImeEnqueueResult.UNAVAILABLE
-            if(owner.connection!==connection || inputIntents.get()!=owner.ticket || debugSdkLease.blocksProduct() || movingTarget(imeSdkJson(connection.target).toString()) ||
+            if(owner.connection!==connection || inputIntents.get()!=owner.ticket || debugSdkLease.blocksProduct() || movingTarget(imeSdkJson(connection.target).toString()) || !windowGroupInputAllowed(connection.runtime,imeSdkJson(connection.target)) ||
                 editing.get() || panelTextInputs.isNotEmpty() || !activityVisible.get() || xrState.get()!="FOCUSED") return@serial ImeEnqueueResult.UNAVAILABLE
         }
         val envelope = JSONObject().put("schema", 1).put("request_id", request)
@@ -1190,7 +1198,7 @@ object NativeSessionHost {
     }
     private fun imeFocusCurrent(connection: ImeSessionConnection, focus: ImeSessionFocus) =
         imeConnection === connection && imeOwner?.let {it.connection===connection && it.ticket==inputIntents.get()}==true &&
-            !debugSdkLease.blocksProduct() && !movingTarget(imeSdkJson(connection.target).toString()) && connection.runtime == handle && focus.target == connection.target &&
+            !debugSdkLease.blocksProduct() && !movingTarget(imeSdkJson(connection.target).toString()) && windowGroupInputAllowed(connection.runtime,imeSdkJson(connection.target)) && connection.runtime == handle && focus.target == connection.target &&
             imeFocus(keyboardFocus) == focus && !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get() == "FOCUSED"
 
     private fun sendImeNonTextKey(connection: ImeSessionConnection, focus: ImeSessionFocus, event: KeyEvent): Boolean = inputIntents.serial {
@@ -1267,7 +1275,7 @@ object NativeSessionHost {
         if (imeRawBlocked.get()) return false // Android IME owns physical ingress until reset/disable ACKs.
         if(BuildHooks.imeProbeActive()) {BuildHooks.imeProbePhysicalKey();return false}
         val focus = keyboardFocus ?: return false
-        if (movingTarget(focus.target)) return false
+        if (movingTarget(focus.target) || !windowGroupInputAllowed(focus.runtime,JSONObject(focus.target))) return false
         if (editing.get() || panelTextInputs.isNotEmpty() || focus.runtime != handle || !activityVisible.get() || xrState.get() != "FOCUSED") return false
         val key = JSONObject().put("device", event.deviceId).put("scan_code", event.scanCode).put("key_code", event.keyCode)
             .put("action", if (event.action == KeyEvent.ACTION_DOWN) "pressed" else "released").put("repeat", event.repeatCount)
@@ -1479,6 +1487,7 @@ object NativeSessionHost {
         invalidateImeConnection()
         keyboardFocus = null
         inputTargets = emptyMap()
+        groupInputGate.set(WindowGroupInputGate.unavailable())
         windowOperation.set(null);windowOperationCompletions.clear()
         val old = handle
         themeImportToken = null; themeRequests.clear(); themeImportMessage = null
@@ -1624,6 +1633,7 @@ object NativeSessionHost {
         val runtime = snapshot.getJSONObject("runtime")
         pumpCatalog(runtime)
         inputIntents.serial {
+        groupInputGate.set(WindowGroupWire.decode(handle,runtime.optJSONObject("window_groups")))
         pendingInputFocus?.let { request ->
             val target=JSONObject(request.target)
             val plans=runtime.getJSONArray("panels")
@@ -1632,7 +1642,7 @@ object NativeSessionHost {
             }?.getJSONObject("target")
             if(SystemClock.elapsedRealtime()>request.deadline || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" ||
                 request.runtime!=handle || request.ticket!=inputIntents.get() ||
-                current==null || targetIdentity(current)!=targetIdentity(target) ||
+                current==null || targetIdentity(current)!=targetIdentity(target) || !windowGroupInputAllowed(request.runtime,target) ||
                 request.controlsRevision?.let {runtime.getJSONObject("render").optLong("theme_revision",0)!=it}==true) {
                 if (BuildConfig.DEBUG) Log.i(TAG,"focus_cancel expired=${SystemClock.elapsedRealtime()>request.deadline} editing=${editing.get()} visible=${activityVisible.get()} xr=${xrState.get()} runtime=${request.runtime==handle} ticket=${request.ticket==inputIntents.get()} target=${current!=null}")
                 pendingInputFocus=null
@@ -1677,7 +1687,7 @@ object NativeSessionHost {
         val renderTargets=runtime.getJSONObject("render").getJSONArray("targets")
         inputTargets=if (!debugSdkLease.blocksProduct() && !editing.get() && runtime.getString("state")=="Ready" && runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED")
             (0 until plans.length()).map { plans.getJSONObject(it) }.filter { plan ->
-                plan.optString("action")=="create" && plan.optBoolean("applied") && plan.isNull("error") && !movingTarget(plan.getJSONObject("target").toString()) &&
+                plan.optString("action")=="create" && plan.optBoolean("applied") && plan.isNull("error") && !movingTarget(plan.getJSONObject("target").toString()) && windowGroupInputAllowed(handle,plan.getJSONObject("target")) &&
                     (0 until renderTargets.length()).any { index ->
                         val rendered=renderTargets.getJSONObject(index)
                         targetIdentity(rendered.getJSONObject("key"))==targetIdentity(plan.getJSONObject("target")) && rendered.getLong("frames")>0
@@ -1692,7 +1702,7 @@ object NativeSessionHost {
                 it.getJSONObject("target").optString("session") == runtime.optJSONObject("app")?.optString("session")
         }
         keyboardFocus = if (!debugSdkLease.blocksProduct() && !editing.get() && runtime.getString("state") == "Ready" && runtime.getBoolean("activity_visible") &&
-            runtime.getString("xr_state") == "FOCUSED" && focused != null && !movingTarget(focused.getJSONObject("target").toString()))
+            runtime.getString("xr_state") == "FOCUSED" && focused != null && !movingTarget(focused.getJSONObject("target").toString()) && windowGroupInputAllowed(handle,focused.getJSONObject("target")))
             KeyboardFocus(handle, runtime.getLong("input_resets"), focused.getJSONObject("target").toString(), runtime.getJSONObject("app").getJSONObject("input").getString("focus_token")) else null
         val eligibleIme=keyboardFocus?.let {f->strictImeSdkTarget(JSONObject(f.target))?.let {ImeTerminalEligibility.allows(runtime,it)}}==true &&
             !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && !editing.get() && panelTextInputs.isEmpty() && !BuildHooks.imeProbeActive()
