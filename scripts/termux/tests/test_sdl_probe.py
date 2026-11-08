@@ -117,7 +117,10 @@ class SdlProbeTests(unittest.TestCase):
                     runner.kill()
                     runner.communicate(timeout=3)
                 if owned_group is not None and probe.group_live(owned_group):
-                    os.killpg(owned_group, signal.SIGKILL)
+                    try:
+                        os.killpg(owned_group, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass  # The owned group may exit between observation and signal.
                     deadline = time.monotonic() + 2
                     while probe.group_live(owned_group) and time.monotonic() < deadline: time.sleep(.01)
                 unrelated.terminate()
