@@ -25,7 +25,7 @@ ACK受付mapは最大9件。旧stamp、Pendingへの移行、binding廃棄、run
 collapsed memberは、anchor quaternionでlocal offsetを回転し、panel normal方向に25mmずつ離す。
 全memberのcollapsed回転はanchorと同じで、元の回転はexpand先として保持する。
 body用の短rayは各panel poseのlocal Z ±5mm、操作球用は各球のlocal normal近傍±4mmであり、world Z固定ではない。
-yaw90なら層間隔もrayもworld X方向へ回る。厚さ1mmのbody hitboxと別層を同じ長いsegmentで貫かない。
+yaw90なら層間隔もrayもworld X方向へ回る。実SDKのPose/Quaternion数学クラスを使ったyaw±90の層方向・短ray方向fixtureもPASSした（実sceneのhit測定とは別）。厚さ1mmのbody hitboxと別層を同じ長いsegmentで貫かない。
 
 完全に同じplaneに別の窓が重なる場合、公開のglobal rayだけでは対象を一意に測れない。
 その場合の不一致は成功扱いせず、recenter/手動配置の別gateとして残す。
@@ -33,7 +33,7 @@ scene準備中の非表示でも実Surface作成と最初のdrawが成立する�
 
 ## 検証と統合条件
 
-- 入力許可・実org.json wire・SDK表示capture選択の純粋fixture: 15件PASS。
+- 入力許可・実org.json wire・SDK表示capture選択の純粋fixture: 16件PASS。
 - 実Android/Meta SDKのclasspathと明示したNativeBridge sourceによる関連13 sourceの限定型検査: PASS。
 - owner/stamp/cleanup/表示所有の独立read-only reviewで追加の確定blockerなし。
 - Gradle/Questの実表示、500msの動き、reverse/close/new/reduced motion、hidden clock、frontだけの入力、全資源回収は未受入れ。

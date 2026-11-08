@@ -40,6 +40,18 @@ class WindowGroupPresentationTest {
         val report=report();report.getJSONArray("groups").getJSONObject(0).put("source_ready",false)
         assertFalse((WindowGroupPresentation.select(7,target(),report) as WindowGroupPresentation.Owned).settling)
     }
+    @Test fun sdkNormalRayRotatesWithYawInsteadOfStayingOnWorldZ() {
+        for(sign in listOf(-1.0,1.0)) {
+            val value=JSONObject().put("position_m",JSONArray(listOf(0.0,2.0,1.5)))
+                .put("rotation_xyzw",JSONArray(listOf(0.0,sign*kotlin.math.sin(Math.PI/4),0.0,kotlin.math.cos(Math.PI/4))))
+            val pose=PanelPoseCodec.toSdk(value)
+            val layer=pose*com.meta.spatial.core.Vector3(0f,0f,.025f)-pose.t
+            val before=pose*com.meta.spatial.core.Vector3(0f,0f,-.005f)-pose.t
+            val after=pose*com.meta.spatial.core.Vector3(0f,0f,.005f)-pose.t
+            assertEquals(sign*.025,layer.x.toDouble(),.00001);assertEquals(0.0,layer.z.toDouble(),.00001)
+            assertEquals(sign*.010,(after.x-before.x).toDouble(),.00001);assertEquals(0.0,(after.z-before.z).toDouble(),.00001)
+        }
+    }
     @Test fun malformedOrFailedGroupNeverFallsBackToBaseGrid() {
         for(change in listOf<(JSONObject)->Unit>(
             {it.put("error","GROUP_OBSERVATION_FAILED")},
