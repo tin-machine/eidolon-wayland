@@ -198,6 +198,11 @@ L7bでは旧probeの90/120秒を十分超える継続稼働後の入力・Close�
 <a id="linux-real-app"></a>
 ### 既存実用アプリ一種の受入れ（L7a）
 
+2026-11-09に[実装単位まで分解した詳細設計](linux-real-app-l7a-design-20261109.md)を追加した。
+第一候補はMousepadのGTK3版。専用bus、永続HOME/XDG、version付き固定catalog、
+nonce markerを持たない実用アプリ用のnative origin/admission、旧版Recoverの維持、host検査を定義する。
+設計完了であり、対象Linuxのpackage版確定・実装・実機受入れは未実施である。
+
 通常demoの次に、対象Ubuntu等にある軽量なエディタなどを一種選び、package/版、実行file、固定argv/cwd、
 Wayland backend/renderer、独立instance条件をversion付きcapabilityへ結び付ける。
 対象は事前確認で決め、未検証の具体的なアプリを対応済みと記載しない。自由shell/argv/任意catalogの解放はL8に残す。

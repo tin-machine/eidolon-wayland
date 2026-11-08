@@ -38,8 +38,8 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 | NX14 | CPU148、熱/容量152、PSS154、gateway164を製品UID・停止復帰確認 | HMD表示受入れ、追加値。全体CPU/GPUは取得経路ごとに判断 |
 | NX15 | [GTK input/dialog/resize](gtk-interaction-operator-20261108.md)の合成入力・SHM/SDK描画・全退役をBuild170で確認 | 通常GUIの製品起動・Stop、HMD/物理入力/IME |
 | NX16 | Build169と4ボタン版Build171で3→6→9枚・指定順/pose・10枚目Busy・hole再利用・全回収が成功。[独立9接続host検査](nx16-independent-clients-wire-20261108.md)も成功 | 共有foot clientのSDK検査と別々の9接続host検査。性能・HMDは別に確認 |
-| NX17 | 500msモデル・runtime/SDK固定caseに加え、[通常groupメニューを統合](window-group-recenter-integration-20261108.md)。捕捉済みgroup/revisionによるまとめる・展開・前面切替 | 最新版の通常メニュー、前面/取消/reduced motionの実SDK受入れ |
-| NX18 | 実APK SSH/固定SHMに続きBuild174のLinux GTK input/dialog・全回収成功。通常profile保存APIはmain、通常GTK helper/protocolは未統合branchへ保存 | SSH actor・lease/専用journal・native/Host・接続UI/launcherの通常経路接続、別実ホスト・物理/IME。[詳細L1〜L8](nx11-nx18-normal-gui-followup-plan-20261108.md#linux-normal) |
+| NX17 | [通常groupメニューを統合](window-group-recenter-integration-20261108.md)。修正版APKの固定native/SDK caseで二枚の集約・途中geometry・背面時計停止・前面切替・展開・全回収が成功 | 通常メニューのコントローラー操作、取消/reduced motion、HMD/物理の受入れ |
+| NX18 | Build174の固定GTKに続き、PR #2で通常GTK helper/actor・専用journal・native/Host・接続UI/launcherをmainへ統合。実用一種の[L7a詳細設計](linux-real-app-l7a-design-20261109.md)を追加 | 通常経路の実host/Quest受入れ、L7aの対応版固定・実装、L7b障害、物理/IME。[詳細L1〜L8](nx11-nx18-normal-gui-followup-plan-20261108.md#linux-normal) |
 
 ## NX09の開始調査（当時の保留までの履歴）
 
