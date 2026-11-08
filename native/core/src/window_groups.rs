@@ -88,7 +88,15 @@ pub fn inspect_foot(
         || forward.nonce != app.nonce
         || forward.error.is_some()
         || !forward.registered
-        || !forward.pending_cleanup.is_empty()
+        // The active lease itself remains in the durable journal while running.
+        // Only that exact live owner is admissible; older/unknown cleanup still blocks.
+        || forward.pending_cleanup.iter().any(|pending| {
+            pending.session != session || pending.nonce != app.nonce || pending.uid != tools.uid
+                || pending.child.as_ref().is_none_or(|owned| {
+                    owned.pid != child.pid || owned.group != child.group || owned.start != child.start
+                        || owned.state.len() != 1 || matches!(owned.state.as_str(), "Z" | "X" | "x")
+                })
+        })
         || remote.phase != "running"
         || remote.error.is_some()
         // cleanup_pendingはrunning中も回収責務を表す。終了通知/EOF/exitだけをlive喪失として扱う。
@@ -423,6 +431,12 @@ pub(crate) mod tests {
                 nonce: NONCE.into(),
                 uid: 10158,
                 registered: true,
+                pending_cleanup: vec![eidolon_transport::journal::Pending {
+                    nonce: NONCE.into(),
+                    session,
+                    uid: 10158,
+                    child: remote.child.clone(),
+                }],
                 remote: Some(remote),
                 ..Default::default()
             }),
@@ -668,6 +682,32 @@ pub(crate) mod tests {
         }
     }
     #[test]
+    fn durable_current_lease_is_not_an_unrelated_cleanup_owner() {
+        let (runtime, snapshot, transport, render) = fixture(2);
+        assert_eq!(
+            capture_foot(runtime, &snapshot, &transport, &render)
+                .unwrap()
+                .members
+                .len(),
+            2
+        );
+        for case in 0..8 {
+            let mut changed = transport.clone();
+            let pending = &mut changed.app_forward.as_mut().unwrap().pending_cleanup[0];
+            match case {
+                0 => pending.nonce = "ffffffffffffffff".into(),
+                1 => pending.session = SessionId::new(99).unwrap(),
+                2 => pending.uid += 1,
+                3 => pending.child = None,
+                4 => pending.child.as_mut().unwrap().pid += 1,
+                5 => pending.child.as_mut().unwrap().group += 1,
+                6 => pending.child.as_mut().unwrap().start = "999".into(),
+                _ => pending.child.as_mut().unwrap().state = "Z".into(),
+            }
+            assert!(capture_foot(runtime, &snapshot, &changed, &render).is_err());
+        }
+    }
+    #[test]
     fn nonce_uid_child_scope_and_forward_failures_are_not_a_fresh_capture() {
         let (runtime, snapshot, transport, render) = fixture(2);
         let original = capture_foot(runtime, &snapshot, &transport, &render).unwrap();
@@ -700,6 +740,12 @@ pub(crate) mod tests {
             .remote
             .as_mut()
             .unwrap()
+            .child
+            .as_mut()
+            .unwrap()
+            .start = "201".into();
+        // A fresh valid owner must agree with its durable record as well.
+        changed.app_forward.as_mut().unwrap().pending_cleanup[0]
             .child
             .as_mut()
             .unwrap()

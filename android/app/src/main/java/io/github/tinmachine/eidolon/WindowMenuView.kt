@@ -18,10 +18,12 @@ import org.json.JSONArray
 import java.nio.ByteBuffer
 import java.util.concurrent.CompletableFuture
 
+data class WindowMenuItem(val action:String,val label:String,val enabled:Boolean=true)
+
 /** A single owned menu: bounded small hit spheres and one non-hit, explicitly owned label quad. */
 class WindowMenuView(private val parent:Entity,private val layout:WindowControlLayout,private val width:Double,private val height:Double,
     private val sdk:Scene,private val objects:SceneObjectSystem,private val live:()->Boolean,private val ownsInput:()->Boolean,
-    private val larger:Boolean,private val smaller:Boolean,private val action:(String)->Unit):AutoCloseable {
+    private val larger:Boolean,private val smaller:Boolean,items:List<WindowMenuItem>?=null,private val action:(String)->Unit):AutoCloseable {
     private class Button(val name:String,val root:Entity,val face:Entity,val icon:Entity,val enabled:Boolean) {
         var obj:SceneObject?=null;var listener:Long?=null
         val press=WindowControlPress();val sources=linkedMapOf<Long,Pair<Entity,Int>>()
@@ -38,7 +40,18 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
     private var bitmap:Bitmap?=null;private var pixels:ByteBuffer?=null
     private var lastPose:Pose?=null
     private var failures=0L
-    init {check(Looper.myLooper()==Looper.getMainLooper());check(owners.isEmpty()) {"MENU_OWNER_LIMIT"};owners.add(this)}
+    private val rows=items?.toList() ?: buildList {
+        add(WindowMenuItem("larger","大きく",larger));add(WindowMenuItem("smaller","小さく",smaller))
+        if(WindowRecenterPolicy.ENABLED) add(WindowMenuItem("recenter","正面へ"))
+        add(WindowMenuItem("back","戻る"))
+    }
+    init {
+        check(Looper.myLooper()==Looper.getMainLooper())
+        require(rows.size in 1..5 && rows.map {it.action}.toSet().size==rows.size && rows.all {
+            it.action in setOf("larger","smaller","recenter","back","group","collapse","expand","next_front") && it.label.length in 1..16
+        })
+        check(owners.isEmpty()) {"MENU_OWNER_LIMIT"};owners.add(this)
+    }
     private var initialized=false
     /** Caller must retain this owner before the first native allocation. Failure is cleaned through that same reference. */
     fun initialize() {
@@ -48,31 +61,26 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
             val vertical=if(layout.anchor.startsWith("top")) 1 else -1
             val x=first.x-side*(layout.diameter/2+.025+.21);val y=first.y+vertical*.12
             val pose=getAbsoluteTransform(parent)
-            val rows=buildList {
-                add(Triple("larger","大きく",larger));add(Triple("smaller","小さく",smaller))
-                if(WindowRecenterPolicy.ENABLED) add(Triple("recenter","正面へ",true))
-                add(Triple("back","戻る",true))
-            }
             val menuHeight=.32*rows.size/3
             val image=pixelSlot.bitmap.also {bitmap=it}
             val canvas=Canvas(image);canvas.drawColor(Color.TRANSPARENT,android.graphics.PorterDuff.Mode.CLEAR);val paint=Paint(Paint.ANTI_ALIAS_FLAG)
             paint.color=0xf4fbe8f2.toInt();canvas.drawRoundRect(0f,0f,WIDTH.toFloat(),HEIGHT.toFloat(),30f,30f,paint)
             for((index,row) in rows.withIndex()) {
-                paint.color=if(row.third) 0xff27354b.toInt() else 0xff8b8790.toInt();paint.textSize=37f;paint.textAlign=Paint.Align.LEFT
+                paint.color=if(row.enabled) 0xff27354b.toInt() else 0xff8b8790.toInt();paint.textSize=37f;paint.textAlign=Paint.Align.LEFT
                 val baseline=(index+.5f)*HEIGHT/rows.size-(paint.fontMetrics.ascent+paint.fontMetrics.descent)/2f
-                canvas.drawText(row.second,155f,baseline,paint)
+                canvas.drawText(row.label,155f,baseline,paint)
                 val py=y+(.5-(index+.5)/rows.size)*menuHeight
                 fun entity(uri:String,collision:MeshCollision,scale:Vector3,z:Float=-.058f):Entity {
                     val e=Entity.create(listOf(Mesh(Uri.parse(uri),collision),TransformParent(parent),Transform(Pose()),Scale(Vector3(1f))));entityCreates++;unadopted.add(e)
                     setAbsoluteTransform(e,pose*Pose(Vector3((x-.15).toFloat(),py.toFloat(),z)));setAbsoluteScale(e,scale)
                     return e
                 }
-                val root=entity(WindowControlMeshes.OUTLINE,if(row.third) MeshCollision.LineTest else MeshCollision.NoCollision,Vector3(.08f,.08f,.02f))
+                val root=entity(WindowControlMeshes.OUTLINE,if(row.enabled) MeshCollision.LineTest else MeshCollision.NoCollision,Vector3(.08f,.08f,.02f))
                 var face:Entity?=null;var icon:Entity?=null
                 try {
-                    face=entity(when(row.first) {"larger"->WindowControlMeshes.FOCUS;"smaller"->WindowControlMeshes.CLOSE;else->WindowControlMeshes.MOVE},MeshCollision.NoCollision,Vector3(.069f,.069f,.018f),-.059f)
-                    icon=entity(when(row.first) {"larger"->WindowControlMeshes.SIZE_UP_ICON;"smaller"->WindowControlMeshes.SIZE_DOWN_ICON;"recenter"->WindowControlMeshes.FOCUS_ICON;else->WindowControlMeshes.MENU_BACK_ICON},MeshCollision.NoCollision,Vector3(.08f,.08f,.02f),-.070f)
-                    val b=Button(row.first,root,face,icon,row.third);buttons.add(b);unadopted.removeAll(b.owned)
+                    face=entity(when(row.action) {"larger"->WindowControlMeshes.FOCUS;"smaller"->WindowControlMeshes.CLOSE;else->WindowControlMeshes.MOVE},MeshCollision.NoCollision,Vector3(.069f,.069f,.018f),-.059f)
+                    icon=entity(when(row.action) {"larger"->WindowControlMeshes.SIZE_UP_ICON;"smaller"->WindowControlMeshes.SIZE_DOWN_ICON;"recenter"->WindowControlMeshes.FOCUS_ICON;else->WindowControlMeshes.MENU_BACK_ICON},MeshCollision.NoCollision,Vector3(.08f,.08f,.02f),-.070f)
+                    val b=Button(row.action,root,face,icon,row.enabled);buttons.add(b);unadopted.removeAll(b.owned)
                     (objects.getSceneObject(root) ?: objects.replaceOrReuseSceneObjectFuture(root)).whenComplete {value,error -> ui.post {
                         if(!closing && live() && buttons.contains(b)) {
                             if(error!=null || value==null) {failures++;return@post}

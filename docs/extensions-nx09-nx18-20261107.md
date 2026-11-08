@@ -33,12 +33,12 @@ Backspace個別、かな漢字変換の候補視認、ランチャーの物理�
 | NX09 | 共通text-input-v3と[debug端末IME/Ctrl+Space](android-ime-terminal-probe-20261108.md)を実装、実IMM/InputConnectionと直接入力復帰を確認 | 通常利用の入口、かな漢字変換・候補・物理Ctrl+Spaceの最終受入れ。案A固有の不成立ならTermux Fcitx5 |
 | NX10 | カタログUI・保存・稼働中footへの任意起動を接続 | Build143のPC検査。初回任意起動・個別取消・配置保存とQuest実機確認は残件 |
 | NX11 | Build172の固定demo成功、通常helper/型付きGUI配線をmainへ実装。Freedoomを既存2項目を保持して実機catalogへ登録済み | 通常起動・操作・close/Stop/切断・初回GUI導線・反復・物理/HMD。[詳細F1〜F7](nx11-nx18-normal-gui-followup-plan-20261108.md#freedoom-normal) |
-| NX12 | focus/close/move/MODEに加え[サイズメニュー](nx12d-window-size-menu-20261108.md)もBuild171の実SDK固定case成功 | 正面復帰、HMD/物理受入れ |
+| NX12 | focus/close/move/MODE・サイズメニューに加え、複数窓の[近傍正面復帰をHostへ接続](window-group-recenter-integration-20261108.md)。SDK適用済み配置の捕捉と送信前再照合 | 最新版の複数窓SDK geometry、HMD/物理受入れ |
 | NX13 | Build159でI/O値とdrawを照合し、Build163で専用root/子のidentity退役と一時data残存0を外部確認 | thread/共有tmux、多窓、HMD。APK内の回収未検証flagは外部証拠と区別 |
 | NX14 | CPU148、熱/容量152、PSS154、gateway164を製品UID・停止復帰確認 | HMD表示受入れ、追加値。全体CPU/GPUは取得経路ごとに判断 |
 | NX15 | [GTK input/dialog/resize](gtk-interaction-operator-20261108.md)の合成入力・SHM/SDK描画・全退役をBuild170で確認 | 通常GUIの製品起動・Stop、HMD/物理入力/IME |
 | NX16 | Build169と4ボタン版Build171で3→6→9枚・指定順/pose・10枚目Busy・hole再利用・全回収が成功。[独立9接続host検査](nx16-independent-clients-wire-20261108.md)も成功 | 共有foot clientのSDK検査と別々の9接続host検査。性能・HMDは別に確認 |
-| NX17 | [500ms集約モデル](nx17a-window-group-model-20261108.md)と[背面present/時計停止](nx17b-hidden-render-targets-20261108.md)のhost検査成功 | runtime/SDKへの接続、信頼済みgroupの選択UI、前面/取消/reduced motionの実SDK受入れ |
+| NX17 | 500msモデル・runtime/SDK固定caseに加え、[通常groupメニューを統合](window-group-recenter-integration-20261108.md)。捕捉済みgroup/revisionによるまとめる・展開・前面切替 | 最新版の通常メニュー、前面/取消/reduced motionの実SDK受入れ |
 | NX18 | 実APK SSH/固定SHMに続きBuild174のLinux GTK input/dialog・全回収成功。通常profile保存APIはmain、通常GTK helper/protocolは未統合branchへ保存 | SSH actor・lease/専用journal・native/Host・接続UI/launcherの通常経路接続、別実ホスト・物理/IME。[詳細L1〜L8](nx11-nx18-normal-gui-followup-plan-20261108.md#linux-normal) |
 
 ## NX09の開始調査（当時の保留までの履歴）

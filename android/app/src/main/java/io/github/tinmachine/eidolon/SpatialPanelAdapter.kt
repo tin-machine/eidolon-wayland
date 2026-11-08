@@ -516,7 +516,9 @@ class SpatialPanelAdapter {
         val group=current.group as? WindowGroupPresentation.Owned
         val groupHidden=current.group==WindowGroupPresentation.Pending || group?.let {it.phase=="stable" && !it.inputAllowed}==true
         current.controls?.setVisible(visible && !groupHidden)
-        current.controls?.setEnabled(!current.editing && visible && !groupHidden && (group==null || group.phase in setOf("settling","stable")))
+        current.controls?.setMenuOnly(group?.phase=="animating")
+        current.controls?.setEnabled(!current.editing && visible && !groupHidden &&
+            (group==null || group.phase in setOf("settling","stable") || group.phase=="animating" && group.front && group.sourceReady))
         val controls=current.controls?.metadata()
         val controlsReady=controls?.optBoolean("enabled")==true && controls.optLong("failures")==0L &&
             controls.optJSONArray("buttons")?.let {buttons -> buttons.length()==4 && (0 until buttons.length()).all {buttons.getJSONObject(it).optBoolean("ready")}}==true &&
@@ -525,6 +527,8 @@ class SpatialPanelAdapter {
         val input=runtime.optJSONObject("app")?.optJSONObject("input")
         val focused=input!=null && !input.isNull("focus_token") && NativeSessionHost.keyboardFocusMatches(current.key,input.getString("focus_token"))
         val groupMode=when {
+            current.menu?.groupMenuActive==true && current.menu?.phase==WindowSizeCapture.Phase.MENU -> WindowMode.MENU
+            current.menu?.groupMenuActive==true -> WindowMode.GROUP_BLOCKED
             current.group==WindowGroupPresentation.Pending -> WindowMode.GROUP_BLOCKED
             group==null -> null
             !group.sourceReady || group.phase=="blocked" -> WindowMode.GROUP_BLOCKED
@@ -561,7 +565,7 @@ class SpatialPanelAdapter {
             current.group=selection;return false
         }
         current.move?.cancelForGroup()
-        val menuClosed=current.menu?.cancelForGroup() ?: true
+        val menuClosed=current.menu?.cancelForGroup(state) ?: true
         cancelGrab(current);current.entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
         current.editing=false;current.wasGrabbed=false;current.queuedPose=null;current.lastDragPose=null
         current.poseRequest?.let(NativeSessionHost::forgetPose);current.poseRequest=null;current.poseAccepted=false

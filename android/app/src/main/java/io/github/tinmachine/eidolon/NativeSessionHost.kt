@@ -599,14 +599,23 @@ object NativeSessionHost {
         if(slot!=null) command.put("slot",slot)
         NativeBridge.nativeCommand(handle,command.toString())
     } } } }
-    data class WindowControlTicket(val runtime: Long, val target: String, val intent: Long, val revision: Long)
+    data class WindowControlTicket(val runtime: Long, val target: String, val intent: Long, val revision: Long) {
+        internal var groupMenuPermit:WindowGroupMenuPermit?=null;private set
+        internal constructor(runtime:Long,target:String,intent:Long,revision:Long,permit:WindowGroupMenuPermit?):this(runtime,target,intent,revision) {groupMenuPermit=permit}
+    }
     /** SDK button down owns one immutable target; reset also releases any Linux-held key. */
-    fun beginWindowControl(target: JSONObject, runtime: Long, revision: Long): WindowControlTicket? = inputIntents.serial {
+    fun beginWindowControl(target: JSONObject, runtime: Long, revision: Long,forMenu:Boolean=false): WindowControlTicket? = inputIntents.serial {
         check(Looper.myLooper()==Looper.getMainLooper())
-        val current=inputTarget(target.toString()) ?: return@serial null
-        if(current.runtime!=runtime || runtime!=handle || revision<0) return@serial null
+        if(runtime!=handle || revision<0 || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || debugSdkLease.blocksProduct()) return@serial null
+        val permit=if(forMenu) runCatching {
+            val state=JSONObject(NativeBridge.nativeSnapshot(runtime)).getJSONObject("runtime")
+            WindowGroupMenuWire.capture(runtime,target,state)?.takeIf {it.controlsRevision==revision}
+        }.getOrNull() else null
+        // The explicit menu permit never unlocks Focus/Key/Pointer/IME or another control action.
+        val current=inputTarget(target.toString())
+        if(current?.runtime!=runtime && permit?.group==null) return@serial null
         resetInput()
-        WindowControlTicket(runtime,target.toString(),inputIntents.get(),revision)
+        WindowControlTicket(runtime,target.toString(),inputIntents.get(),revision,permit)
     }
     fun windowControl(ticket: WindowControlTicket, action: String) { productWorker.execute { inputIntents.serial { safely {
         if(action !in setOf("focus","close") || handle!=ticket.runtime || inputIntents.get()!=ticket.intent || editing.get() ||
@@ -710,6 +719,7 @@ object NativeSessionHost {
             state.optString("scene")!=target.optString("scene") || state.optJSONObject("render")?.optLong("theme_revision",-1)!=ticket.control.revision ||
             !windowGroupInputAllowed(ticket.control.runtime,target)) return@serial null
         val geometry=WindowRecenterWire.read(state,target) ?: return@serial null
+        if(capture.scene?.matches(state,target)!=true) return@serial null
         if(!capture.readyToSubmit(capture.identity,SystemClock.elapsedRealtime(),geometry,state.getLong("input_resets"))) return@serial null
         val request=requests.incrementAndGet().toString();windowOperationCompletions[request]="pending"
         val code=NativeBridge.nativeCommand(ticket.control.runtime,JSONObject().put("schema",1).put("type","set_pose_control")
@@ -722,6 +732,31 @@ object NativeSessionHost {
     fun returnWindowOperation(ticket:WindowOperationTicket):Boolean = inputIntents.serial {
         if(!windowOperationAndroidReleased(ticket) || !windowOperationPhase(ticket,"returning")) return@serial false
         windowControl(ticket.control,"focus");true
+    }
+    internal fun windowGroupMenuPermit(ticket:WindowOperationTicket,state:JSONObject):WindowGroupMenuPermit?=inputIntents.serial {
+        if(ticket.kind!="menu" || !windowOperationCurrent(ticket)) return@serial null
+        val captured=ticket.control.groupMenuPermit ?: return@serial null
+        WindowGroupMenuWire.capture(ticket.control.runtime,JSONObject(ticket.control.target),state)?.takeIf {captured.same(it)}
+    }
+    /** Register the one request before native enqueue while ordinary input intent changes share this monitor. */
+    internal fun submitWindowGroupMenu(ticket:WindowOperationTicket,capture:WindowGroupMenuCapture):String?=inputIntents.serial {
+        if(!windowOperationCurrent(ticket) || !windowOperationAndroidReleased(ticket) || ticket.kind!="menu" ||
+            capture.phase!=WindowGroupMenuCapture.Phase.SUBMITTING || windowOperationCompletions.size>=8) return@serial null
+        val control=ticket.control;val target=JSONObject(control.target)
+        val identity=WindowGroupMenuIdentity(WindowGroupWire.key(control.runtime,target),control.revision,control.intent)
+        val state=runCatching {JSONObject(NativeBridge.nativeSnapshot(control.runtime)).getJSONObject("runtime")}.getOrNull() ?: return@serial null
+        val permit=windowGroupMenuPermit(ticket,state) ?: return@serial null
+        val now=SystemClock.elapsedRealtime()
+        if(capture.identity!=identity || !capture.current(identity,now,permit) || capture.action !in permit.actions) return@serial null
+        val request=requests.incrementAndGet().toString()
+        if(!capture.submitted(identity,now,permit,request)) return@serial null
+        windowOperationCompletions[request]="pending"
+        val code=NativeBridge.nativeCommand(control.runtime,JSONObject().put("schema",1).put("type","window_group")
+            .put("request_id",request).put("target",target).put("controls_revision",control.revision).put("action",capture.action)
+            .put("expected_group",permit.group ?: JSONObject.NULL).put("expected_revision",permit.revision ?: JSONObject.NULL).toString())
+        BuildHooks.windowControlRequested("group-${capture.action}",control.runtime,control.target,control.revision,request,code)
+        if(code!=NativeBridge.ACCEPTED) {windowOperationCompletions.remove(request);capture.cancel("enqueue_rejected");return@serial null}
+        request
     }
     fun requestSnapshot() { worker.execute { safely { publish() } } }
     fun currentHandle(): Long = handle
