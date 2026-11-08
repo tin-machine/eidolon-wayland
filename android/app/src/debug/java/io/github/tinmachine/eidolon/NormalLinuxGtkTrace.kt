@@ -22,6 +22,7 @@ internal class NormalLinuxGtkTrace(val runtimeHandle:Long,val scene:String,val s
     private var cleanup=JSONObject()
     private var adapterEmpty=false
     private var naturalExit=false
+    private var startObserved=false
     init {
         require(runtimeHandle>0 && listOf(scene,session,launchRequest).all {it.matches(Regex("[1-9][0-9]{0,18}")) && it.toLongOrNull()!=null})
     }
@@ -32,6 +33,7 @@ internal class NormalLinuxGtkTrace(val runtimeHandle:Long,val scene:String,val s
         check(transport.getString("session")==session && transport.getString("profile_id")==LinuxConnectionProfile.ID) {"LINUX_SESSION_CHANGED"}
         val desktop=transport.optJSONObject("desktop")
         if(desktop!=null && !desktop.isNull("request_id")) check(desktop.getString("request_id")==launchRequest) {"LINUX_REQUEST_CHANGED"}
+        if(desktop?.optBoolean("start_requested")==true || desktop?.optBoolean("started")==true) startObserved=true
         desktop?.getString("nonce")?.let {nonce ->
             check(nonce.matches(Regex("[0-9a-f]{16}")) && (remoteNonce==null || remoteNonce==nonce)) {"LINUX_REMOTE_OWNER_CHANGED"}
             remoteNonce=nonce
@@ -106,6 +108,7 @@ internal class NormalLinuxGtkTrace(val runtimeHandle:Long,val scene:String,val s
     fun resourcesCleared()=adapterEmpty && cleanup.optBoolean("local_complete") && cleanup.optBoolean("remote_complete") &&
         cleanup.optBoolean("connection_closed") && !cleanup.optBoolean("desktop_pending") &&
         listOf("sdk_bindings","render_targets","panels","board_occupied").all {cleanup.optInt(it,-1)==0}
+    fun hasLaunchEvidence()=startObserved || owned.isNotEmpty()
     fun complete()=cleanupComplete && naturalExit && dialogs.isNotEmpty() && observations.containsAll(setOf("main_mapped","frame_progress","input_delivered","dialog_mapped","main_closed","all_targets_retired"))
     fun json():JSONObject=JSONObject().put("main_target",main?.json() ?: JSONObject.NULL)
         .put("remote_nonce",remoteNonce ?: JSONObject.NULL)

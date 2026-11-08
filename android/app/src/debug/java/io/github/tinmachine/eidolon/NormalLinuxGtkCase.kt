@@ -11,9 +11,7 @@ object NormalLinuxGtkCase {
     private var active:Run?=null
     private val consumed=ArrayDeque<String>()
     fun commandComplete(runtime:Long,request:String,code:String) {ui.post {
-        active?.takeIf {it.handle==runtime && request in setOf(it.connectRequest,it.inspectRequest,it.launchRequest)}?.let {run ->
-            if(!run.done && !run.stopRequested && code!="ACCEPTED") run.finish("failed","LINUX_COMMAND_REJECTED")
-        }
+        active?.takeIf {it.handle==runtime}?.completed(request,code)
     }}
     fun command(name:String,nonce:String) {
         check(Looper.myLooper()==Looper.getMainLooper())
@@ -30,12 +28,30 @@ object NormalLinuxGtkCase {
         var stopRequested=false;var stopBegan=0L
         var catalogVerified=false;var launched=false
         var connectDispatched=false;var connectReplyKnown=false;var stopSent=false
+        val commands=NormalLinuxGtkRequests()
         var trace:NormalLinuxGtkTrace?=null
+        fun completed(request:String,code:String) {
+            val observed=runCatching {commands.completed(request,code,trace?.hasLaunchEvidence()==true)}
+            if(observed.isFailure) {
+                if(!done && !stopRequested) finish("failed","LINUX_COMPLETION_OVERFLOW")
+                return
+            }
+            rejected(observed.getOrNull())
+        }
+        fun rejected(rejected:NormalLinuxGtkRequests.Rejected?) {
+            if(rejected==null) return
+            when(rejected.kind) {
+                NormalLinuxGtkRequests.Kind.CONNECT -> connectRequest=""
+                NormalLinuxGtkRequests.Kind.LAUNCH -> if(rejected.mayForgetLaunch) {launched=false;trace=null}
+                NormalLinuxGtkRequests.Kind.INSPECT -> Unit // 認証済み接続はまだ所有している。
+            }
+            if(!stopRequested) finish(if(done) result else "failed",if(done) reason else "LINUX_COMMAND_REJECTED") else publish()
+        }
         fun publish() {
             NativeSessionHost.publishCheck(JSONObject().put("case","normal-linux-gtk").put("nonce",nonce).put("scope","production_linux_manual_observation")
                 .put("result",result).put("phase",phase).put("reason",reason ?: JSONObject.NULL)
                 .put("runtime",handle.takeIf {it>0}?.toString() ?: JSONObject.NULL).put("session",session.ifEmpty {null} ?: JSONObject.NULL)
-                .put("scene",scene.ifEmpty {null} ?: JSONObject.NULL).put("connect_request_id",connectRequest.ifEmpty {null} ?: JSONObject.NULL)
+                .put("scene",scene.ifEmpty {null} ?: JSONObject.NULL).put("connect_request_id",commands.request(NormalLinuxGtkRequests.Kind.CONNECT) ?: JSONObject.NULL)
                 .put("inspect_request_id",inspectRequest.ifEmpty {null} ?: JSONObject.NULL).put("launch_request_id",launchRequest.ifEmpty {null} ?: JSONObject.NULL)
                 .put("catalog_verified",catalogVerified).put("launched",launched).put("stop_requested",stopRequested)
                 .put("physical_input_verified",false).put("visual_input_verified",false).put("ime_verified",false)
@@ -80,10 +96,13 @@ object NormalLinuxGtkCase {
                         runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED") {"LINUX_START_UNAVAILABLE"}
                     handle=current;scene=runtime.getString("scene");previousSession=transport.optString("session")
                     connectDispatched=true
+                    commands.begin(NormalLinuxGtkRequests.Kind.CONNECT)
                     transition("CONNECTING")
                     NativeSessionHost.connect {id,code ->ui.post {
                         if(active===this) {
                             connectReplyKnown=true;connectRequest=id.takeIf {code==NativeBridge.ACCEPTED} ?: ""
+                            if(code==NativeBridge.ACCEPTED) rejected(commands.enqueued(NormalLinuxGtkRequests.Kind.CONNECT,id))
+                            else commands.enqueueRejected(NormalLinuxGtkRequests.Kind.CONNECT)
                             if(!done && !stopRequested && code!=NativeBridge.ACCEPTED) finish("failed","LINUX_CONNECT_REJECTED") else publish()
                         }
                     }}
@@ -109,9 +128,12 @@ object NormalLinuxGtkCase {
                             check(transport.optString("state") !in setOf("Failed","CleanupPending")) {"LINUX_CONNECT_OR_RECOVERY_REQUIRED"}
                             if(transport.optString("state")=="ProbeReady") {
                                 transition("INSPECTING")
+                                commands.begin(NormalLinuxGtkRequests.Kind.INSPECT)
                                 NativeSessionHost.inspectLinuxDesktop {id,code ->ui.post {
                                     if(active===this) {
                                         inspectRequest=id
+                                        if(code==NativeBridge.ACCEPTED) rejected(commands.enqueued(NormalLinuxGtkRequests.Kind.INSPECT,id))
+                                        else commands.enqueueRejected(NormalLinuxGtkRequests.Kind.INSPECT)
                                         if(!done && !stopRequested && code!=NativeBridge.ACCEPTED) finish("failed","LINUX_INSPECT_REJECTED") else publish()
                                     }
                                 }}
@@ -123,10 +145,14 @@ object NormalLinuxGtkCase {
                             if(inspectRequest.isNotEmpty() && catalog.linux && catalog.session==session && catalog.connected && !catalog.busy &&
                                 catalog.entries.singleOrNull()?.let {it.id==LinuxDesktopCatalog.APP_ID && it.available}==true) {
                                 catalogVerified=true;transition("LAUNCHING")
+                                commands.begin(NormalLinuxGtkRequests.Kind.LAUNCH)
                                 NativeSessionHost.launchRegistered(session,catalog.revision,LinuxDesktopCatalog.APP_ID) {id,code ->ui.post {
                                     if(active===this) {
                                         launchRequest=id
-                                        if(code==NativeBridge.ACCEPTED) {launched=true;trace=NormalLinuxGtkTrace(handle,scene,session,id)}
+                                        if(code==NativeBridge.ACCEPTED) {
+                                            launched=true;trace=NormalLinuxGtkTrace(handle,scene,session,id)
+                                            rejected(commands.enqueued(NormalLinuxGtkRequests.Kind.LAUNCH,id,trace?.hasLaunchEvidence()==true))
+                                        } else commands.enqueueRejected(NormalLinuxGtkRequests.Kind.LAUNCH)
                                         if(!done && !stopRequested) {
                                             if(code!=NativeBridge.ACCEPTED) finish("failed","LINUX_LAUNCH_REJECTED") else transition("OBSERVING")
                                         } else publish()
