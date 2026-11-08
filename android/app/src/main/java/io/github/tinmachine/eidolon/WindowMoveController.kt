@@ -75,6 +75,10 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
         } else capture?.cancel("input_capture_lost")
     }
     fun cancelSource(sourceId:Long,reason:String) {if(owns(sourceId)) capture?.cancel(reason)}
+    fun cancelForGroup() {
+        val current=capture ?: return
+        current.cancel("group_owned");cancelled++;end(false)
+    }
     fun tick(runtimeState:JSONObject,placement:JSONObject) {
         val c=capture ?: return
         val owner=ticket ?: return

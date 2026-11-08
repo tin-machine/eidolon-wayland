@@ -71,7 +71,7 @@ class WindowModeBadge(parent:Entity,layout:WindowControlLayout,width:Double,heig
         checkNotNull(texture).update(slot.buffer,WIDTH,HEIGHT,slot.bitmap.rowBytes);updates++;textureUpdates++
     }
     fun metadata()=JSONObject().put("entity",entity?.id?.toString() ?: JSONObject.NULL).put("mode",mode.name).put("label",mode.label)
-        .put("object_ready",!closeRequested && obj?.handle?.let {it!=0L}==true).put("non_hit",true).put("updates",updates).put("failures",failures)
+        .put("visible",lastVisible ?: false).put("object_ready",!closeRequested && obj?.handle?.let {it!=0L}==true).put("non_hit",true).put("updates",updates).put("failures",failures)
     override fun close() {
         if(disposed) return
         closeRequested=true

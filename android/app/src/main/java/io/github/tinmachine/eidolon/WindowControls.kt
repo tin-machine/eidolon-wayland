@@ -20,6 +20,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
     private val ui=Handler(Looper.getMainLooper())
     private var closed=false
     private var enabled=true
+    private var visible=true
     private val buttons=mutableListOf<Button>()
     private var submitted=0L
     private var rejected=0L
@@ -138,12 +139,35 @@ class WindowControls(private val parent: Entity, private val target: String, pri
             if(!next) {cancelSources(button);pressed(button,false)}
         }
     }
+    fun setVisible(value:Boolean) {
+        if(closed || visible==value) return
+        visible=value
+        for(button in buttons) for(entity in listOf(button.entity,button.face,button.icon)) entity.setComponent(Visible(value))
+    }
+    /** Short probes stay near this sphere, avoiding another stacked window 25mm away. */
+    fun geometryMatches():Boolean {
+        if(closed || !enabled || !visible || buttons.size!=4) return false
+        for(button in buttons) {
+            if(button.listener==null) return false
+            val pose=getAbsoluteTransform(button.entity);val scale=getAbsoluteScale(button.entity)
+            for((u,v) in listOf(0f to 0f,.3f to 0f,0f to .3f)) {
+                val z=-scale.z*kotlin.math.sqrt(.25f-u*u-v*v)
+                val hit=sdk.lineSegmentIntersect(pose*Vector3(u*scale.x,v*scale.y,z-.004f),pose*Vector3(u*scale.x,v*scale.y,z+.004f)) ?: return false
+                if(hit.entity?.id!=button.entity.id) return false
+            }
+            for((u,v) in listOf(.65f to 0f,0f to .65f)) {
+                val z=-scale.z*.5f
+                if(sdk.lineSegmentIntersect(pose*Vector3(u*scale.x,v*scale.y,z-.004f),pose*Vector3(u*scale.x,v*scale.y,z+.004f))?.entity?.id==button.entity.id) return false
+            }
+        }
+        return true
+    }
     private fun cancelSources(button: Button) {
         for((source,state) in button.sources.values.toList()) runCatching {sdk.onNoIntersectionInput(source,state,0)}
         if(button.sources.isNotEmpty()) runCatching {sdk.resolveInput()}
         button.sources.clear();button.tickets.clear();button.press.clear()
     }
-    fun metadata(): JSONObject=JSONObject().put("revision",revision).put("enabled",enabled).put("requests_submitted",submitted).put("rejected",rejected)
+    fun metadata(): JSONObject=JSONObject().put("revision",revision).put("enabled",enabled).put("visible",visible).put("requests_submitted",submitted).put("rejected",rejected)
         .put("failures",failures).put("entities",buttons.size*3).put("extra_android_displays",0).put("extra_surfaces",0)
         .put("buttons",JSONArray(buttons.map {JSONObject().put("action",it.action).put("entity",it.entity.id.toString())
             .put("ready",it.listener!=null).put("target",JSONObject(target))}))

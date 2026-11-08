@@ -81,6 +81,7 @@ object NativeSessionHost {
     data class InputTarget(val runtime: Long, val epoch: Long, val identity: String, val target: String)
     @Volatile private var inputTargets: Map<String, InputTarget> = emptyMap()
     private val groupInputGate=AtomicReference(WindowGroupInputGate.unavailable())
+    private val groupGeometryCompletions=ConcurrentHashMap<String,String>()
     private fun targetIdentity(target: JSONObject): String = listOf("session","window","scene","generation").joinToString(":") { target.getString(it) }
     val keyboardSummary = mutableStateOf("操作パネルへ入力")
     val inputStatus = mutableStateOf(InputStatus("PREPARING","画面を準備中"))
@@ -541,6 +542,24 @@ object NativeSessionHost {
     fun windowGroupInputAllowed(runtime:Long,target:JSONObject):Boolean = runCatching {
         runtime==handle && groupInputGate.get().allows(WindowGroupWire.key(runtime,target))
     }.getOrDefault(false)
+    internal fun ackWindowGroupGeometry(owner:WindowGroupPresentation.Owned,actual:JSONObject,frame:String):String?=inputIntents.serial {
+        if(owner.runtime!=handle || owner.key.scene!=scenes.get().toString() || !owner.settling ||
+            !activityVisible.get() || xrState.get()!="FOCUSED" || debugSdkLease.blocksProduct() || groupGeometryCompletions.size>=9 ||
+            !PanelPoseCodec.valid(actual) || frame.toLongOrNull()?.let {it>0}!=true) return@serial null
+        val target=JSONObject().put("session",owner.key.session).put("window",owner.key.window).put("scene",owner.key.scene).put("generation",owner.key.generation)
+        val request=requests.incrementAndGet().toString();groupGeometryCompletions[request]="pending"
+        val code=NativeBridge.nativeCommand(owner.runtime,JSONObject().put("schema",1).put("type","window_group_applied")
+            .put("request_id",request).put("target",target).put("group",owner.group).put("revision",owner.revision)
+            .put("pose",actual).put("physical_size",owner.size).put("content_frame",frame).toString())
+        if(code!=NativeBridge.ACCEPTED) {groupGeometryCompletions.remove(request);null} else request
+    }
+    internal fun windowGroupGeometryCompletion(request:String):String? {
+        val result=groupGeometryCompletions[request] ?: return null
+        if(result!="pending") groupGeometryCompletions.remove(request)
+        return result
+    }
+    internal fun forgetWindowGroupGeometry(request:String) {groupGeometryCompletions.remove(request)}
+    internal fun windowGroupGeometryPending()=groupGeometryCompletions.size
     fun inputTarget(target: String): InputTarget? {
         if (debugSdkLease.blocksProduct() || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || movingTarget(target)) return null
         val key=JSONObject(target)
@@ -1537,7 +1556,7 @@ object NativeSessionHost {
         val endedIme = imeConnection
         ui.post { if (imeConnection === endedIme) { endedIme?.close(); imeConnection = null; imeOwner = null; imeAndroidReleased = null; imeRawReturn = null; imeInputMessage = null; imeRawBlocked.set(false) } }
         catalogPending=null;launcherUpdate(LauncherUi(path=launcherState.path))
-        poseCompletions.clear();selectedWindow=null;lastFocusedWindow=null;editing.set(false);ui.post { layoutEditing.value=false }
+        poseCompletions.clear();groupGeometryCompletions.clear();selectedWindow=null;lastFocusedWindow=null;editing.set(false);ui.post { layoutEditing.value=false }
         clearTerminalOpen(); terminalAdding = null; terminalError = null
         lastConnectRequest = null; pendingDisconnect = null; connectPending = false
         Log.i(TAG, "runtime_stopped handle=$old duration_ms=${SystemClock.elapsedRealtime() - started}")
@@ -1605,6 +1624,7 @@ object NativeSessionHost {
                 }
                 themeRequests.remove(event.getString("request_id"))?.invoke(event.getString("code"))
                 BuildHooks.commandComplete(event.getString("request_id"), event.getString("code"))
+                groupGeometryCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
                 poseCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
                 windowOperationCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
                 if (event.getString("request_id") == lastConnectRequest) {
