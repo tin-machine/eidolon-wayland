@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""通常登録Freedoomを固定caseで一度起動し、同jobの入力/自然exit/SDK全回収を照合する。"""
+import argparse
+import datetime
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import secrets
+import shlex
+import signal
+import subprocess
+import time
+from native_build import ROOT
+from gui_probe_sdk import digest_sources
+from quest_device import PACKAGE,QuestDevice,package_uid,work_root
+from sdl_lease_capture import MAX_SNAPSHOT,decode,select_snapshot,binding_key,need,hexadecimal
+import launcher_bundle
+import freedoom_normal_evidence as evidence
+
+loader=importlib.machinery.SourceFileLoader('freedoom_registration_cli',str(ROOT/'scripts/quest-register-freedoom-launcher'))
+spec=importlib.util.spec_from_loader(loader.name,loader);registration=importlib.util.module_from_spec(spec);loader.exec_module(registration)
+SOURCES=('scripts/quest-run-freedoom-gui','scripts/freedoom_normal_evidence.py','scripts/quest-run-sdl-probe','scripts/sdl_lease_capture.py','scripts/sdl_probe_run.py',
+         'scripts/gui_probe_sdk.py','scripts/gtk_interaction_evidence.py','scripts/gtk_interaction_run.py','scripts/gtk_probe_run.py',
+         'scripts/quest_device.py','scripts/native_build.py')
+
+
+def source_hashes():
+    return dict(registration.source_hashes(),**{name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in SOURCES})
+
+
+def inspect_registration(serial,run_id,asset_run,manifest_sha):
+    _,bundle=launcher_bundle.prepare(ROOT)
+    request=dict(schema=1,action='inspect',run_id=run_id,profile=dict(kind='freedoom_phase1_software',assets_run_id=asset_run,manifest_sha256=manifest_sha),expected_revision=None,sources=bundle['files'])
+    command=shlex.join(['run-as','com.termux','/data/data/com.termux/files/usr/bin/python3','-c',registration.remote_source()]);need(len(command.encode())<=49*1024,'REMOTE_COMMAND_LIMIT')
+    wire=json.dumps(request,separators=(',',':')).encode();need(len(wire)<=4096,'REQUEST_INVALID')
+    row=subprocess.run(['adb','-s',serial,'shell','-T',command],input=wire,capture_output=True,timeout=20)
+    need(row.returncode==0 and len(row.stdout)<=4096 and len(row.stderr)==0,'REGISTRATION_INSPECT_FAILED');report=decode(row.stdout,4096)
+    fields={'schema','status','run_id','uid','action','configured','revision','total','target_present','target_matches','changed','other_entries_preserved','asset_runtime_validated','execution','reload_requested'}
+    need(type(report) is dict and set(report)==fields and type(report['schema']) is int and report['schema']==1 and report['status']=='inspected' and report['run_id']==run_id and
+        type(report['uid']) is int and report['uid']==10158 and report['action']=='inspect' and report['execution']=='not_run' and hexadecimal(report['revision'],64) and
+        type(report['total']) is int and 1<=report['total']<=64 and all(report[k] is True for k in ('configured','target_present','target_matches','other_entries_preserved','asset_runtime_validated')) and
+        report['changed'] is False and report['reload_requested'] is False,'REGISTRATION_NOT_OPTED_IN')
+    return report
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--serial',required=True);parser.add_argument('--case',choices=evidence.CASES,required=True)
+    parser.add_argument('--asset-run-id',required=True);parser.add_argument('--manifest-sha256',required=True);parser.add_argument('--artifact-root',type=Path)
+    args=parser.parse_args()
+    if not hexadecimal(args.asset_run_id,32) or not hexadecimal(args.manifest_sha256,64):parser.error('asset run-idは32hex、manifestは既知64hexです')
+    os.umask(0o077);nonce=secrets.token_hex(16);root=args.artifact_root or work_root()/'eidolon-freedoom-normal-gui'
+    if not root.is_absolute():parser.error('artifact rootは絶対pathです')
+    run=root/(datetime.datetime.now().strftime('%Y%m%dT%H%M%S-%f')+'-'+nonce);run.mkdir(parents=True,mode=0o700)
+    result=dict(schema=1,status='blocked',case=args.case,nonce=nonce,asset_run_id=args.asset_run_id,manifest_sha256=args.manifest_sha256,
+        sdk_samples=[],android_receipts=[],gui_receipts=[],physical_input='not_run',ime='not_run',hmd='not_run',wire_trace='not_run',session_stop_sent=False)
+    device=QuestDevice(args.serial,run);started=False;row=None;baseline=None;last=None;binding=None;digest=None;source=None
+    interrupted=[False];previous_signals={}
+    for kind in (signal.SIGINT,signal.SIGTERM):previous_signals[kind]=signal.signal(kind,lambda *_:interrupted.__setitem__(0,True))
+    def snapshot():
+        process=subprocess.run(['adb','-s',args.serial,'exec-out','run-as',PACKAGE,'head','-c',str(MAX_SNAPSHOT+1),'no_backup/diagnostics/latest.json'],capture_output=True,timeout=5)
+        need(process.returncode==0,'DIAGNOSTICS_UNAVAILABLE');return decode(process.stdout)
+    def broadcast(case):
+        device.adb('shell','am','broadcast','-n',PACKAGE+'/.FreedoomGuiCommandReceiver','-a',PACKAGE+'.FREEDOOM_GUI_COMMAND','--es','case','freedoom-'+case,'--es','nonce',nonce,timeout=5)
+    def poll(stopping=False):
+        nonlocal row,last
+        value=snapshot();need(registration.apk_binding(value,digest)==result['apk_binding'],'APK_BINDING_CHANGED')
+        runtime=value['runtime']['runtime'];need(value['runtime']['handle']==binding['handle'] and runtime['scene']==result['scene'],'APK_BINDING_CHANGED')
+        if not stopping:need(binding_key(select_snapshot(value,digest,10158))==binding_key(binding),'APK_BINDING_CHANGED')
+        elif runtime['transport']['state']!='Idle':need(runtime['transport'].get('session')==binding['session'],'APK_BINDING_CHANGED')
+        observed=evidence.android(value,nonce,args.case,binding,baseline,result['catalog']['revision'],result['scene'])
+        if observed is not None:
+            if row is not None:
+                need(not (row['result'] in {'failed','cancelled'} and observed['result']!=row['result']),'GUI_ORIGINAL_FAILURE_CHANGED')
+                for field in ('request_id','launch_id','app_id','target','revision'):
+                    if row[field] is not None:need(observed[field]==row[field],'GUI_ANDROID_BINDING_CHANGED')
+            row=observed
+            if not result['android_receipts'] or observed!=result['android_receipts'][-1]:
+                need(len(result['android_receipts'])<128,'ANDROID_RECEIPT_LIMIT');result['android_receipts'].append(observed)
+        sample=evidence.sample(value,baseline,None if row is None else row['app_id'])
+        if not result['sdk_samples'] or sample['sequence']!=result['sdk_samples'][-1]['sequence']:
+            need(len(result['sdk_samples'])<1024,'SDK_SAMPLE_LIMIT');result['sdk_samples'].append(sample)
+        receipt=evidence.receipt(runtime,row,binding)
+        if receipt is not None and receipt not in result['gui_receipts']:
+            need(len(result['gui_receipts'])<2,'GUI_RECEIPT_LIMIT');result['gui_receipts'].append(receipt)
+        last=value;return sample
+    try:
+        result['device']=device.validate();need(package_uid(device.adb('shell','pm','list','packages','-U','com.termux'),'com.termux')==10158,'UID_MISMATCH')
+        source=source_hashes();digest=digest_sources();initial=snapshot();binding=select_snapshot(initial,digest,10158)
+        result['apk_binding']=registration.apk_binding(initial,digest);need(device.adb('shell','pidof',PACKAGE).strip()==str(binding['process_id']),'APK_PROCESS_NOT_CURRENT')
+        need(initial.get('check',{}).get('result')!='running','OTHER_DEBUG_CASE_RUNNING')
+        baseline=evidence.sample(initial,dict(mapped=[]),None);need(len(baseline['mapped'])==1,'ONE_BASELINE_WINDOW_REQUIRED')
+        need(evidence.baseline_resources(baseline['resources'],set(baseline['mapped']),baseline['native_targets']),'SDK_BASELINE_NOT_OWNED')
+        result.update(binding=binding,scene=initial['runtime']['runtime']['scene'],source_digest=digest,operator_source_sha256=source,sdk_baseline=baseline)
+        result['catalog']=inspect_registration(args.serial,nonce,args.asset_run_id,args.manifest_sha256)
+        poll();need(not interrupted[0],'GUI_HOST_CANCELLED');broadcast(args.case);started=True;deadline=time.monotonic()+43
+        while time.monotonic()<deadline:
+            need(not interrupted[0],'GUI_HOST_CANCELLED')
+            poll()
+            if row is not None and row['result']!='running':break
+            time.sleep(.1)
+        need(row is not None and row['result']!='running','GUI_CASE_TIMEOUT')
+        settle=time.monotonic()+3
+        while row['result']=='completed' and time.monotonic()<settle:
+            observation=evidence.summarize(baseline,result['sdk_samples'],row,(result['gui_receipts'] or [None])[-1],args.case)
+            if observation['status']=='observed':break
+            time.sleep(.1);poll()
+        result['sdk_observation']=evidence.summarize(baseline,result['sdk_samples'],row,(result['gui_receipts'] or [None])[-1],args.case)
+        need(row['result']=='completed' and result['sdk_observation']['status']=='observed','GUI_CASE_NOT_VERIFIED')
+        result['catalog_after']=inspect_registration(args.serial,nonce,args.asset_run_id,args.manifest_sha256)
+        need(result['catalog_after']==result['catalog'],'CATALOG_CHANGED')
+        need(source_hashes()==source and digest_sources()==digest,'SOURCE_CHANGED');result['source_unchanged']=True
+        need(device.adb('shell','pidof',PACKAGE).strip()==str(binding['process_id']),'APK_PROCESS_NOT_CURRENT')
+        need(not interrupted[0],'GUI_HOST_CANCELLED');result['status']='completed'
+    except (OSError,ValueError,RuntimeError,KeyError,TypeError,subprocess.SubprocessError) as error:
+        result['status']='failed' if started else 'blocked'
+        token=str(error);result['reason']=token if __import__('re').fullmatch('[A-Z][A-Z0-9_]{0,79}',token) else 'GUI_OPERATOR_FAILED'
+    finally:
+        if started and result['status']!='completed':
+            try:
+                # 起動済みcaseの同じactor/nonceだけへ通常session Stop。保存PIDをsignalしない。
+                broadcast('stop');result['session_stop_sent']=True;until=time.monotonic()+23
+                while time.monotonic()<until:
+                    sample=poll(stopping=True)
+                    if evidence.stopped(baseline,result['sdk_samples']):break
+                    if row is not None and row['phase']=='PENDING_CLEANUP' and row['cleanup_reason'] is not None:break
+                    time.sleep(.1)
+                result['failure_sdk_cleanup_complete']=evidence.stopped(baseline,result['sdk_samples'])
+                result['failure_process_cleanup_complete']=evidence.reclaimed((result['gui_receipts'] or [None])[-1])
+                result['failure_cleanup_complete']=result['failure_sdk_cleanup_complete'] and result['failure_process_cleanup_complete']
+                result['baseline_terminated_by_session_stop']=not set(baseline['mapped']) & set(result['sdk_samples'][-1]['mapped'])
+            except (OSError,ValueError,RuntimeError,KeyError,TypeError,subprocess.SubprocessError):result['failure_cleanup_complete']=False
+        if baseline is not None and result['sdk_samples']:
+            try:result['sdk_observation']=evidence.summarize(baseline,result['sdk_samples'],row,(result['gui_receipts'] or [None])[-1],args.case)
+            except (ValueError,KeyError,TypeError):result['evidence_error']='GUI_EVIDENCE_INVALID';result['status']='failed'
+        if source is not None:
+            try:result['source_unchanged']=source_hashes()==source and digest_sources()==digest
+            except OSError:result['source_unchanged']=False
+            if not result['source_unchanged']:result['status']='failed';result.setdefault('reason','SOURCE_CHANGED')
+        for kind,previous in previous_signals.items():signal.signal(kind,previous)
+        (run/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+    print(json.dumps(dict(status=result['status'],case=args.case,nonce=nonce,artifact=str(run),reason=result.get('reason'),physical_input='not_run')))
+    return 0 if result['status']=='completed' else 1
+
+
+if __name__=='__main__':raise SystemExit(main())

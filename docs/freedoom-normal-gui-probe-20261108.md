@@ -42,3 +42,28 @@ enqueue実行時のruntime/sessionも再検査する。新しいsessionへ遅れ
 この場合は元foot/anchorも終了するため、自然exitや元foot継続の合格とは分ける。
 元の失敗理由を残し、Idle/pending cleanup空と全SDK/Board owner0を別に確認する。
 回収失敗や外部ownerへ交代した場合はpendingを保持し、保存PIDへsignalしない。
+
+## 同じjobでのoperator実行
+
+登録opt-inと同じsourceのdebug APK、同じ3file helper bundle、通常foot一枚/観測登録/FOCUSEDを用意してから実行する。
+このコマンドは登録を書き換えず、前後のinspectで固定asset profileとcatalog revisionを検査する。
+
+```bash
+scripts/quest-run-freedoom-gui --serial "$EIDOLON_QUEST_SERIAL" --case keys \
+  --asset-run-id "$FREEDOOM_ASSET_RUN_ID" --manifest-sha256 "$FREEDOOM_MANIFEST_SHA256"
+
+# keysとは別の起動/nonceでclose二段階を検証する。
+scripts/quest-run-freedoom-gui --serial "$EIDOLON_QUEST_SERIAL" --case close \
+  --asset-run-id "$FREEDOOM_ASSET_RUN_ID" --manifest-sha256 "$FREEDOOM_MANIFEST_SHA256"
+```
+
+operatorは起動前からGUI退役後まで同じAPK process/source/runtime/session/scene/leaseを照合し、
+元footの全sample継続、専用cookie窓のSDK frame/content進行、各native command ACK、game/worker receipt、
+全世代のSDK/Board/controls/MODE退役を要求する。追加窓のMapped消失だけでは合格しない。
+通常workerではraw traceを有効にせず、session全体のSHM copy counter増分とGUIのSDK frameを別に記録する。
+copy counterをGUI一枚のwire commit数へ読み替えず、`wire_trace=not_run`を残す。
+
+SIGINT/TERMやcase失敗では同じactor/nonceへ固定Stopを依頼する。元の失敗を保持したまま、
+プロセスreceiptのPIDFD/pipe回収とSDK全owner0を別々に記録する。Stopでfootが終了した結果を
+自然終了・元foot継続の合格へ変換しない。未知のowner/新session/回収receipt欠落は未確認として残す。
+結果と選択したmetadataだけがprivate artifactの`result.json`へ保存される。
