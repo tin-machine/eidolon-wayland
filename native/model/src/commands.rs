@@ -314,6 +314,9 @@ pub enum Command {
         schema: u32,
         request_id: CommandSeq,
         target: crate::surface::TargetKey,
+        /// 初期診断panelのSDK所有。省略した既存callerはアプリ資源として回収を待つ。
+        #[serde(default)]
+        diagnostic: bool,
     },
     ReleaseSdkBinding {
         schema: u32,
@@ -953,6 +956,28 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sdk_binding_is_an_app_owner_unless_diagnostic_is_explicit() {
+        let mut value = serde_json::json!({"schema":1,"type":"register_sdk_binding","request_id":"1",
+            "target":{"session":"1","window":"1","scene":"1","generation":"1"}});
+        assert!(matches!(
+            Command::parse(&value.to_string()).unwrap(),
+            Command::RegisterSdkBinding {
+                diagnostic: false,
+                ..
+            }
+        ));
+        value["diagnostic"] = true.into();
+        assert!(matches!(
+            Command::parse(&value.to_string()).unwrap(),
+            Command::RegisterSdkBinding {
+                diagnostic: true,
+                ..
+            }
+        ));
+        value["diagnostic"] = "true".into();
+        assert!(Command::parse(&value.to_string()).is_err());
+    }
     #[test]
     fn group_wire_keeps_new_instance_and_geometry_ack_fences_distinct() {
         let action = serde_json::json!({"schema":1,"type":"window_group","request_id":"10",

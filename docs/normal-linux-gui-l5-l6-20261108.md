@@ -37,7 +37,7 @@ host pinはclient identityと独立した接続先認証情報であり、別経
 nativeのcredential scopeに含まれるsessionも照合する。scopeの不一致・遅延・二度目の供給を拒否し、秘密bufferはJNI受付後に消去する。
 
 bundle pinsもC1のatomic storage境界を再利用し、確認したprofile bindingと一緒に保存する。
-profileが変われば再確認が必要。接続中、起動待ち、native/SDK target残存、remote journal回収待ちの間はprofile/pinsを変更できない。
+profileが変われば再確認が必要。接続中、起動待ち、以前のアプリのnative/SDK target残存、remote journal回収待ちの間はprofile/pinsを変更できない。
 アプリ再起動後やTermux表示中にも通常Linux journalのbarrierを保持する。設定の見かけだけを変えて未回収ownerを消さない。
 
 ### Linux側の準備とpins出力
@@ -71,7 +71,23 @@ app_idだけで起動成功や親子関係を決めない。
 Main/Dialogは独立したwindow/full target `(session, window, scene, generation)` を持ち、
 既存のpointer/keyboard/resize/Close/panel/SDK処理へ渡す。許可が失われたwindowは入力・renderから除外するが、
 「非表示」をWayland窓の破棄やslot解放の証拠にしない。raw windowの実在、native target、panel、SDK binding、
-SDK disposal receiptをそれぞれ観測し、全世代の退役が終わるまで次の接続を許可しない。
+SDK disposal receiptをそれぞれ観測し、アプリの全世代の退役が終わるまで次の接続を許可しない。
+
+### 初期診断パネルと接続の入口
+
+通常起動直後の診断パネルは、接続後にwindow modeへ移ってから退役する。
+このパネルが存在するだけで「以前のアプリが未回収」と判定すると、接続を開始できず、診断パネルも退役できない。
+そのため、接続・設定変更・回収先選択の入口では初期診断の所有権とアプリの所有権を区別する。
+
+native render targetの `role=diagnostic` と、SDK登録時に明示した診断用bindingだけを接続の妨げにしない。
+SDKはSurfaceのattach前にも登録され、detach後にも残るため、その時点のrender targetの有無やSDK総数から役割を推定しない。
+登録した完全なtarget tupleに役割を保持し、通常bindingの診断用への付け替えや、window mode移行後の新しい診断用登録は許可しない。
+役割指定を省略した既存呼出しはアプリ所有として扱う。
+
+snapshotの `app_sdk_bindings` は診断用を除く接続判定用の数で、`shutdown.sdk_bindings` は診断用も含む全所有数である。
+設定保存に伴うruntime停止を含め、shutdownは引き続き全bindingの明示releaseを待つ。
+アプリの稼働・起動待ち、通常render target、panel、古いsceneのアプリSDK binding、Boardの残存は従来どおり拒否条件になる。
+remote journalのbarrierも維持し、診断パネルだけの再起動状態では保存済みの同じLinux設定へ選択・再接続してRecoverに進める。
 
 SSH actorの終了とlocal Waypipe/SHM/compositor終了も別の条件で扱う。
 helper喪失・ACK喪失・同一bootのunknown ownerはL1〜L4のjournalを残す。
@@ -87,6 +103,15 @@ workerを生成していないことが確認できた場合は `startup_failed`
 
 hostテスト・catalog表示・Mapped・helper終了の単独成功を、実描画や入力の成功としない。
 対象APK/source/bundle/profile revisionを固定した同一runで、次を記録する。
+
+最初に通常起動からの入口を確認する。診断パネルを手動で消した状態やSDK所有が空のfixtureだけでは、この受入れを代替しない。
+
+- 未設定の起動直後に診断パネルがある状態で、初回Termuxペアリングの保存、Linuxの選択・profile/pins保存に進める。
+- 保存済みTermux設定でアプリを起動し、診断パネルを残したまま通常接続を開始できる。
+- 保存済みLinux設定でアプリを起動し、診断パネルを残したままConnect→Inspectへ進める。
+- durableなLinux回収待ちがある再起動では、設定の上書き・Termux接続を拒否したまま、同じLinuxへの選択・再接続・明示Recoverへ進める。
+
+これらの入口を確認したうえで、GTKの一回の起動を次の手順で受け入れる。
 
 1. 通常設定から明示Connect→Inspect→GTKデモのLaunch。一度のclickで一つのmainが開き、待機中に自動終了しない。
 2. mainのMapped、Started/cookie照合、SDK初frameとcontent進行を別々に確認する。
@@ -125,6 +150,8 @@ main/Dialogの全世代SDK disposal receiptを照合する。古いrunの完了�
 - [共有GUIモデル](../native/model/src/linux_desktop.rs): selection、Started、main/Dialogの対応。
 - [native runtime](../native/core/src/runtime.rs) / [Session](../native/core/src/session.rs) / [slot](../native/core/src/window_slots.rs): 予約、admission、full-target退役。
 - [通常Host](../android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt) / [接続設定](../android/app/src/main/java/io/github/tinmachine/eidolon/ConnectionSettings.kt): worker上の明示操作、個別鍵、scope capture、UI。
+- [通常起動の接続回帰](../native/core/tests/initial_diagnostic_connection.rs): 実Runtimeに診断target/SDK所有を残したままTermux/LinuxのConnect受理と接続先の記録を確認する。SSH接続・認証の成功や実機描画の検査ではない。
+- [Androidの接続判定回帰](../android/app/src/test/java/io/github/tinmachine/eidolon/ConnectionAdmissionTest.kt): 診断パネルを伴う初期snapshotから設定・接続・回収先選択を確認し、旧アプリSDK・通常target・panel・Board・journalの拒否を維持する。
 - [pins exporterとテスト](../scripts/tests/test_linux_desktop_build.py): 検証済みpinsの読取専用出力、source/hash/manifest不一致の拒否。
 - [通常GUI観測operator](../scripts/quest-observe-normal-linux-gui) / [独立判定](../scripts/normal_linux_evidence.py) / [回帰テスト](../scripts/tests/test_normal_linux_gui.py): 別sessionの回収、古いtarget世代、不正終端、SDK漏れ、偽の物理入力成功を受け入れない。
 

@@ -19,6 +19,8 @@ pub struct Snapshot {
     pub input_resets: u64,
     pub error: Option<&'static str>,
     pub shutdown: crate::shutdown::Report,
+    /// 初期診断panelを除くSDK所有数。停止時はshutdown.sdk_bindingsの全所有を待つ。
+    pub app_sdk_bindings: usize,
     pub helper: Option<crate::helper::Report>,
     pub helper_workers: usize,
     pub native_deps: Option<crate::compositor::primitives::Report>,
@@ -51,6 +53,7 @@ impl Default for Snapshot {
             input_resets: 0,
             error: None,
             shutdown: Default::default(),
+            app_sdk_bindings: 0,
             helper: None,
             helper_workers: 0,
             native_deps: None,

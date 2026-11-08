@@ -20,6 +20,9 @@ struct Shared {
     ime_ui: Option<eidolon_model::ime::ImeSnapshot>,
     shutdown: crate::shutdown::Watch,
     sdk_bindings: Vec<eidolon_model::surface::TargetKey>,
+    // SDK登録はSurface作成より先で、Surface世代の交換/退役後もownerKeyが残る。
+    // 現在のrender targetやsession/window番号から診断所有を推測しない。
+    diagnostic_sdk_bindings: Vec<eidolon_model::surface::TargetKey>,
     panels: crate::panels::Controller,
     workspace: crate::workspace::Controller,
     credentials: eidolon_transport::credentials::CredentialSlot,
@@ -43,6 +46,12 @@ struct DesktopLaunch {
     lease: eidolon_model::window_slots::Lease,
 }
 impl Shared {
+    fn app_sdk_bindings(&self) -> usize {
+        self.sdk_bindings
+            .iter()
+            .filter(|key| !self.diagnostic_sdk_bindings.contains(key))
+            .count()
+    }
     fn clear_credentials(&mut self) {
         self.credentials.clear();
         self.credential_scope = None;
@@ -260,6 +269,7 @@ impl Runtime {
             ime_ui: None,
             shutdown: Default::default(),
             sdk_bindings: vec![],
+            diagnostic_sdk_bindings: vec![],
             panels: Default::default(),
             workspace: crate::workspace::Controller::load(None),
             credentials: Default::default(),
@@ -903,9 +913,11 @@ impl Runtime {
                             let mut asynchronous = false;
                             let app_busy =
                                 pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
-                            // Session::closed は protocol/local の証拠。SDK/native target の回収も別に待つ。
+                            // Session::closed は protocol/local の証拠。全世代のアプリ資源を別に待つ。
+                            // 初期診断panelは接続後に退役するため、接続/起動の前提にはしない。
                             let native_busy = app_busy || slots.report().occupied != 0
-                                || !render.targets.is_empty() || !state.sdk_bindings.is_empty()
+                                || gl.snapshot().targets.iter().any(|target| target.role != eidolon_render::RenderMode::Diagnostic)
+                                || state.app_sdk_bindings() != 0
                                 || !state.panels.snapshot().is_empty();
                             let code = match &command {
                                 Command::SetImeBackend {
@@ -2072,9 +2084,17 @@ impl Runtime {
         if let Command::RegisterSdkBinding { target, .. }
         | Command::ReleaseSdkBinding { target, .. } = &command
         {
+            let diagnostic = matches!(
+                command,
+                Command::RegisterSdkBinding {
+                    diagnostic: true,
+                    ..
+                }
+            );
             let code = if matches!(command, Command::ReleaseSdkBinding { .. }) {
                 if let Some(index) = state.sdk_bindings.iter().position(|key| key == target) {
                     state.sdk_bindings.remove(index);
+                    state.diagnostic_sdk_bindings.retain(|key| key != target);
                     Status::Accepted
                 } else {
                     Status::Stale
@@ -2086,11 +2106,25 @@ impl Runtime {
             } else if state.snapshot.scene != Some(target.scene) {
                 Status::Stale
             } else if state.sdk_bindings.contains(target) {
-                Status::Accepted
+                // 同じownerの再送は許すが、アプリ所有を診断へ付け替えて回収を迂回できない。
+                if state.diagnostic_sdk_bindings.contains(target) == diagnostic {
+                    Status::Accepted
+                } else {
+                    Status::Stale
+                }
+            } else if diagnostic
+                && (state.snapshot.app.is_some()
+                    || self.render.snapshot().mode != eidolon_render::RenderMode::Diagnostic)
+            {
+                // use_windowsは一方向。古い診断callbackで新しいアプリ所有を免除しない。
+                Status::NotReady
             } else if state.sdk_bindings.len() >= limits::SDK_BINDINGS {
                 Status::Busy
             } else {
                 state.sdk_bindings.push(*target);
+                if diagnostic {
+                    state.diagnostic_sdk_bindings.push(*target);
+                }
                 Status::Accepted
             };
             if code == Status::Accepted {
@@ -2206,6 +2240,7 @@ impl Runtime {
             shutdown: state
                 .shutdown
                 .report(Instant::now(), pending, state.sdk_bindings.len()),
+            app_sdk_bindings: state.app_sdk_bindings(),
             transport: self.transport.snapshot(),
             render: self.render.snapshot(),
             commands_pending: state.commands.len(),
@@ -2598,6 +2633,199 @@ mod tests {
             scene: SceneEpoch::new(id).unwrap(),
         }
     }
+    fn completed(runtime: &Runtime, command: Command) -> Status {
+        let request = command.request_id();
+        let before = runtime.snapshot().commands_processed;
+        assert_eq!(runtime.command(command), Status::Accepted);
+        wait(runtime, |r| r.snapshot().commands_processed > before);
+        runtime
+            .poll(64)
+            .unwrap()
+            .into_iter()
+            .find_map(|event| match event {
+                Event::CommandComplete { request_id, code } if request_id == request => Some(code),
+                _ => None,
+            })
+            .expect("queued command completion")
+    }
+    fn register_sdk(target: eidolon_model::surface::TargetKey, diagnostic: bool) -> Command {
+        Command::RegisterSdkBinding {
+            schema: 1,
+            request_id: CommandSeq::new(100).unwrap(),
+            target,
+            diagnostic,
+        }
+    }
+    fn release_sdk(target: eidolon_model::surface::TargetKey) -> Command {
+        Command::ReleaseSdkBinding {
+            schema: 1,
+            request_id: CommandSeq::new(101).unwrap(),
+            target,
+        }
+    }
+    fn connect_missing_profile(request: i64) -> Command {
+        Command::Connect {
+            schema: 1,
+            request_id: CommandSeq::new(request).unwrap(),
+            profile_id: "termux-local".into(),
+        }
+    }
+    #[test]
+    fn diagnostic_sdk_role_cannot_hide_an_app_owner_from_an_old_scene() {
+        use eidolon_model::surface::TargetKey;
+        let runtime = Runtime::start(RuntimeConfig::default()).unwrap();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
+        assert_eq!(completed(&runtime, scene(1)), Status::Accepted);
+        let diagnostic = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        let app = TargetKey::from_raw(1, 1, 1, 2).unwrap();
+        assert_eq!(
+            runtime.command(register_sdk(diagnostic, true)),
+            Status::Accepted
+        );
+        assert_eq!(
+            runtime.attach_surface(
+                diagnostic,
+                eidolon_render::PlatformWindow::default(),
+                64,
+                64
+            ),
+            Status::Accepted
+        );
+        wait(&runtime, |r| r.snapshot().render.targets.len() == 1);
+        // session/window番号が同じでも、別世代の通常SDK ownerを診断扱いしない。
+        assert_eq!(runtime.command(register_sdk(app, false)), Status::Accepted);
+        assert_eq!(runtime.command(register_sdk(app, true)), Status::Stale);
+        assert_eq!(
+            runtime.command(register_sdk(diagnostic, false)),
+            Status::Stale
+        );
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 1);
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(10)),
+            Status::Busy
+        );
+        assert_eq!(runtime.snapshot().transport.credential_requests, 0);
+        assert_eq!(completed(&runtime, scene(2)), Status::Accepted);
+        let wrong_scene = TargetKey::from_raw(1, 1, 2, 2).unwrap();
+        assert_eq!(runtime.command(release_sdk(wrong_scene)), Status::Stale);
+        assert_eq!(runtime.command(register_sdk(app, true)), Status::Stale);
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(11)),
+            Status::Busy
+        );
+        assert_eq!(runtime.command(release_sdk(app)), Status::Accepted);
+        assert_eq!(runtime.command(release_sdk(app)), Status::Stale);
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 0);
+        assert_eq!(runtime.snapshot().shutdown.sdk_bindings, 1);
+        // native surfaceの退役後もSDK ownerKeyは残るが、通常接続を妨げない。
+        assert_eq!(
+            completed(
+                &runtime,
+                Command::SurfaceLost {
+                    schema: 1,
+                    request_id: CommandSeq::new(12).unwrap(),
+                    target: diagnostic,
+                }
+            ),
+            Status::Accepted
+        );
+        wait(&runtime, |r| r.snapshot().render.targets.is_empty());
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(13)),
+            Status::NotReady
+        );
+        assert_eq!(runtime.snapshot().transport.error, Some("HOST_KEY_UNKNOWN"));
+        runtime.request_stop();
+        wait(&runtime, |r| r.snapshot().render.workers == 0);
+        assert!(!runtime.can_destroy());
+        let stopped = runtime.snapshot().shutdown;
+        assert_eq!(stopped.sdk_bindings, 1);
+        assert!(stopped.pending_owners.contains(&"sdk"));
+        assert_eq!(runtime.command(release_sdk(diagnostic)), Status::Accepted);
+        wait(&runtime, Runtime::can_destroy);
+        assert!(runtime.snapshot().shutdown.complete);
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 0);
+    }
+    #[test]
+    fn diagnostic_sdk_registration_cannot_begin_after_window_mode() {
+        use eidolon_model::surface::TargetKey;
+        let runtime = Runtime::start(RuntimeConfig::default()).unwrap();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
+        assert_eq!(completed(&runtime, scene(1)), Status::Accepted);
+        let first = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        let late = TargetKey::from_raw(1, 1, 1, 2).unwrap();
+        assert_eq!(runtime.command(register_sdk(first, true)), Status::Accepted);
+        // Coreのapp snapshotがまだない間でも、rendererの一方向遷移を照合する。
+        runtime.render.use_windows();
+        assert!(runtime.snapshot().app.is_none());
+        assert_eq!(runtime.command(register_sdk(late, true)), Status::NotReady);
+        assert_eq!(runtime.command(register_sdk(first, true)), Status::Accepted);
+        assert_eq!(runtime.command(register_sdk(late, false)), Status::Accepted);
+        assert_eq!(runtime.snapshot().shutdown.sdk_bindings, 2);
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 1);
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(10)),
+            Status::Busy
+        );
+        runtime.request_stop();
+        assert_eq!(runtime.command(release_sdk(first)), Status::Accepted);
+        assert_eq!(runtime.command(release_sdk(first)), Status::Stale);
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 1);
+        assert_eq!(runtime.command(release_sdk(late)), Status::Accepted);
+        wait(&runtime, Runtime::can_destroy);
+    }
+    #[test]
+    fn unretired_app_native_target_still_blocks_connect_without_an_sdk_owner() {
+        use eidolon_model::surface::TargetKey;
+        let runtime = Runtime::start(RuntimeConfig::default()).unwrap();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
+        assert_eq!(completed(&runtime, scene(1)), Status::Accepted);
+        let target = TargetKey::from_raw(1, 1, 1, 2).unwrap();
+        runtime.render.use_windows();
+        assert_eq!(
+            runtime.render.windows(target.session, &[target.window]),
+            Status::Accepted
+        );
+        let (image, probes) = eidolon_render::fixtures::make(0, 1, target, 64, 64).unwrap();
+        assert_eq!(runtime.render.submit(image, probes), Status::Accepted);
+        assert_eq!(
+            runtime
+                .render
+                .attach_window(target, eidolon_render::PlatformWindow::default(), 64, 64),
+            Status::Accepted
+        );
+        wait(&runtime, |r| {
+            r.snapshot()
+                .render
+                .targets
+                .iter()
+                .any(|t| t.key == target && t.role == eidolon_render::RenderMode::Windows)
+        });
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 0);
+        assert_eq!(runtime.snapshot().shutdown.sdk_bindings, 0);
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(10)),
+            Status::Busy
+        );
+        assert_eq!(
+            completed(
+                &runtime,
+                Command::SurfaceLost {
+                    schema: 1,
+                    request_id: CommandSeq::new(11).unwrap(),
+                    target,
+                }
+            ),
+            Status::Accepted
+        );
+        wait(&runtime, |r| r.snapshot().render.targets.is_empty());
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(12)),
+            Status::NotReady
+        );
+        runtime.request_stop();
+        wait(&runtime, Runtime::can_destroy);
+    }
     #[test]
     fn sdk_release_bypasses_full_queue_but_old_or_duplicate_ack_cannot_finish_stop() {
         use eidolon_model::surface::TargetKey;
@@ -2618,6 +2846,7 @@ mod tests {
                     schema: 1,
                     request_id: CommandSeq::new(1).unwrap(),
                     target,
+                    diagnostic: false,
                 }
             } else {
                 Command::ReleaseSdkBinding {

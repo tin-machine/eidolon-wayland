@@ -261,20 +261,8 @@ object NativeSessionHost {
         val editable=connectionEditable
         ui.post {connectionUi.value=ConnectionUi(publicKey,profile?.username ?: "",profile?.hostKey ?: "",profile?.token ?: "",editable,message)}
     }
-    private fun canChangeConnection(runtime:JSONObject):Boolean {
-        if (debugSdkLease.blocksProduct()) return false
-        val transport=runtime.getJSONObject("transport")
-        return runtime.getString("state")=="Ready" && !connectPending && pendingDisconnect==null && terminalOpen==null &&
-            transport.getString("state") in setOf("Idle","Disconnected","Failed") && transport.getInt("owned_connections")==0 &&
-            transport.getJSONArray("pending_cleanup").length()==0 && !transport.optBoolean("desktop_pending") &&
-            linuxAction==null && localTargetsRetired(runtime)
-    }
-    private fun localTargetsRetired(runtime:JSONObject):Boolean =
-        (runtime.optJSONObject("app")?.optString("state") ?: "stopped")=="stopped" &&
-            runtime.getJSONObject("shutdown").getInt("sdk_bindings")==0 && runtime.getJSONArray("panels").length()==0 &&
-            runtime.getJSONObject("render").getJSONArray("targets").length()==0 && runtime.getJSONObject("window_slots").let {board ->
-                board.getInt("occupied")==0 && !board.getBoolean("cleanup_required") && board.getJSONArray("entries").length()==0 && board.getJSONArray("unassigned").length()==0
-            }
+    private fun canChangeConnection(runtime:JSONObject):Boolean = ConnectionAdmission.canChange(runtime,
+        debugSdkLease.blocksProduct() || connectPending || pendingDisconnect!=null || terminalOpen!=null || linuxAction!=null)
     fun saveConnection(username:String,hostKey:String,expected:String,confirmed:Boolean) {
         productWorker.execute {
             try {
@@ -293,12 +281,9 @@ object NativeSessionHost {
 
     private fun linuxPins(): LinuxDesktopPins? = linuxSavedPins?.forProfile(linuxProfile)
     private fun canSelectRecovery(runtime:JSONObject):Boolean {
-        val transport=runtime.getJSONObject("transport")
-        return !debugSdkLease.blocksProduct() && selectedProfileId!=LinuxConnectionProfile.ID && linuxProfile!=null && linuxPins()!=null &&
-            runtime.getString("state")=="Ready" && !connectPending && pendingDisconnect==null && terminalOpen==null &&
-            transport.optBoolean("desktop_pending") && transport.optInt("owned_connections")==0 &&
-            transport.optString("state") in setOf("Idle","Disconnected","Failed","CleanupPending") && transport.getJSONArray("pending_cleanup").length()==0 &&
-            localTargetsRetired(runtime)
+        return selectedProfileId!=LinuxConnectionProfile.ID && linuxProfile!=null && linuxPins()!=null &&
+            ConnectionAdmission.canSelectRecovery(runtime,
+                debugSdkLease.blocksProduct() || connectPending || pendingDisconnect!=null || terminalOpen!=null)
     }
     private fun refreshLinuxConnection(message:String) {
         val profile=linuxProfile
@@ -425,7 +410,7 @@ object NativeSessionHost {
         }
         val busy=connectPending || pendingDisconnect!=null || linuxAction!=null
         val configured=linuxIdentity!=null && linuxProfile?.let {LinuxConnectionProfile.endpointSupport(it)==LinuxConnectionProfile.EndpointSupport.IPV4}==true && linuxPins()!=null
-        val canConnect=configured && !busy && localTargetsRetired(runtime) && owned==0 && phase in setOf("Idle","Disconnected","Failed","CleanupPending")
+        val canConnect=configured && ConnectionAdmission.canConnectLinux(runtime,busy)
         val canInspect=!busy && owned==1 && phase=="ProbeReady" && !pending
         val canRecover=!busy && owned==1 && phase=="CleanupPending" && pending && !appActive && transport.isNull("desktop")
         val canStop=pendingDisconnect==null && (owned>0 || connectPending || appActive)
@@ -1759,9 +1744,12 @@ object NativeSessionHost {
             ui.post {completed(receipt)}
         }
     }
-    fun sdkBinding(target: JSONObject, runtime: Long, owned: Boolean): Int = NativeBridge.nativeCommand(runtime,
-        JSONObject().put("schema",1).put("type",if(owned) "register_sdk_binding" else "release_sdk_binding")
-            .put("request_id",requests.incrementAndGet().toString()).put("target",target).toString())
+    fun sdkBinding(target: JSONObject, runtime: Long, owned: Boolean, diagnostic: Boolean = false): Int {
+        val command=JSONObject().put("schema",1).put("type",if(owned) "register_sdk_binding" else "release_sdk_binding")
+            .put("request_id",requests.incrementAndGet().toString()).put("target",target)
+        if(owned) command.put("diagnostic",diagnostic)
+        return NativeBridge.nativeCommand(runtime,command.toString())
+    }
     private fun stopRuntime() {
         if (handle == 0L) return
         invalidateImeConnection()

@@ -211,7 +211,7 @@ class SpatialPanelAdapter {
         creating = true
         attempting = plan
         val ownerKey = if(plan==null) key() else JSONObject(plan.getJSONObject("target").toString())
-        if(NativeSessionHost.sdkBinding(ownerKey,handle,true)!=NativeBridge.ACCEPTED) { creating=false;return }
+        if(NativeSessionHost.sdkBinding(ownerKey,handle,true,diagnostic=plan==null)!=NativeBridge.ACCEPTED) { creating=false;return }
         var entity: Entity? = null
         try {
             val decoration = plan?.optJSONObject("decoration")
