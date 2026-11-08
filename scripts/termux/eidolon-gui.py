@@ -78,7 +78,7 @@ def read_file(root,name,*,size=None,pin=None,mode=0o600,limit=32768,retain=True,
     parts=name.split('/');fd=directory(root,parts[:-1]);target=None
     try:
         target=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd);before=os.fstat(target)
-        require(stat.S_ISREG(before.st_mode) and before.st_uid==os.getuid() and stat.S_IMODE(before.st_mode)==mode and before.st_nlink==1
+        require(stat.S_ISREG(before.st_mode) and before.st_uid==os.getuid() and (not before.st_mode&0o022 if mode is None else stat.S_IMODE(before.st_mode)==mode) and before.st_nlink==1
             and 0<before.st_size<=limit and (size is None or before.st_size==size))
         digest=hashlib.sha256();body=bytearray();count=0
         while True:
@@ -95,7 +95,7 @@ def read_file(root,name,*,size=None,pin=None,mode=0o600,limit=32768,retain=True,
 
 
 def inspect_assets(home,value):
-    value=profile(value);run=value['assets_run_id'];root=home/'.local/share/eidolon/freedoom/0.13.0'/run
+    home=home.resolve(strict=True);value=profile(value);run=value['assets_run_id'];root=home/'.local/share/eidolon/freedoom/0.13.0'/run
     parent=directory(home,('.local','share','eidolon','freedoom','0.13.0',run));os.close(parent)
     _,raw=read_file(root,'manifest.json',pin=value['manifest_sha256'],limit=16384);manifest=decode(raw)
     require(type(manifest) is dict and set(manifest)=={'schema','kind','run_id','version','archive','demo','files','signature_verification','catalog','execution','termux_install'} and
@@ -122,7 +122,7 @@ def inspect_assets(home,value):
     claimed=receipt['engine'];require(type(claimed) is dict and set(claimed)=={'package','version','sha256','bytes','uid','mode','nlink','elf_machine','identity'} and
         claimed==dict(package='chocolate-doom',version='3.1.1',sha256=ENGINE_SHA,bytes=ENGINE_BYTES,uid=os.getuid(),mode=0o700,nlink=1,elf_machine=183,identity=list(engine['identity'])))
     runtime={}
-    for name,pin in RUNTIME.items():runtime[name],_=read_file(prefix/'lib',name,pin=pin,mode=0o700,limit=32*1024*1024,retain=False)
+    for name,pin in RUNTIME.items():runtime[name],_=read_file(prefix/'lib',name,pin=pin,mode=None,limit=32*1024*1024,retain=False)
     for name,target in ALIASES.items():
         link=prefix/'lib'/name;require(link.lstat().st_uid==os.getuid() and link.is_symlink() and link.resolve(strict=True)==prefix/'lib'/target)
     _,raw=read_file(prefix,'share/glvnd/egl_vendor.d/50_mesa.json',limit=4096)
@@ -160,6 +160,12 @@ def make_state(home,nonce,launch,checked):
         os.fsync(fd)
     finally:os.close(fd)
     return home.joinpath(*parts)
+
+
+def current_files(home,checked):
+    for name,row in checked['files'].items():require(ident((checked['root']/name).lstat())==row['identity'],'GUI_ASSET_CHANGED')
+    require(ident((home.parent/'usr/bin/chocolate-doom').lstat())==checked['engine']['identity'],'GUI_RUNTIME_CHANGED')
+    for name,row in checked['runtime'].items():require(ident((home.parent/'usr/lib'/name).lstat())==row['identity'],'GUI_RUNTIME_CHANGED')
 
 
 def app_id(nonce,launch):
@@ -211,7 +217,7 @@ def worker(request,control_fd,emit,*,home=HOME,owner_module=None,interrupted=lam
             if interrupted():reason='signal';break
             if time.monotonic()-last_check>.25:
                 last_check=time.monotonic();lease(home,nonce,parent)
-                for name,row in checked['files'].items():require(ident((checked['root']/name).lstat())==row['identity'],'GUI_ASSET_CHANGED')
+                current_files(home,checked)
             for key,_ in selector.select(.02):
                 try:data=os.read(key.fd,4096)
                 except BlockingIOError:continue

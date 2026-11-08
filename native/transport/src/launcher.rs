@@ -186,6 +186,10 @@ pub struct Finished {
     pub pattern: Option<Pattern>,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub gui_children: Option<GuiSummary>,
+    #[serde(default)]
+    pub gui_receipts: Vec<GuiExited>,
 }
 impl Finished {
     fn valid(&self) -> bool {
@@ -226,6 +230,17 @@ impl Finished {
                 .pattern
                 .as_ref()
                 .is_none_or(|p| p.uid == self.uid && p.valid())
+            && self.gui_children.as_ref().is_none_or(GuiSummary::valid)
+            && (!self.cleaned
+                || self
+                    .gui_children
+                    .as_ref()
+                    .is_none_or(|g| g.active == 0 && !g.cleanup_pending))
+            && self.gui_receipts.len() <= 16
+            && self
+                .gui_receipts
+                .iter()
+                .all(|r| r.valid() && r.nonce == self.nonce && r.uid == self.uid)
     }
 }
 #[derive(Deserialize)]
@@ -256,6 +271,100 @@ pub struct TerminalOpened {
     pub ordinal: u32,
     #[serde(default)]
     pub error: Option<crate::catalog::Error>,
+    #[serde(default)]
+    pub mode: crate::catalog::Mode,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuiProcess {
+    pub pid: u32,
+    pub start: String,
+    pub group: u32,
+}
+impl GuiProcess {
+    fn valid(&self) -> bool {
+        self.pid > 0
+            && self.group == self.pid
+            && !self.start.is_empty()
+            && self.start.len() <= 32
+            && self.start.bytes().all(|b| b.is_ascii_digit())
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuiSummary {
+    pub schema: u32,
+    pub active: u32,
+    pub started: u32,
+    pub retired: u32,
+    pub cleanup_pending: bool,
+}
+impl GuiSummary {
+    fn valid(&self) -> bool {
+        self.schema == 1 && self.active <= 9
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuiState {
+    pub schema: u32,
+    pub nonce: String,
+    pub uid: u32,
+    pub session: SessionId,
+    pub summary: GuiSummary,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuiExited {
+    pub schema: u32,
+    pub nonce: String,
+    pub uid: u32,
+    pub session: SessionId,
+    pub request_id: Option<CommandSeq>,
+    pub terminal_id: TerminalId,
+    pub app_id: String,
+    pub worker: Option<GuiProcess>,
+    pub child: Option<GuiProcess>,
+    pub child_returncode: Option<i32>,
+    pub worker_returncode: i32,
+    pub reason: String,
+    pub cleanup_complete: bool,
+    pub pipes_closed: bool,
+    pub assets_runtime_unchanged: bool,
+    pub term_signals: u32,
+    pub kill_signals: u32,
+    pub reaped: u32,
+    pub open_pidfds: u32,
+}
+impl GuiExited {
+    fn valid(&self) -> bool {
+        self.schema == 1
+            && self.cleanup_complete
+            && self.pipes_closed
+            && self.worker_returncode == 0
+            && self.open_pidfds == 0
+            && self.worker.as_ref().is_none_or(GuiProcess::valid)
+            && self.child.as_ref().is_none_or(GuiProcess::valid)
+            && self
+                .child_returncode
+                .is_none_or(|c| (-255..=255).contains(&c))
+            && self.term_signals <= 65536
+            && self.kill_signals <= 65536
+            && self.reaped <= 65536
+            && matches!(
+                self.reason.as_str(),
+                "natural"
+                    | "signal"
+                    | "control_eof"
+                    | "cancel"
+                    | "output_limit"
+                    | "failed"
+                    | "unsupported"
+            )
+            && eidolon_model::window_launch::gui_app_id(&self.nonce, self.terminal_id).as_ref()
+                == Some(&self.app_id)
+    }
 }
 pub use eidolon_model::window_launch::TerminalLaunch;
 
@@ -266,6 +375,10 @@ enum Frame {
     Tools(Tools),
     ChildStarted(Started),
     TerminalOpened(TerminalOpened),
+    #[serde(rename = "gui_state_v1")]
+    GuiStateV1(GuiState),
+    #[serde(rename = "gui_exited_v1")]
+    GuiExitedV1(GuiExited),
     #[serde(rename = "workload_v1")]
     WorkloadV1(Telemetry),
     CatalogV1(crate::catalog::Reply),
@@ -278,6 +391,8 @@ pub struct Report {
     pub terminal_count: u32,
     pub terminal_pending: Option<CommandSeq>,
     pub last_terminal: Option<TerminalOpened>,
+    pub gui_state: Option<GuiState>,
+    pub gui_receipts: Vec<GuiExited>,
     pub terminal_launches: Vec<TerminalLaunch>,
     pub workload: Option<Telemetry>,
     pub tools: Option<Tools>,
@@ -298,6 +413,7 @@ pub struct Launcher {
     last_catalog_request: Option<CommandSeq>,
     terminal_session: Option<SessionId>,
     next_terminal: Option<TerminalId>,
+    structured_start: bool,
     expected_tools: Option<String>,
     channel: Option<Channel<client::Msg>>,
     nonce: String,
@@ -355,6 +471,7 @@ impl Launcher {
             last_catalog_request: None,
             terminal_session: None,
             next_terminal: Some(TerminalId::new(1).unwrap()),
+            structured_start: false,
             expected_tools: None,
             expected_socket: remote_path(nonce)?,
             beat_every: Duration::from_secs(10),
@@ -447,21 +564,36 @@ impl Launcher {
         Ok(tools)
     }
     pub async fn start_app(&mut self, mode: &str, session: SessionId) -> Result<(), &'static str> {
+        self.start_app_target(mode, session, None).await
+    }
+    /// 初回GUIも同じFootserver anchorで開始する。targetは固定typed capの構造化値だけ。
+    pub async fn start_app_target(
+        &mut self,
+        mode: &str,
+        session: SessionId,
+        target: Option<crate::catalog::Target>,
+    ) -> Result<(), &'static str> {
         if self.report.phase != "prepared"
             || self.stopping.is_some()
             || !matches!(mode, "pattern" | "foot" | "foot_fixture")
             || self.report.tools.as_ref().is_none_or(|t| t.mode != mode)
+            || target
+                .as_ref()
+                .is_some_and(|t| !t.valid() || !matches!(mode, "foot" | "foot_fixture"))
         {
             return Err("NOT_READY");
         }
+        self.structured_start = target.is_some();
         if matches!(mode, "foot" | "foot_fixture") {
             let terminal = self.allocate_terminal(None)?;
             self.terminal_session = Some(session);
-            self.send_frame(
-                serde_json::json!({"type":"start_terminal_v1","schema":1,"nonce":self.nonce,
-                "mode":mode,"session":session,"terminal_id":terminal}),
-            )
-            .await?;
+            let mut frame = serde_json::json!({"type":"start_terminal_v1","schema":1,"nonce":self.nonce,
+                "mode":mode,"session":session,"terminal_id":terminal});
+            if let Some(target) = target {
+                frame["type"] = "start_application_v1".into();
+                frame["target"] = serde_json::to_value(target).map_err(|_| "INVALID_ARGUMENT")?;
+            }
+            self.send_frame(frame).await?;
         } else {
             self.control("start", Some(mode)).await?;
         }
@@ -523,6 +655,7 @@ impl Launcher {
             terminal_id: terminal,
             request_id: request,
             accepted: None,
+            mode: crate::catalog::Mode::Terminal,
         });
         Ok(terminal)
     }
@@ -531,7 +664,7 @@ impl Launcher {
     }
     pub(crate) async fn control_eof(&mut self) -> Result<(), &'static str> {
         self.stopping = Some(Instant::now());
-        self.deadline = Instant::now() + Duration::from_secs(8);
+        self.deadline = Instant::now() + self.cleanup_window();
         timeout(
             Duration::from_secs(2),
             self.channel.as_ref().ok_or("STALE")?.eof(),
@@ -560,12 +693,24 @@ impl Launcher {
     pub async fn request_stop(&mut self) -> Result<(), &'static str> {
         if self.stopping.is_none() && self.report.phase != "finished" {
             self.stopping = Some(Instant::now());
-            self.deadline = Instant::now() + Duration::from_secs(8);
+            self.deadline = Instant::now() + self.cleanup_window();
             if self.report.finished.is_none() {
                 self.control("stop", None).await?;
             }
         }
         Ok(())
+    }
+    fn cleanup_window(&self) -> Duration {
+        Duration::from_secs(
+            if self.structured_start
+                || self.report.gui_state.is_some()
+                || self.report.terminal_pending.is_some()
+            {
+                12
+            } else {
+                8
+            },
+        )
     }
     /// SSH channelを読み続けるcallerだけがheartbeatを送る。UI/coreではawaitしない。
     pub async fn next(&mut self) -> Result<Report, &'static str> {
@@ -708,8 +853,48 @@ impl Launcher {
                         })
                         .ok_or("PROTOCOL_ERROR")?;
                     launch.accepted = Some(value.success);
+                    launch.mode = value.mode;
                 }
                 self.report.last_terminal = Some(value);
+            }
+            Frame::GuiStateV1(value) => {
+                if value.schema != 1
+                    || value.nonce != self.nonce
+                    || value.uid != self.uid
+                    || Some(value.session) != self.terminal_session
+                    || !value.summary.valid()
+                    || !matches!(self.report.phase, "running" | "finishing")
+                {
+                    return Err("PROTOCOL_ERROR");
+                }
+                self.report.gui_state = Some(value);
+            }
+            Frame::GuiExitedV1(value) => {
+                if value.nonce != self.nonce
+                    || value.uid != self.uid
+                    || Some(value.session) != self.terminal_session
+                    || !value.valid()
+                    || !matches!(self.report.phase, "running" | "finishing")
+                    || self
+                        .report
+                        .terminal_launches
+                        .iter()
+                        .find(|r| {
+                            r.terminal_id == value.terminal_id && r.request_id == value.request_id
+                        })
+                        .is_none_or(|r| r.mode != crate::catalog::Mode::Gui || r.accepted.is_none())
+                    || self
+                        .report
+                        .gui_receipts
+                        .iter()
+                        .any(|r| r.terminal_id == value.terminal_id)
+                {
+                    return Err("PROTOCOL_ERROR");
+                }
+                if self.report.gui_receipts.len() == 16 {
+                    self.report.gui_receipts.remove(0);
+                }
+                self.report.gui_receipts.push(value);
             }
             Frame::WorkloadV1(value) => {
                 if !matches!(self.report.phase, "starting" | "running" | "finishing")
@@ -1250,5 +1435,39 @@ mod tests {
         assert!(!std::path::Path::new(&format!("/proc/{}", child.pid)).exists());
         drop(owner);
         drop(ssh);
+    }
+    #[test]
+    fn gui_receipt_has_fixed_cookie_owned_cleanup_and_no_free_body() {
+        let row = serde_json::json!({"schema":1,"nonce":"0123456789abcdef","uid":10158,"session":"17","request_id":"10","terminal_id":"2",
+            "app_id":"io.github.tinmachine.eidolon.gui.g-0123456789abcdef-2","worker":{"pid":123,"start":"456","group":123},
+            "child":{"pid":124,"start":"457","group":124},"child_returncode":7,"worker_returncode":0,"reason":"natural", "cleanup_complete":true,"pipes_closed":true,
+            "assets_runtime_unchanged":true,"term_signals":0,"kill_signals":0,"reaped":1,"open_pidfds":0});
+        let receipt: GuiExited = serde_json::from_value(row.clone()).unwrap();
+        assert!(receipt.valid());
+        assert_eq!(receipt.child_returncode, Some(7));
+        for (key, value) in [
+            (
+                "app_id",
+                serde_json::json!("io.github.tinmachine.eidolon.foot.t-0123456789abcdef-2"),
+            ),
+            ("cleanup_complete", serde_json::json!(false)),
+            ("open_pidfds", serde_json::json!(1)),
+            ("worker_returncode", serde_json::json!(-15)),
+        ] {
+            let mut bad = row.clone();
+            bad[key] = value;
+            assert!(!serde_json::from_value::<GuiExited>(bad).unwrap().valid());
+        }
+        let mut bad = row.clone();
+        bad["body"] = serde_json::json!("private");
+        assert!(serde_json::from_value::<GuiExited>(bad).is_err());
+        let mut first = row;
+        first["request_id"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<GuiExited>(first).unwrap().valid());
+        let legacy:TerminalOpened=serde_json::from_value(serde_json::json!({"schema":1,"nonce":"0123456789abcdef","uid":10158,"request_id":null,"success":true,"ordinal":1})).unwrap();
+        assert_eq!(legacy.mode, crate::catalog::Mode::Terminal);
+        let frame:Frame=serde_json::from_value(serde_json::json!({"type":"gui_state_v1","schema":1,"nonce":"0123456789abcdef","uid":10158,"session":"17",
+            "summary":{"schema":1,"active":1,"started":1,"retired":0,"cleanup_pending":false}})).unwrap();
+        assert!(matches!(frame,Frame::GuiStateV1(value) if value.summary.valid()));
     }
 }

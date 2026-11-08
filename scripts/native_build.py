@@ -17,6 +17,7 @@ TARGET = "aarch64-linux-android"
 def source_files(root=ROOT):
     fixed = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts/build-native",
              "scripts/native-build-inputs", "scripts/native_build.py", "scripts/theme_licenses.py", "scripts/check-native-package", "scripts/termux/eidolon-session.py",
+             "scripts/termux/eidolon-gui.py", "scripts/termux/eidolon_gui_owner.py",
              "scripts/linux/eidolon-linux-session.py",
              "scripts/fixtures/gtk3-interaction-fixture.c",
              "scripts/build-native-deps", "scripts/check-native-deps", "scripts/native-keymap-generator.c", "scripts/prepare-smithay",

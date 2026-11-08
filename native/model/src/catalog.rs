@@ -2,11 +2,38 @@
 use crate::ids::CommandSeq;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
+    #[default]
     Terminal,
     Gui,
+}
+
+/// 接続先profileとは別の固定実行条件。自由env/argvの許可へ変換しない。
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ExecutionProfile {
+    FreedoomPhase1Software {
+        assets_run_id: String,
+        manifest_sha256: String,
+    },
+}
+impl ExecutionProfile {
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::FreedoomPhase1Software {
+                assets_run_id,
+                manifest_sha256,
+            } => {
+                assets_run_id.len() == 32
+                    && assets_run_id
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    && hash(manifest_sha256)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,6 +51,8 @@ pub struct Definition {
     pub interpreter: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_profile: Option<ExecutionProfile>,
 }
 
 fn text(value: &str, max: usize) -> bool {
@@ -52,6 +81,14 @@ impl Definition {
                 .iter()
                 .all(|field| field.as_ref().is_none_or(|v| text(v, 1024)))
             && self.args.len() <= 64
+            && self.execution_profile.as_ref().is_none_or(|profile| {
+                profile.valid()
+                    && self.mode == Mode::Gui
+                    && self.executable == "/data/data/com.termux/files/usr/bin/chocolate-doom"
+                    && self.args.is_empty()
+                    && self.interpreter.is_none()
+                    && self.cwd.as_ref().is_none_or(|cwd| cwd == ".")
+            })
             && self
                 .args
                 .iter()
@@ -128,6 +165,8 @@ pub struct Entry {
     pub icon: String,
     pub available: bool,
     pub error: Option<Error>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_profile: Option<ExecutionProfile>,
 }
 impl Entry {
     fn valid(&self) -> bool {
@@ -138,7 +177,11 @@ impl Entry {
                 "builtin:terminal" | "builtin:editor" | "builtin:script" | "builtin:game"
             )
             && self.available == self.error.is_none()
-            && (self.mode != Mode::Gui || !self.available)
+            && self
+                .execution_profile
+                .as_ref()
+                .is_none_or(|profile| profile.valid() && self.mode == Mode::Gui)
+            && (self.mode != Mode::Gui || !self.available || self.execution_profile.is_some())
     }
 }
 
@@ -192,7 +235,8 @@ impl Target {
                 id: app_id,
             } => hash(revision) && id(app_id),
             Self::Temporary { definition } => {
-                definition.valid() && definition.mode == Mode::Terminal
+                definition.valid()
+                    && (definition.mode == Mode::Terminal || definition.execution_profile.is_some())
             }
         }
     }
@@ -219,6 +263,37 @@ mod tests {
                 "id":"s", "label":"s", "mode":"terminal", "executable":"x", "shell":"bash -c x"
             }))
             .is_err()
+        );
+    }
+    #[test]
+    fn gui_execution_profile_is_fixed_and_does_not_enable_arbitrary_gui_or_terminal_env() {
+        let value = serde_json::json!({"id":"freedoom", "label":"Freedoom", "mode":"gui",
+            "executable":"/data/data/com.termux/files/usr/bin/chocolate-doom", "args":[],
+            "execution_profile":{"kind":"freedoom_phase1_software", "assets_run_id":"a".repeat(32), "manifest_sha256":"b".repeat(64)}});
+        let definition: Definition = serde_json::from_value(value.clone()).unwrap();
+        assert!(definition.valid());
+        assert!(Target::Temporary { definition }.valid());
+        for (key, change) in [
+            ("mode", serde_json::json!("terminal")),
+            ("executable", serde_json::json!("/bin/sh")),
+            ("args", serde_json::json!(["-c", "body"])),
+            ("cwd", serde_json::json!("elsewhere")),
+            ("interpreter", serde_json::json!("python")),
+        ] {
+            let mut bad = value.clone();
+            bad[key] = change;
+            assert!(!serde_json::from_value::<Definition>(bad).unwrap().valid());
+        }
+        let mut bad = value.clone();
+        bad["execution_profile"]["env"] = serde_json::json!({"LD_PRELOAD":"body"});
+        assert!(serde_json::from_value::<Definition>(bad).is_err());
+        let mut bad = value;
+        bad.as_object_mut().unwrap().remove("execution_profile");
+        assert!(
+            !Target::Temporary {
+                definition: serde_json::from_value(bad).unwrap()
+            }
+            .valid()
         );
     }
 }

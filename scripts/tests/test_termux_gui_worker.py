@@ -111,6 +111,9 @@ class GuiWorkerTests(unittest.TestCase):
     def test_missing_license_or_runtime_change_is_rejected_before_spawn(self):
         path=self.directory/'assets/COPYING.txt';path.write_bytes(b'changed')
         with self.assertRaises(gui.GuiError):gui.inspect_assets(self.home,self.profile)
+    def test_android_home_alias_is_canonicalized_before_runtime_alias_comparison(self):
+        alias=self.root/'android-home-alias';alias.symlink_to(self.home,target_is_directory=True)
+        self.assertEqual(gui.inspect_assets(alias,self.profile),gui.inspect_assets(self.home,self.profile))
     def test_natural_failure_preserves_root_rc_and_reaps_owned_process_only(self):
         child=self.start("import time;print('FIXED',flush=True);time.sleep(.08);raise SystemExit(7)")
         rows=self.collect(child);self.assertEqual([row['phase'] for row in rows],['started','finished'])
@@ -129,13 +132,16 @@ class GuiWorkerTests(unittest.TestCase):
         child=self.start(code);rows=self.collect(child);last=rows[-1]
         self.assertEqual(last['child_returncode'],0);self.assertTrue(last['cleanup']['complete']);self.assertGreaterEqual(last['cleanup']['reaped'],2)
         self.assertGreaterEqual(last['cleanup']['kill_signals'],1);self.assertTrue(last['pipes_closed'])
-    def manager(self,body):
-        lease=self.setup_lease();text=(self.lib/'eidolon-gui.py').read_text()
+    def fixed_worker_source(self,body):
+        text=(self.lib/'eidolon-gui.py').read_text()
         text=text.replace("HOME=Path('/data/data/com.termux/files/home')",'HOME=Path('+repr(str(self.home))+')')
         overrides=(f'ENGINE_SHA={self.engine_sha!r};ENGINE_BYTES={self.engine_bytes!r};STATIC_FILES={self.static!r};RUNTIME={self.runtime!r};ALIASES={self.aliases!r}\n'
             +f'command=lambda home,state,checked:[{str(self.binary)!r},"-I","-S","-B","-c",{body!r}]\n')
         text=text.replace("if __name__=='__main__':",overrides+"if __name__=='__main__':")
-        return gui.GuiChildren(self.home,lease,'17',text.encode())
+        return text.encode()
+    def manager(self,body):
+        lease=self.setup_lease()
+        return gui.GuiChildren(self.home,lease,'17',self.fixed_worker_source(body))
     def test_parent_manager_accepts_gui_without_foot_window_and_keeps_anchor_after_last_exit(self):
         manager=self.manager('import time;time.sleep(.1)')
         manager.allow_initial=True
@@ -168,6 +174,16 @@ class GuiWorkerTests(unittest.TestCase):
         self.assertEqual(gui.worker_event(row,request),row)
         for change in (dict(body='PRIVATE'),dict(app_id='unrelated'),dict(uid=os.getuid()+1),dict(child=dict(pid=123,start='456',group=1))):
             with self.assertRaises(gui.GuiError):gui.worker_event(dict(row,**change),request)
+    def test_runtime_replacement_is_gui_failure_and_never_stops_existing_anchor(self):
+        manager=self.manager('import time;time.sleep(4)');manager.begin('10','1',dict(mode='gui',executable=gui.EXECUTABLE,execution_profile=self.profile))
+        closed=[];changed=False;deadline=time.monotonic()+6
+        while manager.rows and time.monotonic()<deadline:
+            opened,retired=manager.tick();closed+=retired
+            if opened and not changed:
+                changed=True;(self.home.parent/'usr/lib/libSDL2-2.0.so').write_bytes(b'changed runtime')
+            time.sleep(.02)
+        self.assertTrue(changed);self.assertEqual(len(closed),1);self.assertEqual(closed[0]['reason'],'failed')
+        self.assertFalse(closed[0]['assets_runtime_unchanged']);self.assertTrue(closed[0]['cleanup_complete']);self.assertIsNone(self.anchor.poll())
 
 
 class PinContractTests(unittest.TestCase):

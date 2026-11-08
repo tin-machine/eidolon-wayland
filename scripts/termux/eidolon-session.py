@@ -43,6 +43,25 @@ CATALOG_BYTES = 256 * 1024
 CATALOG_APPS = 64
 CATALOG_PAGE = 8
 CONTROL_BYTES = 16384
+GUI_WORKER_SHA = 'b526166208324dcff3292bfe632a16bb07dc8dfca1fb26ce1f08c618967b6dff'
+
+
+def gui_policy(home):
+    """主helper SHAへ固定した小workerだけ。検査したbytesを実行し、未検証import先へ委譲しない。"""
+    path=home/'.local/lib/eidolon/eidolon-gui.py'
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    try:
+        before=os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_uid!=os.getuid() or stat.S_IMODE(before.st_mode)!=0o700 or before.st_nlink!=1 or not 0<before.st_size<=65536:
+            raise CatalogError('GUI_NOT_VERIFIED')
+        data=os.read(fd,65537);after=os.fstat(fd)
+        if ((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns)
+                or len(data)!=before.st_size or hashlib.sha256(data).hexdigest()!=GUI_WORKER_SHA):raise CatalogError('GUI_NOT_VERIFIED')
+    finally:os.close(fd)
+    module=type(sys)('eidolon_gui_policy');module.__file__=str(path);exec(compile(data,str(path),'exec'),module.__dict__)
+    module.read_file(path.parent,'eidolon_gui_owner.py',pin=module.OWNER_SHA,mode=0o700,limit=32768)
+    module.SOURCE_BYTES=data
+    return module
 
 
 class CatalogError(ValueError):
@@ -65,7 +84,7 @@ def catalog_text(value, limit, *, empty=False, multiline=False):
 def catalog_definition(value):
     """TOMLと一時起動に同じ構造を使う。shell展開や暗黙のPATH探索はしない。"""
     required = {'id', 'label', 'mode', 'executable'}
-    optional = {'args', 'cwd', 'interpreter', 'icon'}
+    optional = {'args', 'cwd', 'interpreter', 'icon', 'execution_profile'}
     if not isinstance(value, dict) or not required <= value.keys() or value.keys() - required - optional:
         raise CatalogError('CATALOG_INVALID')
     if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,47}', catalog_text(value['id'], 48)):
@@ -82,6 +101,16 @@ def catalog_definition(value):
     result['args'] = [catalog_text(arg, 2048, empty=True, multiline=True) for arg in args]
     if 'interpreter' in value:
         result['interpreter'] = catalog_text(value['interpreter'], 1024)
+    if 'execution_profile' in value:
+        profile=value['execution_profile']
+        if (type(profile) is not dict or set(profile)!={'kind','assets_run_id','manifest_sha256'}
+                or profile['kind']!='freedoom_phase1_software' or type(profile['assets_run_id']) is not str
+                or re.fullmatch(r'[0-9a-f]{32}',profile['assets_run_id']) is None or type(profile['manifest_sha256']) is not str
+                or re.fullmatch(r'[0-9a-f]{64}',profile['manifest_sha256']) is None or result['mode']!='gui'
+                or result['executable']!='/data/data/com.termux/files/usr/bin/chocolate-doom'
+                or result['args'] or result['cwd']!='.' or 'interpreter' in result):
+            raise CatalogError('CATALOG_INVALID')
+        result['execution_profile']=profile.copy()
     if len(json.dumps(result, ensure_ascii=False).encode()) > 8192:
         raise CatalogError('CATALOG_LIMIT')
     return result
@@ -161,7 +190,8 @@ class LauncherCatalog:
         for app in apps:
             lines.append('\n[[apps]]')
             for key, value in app.items():
-                encoded = '[' + ', '.join(quoted(arg) for arg in value) + ']' if isinstance(value, list) else quoted(value)
+                if key=='execution_profile':encoded='{ '+', '.join(name+' = '+quoted(item) for name,item in value.items())+' }'
+                else:encoded = '[' + ', '.join(quoted(arg) for arg in value) + ']' if isinstance(value, list) else quoted(value)
                 lines.append(key + ' = ' + encoded)
         data = ('\n'.join(lines) + '\n').encode('utf-8')
         if LauncherCatalog.parse(data) != apps:
@@ -265,19 +295,26 @@ class LauncherCatalog:
     def summary(self, app):
         error = None
         try:
-            self.command(app)
             if app['mode'] == 'gui':
-                error = 'GUI_NOT_VERIFIED'
+                if 'execution_profile' not in app:raise CatalogError('GUI_NOT_VERIFIED')
+                gui_policy(self.home).inspect_assets(self.home,app['execution_profile'])
+            else:self.command(app)
         except CatalogError as failure:
             error = str(failure)
         except OSError:
             error = 'PATH_UNAVAILABLE'
+        except (ValueError,RuntimeError,KeyError,TypeError):
+            error = 'GUI_NOT_VERIFIED'
         # 任意画像の取得/復号はしない。未対応iconは標準素材へ戻す。
         icon = app['icon'] if app['icon'] in {'builtin:terminal', 'builtin:editor', 'builtin:script', 'builtin:game'} else 'builtin:script'
-        return dict(id=app['id'], label=app['label'], mode=app['mode'], icon=icon, available=error is None, error=error)
+        result=dict(id=app['id'], label=app['label'], mode=app['mode'], icon=icon, available=error is None, error=error)
+        if 'execution_profile' in app:result['execution_profile']=app['execution_profile'].copy()
+        return result
 
     def selected_command(self, revision, app_id):
-        return self.command(self.selected_definition(revision, app_id))
+        definition=self.selected_definition(revision,app_id)
+        if definition['mode']!='terminal':raise CatalogError('GUI_NOT_VERIFIED')
+        return self.command(definition)
 
     def selected_definition(self, revision, app_id):
         if revision != self.revision:
@@ -287,7 +324,7 @@ class LauncherCatalog:
         app = next((app for app in self.apps if app['id'] == app_id), None)
         if app is None:
             raise CatalogError('APP_NOT_FOUND')
-        if app['mode'] != 'terminal':
+        if app['mode'] != 'terminal' and 'execution_profile' not in app:
             raise CatalogError('GUI_NOT_VERIFIED')
         return app.copy()
 
@@ -300,9 +337,11 @@ class LauncherCatalog:
             app = catalog_definition(target['definition'])
         else:
             raise CatalogError('CATALOG_INVALID')
-        if app['mode'] != 'terminal':
-            raise CatalogError('GUI_NOT_VERIFIED')
-        self.command(app)
+        if app['mode'] == 'gui':
+            if 'execution_profile' not in app:raise CatalogError('GUI_NOT_VERIFIED')
+            try:gui_policy(self.home).inspect_assets(self.home,app['execution_profile'])
+            except (OSError,ValueError,RuntimeError,KeyError,TypeError):raise CatalogError('GUI_NOT_VERIFIED') from None
+        else:self.command(app)
         return app
 
     def request(self, operation):
@@ -860,7 +899,9 @@ def terminal_application_write(directory, terminal, definition):
     if owned(directory.parent.parent, nonce) != directory:
         raise ValueError('TERMINAL_INVALID')
     path = terminal_application_path(directory, terminal)
-    record = dict(**marker(nonce), terminal_id=terminal, definition=catalog_definition(definition))
+    app=catalog_definition(definition)
+    if app['mode']!='terminal':raise CatalogError('GUI_NOT_VERIFIED')
+    record = dict(**marker(nonce), terminal_id=terminal, definition=app)
     data = json.dumps(record, separators=(',', ':'), ensure_ascii=False).encode()
     if len(data) > CONTROL_BYTES:
         raise CatalogError('CATALOG_LIMIT')
@@ -1688,6 +1729,8 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
     started_mode = None
     checked_tools = None
     terminals = None
+    guis,gui_summary=None,None
+    total_opened=0
     observer, observer_pending = None, False
     terminal_session, last_terminal = None, 0
     catalog, last_catalog_request = LauncherCatalog(home), 0
@@ -1696,6 +1739,7 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
     pending = bytearray()
     last_heartbeat = time.monotonic()
     stopping_at = None
+    anchor_stopping_at = None
     interrupted = [False]
     saved_signals = {}
     if threading.current_thread() is threading.main_thread():
@@ -1715,12 +1759,14 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                 pass
 
     def stop(reason):
-        nonlocal stopping_at
+        nonlocal stopping_at,anchor_stopping_at
         if stopping_at is None:
             report["reason"] = reason
             stopping_at = time.monotonic()
-            if child is not None and group_live(child.pid):
+            if guis is not None:guis.cancel_all()
+            if (guis is None or not guis.rows) and child is not None and group_live(child.pid):
                 signal_owned(signal.SIGTERM)
+                anchor_stopping_at=time.monotonic()
 
     def publish(value):
         try:
@@ -1728,6 +1774,11 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
         except OSError:
             # SSH stdoutが先に閉じても所有者は停止・回収を最後まで進める。
             stop("IOFailed")
+
+    def publish_opened(value):
+        nonlocal total_opened
+        if value['success']:total_opened+=1
+        publish({**marker(nonce),'type':'terminal_opened',**value,'ordinal':total_opened})
 
     try:
         selector.register(control_fd, selectors.EVENT_READ, "control")
@@ -1750,21 +1801,36 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
             if terminals is not None and stopping_at is None:
                 opened_terminal = terminals.tick()
                 if opened_terminal is not None:
-                    publish({**marker(nonce), 'type': 'terminal_opened', **opened_terminal})
+                    publish_opened(opened_terminal)
                     if not opened_terminal['success'] and opened_terminal['request_id'] is None:
                         report['error'] = 'DEPENDENCY_NOT_READY'
                         stop('ControlInvalid')
+            if guis is not None:
+                accepted,retired=guis.tick()
+                for event in accepted:publish_opened(event)
+                for event in retired:publish({**marker(nonce),'type':'gui_exited_v1',**event})
+                current=guis.summary()
+                if current!=gui_summary:
+                    gui_summary=current;publish({**marker(nonce),'type':'gui_state_v1','session':terminal_session,'summary':current})
             if observer is not None and stopping_at is None:
                 sample = observer.take()
                 if sample is not None:
                     publish(sample)
             if stopping_at is not None:
+                if guis is not None and guis.rows:
+                    # live worker/pidfd ownerを強制killして子孫所有を失わない。
+                    guis.cancel_all()
+                    if now-stopping_at>2*grace_seconds+3:report['error']='CLEANUP_FAILED'
+                    time.sleep(.02)
+                    continue
+                if anchor_stopping_at is None and child is not None and not child_reaped:
+                    signal_owned(signal.SIGTERM);anchor_stopping_at=now
                 if child is None or child_reaped:
                     if not opened:
                         break
-                elif now - stopping_at >= grace_seconds and not report["kill_sent"]:
+                elif now - (anchor_stopping_at or stopping_at) >= grace_seconds and not report["kill_sent"]:
                     signal_owned(signal.SIGKILL)
-                if now - stopping_at > grace_seconds + 3:
+                if now - (anchor_stopping_at or stopping_at) > grace_seconds + 3:
                     report["reason"] = "CleanupTimeout"
                     break
             for key, _ in selector.select(timeout=0.05):
@@ -1796,12 +1862,13 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                         shapes = {'start': {'type', 'nonce', 'mode'}, 'inspect_tools': {'type', 'nonce', 'mode'},
                                   'open_terminal': {'type', 'nonce', 'request_id'},
                                   'start_terminal_v1': {'type', 'nonce', 'mode', 'schema', 'session', 'terminal_id'},
+                                  'start_application_v1': {'type', 'nonce', 'mode', 'schema', 'session', 'terminal_id', 'target'},
                                   'open_terminal_v1': {'type', 'nonce', 'request_id', 'schema', 'session', 'terminal_id'},
                                   'open_terminal_v2': {'type', 'nonce', 'request_id', 'schema', 'session', 'terminal_id', 'target'},
                                   'observe_workload_v1': {'type','nonce','schema','session','enabled'},
                                   'catalog_v1': {'type','nonce','schema','request_id','operation'}}
                         expected = shapes.get(kind, {'type', 'nonce'})
-                        if (len(line) > (CONTROL_BYTES if kind in {'catalog_v1', 'open_terminal_v2'} else 1024)
+                        if (len(line) > (CONTROL_BYTES if kind in {'catalog_v1', 'open_terminal_v2','start_application_v1'} else 1024)
                                 or set(value) != expected or value["nonce"] != nonce):
                             raise ValueError("CONTROL_INVALID")
                         if kind == "heartbeat":
@@ -1822,7 +1889,7 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                                     or value['session'] != terminal_session or type(value['enabled']) is not bool):
                                 raise ValueError('CONTROL_INVALID')
                             if observer is not None: observer.set_enabled(value['enabled'])
-                        elif kind in {'open_terminal', 'open_terminal_v1', 'open_terminal_v2'} and terminals is not None and terminals.count > 0:
+                        elif kind in {'open_terminal', 'open_terminal_v1', 'open_terminal_v2'} and terminals is not None and total_opened > 0:
                             request = value['request_id']
                             if not isinstance(request,str) or not re.fullmatch(r'[1-9][0-9]{0,18}',request) or int(request)>9223372036854775807:
                                 raise ValueError('CONTROL_INVALID')
@@ -1840,7 +1907,11 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                                     if terminals.deadline is not None:
                                         raise CatalogError('CATALOG_LIMIT')
                                     definition = catalog.launch_definition(value['target'])
-                                    terminals.begin(request, terminal, definition)
+                                    if definition['mode']=='gui':
+                                        if guis is None:
+                                            policy=gui_policy(home);guis=policy.GuiChildren(home,directory,terminal_session,policy.SOURCE_BYTES)
+                                        guis.begin(request,terminal,definition)
+                                    else:terminals.begin(request, terminal, definition)
                                     error = None
                                 except CatalogError as failure:
                                     error = str(failure)
@@ -1848,31 +1919,34 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                                     error = 'PATH_MISSING'
                                 except OSError:
                                     error = 'PATH_UNAVAILABLE'
+                                except (ValueError,RuntimeError):
+                                    error = 'GUI_NOT_VERIFIED'
                                 if error is not None:
-                                    publish(dict(**marker(nonce), type='terminal_opened', request_id=request,
-                                                 success=False, ordinal=terminals.count, error=error))
+                                    publish_opened(dict(request_id=request,success=False,error=error,mode='terminal'))
                                     continue
                             else:
                                 terminals.begin(request, terminal)
-                            if observer is not None and terminal is not None: observer.allow(terminal)
+                            if observer is not None and terminal is not None and (kind!='open_terminal_v2' or definition['mode']=='terminal'): observer.allow(terminal)
                         elif kind == 'inspect_tools' and child is None:
                             checked_tools = inspect_tools(value['mode'])
                             publish({**marker(nonce), 'type': 'tools', **checked_tools})
-                        elif kind in {'start', 'start_terminal_v1'} and child is None and value["mode"] in {"echo", "pattern", "foot", "foot_fixture"}:
+                        elif kind in {'start', 'start_terminal_v1','start_application_v1'} and child is None and value["mode"] in {"echo", "pattern", "foot", "foot_fixture"}:
                             started_mode = value["mode"]
                             if started_mode != 'echo' and (checked_tools is None or checked_tools['mode'] != started_mode):
                                 raise ValueError('DEPENDENCY_NOT_READY')
                             terminal = None
-                            if kind == 'start_terminal_v1':
+                            initial_definition=None
+                            if kind in {'start_terminal_v1','start_application_v1'}:
                                 terminal = value['terminal_id']
                                 terminal_session = value['session']
                                 if (type(value['schema']) is not int or value['schema'] != 1 or started_mode not in {'foot', 'foot_fixture'}
                                         or not valid_terminal_id(terminal) or not valid_terminal_id(terminal_session)):
                                     raise ValueError('CONTROL_INVALID')
                                 last_terminal = int(terminal)
+                                if kind=='start_application_v1':initial_definition=catalog.launch_definition(value['target'])
                                 try:
                                     observer = WorkloadObserver(directory, nonce, terminal_session)
-                                    observer.allow(terminal)
+                                    if initial_definition is None or initial_definition['mode']=='terminal':observer.allow(terminal)
                                 except (OSError, ValueError):
                                     publish(dict(**marker(nonce), type='workload_v1', session=terminal_session,
                                                  epoch=secrets.token_hex(16), sequence='1', sampled_monotonic_ms=int(time.monotonic() * 1000),
@@ -1894,7 +1968,10 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                             publish({**marker(nonce), "type": "child_started", "child": identity})
                             if started_mode in {'foot','foot_fixture'}:
                                 terminals = TerminalStarter(directory, started_mode)
-                                terminals.begin(None, terminal)
+                                if initial_definition is not None and initial_definition['mode']=='gui':
+                                    policy=gui_policy(home);guis=policy.GuiChildren(home,directory,terminal_session,policy.SOURCE_BYTES,allow_initial=True)
+                                    guis.begin(None,terminal,initial_definition)
+                                else:terminals.begin(None,terminal,initial_definition)
                         else:
                             raise ValueError("CONTROL_INVALID")
                     except (KeyError, TypeError, ValueError, OSError, RecursionError) as error:
@@ -1904,6 +1981,15 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                     stop('ControlInvalid')
         report["group_alive"] = child is not None and not child_reaped and group_live(child.pid)
     finally:
+        if guis is not None:
+            guis.cancel_all()
+            while guis.rows:
+                accepted,retired=guis.tick()
+                for event in accepted:publish_opened(event)
+                for event in retired:publish({**marker(nonce),'type':'gui_exited_v1',**event})
+                if guis.rows:time.sleep(.02)  # pendingはこのlive ownerのまま回収し、新leaseへ譲らない。
+            report['gui_children']=guis.summary()
+            report['gui_receipts']=[dict(**marker(nonce),**receipt) for receipt in guis.receipts]
         if observer is not None:
             try: observer.close()
             except (OSError, ValueError):

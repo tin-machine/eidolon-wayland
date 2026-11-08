@@ -243,6 +243,7 @@ mod tests {
                     terminal_id: TerminalId::new(id).unwrap(),
                     request_id: None,
                     accepted: Some(true),
+                    mode: eidolon_model::catalog::Mode::Terminal,
                 })
                 .collect(),
             ..Default::default()

@@ -184,6 +184,34 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(inspected['inspected']['error'], 'GUI_NOT_VERIFIED')
         self.assertEqual(inspected['inspected']['icon'], 'builtin:script')
 
+    def gui_definition(self):
+        return dict(id='freedoom',label='Freedoom',mode='gui',executable='/data/data/com.termux/files/usr/bin/chocolate-doom',args=[],cwd='.',icon='builtin:game',
+            execution_profile=dict(kind='freedoom_phase1_software',assets_run_id='a'*32,manifest_sha256='b'*64))
+
+    def test_fixed_gui_profile_toml_roundtrip_and_save_preserve_other_terminal(self):
+        app=launcher.catalog_definition(self.gui_definition())
+        self.assertEqual(launcher.LauncherCatalog.parse(launcher.LauncherCatalog.encode([app])),[app])
+        self.catalog.save('launcher.toml',None,self.app);revision=self.catalog.revision
+        self.catalog.save('launcher.toml',revision,app)
+        self.assertEqual([row['id'] for row in self.catalog.apps],['script','freedoom'])
+        self.assertEqual(self.catalog.apps[1]['execution_profile'],app['execution_profile'])
+        self.assertTrue(self.catalog.summary(self.catalog.apps[0])['available'])
+        self.assertFalse(self.catalog.summary(app)['available'])
+
+    def test_gui_profile_only_enables_fixed_policy_and_never_routes_through_terminal_command(self):
+        from types import SimpleNamespace
+        app=self.gui_definition()
+        for change in (dict(mode='terminal'),dict(args=['-c','body']),dict(executable='/bin/sh'),dict(interpreter=sys.executable),dict(cwd='elsewhere'),
+            dict(execution_profile={**app['execution_profile'],'env':{'LD_PRELOAD':'body'}})):
+            with self.assertRaises(launcher.CatalogError):launcher.catalog_definition({**app,**change})
+        with patch.object(launcher,'gui_policy',return_value=SimpleNamespace(inspect_assets=lambda *_:None)):
+            summary=self.catalog.summary(launcher.catalog_definition(app));self.assertTrue(summary['available']);self.assertEqual(summary['execution_profile'],app['execution_profile'])
+            selected=self.catalog.launch_definition(dict(kind='temporary',definition=app));self.assertEqual(selected['mode'],'gui')
+            self.catalog.save('launcher.toml',None,app)
+            with self.assertRaisesRegex(launcher.CatalogError,'GUI_NOT_VERIFIED'):self.catalog.selected_command(self.catalog.revision,'freedoom')
+        with patch.object(launcher,'gui_policy',side_effect=ValueError('PRIVATE')):
+            summary=self.catalog.summary(launcher.catalog_definition(app));self.assertEqual(summary['error'],'GUI_NOT_VERIFIED');self.assertNotIn('PRIVATE',json.dumps(summary))
+
     def test_real_supervisor_catalog_errors_do_not_stop_or_spawn_children(self):
         nonce = 'e' * 16
         read, write = os.pipe()

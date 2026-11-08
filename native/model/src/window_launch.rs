@@ -1,5 +1,6 @@
 //! launch receiptとtoplevel markerの照合。forward/session/nonceの所有境界は呼出元で先に検査する。
 use crate::{
+    catalog::Mode,
     ids::{CommandSeq, SessionId, TerminalId, WindowId},
     window::WindowLife,
     workload::claimed_terminal,
@@ -11,6 +12,26 @@ pub struct TerminalLaunch {
     pub terminal_id: TerminalId,
     pub request_id: Option<CommandSeq>,
     pub accepted: Option<bool>,
+    pub mode: Mode,
+}
+
+const GUI_APP_ID: &str = "io.github.tinmachine.eidolon.gui";
+fn valid_nonce(nonce: &str) -> bool {
+    nonce.len() == 16
+        && nonce
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+pub fn gui_app_id(nonce: &str, launch: TerminalId) -> Option<String> {
+    valid_nonce(nonce).then(|| format!("{GUI_APP_ID}.g-{nonce}-{}", launch.get()))
+}
+fn claimed_gui(app_id: &str, nonce: &str) -> Option<TerminalId> {
+    if !valid_nonce(nonce) {
+        return None;
+    }
+    let text = app_id.strip_prefix(&format!("{GUI_APP_ID}.g-{nonce}-"))?;
+    let id = TerminalId::new(text.parse().ok()?).ok()?;
+    (id.get().to_string() == text).then_some(id)
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Candidate<'a> {
@@ -85,7 +106,10 @@ pub fn correlate(
     }
     let mut claims = windows.iter().filter(|w| {
         w.life != WindowLife::Destroyed
-            && w.app_id.and_then(|id| claimed_terminal(id, nonce)) == Some(terminal_id)
+            && w.app_id.and_then(|id| match receipt.mode {
+                Mode::Terminal => claimed_terminal(id, nonce),
+                Mode::Gui => claimed_gui(id, nonce),
+            }) == Some(terminal_id)
     });
     let Some(claim) = claims.next() else {
         return Outcome::AwaitingWindow { terminal_id };
@@ -124,6 +148,7 @@ mod tests {
             terminal_id: terminal(id),
             request_id: Some(request(req)),
             accepted,
+            mode: Mode::Terminal,
         }
     }
     #[test]
@@ -299,6 +324,7 @@ mod tests {
             terminal_id: terminal(1),
             request_id: None,
             accepted: Some(true),
+            mode: Mode::Terminal,
         }];
         let candidates = [Candidate {
             window: window(1),
@@ -335,5 +361,66 @@ mod tests {
         assert!(!Outcome::AmbiguousReceipt.completed());
         assert!(!Outcome::AwaitingReceipt.completed());
         assert!(Outcome::Cancelled.completed());
+    }
+    #[test]
+    fn gui_cookie_requires_gui_receipt_and_does_not_claim_a_terminal_workload() {
+        let gui = gui_app_id(NONCE, terminal(2)).unwrap();
+        let foot = terminal_app_id(NONCE, terminal(2)).unwrap();
+        assert_eq!(claimed_terminal(&gui, NONCE), None);
+        let mut launch = receipt(10, 2, Some(true));
+        launch.mode = Mode::Gui;
+        for wrong in [
+            &foot,
+            "io.github.tinmachine.eidolon.gui.g-0123456789abcdef-02",
+            "io.github.tinmachine.eidolon.gui.g-fedcba9876543210-2",
+        ] {
+            assert_eq!(
+                correlate(
+                    NONCE,
+                    Some(request(10)),
+                    &[launch],
+                    &[Candidate {
+                        window: window(7),
+                        app_id: Some(wrong),
+                        life: WindowLife::Mapped
+                    }],
+                    &[]
+                ),
+                Outcome::AwaitingWindow {
+                    terminal_id: terminal(2)
+                }
+            );
+        }
+        let candidate = Candidate {
+            window: window(7),
+            app_id: Some(&gui),
+            life: WindowLife::Mapped,
+        };
+        assert_eq!(
+            correlate(NONCE, Some(request(10)), &[launch], &[candidate], &[]),
+            Outcome::Matched {
+                terminal_id: terminal(2),
+                window: window(7)
+            }
+        );
+        assert_eq!(
+            correlate(
+                NONCE,
+                Some(request(10)),
+                &[launch],
+                &[candidate],
+                &[window(7)]
+            ),
+            Outcome::PreexistingClaim {
+                terminal_id: terminal(2)
+            }
+        );
+        launch.mode = Mode::Terminal;
+        assert_eq!(
+            correlate(NONCE, Some(request(10)), &[launch], &[candidate], &[]),
+            Outcome::AwaitingWindow {
+                terminal_id: terminal(2)
+            }
+        );
     }
 }
