@@ -13,6 +13,34 @@ CHECK_FIELDS={'case','nonce','scope','result','phase','reason','runtime','sessio
 def number(value):return type(value) is int and 0<=value<=2**63-1
 
 
+def idle_before_launch(value):
+    """開始/起動前取消だけの判定。診断所有は保持し、最終回収のempty()とは分ける。"""
+    runtime=value['runtime']['runtime'];transport=runtime['transport'];app=runtime.get('app') or {}
+    resource=resources(value);board=resource['board'];adapter=value['adapter']
+    sdk=adapter['targets'];native=runtime['render']['targets'];scene=runtime['scene'];handle=value['runtime']['handle']
+    if not (runtime['state']=='Ready' and app.get('state','stopped')=='stopped' and not app.get('windows') and
+        type(runtime.get('app_sdk_bindings')) is int and runtime['app_sdk_bindings']==0 and
+        transport['state'] in {'Idle','Disconnected','Failed'} and transport['owned_connections']==0 and
+        not transport['desktop_pending'] and not transport['pending_cleanup'] and
+        not resource['panels'] and not board['entries'] and not board['cleanup_required'] and not board['unassigned']):return False
+    # SDKの役割は明示属性だけを使い、window番号やnative targetの存在から推測しない。
+    if not all(t.get('role')=='diagnostic' and key(t['key'])['scene']==scene for t in native):return False
+    if not all(t.get('role')=='diagnostic' and t.get('runtime')==handle and key(t['target'])['scene']==scene and
+        not t['retiring'] and not t['sdk_disposed'] and not t['disposal_failed'] for t in sdk):return False
+    if resource['sdk_bindings']!=len(sdk):return False
+    owners=resource['owners']
+    return owners['panel_entities']==len(sdk) and owners['listeners']==sum(t['listener_owned'] for t in sdk) and \
+        not any(count for name,count in owners.items() if name not in {'panel_entities','listeners'})
+
+
+def before_launch_reclaimed(value,row):
+    """失敗した同じ接続の終了だけを確認。GUIの表示/退役成功を補完しない。"""
+    runtime=value['runtime']['runtime'];transport=runtime['transport']
+    return (row is not None and row['result'] in {'failed','cancelled','incomplete'} and not row['launched'] and row['trace'] is None and
+        decimal(row['connect_request_id']) and decimal(row['session']) and row['session']==transport.get('session') and transport.get('profile_id')=='remote-linux' and
+        row['runtime']==value['runtime']['handle'] and row['scene']==runtime['scene'] and idle_before_launch(value))
+
+
 def binding(value,digest):
     need(type(value) is dict and value.get('schema')==1 and decimal(value.get('sequence')) and
         type(value.get('process_id')) is int and value['process_id']>0,'LINUX_SNAPSHOT_INVALID')

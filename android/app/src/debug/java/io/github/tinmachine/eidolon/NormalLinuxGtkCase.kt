@@ -67,14 +67,8 @@ object NormalLinuxGtkCase {
             }.getOrDefault(false)
             if(trace?.resourcesCleared()==true || !connectDispatched || connectReplyKnown && connectRequest.isEmpty() || beforeLaunch) {if(active===this) active=null}
         }
-        fun beforeLaunchClosed(runtime:JSONObject):Boolean {
-            val transport=runtime.getJSONObject("transport")
-            return !launched && connectReplyKnown && (connectRequest.isEmpty() || session.isNotEmpty() && transport.optString("session")==session) &&
-                transport.optString("state") in setOf("Idle","Disconnected","Failed") && transport.optInt("owned_connections")==0 &&
-                !transport.optBoolean("desktop_pending") && (runtime.optJSONObject("app")?.optString("state") ?: "stopped")=="stopped" &&
-                runtime.getJSONArray("panels").length()==0 && runtime.getJSONObject("render").getJSONArray("targets").length()==0 &&
-                runtime.getJSONObject("shutdown").getInt("sdk_bindings")==0 && runtime.getJSONObject("window_slots").getInt("occupied")==0
-        }
+        fun beforeLaunchClosed(runtime:JSONObject):Boolean = NormalLinuxGtkAdmission.beforeLaunchClosed(
+            runtime,session,connectRequest,connectReplyKnown,launched)
         fun stop() {
             if(stopRequested || trace?.cleanupComplete==true) return
             stopRequested=true;stopBegan=SystemClock.elapsedRealtime();done=false

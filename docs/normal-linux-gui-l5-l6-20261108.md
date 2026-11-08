@@ -89,6 +89,19 @@ snapshotの `app_sdk_bindings` は診断用を除く接続判定用の数で、`
 アプリの稼働・起動待ち、通常render target、panel、古いsceneのアプリSDK binding、Boardの残存は従来どおり拒否条件になる。
 remote journalのbarrierも維持し、診断パネルだけの再起動状態では保存済みの同じLinux設定へ選択・再接続してRecoverに進める。
 
+観測operatorの開始条件も、診断panelだけを許容する `idle_before_launch` を使う。
+nativeの `app_sdk_bindings=0` に加え、adapterの明示role、runtime/scene/full target、SDK総数と
+診断Entity/listener数を照合する。通常target・古いscene/runtime・未分類SDK・余分な装飾/menu所有・
+Board・journalが残る場合は開始しない。Surface attach前やdetach後の診断SDK所有も扱う。
+起動前取消は `NormalLinuxGtkAdmission` から通常Hostと同じ接続変更gateを使用し、同じLinux sessionの
+実際の切断後にobserverを解放する。Launch受理後は、この診断例外でobserverを解放しない。
+
+接続失敗でAndroidがobserverを既に解放した場合、元nonceへのStopには新しいACKが来ない。
+operatorは同じruntime/scene/sessionとConnect要求を含む失敗記録・実所有を独立に照合し、
+`failure_cleanup_phase=before_launch` として起動前の終了確認だけを残す。元の失敗は維持し、
+GUI表示・Close・target退役の成功には数えない。sessionが未確定なら終了を推測しない。
+GUI起動後の `empty` / `reclaimed` は引き続き診断用も含む全資源の回収を要求する。
+
 SSH actorの終了とlocal Waypipe/SHM/compositor終了も別の条件で扱う。
 helper喪失・ACK喪失・同一bootのunknown ownerはL1〜L4のjournalを残す。
 ファイルの欠落やアプリ再起動を回収成功とみなさない。保存PIDを使うkillは追加しない。
@@ -152,8 +165,13 @@ main/Dialogの全世代SDK disposal receiptを照合する。古いrunの完了�
 - [通常Host](../android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt) / [接続設定](../android/app/src/main/java/io/github/tinmachine/eidolon/ConnectionSettings.kt): worker上の明示操作、個別鍵、scope capture、UI。
 - [通常起動の接続回帰](../native/core/tests/initial_diagnostic_connection.rs): 実Runtimeに診断target/SDK所有を残したままTermux/LinuxのConnect受理と接続先の記録を確認する。SSH接続・認証の成功や実機描画の検査ではない。
 - [Androidの接続判定回帰](../android/app/src/test/java/io/github/tinmachine/eidolon/ConnectionAdmissionTest.kt): 診断パネルを伴う初期snapshotから設定・接続・回収先選択を確認し、旧アプリSDK・通常target・panel・Board・journalの拒否を維持する。
+- [観測の起動前取消回帰](../android/app/src/testDebug/java/io/github/tinmachine/eidolon/NormalLinuxGtkAdmissionTest.kt): 同じsessionの接続失敗・取消後の解放、切断待ち・未知要求・別session・Launch後・残存所有による再試行拒否を確認する。
 - [pins exporterとテスト](../scripts/tests/test_linux_desktop_build.py): 検証済みpinsの読取専用出力、source/hash/manifest不一致の拒否。
 - [通常GUI観測operator](../scripts/quest-observe-normal-linux-gui) / [独立判定](../scripts/normal_linux_evidence.py) / [回帰テスト](../scripts/tests/test_normal_linux_gui.py): 別sessionの回収、古いtarget世代、不正終端、SDK漏れ、偽の物理入力成功を受け入れない。
 
 回帰テストとPR CIの結果はPR本文に記録する。この変更を作成した環境ではQuest/対象Linuxへの実配備を行っていない。
 したがってL5/L6の実機受入れと、L7a/L7bの既存アプリ・継続稼働・障害・物理/HMD/IME受入れは未確認として残す。
+
+P2修正のローカル回帰では、通常GUI観測/operator 21件、接続判定・起動前取消・要求相関・GUI traceの
+Kotlin 27件が成功。診断panelを持つ開始から1回だけConnectする経路と、通常SDK残存時の開始拒否、
+起動後の全退役、起動前失敗へのStopで新ACKが来ない経路を検査した。実ADB/実SSHの成功ではない。

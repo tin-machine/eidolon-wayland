@@ -36,6 +36,7 @@ def main():
     result=dict(schema=1,status='blocked',nonce=nonce,case='normal-linux-gtk',checks=[],samples=[],stop_sent=False,
         physical_input='not_verified',visual_input='not_verified',close_action='not_verified',hmd='not_run',ime='not_run')
     device=QuestDevice(args.serial,run);started=False;owner=None;digest=None;sources=None;last=None;last_check=None;failure_check=None
+    prelaunch_reclaimed=False
     interrupted=[False];previous={kind:signal.signal(kind,lambda *_:interrupted.__setitem__(0,True)) for kind in (signal.SIGINT,signal.SIGTERM)}
     def snapshot():
         row=subprocess.run(['adb','-s',args.serial,'exec-out','run-as',PACKAGE,'head','-c',str(MAX_SNAPSHOT+1),'no_backup/diagnostics/latest.json'],capture_output=True,timeout=5)
@@ -44,13 +45,14 @@ def main():
         device.adb('shell','am','broadcast','-n',PACKAGE+'/.NormalLinuxGtkCommandReceiver','-a',PACKAGE+'.NORMAL_LINUX_GTK_COMMAND',
             '--es','case','normal-linux-gtk-stop' if stop else 'normal-linux-gtk','--es','nonce',nonce,timeout=5)
     def poll():
-        nonlocal last,last_check
+        nonlocal last,last_check,prelaunch_reclaimed
         value=snapshot();need(evidence.binding(value,digest)==owner,'LINUX_APK_CHANGED')
         observed=evidence.check(value,nonce,owner,last_check)
         if observed is not None:
             if observed!=last_check:
                 need(len(result['checks'])<2048,'LINUX_CHECK_LIMIT');result['checks'].append(observed)
             last_check=observed
+        prelaunch_reclaimed=evidence.before_launch_reclaimed(value,observed)
         current=evidence.sample(value)
         if last is not None:need(int(current['sequence'])>=int(last['sequence']),'LINUX_SNAPSHOT_REGRESSED')
         if last is None or current['sequence']!=last['sequence']:
@@ -61,9 +63,8 @@ def main():
         owner=evidence.binding(initial,digest);result.update(apk_binding=owner,operator_sources=sources)
         need(device.adb('shell','pidof',PACKAGE).strip()==str(owner['process_id']),'LINUX_APK_CHANGED')
         need(initial.get('check',{}).get('result')!='running','OTHER_DEBUG_CASE_RUNNING')
-        baseline=evidence.sample(initial);runtime=initial['runtime']['runtime']
-        need(runtime['state']=='Ready' and runtime['activity_visible'] is True and runtime['xr_state']=='FOCUSED' and evidence.empty(baseline) and
-            baseline['state'] in {'Idle','Disconnected','Failed'} and baseline['owned_connections']==0 and not baseline['desktop_pending'] and not baseline['termux_pending'],'LINUX_BASELINE_NOT_IDLE')
+        runtime=initial['runtime']['runtime']
+        need(runtime['activity_visible'] is True and runtime['xr_state']=='FOCUSED' and evidence.idle_before_launch(initial),'LINUX_BASELINE_NOT_IDLE')
         poll();need(not interrupted[0],'LINUX_HOST_CANCELLED');started=True;command()
         print('通常LinuxのGTKデモで英数を入力し、Dialogを開いて閉じ、最後にmainをCloseしてください。画像・入力本文は採取しません。',flush=True)
         deadline=time.monotonic()+args.timeout_seconds
@@ -92,6 +93,8 @@ def main():
                     row=poll()
                     owned=(row or {}).get('trace') or {}
                     if owned and evidence.reclaimed(last,owned['targets'],row['session'],owned['remote_nonce'],row['launch_request_id']):result['failure_cleanup_complete']=True;break
+                    if prelaunch_reclaimed:
+                        result['failure_cleanup_complete']=True;result['failure_cleanup_phase']='before_launch';break
                     if row is not None and row['result']!='running' and row['stop_requested']:break
                     time.sleep(.2)
             except (OSError,ValueError,RuntimeError,KeyError,TypeError,subprocess.SubprocessError):pass

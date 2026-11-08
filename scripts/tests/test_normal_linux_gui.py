@@ -35,13 +35,24 @@ def snapshot(sequence=1,stage='main'):
         input=dict(delivered=2 if dialog or closed else 0,private_body='NEVER RECORD'),directory_cleaned=closed,
         local=dict(workers=0 if closed else 1,owned_groups=0 if closed else 1,waited=closed),
         **{name:0 if closed else 1 for name in ('clients','objects','surfaces','pool_bytes','pool_count','pixel_bytes')})
-    runtime=dict(schema=1,state='Ready',scene='3',activity_visible=True,xr_state='FOCUSED',app=app,
+    runtime=dict(schema=1,state='Ready',scene='3',activity_visible=True,xr_state='FOCUSED',app=app,app_sdk_bindings=len(keys),
         transport=dict(session=None if idle else '2',profile_id=None if idle else 'remote-linux',state='Idle' if idle else 'Disconnected' if closed else 'DesktopReady',
             owned_connections=0 if idle or closed else 1,desktop_pending=False if idle or closed else True,pending_cleanup=[],desktop=desktop),
         render=dict(targets=[dict(key=k,frames=frames,content_frame=str(frames)) for k in keys]))
     adapter=raw_resources(runtime,closed)
     return dict(schema=1,sequence=str(sequence),process_id=83,build_info=dict(schema=1,source_digest=DIGEST,source_commit='e'*40,source_dirty=False,
         profile='debug',target='aarch64-linux-android',apk_version_code=177),runtime=dict(schema=1,code=0,handle='9',runtime=runtime),adapter=adapter)
+
+
+def diagnostic_snapshot(sequence=1):
+    value=snapshot(sequence,'idle');runtime=value['runtime']['runtime'];adapter=value['adapter']
+    target=dict(session='1',window='1',scene='3',generation='7')
+    runtime['render'].update(mode='diagnostic',targets=[dict(key=target,role='diagnostic',frames=5,content_frame=None)])
+    runtime['shutdown']['sdk_bindings']=1
+    adapter.update(created=1,bindings=1,listeners=1,targets=[dict(target=target,runtime='9',role='diagnostic',entity='100',
+        visual_entity=None,listener_owned=True,input_owned=True,retiring=False,sdk_disposed=False,disposal_failed=False,
+        controls=None,mode_badge=None,move=None)])
+    return value
 
 
 def trace():
@@ -148,20 +159,71 @@ class EvidenceTests(unittest.TestCase):
         value['build_info']['source_digest']='c'*64
         with self.assertRaises(CaptureError):evidence.binding(value,DIGEST)
 
+    def test_initial_diagnostic_can_start_before_attach_and_after_detach_but_is_not_final_cleanup(self):
+        value=diagnostic_snapshot()
+        self.assertTrue(evidence.idle_before_launch(value))
+        self.assertFalse(evidence.empty(evidence.sample(value)))
+        value['runtime']['runtime']['render']['targets']=[]
+        self.assertTrue(evidence.idle_before_launch(value))
+        self.assertFalse(evidence.empty(evidence.sample(value)))
+
+    def test_diagnostic_exception_cannot_hide_app_unknown_or_foreign_owners(self):
+        for change in (
+            lambda v:v['runtime']['runtime'].update(app_sdk_bindings=1),
+            lambda v:v['runtime']['runtime']['render']['targets'][0].update(role='windows'),
+            lambda v:v['runtime']['runtime']['render']['targets'][0]['key'].update(scene='2'),
+            lambda v:v['adapter']['targets'][0].update(role='windows'),
+            lambda v:v['adapter']['targets'][0].update(role='unknown'),
+            lambda v:v['adapter']['targets'][0].update(runtime='10'),
+            lambda v:v['adapter']['targets'][0]['target'].update(scene='2'),
+            lambda v:v['adapter']['targets'][0].update(retiring=True),
+            lambda v:v['adapter']['targets'][0].update(disposal_failed=True),
+            lambda v:v['adapter']['window_menus'].update(owners=1),
+            lambda v:v['runtime']['runtime']['shutdown'].update(sdk_bindings=2),
+            lambda v:v['runtime']['runtime']['window_slots'].update(cleanup_required=True),
+            lambda v:v['runtime']['runtime']['transport'].update(desktop_pending=True),
+            lambda v:v['runtime']['runtime']['transport'].update(pending_cleanup=[{}]),
+            lambda v:v['runtime']['runtime']['transport'].update(owned_connections=1),
+            lambda v:v['runtime']['runtime'].update(app=dict(state='queued')),
+        ):
+            value=diagnostic_snapshot();change(value)
+            self.assertFalse(evidence.idle_before_launch(value))
+
+    def test_diagnostic_still_cannot_pass_post_launch_resource_retirement(self):
+        value=snapshot(4,'closed');idle=diagnostic_snapshot()
+        value['runtime']['runtime']['render']=idle['runtime']['runtime']['render']
+        value['runtime']['runtime']['shutdown']=idle['runtime']['runtime']['shutdown']
+        value['adapter']=idle['adapter']
+        self.assertTrue(evidence.idle_before_launch(value))
+        self.assertFalse(evidence.reclaimed(evidence.sample(value),[MAIN,DIALOG],'2',REMOTE,'17'))
+
+    def test_prelaunch_reclamation_requires_terminal_check_and_same_connection(self):
+        value=diagnostic_snapshot();transport=value['runtime']['runtime']['transport']
+        transport.update(state='Failed',session='2',profile_id='remote-linux')
+        row=check('failed');row.update(launched=False,trace=None)
+        self.assertTrue(evidence.before_launch_reclaimed(value,row))
+        for field,replacement in (('connect_request_id',None),('session',None),('session','3'),('runtime','10'),('scene','4'),('result','running'),('launched',True),('trace',trace())):
+            changed=dict(row);changed[field]=replacement
+            self.assertFalse(evidence.before_launch_reclaimed(value,changed))
+
 
 class OperatorTests(unittest.TestCase):
-    def run_case(self,failed):
-        initial=snapshot(1,'idle');main=snapshot(2,'main');dialog=snapshot(3,'dialog');closed=snapshot(4,'closed')
+    def run_case(self,failed,diagnostic=False):
+        initial=diagnostic_snapshot() if diagnostic else snapshot(1,'idle')
+        main=snapshot(2,'main');dialog=snapshot(3,'dialog');closed=snapshot(4,'closed')
         live=check('running');live['phase']='OBSERVING';live['trace']=None;main['check']=copy.deepcopy(live);dialog['check']=copy.deepcopy(live)
         final=check('failed' if failed else 'completed')
         if failed:final['reason']='LINUX_TRACE_INVALID'
         closed['check']=final
         cleanup=copy.deepcopy(closed);cleanup['sequence']='5';cleanup['check']=check('cancelled');cleanup['check'].update(stop_requested=True,reason='LINUX_EXPLICIT_STOP')
-        sequence=iter([initial,initial,main,dialog,closed,cleanup]);commands=[]
+        return self.run_sequence([initial,initial,main,dialog,closed,cleanup])
+
+    def run_sequence(self,rows):
+        sequence=iter(rows);commands=[]
         def adb(*args,**kwargs):
             commands.append(args)
             return '83\n' if args[:2]==('shell','pidof') else ''
-        def read(*args,**kwargs):return SimpleNamespace(returncode=0,stdout=json.dumps(next(sequence,cleanup)).encode(),stderr=b'')
+        def read(*args,**kwargs):return SimpleNamespace(returncode=0,stdout=json.dumps(next(sequence,rows[-1])).encode(),stderr=b'')
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
             device=SimpleNamespace(validate=lambda:dict(model='Quest 3',api=34),adb=adb)
@@ -185,6 +247,33 @@ class OperatorTests(unittest.TestCase):
         self.assertTrue(result['failure_cleanup_complete']);self.assertEqual(result['original_check']['reason'],'LINUX_TRACE_INVALID')
         stops=[command for command in commands if 'normal-linux-gtk-stop' in command]
         self.assertEqual(len(stops),1);self.assertEqual(stops[0][-1],NONCE)
+
+    def test_diagnostic_startup_dispatches_connect_once_and_keeps_strict_final_cleanup(self):
+        code,result,commands=self.run_case(False,diagnostic=True)
+        self.assertEqual(code,0);self.assertEqual(result['status'],'observed')
+        self.assertEqual(sum('normal-linux-gtk' in command for command in commands),1)
+        self.assertFalse(result['stop_sent'])
+
+    def test_foreign_sdk_owner_prevents_even_the_first_broadcast(self):
+        initial=diagnostic_snapshot();initial['runtime']['runtime']['app_sdk_bindings']=1
+        code,result,commands=self.run_sequence([initial])
+        self.assertEqual(code,1);self.assertEqual(result['reason'],'LINUX_BASELINE_NOT_IDLE')
+        self.assertFalse(any('broadcast' in command for command in commands))
+
+    def test_cancel_before_launch_keeps_failure_and_does_not_claim_gui_cleanup(self):
+        initial=diagnostic_snapshot();failed=diagnostic_snapshot(2)
+        failed['runtime']['runtime']['transport'].update(state='Failed',session='2',profile_id='remote-linux')
+        row=check('failed');row.update(phase='PENDING_CLEANUP',reason='LINUX_CONNECT_OR_RECOVERY_REQUIRED',
+            catalog_verified=False,launched=False,inspect_request_id=None,launch_request_id=None,trace=None)
+        failed['check']=row
+        # Androidは既に同じ接続の終了を確認してactiveを解放済み。Stopへの新ACKは来ない。
+        code,result,commands=self.run_sequence([initial,initial,failed,failed])
+        self.assertEqual(code,1);self.assertEqual(result['status'],'failed')
+        self.assertEqual(result['original_check']['reason'],'LINUX_CONNECT_OR_RECOVERY_REQUIRED')
+        self.assertEqual(sum('normal-linux-gtk-stop' in command for command in commands),1)
+        self.assertTrue(result['failure_cleanup_complete'])
+        self.assertEqual(result['failure_cleanup_phase'],'before_launch')
+        self.assertNotIn('observation',result)
 
 
 if __name__=='__main__':unittest.main()
