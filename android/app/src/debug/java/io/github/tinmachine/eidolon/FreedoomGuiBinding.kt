@@ -29,7 +29,9 @@ internal object FreedoomGuiBinding {
             row.getInt("uid")==10158 && row.getString("terminal_id")==launch && row.getString("app_id")==appId) {"FREEDOOM_BINDING_INVALID"}
         return row
     }
-    fun natural(row:JSONObject):Boolean = row.optString("reason")=="natural" && !row.isNull("child_returncode") && row.getInt("child_returncode")==0 &&
+    private fun process(value:JSONObject?):Boolean = value!=null && value.keys().asSequence().toSet()==setOf("pid","start","group") &&
+        value.optInt("pid")>0 && value.optInt("group")==value.optInt("pid") && value.optString("start").matches(Regex("[1-9][0-9]{0,18}"))
+    fun natural(row:JSONObject):Boolean = process(row.optJSONObject("child")) && process(row.optJSONObject("worker")) && row.optString("reason")=="natural" && !row.isNull("child_returncode") && row.getInt("child_returncode")==0 &&
         row.getInt("worker_returncode")==0 && row.getBoolean("cleanup_complete") && row.getBoolean("pipes_closed") &&
         row.getBoolean("assets_runtime_unchanged") && row.getInt("open_pidfds")==0 && row.getInt("term_signals")==0 && row.getInt("kill_signals")==0 && row.getInt("reaped")>=1
     fun stopped(runtime:JSONObject,adapter:JSONObject?):Boolean {

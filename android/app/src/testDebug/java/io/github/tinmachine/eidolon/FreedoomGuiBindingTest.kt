@@ -14,6 +14,7 @@ class FreedoomGuiBindingTest {
     private fun receipt()=JSONObject().put("request_id","17").put("terminal_id","2").put("session","5").put("nonce","0123456789abcdef").put("uid",10158)
         .put("app_id",appId).put("reason","natural").put("child_returncode",0).put("worker_returncode",0).put("cleanup_complete",true).put("pipes_closed",true)
         .put("assets_runtime_unchanged",true).put("open_pidfds",0).put("term_signals",0).put("kill_signals",0).put("reaped",1)
+        .put("worker",JSONObject().put("pid",19).put("group",19).put("start","23")).put("child",JSONObject().put("pid",29).put("group",29).put("start","31"))
     @Test fun launchRequiresOneExactRequestAcceptedGuiReceipt() {
         val value=state();assertNull(FreedoomGuiBinding.launch(value,"17"));remote(value).getJSONArray("terminal_launches").put(launch())
         assertEquals("2" to appId,FreedoomGuiBinding.launch(value,"17"));assertNull(FreedoomGuiBinding.launch(value,"18"))
@@ -35,6 +36,8 @@ class FreedoomGuiBindingTest {
             "assets_runtime_unchanged" to false,"open_pidfds" to 1,"term_signals" to 1,"kill_signals" to 1,"reaped" to 0)) {
             assertFalse(FreedoomGuiBinding.natural(receipt().put(field,bad)))
         }
+        assertFalse(FreedoomGuiBinding.natural(receipt().put("child",JSONObject.NULL)))
+        assertFalse(FreedoomGuiBinding.natural(receipt().put("worker",JSONObject.NULL)))
     }
     @Test fun stopRequiresEverySdkAndBoardOwnerZero() {
         val runtime=JSONObject().put("scene","3").put("panels",JSONArray()).put("render",JSONObject().put("targets",JSONArray()))

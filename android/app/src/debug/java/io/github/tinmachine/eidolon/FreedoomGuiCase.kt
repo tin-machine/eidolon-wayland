@@ -32,8 +32,9 @@ object FreedoomGuiCase {
         @Volatile var owner:GtkFixtureBinding.Owner?=null;var trial:NativeSessionHost.DebugInputTrial?=null
         var foot=setOf<String>();var target:GtkFixtureBinding.Target?=null;var epoch=0L;var theme=0L
         var previousCatalog="";var revision="";var request="";var launch="";var appId="";var window=""
-        var launchAccepted=false;var launchDispatched=false;var token="";var keys=0L;var buttons=0L;var expectedKeys=0L;var content=0L;var keyStage=0
+        var launchAccepted=false;var launchDispatched=false;var token="";var keys=0L;var lastKeys=0L;var buttons=0L;var expectedKeys=0L;var content=0L;var keyStage=0
         var firstClose="";var secondClose="";var firstClosePending=false;var natural=false;var cleanup=false;var stopSent=false
+        var focusProgress:GtkInputProgress?=null;var closeProgress:FreedoomCloseProgress?=null
         fun rows(array:JSONArray)=(0 until array.length()).map {array.getJSONObject(it)}
         fun windows(runtime:JSONObject)=rows(runtime.getJSONObject("app").getJSONArray("windows")).filter {it.optString("life")=="Mapped"}.map {it.getString("window")}.toSet()
         fun publish() {
@@ -45,6 +46,8 @@ object FreedoomGuiCase {
                 .put("request_id",request.ifEmpty {null} ?: JSONObject.NULL).put("launch_id",launch.ifEmpty {null} ?: JSONObject.NULL)
                 .put("app_id",appId.ifEmpty {null} ?: JSONObject.NULL).put("target",target?.json() ?: JSONObject.NULL).put("input_epoch",epoch)
                 .put("first_close_pending",firstClosePending).put("natural_exit",natural).put("cleanup_complete",cleanup).put("session_stop_sent",stopSent)
+                .put("focus_progress",focusProgress?.let {JSONObject(it.metadata())} ?: JSONObject.NULL)
+                .put("close_progress",closeProgress?.let {JSONObject(it.metadata())} ?: JSONObject.NULL)
                 .put("commands",JSONArray(pendingCommands.entries.sortedBy {it.key.toLong()}.map {JSONObject().put("request_id",it.key).put("kind",it.value).put("completion",acks[it.key] ?: JSONObject.NULL)}))
                 .put("steps",steps))
         }
@@ -99,7 +102,8 @@ object FreedoomGuiCase {
             check(NativeSessionHost.debugCloseInputTarget(checkNotNull(trial),key.json()) {
                 NativeBridge.nativeCommand(checkNotNull(owner).handle,JSONObject().put("schema",1).put("type","close_window_target").put("request_id",id)
                     .put("target",key.json()).put("controls_revision",theme).toString())
-            }) {"FREEDOOM_INTENT_LOST"};return id
+            }) {"FREEDOOM_INTENT_LOST"}
+            checkNotNull(closeProgress).queued(id,SystemClock.elapsedRealtime());return id
         }
         fun seal() {val captured=checkNotNull(trial);check(NativeSessionHost.debugSealInput(captured) && NativeSessionHost.debugExpectRetirement(captured,checkNotNull(target).json())) {"FREEDOOM_INTENT_LOST"}}
         fun content(runtime:JSONObject):Long = rows(runtime.getJSONObject("render").getJSONArray("targets"))
@@ -126,6 +130,8 @@ object FreedoomGuiCase {
                     epoch=runtime.getLong("input_resets");trial=checkNotNull(NativeSessionHost.debugCaptureInput(checkNotNull(NativeSessionHost.inputTarget(base.json().toString())))) {"FREEDOOM_INPUT_UNAVAILABLE"}
                     check(input.getInt("pressed")==0 && input.getJSONObject("pointer").getInt("pressed")==0) {"FREEDOOM_INPUT_HELD"}
                     owner=binding;theme=runtime.getJSONObject("render").getLong("theme_revision");keys=input.getLong("delivered");buttons=input.getJSONObject("pointer").getLong("buttons")
+                    check(epoch in 0..Long.MAX_VALUE-3 && keys in 0..Long.MAX_VALUE-8 && buttons in 0..Long.MAX_VALUE-4) {"FREEDOOM_COUNTER_LIMIT"};lastKeys=keys
+                    focusProgress=GtkInputProgress(keys,buttons,false);if(name=="close") closeProgress=FreedoomCloseProgress(epoch)
                     previousCatalog=JSONObject(NativeBridge.nativeCatalogUi(handle)).optJSONObject("catalog")?.optString("request_id") ?: ""
                     NativeSessionHost.reloadLauncher(".config/eidolon/launcher.toml");transition("CATALOG")
                 } else {
@@ -136,7 +142,13 @@ object FreedoomGuiCase {
                     else if(phase=="WAIT_WINDOW") check(extras.all {id->GtkFixtureBinding.window(runtime,appId)?.getString("window")==id}) {"FREEDOOM_OTHER_WINDOW"}
                     else check((extras-setOf(window)).isEmpty()) {"FREEDOOM_OTHER_WINDOW"}
                     check(runtime.getJSONObject("render").getLong("theme_revision")==theme) {"FREEDOOM_THEME_CHANGED"}
-                    if(phase!="RETIRING") check(runtime.getLong("input_resets")==epoch) {"FREEDOOM_EPOCH_CHANGED"}
+                    if(phase !in setOf("FIRST_CLOSE","RETIRING")) check(runtime.getLong("input_resets")==epoch) {"FREEDOOM_EPOCH_CHANGED"}
+                    val closeReady=if(phase in setOf("FIRST_CLOSE","RETIRING") && name=="close") {
+                        val gate=checkNotNull(closeProgress)
+                        gate.observe(SystemClock.elapsedRealtime(),runtime.getLong("input_resets"),acks,window !in windows(runtime))
+                        check(gate.state!=FreedoomCloseProgress.State.REJECTED) {"FREEDOOM_${gate.reason}"};gate.state==FreedoomCloseProgress.State.COMPLETE
+                    } else false
+                    if(phase=="RETIRING" && name=="keys") check(runtime.getLong("input_resets") in epoch..epoch+1) {"FREEDOOM_EPOCH_CHANGED"}
                     for((_,code) in acks) check(code=="ACCEPTED") {"FREEDOOM_COMMAND_REJECTED"}
                     when(phase) {
                         "CATALOG" -> {
@@ -169,15 +181,21 @@ object FreedoomGuiCase {
                                 }
                             }
                         }
-                        "WAIT_FOCUS" -> if(focused(runtime)) {
-                            check(input.getLong("delivered")==keys && input.getJSONObject("pointer").getLong("buttons")==buttons+2 && input.getJSONObject("pointer").getInt("pressed")==0) {"FREEDOOM_OTHER_INPUT"}
+                        "WAIT_FOCUS" -> {
+                          val pointer=input.getJSONObject("pointer");val gate=checkNotNull(focusProgress)
+                          gate.observe("WAIT_FOCUS",SystemClock.elapsedRealtime(),GtkInputProgress.Observed(input.getLong("delivered"),pointer.getLong("buttons"),input.getInt("pressed"),pointer.getInt("pressed")))
+                          check(gate.state!=GtkInputProgress.State.REJECTED) {"FREEDOOM_FOCUS_${gate.reason}"}
+                          if(gate.state==GtkInputProgress.State.COMPLETE && focused(runtime)) {
                             token=input.getString("focus_token");record("focused",runtime)
                             if(name=="keys") {key(KeyEvent.KEYCODE_ESCAPE,1,runtime);content=content(runtime);transition("WAIT_KEY")}
                             else {seal();firstClose=close();record("first_close_queued",runtime);content=content(runtime);transition("FIRST_CLOSE")}
+                          }
                         }
                         "WAIT_KEY" -> {
-                            check(focused(runtime) && input.getString("focus_token")==token && input.getLong("delivered")<=keys+expectedKeys &&
+                            val delivered=input.getLong("delivered")
+                            check(focused(runtime) && input.getString("focus_token")==token && delivered in keys+expectedKeys-2..keys+expectedKeys && delivered>=lastKeys && input.getInt("pressed") in 0..1 &&
                                 input.getJSONObject("pointer").getLong("buttons")==buttons+2) {"FREEDOOM_OTHER_INPUT"}
+                            check(SystemClock.elapsedRealtime()-stageBegan<6000) {"FREEDOOM_KEY_PROGRESS_TIMEOUT"};lastKeys=delivered
                             if(input.getLong("delivered")==keys+expectedKeys && input.getInt("pressed")==0 && content(runtime)>content && SystemClock.elapsedRealtime()-stageBegan>=300) {
                                 when(keyStage++) {
                                     0 -> {record("escape_delivered",runtime);key(KeyEvent.KEYCODE_DPAD_UP,103,runtime)}
@@ -187,7 +205,7 @@ object FreedoomGuiCase {
                                 content=content(runtime);stageBegan=SystemClock.elapsedRealtime()
                             }
                         }
-                        "FIRST_CLOSE" -> if(acks[firstClose]=="ACCEPTED" && SystemClock.elapsedRealtime()-stageBegan>=500) {
+                        "FIRST_CLOSE" -> if(closeReady && SystemClock.elapsedRealtime()-stageBegan>=500) {
                             if(GtkFixtureBinding.window(runtime,appId)==null) {record("first_close_retired",runtime);transition("RETIRING")}
                             else if(GtkFixtureBinding.targetFor(runtime,window)==target && content(runtime)>content) {
                                 firstClosePending=true;record("first_close_pending",runtime);secondClose=close();record("second_close_queued",runtime);transition("RETIRING")
@@ -197,7 +215,7 @@ object FreedoomGuiCase {
                             val receipt=FreedoomGuiBinding.receipt(runtime,request,launch,appId)
                             if(receipt!=null) {
                                 check(FreedoomGuiBinding.natural(receipt)) {"FREEDOOM_NOT_NATURAL"}
-                                if(name=="close") check(acks[firstClose]=="ACCEPTED" && (secondClose.isEmpty() || acks[secondClose]=="ACCEPTED")) {"FREEDOOM_CLOSE_ACK_MISSING"}
+                                if(name=="close" && !closeReady) {publish();ui.postDelayed(this,50);return}
                                 val key=checkNotNull(target)
                                 if(GtkFixtureBinding.window(runtime,appId)==null && GtkFixtureBinding.retired(runtime,NativeSessionHost.debugAdapterSnapshot(),binding,setOf(key),foot)) {
                                     check(NativeSessionHost.debugFinishInput(checkNotNull(trial))) {"FREEDOOM_INTENT_LOST"};trial=null

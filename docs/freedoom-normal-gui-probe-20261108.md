@@ -26,6 +26,13 @@ content前進を確認してから次へ進む。初期main menu選択0、Upの�
 上流の`ev_quit`は一回目で終了確認、確認中の二回目でQuitを実行する。最初のcloseだけで終了成功にしない。
 二回目のenqueue/ACKと自然exitを分け、TERM/KILLやpendingを自然終了へ変換しない。
 
+CloseWindowTargetはnative input resetを伴うため、捕捉epochへ固定した通常key条件をclose後へ流用しない。
+`FreedoomCloseProgress`は送信済みrequest最大2件とそのACK、base epochから対応件数の増分、
+事前にsealed trialへ登録した自身full targetの退役reset1回だけを許す。
+epoch→ACK、ACK→epochのどちらの公開順も6秒以内だけ待ち、逆行・余分なreset・遅れた成功を拒否する。
+focus/UPの公開順は既存`GtkInputProgress`のWAIT_FOCUS契約を再用し、focusが先に出ても
+DOWN→UPの既知counter途中だけを待つ。余分/逆行/無関係なheldを新baselineにしない。
+
 自然終了の判定にはゲームworker receiptの実child/UID、資源回収、pin不変、PIDFD0、TERM/KILL0も必要である。
 元foot継続とGUI全full-targetのnative panel/Board/SDK binding/Entity/listener/controls/MODE回収は同じjobのhost観測で確認する。
 raw Wayland、入力本文、画面画像は保存しない。
