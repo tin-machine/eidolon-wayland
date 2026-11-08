@@ -59,10 +59,10 @@ PACKAGE_NAME = re.compile(r"[a-z0-9][a-z0-9+.-]{0,127}\Z")
 # These bytes were reviewed at the immutable mousepad-0.6.3 upstream tag.
 # https://github.com/xfce-mirror/mousepad/tree/mousepad-0.6.3
 SOURCE_HASHES = {
-    "configure.ac": "6bd49a22c7b36ba3042453d0e7b78f20c76f4b16bda69c0cb352145f4b386cd1",
-    "mousepad/mousepad-settings-store.c": "7b8d774a534f1b208c2da1e4650930506301b5d7ab7fb811fb7601648a922e92",
-    "mousepad/mousepad-history.c": "a1b6bd3dddb82719a432eb2d9456e2675263cfe6dbaa77b6e260d1cafc469692",
-    "mousepad/org.xfce.mousepad.gschema.xml": "28b3b4969e5e309b80576d10226d9a4680273268bb84550d1e6e41e0b75958e0",
+    "configure.ac": "76b1ad228bf153aa88cba0a11d8c8225432ae9bec39baa6a010df21fee33146e",
+    "mousepad/mousepad-settings-store.c": "7c7f2597ebf139af1c03b9af2c29299bbf437ce8a7d564c51cc02c84be961fbe",
+    "mousepad/mousepad-history.c": "c7f7dfa1ea20ca5f08fd8282c4db31d33788b1e1e1594abd8a1058caee907a3a",
+    "mousepad/org.xfce.mousepad.gschema.xml": "0dd0a59b84d965ad581cefe2a8205ea94a39d078f5015a086fee4d3eeb3effd5",
 }
 REQUIRED_ROLES = frozenset({"gtk", "glib", "gtksourceview", "gio", "dbus_daemon", "dbus_run_session", "schema_xml", "schema_compiled"})
 DEPENDENCY_ROLES = REQUIRED_ROLES | {"gio_module", "dependency"}
