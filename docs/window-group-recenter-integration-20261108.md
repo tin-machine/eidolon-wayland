@@ -24,3 +24,14 @@ Androidの実SDK classpathでcompileDebugKotlinとtestDebugUnitTestを実行す�
 HMD視認、物理メニュー操作、実機のgroup transitionと複数窓geometryは未受入れ。
 実機では二枚のfootでまとめる→前面切替→展開、取消・reduced motion・Close、正面復帰と入力復帰、
 他窓不変、操作部とSDK/Boardの回収を確認する。hostテストやcommand ACKだけで実機成功としない。
+
+## 実機で見つかったgroup候補の拒否
+
+初回の単一窓recenterはSDK・回収・通常復帰まで成功したが、二枚のgroupケースはcollapseでNOT_READYとなった。
+記録を追加して確認すると、実行中foot自身のdurable journal entryを、候補抽出が未回収の別ownerとして拒否していた。
+`remote.cleanup_pending`の真偽だけでなく、`forward.pending_cleanup`にも稼働中の自分の回収責務が残る。
+
+修正ではsession/nonce/UIDと子のpid/group/startが認証済みの稼働ownerに一致するentryだけを許容する。
+別owner・子identityの不一致・不明child・終端stateは引き続き拒否する。journalの削除や回収済み化はしない。
+host fixtureにも実機と同じ稼働ownerのjournalを持たせ、矛盾したjournalを拒否する負例を追加した。
+初回の失敗と修正後の受入れは別のnonceで記録する。マージ判定は修正後のCIと実機結果を確認して行う。
