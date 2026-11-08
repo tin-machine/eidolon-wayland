@@ -31,10 +31,13 @@ exclusive linkで採用する。検査後に別fileが作られた場合も上�
 
 Termux Python3.14.8では`os.link`が公開されていないことをBuild175の初回登録で確認した。
 この失敗ではcatalogも同run stagingも残らず、親directoryだけが作られた。失敗記録は保持する。
-Android/aarch64/LP64に限定し、固定2basenameと同じ検査済み親dirfdだけをBionic公開
-[`linkat(2)`](https://android.googlesource.com/platform/bionic/+/refs/heads/main/libc/include/unistd.h)へ渡す。
-EEXISTは従来どおり競合拒否し、`replace`への代用はしない。他platform/ABI/未提供symbolはunsupportedで止める。
-これはkernel hardlinkとPython wrapperの違いの補完であり、既存設定の上書き許可を広げない。
+続くBionic `linkat`補完も、実機の専用fixtureでerrno13(EACCES)となった。こちらの失敗も保持する。
+同じUIDの専用fixtureでは`renameat2(RENAME_NOREPLACE)`の新規採用と既存target EEXIST拒否、inode維持、全回収が成立した。
+この根拠に基づき、Android/aarch64/LP64に限定し、固定2basenameと同じ検査済み親dirfdだけをBionic公開
+[`renameat2(2)`](https://android.googlesource.com/platform/bionic/+/refs/heads/main/libc/include/stdio.h)へ渡す。
+flagsは`RENAME_NOREPLACE=1`のみで、stageが移動する場合もdirectory fsyncと最終nlink1を確認する。
+EEXISTは従来どおり競合拒否し、`os.replace`への代用はしない。他platform/ABI/未提供symbolはunsupportedで止める。
+既存設定の上書き許可を広げるものではない。通常hostのPython `os.link`経路は維持する。
 
 結果はprivate artifactの`result.json`へ残る。`registered`も`execution=not_run`である。
 登録後の通常GUI検証ではproduction `launchRegistered`と現行lease/launch receipt/cookieを対応させ、

@@ -26,19 +26,19 @@ def sha(data):return hashlib.sha256(data).hexdigest()
 def identity(row):return row.st_dev,row.st_ino,row.st_size,row.st_mtime_ns,row.st_ctime_ns
 
 
-def exclusive_link(parent,source,target):
-    """固定basenameを同じowned dirfdでlink。Android Pythonのos.link欠落だけを公開libc ABIで補う。"""
+def exclusive_publish(parent,source,target):
+    """固定basenameを同じowned dirfdで非上書き採用。Androidは実cap済みNOREPLACE rename。"""
     require(re.fullmatch(r'\.freedoom-[0-9a-f]{32}\.toml',source) is not None and target=='launcher.toml','STAGING_UNSAFE')
     row=os.fstat(parent);require(stat.S_ISDIR(row.st_mode) and row.st_uid==os.getuid() and not row.st_mode&0o022,'STAGING_UNSAFE')
     if hasattr(os,'link'):
         os.link(source,target,src_dir_fd=parent,dst_dir_fd=parent,follow_symlinks=False);return 'python_os_link'
     require(sys.platform=='android' and platform.machine()=='aarch64' and ctypes.sizeof(ctypes.c_void_p)==8 and ctypes.sizeof(ctypes.c_int)==4,'PLATFORM_UNSUPPORTED')
-    library=ctypes.CDLL(None,use_errno=True);function=getattr(library,'linkat',None);require(function is not None,'PLATFORM_UNSUPPORTED')
-    function.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_int];function.restype=ctypes.c_int
+    library=ctypes.CDLL(None,use_errno=True);function=getattr(library,'renameat2',None);require(function is not None,'PLATFORM_UNSUPPORTED')
+    function.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint];function.restype=ctypes.c_int
     ctypes.set_errno(0)
-    if function(parent,source.encode('ascii'),parent,target.encode('ascii'),0)!=0:
-        code=ctypes.get_errno();raise OSError(code,errno.errorcode.get(code,'LINKAT_FAILED'))
-    return 'android_bionic_linkat'
+    if function(parent,source.encode('ascii'),parent,target.encode('ascii'),1)!=0: # RENAME_NOREPLACE
+        code=ctypes.get_errno();raise OSError(code,errno.errorcode.get(code,'NOREPLACE_FAILED'))
+    return 'android_bionic_renameat2_noreplace'
 
 
 def directories(home,parts,*,missing=False):
@@ -101,7 +101,7 @@ def create_with_builtins(home,helper,app,run_id):
         require(sha(helper.catalog_read(stage))==sha(data),'CATALOG_CHANGED')
         fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
         try:
-            try:exclusive_link(fd,stage.name,'launcher.toml')
+            try:exclusive_publish(fd,stage.name,'launcher.toml')
             except FileExistsError:raise InstallError('CATALOG_CHANGED') from None
             os.fsync(fd)
         finally:os.close(fd)

@@ -100,21 +100,24 @@ class RegistrationTests(unittest.TestCase):
         process=subprocess.run([sys.executable,'-I','-S','-B','-c',cli.remote_source()],input=b'{}',capture_output=True,timeout=5)
         self.assertEqual(process.returncode,2);self.assertEqual(process.stderr,b'')
         self.assertIn(b'REQUEST_INVALID',process.stdout)
-    def test_android_no_python_link_uses_owned_dirfd_libc_linkat_without_overwrite(self):
+    def test_android_no_python_link_uses_owned_dirfd_libc_noreplace_without_overwrite(self):
         parent=registration.config_parent(self.home);stage=parent/('.freedoom-'+self.request['run_id']+'.toml');stage.write_bytes(b'own fixed stage')
         fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW);self.addCleanup(os.close,fd)
         # 同じ公開libc ABIをlocalhost owned directoryだけで実callする。既存fileへreplaceしない。
         real_hasattr=hasattr
         def without_link(obj,name):return False if obj is os and name=='link' else real_hasattr(obj,name)
         with patch('builtins.hasattr',side_effect=without_link),patch.object(registration.sys,'platform','android'),patch.object(registration.platform,'machine',return_value='aarch64'):
-            self.assertEqual(registration.exclusive_link(fd,stage.name,'launcher.toml'),'android_bionic_linkat')
+            self.assertEqual(registration.exclusive_publish(fd,stage.name,'launcher.toml'),'android_bionic_renameat2_noreplace')
             self.assertEqual((parent/'launcher.toml').read_bytes(),b'own fixed stage')
-            with self.assertRaises(FileExistsError):registration.exclusive_link(fd,stage.name,'launcher.toml')
+            self.assertFalse(stage.exists());before=(parent/'launcher.toml').stat();stage.write_bytes(b'replacement refused')
+            with self.assertRaises(FileExistsError) as failure:registration.exclusive_publish(fd,stage.name,'launcher.toml')
+            self.assertEqual(failure.exception.errno,17)
             self.assertEqual((parent/'launcher.toml').read_bytes(),b'own fixed stage')
-            with self.assertRaisesRegex(InstallError,'STAGING_UNSAFE'):registration.exclusive_link(fd,'../outside','launcher.toml')
+            self.assertEqual((parent/'launcher.toml').stat().st_ino,before.st_ino);self.assertEqual(stage.read_bytes(),b'replacement refused')
+            with self.assertRaisesRegex(InstallError,'STAGING_UNSAFE'):registration.exclusive_publish(fd,'../outside','launcher.toml')
             with patch.object(registration.platform,'machine',return_value='x86_64'),self.assertRaisesRegex(InstallError,'PLATFORM_UNSUPPORTED'):
-                registration.exclusive_link(fd,stage.name,'launcher.toml')
-    def test_android_linkat_failure_preserves_errno_and_first_creation_staging_is_removed(self):
+                registration.exclusive_publish(fd,stage.name,'launcher.toml')
+    def test_android_noreplace_first_creation_moves_staging_and_keeps_nlink_one(self):
         real_hasattr=hasattr
         def without_link(obj,name):return False if obj is os and name=='link' else real_hasattr(obj,name)
         with patch('builtins.hasattr',side_effect=without_link),patch.object(registration.sys,'platform','android'),patch.object(registration.platform,'machine',return_value='aarch64'):
