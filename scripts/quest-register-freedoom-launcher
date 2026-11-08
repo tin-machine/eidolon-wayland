@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""固定Freedoom定義を明示opt-inで登録する。既定はread-only inspect。起動/reloadはしない。"""
+import argparse
+import base64
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import shlex
+import subprocess
+import zlib
+from native_build import ROOT
+from quest_device import PACKAGE,QuestDevice,package_uid,work_root
+from gui_probe_sdk import digest_sources
+import launcher_bundle
+import freedoom_launcher_registration as registration
+
+
+def source_hashes():
+    paths=['scripts/quest-register-freedoom-launcher','scripts/freedoom_launcher_registration.py','scripts/sdl_probe_install.py',
+           'scripts/launcher_bundle.py','scripts/gui_probe_sdk.py','scripts/native_build.py','scripts/quest_device.py',
+           *['scripts/termux/'+name for name in launcher_bundle.FILES]]
+    return {name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in paths}
+
+
+def remote_source():
+    source='import sys,types\n'
+    for name in ('sdl_probe_install','freedoom_launcher_registration'):
+        source+=f"m=types.ModuleType({name!r});sys.modules[m.__name__]=m;exec({(ROOT/('scripts/'+name+'.py')).read_text()!r},m.__dict__)\n"
+    source+="raise SystemExit(sys.modules['freedoom_launcher_registration'].remote_main())\n"
+    compressed=base64.b64encode(zlib.compress(source.encode(),9)).decode()
+    return f'import base64,zlib;exec(zlib.decompress(base64.b64decode({compressed!r})))'
+
+
+def apk_binding(value,digest):
+    registration.require(type(value) is dict and type(value.get('process_id')) is int and value['process_id']>0,'APK_BINDING_INVALID')
+    build=value.get('build_info',{})
+    registration.require(type(build) is dict and build.get('schema')==1 and build.get('source_digest')==digest and
+        build.get('profile')=='debug' and build.get('target')=='aarch64-linux-android' and type(build.get('apk_version_code')) is int,'SOURCE_BUILD_MISMATCH')
+    return dict(process_id=value['process_id'],source_digest=digest,apk_version=build['apk_version_code'])
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--serial',required=True);parser.add_argument('--asset-run-id',required=True);parser.add_argument('--manifest-sha256',required=True)
+    parser.add_argument('--action',choices=('inspect','register'),default='inspect')
+    parser.add_argument('--expected-revision',help='register時はinspectの64hex revision、未作成ならabsentを明示')
+    parser.add_argument('--artifact-root',type=Path);args=parser.parse_args()
+    if not registration.hexstr(args.asset_run_id,32) or not registration.hexstr(args.manifest_sha256,64):parser.error('run-idは32hex、manifestは既知64hexです')
+    if args.action=='register' and args.expected_revision!='absent' and not registration.hexstr(args.expected_revision,64):parser.error('registerには--expected-revisionが必要です')
+    if args.action=='inspect' and args.expected_revision is not None:parser.error('inspectではexpected revisionを指定しません')
+    os.umask(0o077);root=args.artifact_root or work_root()/'eidolon-freedoom-registration';run_id=secrets.token_hex(16)
+    if not root.is_absolute():parser.error('artifact rootは絶対pathです')
+    run=root/(datetime.datetime.now().strftime('%Y%m%dT%H%M%S-%f')+'-'+run_id);run.mkdir(mode=0o700,parents=True)
+    result=dict(schema=1,status='blocked',action=args.action,run_id=run_id,execution='not_run',reload_requested=False)
+    device=QuestDevice(args.serial,run)
+    def snapshot():
+        row=subprocess.run(['adb','-s',args.serial,'exec-out','run-as',PACKAGE,'head','-c','262145','no_backup/diagnostics/latest.json'],capture_output=True,timeout=5)
+        registration.require(row.returncode==0 and len(row.stdout)<=262144,'DIAGNOSTICS_UNAVAILABLE')
+        return json.loads(row.stdout)
+    try:
+        result['device']=device.validate();uid=package_uid(device.adb('shell','pm','list','packages','-U','com.termux'),'com.termux')
+        registration.require(uid==registration.UID,'UID_MISMATCH');source=source_hashes();digest=digest_sources();binding=apk_binding(snapshot(),digest)
+        registration.require(device.adb('shell','pidof',PACKAGE).strip()==str(binding['process_id']),'APK_PROCESS_NOT_CURRENT')
+        _,manifest=launcher_bundle.prepare(ROOT)
+        request=dict(schema=1,action=args.action,run_id=run_id,profile=dict(kind='freedoom_phase1_software',assets_run_id=args.asset_run_id,manifest_sha256=args.manifest_sha256),
+            expected_revision=None if args.expected_revision in (None,'absent') else args.expected_revision,sources=manifest['files'])
+        wire=json.dumps(request,separators=(',',':')).encode();registration.require(len(wire)<=4096,'REQUEST_INVALID')
+        command=shlex.join(['run-as','com.termux','/data/data/com.termux/files/usr/bin/python3','-c',remote_source()]);registration.require(len(command.encode())<=49*1024,'REMOTE_COMMAND_LIMIT')
+        result.update(binding=binding,source_sha256=source,remote_command_bytes=len(command.encode()),request=request)
+        row=subprocess.run(['adb','-s',args.serial,'shell','-T',command],input=wire,capture_output=True,timeout=20)
+        result.update(remote_returncode=row.returncode,stdout_bytes=len(row.stdout),stderr_bytes=len(row.stderr))
+        registration.require(len(row.stdout)<=4096,'REMOTE_RESULT_INVALID');report=json.loads(row.stdout)
+        registration.require(type(report) is dict and report.get('schema')==1 and report.get('status') in {'inspected','registered','blocked'},'REMOTE_RESULT_INVALID')
+        # remote bodyは固定schemaだけ。任意文字列をartifactへ転記しない。
+        allowed={'schema','status','run_id','uid','action','configured','revision','total','target_present','target_matches','changed','other_entries_preserved','asset_runtime_validated','execution','reload_requested'}
+        registration.require(report.get('execution')=='not_run','REMOTE_RESULT_INVALID')
+        if report['status']=='blocked':
+            registration.require(set(report)=={'schema','status','reason','execution'} and report.get('reason') in registration.REASONS,'REMOTE_RESULT_INVALID');result['remote']=report
+        else:
+            registration.require(set(report)==allowed and report.get('status')==('registered' if args.action=='register' else 'inspected') and report.get('run_id')==run_id and report.get('uid')==uid and
+                report.get('action')==args.action and (report.get('revision') is None or registration.hexstr(report['revision'],64)) and
+                type(report.get('total')) is int and 0<=report['total']<=64 and all(type(report.get(k)) is bool for k in
+                ('configured','target_present','target_matches','changed','other_entries_preserved','asset_runtime_validated','reload_requested')),'REMOTE_RESULT_INVALID')
+            result['remote']=report
+        result['source_unchanged']=source_hashes()==source and digest_sources()==digest
+        result['apk_unchanged']=apk_binding(snapshot(),digest)==binding and device.adb('shell','pidof',PACKAGE).strip()==str(binding['process_id'])
+        registration.require(result['source_unchanged'] and result['apk_unchanged'],'SOURCE_BUILD_MISMATCH')
+        if row.returncode==0 and report['status']!='blocked':result['status']=report['status']
+    except (OSError,ValueError,RuntimeError,KeyError,TypeError,subprocess.SubprocessError):result['reason']='REGISTRATION_UNAVAILABLE'
+    (run/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+    print(json.dumps(dict(status=result['status'],artifact=str(run),action=args.action,execution='not_run',reason=result.get('reason') or result.get('remote',{}).get('reason'))))
+    return 0 if result['status'] in {'inspected','registered'} else 1
+
+
+if __name__=='__main__':raise SystemExit(main())
