@@ -115,7 +115,19 @@ r=h.serve(home,'1111111111111111',0,lambda v:print(json.dumps(v),flush=True),lea
     def test_owned_child_fork_and_term_ignore_is_killed_without_touching_unrelated(self):
         unrelated=subprocess.Popen(['/usr/bin/python3','-c','import time;time.sleep(10)'],start_new_session=True)
         try:
-            child="import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,signal.SIG_IGN);pid=os.fork();(Path(os.environ['XDG_RUNTIME_DIR'])/'ready').write_text(str(pid)) if pid else None;time.sleep(10)"
+            # Publish the complete PID atomically: exists() must not expose an
+            # empty file between open(O_TRUNC) and write on a busy CI runner.
+            child="""import os,signal,time
+from pathlib import Path
+signal.signal(signal.SIGTERM,signal.SIG_IGN)
+pid=os.fork()
+if pid:
+    ready=Path(os.environ['XDG_RUNTIME_DIR'])/'ready'
+    pending=ready.with_suffix('.pending')
+    pending.write_text(str(pid))
+    pending.replace(ready)
+time.sleep(10)
+"""
             result,values=self.run_process([{'type':'inspect_tools'},{'type':'start','mode':'pattern'},{'type':'stop'}],child,lease=4,wait_ready=True)
             self.assertTrue(any(v['type']=='child_started' for v in values));self.assertTrue(result['child_reaped']);self.assertFalse(result['group_alive']);self.assertTrue(result['cleaned'])
             self.assertIsNone(unrelated.poll());self.assertFalse(result['pattern_verified'])

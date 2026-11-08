@@ -53,6 +53,9 @@ pub struct Lease {
     route: Arc<Route>,
 }
 impl Router {
+    pub(crate) fn belongs_to(&self, session: SessionId) -> bool {
+        self.session == session
+    }
     pub fn new(session: SessionId) -> Self {
         Self {
             session,

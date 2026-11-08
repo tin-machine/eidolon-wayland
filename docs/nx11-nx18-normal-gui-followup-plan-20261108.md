@@ -83,6 +83,7 @@ F2の固定キーは「メニューから終了できる」検証であり、ゲ
 | 通常接続設定 C1 | mainに専用保存モデル/Store/CASを実装。profile ID `remote-linux`、backend `linux_ssh`、revision/bindingとpinを分離 | 接続設定UI・Hostへの採用、device filesystemでの中断復旧、保存後の通常SSH接続 |
 | process owner C2a | subreaperとlive pidfdでsetsid子孫を含む所有・回収を扱う部品を実装・host検査。pipe EOFはadapterで別判定 | 通常remote foot/GUIの接続完成、helper自身が失われた後の回収保証。C2aという名称だけでterminal対応済みとはしない |
 | 通常GTK C2 | 作業branch `43767a4`に通常demo/helper/builderと型付きprotocolを保存。Python13件・Rust8件・Cビルド・限定clippy成功 | main統合、実配備、SSH actor/wire loop/lease/journal/runtime/Host/UIへの接続、実描画・入力 |
+| L1〜L4の後続PR | C2を取り込み、非同期終了競合・通常lease・SSH actor/StreamLocal・独立journal・helper喪失/boot変更時の明示復旧を接続。[実装と検証範囲](normal-linux-gui-l1-l4-20261108.md)を参照 | mainへのmerge、対象host/Questへの配備、L5/L6のHost/SDK/UI、実描画・入力、L7a/L7bの受入れ |
 
 固定GTKの詳細は[Build174](build-174-integration-20261108.md)。C1は[保存設計](normal-linux-profile-c1-20261108.md)、
 C2の保存版は[通常Linux GUIのcheckpoint](https://github.com/tin-machine/eidolon-wayland/blob/43767a437b5deab94156f5550846c1a0456dbe73/docs/normal-linux-gui-c2-20261108.md)を参照する。
@@ -145,7 +146,7 @@ L2〜L5が揃うまで、通常GUI経路は利用可能と表示しない。
 3. Questがその通知を受け取る前にheartbeat `3`を生成する。
 4. 正しい終了通知も`2 != 3`で`DESKTOP_PROTOCOL_SCOPE`となり、`Failed`へ移る。
 
-これはコードから確認した静的指摘で、実機発生や修正済みを意味しない。L3の通常actorへ配線する前に、
+これは保存版C2のコードから確認した静的指摘で、実機発生を意味しない。後続L1〜L4 PRではACKと非同期終端の因果範囲を分け、protocol/actual actorの交差fixtureを追加した。L3の通常actorへ配線する条件として、
 Python/Rust共通のwire契約として、要求ACKの対応番号と非同期eventの最終処理request番号を分離する。
 
 - ACKは対象requestと厳密に対応付ける。非同期終端eventではremoteが処理済みのrequestと未処理requestの関係を確認する。

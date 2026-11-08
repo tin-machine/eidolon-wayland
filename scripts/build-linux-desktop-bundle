@@ -1,0 +1,69 @@
+#!/usr/bin/python3
+"""既存base bundleへ通常GTK demo/pidfd adapterを追加。B4/B6・鍵・設定は変更せず、アプリを起動しない。"""
+import argparse
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+loader = importlib.machinery.SourceFileLoader('desktop_build_tools', str(ROOT / 'scripts/build-linux-gtk-bundle'))
+spec = importlib.util.spec_from_loader(loader.name, loader);tools = importlib.util.module_from_spec(spec);loader.exec_module(tools)
+helper = tools.helper
+spec = importlib.util.spec_from_file_location('desktop_adapter', ROOT / 'scripts/linux/eidolon_linux_desktop.py')
+desktop = importlib.util.module_from_spec(spec);spec.loader.exec_module(desktop)
+SOURCES = {'eidolon_linux_desktop.py':ROOT / 'scripts/linux/eidolon_linux_desktop.py',
+           'eidolon_linux_desktop_session.py':ROOT / 'scripts/linux/eidolon_linux_desktop_session.py',
+           'eidolon_linux_process_owner.py':ROOT / 'scripts/linux/eidolon_linux_process_owner.py',
+           'gtk3-desktop-demo.c':ROOT / 'scripts/fixtures/gtk3-desktop-demo.c'}
+
+
+def build(directory):
+    helper.require(sys.platform == 'linux' and os.getuid() == os.geteuid() != 0 and directory.is_absolute() and
+                   directory.resolve() == directory and directory.parts[-3:] == ('.local','lib','eidolon-linux'), 'BUILD_LOCATION_INVALID')
+    home = directory.parents[2];helper.checked_directory(home,private=False)
+    verified, _, base_hash = helper.bundle(home);helper.require(verified == directory,'BUILD_LOCATION_INVALID')
+    for name in (*desktop.FILES,'desktop-bundle.json','desktop-build'):
+        helper.require(not os.path.lexists(directory/name),'BUILD_ALREADY_EXISTS')
+    inputs = {name:path.read_bytes() for name,path in SOURCES.items()}
+    helper.require(all(0 < len(data) <= 65536 for data in inputs.values()),'BUILD_SOURCE_INVALID')
+    cc,pkg = tools.trusted_tool('/usr/bin/cc'),tools.trusted_tool('/usr/bin/pkg-config')
+    scratch=directory/'desktop-build';scratch.mkdir(mode=0o700)
+    env={'PATH':'/usr/bin:/bin','HOME':str(scratch),'TMPDIR':str(scratch),'LANG':'C.UTF-8','LC_ALL':'C.UTF-8'}
+    version=tools.command([pkg,'--modversion','gtk+-3.0'],env,capture=True)[0].decode('ascii').strip()
+    helper.require(re.fullmatch(r'3\.24\.[0-9]{1,3}',version),'GTK_VERSION_UNSUPPORTED')
+    flags=shlex.split(tools.command([pkg,'--cflags','--libs','gtk+-3.0'],env,capture=True)[0].decode('ascii'))
+    helper.require(flags and all(flag.startswith(('-I','-L','-l','-D','-pthread','-Wl,')) for flag in flags),'GTK_FLAGS_INVALID')
+    source=scratch/'gtk3-desktop-demo.c';tools.exclusive_file(source,inputs[source.name],0o600)
+    target=scratch/'eidolon-gtk3-desktop'
+    _,counts=tools.command([cc,'-std=c11','-Wall','-Wextra','-Werror','-O2',str(source),'-o',str(target),*flags],env,seconds=30)
+    target.chmod(0o700);binary=helper.private_read(target,4*1024*1024,executable=True)
+    helper.require(binary[:6]==b'\x7fELF\x02\x01' and len(binary)>=64,'BUILD_BINARY_INVALID')
+    helper.require(all(SOURCES[name].read_bytes()==data for name,data in inputs.items()) and helper.bundle(home)[2]==base_hash,'BUILD_INPUT_CHANGED')
+    contents={**inputs,'eidolon-gtk3-desktop':binary};hashes={name:hashlib.sha256(data).hexdigest() for name,data in contents.items()}
+    manifest=dict(schema=1,backend='linux_posix',revision=desktop.REVISION,base_bundle_sha256=base_hash,gtk_version=version,files=hashes)
+    for name,data in contents.items():tools.exclusive_file(directory/name,data,0o700 if name=='eidolon-gtk3-desktop' else 0o600)
+    helper.write_record(directory/'desktop-bundle.json',manifest,replace=False)
+    manifest_hash=hashlib.sha256(helper.private_read(directory/'desktop-bundle.json')).hexdigest()
+    desktop.Bundle(helper,home,manifest_hash,hashes['eidolon_linux_desktop.py'],hashes['eidolon_linux_process_owner.py'],
+                   hashes['gtk3-desktop-demo.c'],hashes['eidolon_linux_desktop_session.py'])
+    result=dict(schema=1,status='built',executed=False,desktop_bundle_sha256=manifest_hash,source_hashes=hashes,
+                base_bundle_sha256=base_hash,gtk_version=version,compiler_output_bytes=counts,compiler_reaped=True)
+    helper.write_record(scratch/'build.json',result,replace=False);return result
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--bundle-directory',type=Path,required=True)
+    args=parser.parse_args();os.umask(0o077)
+    try:result=build(args.bundle_directory)
+    except (OSError,ValueError,TypeError,KeyError,UnicodeError) as error:
+        token=str(error)
+        result=dict(schema=1,status='failed',executed=False,reason=token if re.fullmatch(r'(BUILD|GTK|BUNDLE|HELPER|FILE|DIRECTORY|DESKTOP|PIN)_[A-Z_]{1,48}',token) else 'BUILD_UNAVAILABLE')
+    print(json.dumps(result,separators=(',',':')));return 0 if result['status']=='built' else 1
+
+if __name__=='__main__':raise SystemExit(main())
