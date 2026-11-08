@@ -282,6 +282,9 @@ class ArtifactSafetyTests(TemporaryCheck):
     def test_insecure_or_relative_artifact_root_is_refused(self):
         insecure = self.base / "insecure"
         insecure.mkdir(mode=0o755)
+        # Earlier suites may install umask077. Establish the intended unsafe
+        # mode explicitly so this case cannot silently become a private root.
+        insecure.chmod(0o755)
         for path in (insecure, Path("relative-artifact")):
             with self.subTest(path=path), self.no_processes():
                 status, result = self.command("--stage", "acceptance", "--artifact-root", str(path))

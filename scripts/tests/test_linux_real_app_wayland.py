@@ -126,7 +126,9 @@ class InputAndOracleTests(unittest.TestCase):
             artifact = Path(temporary)
             # No runtime dependency is invoked, and unsupported prerequisites
             # must be a failure receipt rather than a skipped successful gate.
-            with mock.patch.object(owner.os, "getuid", return_value=0), mock.patch.object(owner.os, "geteuid", return_value=0):
+            # Keep the actual temp directory owner/UID relationship intact on
+            # both root local environments and non-root GitHub runners.
+            with mock.patch.object(owner.sys, "platform", "unsupported"):
                 result = owner.run_case(ROOT, artifact, artifact / "missing-settings")
             self.assertEqual(result["state"], "fail")
             self.assertFalse(result["feasibility_verified"])

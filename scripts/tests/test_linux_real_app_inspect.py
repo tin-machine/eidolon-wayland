@@ -523,6 +523,8 @@ class ReceiptContractTest(unittest.TestCase):
         with self.assertRaises(OSError):
             M.write_inspection_receipt(directory_link, receipt)
         (self.home / "insecure").mkdir(mode=0o755)
+        # The full host suite may leave umask077; mkdir's mode is filtered.
+        (self.home / "insecure").chmod(0o755)
         with self.assertRaises(M.InspectionError):
             M.write_inspection_receipt(self.home / "insecure", receipt)
 

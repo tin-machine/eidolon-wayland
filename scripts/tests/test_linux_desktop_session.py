@@ -384,7 +384,9 @@ class DesktopSessionLoopTest(DesktopSessionHarness):
         for _ in range(7):
             time.sleep(.1)
             self.send('heartbeat')
-            self.assertEqual(self.event()['event']['type'], 'heartbeat')
+            response = self.event()
+            self.assertEqual(response['event']['type'], 'heartbeat',
+                             'synthetic renewal response: ' + json.dumps(response, sort_keys=True))
         self.send('stop')
         self.finished('stop')
     def test_control_eof_reaches_cleanup_and_receipt(self):
