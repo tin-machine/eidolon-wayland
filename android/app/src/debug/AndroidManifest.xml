@@ -26,5 +26,7 @@
             android:permission="android.permission.DUMP" />
         <receiver android:name=".GtkFixtureCommandReceiver" android:exported="true"
             android:permission="android.permission.DUMP" />
+        <receiver android:name=".FreedoomGuiCommandReceiver" android:exported="true"
+            android:permission="android.permission.DUMP" />
     </application>
 </manifest>

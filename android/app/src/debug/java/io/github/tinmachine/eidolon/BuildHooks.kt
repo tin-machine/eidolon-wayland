@@ -25,7 +25,7 @@ object BuildHooks {
     private var running = false
     private val consumedNonces = ArrayDeque<String>()
     private val gtkRecoveries=LinuxGtkRecoveryBudget()
-    fun commandComplete(request: String, code: String) { KeyboardCase.commandComplete(request, code);WindowControlsCase.commandComplete(request,code);WindowRecenterCase.commandComplete(request,code);WindowSlotsCase.commandComplete(request,code);LinuxShmSdkCase.commandComplete(NativeSessionHost.currentHandle(),request,code);LinuxGtkSdkCase.commandComplete(NativeSessionHost.currentHandle(),request,code) }
+    fun commandComplete(request: String, code: String) { KeyboardCase.commandComplete(request, code);WindowControlsCase.commandComplete(request,code);WindowRecenterCase.commandComplete(request,code);WindowSlotsCase.commandComplete(request,code);LinuxShmSdkCase.commandComplete(NativeSessionHost.currentHandle(),request,code);LinuxGtkSdkCase.commandComplete(NativeSessionHost.currentHandle(),request,code);FreedoomGuiCase.commandComplete(NativeSessionHost.currentHandle(),request,code) }
     fun windowControlRequested(action:String,runtime:Long,target:String,revision:Long,request:String,code:Int) {
         WindowControlsCase.requested(action,runtime,target,revision,request,code);WindowRecenterCase.requested(action,runtime,target,revision,request,code)
     }

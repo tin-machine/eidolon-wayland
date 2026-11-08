@@ -190,8 +190,8 @@ object NativeSessionHost {
             }},message=if(error=="PATH_MISSING" && reply.getBoolean("builtin")) "設定ファイルは未作成です。標準のアプリ一覧を表示します"
                 else if(error!=null) LauncherMessages.error(error) else if(pending.kind=="save") "登録しました" else "アプリを選んで起動できます"))
     }
-    fun launchRegistered(session: String, revision: String, id: String) { launchCatalogTerminal(session,
-        JSONObject().put("kind","registered").put("revision",revision).put("id",id)) }
+    fun launchRegistered(session: String, revision: String, id: String, requested: ((String, Int) -> Unit)? = null) { launchCatalogTerminal(session,
+        JSONObject().put("kind","registered").put("revision",revision).put("id",id),requested) }
     fun launchFile(form: LauncherForm, requested: ((String, Int) -> Unit)? = null) {
         if(form.valid()) launchCatalogTerminal(launcherUi.value.session,JSONObject().put("kind","temporary").put("definition",form.definition()), requested)
     }
@@ -344,7 +344,12 @@ object NativeSessionHost {
         }
         terminalOpen = operation
     } } }
-    fun disconnect() { productWorker.execute { safely {
+    fun disconnect() = disconnectExpected(null,null)
+    fun debugDisconnectSession(runtime:Long,session:String) {
+        if(BuildConfig.DEBUG && runtime>0 && session.matches(Regex("[1-9][0-9]{0,18}"))) disconnectExpected(runtime,session)
+    }
+    private fun disconnectExpected(expectedRuntime:Long?,expectedSession:String?) { productWorker.execute { safely {
+        if(expectedRuntime!=null && (handle!=expectedRuntime || snapshot().getJSONObject("runtime").getJSONObject("transport").optString("session")!=expectedSession)) return@safely
         pendingInputFocus=null
         clearTerminalOpen(); terminalAdding=null; terminalError = null
         resetInput()
