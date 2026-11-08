@@ -140,9 +140,26 @@ pub fn inspect_foot(
             Origin::Unrequested(id) if id == window => None,
             _ => return Err(Status::Stale),
         };
-        if !matches!(correlate(&app.nonce,request,&remote.terminal_launches,&candidates,&[]),Outcome::Matched {window:id,..} if id==window)
+        let Outcome::Matched {
+            terminal_id,
+            window: matched,
+        } = correlate(
+            &app.nonce,
+            request,
+            &remote.terminal_launches,
+            &candidates,
+            &[],
+        )
+        else {
+            continue;
+        };
+        if matched != window
+            || !remote.terminal_launches.iter().any(|launch| {
+                launch.terminal_id == terminal_id
+                    && launch.mode == eidolon_model::catalog::Mode::Terminal
+            })
         {
-            continue; // GTK等の別アプリをfootへ推測分類しない。
+            continue; // 一般化されたcorrelateのGUI成功をfoot分類へ読み替えない。
         }
         entries.push(*entry);
     }
@@ -358,6 +375,7 @@ pub(crate) mod tests {
                 terminal_id,
                 request_id: Some(request),
                 accepted: Some(true),
+                mode: eidolon_model::catalog::Mode::Terminal,
             });
         }
         let mut workspace = crate::workspace::Controller::load(None);
@@ -481,6 +499,27 @@ pub(crate) mod tests {
                 .len(),
             1
         );
+    }
+    #[test]
+    fn verified_gui_receipt_and_gui_cookie_do_not_join_the_foot_group() {
+        let (runtime, mut snapshot, mut transport, render) = fixture(2);
+        let launch = &mut transport
+            .app_forward
+            .as_mut()
+            .unwrap()
+            .remote
+            .as_mut()
+            .unwrap()
+            .terminal_launches[1];
+        launch.mode = eidolon_model::catalog::Mode::Gui;
+        snapshot.app.as_mut().unwrap().windows[1].app_id =
+            Some(eidolon_model::window_launch::gui_app_id(NONCE, launch.terminal_id).unwrap());
+        let inspected = inspect_foot(runtime, &snapshot, &transport, &render).unwrap();
+        assert_eq!(inspected.entries.len(), 1);
+        assert!(matches!(inspected.entries[0].state, Phase::Bound { window } if window.get() == 1));
+        let capture = capture_foot(runtime, &snapshot, &transport, &render).unwrap();
+        assert_eq!(capture.members.len(), 1);
+        assert_eq!(capture.members[0].target.window.get(), 1);
     }
     #[test]
     fn claimed_app_id_without_accepted_unique_receipt_never_joins_the_group() {
@@ -619,6 +658,8 @@ pub(crate) mod tests {
                         echo: None,
                         pattern: None,
                         error: None,
+                        gui_children: None,
+                        gui_receipts: vec![],
                     })
                 }
             }

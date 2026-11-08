@@ -16,7 +16,7 @@ class ImeTerminalEligibilityTest {
                 .put("app_id","io.github.tinmachine.eidolon.foot.t-0123456789abcdef-1"))))
         .put("transport",JSONObject().put("state","Ready").put("session","2").put("app_forward",JSONObject().put("state","running").put("nonce","0123456789abcdef")
             .put("remote",JSONObject().put("phase","running").put("error",JSONObject.NULL).put("cleanup_pending",true).put("eof",false).put("exit_signal",false).put("exit_status",JSONObject.NULL).put("finished",JSONObject.NULL)
-                .put("terminal_launches",JSONArray().put(JSONObject().put("terminal_id","1").put("accepted",true))))))
+                .put("terminal_launches",JSONArray().put(JSONObject().put("terminal_id","1").put("accepted",true).put("mode","terminal"))))))
     private fun remote(s:JSONObject)=s.getJSONObject("transport").getJSONObject("app_forward").getJSONObject("remote")
     @Test fun onlyTheCapturedSessionFootWithAcceptedReceiptIsEligible() {
         assertTrue(ImeTerminalEligibility.allows(snapshot(),target))
@@ -32,6 +32,14 @@ class ImeTerminalEligibilityTest {
         val missing=snapshot();remote(missing).put("terminal_launches",JSONArray());assertFalse(ImeTerminalEligibility.allows(missing,target))
         val duplicate=snapshot();val rows=duplicate.getJSONObject("app").getJSONArray("windows")
         rows.put(JSONObject(rows.getJSONObject(0).toString()).put("window","9"));assertFalse(ImeTerminalEligibility.allows(duplicate,target))
+    }
+    @Test fun guiReceiptCannotUseAFootMarkerToBecomeAnImeTerminal() {
+        for(mode in listOf("gui","unknown",JSONObject.NULL,true,1)) {
+            val s=snapshot();remote(s).getJSONArray("terminal_launches").getJSONObject(0).put("mode",mode)
+            assertFalse(ImeTerminalEligibility.allows(s,target))
+        }
+        val missing=snapshot();remote(missing).getJSONArray("terminal_launches").getJSONObject(0).remove("mode")
+        assertFalse(ImeTerminalEligibility.allows(missing,target))
     }
     @Test fun oldNonceOtherGuiAndCleanupNeverBecomeTheNewTarget() {
         for(id in listOf("foot","io.github.tinmachine.eidolon.gtkfixture.rfixture","io.github.tinmachine.eidolon.foot.t-0000000000000000-1")) {

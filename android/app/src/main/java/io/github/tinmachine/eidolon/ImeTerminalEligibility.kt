@@ -30,6 +30,7 @@ internal object ImeTerminalEligibility {
             rows.count {it.optString("app_id")==appId && it.optString("life")!="Destroyed"}==1)
         val launches=remote.getJSONArray("terminal_launches")
         val receipt=(0 until launches.length()).map {launches.getJSONObject(it)}.single {it.opt("terminal_id")==terminal}
+        check(receipt.optString("mode")=="terminal")
         receipt.opt("accepted").let {it is Boolean && it}
     } catch(_:Exception) {false}
 }
