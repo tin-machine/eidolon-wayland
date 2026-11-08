@@ -74,8 +74,11 @@ source/APK・asset/engine/runtimeの照合、他の項目の維持を確認し�
 | ブランチ | 保存する範囲と残る確認 |
 | --- | --- |
 | `codex/nx18-linux-gui-c2-176` | 通常Linux GUI用helper/demo、Pins/Binding/typed protocol。Python13件・Rust8件・Cビルド・transport限定clippy成功。SSH actor・lease・専用journal・runtime・通常UIは未接続 |
-| `codex/nx17d-menu` | グループ操作メニューのモデルと通常操作への接続作業。限定検証の範囲と実SDK未受入れをbranch内の記録に保持 |
+| `codex/nx17d-menu` | グループ操作メニューのモデルと通常操作への接続作業。JUnit31件・18 SDK sourceの限定型検査成功。通常実SDKの操作は未受入れ、接続部分のpeer reviewも未実施 |
 | `codex/nx12-recenter-overlap-177` | 既存の有限配置候補モデルを最新main基点へ移した準備。モデル8件と既存27件は元checkpointで成功。Host/Adapterの接続・複数窓の実geometry確認は未実装 |
+
+停止時のbranch先端は、Linux GUIが`43767a4`、groupメニューが`3cb4e27`、recenter準備が`f3b21a4`。
+3つのtreeはいずれもcleanで、担当agentのbuild・fixtureは終了した。
 
 ## 再開順
 
