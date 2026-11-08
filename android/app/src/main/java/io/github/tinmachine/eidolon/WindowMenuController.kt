@@ -4,6 +4,7 @@ import android.os.SystemClock
 import com.meta.spatial.core.Entity
 import com.meta.spatial.runtime.Scene
 import com.meta.spatial.toolkit.SceneObjectSystem
+import com.meta.spatial.toolkit.getAbsoluteTransform
 import org.json.JSONObject
 
 /** Survives the controls rebuild caused by a size change; it never borrows the global selected window. */
@@ -11,17 +12,22 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
     private val layout:WindowControlLayout,private val sdk:Scene,private val objects:SceneObjectSystem,private val live:()->Boolean):AutoCloseable {
     private var owner:NativeSessionHost.WindowOperationTicket?=null
     private var capture:WindowSizeCapture?=null
+    private var recenter:WindowRecenterCapture?=null
+    private var lastAction="menu"
+    private var recenterReadMs:Long?=null
+    private var recenterReadReason:String?=null
     private var view:WindowMenuView?=null
     private var resetRequest:String?=null
     private var dimensions=""
     private var closed=false
     private var lastPhase="IDLE";private var lastReason="idle";private var lastRequest:String?=null
     private var opened=0L;private var completed=0L;private var cancelled=0L;private var rejected=0L
-    val phase get()=capture?.phase
+    val phase get()=recenter?.phase?.let {WindowSizeCapture.Phase.valueOf(it.name)} ?: capture?.phase
+    val recentering get()=recenter!=null
     fun open(control:NativeSessionHost.WindowControlTicket):Boolean {
         if(closed || capture!=null || !live() || control.runtime!=runtime || control.revision!=revision || !same(JSONObject(control.target),JSONObject(target))) return false
         val ticket=NativeSessionHost.beginWindowMenu(control) ?: return false
-        owner=ticket
+        owner=ticket;lastAction="menu";recenterReadMs=null;recenterReadReason=null
         try {
             val state=JSONObject(NativeBridge.nativeSnapshot(runtime)).getJSONObject("runtime")
             check(current(ticket,state)) {"owner_changed"}
@@ -35,7 +41,8 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
     }
     fun tick(state:JSONObject,controlsReady:Boolean) {
         val c=capture ?: return;val ticket=owner ?: return;val now=SystemClock.elapsedRealtime()
-        if(!current(ticket,state)) c.cancel("owner_changed")
+        if(!current(ticket,state)) {c.cancel("owner_changed");recenter?.cancel("owner_changed")}
+        if(recenter!=null) {tickRecenter(ticket,state,controlsReady,now);return}
         c.current(identity(ticket),now)
         val window=window(state);val sizing=window?.optJSONObject("sizing")
         if(sizing==null) c.cancel("window_missing")
@@ -80,15 +87,70 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
     }
     private fun choose(action:String) {
         val c=capture ?: return;val ticket=owner ?: return
-        if(c.phase!=WindowSizeCapture.Phase.MENU) return
+        if(c.phase!=WindowSizeCapture.Phase.MENU || recenter!=null) return
         val state=runCatching {JSONObject(NativeBridge.nativeSnapshot(runtime)).getJSONObject("runtime")}.getOrNull()
         if(state==null || !current(ticket,state)) {c.cancel("owner_changed");return}
-        if(action=="back") {beginReturn(state);return}
+        if(action=="back") {lastAction="back";beginReturn(state);return}
+        if(action=="recenter") {chooseRecenter(ticket,state);return}
         if(action !in setOf("larger","smaller")) return
         val window=window(state) ?: return
         if(pixels(window,plan(state))!=dimensions) {c.cancel("pixel_dimensions_changed");return}
         val sizing=window.getJSONObject("sizing")
+        lastAction=action
         c.choose(identity(ticket),SystemClock.elapsedRealtime(),action=="larger",command(sizing),size(sizing.getJSONObject("physical_size_m")))
+    }
+    private fun chooseRecenter(ticket:NativeSessionHost.WindowOperationTicket,before:JSONObject) {
+        if(!WindowRecenterPolicy.ENABLED || !NativeSessionHost.windowOperationAndroidReleased(ticket)) return
+        val key=JSONObject(target);val started=SystemClock.elapsedRealtime()
+        lastAction="recenter";var stage="baseline_unavailable"
+        try {
+            val baseline=WindowRecenterWire.read(before,key) ?: error("recenter_baseline_unavailable")
+            check(WindowRecenterWire.applied(before,key,baseline.poseCommand,baseline.pose) &&
+                WindowMoveController.motion(getAbsoluteTransform(parent))?.near(baseline.pose)==true) {"recenter_geometry_pending"}
+            stage="viewer_read_unavailable"
+            val sceneHandle=sdk.handle;check(sceneHandle!=0L && NativeSessionHost.currentSceneEpoch().toString()==key.getString("scene"))
+            val viewer=sdk.getViewerPose()
+            val value=WindowMotionPose(listOf(viewer.t.x.toDouble(),viewer.t.y.toDouble(),viewer.t.z.toDouble()),
+                listOf(viewer.q.x.toDouble(),viewer.q.y.toDouble(),viewer.q.z.toDouble(),viewer.q.w.toDouble()))
+            stage="viewer_pose_unavailable"
+            val desired=WindowRecenterPose.candidate(value) ?: error("viewer_pose_unavailable")
+            val sampledAt=SystemClock.elapsedRealtime();stage="viewer_owner_changed"
+            val after=JSONObject(NativeBridge.nativeSnapshot(runtime)).getJSONObject("runtime")
+            val fresh=WindowRecenterWire.read(after,key) ?: error("recenter_baseline_unavailable")
+            val now=SystemClock.elapsedRealtime();recenterReadMs=now-started
+            check(now>=started && now-started<=100 && sdk.handle==sceneHandle && current(ticket,after) &&
+                NativeSessionHost.currentSceneEpoch().toString()==key.getString("scene") &&
+                baseline.sameDimensions(fresh) && baseline.samePlacement(fresh) && after.getLong("input_resets")==before.getLong("input_resets")) {"viewer_owner_changed"}
+            recenter=WindowRecenterCapture(identity(ticket),baseline,desired,after.getLong("input_resets"),sampledAt)
+            recenterReadReason="captured"
+        } catch(_:Exception) {recenterReadReason=stage;capture?.cancel(stage);rejected++}
+    }
+    private fun tickRecenter(ticket:NativeSessionHost.WindowOperationTicket,state:JSONObject,controlsReady:Boolean,now:Long) {
+        val c=recenter ?: return;val key=JSONObject(target)
+        c.current(identity(ticket),now)
+        val geometry=WindowRecenterWire.read(state,key)
+        if(geometry==null) c.cancel("recenter_geometry_unavailable")
+        if(c.phase==WindowRecenterCapture.Phase.NEEDS_SUBMIT) {
+            closeView()
+            if(c.phase!=WindowRecenterCapture.Phase.CANCELLED) {
+                val request=NativeSessionHost.submitWindowRecenter(ticket,c)
+                if(request==null || !c.submitted(request,SystemClock.elapsedRealtime())) c.cancel("recenter_enqueue_rejected")
+                else {NativeSessionHost.windowOperationPhase(ticket,"recentering");return} // Next tick owns the post-enqueue observation time.
+            }
+        }
+        val applied=controlsReady && WindowRecenterWire.applied(state,key,c.request,c.desired) &&
+            runCatching {WindowMoveController.motion(getAbsoluteTransform(parent))?.near(c.desired)==true}.getOrDefault(false)
+        if(geometry!=null && c.phase in setOf(WindowRecenterCapture.Phase.COMMITTING,WindowRecenterCapture.Phase.GEOMETRY) &&
+            c.observed(identity(ticket),now,c.request?.let(NativeSessionHost::windowOperationCompletion),geometry,state.getLong("input_resets"),applied)) {
+            if(!c.beginReturn(identity(ticket),now,state.getLong("input_resets")) || !NativeSessionHost.returnWindowOperation(ticket)) c.cancel("raw_return_rejected")
+        }
+        if(geometry!=null && c.phase==WindowRecenterCapture.Phase.RETURNING) {
+            val input=state.optJSONObject("app")?.optJSONObject("input")
+            val focused=input!=null && input.optString("focus_window")==key.getString("window") && !input.isNull("focus_token") &&
+                NativeSessionHost.keyboardFocusMatches(key,input.getString("focus_token"))
+            c.focusObserved(identity(ticket),now,state.getLong("input_resets"),focused && applied,geometry)
+        }
+        if(c.phase in setOf(WindowRecenterCapture.Phase.COMPLETE,WindowRecenterCapture.Phase.CANCELLED)) end()
     }
     private fun beginReturn(state:JSONObject) {
         val c=capture ?: return;val ticket=owner ?: return
@@ -98,17 +160,18 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
     }
     private fun closeView() {
         val old=view ?: return
-        try {old.close();view=null} catch(_:Exception) {capture?.cancel("menu_cleanup_failed");owner?.let {NativeSessionHost.windowOperationPhase(it,"cleanup")}}
+        try {old.close();view=null} catch(_:Exception) {capture?.cancel("menu_cleanup_failed");recenter?.cancel("menu_cleanup_failed");owner?.let {NativeSessionHost.windowOperationPhase(it,"cleanup")}}
     }
     private fun end() {
         closeView()
         if(view!=null) return // Keep the single owner and block direct input until SDK resources are actually released.
         val c=capture
-        if(c?.phase==WindowSizeCapture.Phase.COMPLETE) completed++ else if(c!=null) cancelled++
-        lastPhase=c?.phase?.name ?: "CANCELLED";lastReason=c?.reason ?: "open_failed";lastRequest=c?.request
+        if(phase==WindowSizeCapture.Phase.COMPLETE) completed++ else if(c!=null) cancelled++
+        lastPhase=phase?.name ?: "CANCELLED";lastReason=recenter?.reason ?: c?.reason ?: "open_failed";lastRequest=recenter?.request ?: c?.request
+        recenter?.request?.let(NativeSessionHost::forgetWindowOperation)
         c?.request?.let(NativeSessionHost::forgetWindowOperation);resetRequest?.let(NativeSessionHost::forgetWindowOperation)
         owner?.let(NativeSessionHost::finishWindowOperation)
-        owner=null;capture=null;resetRequest=null
+        owner=null;capture=null;recenter=null;resetRequest=null
     }
     private fun current(ticket:NativeSessionHost.WindowOperationTicket,state:JSONObject):Boolean {
         if(!live() || !NativeSessionHost.windowOperationCurrent(ticket) || state.optString("state")!="Ready" || !state.optBoolean("activity_visible") || state.optString("xr_state")!="FOCUSED" ||
@@ -124,9 +187,14 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
         if(app.optString("session")!=JSONObject(target).optString("session")) return null
         return app.optJSONArray("windows")?.let {a -> (0 until a.length()).map {a.getJSONObject(it)}.singleOrNull {it.optString("window")==JSONObject(target).optString("window") && it.optString("life")=="Mapped"}}
     }
-    fun metadata()=JSONObject().put("target",JSONObject(target)).put("revision",revision).put("phase",phase?.name ?: lastPhase).put("reason",capture?.reason ?: lastReason).put("request_id",capture?.request ?: lastRequest ?: JSONObject.NULL)
+    fun cancelForGroup():Boolean {
+        if(capture==null && recenter==null && view==null) return true
+        capture?.cancel("group_owned");recenter?.cancel("group_owned");end();return view==null
+    }
+    fun metadata()=JSONObject().put("target",JSONObject(target)).put("revision",revision).put("phase",phase?.name ?: lastPhase).put("reason",recenter?.reason ?: capture?.reason ?: lastReason).put("request_id",recenter?.request ?: capture?.request ?: lastRequest ?: JSONObject.NULL).put("action",lastAction).put("recenter_enabled",WindowRecenterPolicy.ENABLED)
+        .put("recenter_read_ms",recenterReadMs ?: JSONObject.NULL).put("recenter_read_reason",recenterReadReason ?: JSONObject.NULL).put("tracking_freshness","not_exposed")
         .put("opened",opened).put("completed",completed).put("cancelled",cancelled).put("rejected",rejected).put("view",view?.metadata())
-    override fun close() {closed=true;capture?.cancel("owner_disposed");end();check(view==null) {"MENU_CLEANUP_PENDING"}}
+    override fun close() {closed=true;capture?.cancel("owner_disposed");recenter?.cancel("owner_disposed");end();check(view==null) {"MENU_CLEANUP_PENDING"}}
     companion object {
         private fun same(a:JSONObject,b:JSONObject)=listOf("session","window","scene","generation").all {a.optString(it)==b.optString(it)}
         private fun identity(ticket:NativeSessionHost.WindowOperationTicket)=WindowSizeIdentity(ticket.control.runtime,ticket.control.target,ticket.control.revision,ticket.control.intent)

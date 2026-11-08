@@ -503,7 +503,7 @@ class SpatialPanelAdapter {
         current.menu?.tick(runtime,controlsReady)
         val input=runtime.optJSONObject("app")?.optJSONObject("input")
         val focused=input!=null && !input.isNull("focus_token") && NativeSessionHost.keyboardFocusMatches(current.key,input.getString("focus_token"))
-        current.modeBadge?.update(WindowMode.from(NativeSessionHost.inputTarget(controlTarget)!=null,visible,current.editing,current.move?.phase,NativeSessionHost.inputStatus.value.reason,focused,current.menu?.phase),visible)
+        current.modeBadge?.update(WindowMode.from(NativeSessionHost.inputTarget(controlTarget)!=null,visible,current.editing,current.move?.phase,NativeSessionHost.inputStatus.value.reason,focused,current.menu?.phase,current.menu?.recentering==true),visible)
     }
     private fun tickMove(current:Binding,runtime:JSONObject) {
         val windows=runtime.getJSONObject("workspace").getJSONArray("windows")

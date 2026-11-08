@@ -452,7 +452,7 @@ object NativeSessionHost {
     }
     fun windowOperationAndroidReleased(ticket:WindowOperationTicket)=windowOperationCurrent(ticket) && !imeRawBlocked.get()
     fun windowOperationPhase(ticket:WindowOperationTicket,phase:String):Boolean = inputIntents.serial {
-        if(!windowOperationCurrent(ticket) || phase !in setOf("menu","resizing","returning","cleanup")) return@serial false
+        if(!windowOperationCurrent(ticket) || phase !in setOf("menu","resizing","recentering","returning","cleanup")) return@serial false
         ticket.phase=phase;true
     }
     fun finishWindowOperation(ticket:WindowOperationTicket) {windowOperation.compareAndSet(ticket,null)}
@@ -476,6 +476,26 @@ object NativeSessionHost {
             .put("expected_size_command",expectedCommand ?: JSONObject.NULL).put("expected_size",JSONObject().put("width_m",expected.width.toDouble()).put("height_m",expected.height.toDouble()))
             .put("step",if(larger) "larger" else "smaller").toString())
         BuildHooks.windowControlRequested("physical-size",ticket.control.runtime,ticket.control.target,ticket.control.revision,request,code)
+        if(code!=NativeBridge.ACCEPTED) {windowOperationCompletions.remove(request);return@serial null}
+        request
+    }
+    /** Same menu owner, one captured placement. Product selection is never consulted after capture. */
+    fun submitWindowRecenter(ticket:WindowOperationTicket,capture:WindowRecenterCapture):String? = inputIntents.serial {
+        if(!WindowRecenterPolicy.ENABLED || !windowOperationCurrent(ticket) || !windowOperationAndroidReleased(ticket) ||
+            ticket.kind!="menu" || capture.identity!=WindowSizeIdentity(ticket.control.runtime,ticket.control.target,ticket.control.revision,ticket.control.intent) ||
+            windowOperationCompletions.size>=8) return@serial null
+        val target=JSONObject(ticket.control.target)
+        val state=runCatching {JSONObject(NativeBridge.nativeSnapshot(ticket.control.runtime)).getJSONObject("runtime")}.getOrNull() ?: return@serial null
+        if(state.optString("state")!="Ready" || !state.optBoolean("activity_visible") || state.optString("xr_state")!="FOCUSED" ||
+            state.optString("scene")!=target.optString("scene") || state.optJSONObject("render")?.optLong("theme_revision",-1)!=ticket.control.revision ||
+            !windowGroupInputAllowed(ticket.control.runtime,target)) return@serial null
+        val geometry=WindowRecenterWire.read(state,target) ?: return@serial null
+        if(!capture.readyToSubmit(capture.identity,SystemClock.elapsedRealtime(),geometry,state.getLong("input_resets"))) return@serial null
+        val request=requests.incrementAndGet().toString();windowOperationCompletions[request]="pending"
+        val code=NativeBridge.nativeCommand(ticket.control.runtime,JSONObject().put("schema",1).put("type","set_pose_control")
+            .put("request_id",request).put("target",target).put("controls_revision",ticket.control.revision)
+            .put("pose",WindowMoveController.json(capture.desired)).toString())
+        BuildHooks.windowControlRequested("recenter",ticket.control.runtime,ticket.control.target,ticket.control.revision,request,code)
         if(code!=NativeBridge.ACCEPTED) {windowOperationCompletions.remove(request);return@serial null}
         request
     }
@@ -1722,6 +1742,7 @@ object NativeSessionHost {
                 when(move.phase) {
                     "menu" -> InputStatus("WINDOW_MENU","窓 $name の操作メニュー · その窓の文字入力を停止")
                     "resizing" -> InputStatus("WINDOW_RESIZING","窓 $name の表示サイズを確認中 · その窓の文字入力を停止")
+                    "recentering" -> InputStatus("WINDOW_RECENTERING","窓 $name の正面配置を確認中 · その窓の文字入力を停止")
                     "cleanup" -> InputStatus("WINDOW_OPERATION_CLEANUP","窓 $name の操作終了を確認中")
                     "returning" -> InputStatus("WINDOW_RETURNING","窓 $name への入力復帰を確認中")
                     else -> InputStatus("WINDOW_MOVING","窓 $name を移動中 · その窓の文字入力を停止")
