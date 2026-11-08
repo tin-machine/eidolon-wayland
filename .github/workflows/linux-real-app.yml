@@ -59,7 +59,9 @@ jobs:
         run: |
           scripts/build-native-deps --target host
           scripts/build-waypipe --target host
-          cargo test --locked --manifest-path scripts/fixtures/linux-real-app-wayland/Cargo.toml --target-dir target
+          # Match the A0 builder's explicit host toolchain. Root workspace
+          # rustfmt/clippy/Android components are checked by the existing CI.
+          cargo +1.95.0 test --locked --manifest-path scripts/fixtures/linux-real-app-wayland/Cargo.toml --target-dir target
       - name: Build the unmodified pinned Mousepad test package
         run: python3 scripts/ci/prepare-linux-real-app-fixture --stage build --work-directory "$RUNNER_TEMP/mousepad-a0"
       - name: Install only on the ephemeral CI runner and record reviewed inputs
