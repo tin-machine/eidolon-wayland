@@ -42,6 +42,18 @@ class TerminalMetadataTests(unittest.TestCase):
         self.assertEqual(self.read(data),data)
         data['raw_return_failure']='private content'
         with self.assertRaisesRegex(ValueError,'TOKEN'):self.read(data)
+    def test_attach_failure_and_sdk_cleanup_pending_are_known_tokens_without_success_claim(self):
+        for phase,reason in [('CLOSING','editor_attach_failed'),('SDK_CLEANUP','sdk_cleanup_pending')]:
+            data=self.fixture();data.update(phase=phase,reason=reason)
+            self.assertEqual(self.read(data),data)
+            self.assertEqual(data['acceptance']['actual_ime'],'not_verified')
+        for field,value in [('phase','SDK_CLEANUP_UNRECOGNIZED'),('reason','editor_attach_unknown')]:
+            data=self.fixture();data[field]=value
+            with self.assertRaisesRegex(ValueError,'TOKEN'):self.read(data)
+    def test_intentional_close_is_a_valid_off_receipt_not_a_schema_failure(self):
+        data=self.fixture();data.update(phase='STOPPED',reason='off_requested',result='completed',
+                                      connection_failure='closed',failure='closed',raw_return='COMPLETE',android_released=True)
+        self.assertEqual(self.read(data),data)
     def test_malformed_types_and_unknown_status_are_rejected(self):
         for key,value in [('applied',1.0),('enqueued',-1),('sdk_down_submitted',1)]:
             data=self.fixture();data[key]=value

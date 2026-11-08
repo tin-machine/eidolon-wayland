@@ -32,6 +32,7 @@ object TerminalImeController {
     private var sceneReady = false
     private var active: Run? = null
     private var sceneProvider:(()->Scene)?=null
+    private var lastProductReport:JSONObject?=null // debug metadata only; no editor body or key events
     val activeState=androidx.compose.runtime.mutableStateOf(false)
     class Probe(val nonce:String,val verifyEditor:(Context)->Boolean,val publish:(JSONObject)->Unit,val done:()->Unit)
     fun activity(value: android.app.Activity) { activity = WeakReference(value as? MainActivity) }
@@ -60,6 +61,22 @@ object TerminalImeController {
             "ime-terminal-status" -> run.publish()
         }
     }
+    /** debug receiver only. The regular UI does not poll or retain diagnostic input metadata. */
+    fun debugProductState():JSONObject? {
+        check(Looper.myLooper()==Looper.getMainLooper())
+        if(!BuildConfig.DEBUG) return null
+        val current=active
+        val value=if(current!=null) {if(current.probe==null) current.debugReport() else JSONObject().put("scope","debug_terminal_ime").put("active",true)}
+            else lastProductReport?.let {JSONObject(it.toString())}
+        if(value?.optString("scope")=="normal_terminal_ime") {
+            val target=value.optJSONObject("target")?.let {ImeSdkTarget(it.getString("session"),it.getString("window"),it.getString("scene"),it.getString("generation"))}
+            val runtimeMatches=value.optString("runtime").toLongOrNull()==NativeSessionHost.currentHandle()
+            value.put("current_runtime_matches",runtimeMatches)
+                .put("captured_input_current",runtimeMatches && NativeSessionHost.imeCaptureCurrent())
+                .put("raw_focus_same_target",runtimeMatches && target!=null && NativeSessionHost.debugImeFocusedTarget()==target)
+        }
+        return value
+    }
     fun registrations(): List<PanelRegistration> = listOf(ViewPanelRegistration(panelId,
         dynamicViewCreator = { entity, context -> active?.takeIf { it.entity?.id == entity.id }?.create(context) ?: TextView(context) },
         settingsCreator = { UIPanelSettings(shape = QuadShapeOptions(width=1.05f,height=.48f), display=DpPerMeterDisplayOptions(),
@@ -77,6 +94,9 @@ object TerminalImeController {
         private var display: PanelDisplay? = null
         private var bridge: PanelKeyboardBridge? = null
         private var editor: ImeEditorView? = null
+        private val productTarget=initialOwner?.target
+        private val productRuntime=initialOwner?.runtime
+        private val productRun=initialOwner?.ticket?.toString()
         private var editorOwner=initialOwner
         private var lastMetadata:ImeSessionMetadata?=null
         private var opened = false
@@ -230,6 +250,7 @@ object TerminalImeController {
                 phase="SDK_CLEANUP";reason="sdk_cleanup_pending";publish();return false
             }
             stopped=true;ui.removeCallbacks(this);phase="STOPPED";publish()
+            if(BuildConfig.DEBUG && probe==null) lastProductReport=runCatching {debugReport()}.getOrNull()
             if(active===this) {active=null;activeState.value=false;probe?.done?.invoke()}
             return true
         }
@@ -296,17 +317,30 @@ object TerminalImeController {
         }
         fun publish() {
             val probe=probe ?: return
+            probe.publish(debugReport().put("case","ime-terminal").put("nonce",probe.nonce))
+        }
+        fun debugReport():JSONObject {
+            check(BuildConfig.DEBUG)
             val metadata=editorOwner?.let {NativeSessionHost.imeStatus(it)} ?: lastMetadata;val returning=NativeSessionHost.imeRawReturnStatus();val view=editor
             val imm=view?.context?.getSystemService(InputMethodManager::class.java)
-            probe.publish(JSONObject().put("case","ime-terminal").put("nonce",probe.nonce)
-                .put("result",if(stopped) "completed" else "running").put("scope","debug_terminal_ime").put("phase",phase).put("reason",reason)
+            val rawTarget=NativeSessionHost.debugImeFocusedTarget()
+            return JSONObject().put("result",if(stopped) "completed" else "running")
+                .put("scope",if(probe==null) "normal_terminal_ime" else "debug_terminal_ime").put("phase",phase).put("reason",reason)
+                .apply {if(probe==null) {
+                    put("run",productRun ?: JSONObject.NULL).put("runtime",productRuntime?.toString() ?: JSONObject.NULL)
+                    put("target",productTarget?.let {JSONObject().put("session",it.session).put("window",it.window).put("scene",it.scene).put("generation",it.generation)} ?: JSONObject.NULL)
+                    put("active",active===this && !stopped).put("stopped",stopped).put("owner_claimed",editorOwner!=null)
+                    put("owner_before_view",editorOwner!=null && editor==null && entity==null)
+                    put("connection_phase",metadata?.phase?.name ?: JSONObject.NULL)
+                    put("raw_focus_same_target",productTarget!=null && productRuntime==NativeSessionHost.currentHandle() && rawTarget==productTarget)
+                }}
                 .put("toggles",toggles).put("focus_requests",focusRequests)
                 .put("focus_observed",focusReceipt?.let(NativeSessionHost::debugImeFocusObserved) ?: false)
                 .put("last_external_loss",lastExternalLoss ?: JSONObject.NULL)
                 .put("sdk_down_submitted",downSubmitted).put("sdk_up_submitted",upSubmitted).put("sdk_tap_failed",tapFailed)
                 .put("editor_attached",view?.isAttachedToWindow ?: false).put("editor_view_focus",view?.hasFocus() ?: false)
                 .put("editor_window_focus",view?.hasWindowFocus() ?: false).put("editor_connection_active",view?.metadata()?.active ?: false)
-                .put("editor_permanently_closed",view?.isPermanentlyClosed() ?: false).put("closed_editor_fixture_passed",closedEditorFixture)
+                .put("editor_permanently_closed",view?.isPermanentlyClosed() ?: false).put("closed_editor_fixture_passed",if(probe!=null) closedEditorFixture else JSONObject.NULL)
                 .put("editor_imm_active",if(view!=null) imm?.isActive(view) ?: false else false)
                 .put("editor_imm_accepting_text",imm?.isAcceptingText ?: false)
                 .put("enqueued",metadata?.enqueued ?: 0).put("applied",metadata?.applied ?: 0).put("pending_acks",metadata?.pendingAcks ?: 0)
@@ -314,7 +348,7 @@ object TerminalImeController {
                 .put("raw_return",returning?.phase?.name ?: "not_requested")
                 .put("connection_failure",metadata?.failure ?: JSONObject.NULL).put("raw_return_failure",returning?.failure ?: JSONObject.NULL)
                 .put("failure",returning?.failure ?: metadata?.failure ?: JSONObject.NULL)
-                .put("acceptance",JSONObject().put("actual_ime","not_verified").put("physical_input","not_verified").put("hmd","not_verified")))
+                .put("acceptance",JSONObject().put("actual_ime","not_verified").put("physical_input","not_verified").put("hmd","not_verified"))
         }
     }
 }

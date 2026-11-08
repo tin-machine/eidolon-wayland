@@ -21,10 +21,10 @@ BOOLS = {'sdk_down_submitted','sdk_up_submitted','sdk_tap_failed','editor_attach
 NUMBERS = {'toggles','enqueued','applied','pending_acks','focus_requests'}
 PHASES = {'WAITING_TARGET','DIRECT_READY','CONNECTING','TARGET_UNAVAILABLE','OWNER_UNAVAILABLE','STOPPED',
           'IDLE','ENABLING','NEEDS_RESET','RESETTING','NEEDS_FOCUS','FOCUSING','WAITING_CLIENT','BOUND','SUSPENDED',
-          'CLOSING','CLOSED','WAITING_CLEANUP','WAITING_FOCUS','COMPLETE','CANCELLED','FAILED'}
+          'CLOSING','CLOSED','SDK_CLEANUP','WAITING_CLEANUP','WAITING_FOCUS','COMPLETE','CANCELLED','FAILED'}
 REASONS = {'preparing','off_requested','on_requested','ready','editor_bounds_unavailable','handoff_not_confirmed',
            'editor_window_lost','activity_paused','external_focus_lost','scene_closed','operator_stop','panel_stop',
-           'timeout','target_not_ready','controller_failure','focus_requested','closed_editor_fixture_failed'}
+           'editor_attach_failed','sdk_cleanup_pending','timeout','target_not_ready','controller_failure','focus_requested','closed_editor_fixture_failed'}
 FAILURES = {'closed','bridge_invalidated','reset_rejected','target_unavailable','invalid_snapshot','ack_timeout',
             'control_rejected','focus_changed','snapshot_target_changed','binding_rejected','ack_limit','request_collision',
             'enqueue_rejected','key_rejected','cleanup_unconfirmed','owner_changed','return_timeout',

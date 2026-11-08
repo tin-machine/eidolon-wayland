@@ -14,6 +14,7 @@ import org.json.JSONObject
 
 /** 実際のSDK Surfaceを使う固定case。UIをblockせず段階ごとに待つ。 */
 object BuildHooks {
+    fun imeProductProbeAllowed():Boolean=!running
     fun registerMeshes(activity: com.meta.spatial.toolkit.AppSystemActivity) = ThemeInputCandidates.register(activity)
     fun additionalPanels() = ThemeSurfaceProbe.registrations() + ImeProbe.registrations()
     fun sceneClosing() { ImeProbe.sceneClosing(); ThemeSurfaceProbe.sceneClosing() }
@@ -70,7 +71,7 @@ object BuildHooks {
             ImeProbe.sdkTap(nonce)
             return
         }
-        if (running || name !in setOf("viewer-pose", "window-size", "linux-gtk-input", "linux-gtk-dialog", "linux-gtk-input-recover", "linux-gtk-dialog-recover", "linux-shm-sdk", "window-slots", "window-move", "window-controls", "extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe", "ime-terminal")) return
+        if (running || ImeProductCommandReceiver.probeActive() || name !in setOf("viewer-pose", "window-size", "linux-gtk-input", "linux-gtk-dialog", "linux-gtk-input-recover", "linux-gtk-dialog-recover", "linux-shm-sdk", "window-slots", "window-move", "window-controls", "extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe", "ime-terminal")) return
         intent.removeExtra("case"); intent.removeExtra("nonce")
         val gtkRecovery=name in setOf("linux-gtk-input-recover","linux-gtk-dialog-recover")
         if(gtkRecovery) {if(!gtkRecoveries.claim(name,nonce)) return} else if(nonce in consumedNonces) return
