@@ -18,9 +18,10 @@ class LinuxProfileStore(context: Context, installation: String) {
     fun save(draft: LinuxConnectionDraft, expectedBinding: String?, confirmed: Boolean): ConnectionProfileV2.Value =
         repository.save(draft, expectedBinding, confirmed)
 
-    private class AtomicFile(private val directory: File) : LinuxProfileRepository.Storage {
-        private val saved = File(directory, "remote-linux.json")
-        private val temporary = File(directory, "remote-linux.tmp")
+    internal class AtomicFile(private val directory: File, name: String = "remote-linux") : LinuxProfileRepository.Storage {
+        private val saved = File(directory, "$name.json")
+        private val temporary = File(directory, "$name.tmp")
+        init { require(name in setOf("remote-linux", "desktop-pins")) }
         // 別Store instanceも同じatomic境界に入る。UI/ネットワークcallbackはこのlock内で呼ばない。
         companion object { private val lock = Any() }
 

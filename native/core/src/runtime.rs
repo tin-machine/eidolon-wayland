@@ -20,6 +20,9 @@ struct Shared {
     ime_ui: Option<eidolon_model::ime::ImeSnapshot>,
     shutdown: crate::shutdown::Watch,
     sdk_bindings: Vec<eidolon_model::surface::TargetKey>,
+    // SDK登録はSurface作成より先で、Surface世代の交換/退役後もownerKeyが残る。
+    // 現在のrender targetやsession/window番号から診断所有を推測しない。
+    diagnostic_sdk_bindings: Vec<eidolon_model::surface::TargetKey>,
     panels: crate::panels::Controller,
     workspace: crate::workspace::Controller,
     credentials: eidolon_transport::credentials::CredentialSlot,
@@ -33,7 +36,22 @@ struct Shared {
     // 通常eventが満杯でもfailure/stoppedを失わない、最大2件の予約枠。
     terminal: VecDeque<Event>,
 }
+
+/// 捕捉した catalog 選択と native 枠は transport Start の enqueue より前に確定する。
+struct DesktopLaunch {
+    session: eidolon_model::ids::SessionId,
+    request: eidolon_model::ids::CommandSeq,
+    nonce: String,
+    selection: eidolon_model::linux_desktop::Selection,
+    lease: eidolon_model::window_slots::Lease,
+}
 impl Shared {
+    fn app_sdk_bindings(&self) -> usize {
+        self.sdk_bindings
+            .iter()
+            .filter(|key| !self.diagnostic_sdk_bindings.contains(key))
+            .count()
+    }
     fn clear_credentials(&mut self) {
         self.credentials.clear();
         self.credential_scope = None;
@@ -142,6 +160,7 @@ pub struct Runtime {
     worker: JoinHandle<()>,
     render: Arc<eidolon_render::Controller>,
     transport: Arc<eidolon_transport::session::Controller>,
+    normal_linux: bool,
 }
 impl Runtime {
     pub fn start(config: RuntimeConfig) -> std::io::Result<Self> {
@@ -195,6 +214,24 @@ impl Runtime {
                     .map_err(|_| invalid())
             })
             .transpose()?;
+        let desktop_profile = config
+            .linux_profile_v2
+            .as_deref()
+            .map(|json| {
+                eidolon_model::connection_profile::Profile::parse(
+                    json,
+                    config.installation.as_deref().ok_or_else(invalid)?,
+                )
+                .map_err(|_| invalid())
+            })
+            .transpose()?;
+        let desktop_pins = config
+            .linux_desktop_pins
+            .as_deref()
+            .map(eidolon_transport::linux_desktop::Pins::parse)
+            .transpose()
+            .map_err(|_| invalid())?;
+        let normal_linux = desktop_profile.is_some();
         #[cfg(any(test, feature = "debug-fixtures"))]
         let linux_pins = config
             .debug_linux_shm_pins
@@ -232,6 +269,7 @@ impl Runtime {
             ime_ui: None,
             shutdown: Default::default(),
             sdk_bindings: vec![],
+            diagnostic_sdk_bindings: vec![],
             panels: Default::default(),
             workspace: crate::workspace::Controller::load(None),
             credentials: Default::default(),
@@ -263,6 +301,7 @@ impl Runtime {
                 )> = None;
                 let mut app: Option<crate::session::Session> = None;
                 let mut app_linux = false;
+                let mut desktop_launch: Option<DesktopLaunch> = None;
                 let mut slots = crate::window_slots::Controller::new(runtime_handle);
                 let mut groups = WindowGroups::new(runtime_handle);
                 let mut slot_refused = Vec::new();
@@ -346,9 +385,12 @@ impl Runtime {
                             && pending_app.as_ref().is_none_or(|(session, nonce, _, _, _)| slots.can_begin(*session, nonce))
                             && let Some((session, nonce, mode, virtual_clock, linux)) = pending_app.take()
                         {
+                            let mut created_session = false;
                             let started = (|| {
                                 if ssh.session != Some(session)
-                                    || ssh.state != if linux {eidolon_transport::session::State::ProbeReady}else{eidolon_transport::session::State::Ready}
+                                    || ssh.state != if mode == eidolon_model::commands::AppMode::LinuxDesktop {
+                                        eidolon_transport::session::State::DesktopReady
+                                    } else if linux {eidolon_transport::session::State::ProbeReady}else{eidolon_transport::session::State::Ready}
                                 {
                                     return Err("STALE");
                                 }
@@ -384,16 +426,46 @@ impl Runtime {
                                         keyboard_layout,
                                         pixels: gl.pixel_budget(),
                                     },
-                                )?);
+                                ));
                                 app_linux=linux;
+                                created_session = true;
                                 if !virtual_clock {
                                     slots.begin(session, &nonce).map_err(|_| "NOT_READY")?;
                                     gl.use_windows();
                                 }
+                                if let Some(error) = app.as_ref().and_then(|current| current.snapshot().error) {
+                                    return Err(error);
+                                }
+                                if mode == eidolon_model::commands::AppMode::LinuxDesktop {
+                                    let launch = desktop_launch.as_ref().filter(|launch| launch.session == session && launch.nonce == nonce).ok_or("STALE")?;
+                                    app.as_mut().ok_or("NOT_READY")?.reserve_desktop(launch.request)?;
+                                }
                                 Ok(())
                             })();
                             if let Err(error) = started {
-                                state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.app =
+                                if mode == eidolon_model::commands::AppMode::LinuxDesktop {
+                                    if let Some(launch) = desktop_launch.take() {
+                                        slots.not_enqueued(launch.lease);
+                                        state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.window_launch = Some(eidolon_model::window_launch::Report {
+                                            session: launch.session, request_id: launch.request, outcome: eidolon_model::window_launch::Outcome::Cancelled,
+                                        });
+                                    }
+                                    opening_window = None;
+                                    if app.as_ref().is_none_or(|current| current.closed()) {
+                                        app = Some(crate::session::Session::failed_start(session, &nonce, mode, virtual_clock, error));
+                                        app_linux = true;
+                                    }
+                                }
+                                if mode == eidolon_model::commands::AppMode::LinuxDesktop || created_session {
+                                    // Partial startup still owns its local allocations. Close the inspected
+                                    // helper first; Session::tick waits for this remote proof before retiring.
+                                    io.disconnect(session);
+                                }
+                                if let Some(current) = app.as_mut().filter(|current| current.session() == session && current.nonce() == nonce) {
+                                    current.fail(error);
+                                    state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.app = Some(current.snapshot());
+                                } else {
+                                    state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.app =
                                     Some(crate::session::Report {
                                         state: "fail",
                                         session: Some(session),
@@ -402,9 +474,14 @@ impl Runtime {
                                         error: Some(error),
                                         ..Default::default()
                                     });
+                                }
                             }
                         }
                         if let Some(current) = app.as_mut() {
+                            let desktop = current.mode() == eidolon_model::commands::AppMode::LinuxDesktop;
+                            let desktop_finished = desktop && ssh.desktop.as_ref().is_some_and(|report| report.session == Some(current.session()) && report.nonce == current.nonce() && report.finished);
+                            let desktop_terminating = desktop && ssh.desktop.as_ref().is_some_and(|report| report.session == Some(current.session()) && report.nonce == current.nonce()
+                                && (report.finished || report.state == "stopping" || report.remote.terminal_event || report.remote.channel_closed));
                             let close = stopping.load(Ordering::Acquire)
                                 || ssh.session != Some(current.session())
                                 || matches!(
@@ -413,14 +490,19 @@ impl Runtime {
                                         | eidolon_transport::session::State::Disconnected
                                         | eidolon_transport::session::State::Stopped
                                 )
+                                || (desktop && (desktop_terminating || matches!(ssh.state, eidolon_transport::session::State::Disconnecting | eidolon_transport::session::State::CleanupPending)))
                                 || current.snapshot().error.is_some();
                             let remote_gone = io.is_finished()
+                                || desktop_finished
                                 || (ssh.owned_connections == 0 && ssh.forward.active == 0);
                             if !app_linux && let Some(forward) = ssh.app_forward.as_ref() {
                                 current.forwarding(forward);
                             }
+                            if desktop && let Some(forward) = ssh.desktop.as_ref() {
+                                current.desktop_forwarding(forward);
+                            }
                             #[cfg(any(test, feature = "debug-fixtures"))]
-                            if app_linux && let Some(forward)=ssh.linux_forward.as_ref() {current.linux_forwarding(forward);}
+                            if app_linux && !desktop && let Some(forward)=ssh.linux_forward.as_ref() {current.linux_forwarding(forward);}
                             current.tick(close, remote_gone);
                             if let Some((session, request, nonce, before)) = opening_window.as_ref() {
                                 use eidolon_model::window_launch::{Candidate, Outcome, Report, correlate};
@@ -433,6 +515,15 @@ impl Runtime {
                                     || current.nonce() != expected_nonce || ssh.session != Some(*session)
                                 {
                                     Outcome::Cancelled
+                                } else if desktop {
+                                    let receipt = ssh.desktop.as_ref().and_then(|remote| Some(eidolon_model::linux_desktop::Receipt {
+                                        session: remote.session?, request: remote.request_id?, nonce: &remote.nonce, started: remote.started,
+                                        terminal: remote.finished || remote.state == "stopping" || remote.remote.terminal_event || remote.remote.channel_closed,
+                                    }));
+                                    let windows = now.windows.iter().map(|w| eidolon_model::linux_desktop::Candidate {
+                                        window: w.window, app_id: w.app_id.as_deref(), parent: w.parent, life: w.life,
+                                    }).collect::<Vec<_>>();
+                                    eidolon_model::linux_desktop::correlate(*session, *request, expected_nonce, receipt, &windows, before)
                                 } else {
                                     ssh.app_forward.as_ref().filter(|f| f.nonce == expected_nonce)
                                         .and_then(|f| f.remote.as_ref()).map_or(Outcome::AwaitingReceipt, |remote| {
@@ -446,6 +537,9 @@ impl Runtime {
                                     current.fail("SLOT_STATE_INVALID");
                                 }
                                 if outcome.completed() { opening_window = None; }
+                            }
+                            if desktop && close && let Some(launch) = desktop_launch.take() {
+                                slots.not_enqueued(launch.lease);
                             }
 
                             let selected = state
@@ -471,7 +565,25 @@ impl Runtime {
                             current.render_tick(&gl, clock.elapsed());
                             let report = current.snapshot();
                             if !close && report.ready && !report.forward_sent {
-                                let code = if app_linux {
+                                let code = if desktop {
+                                    if let Some(launch) = desktop_launch.take() {
+                                        let code = if launch.session != current.session() || launch.nonce != current.nonce() {
+                                            Status::Stale
+                                        } else if let Some(socket) = current.socket() {
+                                            io.start_linux_desktop(launch.session, launch.request, &socket, launch.selection)
+                                        } else { Status::NotReady };
+                                        if code == Status::Accepted {
+                                            if slots.enqueued(launch.lease).is_err() { current.fail("SLOT_STATE_INVALID"); }
+                                        } else {
+                                            slots.not_enqueued(launch.lease);
+                                            opening_window = None;
+                                            state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.window_launch = Some(eidolon_model::window_launch::Report {
+                                                session: launch.session, request_id: launch.request, outcome: eidolon_model::window_launch::Outcome::Cancelled,
+                                            });
+                                        }
+                                        code
+                                    } else { Status::Stale }
+                                } else if app_linux {
                                     #[cfg(any(test, feature = "debug-fixtures"))]
                                     {if let Some(paths)=config.paths.as_ref() {
                                         if let Some(case)=current.mode().linux_gtk_case() {
@@ -533,6 +645,7 @@ impl Runtime {
                             if !current.virtual_clock() {
                                 let windows = snapshot.windows.iter().map(|w| crate::window_slots::Window {
                                     id: w.window, app_id: w.app_id.as_deref(), life: w.life,
+                                    admissible: !desktop || snapshot.gui_windows.contains(&w.window),
                                 }).collect::<Vec<_>>();
                                 let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
                                 let native = render.targets.iter().map(|t| t.key).collect::<Vec<_>>();
@@ -740,6 +853,7 @@ impl Runtime {
                                 app.windows
                                     .iter()
                                     .filter(|w| w.life == eidolon_model::window::WindowLife::Mapped)
+                                    .filter(|w| app.mode != Some(eidolon_model::commands::AppMode::LinuxDesktop) || app.gui_windows.contains(&w.window))
                                     .filter_map(|w| app.session.map(|session| (session, w.window)))
                             })
                             .collect();
@@ -751,7 +865,9 @@ impl Runtime {
                             .as_ref()
                             .into_iter()
                             .flat_map(|app| {
-                                app.windows.iter().filter_map(|w| {
+                                app.windows.iter()
+                                    .filter(|w| app.mode != Some(eidolon_model::commands::AppMode::LinuxDesktop) || app.gui_windows.contains(&w.window))
+                                    .filter_map(|w| {
                                     render.theme_id.as_ref()?;
                                     let content = w.logical_size?;
                                     let canvas =
@@ -797,6 +913,12 @@ impl Runtime {
                             let mut asynchronous = false;
                             let app_busy =
                                 pending_app.is_some() || app.as_ref().is_some_and(|a| !a.closed());
+                            // Session::closed は protocol/local の証拠。全世代のアプリ資源を別に待つ。
+                            // 初期診断panelは接続後に退役するため、接続/起動の前提にはしない。
+                            let native_busy = app_busy || slots.report().occupied != 0
+                                || gl.snapshot().targets.iter().any(|target| target.role != eidolon_render::RenderMode::Diagnostic)
+                                || state.app_sdk_bindings() != 0
+                                || !state.panels.snapshot().is_empty();
                             let code = match &command {
                                 Command::SetImeBackend {
                                     session, enabled, ..
@@ -918,6 +1040,41 @@ impl Runtime {
                                     }
                                 }
 
+                                Command::LinuxDesktopInspect { session, request_id, .. } => {
+                                    if native_busy || helper.is_some() || dependencies.is_some() || compositor.is_some() { Status::Busy }
+                                    else { io.inspect_linux_desktop(*session, *request_id) }
+                                }
+                                Command::LinuxDesktopRecover { session, request_id, .. } => {
+                                    if native_busy || helper.is_some() || dependencies.is_some() || compositor.is_some() { Status::Busy }
+                                    else { io.recover_linux_desktop(*session, *request_id) }
+                                }
+                                Command::LinuxDesktopLaunch { session, request_id, selection, .. } => {
+                                    if native_busy || opening_window.is_some() || desktop_launch.is_some()
+                                        || helper.is_some() || dependencies.is_some() || compositor.is_some() { Status::Busy }
+                                    else if config.paths.is_none() { Status::NotReady }
+                                    else {
+                                        match io.desktop_launch_nonce(*session, selection) {
+                                            Err(code) => code,
+                                            Ok(nonce) => {
+                                                let reservation = slots.begin(*session, &nonce).and_then(|()| slots.reserve(*session, *request_id));
+                                                match reservation {
+                                                    Err(code) => code,
+                                                    Ok(lease) => {
+                                                        desktop_launch = Some(DesktopLaunch { session: *session, request: *request_id, nonce: nonce.clone(), selection: selection.clone(), lease });
+                                                        pending_app = Some((*session, nonce.clone(), eidolon_model::commands::AppMode::LinuxDesktop, false, true));
+                                                        opening_window = Some((*session, *request_id, nonce.clone(), vec![]));
+                                                        state.snapshot.window_launch = Some(eidolon_model::window_launch::Report { session: *session, request_id: *request_id, outcome: eidolon_model::window_launch::Outcome::Queued });
+                                                        state.snapshot.window_slots = slots.report();
+                                                        state.snapshot.app = Some(crate::session::Report {
+                                                            state: "queued", session: Some(*session), nonce, mode: Some(eidolon_model::commands::AppMode::LinuxDesktop), callback_clock: "target-driven", ..Default::default()
+                                                        });
+                                                        Status::Accepted
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 Command::Catalog {
                                     session,
                                     request_id,
@@ -1404,7 +1561,7 @@ impl Runtime {
                                         .forward_probe
                                         .as_ref()
                                         .is_none_or(|r| matches!(r.state, "pass" | "fail"));
-                                    if mode.linux_gtk_case().is_some() || (virtual_clock && !cfg!(debug_assertions))
+                                    if *mode == eidolon_model::commands::AppMode::LinuxDesktop || mode.linux_gtk_case().is_some() || (virtual_clock && !cfg!(debug_assertions))
                                         || config.paths.is_none()
                                         || (!virtual_clock
                                             && *mode != eidolon_model::commands::AppMode::Foot
@@ -1625,7 +1782,7 @@ impl Runtime {
                                 Command::ConnectSavedProbe { request_id, .. } => {
                                     if !cfg!(any(test, feature = "debug-fixtures")) {
                                         Status::InvalidArgument
-                                    } else if app_busy {
+                                    } else if native_busy {
                                         Status::Busy
                                     } else if let Some(spec) = &probe_spec {
                                         io.connect_spec(spec.clone(), *request_id)
@@ -1638,8 +1795,12 @@ impl Runtime {
                                     request_id,
                                     ..
                                 } => {
-                                    if app_busy {
+                                    if native_busy {
                                         Status::Busy
+                                    } else if profile_id == "remote-linux" {
+                                        if let (Some(profile), Some(pins), Some(paths)) = (desktop_profile.as_ref(), desktop_pins.as_ref(), config.paths.as_ref()) {
+                                            io.connect_linux(profile.clone(), pins.clone(), std::path::Path::new(&paths.files_dir), *request_id)
+                                        } else { Status::NotReady }
                                     } else if let Some(profile) = profiles.get(profile_id) {
                                         io.connect(profile.clone(), *request_id)
                                     } else {
@@ -1892,6 +2053,7 @@ impl Runtime {
             worker,
             render,
             transport,
+            normal_linux,
         })
     }
 
@@ -1922,9 +2084,17 @@ impl Runtime {
         if let Command::RegisterSdkBinding { target, .. }
         | Command::ReleaseSdkBinding { target, .. } = &command
         {
+            let diagnostic = matches!(
+                command,
+                Command::RegisterSdkBinding {
+                    diagnostic: true,
+                    ..
+                }
+            );
             let code = if matches!(command, Command::ReleaseSdkBinding { .. }) {
                 if let Some(index) = state.sdk_bindings.iter().position(|key| key == target) {
                     state.sdk_bindings.remove(index);
+                    state.diagnostic_sdk_bindings.retain(|key| key != target);
                     Status::Accepted
                 } else {
                     Status::Stale
@@ -1936,11 +2106,25 @@ impl Runtime {
             } else if state.snapshot.scene != Some(target.scene) {
                 Status::Stale
             } else if state.sdk_bindings.contains(target) {
-                Status::Accepted
+                // 同じownerの再送は許すが、アプリ所有を診断へ付け替えて回収を迂回できない。
+                if state.diagnostic_sdk_bindings.contains(target) == diagnostic {
+                    Status::Accepted
+                } else {
+                    Status::Stale
+                }
+            } else if diagnostic
+                && (state.snapshot.app.is_some()
+                    || self.render.snapshot().mode != eidolon_render::RenderMode::Diagnostic)
+            {
+                // use_windowsは一方向。古い診断callbackで新しいアプリ所有を免除しない。
+                Status::NotReady
             } else if state.sdk_bindings.len() >= limits::SDK_BINDINGS {
                 Status::Busy
             } else {
                 state.sdk_bindings.push(*target);
+                if diagnostic {
+                    state.diagnostic_sdk_bindings.push(*target);
+                }
                 Status::Accepted
             };
             if code == Status::Accepted {
@@ -2056,6 +2240,7 @@ impl Runtime {
             shutdown: state
                 .shutdown
                 .report(Instant::now(), pending, state.sdk_bindings.len()),
+            app_sdk_bindings: state.app_sdk_bindings(),
             transport: self.transport.snapshot(),
             render: self.render.snapshot(),
             commands_pending: state.commands.len(),
@@ -2149,6 +2334,8 @@ impl Runtime {
                 && app.callback_clock == "target-driven"
                 && app.ready
                 && app.error.is_none()
+                && (app.mode != Some(eidolon_model::commands::AppMode::LinuxDesktop)
+                    || app.gui_windows.contains(&key.window))
                 && app.windows.iter().any(|window| {
                     window.window == key.window
                         && window.life == eidolon_model::window::WindowLife::Mapped
@@ -2178,11 +2365,11 @@ impl Runtime {
         }
         Self::supply_credential(&mut state, &self.worker, session, request, private)
     }
-    /// Debug専用private取得。通常diagnosticsはbindingを含めない。
+    /// 通常 Linux / debug probe 接続owner専用。通常diagnosticsはbindingを含めない。
     pub fn credential_scope(
         &self,
     ) -> Result<Option<eidolon_transport::session::CredentialScope>, Status> {
-        if !cfg!(any(test, feature = "debug-fixtures")) {
+        if !self.normal_linux && !cfg!(any(test, feature = "debug-fixtures")) {
             return Err(Status::InvalidArgument);
         }
         let state = self.lock();
@@ -2194,9 +2381,13 @@ impl Runtime {
             .as_ref()
             .filter(|scope| {
                 scope.revision.is_some()
+                    && (scope.profile_id == "remote-linux"
+                        || cfg!(any(test, feature = "debug-fixtures")))
                     && self.transport.credential_scope().is_some_and(|live| {
                         live.session == scope.session
                             && live.request == scope.request
+                            && live.profile_id == scope.profile_id
+                            && live.revision == scope.revision
                             && live.binding == scope.binding
                     })
             })
@@ -2209,7 +2400,7 @@ impl Runtime {
         binding: &str,
         private: eidolon_transport::credentials::Secret,
     ) -> Status {
-        if !cfg!(any(test, feature = "debug-fixtures")) {
+        if !self.normal_linux && !cfg!(any(test, feature = "debug-fixtures")) {
             return Status::InvalidArgument;
         }
         let mut state = self.lock();
@@ -2219,10 +2410,18 @@ impl Runtime {
                 scope.session != session
                     || scope.request != request
                     || scope.revision.is_none()
+                    || (scope.profile_id != "remote-linux"
+                        && !cfg!(any(test, feature = "debug-fixtures")))
                     || scope.binding != binding
             })
             || self.transport.credential_scope().is_none_or(|scope| {
-                scope.session != session || scope.request != request || scope.binding != binding
+                scope.session != session
+                    || scope.request != request
+                    || scope.binding != binding
+                    || state.credential_scope.as_ref().is_none_or(|captured| {
+                        captured.profile_id != scope.profile_id
+                            || captured.revision != scope.revision
+                    })
             })
         {
             return Status::Stale;
@@ -2434,6 +2633,199 @@ mod tests {
             scene: SceneEpoch::new(id).unwrap(),
         }
     }
+    fn completed(runtime: &Runtime, command: Command) -> Status {
+        let request = command.request_id();
+        let before = runtime.snapshot().commands_processed;
+        assert_eq!(runtime.command(command), Status::Accepted);
+        wait(runtime, |r| r.snapshot().commands_processed > before);
+        runtime
+            .poll(64)
+            .unwrap()
+            .into_iter()
+            .find_map(|event| match event {
+                Event::CommandComplete { request_id, code } if request_id == request => Some(code),
+                _ => None,
+            })
+            .expect("queued command completion")
+    }
+    fn register_sdk(target: eidolon_model::surface::TargetKey, diagnostic: bool) -> Command {
+        Command::RegisterSdkBinding {
+            schema: 1,
+            request_id: CommandSeq::new(100).unwrap(),
+            target,
+            diagnostic,
+        }
+    }
+    fn release_sdk(target: eidolon_model::surface::TargetKey) -> Command {
+        Command::ReleaseSdkBinding {
+            schema: 1,
+            request_id: CommandSeq::new(101).unwrap(),
+            target,
+        }
+    }
+    fn connect_missing_profile(request: i64) -> Command {
+        Command::Connect {
+            schema: 1,
+            request_id: CommandSeq::new(request).unwrap(),
+            profile_id: "termux-local".into(),
+        }
+    }
+    #[test]
+    fn diagnostic_sdk_role_cannot_hide_an_app_owner_from_an_old_scene() {
+        use eidolon_model::surface::TargetKey;
+        let runtime = Runtime::start(RuntimeConfig::default()).unwrap();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
+        assert_eq!(completed(&runtime, scene(1)), Status::Accepted);
+        let diagnostic = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        let app = TargetKey::from_raw(1, 1, 1, 2).unwrap();
+        assert_eq!(
+            runtime.command(register_sdk(diagnostic, true)),
+            Status::Accepted
+        );
+        assert_eq!(
+            runtime.attach_surface(
+                diagnostic,
+                eidolon_render::PlatformWindow::default(),
+                64,
+                64
+            ),
+            Status::Accepted
+        );
+        wait(&runtime, |r| r.snapshot().render.targets.len() == 1);
+        // session/window番号が同じでも、別世代の通常SDK ownerを診断扱いしない。
+        assert_eq!(runtime.command(register_sdk(app, false)), Status::Accepted);
+        assert_eq!(runtime.command(register_sdk(app, true)), Status::Stale);
+        assert_eq!(
+            runtime.command(register_sdk(diagnostic, false)),
+            Status::Stale
+        );
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 1);
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(10)),
+            Status::Busy
+        );
+        assert_eq!(runtime.snapshot().transport.credential_requests, 0);
+        assert_eq!(completed(&runtime, scene(2)), Status::Accepted);
+        let wrong_scene = TargetKey::from_raw(1, 1, 2, 2).unwrap();
+        assert_eq!(runtime.command(release_sdk(wrong_scene)), Status::Stale);
+        assert_eq!(runtime.command(register_sdk(app, true)), Status::Stale);
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(11)),
+            Status::Busy
+        );
+        assert_eq!(runtime.command(release_sdk(app)), Status::Accepted);
+        assert_eq!(runtime.command(release_sdk(app)), Status::Stale);
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 0);
+        assert_eq!(runtime.snapshot().shutdown.sdk_bindings, 1);
+        // native surfaceの退役後もSDK ownerKeyは残るが、通常接続を妨げない。
+        assert_eq!(
+            completed(
+                &runtime,
+                Command::SurfaceLost {
+                    schema: 1,
+                    request_id: CommandSeq::new(12).unwrap(),
+                    target: diagnostic,
+                }
+            ),
+            Status::Accepted
+        );
+        wait(&runtime, |r| r.snapshot().render.targets.is_empty());
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(13)),
+            Status::NotReady
+        );
+        assert_eq!(runtime.snapshot().transport.error, Some("HOST_KEY_UNKNOWN"));
+        runtime.request_stop();
+        wait(&runtime, |r| r.snapshot().render.workers == 0);
+        assert!(!runtime.can_destroy());
+        let stopped = runtime.snapshot().shutdown;
+        assert_eq!(stopped.sdk_bindings, 1);
+        assert!(stopped.pending_owners.contains(&"sdk"));
+        assert_eq!(runtime.command(release_sdk(diagnostic)), Status::Accepted);
+        wait(&runtime, Runtime::can_destroy);
+        assert!(runtime.snapshot().shutdown.complete);
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 0);
+    }
+    #[test]
+    fn diagnostic_sdk_registration_cannot_begin_after_window_mode() {
+        use eidolon_model::surface::TargetKey;
+        let runtime = Runtime::start(RuntimeConfig::default()).unwrap();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
+        assert_eq!(completed(&runtime, scene(1)), Status::Accepted);
+        let first = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        let late = TargetKey::from_raw(1, 1, 1, 2).unwrap();
+        assert_eq!(runtime.command(register_sdk(first, true)), Status::Accepted);
+        // Coreのapp snapshotがまだない間でも、rendererの一方向遷移を照合する。
+        runtime.render.use_windows();
+        assert!(runtime.snapshot().app.is_none());
+        assert_eq!(runtime.command(register_sdk(late, true)), Status::NotReady);
+        assert_eq!(runtime.command(register_sdk(first, true)), Status::Accepted);
+        assert_eq!(runtime.command(register_sdk(late, false)), Status::Accepted);
+        assert_eq!(runtime.snapshot().shutdown.sdk_bindings, 2);
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 1);
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(10)),
+            Status::Busy
+        );
+        runtime.request_stop();
+        assert_eq!(runtime.command(release_sdk(first)), Status::Accepted);
+        assert_eq!(runtime.command(release_sdk(first)), Status::Stale);
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 1);
+        assert_eq!(runtime.command(release_sdk(late)), Status::Accepted);
+        wait(&runtime, Runtime::can_destroy);
+    }
+    #[test]
+    fn unretired_app_native_target_still_blocks_connect_without_an_sdk_owner() {
+        use eidolon_model::surface::TargetKey;
+        let runtime = Runtime::start(RuntimeConfig::default()).unwrap();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
+        assert_eq!(completed(&runtime, scene(1)), Status::Accepted);
+        let target = TargetKey::from_raw(1, 1, 1, 2).unwrap();
+        runtime.render.use_windows();
+        assert_eq!(
+            runtime.render.windows(target.session, &[target.window]),
+            Status::Accepted
+        );
+        let (image, probes) = eidolon_render::fixtures::make(0, 1, target, 64, 64).unwrap();
+        assert_eq!(runtime.render.submit(image, probes), Status::Accepted);
+        assert_eq!(
+            runtime
+                .render
+                .attach_window(target, eidolon_render::PlatformWindow::default(), 64, 64),
+            Status::Accepted
+        );
+        wait(&runtime, |r| {
+            r.snapshot()
+                .render
+                .targets
+                .iter()
+                .any(|t| t.key == target && t.role == eidolon_render::RenderMode::Windows)
+        });
+        assert_eq!(runtime.snapshot().app_sdk_bindings, 0);
+        assert_eq!(runtime.snapshot().shutdown.sdk_bindings, 0);
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(10)),
+            Status::Busy
+        );
+        assert_eq!(
+            completed(
+                &runtime,
+                Command::SurfaceLost {
+                    schema: 1,
+                    request_id: CommandSeq::new(11).unwrap(),
+                    target,
+                }
+            ),
+            Status::Accepted
+        );
+        wait(&runtime, |r| r.snapshot().render.targets.is_empty());
+        assert_eq!(
+            completed(&runtime, connect_missing_profile(12)),
+            Status::NotReady
+        );
+        runtime.request_stop();
+        wait(&runtime, Runtime::can_destroy);
+    }
     #[test]
     fn sdk_release_bypasses_full_queue_but_old_or_duplicate_ack_cannot_finish_stop() {
         use eidolon_model::surface::TargetKey;
@@ -2454,6 +2846,7 @@ mod tests {
                     schema: 1,
                     request_id: CommandSeq::new(1).unwrap(),
                     target,
+                    diagnostic: false,
                 }
             } else {
                 Command::ReleaseSdkBinding {

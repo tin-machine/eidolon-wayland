@@ -6,7 +6,7 @@ use crate::{
 };
 use eidolon_model::{
     commands::AppMode,
-    ids::{SessionId, WindowId},
+    ids::{CommandSeq, SessionId, WindowId},
     window::{LogicalSize, WindowLife},
 };
 use serde::Serialize;
@@ -37,6 +37,8 @@ pub struct Report {
     pub callbacks: u64,
     pub verified_hashes: u32,
     pub remote_gui_verified: bool,
+    /// 通常 GUI の検証済み Started と main/dialog 所有関係が揃った窓だけを公開する。
+    pub gui_windows: Vec<WindowId>,
     pub non_uniform: bool,
     pub last_size: Option<LogicalSize>,
     pub window_ids: Vec<WindowId>,
@@ -58,6 +60,10 @@ pub struct Report {
     pub memfd_fds_after: Option<usize>,
     pub memfd_maps_after: Option<usize>,
     pub directory_cleaned: bool,
+    /// Synchronous construction failed before a LocalClient worker existed.
+    pub startup_failed: bool,
+    /// That unstarted owner has explicitly released all resources; this is not a child wait.
+    pub startup_cleanup_complete: bool,
     pub error: Option<&'static str>,
 }
 
@@ -67,7 +73,8 @@ pub struct Session {
     listener: Option<UnixListener>,
     display: Option<Display<ProtocolState>>,
     protocol: Option<ProtocolState>,
-    local: LocalClient,
+    local: Option<LocalClient>,
+    startup_allocation_absent: bool,
     base: Counters,
     copied: u64,
     virtual_clock: bool,
@@ -76,6 +83,8 @@ pub struct Session {
     published: Vec<WindowId>,
     started: Instant,
     workload: crate::workload::Tracker,
+    desktop_request: Option<CommandSeq>,
+    desktop_started: bool,
 }
 pub struct Options {
     pub virtual_clock: bool,
@@ -90,28 +99,79 @@ impl Session {
         nonce: &str,
         mode: AppMode,
         options: Options,
-    ) -> Result<Self, &'static str> {
+    ) -> Self {
+        Self::start_with_setup(session, files, executable, nonce, mode, options, |_| {})
+    }
+    fn start_with_setup(
+        session: SessionId,
+        files: &Path,
+        executable: &Path,
+        nonce: &str,
+        mode: AppMode,
+        options: Options,
+        before_bind: impl FnOnce(&Path),
+    ) -> Self {
         let Options {
             virtual_clock,
             keyboard_layout,
             pixels,
         } = options;
-        if virtual_clock && !cfg!(debug_assertions) {
-            return Err("NOT_READY");
+        let mut current = Self::unstarted(session, nonce, mode, virtual_clock);
+        let setup = (|| {
+            if virtual_clock && !cfg!(debug_assertions) {
+                return Err("NOT_READY");
+            }
+            let directory = RuntimeDirectory::create_tracked(files, nonce).map_err(|failure| {
+                current.startup_allocation_absent = failure.allocation_absent;
+                failure.error
+            })?;
+            current.startup_allocation_absent = false;
+            current.directory = Some(directory);
+            let path = &current.directory.as_ref().unwrap().path;
+            before_bind(path);
+            current.listener =
+                Some(UnixListener::bind(path.join("w")).map_err(|_| "LOCAL_SOCKET_FAILED")?);
+            current
+                .listener
+                .as_ref()
+                .unwrap()
+                .set_nonblocking(true)
+                .map_err(|_| "LOCAL_SOCKET_FAILED")?;
+            current.display = Some(Display::<ProtocolState>::new().map_err(|_| "DISPLAY_CREATE")?);
+            let mut protocol = ProtocolState::new_with_budget(
+                &current.display.as_ref().unwrap().handle(),
+                session,
+                pixels,
+            );
+            if !virtual_clock {
+                protocol.configure_keyboard(keyboard_layout)?;
+            }
+            current.protocol = Some(protocol);
+            // This is the last fallible construction step. On synchronous failure no worker
+            // or child can exist, and the partial Session still owns all earlier allocations.
+            current.local = Some(LocalClient::start(executable, path)?);
+            Ok(())
+        })();
+        if let Err(error) = setup {
+            current.report.startup_failed = true;
+            current.fail(error);
         }
-        let directory = RuntimeDirectory::create(files, nonce)?;
-        let listener =
-            UnixListener::bind(directory.path.join("w")).map_err(|_| "LOCAL_SOCKET_FAILED")?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|_| "LOCAL_SOCKET_FAILED")?;
-        let display = Display::<ProtocolState>::new().map_err(|_| "DISPLAY_CREATE")?;
-        let mut protocol = ProtocolState::new_with_budget(&display.handle(), session, pixels);
-        if !virtual_clock {
-            protocol.configure_keyboard(keyboard_layout)?;
-        }
-        let local = LocalClient::start(executable, &directory.path)?;
-        Ok(Self {
+        current
+    }
+    pub(crate) fn failed_start(
+        session: SessionId,
+        nonce: &str,
+        mode: AppMode,
+        virtual_clock: bool,
+        error: &'static str,
+    ) -> Self {
+        let mut current = Self::unstarted(session, nonce, mode, virtual_clock);
+        current.report.startup_failed = true;
+        current.fail(error);
+        current
+    }
+    fn unstarted(session: SessionId, nonce: &str, mode: AppMode, virtual_clock: bool) -> Self {
+        Self {
             report: Report {
                 state: "preparing",
                 session: Some(session),
@@ -124,11 +184,12 @@ impl Session {
                 },
                 ..Default::default()
             },
-            directory: Some(directory),
-            listener: Some(listener),
-            display: Some(display),
-            protocol: Some(protocol),
-            local,
+            directory: None,
+            listener: None,
+            display: None,
+            protocol: None,
+            local: None,
+            startup_allocation_absent: true,
             base: Default::default(),
             copied: 0,
             virtual_clock,
@@ -137,13 +198,18 @@ impl Session {
             published: vec![],
             started: Instant::now(),
             workload: Default::default(),
-        })
+            desktop_request: None,
+            desktop_started: false,
+        }
     }
     pub fn snapshot(&self) -> Report {
         self.report.clone()
     }
     pub fn layout_windows(&self) -> Vec<WindowReport> {
         let mut windows = self.report.windows.clone();
+        if self.mode() == AppMode::LinuxDesktop {
+            windows.retain(|window| self.report.gui_windows.contains(&window.window));
+        }
         for window in &mut windows {
             if let Some(base) = self
                 .report
@@ -169,8 +235,23 @@ impl Session {
     pub fn virtual_clock(&self) -> bool {
         self.virtual_clock
     }
+    fn owns_window(&self, window: WindowId) -> bool {
+        self.mode() != AppMode::LinuxDesktop
+            || (self.desktop_started && self.report.gui_windows.contains(&window))
+    }
+    /// Native reservation と request を先に捕捉し、後の transport ACK と照合する。
+    pub fn reserve_desktop(&mut self, request: CommandSeq) -> Result<(), &'static str> {
+        if self.mode() != AppMode::LinuxDesktop
+            || self.desktop_request.is_some()
+            || self.report.forward_sent
+        {
+            return Err("STALE");
+        }
+        self.desktop_request = Some(request);
+        Ok(())
+    }
     pub fn focus_window(&mut self, window: WindowId) -> Result<(), &'static str> {
-        if self.closing {
+        if self.closing || !self.owns_window(window) {
             return Err("STALE");
         }
         self.protocol
@@ -184,7 +265,7 @@ impl Session {
         focus_token: eidolon_model::ids::CommandSeq,
         key: eidolon_model::keyboard::KeyPacket,
     ) -> Result<(), &'static str> {
-        if self.closing {
+        if self.closing || !self.owns_window(window) {
             return Err("STALE");
         }
         self.protocol
@@ -229,7 +310,7 @@ impl Session {
             .collect();
     }
     pub fn close_window(&mut self, window: WindowId) -> Result<(), &'static str> {
-        if self.closing {
+        if self.closing || !self.owns_window(window) {
             return Err("STALE");
         }
         self.protocol
@@ -238,6 +319,9 @@ impl Session {
             .close_window(window)
     }
     pub fn current_window(&self, window: WindowId) -> Option<WindowReport> {
+        if !self.owns_window(window) {
+            return None;
+        }
         self.protocol
             .as_ref()?
             .windows()
@@ -273,7 +357,7 @@ impl Session {
         window: WindowId,
         size: LogicalSize,
     ) -> Result<(), &'static str> {
-        if self.closing {
+        if self.closing || !self.owns_window(window) {
             return Err("STALE");
         }
         self.protocol
@@ -287,7 +371,7 @@ impl Session {
         request: eidolon_model::ids::CommandSeq,
         size: LogicalSize,
     ) -> Result<(), &'static str> {
-        if self.closing || target.session != self.session() {
+        if self.closing || target.session != self.session() || !self.owns_window(target.window) {
             return Err("STALE");
         }
         self.protocol
@@ -301,7 +385,7 @@ impl Session {
         request: eidolon_model::ids::CommandSeq,
         size: eidolon_model::resize::PhysicalSize,
     ) -> Result<(), &'static str> {
-        if self.closing {
+        if self.closing || !self.owns_window(window) {
             return Err("STALE");
         }
         self.protocol
@@ -317,7 +401,7 @@ impl Session {
         expected: eidolon_model::resize::PhysicalSize,
         step: eidolon_model::resize::PhysicalStep,
     ) -> Result<(), &'static str> {
-        if self.closing {
+        if self.closing || !self.owns_window(window) {
             return Err("STALE");
         }
         self.protocol
@@ -331,7 +415,7 @@ impl Session {
         command: Option<eidolon_model::ids::CommandSeq>,
         size: eidolon_model::resize::PhysicalSize,
     ) -> Result<(), &'static str> {
-        if self.closing {
+        if self.closing || !self.owns_window(window) {
             return Err("STALE");
         }
         self.protocol
@@ -346,7 +430,7 @@ impl Session {
         width: i32,
         height: i32,
     ) -> Result<(), &'static str> {
-        if self.closing {
+        if self.closing || !self.owns_window(window) {
             return Err("STALE");
         }
         self.protocol
@@ -370,7 +454,10 @@ impl Session {
         let Some(state) = self.protocol.as_mut() else {
             return;
         };
-        let windows = state.windows();
+        let mut windows = state.windows();
+        if self.report.mode == Some(AppMode::LinuxDesktop) {
+            windows.retain(|window| self.report.gui_windows.contains(&window.window));
+        }
         let logical: Vec<_> = windows.iter().map(|window| window.window).collect();
         if gl.windows(session, &logical) != eidolon_model::state::Status::Accepted {
             self.fail("RENDER_BUDGET");
@@ -457,7 +544,11 @@ impl Session {
         if !eidolon_transport::forward_probe::valid_nonce(nonce) {
             return Err("INVALID_ARGUMENT");
         }
-        if self.closing || self.closed() {
+        if self.closing
+            || self.closed()
+            || self.mode() == AppMode::LinuxDesktop
+            || mode == AppMode::LinuxDesktop
+        {
             return Err("STALE");
         }
         self.base = self.protocol.as_ref().unwrap().counters;
@@ -488,6 +579,33 @@ impl Session {
         } else if forward.state == "pass" {
             self.report.state = "pass";
         } else if forward.state == "running" {
+            self.report.state = "running";
+        }
+    }
+    pub fn desktop_forwarding(&mut self, forward: &eidolon_transport::linux_desktop::Report) {
+        if self.closing || self.closed() || self.mode() != AppMode::LinuxDesktop {
+            return;
+        }
+        if forward.session != Some(self.session()) || forward.nonce != self.report.nonce {
+            self.fail("DESKTOP_RECEIPT_SCOPE");
+            return;
+        }
+        // Inspection is not a launch receipt. Only the captured explicit Start request can admit a GUI.
+        if let Some(request) = forward.request_id {
+            if Some(request) != self.desktop_request {
+                self.fail("DESKTOP_RECEIPT_SCOPE");
+                return;
+            }
+            self.desktop_started |= forward.started;
+        }
+        if let Some(error) = forward.error {
+            self.fail(error);
+        } else if self.desktop_started
+            && forward.state == "running"
+            && !forward.finished
+            && !forward.remote.terminal_event
+            && !forward.remote.channel_closed
+        {
             self.report.state = "running";
         }
     }
@@ -546,13 +664,14 @@ impl Session {
         if self.closed() {
             return;
         }
+        let admitted_before = self.report.gui_windows.clone();
         self.closing |= close;
         if self.closing {
             self.reset_input();
             self.report.state = "closing";
             self.report.ready = false;
-            if remote_gone {
-                self.local.request_stop();
+            if remote_gone && let Some(local) = self.local.as_ref() {
+                local.request_stop();
             }
         }
         if let Err(error) = self.dispatch() {
@@ -564,7 +683,20 @@ impl Session {
             protocol.resize_tick(self.started.elapsed());
         }
         self.refresh_stats();
-        self.report.local = self.local.snapshot();
+        if self.mode() == AppMode::LinuxDesktop
+            && admitted_before
+                .iter()
+                .any(|window| !self.report.gui_windows.contains(window))
+        {
+            // app_id / parent / map の喪失は SDK retire ACK より先に入力所有を失効させる。
+            self.reset_input();
+            if let Some(protocol) = self.protocol.as_ref() {
+                self.report.input = protocol.input_report();
+            }
+        }
+        if let Some(local) = self.local.as_ref() {
+            self.report.local = local.snapshot();
+        }
         if let Some(error) = self.report.local.error {
             self.fail(error);
         }
@@ -575,10 +707,12 @@ impl Session {
         if !self.closing {
             return;
         }
-        if !remote_gone || !self.local.finished() {
+        if !remote_gone || self.local.as_mut().is_some_and(|local| !local.finished()) {
             return;
         }
-        self.report.local = self.local.snapshot();
+        if let Some(local) = self.local.as_ref() {
+            self.report.local = local.snapshot();
+        }
         if self.report.clients > 0
             && let Some(display) = self.display.as_ref()
         {
@@ -615,8 +749,11 @@ impl Session {
             if let Some(directory) = self.directory.as_ref() {
                 directory.cleanup()?;
                 self.directory.take();
-                self.report.directory_cleaned = true;
+            } else if !self.report.directory_cleaned && !self.startup_allocation_absent {
+                // A collided path or allocation without a captured identity is not ours to delete.
+                return Err("CLEANUP_FAILED");
             }
+            self.report.directory_cleaned = true;
             let (fds, maps) = named_memfds()?;
             self.report.memfd_fds_after = Some(fds);
             self.report.memfd_maps_after = Some(maps);
@@ -630,6 +767,7 @@ impl Session {
             return;
         }
         self.report.input = Default::default();
+        self.report.startup_cleanup_complete = self.report.startup_failed && self.local.is_none();
         self.report.state = "stopped";
     }
     fn dispatch(&mut self) -> Result<(), &'static str> {
@@ -725,6 +863,27 @@ impl Session {
             return;
         };
         self.report.windows = state.windows();
+        if self.report.mode == Some(AppMode::LinuxDesktop) {
+            self.report.gui_windows =
+                if self.desktop_started && !self.closing && self.report.error.is_none() {
+                    let windows = self
+                        .report
+                        .windows
+                        .iter()
+                        .map(|window| eidolon_model::linux_desktop::Candidate {
+                            window: window.window,
+                            app_id: window.app_id.as_deref(),
+                            parent: window.parent,
+                            life: window.life,
+                        })
+                        .collect::<Vec<_>>();
+                    eidolon_model::linux_desktop::owned_windows(&self.report.nonce, &windows)
+                } else {
+                    vec![]
+                };
+            self.report.remote_gui_verified =
+                self.desktop_started && !self.report.gui_windows.is_empty();
+        }
         self.report.workloads = self.workload.sync(
             self.session(),
             &self.report.nonce,
@@ -772,9 +931,11 @@ impl Session {
 }
 impl Drop for Session {
     fn drop(&mut self) {
-        self.local.request_stop();
-        while !self.local.finished() {
-            std::thread::sleep(Duration::from_millis(5));
+        if let Some(local) = self.local.as_mut() {
+            local.request_stop();
+            while !local.finished() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
         drop(self.listener.take());
         drop(self.display.take());
@@ -814,6 +975,152 @@ mod tests {
         thread,
     };
     #[test]
+    fn synchronous_desktop_start_failure_retires_before_allowing_retry() {
+        use eidolon_model::ids::RuntimeHandle;
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let files = std::env::temp_dir().join(format!("ew-start-fail-{}", std::process::id()));
+        fs::create_dir(&files).unwrap();
+        let id = SessionId::new(31).unwrap();
+        let nonce = "1122334455667788";
+        let directory = files.join("rt").join(nonce);
+        let options = || Options {
+            virtual_clock: false,
+            keyboard_layout: Default::default(),
+            pixels: Default::default(),
+        };
+        let mut slots = crate::window_slots::Controller::new(RuntimeHandle::new(1).unwrap());
+        slots.begin(id, nonce).unwrap();
+        let lease = slots.reserve(id, CommandSeq::new(1).unwrap()).unwrap();
+        let mut session = Session::start_with_setup(
+            id,
+            &files,
+            Path::new("/missing-waypipe-startup-test"),
+            nonce,
+            AppMode::LinuxDesktop,
+            options(),
+            |directory| fs::write(directory.join("w"), b"occupied socket path").unwrap(),
+        );
+        assert_eq!(session.snapshot().error, Some("LOCAL_SOCKET_FAILED"));
+        assert!(session.snapshot().startup_failed);
+        assert!(session.local.is_none());
+        slots.not_enqueued(lease);
+        // Core disconnects the inspected SSH helper before allowing this owner to retire.
+        session.tick(true, false);
+        assert!(!session.closed());
+        assert!(!session.snapshot().startup_cleanup_complete);
+        assert!(directory.is_dir());
+        session.tick(true, true);
+        let failed = session.snapshot();
+        assert!(session.closed() && failed.startup_cleanup_complete && failed.directory_cleaned);
+        assert_eq!(failed.error, Some("LOCAL_SOCKET_FAILED"));
+        assert_eq!((failed.local.workers, failed.local.owned_groups), (0, 0));
+        assert!(!failed.local.waited); // There never was a worker or a child to wait for.
+        assert_eq!(
+            (failed.memfd_fds_after, failed.memfd_maps_after),
+            (Some(0), Some(0))
+        );
+        assert!(!directory.exists());
+        slots
+            .observe(crate::window_slots::Observation {
+                session: id,
+                nonce,
+                windows: &[],
+                session_closed: session.closed(),
+                native: &[],
+                sdk: &[],
+                panels: &[],
+            })
+            .unwrap();
+        assert_eq!(slots.report().occupied, 0);
+        assert!(slots.can_begin(id, nonce));
+        slots.reserve(id, CommandSeq::new(2).unwrap()).unwrap();
+        drop(session);
+        let mut retry = Session::start(
+            id,
+            &files,
+            Path::new("/missing-waypipe-startup-test"),
+            nonce,
+            AppMode::LinuxDesktop,
+            options(),
+        );
+        assert!(
+            !retry.snapshot().startup_failed && retry.local.is_some(),
+            "{:?}",
+            retry.snapshot()
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !retry.closed() {
+            assert!(Instant::now() < deadline);
+            retry.tick(true, true);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!retry.snapshot().startup_cleanup_complete);
+        drop(retry);
+        fs::remove_dir_all(files).unwrap();
+    }
+    #[test]
+    fn desktop_start_collision_cannot_claim_an_unknown_directory_was_cleaned() {
+        use std::os::unix::fs::DirBuilderExt;
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let files = std::env::temp_dir().join(format!("ew-start-collision-{}", std::process::id()));
+        fs::create_dir(&files).unwrap();
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(files.join("rt"))
+            .unwrap();
+        let nonce = "1122334455667788";
+        let directory = files.join("rt").join(nonce);
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("unrelated-owner"), b"preserve").unwrap();
+        let mut session = Session::start(
+            SessionId::new(32).unwrap(),
+            &files,
+            Path::new("/unused"),
+            nonce,
+            AppMode::LinuxDesktop,
+            Options {
+                virtual_clock: false,
+                keyboard_layout: Default::default(),
+                pixels: Default::default(),
+            },
+        );
+        session.tick(true, true);
+        let report = session.snapshot();
+        assert!(report.startup_failed);
+        assert_eq!(report.error, Some("CONFIG_INVALID"));
+        assert!(!session.closed() && !report.startup_cleanup_complete && !report.directory_cleaned);
+        assert_eq!(
+            fs::read(directory.join("unrelated-owner")).unwrap(),
+            b"preserve"
+        );
+        drop(session);
+        assert!(directory.is_dir());
+        fs::remove_dir_all(files).unwrap();
+    }
+    #[test]
+    fn rejected_desktop_setup_without_allocations_still_waits_for_remote_retirement() {
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let mut session = Session::failed_start(
+            SessionId::new(33).unwrap(),
+            "1122334455667788",
+            AppMode::LinuxDesktop,
+            false,
+            "STALE",
+        );
+        session.tick(true, false);
+        assert!(!session.closed());
+        session.tick(true, true);
+        let report = session.snapshot();
+        assert!(
+            session.closed()
+                && report.startup_failed
+                && report.startup_cleanup_complete
+                && report.directory_cleaned
+        );
+        assert!(!report.local.waited);
+        assert_eq!(report.error, Some("STALE"));
+    }
+    #[test]
     fn real_waypipe_server_producer_and_owned_compositor_verify_100_frames() {
         let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -842,8 +1149,7 @@ mod tests {
                 keyboard_layout: Default::default(),
                 pixels: Default::default(),
             },
-        )
-        .unwrap();
+        );
         let cancel = Arc::new(AtomicBool::new(false));
         let mut worker = None;
         let (tx, rx) = mpsc::sync_channel(1);

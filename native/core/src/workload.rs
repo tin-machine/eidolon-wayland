@@ -218,6 +218,7 @@ mod tests {
         WindowReport {
             window: WindowId::new(id).unwrap(),
             app_id: terminal_app_id("aaaaaaaaaaaaaaaa", TerminalId::new(terminal).unwrap()),
+            parent: None,
             life: WindowLife::Mapped,
             frame: None,
             logical_size: None,

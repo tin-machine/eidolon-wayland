@@ -13,6 +13,7 @@ data class InputConditions(
     val focusedWindow: String? = null,
     val panelEditing: Boolean = false,
     val imeProbe: Boolean = false,
+    val linuxDesktop: Boolean = false,
 )
 
 data class InputStatus(val reason: String, val message: String, val action: Action = Action.NONE) {
@@ -29,13 +30,15 @@ data class InputStatus(val reason: String, val message: String, val action: Acti
             !c.runtimeReady -> InputStatus("PREPARING", "入力停止 · 画面を準備中")
             c.imeProbe -> InputStatus("IME_PROBE", "入力先: 日本語入力の検証パネル · Linuxへのキー転送は停止中")
             c.panelEditing -> InputStatus("PANEL_INPUT", "入力先: ランチャーの設定欄")
-            c.transport != "Ready" -> when(c.transport) {
+            c.transport !in setOf("Ready", "DesktopReady") -> when(c.transport) {
                 "Idle", "Disconnected", "Failed" -> InputStatus("DISCONNECTED", "入力停止 · 接続されていません", Action.OPEN)
+                "ProbeReady" -> InputStatus("APP_INSPECTION_REQUIRED", "SSH認証済み · アプリを確認してから起動してください")
+                "CleanupPending" -> InputStatus("CLEANUP_PENDING", "入力停止 · 前回のアプリの終了を確認してください")
                 else -> InputStatus("CONNECTING", "入力停止 · 接続の準備・終了を確認中")
             }
             c.editing -> InputStatus("EDITING", "配置編集中 · 文字入力は停止", Action.FINISH_EDITING)
             c.keyboards == 0 -> InputStatus("NO_KEYBOARD", "キーボード未検出 · 接続後に入力先を選んでください")
-            !c.hasWindows -> InputStatus("NO_WINDOW", "入力先のターミナルがありません", Action.OPEN)
+            !c.hasWindows -> InputStatus("NO_WINDOW", if(c.linuxDesktop) "入力先のアプリがありません。確認済みのGTKデモを起動してください" else "入力先のターミナルがありません", Action.OPEN)
             !c.targetReady -> InputStatus("TARGET_NOT_READY", "入力先の画面を準備中 · 表示する窓を選んでください")
             c.focusedWindow == null -> InputStatus("NO_FOCUS", "入力先が未選択 · 下の窓を選んでください", Action.FOCUS)
             c.keyboards == null -> InputStatus("DEVICE_UNKNOWN", "入力先: 窓 ${c.focusedWindow} · キーボードを確認中")

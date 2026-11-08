@@ -80,10 +80,11 @@ F2の固定キーは「メニューから終了できる」検証であり、ゲ
 | --- | --- | --- |
 | SSH認証・StreamLocal・固定SHM | 実APKから隔離Linux検証環境へ接続、固定SHM100frameと通常SDK表示・復帰・lease解放が成立 | 任意のUbuntuホストや既存desktop全体への対応 |
 | 固定GTK B6 | Build174のinput/dialogが成功。文字・削除・button、追加窓、SHM/SDK、全退役、remote journal/所有process回収、通常復帰を同jobで確認 | 通常ランチャー、終了しない通常アプリ、任意GTK/Qt、物理入力、remote IME |
-| 通常接続設定 C1 | mainに専用保存モデル/Store/CASを実装。profile ID `remote-linux`、backend `linux_ssh`、revision/bindingとpinを分離 | 接続設定UI・Hostへの採用、device filesystemでの中断復旧、保存後の通常SSH接続 |
+| 通常接続設定 C1 | mainに専用保存モデル/Store/CASを実装。profile ID `remote-linux`、backend `linux_ssh`、revision/bindingとpinを分離。L5/L6で通常設定UI・Hostへ採用 | device filesystemでの中断復旧、保存後の実Questからの通常SSH接続 |
 | process owner C2a | subreaperとlive pidfdでsetsid子孫を含む所有・回収を扱う部品を実装・host検査。pipe EOFはadapterで別判定 | 通常remote foot/GUIの接続完成、helper自身が失われた後の回収保証。C2aという名称だけでterminal対応済みとはしない |
-| 通常GTK C2 | 作業branch `43767a4`に通常demo/helper/builderと型付きprotocolを保存。Python13件・Rust8件・Cビルド・限定clippy成功 | main統合、実配備、SSH actor/wire loop/lease/journal/runtime/Host/UIへの接続、実描画・入力 |
-| L1〜L4の後続PR | C2を取り込み、非同期終了競合・通常lease・SSH actor/StreamLocal・独立journal・helper喪失/boot変更時の明示復旧を接続。[実装と検証範囲](normal-linux-gui-l1-l4-20261108.md)を参照 | mainへのmerge、対象host/Questへの配備、L5/L6のHost/SDK/UI、実描画・入力、L7a/L7bの受入れ |
+| 通常GTK C2 | 保存版 `43767a4`の通常demo/helper/builderと型付きprotocolをL1〜L4でmainへ統合。自動終了しない固定GTKのみを扱う | 実配備・通常経路での実描画・入力 |
+| L1〜L4 | [PR #1](https://github.com/tin-machine/eidolon-wayland/pull/1)をmain `d47c2409`へmerge。非同期終了競合・通常lease・SSH actor/StreamLocal・独立journal・helper喪失/boot変更時の明示復旧を接続。[実装と検証範囲](normal-linux-gui-l1-l4-20261108.md)を参照 | 対象host/Questへの実配備、L7a/L7bの受入れ |
+| L5〜L6 | 通常Connect→明示Inspect→catalog→明示Launch、native cookie/slot/Started照合・SDK入力/Close経路、接続設定・個別client鍵・pins確認を接続。[実装・受入れ手順](normal-linux-gui-l5-l6-20261108.md)を参照 | 実Questで同じjobの描画・英数入力・Dialog・Close・全target退役を確認する受入れ。hostテストだけではL1〜L6統合成立としない |
 
 固定GTKの詳細は[Build174](build-174-integration-20261108.md)。C1は[保存設計](normal-linux-profile-c1-20261108.md)、
 C2の保存版は[通常Linux GUIのcheckpoint](https://github.com/tin-machine/eidolon-wayland/blob/43767a437b5deab94156f5550846c1a0456dbe73/docs/normal-linux-gui-c2-20261108.md)を参照する。
@@ -290,20 +291,20 @@ L7bでは、静止画面・文字入力・scroll/resize等の更新を分け、n
 PC側GPUの有無や一度のSHM表示だけを、動画・高解像度・高更新頻度の快適性の証拠にしない。
 
 <a id="linux-credentials"></a>
-### host key pinとclient identity（L6前に確定）
+### host key pinとclient identity（L6で採用する契約）
 
 host key pinは接続先の認証、client identityはAPK側の公開鍵認証として区別する。
 pin/endpoint/user/revisionを含むimmutable bindingを使い、別hostのpinを流用しない。
 credentialはcaptureした要求へ一度だけ渡し、遅い認証結果を新接続へ流さない。
 
-現行の[CredentialStore](https://github.com/tin-machine/eidolon-wayland/blob/ea068ba28051f441d28698730b4b18056ba59ae5/android/app/src/main/java/io/github/tinmachine/eidolon/CredentialStore.kt#L20-L27)は
-単一identityを保存する。L6前に、次の一方を製品契約として選び、UI・保存・要求へのcaptureを揃える。
+[CredentialStore](../android/app/src/main/java/io/github/tinmachine/eidolon/CredentialStore.kt)を別alias・別directoryで使い、
+**`remote-linux` profile専用client鍵**を採用する。Termux用の既存identityは維持し、debug probeの鍵を移行しない。
+初版の通常Linux profileは一つで、endpoint変更だけでclient鍵を自動交換する機能はない。公開鍵を対象Linuxユーザーへ明示登録する。
+失われた鍵を黙って再生成せず、接続先/pin変更時にはprofile revisionを進め、bundle pinsも新bindingに対して再確認する。
 
-- **APK identityを共有:** 利用するclient公開鍵を対象Linuxユーザーへ明示登録する。共有をhost key pinやprofile scopeの共有と混同しない。
-- **host別client鍵:** credential ID、鍵の生成/保存、公開鍵登録、profileとの対応と変更時のrevisionを追加する。
-
-client鍵の共有自体を禁止する根拠にhost pinの取り違えを用いず、どちらを選んでもcredential変更後の遅い要求や
-古いjournalのownerを新しいidentityへ付け替えない。
+通常HostはConnect時のruntime/request/profile/revision/bindingをcaptureし、nativeからの同じsessionを含むcredential scopeと照合して
+一度だけ秘密bufferを供給する。遅いevent・再供給・古いbindingは拒否し、callback終了時にbufferを消去する。
+回収未完了のjournalがあれば接続先変更を止め、古いownerを新しいprofile/identityへ付け替えない。
 
 ### その他の継続条件
 
@@ -323,7 +324,7 @@ client鍵の共有自体を禁止する根拠にhost pinの取り違えを用い
 
 host fixture、helperの`complete`、catalogの表示、Mapped消失だけでは合格にしない。
 「未確認」「失敗したが回収成功」「通常操作成功」を分け、未回収は同ownerのpendingを維持する。
-今回のレビュー・計画更新だけでは、上記いずれの新しい完了条件も達成済みにしない。
+実装・host/CI検証と実機受入れを分ける。L5/L6のcodeが揃っても、同jobの実機記録がない段階で上記の完了条件を達成済みにしない。
 
 ## 3. 記録と再開の約束
 

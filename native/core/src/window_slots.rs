@@ -38,6 +38,8 @@ pub struct Window<'a> {
     pub id: WindowId,
     pub app_id: Option<&'a str>,
     pub life: WindowLife,
+    /// 新規採用の許可。false でも実在する Bound 窓の回収証拠から除かない。
+    pub admissible: bool,
 }
 pub struct Observation<'a> {
     pub session: SessionId,
@@ -172,7 +174,7 @@ impl Controller {
         self.initial_window_seen |= observation
             .windows
             .iter()
-            .any(|w| w.life == WindowLife::Mapped);
+            .any(|w| w.life == WindowLife::Mapped && w.admissible);
         for entry in board.snapshot() {
             match entry.state {
                 Phase::Bound { window }
@@ -235,18 +237,19 @@ impl Controller {
         for window in observation
             .windows
             .iter()
-            .filter(|w| w.life == WindowLife::Mapped)
+            .filter(|w| w.life == WindowLife::Mapped && w.admissible)
         {
             let known=board.snapshot().iter().any(|e|matches!(e.state,Phase::Bound{window:id}|Phase::Retiring{window:Some(id),..} if id==window.id));
             if known {
                 continue;
             }
-            // 受付よりmapが先でもfootの結果を自発窓として予約から奪わない。
+            // 受付よりmapが先でも起動結果を自発窓として予約から奪わない。
             if has_pending
-                && window
-                    .app_id
-                    .and_then(|id| claimed_terminal(id, observation.nonce))
-                    .is_some()
+                && window.app_id.is_some_and(|id| {
+                    claimed_terminal(id, observation.nonce).is_some()
+                        || eidolon_model::linux_desktop::claim(id, observation.nonce)
+                            == Some(eidolon_model::linux_desktop::Role::Main)
+                })
             {
                 continue;
             }
@@ -296,6 +299,7 @@ mod tests {
             id: id(n),
             app_id: None,
             life: WindowLife::Mapped,
+            admissible: true,
         }
     }
     fn controller() -> Controller {
@@ -378,6 +382,7 @@ mod tests {
             id: id(2),
             app_id: Some(&marker),
             life: WindowLife::Mapped,
+            admissible: true,
         };
         observe(&mut c, &[window(1), result], false, &[], &[], &[]);
         assert_eq!(c.assignments(), [(0, session(), id(1))]);
@@ -410,6 +415,88 @@ mod tests {
         assert!(c.has_mapped_initial(session())); // 全窓close後にも新しいterminalを開ける。
         observe(&mut c, &[window(2)], false, &[], &[], &[]);
         assert_eq!(c.assignments(), [(0, session(), id(2))]);
+    }
+    #[test]
+    fn linux_main_maps_before_started_without_stealing_reservation_and_dialog_retires_separately() {
+        let mut c = controller();
+        let lease = c.reserve(session(), req(10)).unwrap();
+        // Local Session setup repeats begin after the command reserved its slot.
+        c.begin(session(), NONCE).unwrap();
+        assert_eq!(c.report().entries[0].lease, lease);
+        c.enqueued(lease).unwrap();
+        let main_id = eidolon_model::linux_desktop::main_app_id(NONCE).unwrap();
+        let dialog_id = eidolon_model::linux_desktop::dialog_app_id(NONCE).unwrap();
+        let main = Window {
+            id: id(1),
+            app_id: Some(&main_id),
+            life: WindowLife::Mapped,
+            admissible: true,
+        };
+        let dialog = Window {
+            id: id(2),
+            app_id: Some(&dialog_id),
+            life: WindowLife::Mapped,
+            admissible: true,
+        };
+        observe(&mut c, &[main], false, &[], &[], &[]);
+        assert!(c.assignments().is_empty());
+        assert_eq!(c.report().occupied, 1);
+        c.outcome(
+            session(),
+            req(10),
+            Outcome::Matched {
+                terminal_id: TerminalId::new(1).unwrap(),
+                window: id(1),
+            },
+        )
+        .unwrap();
+        observe(
+            &mut c,
+            &[main, dialog],
+            false,
+            &[key(1, 1), key(2, 1)],
+            &[key(1, 1), key(2, 1)],
+            &[],
+        );
+        assert_eq!(
+            c.assignments(),
+            [(0, session(), id(1)), (1, session(), id(2))]
+        );
+        // Admission loss hides targets but is not proof that the Wayland owner destroyed the windows.
+        observe(
+            &mut c,
+            &[
+                Window {
+                    admissible: false,
+                    ..main
+                },
+                Window {
+                    admissible: false,
+                    ..dialog
+                },
+            ],
+            false,
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(c.report().occupied, 2);
+        assert!(!c.report().cleanup_required);
+        observe(
+            &mut c,
+            &[main],
+            false,
+            &[key(1, 1)],
+            &[key(1, 1), key(2, 1)],
+            &[],
+        );
+        assert_eq!(c.report().occupied, 2);
+        observe(&mut c, &[main], false, &[key(1, 1)], &[key(1, 1)], &[]);
+        assert_eq!(c.report().occupied, 1);
+        observe(&mut c, &[], true, &[key(1, 1)], &[key(1, 1)], &[]);
+        assert!(!c.can_begin(SessionId::new(2).unwrap(), "ffffffffffffffff"));
+        observe(&mut c, &[], true, &[], &[], &[]);
+        assert!(c.can_begin(SessionId::new(2).unwrap(), "ffffffffffffffff"));
     }
     #[test]
     fn sdk_can_finish_first_without_late_ack_failing_the_fresh_native_release() {

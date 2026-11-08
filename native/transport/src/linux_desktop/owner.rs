@@ -408,6 +408,20 @@ impl Owner {
         Ok(())
     }
     pub async fn next(&mut self) -> Result<(), &'static str> {
+        self.next_input(None).await.map(|_| ())
+    }
+    pub async fn next_launch(
+        &mut self,
+        requests: &mut tokio::sync::mpsc::Receiver<super::runtime::Launch>,
+    ) -> Result<Option<super::runtime::Launch>, &'static str> {
+        self.next_input(Some(requests)).await
+    }
+    /// The mailbox participates only in the channel/timer wait. Once a control
+    /// command begins enqueueing it must finish before a UI command is observed.
+    async fn next_input(
+        &mut self,
+        mut requests: Option<&mut tokio::sync::mpsc::Receiver<super::runtime::Launch>>,
+    ) -> Result<Option<super::runtime::Launch>, &'static str> {
         if self.closed() || self.phase() == Phase::Failed {
             return Err("STALE");
         }
@@ -420,6 +434,9 @@ impl Owner {
                 _=self.cancel.cancelled(),if !self.stopping=>{self.stop().await?;continue;},
                 _=sleep_until(deadline),if self.deadline.is_some()=>return Err(self.fail("DESKTOP_HELPER_TIMEOUT")),
                 message=self.channel.as_mut().ok_or("STALE")?.wait()=>message,
+                launch=async { requests.as_mut().unwrap().recv().await },if requests.is_some() && !self.stopping=>{
+                    return launch.map(Some).ok_or("DESKTOP_COMMANDS_CLOSED");
+                },
                 _=sleep_until(self.heartbeat),if !self.stopping && !self.report.eof && !self.report.terminal_event && self.protocol.in_flight().is_none() && matches!(self.phase(), Phase::Prepared | Phase::Catalog | Phase::Started)=>{
                     self.control(Action::Heartbeat, None).await?;
                     continue;
@@ -428,7 +445,7 @@ impl Owner {
             match message {
                 Some(ChannelMsg::Data { data }) => {
                     self.data(&data)?;
-                    return Ok(());
+                    return Ok(None);
                 }
                 Some(ChannelMsg::ExtendedData { data, ext: 1 }) => {
                     if self.report.eof {
@@ -464,7 +481,7 @@ impl Owner {
                     if !self.channel_complete() || !self.report.terminal_event {
                         return Err(self.fail("DESKTOP_HELPER_LOST"));
                     }
-                    return Ok(());
+                    return Ok(None);
                 }
                 Some(ChannelMsg::Failure | ChannelMsg::ExtendedData { .. }) => {
                     return Err(self.fail("DESKTOP_PROTOCOL_INVALID"));

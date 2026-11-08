@@ -20,4 +20,13 @@ class InputStatusTest {
         assertEquals(InputStatus.Action.OPEN,InputStatus.from(ready.copy(hasWindows=false,focusedWindow=null)).action)
         assertTrue(InputStatus.from(ready).message.contains("窓 2"))
     }
+    @Test fun linuxDesktopNeedsAnInspectedConnectionAndTheExistingMappedTargetGate() {
+        val linux=ready.copy(transport="DesktopReady",linuxDesktop=true)
+        assertEquals("READY",InputStatus.from(linux).reason)
+        assertEquals("APP_INSPECTION_REQUIRED",InputStatus.from(linux.copy(transport="ProbeReady")).reason)
+        assertEquals("CLEANUP_PENDING",InputStatus.from(linux.copy(transport="CleanupPending")).reason)
+        assertEquals("TARGET_NOT_READY",InputStatus.from(linux.copy(targetReady=false)).reason)
+        assertEquals("BACKGROUND",InputStatus.from(linux.copy(visible=false)).reason)
+        assertTrue(InputStatus.from(linux.copy(hasWindows=false)).message.contains("GTKデモ"))
+    }
 }

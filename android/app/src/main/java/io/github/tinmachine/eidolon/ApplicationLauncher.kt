@@ -28,9 +28,15 @@ fun LauncherStrip() {
     val focus=LocalFocusManager.current
     Row(Modifier.fillMaxSize().padding(8.dp),horizontalArrangement=Arrangement.spacedBy(8.dp,Alignment.CenterHorizontally),
         verticalAlignment=Alignment.CenterVertically) {
-        Button(modifier=Modifier.weight(1f),onClick={focus.clearFocus();NativeSessionHost.openTerminal()},colors=ButtonDefaults.buttonColors(containerColor=candy,contentColor=Color(0xFF28203D))) {
+        if(!state.linux) Button(modifier=Modifier.weight(1f),onClick={focus.clearFocus();NativeSessionHost.openTerminal()},colors=ButtonDefaults.buttonColors(containerColor=candy,contentColor=Color(0xFF28203D))) {
             Text(">_ ターミナル")
-        }
+        } else Button(modifier=Modifier.weight(1f),enabled=state.canConnect || state.canInspect || state.canRecover || state.canStop,
+            onClick={focus.clearFocus();when {
+                state.canRecover -> NativeSessionHost.recoverLinuxDesktop()
+                state.canInspect -> NativeSessionHost.inspectLinuxDesktop()
+                state.canConnect -> NativeSessionHost.connect()
+                state.canStop -> NativeSessionHost.disconnect()
+            }}) {Text(when {state.canRecover -> "前回の回収";state.canInspect -> "アプリを確認";state.canConnect -> "Linuxへ接続";else -> "停止・切断"})}
         for(entry in state.entries.filter {it.id!="terminal"}.take(2)) {
             Button(modifier=Modifier.weight(1f),enabled=state.connected && entry.available && !state.busy && !NativeSessionHost.terminalBusy.value,
                 onClick={NativeSessionHost.launchRegistered(state.session,state.revision,entry.id)},
@@ -39,7 +45,7 @@ fun LauncherStrip() {
             }
         }
         Button(modifier=Modifier.weight(1f),onClick={NativeSessionHost.showLauncher()},colors=ButtonDefaults.buttonColors(containerColor=Color(0xFFFFDF9E),contentColor=Color(0xFF28203D))) {
-            Text("＋ アプリ")
+            Text(if(state.linux) "Linuxアプリ" else "＋ アプリ")
         }
     }
 }
@@ -68,6 +74,24 @@ fun LauncherSettings(modifier: Modifier=Modifier) {
             Button(onClick={NativeSessionHost.launcherExpanded.value=false}) {Text("閉じる")}
         }
         Text(state.message,color=Color.White)
+        if(state.linux) {
+            Text("接続先: ${NativeSessionHost.connectionTarget.value}",color=Color.White)
+            Text("利用対象は固定GTKデモです。起動後は自動終了しません。",color=Color.White)
+            Text("停止・切断、または通信やスリープでleaseが失効すると、未保存の作業も終了します。再接続・再起動は明示操作が必要です。",color=Color(0xFFFFD59E))
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                Button(enabled=state.canConnect,onClick={NativeSessionHost.connect()}) {Text("Linuxへ接続")}
+                Button(enabled=state.canInspect,onClick={NativeSessionHost.inspectLinuxDesktop()}) {Text("アプリを確認")}
+                if(state.canRecover) Button(onClick={NativeSessionHost.recoverLinuxDesktop()}) {Text("前回の回収")}
+            }
+            for(entry in state.entries) {
+                Button(enabled=state.connected && entry.available && !state.busy,onClick={
+                    focus.clearFocus(force=true);NativeSessionHost.launchRegistered(state.session,state.revision,entry.id)
+                }) {Text("GTKデモを起動")}
+            }
+            Button(enabled=state.canStop,onClick={NativeSessionHost.disconnect()}) {Text("停止・切断")}
+            Text("アプリのCloseで終了した後も、接続・確認・起動をもう一度選んでください。",color=Color.White)
+            return@Column
+        }
         if(!state.connected) Button(onClick={NativeSessionHost.openTerminal()}) {Text("ターミナルを開いて接続")}
         LauncherField("Termux内の設定ファイル",path,{path=it})
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {

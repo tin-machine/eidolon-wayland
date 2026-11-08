@@ -1,20 +1,24 @@
-//! One explicit launch on the authenticated connection. This is a transport API;
-//! native/Host catalog, surface cookies and SDK publication are separate steps.
+//! One inspected helper and one explicit launch on the authenticated connection.
+//! The idle launcher renews the lease without starting an application. A queued
+//! Start is consumed by that same actor, never replayed after failure/reconnect.
 use super::{
-    Binding, Phase, RemoteReport,
+    Binding, Phase, RemoteReport, Selection,
     journal::{Cleanup, Journal, Stage},
     owner,
 };
 use crate::forward;
-use eidolon_model::ids::SessionId;
+use eidolon_model::ids::{CommandSeq, SessionId};
 use russh::client;
 use serde::Serialize;
 use std::{
     os::unix::fs::{FileTypeExt, MetadataExt},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
-use tokio::time::{Duration, timeout};
+use tokio::{
+    sync::mpsc,
+    time::{Duration, timeout},
+};
 use tokio_util::sync::CancellationToken;
 
 /// The caller owns the authenticated handle and its Router for this binding's
@@ -26,10 +30,25 @@ pub struct Request<'a> {
     pub local_socket: &'a Path,
 }
 
+pub(crate) struct Inspection<'a> {
+    pub binding: &'a Binding,
+    pub files: &'a Path,
+}
+
+pub(crate) struct Launch {
+    pub request_id: Option<CommandSeq>,
+    pub local_socket: PathBuf,
+    pub selection: Selection,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
     pub session: Option<SessionId>,
+    pub nonce: String,
+    pub request_id: Option<CommandSeq>,
     pub state: &'static str,
+    /// Bounded teardown finished. Unknown cleanup still keeps journal_pending.
+    pub finished: bool,
     pub tools_verified: bool,
     pub start_requested: bool,
     pub started: bool,
@@ -54,8 +73,42 @@ pub async fn run<H: client::Handler>(
     cancel: &CancellationToken,
     publish: impl Fn(&Report),
 ) -> Report {
+    let (sender, requests) = mpsc::channel(1);
+    serve(
+        client,
+        router,
+        Inspection {
+            binding: request.binding,
+            files: request.files,
+        },
+        requests,
+        cancel,
+        publish,
+        |selection| {
+            // Compatibility transport API: its caller already explicitly
+            // requested this one launch. Normal UI uses serve() with its mailbox.
+            let _ = sender.try_send(Launch {
+                request_id: None,
+                local_socket: request.local_socket.into(),
+                selection: selection.clone(),
+            });
+        },
+    )
+    .await
+}
+
+pub(crate) async fn serve<H: client::Handler>(
+    client: &client::Handle<H>,
+    router: &Arc<forward::Router>,
+    request: Inspection<'_>,
+    mut requests: mpsc::Receiver<Launch>,
+    cancel: &CancellationToken,
+    publish: impl Fn(&Report),
+    catalog: impl Fn(&Selection),
+) -> Report {
     let mut report = Report {
         session: Some(request.binding.session()),
+        nonce: request.binding.nonce().into(),
         state: "preparing",
         ..Default::default()
     };
@@ -66,14 +119,6 @@ pub async fn run<H: client::Handler>(
     let result = async {
         if !router.belongs_to(request.binding.session()) || router.report().active != 0 {
             return Err("DESKTOP_ROUTER_SCOPE");
-        }
-        if !request.local_socket.is_absolute() || request.local_socket.as_os_str().len() > 103 {
-            return Err("DESKTOP_LOCAL_SOCKET_INVALID");
-        }
-        let info = std::fs::symlink_metadata(request.local_socket)
-            .map_err(|_| "DESKTOP_LOCAL_SOCKET_INVALID")?;
-        if !info.file_type().is_socket() || info.uid() != unsafe { libc::getuid() } {
-            return Err("DESKTOP_LOCAL_SOCKET_INVALID");
         }
         if cancel.is_cancelled() {
             return Err("CANCELLED");
@@ -110,8 +155,52 @@ pub async fn run<H: client::Handler>(
         }
         let selection = active.selection().ok_or("DESKTOP_CATALOG_UNAVAILABLE")?;
         report.tools_verified = true;
-        report.state = "tools_verified";
+        report.state = "catalog";
         publish(&report);
+        catalog(&selection);
+        // Owner reads commands only at cancellation-safe input boundaries; an
+        // incoming launch must not drop a half-enqueued heartbeat request.
+        let launch = loop {
+            if cancel.is_cancelled() {
+                return Err("CANCELLED");
+            }
+            if active.closed() || active.phase() != Phase::Catalog {
+                return Err("DESKTOP_CATALOG_UNAVAILABLE");
+            }
+            if let Some(launch) = active.next_launch(&mut requests).await? {
+                break launch;
+            }
+            report.remote = active.report();
+            if report.remote.terminal_event || report.remote.channel_closed {
+                report.state = "stopping";
+            }
+            publish(&report);
+        };
+        report.request_id = launch.request_id;
+        if !launch.selection.valid() || launch.selection != selection {
+            return Err("DESKTOP_CATALOG_STALE");
+        }
+        // A queued heartbeat ACK may still be outstanding. Preserve its original
+        // deadline, then issue exactly one Start after the actor becomes idle.
+        while active.selection().is_none() {
+            if cancel.is_cancelled() || active.phase() != Phase::Catalog {
+                return Err("DESKTOP_CATALOG_UNAVAILABLE");
+            }
+            active.next().await?;
+            report.remote = active.report();
+            if report.remote.terminal_event || report.remote.channel_closed {
+                report.state = "stopping";
+            }
+            publish(&report);
+        }
+        if !launch.local_socket.is_absolute() || launch.local_socket.as_os_str().len() > 103 {
+            return Err("DESKTOP_LOCAL_SOCKET_INVALID");
+        }
+        let info = std::fs::symlink_metadata(&launch.local_socket)
+            .map_err(|_| "DESKTOP_LOCAL_SOCKET_INVALID")?;
+        if !info.file_type().is_socket() || info.uid() != unsafe { libc::getuid() } {
+            return Err("DESKTOP_LOCAL_SOCKET_INVALID");
+        }
         if cancel.is_cancelled() {
             return Err("CANCELLED");
         }
@@ -119,11 +208,7 @@ pub async fn run<H: client::Handler>(
             .remote_socket()
             .ok_or("DESKTOP_PROTOCOL_INVALID")?
             .to_owned();
-        lease = Some(router.arm(
-            request.binding.session(),
-            path.clone(),
-            request.local_socket.into(),
-        )?);
+        lease = Some(router.arm(request.binding.session(), path.clone(), launch.local_socket)?);
         journal.as_mut().unwrap().advance(Stage::ForwardRequested)?;
         remote_path = Some(path.clone());
         report.forward_requested = true;
@@ -148,6 +233,12 @@ pub async fn run<H: client::Handler>(
                 journal.as_mut().unwrap().advance(Stage::Started)?;
                 report.started = true;
                 report.state = "running";
+            }
+            // Started is irreversible evidence, not current liveness. A natural
+            // terminal event can share its SSH packet with Started and must win
+            // before native publishes a surface or accepts more GUI input.
+            if report.remote.terminal_event || report.remote.channel_closed {
+                report.state = "stopping";
             }
             publish(&report);
         }
@@ -220,6 +311,9 @@ pub async fn run<H: client::Handler>(
     if report.journal_pending {
         report.error.get_or_insert("DESKTOP_CLEANUP_PENDING");
     }
+    if report.cancelled && !report.journal_pending && report.error == Some("CANCELLED") {
+        report.error = None;
+    }
     report.state = if report.journal_pending {
         "cleanup_pending"
     } else if report.error.is_some() {
@@ -227,6 +321,7 @@ pub async fn run<H: client::Handler>(
     } else {
         "stopped"
     };
+    report.finished = true;
     publish(&report);
     report
 }

@@ -55,7 +55,10 @@ class SdlProbeTests(unittest.TestCase):
                              'descendant=os.fork()\n'
                              'if descendant==0: time.sleep(30); os._exit(0)\n'
                              'signal.signal(signal.SIGTERM,lambda number,frame: sys.exit(0))\n'
-                             f'Path({str(ready)!r}).write_text(json.dumps(dict(leader=os.getpid(),descendant=descendant)))\n'
+                             f'ready=Path({str(ready)!r})\n'
+                             'pending=ready.with_suffix(".pending")\n'
+                             'pending.write_text(json.dumps(dict(leader=os.getpid(),descendant=descendant)))\n'
+                             'pending.replace(ready)\n'
                              + ('sys.exit(7)\n' if original_failure else 'time.sleep(30)\n'))
             child.chmod(0o700)
             unrelated = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
@@ -70,6 +73,23 @@ class SdlProbeTests(unittest.TestCase):
                     time.sleep(.01)
                 self.assertTrue(ready.exists(), 'fixture did not start')
                 owned_group = json.loads(ready.read_text())['leader']
+                if original_failure:
+                    # ready.json precedes sys.exit(7). Observe the actual leader exit before
+                    # cancellation; the runner retains it with WNOWAIT while the descendant
+                    # keeps both pipes open, so its PID and established status remain owned.
+                    deadline = time.monotonic() + 3
+                    while time.monotonic() < deadline:
+                        self.assertIsNone(runner.poll(), 'runner exited before the fixture failure was established')
+                        text = Path(f'/proc/{owned_group}/stat').read_text()
+                        fields = text[text.rindex(')') + 2:].split()
+                        self.assertEqual((int(fields[1]), int(fields[2])), (runner.pid, owned_group))
+                        if fields[0] == 'Z':
+                            # Linux stat field 52 is the wait status (state is fields[0]).
+                            self.assertEqual(int(fields[49]), 7 << 8, 'fixture did not establish exit status 7')
+                            break
+                        time.sleep(.01)
+                    else:
+                        self.fail('fixture leader did not exit before cancellation')
                 runner.send_signal(number)
                 time.sleep(.1)
                 if runner.poll() is None:
@@ -97,7 +117,10 @@ class SdlProbeTests(unittest.TestCase):
                     runner.kill()
                     runner.communicate(timeout=3)
                 if owned_group is not None and probe.group_live(owned_group):
-                    os.killpg(owned_group, signal.SIGKILL)
+                    try:
+                        os.killpg(owned_group, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass  # The owned group may exit between observation and signal.
                     deadline = time.monotonic() + 2
                     while probe.group_live(owned_group) and time.monotonic() < deadline: time.sleep(.01)
                 unrelated.terminate()

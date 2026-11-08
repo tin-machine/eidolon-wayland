@@ -19,6 +19,11 @@ pub struct RuntimeConfig {
     pub installation: Option<String>,
     #[serde(default)]
     pub profiles: Vec<ConnectionProfile>,
+    /// 通常 Linux 接続。debug probe と独立した immutable C1 profile / pins の組。
+    #[serde(default)]
+    pub linux_profile_v2: Option<String>,
+    #[serde(default)]
+    pub linux_desktop_pins: Option<String>,
     /// Debug専用保存profile。nested JSONも重複keyを失わずProfile::parseへ渡す。
     #[serde(default)]
     pub debug_probe_profile_v2: Option<String>,
@@ -36,6 +41,8 @@ impl Default for RuntimeConfig {
             paths: None,
             installation: None,
             profiles: Vec::new(),
+            linux_profile_v2: None,
+            linux_desktop_pins: None,
             debug_probe_profile_v2: None,
             debug_linux_shm_pins: None,
             debug_linux_gtk_pins: None,
@@ -95,6 +102,28 @@ impl RuntimeConfig {
         {
             return Err(Status::InvalidArgument);
         }
+        if self.linux_profile_v2.is_some() != self.linux_desktop_pins.is_some()
+            || self
+                .linux_desktop_pins
+                .as_ref()
+                .is_some_and(|json| json.is_empty() || json.len() > 4096)
+        {
+            return Err(Status::InvalidArgument);
+        }
+        if let Some(json) = &self.linux_profile_v2 {
+            let profile = crate::connection_profile::Profile::parse(
+                json,
+                self.installation
+                    .as_deref()
+                    .ok_or(Status::InvalidArgument)?,
+            )
+            .map_err(|_| Status::InvalidArgument)?;
+            if profile.profile_id() != "remote-linux"
+                || profile.backend() != crate::connection_profile::Backend::LinuxSsh
+            {
+                return Err(Status::InvalidArgument);
+            }
+        }
         if [
             self.debug_linux_shm_pins.as_ref(),
             self.debug_linux_gtk_pins.as_ref(),
@@ -152,6 +181,7 @@ pub enum AppMode {
     Pattern,
     Foot,
     FootFixture,
+    LinuxDesktop,
     LinuxGtkInput,
     LinuxGtkDialog,
     LinuxGtkResize,
@@ -224,6 +254,7 @@ impl AppMode {
             Self::Pattern => "pattern",
             Self::Foot => "foot",
             Self::FootFixture => "foot_fixture",
+            Self::LinuxDesktop => "linux_desktop",
             Self::LinuxGtkInput => "linux_gtk_input",
             Self::LinuxGtkDialog => "linux_gtk_dialog",
             Self::LinuxGtkResize => "linux_gtk_resize",
@@ -283,6 +314,9 @@ pub enum Command {
         schema: u32,
         request_id: CommandSeq,
         target: crate::surface::TargetKey,
+        /// 初期診断panelのSDK所有。省略した既存callerはアプリ資源として回収を待つ。
+        #[serde(default)]
+        diagnostic: bool,
     },
     ReleaseSdkBinding {
         schema: u32,
@@ -381,6 +415,22 @@ pub enum Command {
         request_id: CommandSeq,
         session: crate::ids::SessionId,
         operation: crate::catalog::Operation,
+    },
+    LinuxDesktopInspect {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+    },
+    LinuxDesktopLaunch {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        selection: crate::linux_desktop::Selection,
+    },
+    LinuxDesktopRecover {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
     },
     LaunchTerminal {
         schema: u32,
@@ -650,6 +700,9 @@ impl Command {
             | Self::SetKeyboardLayout { schema, .. }
             | Self::OpenTerminal { schema, .. }
             | Self::Catalog { schema, .. }
+            | Self::LinuxDesktopInspect { schema, .. }
+            | Self::LinuxDesktopLaunch { schema, .. }
+            | Self::LinuxDesktopRecover { schema, .. }
             | Self::LaunchTerminal { schema, .. }
             | Self::ShowWindow { schema, .. }
             | Self::CloseWindow { schema, .. }
@@ -701,7 +754,7 @@ impl Command {
             return Err(Status::InvalidArgument);
         }
         if let Self::Connect { profile_id, .. } = &command
-            && profile_id != "termux-local"
+            && !matches!(profile_id.as_str(), "termux-local" | "remote-linux")
         {
             return Err(Status::InvalidArgument);
         }
@@ -758,6 +811,9 @@ impl Command {
                 return Err(Status::InvalidArgument);
             }
             Self::Catalog { operation, .. } if !operation.valid() => {
+                return Err(Status::InvalidArgument);
+            }
+            Self::LinuxDesktopLaunch { selection, .. } if !selection.valid() => {
                 return Err(Status::InvalidArgument);
             }
             Self::LaunchTerminal { target, .. } if !target.valid() => {
@@ -828,6 +884,9 @@ impl Command {
             | Self::SetKeyboardLayout { request_id, .. }
             | Self::OpenTerminal { request_id, .. }
             | Self::Catalog { request_id, .. }
+            | Self::LinuxDesktopInspect { request_id, .. }
+            | Self::LinuxDesktopLaunch { request_id, .. }
+            | Self::LinuxDesktopRecover { request_id, .. }
             | Self::LaunchTerminal { request_id, .. }
             | Self::ShowWindow { request_id, .. }
             | Self::CloseWindow { request_id, .. }
@@ -897,6 +956,28 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sdk_binding_is_an_app_owner_unless_diagnostic_is_explicit() {
+        let mut value = serde_json::json!({"schema":1,"type":"register_sdk_binding","request_id":"1",
+            "target":{"session":"1","window":"1","scene":"1","generation":"1"}});
+        assert!(matches!(
+            Command::parse(&value.to_string()).unwrap(),
+            Command::RegisterSdkBinding {
+                diagnostic: false,
+                ..
+            }
+        ));
+        value["diagnostic"] = true.into();
+        assert!(matches!(
+            Command::parse(&value.to_string()).unwrap(),
+            Command::RegisterSdkBinding {
+                diagnostic: true,
+                ..
+            }
+        ));
+        value["diagnostic"] = "true".into();
+        assert!(Command::parse(&value.to_string()).is_err());
+    }
     #[test]
     fn group_wire_keeps_new_instance_and_geometry_ack_fences_distinct() {
         let action = serde_json::json!({"schema":1,"type":"window_group","request_id":"10",
@@ -1195,6 +1276,78 @@ mod tests {
             assert_ne!(case.mode(), AppMode::Pattern);
             assert_ne!(case.mode(), AppMode::Foot);
         }
+    }
+    #[test]
+    fn normal_linux_wire_has_explicit_selection_and_no_arbitrary_launch_fields() {
+        let selection = serde_json::json!({"scope":"a".repeat(64),"revision":"b".repeat(64),"app_id":"gtk3-desktop"});
+        let launch = serde_json::json!({"schema":1,"type":"linux_desktop_launch","request_id":"9007199254740993","session":"2","selection":selection});
+        assert!(matches!(
+            Command::parse(&launch.to_string()),
+            Ok(Command::LinuxDesktopLaunch { .. })
+        ));
+        for (key, value) in [
+            ("argv", serde_json::json!(["/bin/sh"])),
+            ("nonce", serde_json::json!("0123456789abcdef")),
+            ("session", serde_json::json!(2)),
+        ] {
+            let mut bad = launch.clone();
+            bad[key] = value;
+            assert!(Command::parse(&bad.to_string()).is_err());
+        }
+        let mut bad = launch.clone();
+        bad["selection"]["app_id"] = serde_json::json!("foot");
+        assert!(Command::parse(&bad.to_string()).is_err());
+        for kind in ["linux_desktop_inspect", "linux_desktop_recover"] {
+            let command =
+                serde_json::json!({"schema":1,"type":kind,"request_id":"3","session":"2"});
+            assert!(Command::parse(&command.to_string()).is_ok());
+        }
+        assert!(
+            Command::parse(
+                r#"{"schema":1,"type":"connect","request_id":"1","profile_id":"remote-linux"}"#
+            )
+            .is_ok()
+        );
+        assert!(
+            Command::parse(
+                r#"{"schema":1,"type":"connect","request_id":"1","profile_id":"linux-probe"}"#
+            )
+            .is_err()
+        );
+        assert_eq!(AppMode::LinuxDesktop.as_str(), "linux_desktop");
+        assert_eq!(AppMode::LinuxDesktop.linux_gtk_case(), None);
+    }
+    #[test]
+    fn normal_linux_config_requires_pair_and_keeps_probe_namespace_independent() {
+        let host_key =
+            include_str!("../../../android/app/src/test/resources/connection-profiles-v2.tsv")
+                .lines()
+                .find(|line| line.starts_with("linux-"))
+                .unwrap()
+                .split('\t')
+                .nth(7)
+                .unwrap();
+        let profile = serde_json::json!({"schema":2,"installation":"1".repeat(32),"profile_id":"remote-linux","revision":"9007199254740993","display_name":"normal","backend":"linux_ssh","host":"192.0.2.1","port":22,"username":"fixture","host_key":host_key});
+        let mut config = RuntimeConfig {
+            installation: Some("1".repeat(32)),
+            linux_profile_v2: Some(profile.to_string()),
+            linux_desktop_pins: Some("{}".into()),
+            ..Default::default()
+        };
+        // Pin cryptographic/schema validation belongs to transport; model bounds the config wire.
+        assert!(config.validate().is_ok());
+        let mut probe = profile.clone();
+        probe["profile_id"] = serde_json::json!("linux-probe");
+        config.debug_probe_profile_v2 = Some(probe.to_string());
+        assert!(config.validate().is_ok());
+        config.linux_profile_v2 = Some(probe.to_string());
+        assert!(config.validate().is_err());
+        config.linux_profile_v2 = Some(profile.to_string());
+        config.linux_desktop_pins = None;
+        assert!(config.validate().is_err());
+        config.linux_profile_v2 = None;
+        config.linux_desktop_pins = Some("{}".into());
+        assert!(config.validate().is_err());
     }
     #[test]
     fn profile_shape_installation_and_fixed_profile_id_are_validated_without_crypto() {
