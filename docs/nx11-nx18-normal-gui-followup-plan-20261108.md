@@ -126,8 +126,8 @@ Dialogなど追加toplevelも全体の9窓予算へ含め、別hostごとに予�
 | L4 | durable journal・復旧 | 通常Linux用journalへ起動前にbinding/ownerとremote boot identityを記録。process/pidfd/pipe、directory/socket/receipt、channel/routerを別判定する。通信断・helper死亡・host再起動を区別し、unknown ownerの明示解消手順と新規起動条件を定義する |
 | L5 | native・Host・SDK | AppMode/GUI receipt/cookie/slotを接続。実inspectとversion/capability照合後だけ一項目catalogを公開。Mapped→SDK初frameと更新→直接入力→Dialog→Close→全target退役を同じsessionで観測する |
 | L6 | 接続設定UI・launcher | C1を通常workerへ接続し、host key pinとclient identityの[認証契約](#linux-credentials)を採用。profile/catalog revisionを要求へcaptureし、接続先・capability・切断時の作業終了条件を表示。旧owner回収後に明示切替し、起動操作で別hostへ暗黙に切り替えない |
-| L7a | 既存実用アプリ一種 | [固定登録した実アプリ](#linux-real-app)の独立起動、D-Bus/session bus、portalを含むファイル選択、remoteファイルの開く/保存、設定保持、resize/focus/Close、基本物理入力を確認。任意exec全面開放を前提にしない |
-| L7b | 継続稼働・回帰・障害・性能 | 固定B4/B6・通常Termuxを回帰確認。probe期限を超える通常GUIの稼働、少量継続出力、切断/スリープ/Stop/起動失敗、helper死亡/host再起動、保存復旧と窓予算を確認。圧縮・遅延・転送量・CPU・総pixel面積・buffer/メモリを測る |
+| L7a | 既存実用アプリ一種 | [固定登録した実アプリ](#linux-real-app)の独立起動、専用busとfile chooser、remoteファイルの開く/保存、固定設定policy・可変設定保持、SDK初frameまでの有限期限、resize/focus/Close、基本物理入力を確認。portal利用有無を記録し、任意exec全面開放を前提にしない |
+| L7b | 継続稼働・回帰・障害・性能 | 固定B4/B6・通常Termuxを回帰確認。通常GUIの継続稼働、少量継続出力、切断/スリープ/Stop、helper死亡/host再起動、保存復旧と窓予算、[成功receiptの受領・退役と上限超過の反復接続](#linux-receipt-retirement)を確認。圧縮・遅延・転送量・CPU・総pixel面積・buffer/メモリを測る |
 | L8 | 利用範囲の拡張 | remote foot/PTY、構造化した任意アプリ定義・遠隔fileの一時実行/登録、Qt等を個別追加。HMD総合受入れ・remoteかな漢字は独立して残す。複数host同時・desktop全体共有・音・任意3Dは別設計 |
 
 L2〜L5が揃うまで、通常GUI経路は利用可能と表示しない。
@@ -182,9 +182,11 @@ C2の[Prepared契約](https://github.com/tin-machine/eidolon-wayland/blob/43767a
 `lease_ms=15000`を固定している。採用または改訂の際にheartbeat間隔と猶予を定め、既存probeの10秒間隔を無検討で流用しない。
 描画・圧縮・SSH送信の待ちがheartbeatへ与える影響と、Questの実際の停止条件をL7bで測る。
 
-C2の[adapterのdrain](https://github.com/tin-machine/eidolon-wayland/blob/43767a437b5deab94156f5550846c1a0456dbe73/scripts/linux/eidolon_linux_desktop.py#L145-L155)は
-stdout/stderrそれぞれの起動からの累積64KiB超を`OUTPUT_LIMIT`にする。本文保持量の制限ではない。
-固定demoの限定出力契約としては保持できるが、実用アプリ用adapterでは次を分離する。
+C2時点の[adapterのdrain](https://github.com/tin-machine/eidolon-wayland/blob/43767a437b5deab94156f5550846c1a0456dbe73/scripts/linux/eidolon_linux_desktop.py#L145-L155)は
+stdout/stderrの累積64KiB超を`OUTPUT_LIMIT`にしたが、現行の
+[通常serveは `drain(enforce=False)` を使用する](https://github.com/tin-machine/eidolon-wayland/blob/1a92b5c6864f38f7901419d1d93de3d004c9051d/scripts/linux/eidolon_linux_desktop_session.py#L311-L313)。
+[64KiB超・複数lease期間の回帰](https://github.com/tin-machine/eidolon-wayland/blob/1a92b5c6864f38f7901419d1d93de3d004c9051d/scripts/tests/test_linux_desktop_session.py#L451-L460)も存在する。
+L7aではこの継続drainを維持し、次の分離と出力速度制限・制御処理の公平性を追加する。
 
 - 制御protocolの1メッセージ上限と未知field/不正JSON拒否。
 - 未処理queue、記録するログ、保持bufferの上限。
@@ -201,7 +203,24 @@ L7bでは旧probeの90/120秒を十分超える継続稼働後の入力・Close�
 2026-11-09に[実装単位まで分解した詳細設計](linux-real-app-l7a-design-20261109.md)を追加した。
 第一候補はMousepadのGTK3版。専用bus、永続HOME/XDG、version付き固定catalog、
 nonce markerを持たない実用アプリ用のnative origin/admission、旧版Recoverの維持、host検査を定義する。
-設計完了であり、対象Linuxのpackage版確定・実装・実機受入れは未実施である。
+同日の実装レビューを反映済みだが、対象packageの成立性を確かめるA0・実装・実機受入れは未実施である。
+read-only事前検査Aの後、実Mousepadと試作settings moduleを合成profileで検査するA0を置き、
+対応版・窓の順序・設定policyを確定してからv3 bundle/transport/UIを実装する。
+
+実装レビューでは、[既定の復元/autosave設定](https://github.com/xfce-mirror/mousepad/blob/mousepad-0.6.3/mousepad/org.xfce.mousepad.gschema.xml#L118-L135)、
+[main前に出る復元dialog](https://github.com/xfce-mirror/mousepad/blob/mousepad-0.6.3/mousepad/mousepad-dialogs.c#L626-L663)、
+[opening-modeによる通常Openのmain生成](https://github.com/xfce-mirror/mousepad/blob/mousepad-0.6.3/mousepad/mousepad-application.c#L1103-L1117)を確認した。
+L7aは既定GSettings backendを利用するpackageに限定し、専用GIO moduleで `session-restore` / `autosave-timer` / `opening-mode` を
+`never` / `0` / `tab` へ固定・変更不可にする。その他の検査済み設定はkeyfileへ永続化する。
+独自backend buildや専用moduleの不成立は未対応として拒否し、host全体の設定を変更しない。
+復元無効化に伴う[アプリ自身のautosave削除](https://github.com/xfce-mirror/mousepad/blob/mousepad-0.6.3/mousepad/mousepad-history.c#L827-L941)を避けるため、
+復元用データがあるprofileはspawn前に `APP_STATE_RECOVERY_REQUIRED` として保持する。
+
+起動成功はmain採用に加え、同じmain/full targetのSDK成功ACK・SDK所有・初renderer frameまで確認する。
+現行の[Mappedと表示済み判定は別条件](https://github.com/tin-machine/eidolon-wayland/blob/1a92b5c6864f38f7901419d1d93de3d004c9051d/android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt#L395-L428)である。
+nativeでmain待ち20秒、採用後のSDK表示待ち10秒を初期上限とし、世代交換で延長せず、失敗時は同ownerのStop/全世代回収へ進む。
+v2 Recoverでは旧source bytes/hashを維持し、現在のMousepad package更新・削除を旧owner回収の拒否理由にしない。
+各contract・根拠・gate・旧APKからの更新試験は[詳細設計](linux-real-app-l7a-design-20261109.md)に従う。
 
 通常demoの次に、対象Ubuntu等にある軽量なエディタなどを一種選び、package/版、実行file、固定argv/cwd、
 Wayland backend/renderer、独立instance条件をversion付きcapabilityへ結び付ける。
@@ -230,9 +249,12 @@ L7aでは、同じsource/profile/app版・instanceを識別して次を確認す
 1. 同じユーザーの既存desktop instanceとは独立してQuestへ起動する。既存窓への転送や正常exitだけを成功にしない。
 2. 開く/保存ダイアログがQuestで操作でき、remote側の検証用ファイルを実際に読み書きできる。
    portal未使用のアプリならその条件を記録し、portal対応済みへ広げない。
-3. アプリ再起動後の設定保持と、session資源だけの回収が決めたHOME/XDG方針に従う。
+3. アプリ再起動後の可変設定保持と固定3キーの変更拒否が成立し、session資源だけの回収がHOME/XDG方針に従う。
+   復元用データのあるfixtureは起動前に拒否され、内容を保持する。
 4. resize、focus往復、基本の物理英数入力、Closeを確認し、生成した全targetと所有資源を回収する。
 5. 取得できないremote CPU/RSS/Disk I/O等はunknownとし、Quest全体やTermuxの値で代用しない。
+6. SDK callback欠落・失敗ACK・起動中の可視性喪失で有限時間内にStopへ進み、遅着frame/ACKで復活しない。
+7. 旧APKのv2 pendingを新APKで旧source/pins/bundleにより回収できる。host fixtureと実機更新試験を区別する。
 
 HMD内の可読性・長時間の使い勝手・remoteかな漢字変換・任意toolkitは、それぞれ別の受入れを残す。
 
@@ -267,6 +289,29 @@ cgroupによる監督を置く方式を比較できる。
 採用する場合はuser managerの可用性、helperとunitの寿命、unit identityとjournal、環境の引渡しを別途検証する。
 固定GTK初版の必須依存にせず、helper喪失後まで保証する範囲を広げる際の選択肢とする。
 スリープ後も同じGUI作業を保持する機能も、lease延長だけで達成したとせず、表示接続とアプリ寿命を分ける後続設計にする。
+
+<a id="linux-receipt-retirement"></a>
+### 成功receiptの受領・退役と反復接続（L7b必須・未実装）
+
+現行の通常desktop helperは[成功receiptを自動GCしない](https://github.com/tin-machine/eidolon-wayland/blob/1a92b5c6864f38f7901419d1d93de3d004c9051d/docs/normal-linux-gui-l1-l4-20261108.md#L109-L111)。
+[rootの全entryを数える上限](https://github.com/tin-machine/eidolon-wayland/blob/1a92b5c6864f38f7901419d1d93de3d004c9051d/scripts/linux/eidolon_linux_desktop_session.py#L111-L117)と
+[終了後にもreceiptを残す処理](https://github.com/tin-machine/eidolon-wayland/blob/1a92b5c6864f38f7901419d1d93de3d004c9051d/scripts/linux/eidolon_linux_desktop_session.py#L172-L200)により、
+正常な接続・終了の反復でも新規起動を拒否する状態へ到達する。
+2026-11-09のレビューでは空の合成rootで現行Stateのprepare→finishを81回完了し、82回目が `STATE_LIMIT` になることを再現した。
+これは既存制限の確認であり、実GUIの反復受入れや解消済みという記録ではない。
+
+L7aではentry数・上限到達を事前検査し、成功receiptを保持する。日常利用へ進むL7bでは、以下の受領・退役契約を別途具体化する。
+
+- localの全回収完了をdurableに確定し、対象receiptの完全なbindingとdigestを持つ受領記録を保存できたものだけを対象にする。
+  local journalが存在しないことだけを受領の根拠にしない。
+- 認証済みの同host/UIDで明示ACKし、remote側はversion・installation/storage・session/nonce/scope・boot・bundleへ束縛した
+  成功receiptだけを検証して退役する。ACKの再送・応答喪失にも対応する。
+- unknown/pending、未ACK、別profile、旧v2のreceiptを年齢や件数で一括削除しない。
+  旧v2には新しいACKを無断適用せず、旧証拠の保管と容量の扱いも別途定義する。
+- ACK前後のcrash・再送、v2/v3混在、80件を超える反復接続でも、未回収ownerの証拠を失わず新規利用を継続できることを受け入れる。
+
+CLI/wire/schema、受領記録の保管上限、退役済みnonceの再送確認方法はL7bの設計事項とする。
+L7aでこのGC/退役機能まで実装済み・受入れ済みとして扱わない。
 
 <a id="linux-rendering"></a>
 ### Waypipe・renderer・性能の固定条件（事前確認・L7）
