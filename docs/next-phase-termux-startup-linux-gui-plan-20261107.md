@@ -1,6 +1,8 @@
 # 次フェーズ案: 入力状態・日本語入力・Termux・Linux GUI・ウィンドウ操作
 
 作成日: 2026-11-07。状態: **NX01〜NX18全体の実装継続をユーザーが承認。追加レビュー後の指示で日本語入力（NX09）を優先再開し、独立作業も並行する**。
+2026-11-08現在はユーザーとの相談のため実装・実機検証・goalを一時停止中。
+今回の文書追記は再開指示として扱わない。停止時点と保存branchは[Build176](build-176-integration-20261108.md)を参照する。
 当初の調査基準は`5a515541296bee5227dfd09c87bb0104a66fbfec`。継続基準は`4ea6986`、実機はBuild142。
 Build142の円の太さ・中央の回転・物理文字入力はユーザー確認済み。残る個別受入れは維持する。
 ゴールの再設定後の進捗・証拠・次の作業は[計画全体の継続記録](extensions-nx09-nx18-20261107.md)へ記録する。
@@ -154,6 +156,12 @@ Ubuntu等のglibc向けバイナリーをそのまま動かせるという意味
 proot内のdistribution、Xwayland、GPU転送、ゲームパッド対応は後続候補に置く。
 
 ## 3. 最初のゲーム候補: Chocolate Doom + Freedoom
+
+2026-11-08追記: 下記は当初の検証方針。現在はSDL経路・固定Freedoom demo・ランチャー登録まで実機で成立している。
+通常helper/型付きGUI配線と検証operatorは実装済みだが、通常起動後の操作・close・Stopは未実行。
+現状の証拠、F1〜F7の実装/検証順、初回GUI導線と完了条件は
+[通常GUIの詳細追記・第1節](nx11-nx18-normal-gui-followup-plan-20261108.md#freedoom-normal)を正本とする。
+登録成功、固定demo、通常ゲームの対話プレイは別々の到達点である。
 
 初代Doom系のエンジンを平面パネルに表示する案。VR版DoomやDoom 3への移植は対象外。
 Termux公式repositoryに[Chocolate Doom 3.1.1のrecipe][doom-package]があり、
@@ -653,6 +661,13 @@ NX04の基本値は実装済み。追加値はNX14で取得可否を個別に検
 既存の固定mode起動を拡張する設計であり、NX10でランチャーUI・起動protocol・APKへ接続する。
 
 ## 10. Ubuntu等の別マシンのGUIをQuestへ表示する
+
+2026-11-08追記: 固定SSH/SHMに続き、Build174でLinux GTKのinput/dialogと資源回収が成功した。
+通常接続設定C1はmainに保存APIまで実装し、通常GTKのC2 helper/型付きprotocolは未統合branchへ保存済み。
+SSH actor・lease/journal・runtime・通常UI/launcherの接続は残っている。
+現在の実装順は、既に成立したGTKを足場に通常GUI一種を完成させ、その後remote foot/任意アプリへ広げる。
+下記の当初案に対する更新、L1〜L8の作業単位・課題・受入れは
+[通常GUIの詳細追記・第2節](nx11-nx18-normal-gui-followup-plan-20261108.md#linux-normal)を参照する。
 
 2026-11-07の技術相談。詳細は[remote Linux GUI拡張案](remote-linux-gui-plan-20261107.md)を参照する。
 既存のSSH・Waypipe・Eidolon compositorを利用し、Ubuntu側で実行するGUIの描画と入力を転送する方式は可能。

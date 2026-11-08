@@ -1,6 +1,10 @@
 # Ubuntu等の別マシンからGUIを表示する拡張案
 
-作成日: 2026-11-07。調査基準: `871f496`。**技術調査・計画のみ。実装・接続試験は未実施**。
+作成日: 2026-11-07。当初の調査基準: `871f496`。以下の当初案の制約表は、その時点のsourceを記録したもの。
+2026-11-08更新: 固定SSH/SHMとBuild174のLinux GTK input/dialog・回収は成立。通常GUIの製品接続は未完了。
+通常profileの保存APIはmain、通常GTK helper/protocolは未統合branch `43767a4`に保存済み。
+現在の到達点・課題・L1〜L8の実装順と完了条件は[詳細追記](nx11-nx18-normal-gui-followup-plan-20261108.md#linux-normal)を優先する。
+実装・実機検証は相談のため一時停止中であり、文書更新だけで再開しない。
 [次フェーズ計画](next-phase-termux-startup-linux-gui-plan-20261107.md)第10節の補足。
 ユーザーはQuest内Termuxに加え、Ubuntu Desktop等へSSH接続し、GUIをQuestで表示・操作できるか相談した。
 
@@ -111,6 +115,10 @@ X11アプリ、音声、clipboard/file転送、切断後の同一GUIセッショ
 「GUIが表示された」をこれらの機能まで成立した証拠にしない。
 
 ## 実装を再開した後の順序
+
+以下は当初のfoot先行案。直近の再開では、既存B6の成功を利用して通常GTK一種を先に接続する。
+profile保存と通常SSH actorの採用、pidfd ownerとremote lease/journal、固定probeと常駐アプリを区別する。
+更新後の順序と個別受入れは[詳細追記](nx11-nx18-normal-gui-followup-plan-20261108.md)に従う。
 
 1. **接続先profileとLinux adapter:** 現行Termuxを維持してhost/portを可変にする。
    schema移行、pin取り違え、DNS失敗、取消、profile変更と古い回収記録の分離をhostで確認する。
