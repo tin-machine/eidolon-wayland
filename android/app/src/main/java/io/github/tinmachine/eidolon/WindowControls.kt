@@ -21,6 +21,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
     private var closed=false
     private var enabled=true
     private var visible=true
+    private var menuOnly=false
     private val buttons=mutableListOf<Button>()
     private var submitted=0L
     private var rejected=0L
@@ -77,11 +78,11 @@ class WindowControls(private val parent: Entity, private val target: String, pri
     private fun point(hit: HitInfo)=listOf(hit.point.x.toDouble(),hit.point.y.toDouble(),hit.point.z.toDouble())
     private fun listener(button: Button)=object: InputListener {
         override fun onInput(receiver: SceneObject,hitInfo: HitInfo,sourceOfInput: Entity,changed: Int,state: Int,downTime: Long): Boolean {
-            if(closed || !enabled || !live() || changed and PRIMARY==0) return false
+            if(closed || !enabled || menuOnly && button.action!="menu" || !live() || changed and PRIMARY==0) return false
             val source=sourceOfInput.id;val at=point(hitInfo)
             if(button.action!="move" && NativeSessionHost.windowMoveSourceOwned(source)) return true
             ui.post {
-                if(closed || !enabled || !live()) return@post
+                if(closed || !enabled || menuOnly && button.action!="menu" || !live()) return@post
                 if(button.action=="move") {
                     if(state and PRIMARY!=0) {if(move.begin(sourceOfInput,downTime)) pressed(button,true)}
                     else {move.release(source,downTime);pressed(button,false)}
@@ -90,7 +91,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
                 if(state and PRIMARY!=0) {
                     if(button.press.down(source,downTime,"$target:$revision",at)) {
                         button.tickets.remove(source);button.sources.remove(source)
-                        val ticket=NativeSessionHost.beginWindowControl(JSONObject(target),runtime,revision)
+                        val ticket=NativeSessionHost.beginWindowControl(JSONObject(target),runtime,revision,forMenu=button.action=="menu")
                         if(ticket==null) {button.press.cancel(source);rejected++}
                         else {button.tickets[source]=downTime to ticket;button.sources[source]=sourceOfInput to state;pressed(button,true)}
                     }
@@ -135,8 +136,16 @@ class WindowControls(private val parent: Entity, private val target: String, pri
         if(closed || enabled==next) return
         enabled=next
         buttons.forEach {button ->
-            button.entity.setComponent(Hittable(if(next) MeshCollision.LineTest else MeshCollision.NoCollision))
+            button.entity.setComponent(Hittable(if(next && (!menuOnly || button.action=="menu")) MeshCollision.LineTest else MeshCollision.NoCollision))
             if(!next) {cancelSources(button);pressed(button,false)}
+        }
+    }
+    fun setMenuOnly(value:Boolean) {
+        if(closed || menuOnly==value) return
+        menuOnly=value
+        for(button in buttons) {
+            button.entity.setComponent(Hittable(if(enabled && (!value || button.action=="menu")) MeshCollision.LineTest else MeshCollision.NoCollision))
+            if(value && button.action!="menu") {cancelSources(button);pressed(button,false)}
         }
     }
     fun setVisible(value:Boolean) {
@@ -146,7 +155,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
     }
     /** Short probes stay near this sphere, avoiding another stacked window 25mm away. */
     fun geometryMatches():Boolean {
-        if(closed || !enabled || !visible || buttons.size!=4) return false
+        if(closed || !enabled || menuOnly || !visible || buttons.size!=4) return false
         for(button in buttons) {
             if(button.listener==null) return false
             val pose=getAbsoluteTransform(button.entity);val scale=getAbsoluteScale(button.entity)
@@ -167,7 +176,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
         if(button.sources.isNotEmpty()) runCatching {sdk.resolveInput()}
         button.sources.clear();button.tickets.clear();button.press.clear()
     }
-    fun metadata(): JSONObject=JSONObject().put("revision",revision).put("enabled",enabled).put("visible",visible).put("requests_submitted",submitted).put("rejected",rejected)
+    fun metadata(): JSONObject=JSONObject().put("revision",revision).put("enabled",enabled).put("visible",visible).put("menu_only",menuOnly).put("requests_submitted",submitted).put("rejected",rejected)
         .put("failures",failures).put("entities",buttons.size*3).put("extra_android_displays",0).put("extra_surfaces",0)
         .put("buttons",JSONArray(buttons.map {JSONObject().put("action",it.action).put("entity",it.entity.id.toString())
             .put("ready",it.listener!=null).put("target",JSONObject(target))}))
