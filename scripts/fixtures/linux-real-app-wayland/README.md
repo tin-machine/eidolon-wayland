@@ -80,12 +80,14 @@ The resulting `wayland.json` contains `status` (`failed` or `incomplete` at this
 | `private_bus` | Actual app-bearing launch through the newly created private bus |
 | `independent_instance` | Pending: an existing ordinary Mousepad instance must also be exercised |
 | `first_main` | Exactly one initial native main with an owned SHM frame and latched lifetime ID |
-| `expected_app_id` | The native main reports `org.xfce.mousepad` |
+| `expected_app_id` | The native main reports exactly the shared `WINDOW_APP_ID` value, `mousepad` |
 | `transient_dialogs` | Actual Open and Save As dialogs have a parent chain to that same main |
 | `open_edit_save_as` | Seat-driven Open/edit/Save/Save As, independently verified exact file bytes |
 | `clean_close_restart` | Pending: normal Close and subsequent restart in the same profile |
 | `gui_setting_persistence` | Pending: independently observed GUI setting after restart |
 | `protected_settings_gui_readonly` | Pending: actual Preferences widget read-only state and transient behavior |
+
+For the pinned Mousepad 0.6.3 / GTK 3.24.41 launch, native `xdg_toplevel.app_id` is exactly `mousepad`: CI run [42502638269](https://github.com/tin-machine/eidolon-wayland/actions/runs/42502638269) observed that value on main window 1 at frame 1 and again at frame 5 after 250 ms. The controller and inspector share `WINDOW_APP_ID` for this exact match. GTK's [Wayland toplevel creation](https://github.com/GNOME/gtk/blob/3.24.41/gdk/wayland/gdkwindow-wayland.c#L2151-L2155) derives this native ID from `g_get_prgname()`. `org.xfce.mousepad` remains the GApplication and GSettings/schema identity.
 
 A successful implemented sequence has five true checks and four pending checks. Its status remains `incomplete`, with `feasibility_verified=false`. The driver's more detailed observations are nested under `evidence`; a successfully launched fresh instance alone does not prove behavior in the presence of an existing ordinary instance. Failure to build or run dependencies yields `failed`, with no passing skip. The A0 parent must require all nine booleans and a successful status before opening the next gate.
 

@@ -482,11 +482,17 @@ class ReceiptContractTest(unittest.TestCase):
         value = {"schema": 1, "app_id": M.APP_ID, "package": "mousepad", "package_version": "0.6.3-test", "architecture": "amd64",
                  "executable": M.EXECUTABLE, "executable_sha256": "a" * 64, "dependency_fingerprint": "b" * 64,
                  "settings_kind": M.SETTINGS_KIND, "settings_policy": M.SETTINGS_POLICY, "settings_module_sha256": "c" * 64,
-                 "settings_relative_path": M.SETTINGS_RELATIVE_PATH, "window_app_ids": ["org.xfce.mousepad"],
+                 "settings_relative_path": M.SETTINGS_RELATIVE_PATH, "window_app_ids": [M.WINDOW_APP_ID],
                  "launch_policy": "mousepad-private-bus-v1", "state_policy": "persistent-keyfile-locked-v1"}
+        self.assertEqual(M.WINDOW_APP_ID, "mousepad")
+        self.assertNotEqual(M.WINDOW_APP_ID, M.APP_ID)
         self.assertIs(M.validate_manifest(value), value)
         for change in ({"schema": True}, {"argv": ["--help"]}, {"window_app_ids": []}, {"settings_kind": "keyfile"},
-                       {"window_app_ids": ["unknown"]}, {"settings_relative_path": "../config"}):
+                       {"window_app_ids": ["org.xfce.mousepad"]}, {"window_app_ids": ["unknown"]},
+                       {"window_app_ids": [M.APP_ID]}, {"window_app_ids": [M.WINDOW_APP_ID, "org.xfce.mousepad"]},
+                       {"window_app_ids": [M.WINDOW_APP_ID, "unknown"]},
+                       {"window_app_ids": [M.WINDOW_APP_ID, M.WINDOW_APP_ID]},
+                       {"window_app_ids": M.WINDOW_APP_ID}, {"settings_relative_path": "../config"}):
             with self.subTest(change=change), self.assertRaises(M.InspectionError):
                 M.validate_manifest(dict(value, **change))
 

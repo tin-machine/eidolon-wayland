@@ -41,6 +41,28 @@ merged-/usrのpackage所有判定は、検証した固定system aliasだけを�
 `inspection_passed=true` でも `available=false`、`runtime_verified=false` である。
 未知のdistro buildは `APP_PACKAGE_UNSUPPORTED` とし、検査用packageと同一と推測しない。
 
+## Waylandの識別子は実測で固定する
+
+GApplicationのIDは上流の[固定macro `org.xfce.mousepad`](https://github.com/xfce-mirror/mousepad/blob/65fbfe0459259f820fcc8b9c4dd454228304842a/mousepad/mousepad-private.h)
+だが、CIの `mousepad 0.6.3-0eidolon.a0.1` / `GTK 3.24.41-4ubuntu1.3` /
+`/usr/bin/mousepad --disable-server` では、Waylandのmain `app_id` は **`mousepad`** だった。
+[実行記録](https://github.com/tin-machine/eidolon-wayland/actions/runs/42502638269)のreceiptでは、
+初回Mapped frameと250ms後のframeで同じID、同じparentless WindowIdを確認している。
+この観測を根拠に、初期候補を実際のwindow識別子へ修正する。
+
+[GTK 3.24.41のtoplevel生成](https://github.com/GNOME/gtk/blob/3.24.41/gdk/wayland/gdkwindow-wayland.c#L2151-L2155)
+は `g_get_prgname()` を `xdg_toplevel.set_app_id` へ渡す。
+[GLib 2.80.0の `g_application_run()`](https://github.com/GNOME/glib/blob/2.80.0/gio/gapplication.c#L2663-L2670)
+は未設定のprogram nameを `argv[0]` のbasenameから設定するため、固定argvでは `mousepad` になる。
+一方、[GtkApplicationの識別子](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkapplication-wayland.c#L51-L57)は
+[別の `gtk_surface1` D-Bus property](https://github.com/GNOME/gtk/blob/3.24.41/gdk/wayland/gdkwindow-wayland.c#L5290-L5297)へ渡される。
+この二つを同一視しないことを、上流実装とruntimeの両方で確認した。
+
+inspectorの将来manifest検証と実Wayland controllerは、共有する `WINDOW_APP_ID` により
+`window_app_ids=["mousepad"]` を要求する。空・未知の値や以前の候補を同時に許容しない。
+これは固定CI構成の観測であり、別版packageのA0や、native originによるinstance由来の証明を代替しない。
+失敗時の診断は固定phase、bounded ID/parent/lifecycle/frame、入力countだけを保存し、本文・title・pixelsを含めない。
+
 ## 設定policyの実装
 
 専用GIO module名は `eidolon-keyfile-v1`、実GTypeは `EidolonKeyfileV1Backend`。

@@ -26,6 +26,9 @@ import sys
 import xml.etree.ElementTree as ET
 
 APP_ID = "mousepad-editor-v1"
+# Observed Wayland identity for the pinned --disable-server launch, distinct
+# from the catalog and GApplication IDs: CI run 42502638269, initial/settled map.
+WINDOW_APP_ID = "mousepad"
 UPSTREAM_VERSION = "0.6.3"
 UPSTREAM_COMMIT = "65fbfe0459259f820fcc8b9c4dd454228304842a"
 EXECUTABLE = "/usr/bin/mousepad"
@@ -405,7 +408,7 @@ def validate_manifest(value):
             _ascii(value["architecture"]) and value["executable"] == EXECUTABLE and
             all(_hash(value[k]) for k in ("executable_sha256", "dependency_fingerprint", "settings_module_sha256")) and
             value["settings_kind"] == SETTINGS_KIND and value["settings_policy"] == SETTINGS_POLICY and
-            value["settings_relative_path"] == SETTINGS_RELATIVE_PATH and value["window_app_ids"] == ["org.xfce.mousepad"] and
+            value["settings_relative_path"] == SETTINGS_RELATIVE_PATH and value["window_app_ids"] == [WINDOW_APP_ID] and
             value["launch_policy"] == "mousepad-private-bus-v1" and value["state_policy"] == "persistent-keyfile-locked-v1",
             "APP_PACKAGE_UNSUPPORTED")
     return value

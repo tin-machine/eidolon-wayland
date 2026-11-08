@@ -179,8 +179,16 @@ canonical化は既存Pythonのsorted keys、compact separators、UTF-8方式に�
 | `settings_kind`, `settings_policy` | 固定 `eidolon-keyfile-v1`、`mousepad-single-main-no-restore-v1`。packageは既定GSettings backend利用版に限定 |
 | `settings_module_sha256` | A0で検証したmodule binaryのSHA256。source/固定probe/登録情報はdesktop bundleにも含める |
 | `settings_relative_path` | 固定 `config/glib-2.0/settings/keyfile`。moduleの委譲先と一致させる |
-| `window_app_ids` | 当該GTK版で観測したmainの固定ID集合。初期候補 `org.xfce.mousepad`。空/未知をmainとして採用しない |
+| `window_app_ids` | 当該GTK版で観測したmainの固定ID集合。CIのMousepad 0.6.3 / GTK 3.24.41 / NON_UNIQUE起動では `["mousepad"]`。空/未知をmainとして採用しない |
 | `launch_policy`, `state_policy` | 固定 `mousepad-private-bus-v1`、`persistent-keyfile-locked-v1` |
+
+初期候補の `org.xfce.mousepad` はGApplication/schemaの識別子だったが、
+[実Waypipeを通したCIの初回window観測](https://github.com/tin-machine/eidolon-wayland/actions/runs/42502638269)
+ではWayland `app_id` は `mousepad` だった。最初のMapped frameと250ms後の両方で同じ値を確認した。
+この結果に合わせ、CI用packageの厳密なwindow IDは `mousepad` 一つへ固定する。
+[GTK 3.24.41の実装](https://github.com/GNOME/gtk/blob/3.24.41/gdk/wayland/gdkwindow-wayland.c#L2151-L2155)も、
+`g_get_prgname()` からWaylandのapp_idを設定している。詳細な識別子経路は[A/A0実装記録](linux-real-app-a0-foundation-20261109.md#waylandの識別子は実測で固定する)を参照。
+別のpackage/GTK版へ値を推測適用せず、対象構成のA0で再確認する。GApplication IDやtitleからWayland IDを補完しない。
 
 manifestからcommand、env、cwdを自由生成しない。これらはhelperの固定policyから組み立てる。
 依存fingerprintの入力形式もschema化し、package名・版・対象schema/moduleのhashをsortして固定する。
@@ -514,7 +522,7 @@ HMD/物理入力/remote IME/長時間/L7bの未実施をhost成功で埋めな�
 
 ## 設計時点の未確定事項
 
-- 対象LinuxとMousepad/GLib package版は未固定。参照0.6.3/2.80.5との差、既定backend利用、main app_id、追加dialogのparentをA/A0で確定する。
+- 対象LinuxとMousepad/GLib package版は未固定。参照0.6.3/2.80.5との差、既定backend利用、CIで観測したmain app_id `mousepad` が対象構成でも成立すること、追加dialogのparentをA/A0で確定する。
 - 専用GIO settings module・固定probeはA0検査基盤として追加する。公開APIの委譲/通知、実GUIの設定変更不可、復元データ保護がA0全体で成立するまで対応済みにしない。
 - Mousepad独自keyfile backendを使うbuildはL7aでは未対応。別経路への対応は別設計とし、未知pathをmanifestから許可しない。
 - 専用busの最小configとWaypipeの終了連鎖は実host試験で確定する。想定外serviceが必要ならcatalogを有効化せず設計を見直す。

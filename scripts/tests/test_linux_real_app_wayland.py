@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import linux_real_app_wayland as owner
 
 driver = owner.driver
-APP_ID = "org.xfce.mousepad"
+APP_ID = owner.inspect_api.WINDOW_APP_ID
 
 
 def window(identifier="1", parent=None, *, app_id=APP_ID, valid=True, frame="1", life="Mapped"):
@@ -43,7 +43,7 @@ def controller(*snapshots):
 
 class WindowEvidenceTests(unittest.TestCase):
     def test_identity_failure_keeps_observed_id_without_admitting_window(self):
-        observed = snapshot(window(app_id="mousepad"))
+        observed = snapshot(window(app_id="org.xfce.mousepad"))
         value = controller(observed)
         value.last_snapshot = observed
         with self.assertRaisesRegex(driver.ProbeError, "INITIAL_APP_ID"):
@@ -51,7 +51,7 @@ class WindowEvidenceTests(unittest.TestCase):
         self.assertIsNone(value.main)
         metadata = driver.diagnostic_metadata(value)
         self.assertEqual(metadata["phase"], "initial_main")
-        self.assertEqual(metadata["windows"][0]["app_id"], "mousepad")
+        self.assertEqual(metadata["windows"][0]["app_id"], "org.xfce.mousepad")
         self.assertEqual(metadata["windows"][0]["life"], "Mapped")
 
     def test_diagnostics_are_bounded_and_exclude_payloads_and_unknown_fields(self):

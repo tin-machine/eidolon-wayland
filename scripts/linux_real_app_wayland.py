@@ -217,7 +217,7 @@ def retry_cleanup(pending):
     return pending.run.finish()
 
 
-def run_case(repo_root, artifact, settings_bundle, *, expected_app_id="org.xfce.mousepad"):
+def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_api.WINDOW_APP_ID):
     """Run one fresh synthetic profile. Return fail/partial, never full pass.
 
     repo_root must be this module's checkout, artifact an empty private owner
@@ -240,7 +240,7 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id="org.xfce.
     try:
         require(sys.platform == "linux" and os.getuid() == os.geteuid() != 0,
                 "APP_WAYLAND_NONROOT_REQUIRED")
-        require(expected_app_id == "org.xfce.mousepad", "APP_WAYLAND_APP_ID")
+        require(expected_app_id == inspect_api.WINDOW_APP_ID, "APP_WAYLAND_APP_ID")
         _private(settings_bundle)
         manifest = _json(settings_bundle / "settings-backend.json")
         module = settings_bundle / "gio/libeidolon-settings.so"
