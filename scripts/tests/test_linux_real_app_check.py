@@ -162,7 +162,7 @@ class FoundationAggregationTests(TemporaryCheck):
                  "settings_present": False, "preferences_sha256": None, "preferences_count": 0,
                  "tree_sha256": sha(b"initial synthetic profile")}
         saved = {**empty, "settings_present": True, "settings_sha256": sha(b"flushed settings"),
-                 "preferences_sha256": sha(b"ordinary window geometry"), "preferences_count": 2,
+                 "preferences_sha256": sha(b"ordinary window geometry"), "preferences_count": 4,
                  "tree_sha256": sha(b"closed synthetic profile")}
 
         def run(number, ending="close", profile_id=100):
@@ -326,6 +326,13 @@ class FoundationAggregationTests(TemporaryCheck):
                 (observation[group] if group else observation)[field] = replacement
             with self.subTest(group=group, field=field):
                 self.assert_invalid_evidence(mutate)
+
+    def test_empty_precursor_settings_cannot_form_an_isolation_baseline(self):
+        def erase_observations(value):
+            for phase in ("precursor_initial", "after_close", "after_stop"):
+                value["lifecycle"]["independence"][phase]["profile"].update(
+                    preferences_count=0, preferences_sha256=None)
+        self.assert_invalid_evidence(erase_observations)
 
     def test_complete_coordinator_cannot_mask_any_unfinished_worker_or_run(self):
         for field, replacement in (("worker_count", 1), ("worker_count", True), ("workers_complete", False),

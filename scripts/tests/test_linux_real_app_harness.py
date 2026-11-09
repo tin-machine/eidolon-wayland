@@ -23,6 +23,58 @@ def event(**changes):
     return {"schema": 1, "event": "ready", "id": 0, "data": {}, **changes}
 
 
+class PrecursorReadinessTests(unittest.TestCase):
+    def state(self, token, count=4):
+        return {"settings_present": True, "preferences_count": count,
+                "preferences_sha256": token if count else None,
+                "settings_sha256": token, "documents_sha256": "unchanged"}
+
+    def exercise(self, snapshot):
+        clock = [0.0]
+        run = mock.Mock(deadline=20, profile_lock=123)
+        control = mock.Mock()
+        control.settle.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        profile = mock.Mock()
+        profile.snapshot.side_effect = lambda lock: snapshot(clock[0])
+        return clock, run, control, profile
+
+    def test_baseline_waits_for_observed_flush_and_resets_quiet_interval_on_change(self):
+        def snapshot(now):
+            if now < 1.5:
+                return self.state("session-only", 0)
+            return self.state("first-flush" if now < 2 else "final-flush")
+        clock, run, control, profile = self.exercise(snapshot)
+        with mock.patch.object(harness.time, "monotonic", side_effect=lambda: clock[0]):
+            value = harness._stable_profile(run, control, profile)
+        self.assertEqual(value, self.state("final-flush"))
+        self.assertGreaterEqual(clock[0], 3.1)
+        self.assertLess(clock[0], 4)
+        self.assertGreater(run.pump.call_count, 1)
+        profile.snapshot.assert_called_with(run.profile_lock)
+
+    def test_absent_ordinary_settings_and_continuous_writes_both_time_out(self):
+        for snapshot in (lambda now: self.state("unchanged-empty", 0),
+                         lambda now: self.state(str(int(now * 4)))):
+            with self.subTest(snapshot=snapshot):
+                clock, run, control, profile = self.exercise(snapshot)
+                with mock.patch.object(harness.time, "monotonic", side_effect=lambda: clock[0]):
+                    with self.assertRaisesRegex(app.WaylandError, "APP_PRECURSOR_SETTINGS_NOT_STABLE"):
+                        harness._stable_profile(run, control, profile)
+                self.assertGreaterEqual(clock[0], 8)
+
+    def test_signal_and_unsafe_profile_are_not_swallowed_as_transient_writes(self):
+        for reason in ("APP_WAYLAND_INTERRUPTED", "APP_WAYLAND_PROFILE_CHANGED"):
+            clock, run, control, profile = self.exercise(lambda now: self.state("stable"))
+            if reason.endswith("INTERRUPTED"):
+                run.pump.side_effect = app.WaylandError(reason)
+            else:
+                profile.snapshot.side_effect = app.WaylandError(reason)
+            with mock.patch.object(harness.time, "monotonic", side_effect=lambda: clock[0]):
+                with self.assertRaisesRegex(app.WaylandError, reason):
+                    harness._stable_profile(run, control, profile)
+            control.settle.assert_not_called()
+
+
 class WorkerProtocolTests(unittest.TestCase):
     def test_json_rejects_duplicates_nonfinite_and_oversize(self):
         for data in (b'{"schema":1,"schema":1}', b'{"x":NaN}', b'{"x":Infinity}',

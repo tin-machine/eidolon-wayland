@@ -113,5 +113,8 @@ jobs:
           path: |
             ${{ runner.temp }}/mousepad-inspection/inspection.json
             ${{ runner.temp }}/real-app-foundation/feasibility.json
+            ${{ runner.temp }}/real-app-foundation/wayland/wayland.json
+            ${{ runner.temp }}/real-app-foundation/wayland/precursor/runs/*/wayland.json
+            ${{ runner.temp }}/real-app-foundation/wayland/target/runs/*/wayland.json
           if-no-files-found: warn
           retention-days: 3

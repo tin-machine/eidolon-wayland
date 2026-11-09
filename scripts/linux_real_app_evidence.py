@@ -147,6 +147,10 @@ def _observation(value):
             and type(value["client_count"]) is int and value["client_count"] == 1
             and _hex(value["topology_sha256"], 64), INVALID)
     _profile(value["profile"])
+    # The pinned unmodified Mousepad saves four ordinary geometry keys after
+    # its configure timer. An empty startup baseline cannot certify isolation.
+    require(value["profile"]["settings_present"] is True
+            and value["profile"]["preferences_count"] >= 4, INVALID)
     response = value["response"]
     _object(response, RESPONSE_FIELDS)
     require(response["responsive"] is True and response["topology_preserved"] is True

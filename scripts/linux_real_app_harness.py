@@ -463,6 +463,7 @@ class _WorkerChannel:
 
 def _observation(run, control, result, profile):
     response = app.driver.exercise_response(control)
+    settled_profile = _stable_profile(run, control, profile)
     snapshot = control.snapshot()
     windows = app.driver.mapped(snapshot)
     app.require(len(windows) == 1 and windows[0]["window"] == control.main,
@@ -472,7 +473,45 @@ def _observation(run, control, result, profile):
             "main": control.main, "app_id": windows[0]["app_id"],
             "client_count": snapshot["counts"]["clients"],
             "topology_sha256": hashlib.sha256(json.dumps(topology, sort_keys=True).encode()).hexdigest(),
-            "profile": profile.snapshot(run.profile_lock), "response": response}
+            "profile": settled_profile, "response": response}
+
+
+def _stable_profile(run, control, profile):
+    """Observe ordinary settings materialization before defining a baseline.
+
+    Mousepad 0.6.3 schedules geometry persistence one second after configure:
+    https://github.com/xfce-mirror/mousepad/blob/65fbfe0459259f820fcc8b9c4dd454228304842a/mousepad/mousepad-window.c#L1416-L1458
+    Its fresh-profile defaults save width/height/maximized/fullscreen. A first
+    mapped frame or responsive dialog is earlier than that asynchronous write.
+    Require the observed four entries and stable bytes, rather than certifying
+    an elapsed sleep. All later comparisons still require identical raw
+    settings, ordinary settings and documents across the target's lifetime.
+    """
+    deadline = min(run.deadline, time.monotonic() + 8)
+    candidate, stable_since = None, None
+    while True:
+        run.pump()
+        try:
+            current = profile.snapshot(run.profile_lock)
+        except FileNotFoundError:
+            # Optional files may be created/atomically replaced by this live
+            # app during its first flush. A failed sample is never stability.
+            current = None
+        except app.WaylandError as exc:
+            if str(exc) != "APP_WAYLAND_PROFILE_SNAPSHOT_CHANGED":
+                raise
+            current = None
+        now = time.monotonic()
+        ready = (current is not None and current["settings_present"] is True
+                 and current["preferences_count"] >= 4 and current["preferences_sha256"] is not None)
+        if not ready or current != candidate:
+            candidate, stable_since = (current, now) if ready else (None, None)
+        elif now - stable_since >= 1.1:
+            return current
+        app.require(now < deadline, "APP_PRECURSOR_SETTINGS_NOT_STABLE")
+        # Control.settle dispatches Wayland and validates the latched main
+        # topology. The run's guard, output limits and deadline remain active.
+        control.settle(min(.05, deadline - now))
 
 
 def _worker(role, directory, bundle):

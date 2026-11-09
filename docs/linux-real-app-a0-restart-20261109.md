@@ -32,7 +32,7 @@ Stop後に復元候補が実際に残った場合でも、それを削除して�
 | HOME/config/data/state、HOME内Documents、設定・保存済み文書 | runtime、cache/tmp、Waypipe socket、専用D-Bus |
 | 合成profile identity、同じinodeのprofile.lock | compositor、Control、live ProcessOwner、artifact/receipt |
 
-profileのrootと固定directory、合成marker、lockのowner/type/mode/link/identityを再検査する。
+profileのrootと固定directory、lockのowner/type/mode/link/identity、およびprocess-localな作成元を再検査する。
 既存directoryを合成profileとして採用しない。lockをunlinkして別inodeへ作り直さず、同じlockを再取得する。
 flock取得から起動前の復元データguard、全子孫・pidfd・pipe終了まで、同じlive runが所有する。
 回収済みownerの再利用やControlのmain/observed_mapped履歴の初期化は行わない。
@@ -83,6 +83,18 @@ GUIで行番号等を変更して再表示を確かめるPR2のoracleを代替�
 先行側は対象の通常Close/Stop後にも同じmain、window構成、設定digestを保持する。
 単なる生存PIDやcompositor入力counterでは応答済みとせず、実Ctrl+Oで新しいtransient dialog/SHM frameを観測し、
 Escapeで閉じて同じmainへ戻るround tripを各回で行う。
+
+初回head `3c5bb97` の [実Mousepad CI](https://github.com/tin-machine/eidolon-wayland/actions/runs/42600564211)
+では、Close後の同profile再起動・文書/設定保持は成功した一方、先行側の通常設定が初期0件→後続4件となり、
+`APP_PRECURSOR_SETTINGS_CHANGED` で停止した。この失敗を独立性の成功へ読み替えない。
+上流の [`configure_event()`](https://github.com/xfce-mirror/mousepad/blob/65fbfe0459259f820fcc8b9c4dd454228304842a/mousepad/mousepad-window.c#L1416-L1458)
+は最後のconfigureから1秒のtimerでgeometryを保存する。
+[Close経路](https://github.com/xfce-mirror/mousepad/blob/65fbfe0459259f820fcc8b9c4dd454228304842a/mousepad/mousepad-window.c#L2935-L2939)
+は即時保存するため、通常Closeの検査だけでは起動中のこの時間差を検出できなかった。
+[GLibのtimer仕様](https://docs.gtk.org/glib/func.timeout_add_seconds.html)も初回の厳密な1秒実行を保証しない。
+このため、先行側の実dialog応答後に4項目以上の通常設定が実在し、profile digestが1.1秒以上安定したことを
+8秒の期限内で観測してからbaselineを確定し、その後に対象workerを起動する。
+後続の観測でも同じ安定条件を使う。時間経過だけで成功にせず、raw設定・通常設定・文書の不変比較を維持する。
 
 coordinatorは最初のworker spawn前からtermination guardとlive ownerを持つ。
 全体中断では全workerに終了を要求し、workerが自分の回収を完了するまで待つ。
@@ -140,6 +152,8 @@ missing dependency、runtime失敗、未回収、検査未実行を「期待し�
 Mousepad/Waypipe/Rust toolchainもないため、実プロセスowner・実アプリ・Rust/Androidはローカルで未実施とし、
 専用CI/既存CIの**今回のhead**に対する実行で確認する。ローカルのskipは成功数へ数えない。
 専用workflowは同じpinned Mousepad 0.6.3/GTK3・実Waypipeを使い、settings module、異常経路、今回の全caseを必須実行する。
+集約receiptに加え、各runの本文を含まない `wayland.json` をartifactへ保存し、失敗caseも追跡できるようにする。
+合成profileやDocumentsの本文、アプリ出力はuploadしない。
 対象利用者Linux一般やQuestでの成功へ拡張しない。
 
 固定v2の5 sourceと [e401918のgolden hash](../scripts/tests/fixtures/linux-desktop-v2-e401918-sources.json) は変更しない。
