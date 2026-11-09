@@ -6,6 +6,7 @@ The frozen-v2 fixture was captured from remote e401918, not computed by a build
 or regenerated from the checkout under test.
 """
 import contextlib
+import copy
 import errno
 import hashlib
 import io
@@ -132,19 +133,302 @@ class FoundationAggregationTests(TemporaryCheck):
 
     @staticmethod
     def cleanup():
-        return {"schema": 1, "complete": True, "pending": False, "reason": "NONE",
+        return {"schema": 1, "complete": True, "pending": False, "reason": "COMPLETED",
                 "term_signals": 0, "kill_signals": 0, "reaped": 4, "open_pidfds": 0,
                 "root_pidfds_closed": True, "output_pipes_eof": True}
 
     def application(self):
-        return {"schema": 1, "stage": "wayland", "state": "partial", "status": "incomplete", "error": None,
+        value = {"schema": 1, "stage": "wayland", "state": "partial", "status": "incomplete", "error": None,
                 "feasibility_verified": False, "physical_input_verified": False, "production_ready": False,
-                "checks": {name: name not in wayland.PENDING_CHECKS for name in wayland.REQUIRED_CHECKS},
-                "pending": list(wayland.PENDING_CHECKS), "cleanup": self.cleanup(), "output_bytes": {},
+                "checks": {name: name not in check.FOUNDATION_PENDING for name in wayland.REQUIRED_CHECKS},
+                "pending": list(check.FOUNDATION_PENDING), "cleanup": self.cleanup(), "output_bytes": {},
                 "payload_logged": False, "titles_logged": False, "pixels_logged": False,
                 "waypipe_ends": 2, "private_bus": True, "profile_kind": "synthetic",
                 "waypipe_version": "0.11.3", "waypipe_sha256": sha(b"Waypipe stage fixture.\n"),
                 "mousepad_sha256": "a" * 64, "source_argv": "mousepad --disable-server"}
+        value["lifecycle"] = self.lifecycle(value)
+        value["cleanup"].update(workers_complete=True, worker_count=2,
+                                worker_returncodes={"precursor": 0, "target": 0})
+        return value
+
+    def lifecycle(self, source):
+        """A fixed nonexecuting receipt specimen for adversarial validator tests.
+
+        The actual application oracle runs only in the mandatory live CI job.
+        Identical WindowIds on fresh compositor runs are intentional here.
+        """
+        identity = lambda number: format(number, "032x")
+        empty = {"documents_sha256": sha(b"synthetic saved documents"), "settings_sha256": None,
+                 "settings_present": False, "preferences_sha256": None, "preferences_count": 0,
+                 "tree_sha256": sha(b"initial synthetic profile")}
+        saved = {**empty, "settings_present": True, "settings_sha256": sha(b"flushed settings"),
+                 "preferences_sha256": sha(b"ordinary window geometry"), "preferences_count": 4,
+                 "tree_sha256": sha(b"closed synthetic profile")}
+
+        def run(number, ending="close", profile_id=100):
+            return {"state": "partial", "status": "incomplete", "error": None,
+                    "run_id": identity(number), "owner_scope_id": identity(number + 1000),
+                    "runtime_id": identity(number + 2000), "profile_id": identity(profile_id),
+                    "termination_kind": ending,
+                    "termination": {"kind": ending, "observed": True,
+                                    "app_pidfd_exit": True if ending == "crash" else None,
+                                    "server_returncode": 137 if ending == "crash" else None if ending == "stop" else 0,
+                                    "forced_scope_cleanup": ending == "stop"},
+                    "initial_main": {"window": "1", "frame": "1", "app_id": "mousepad", "client_count": 1,
+                                     "prelaunch_client_count": 0, "observed_mapped_count": 1,
+                                     "input_delivered": 0, "pressed": 0},
+                    "profile_before": copy.deepcopy(saved), "profile_after": copy.deepcopy(saved),
+                    "documents_before_termination": saved["documents_sha256"],
+                    "app_spawned": True, "cleanup": self.cleanup(),
+                    "final_graph": None if ending == "stop" else {"window_count": 0, "client_count": 0,
+                                                                    "pressed": 0, "focus_window": None},
+                    "recovery_guard": {"clear": True, "reason": "NONE", "session_empty": True,
+                                       "recovery_data_empty": True, "profile_lock_held": True},
+                    "mousepad_sha256": source["mousepad_sha256"], "waypipe_sha256": source["waypipe_sha256"],
+                    "waypipe_version": "0.11.3"}
+
+        cases = {}
+        for number, ending in enumerate(("close", "stop", "crash"), 1):
+            first = run(number * 10, ending, profile_id=100 + number)
+            first["profile_before"] = copy.deepcopy(empty)
+            cases[ending + "_restart"] = {
+                "first": first, "restart": run(number * 10 + 1, profile_id=100 + number), "outcome": "restarted",
+                "documents_preserved": True, "settings_preserved": True if ending == "close" else None,
+            }
+        recovery = {}
+        for number, kind in enumerate(("session", "autosave", "ambiguous"), 1):
+            refused = run(number + 40, profile_id=200 + number)
+            refused.update(state="fail", status="failed", error="APP_STATE_RECOVERY_REQUIRED",
+                           app_spawned=False, initial_main=None, final_graph=None, documents_before_termination=None,
+                           termination={"kind": "close", "observed": False, "app_pidfd_exit": None,
+                                        "server_returncode": None, "forced_scope_cleanup": False})
+            refused["recovery_guard"].update(clear=False, reason="APP_STATE_RECOVERY_REQUIRED",
+                    session_empty=kind == "autosave", recovery_data_empty=kind != "autosave")
+            recovery[kind] = {"run": refused, "profile_preserved": True}
+        final = run(50, profile_id=300)
+        observations = []
+        for index in range(3):
+            observations.append({**{key: final[key] for key in ("run_id", "owner_scope_id", "profile_id", "runtime_id")},
+                "main": "1", "app_id": "mousepad", "client_count": 1, "topology_sha256": sha(b"single main"),
+                "profile": copy.deepcopy(saved),
+                "response": {"responsive": True, "main": "1", "frame": str(index + 2),
+                             "input_delivered_before": index * 10, "input_delivered_after": index * 10 + 6,
+                             "window_count": 1, "client_count": 1, "pressed": 0,
+                             "topology_preserved": True, "dialog_window": str(index + 2)}})
+        return {"schema": 1, "cases": cases, "recovery": recovery,
+                "independence": {"precursor_worker_id": identity(500), "target_worker_id": identity(501),
+                                 "precursor_initial": observations[0], "after_close": observations[1],
+                                 "after_stop": observations[2], "precursor_final": final, "hold_probe": None}}
+
+    def held_application(self):
+        value = self.application()
+        independent = value["lifecycle"]["independence"]
+        held = copy.deepcopy(independent["after_close"])
+        independent["hold_probe"] = {"elapsed_ms": 125_000, "observation": held}
+        for phase in ("after_close", "after_stop"):
+            response = independent[phase]["response"]
+            response["input_delivered_before"] += 10
+            response["input_delivered_after"] += 10
+            response["dialog_window"] = str(int(response["dialog_window"]) + 1)
+            response["frame"] = str(int(response["frame"]) + 1)
+        return value
+
+    def test_long_hold_requires_measured_time_and_an_additional_response(self):
+        value = self.held_application()
+        self.assertIs(check.validate_application_foundation(value, require_precursor_hold=True), value)
+        for elapsed in (None, True, "125000", -1, 120_000, 124_999, 600_000):
+            forged = copy.deepcopy(value)
+            forged["lifecycle"]["independence"]["hold_probe"]["elapsed_ms"] = elapsed
+            with self.subTest(elapsed=elapsed), self.assertRaises(check.BuildError):
+                check.validate_application_foundation(forged, require_precursor_hold=True)
+
+    def test_long_hold_missing_or_replayed_observation_is_rejected(self):
+        for invalid in (None, {}, {"elapsed_ms": 125_000}):
+            value = self.held_application()
+            value["lifecycle"]["independence"]["hold_probe"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(check.BuildError):
+                check.validate_application_foundation(value, require_precursor_hold=True)
+        for phase in ("precursor_initial", "after_close", "after_stop"):
+            value = self.held_application()
+            independent = value["lifecycle"]["independence"]
+            independent["hold_probe"]["observation"] = copy.deepcopy(independent[phase])
+            with self.subTest(replayed=phase), self.assertRaises(check.BuildError):
+                check.validate_application_foundation(value, require_precursor_hold=True)
+
+    def test_optional_hold_still_validates_any_supplied_measurement(self):
+        value = self.held_application()
+        value["lifecycle"]["independence"]["hold_probe"]["elapsed_ms"] = 1
+        with self.assertRaises(check.BuildError):
+            check.validate_application_foundation(value)
+
+    def test_required_hold_cannot_be_dropped_by_the_feasibility_aggregator(self):
+        with self.stages(self.application()):
+            result = check.run_feasibility(self.base / "missing-hold", None, precursor_hold_check=True)
+        self.assertEqual((result["status"], result["reason"]), ("failed", "APP_WAYLAND_RECEIPT_INVALID"))
+        self.assertFalse(result["a0_passed"])
+
+    def assert_invalid_evidence(self, mutate):
+        value = self.application()
+        mutate(value)
+        with self.assertRaises(check.BuildError):
+            check.validate_application_foundation(value)
+
+    def test_fresh_compositors_may_reuse_the_same_window_id(self):
+        value = self.application()
+        for case in value["lifecycle"]["cases"].values():
+            self.assertEqual(case["first"]["initial_main"]["window"], case["restart"]["initial_main"]["window"])
+        self.assertIs(check.validate_application_foundation(value), value)
+
+    def test_summary_booleans_cannot_replace_missing_lifecycle_evidence(self):
+        for replacement in (None, {}, {"schema": 1, "cases": {}}):
+            with self.subTest(replacement=replacement):
+                self.assert_invalid_evidence(lambda value: value.update(lifecycle=replacement))
+
+    def test_missing_or_unknown_case_and_boolean_schema_are_rejected(self):
+        for mutate in (
+            lambda value: value["lifecycle"].update(schema=True),
+            lambda value: value["lifecycle"]["cases"].pop("crash_restart"),
+            lambda value: value["lifecycle"]["cases"].update(extra={}),
+            lambda value: value["lifecycle"]["recovery"].pop("ambiguous"),
+            lambda value: value["lifecycle"].update(quest_verified=True),
+        ):
+            with self.subTest(mutation=mutate):
+                self.assert_invalid_evidence(mutate)
+
+    def test_restart_requires_new_run_owner_and_runtime_on_the_same_profile(self):
+        for field in ("run_id", "owner_scope_id", "runtime_id"):
+            def duplicate(value):
+                case = value["lifecycle"]["cases"]["close_restart"]
+                case["restart"][field] = case["first"][field]
+            with self.subTest(duplicate=field):
+                self.assert_invalid_evidence(duplicate)
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["close_restart"]["restart"].update(profile_id="f" * 32))
+
+    def test_second_main_or_preexisting_client_cannot_certify_fresh_start(self):
+        for field, replacement in (("prelaunch_client_count", 1), ("client_count", 2),
+                                   ("observed_mapped_count", 2), ("app_id", "org.xfce.mousepad"),
+                                   ("frame", "0"), ("pressed", True)):
+            with self.subTest(field=field):
+                self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["close_restart"]["restart"]["initial_main"].update({field: replacement}))
+
+    def test_each_run_must_match_the_inspected_binary_hashes(self):
+        for field in ("mousepad_sha256", "waypipe_sha256", "waypipe_version"):
+            with self.subTest(field=field):
+                self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["crash_restart"]["restart"].update({field: "0" * 64}))
+
+    def test_profile_reset_and_document_loss_cannot_hide_behind_preserved_true(self):
+        for stage, field in (("profile_before", "tree_sha256"), ("profile_after", "documents_sha256")):
+            with self.subTest(stage=stage, field=field):
+                self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["close_restart"]["restart"][stage].update({field: "0" * 64}))
+
+    def test_matching_empty_post_shutdown_snapshots_cannot_hide_lost_saved_documents(self):
+        for ending in ("close", "stop", "crash"):
+            for changed in (sha(b"[]"), sha(b"changed saved documents")):
+                def lose_documents(value):
+                    case = value["lifecycle"]["cases"][ending + "_restart"]
+                    case["first"]["profile_after"]["documents_sha256"] = changed
+                    case["restart"]["profile_before"]["documents_sha256"] = changed
+                    case["restart"]["profile_after"]["documents_sha256"] = changed
+                    case["restart"]["documents_before_termination"] = changed
+                with self.subTest(ending=ending, changed=changed):
+                    self.assert_invalid_evidence(lose_documents)
+
+    def test_document_witness_is_required_only_for_executed_endings(self):
+        for replacement in (None, False, "invalid"):
+            with self.subTest(replacement=replacement):
+                self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["stop_restart"]["first"].update(
+                    documents_before_termination=replacement))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["close_restart"]["first"].pop(
+            "documents_before_termination"))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["recovery"]["session"]["run"].update(
+            documents_before_termination=sha(b"invented pre-termination snapshot")))
+
+    def test_stop_or_crash_protected_refusal_remains_distinct_from_restart_success(self):
+        for ending in ("stop", "crash"):
+            value = self.application()
+            case = value["lifecycle"]["cases"][ending + "_restart"]
+            restart = case["restart"]
+            restart.update(state="fail", status="failed", error="APP_STATE_RECOVERY_REQUIRED",
+                           app_spawned=False, initial_main=None, final_graph=None, documents_before_termination=None,
+                           termination={"kind": "close", "observed": False, "app_pidfd_exit": None,
+                                        "server_returncode": None, "forced_scope_cleanup": False})
+            restart["recovery_guard"].update(clear=False, reason="APP_STATE_RECOVERY_REQUIRED", session_empty=False)
+            case["outcome"] = "recovery_required"
+            with self.subTest(ending=ending):
+                self.assertIs(check.validate_application_foundation(value), value)
+                case["outcome"] = "restarted"
+                with self.assertRaises(check.BuildError):
+                    check.validate_application_foundation(value)
+
+    def test_close_setting_preservation_requires_nonempty_flushed_settings(self):
+        for stage in ("first", "restart"):
+            def erase(value):
+                value["lifecycle"]["cases"]["close_restart"][stage]["profile_after"].update(
+                    preferences_count=0, preferences_sha256=None)
+            with self.subTest(stage=stage):
+                self.assert_invalid_evidence(erase)
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["close_restart"]["restart"]["profile_after"].update(preferences_sha256="0" * 64))
+
+    def test_stop_and_crash_need_their_own_termination_evidence(self):
+        for case, field, replacement in (("stop_restart", "forced_scope_cleanup", False),
+                                          ("crash_restart", "app_pidfd_exit", False),
+                                          ("crash_restart", "server_returncode", 0),
+                                          ("crash_restart", "server_returncode", True)):
+            with self.subTest(case=case, field=field):
+                self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"][case]["first"]["termination"].update({field: replacement}))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["stop_restart"].update(settings_preserved=True))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["close_restart"]["first"]["final_graph"].update(window_count=1))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["crash_restart"]["first"]["final_graph"].update(focus_window="1"))
+
+    def test_always_refusing_does_not_pass_the_successful_restart_gate(self):
+        def refuse(value):
+            case = value["lifecycle"]["cases"]["close_restart"]
+            case.update(outcome="recovery_required", restart=value["lifecycle"]["recovery"]["session"]["run"])
+        self.assert_invalid_evidence(refuse)
+
+    def test_recovery_refusal_requires_no_spawn_and_unchanged_bytes(self):
+        for field, replacement in (("app_spawned", True), ("error", "APP_WAYLAND_DEPENDENCY_OR_IO")):
+            with self.subTest(field=field):
+                self.assert_invalid_evidence(lambda value: value["lifecycle"]["recovery"]["session"]["run"].update({field: replacement}))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["recovery"]["autosave"]["run"]["profile_after"].update(tree_sha256="0" * 64))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["recovery"]["ambiguous"]["run"]["recovery_guard"].update(clear=True))
+
+    def test_precursor_requires_independent_scope_and_new_application_responses(self):
+        for field in ("run_id", "owner_scope_id", "profile_id", "runtime_id"):
+            with self.subTest(field=field):
+                self.assert_invalid_evidence(lambda value: value["lifecycle"]["independence"]["after_stop"].update({field: "f" * 32}))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["independence"].update(target_worker_id=value["lifecycle"]["independence"]["precursor_worker_id"]))
+        for phase in ("after_close", "after_stop"):
+            with self.subTest(stale=phase):
+                self.assert_invalid_evidence(lambda value: value["lifecycle"]["independence"].update({phase: copy.deepcopy(value["lifecycle"]["independence"]["precursor_initial"])}))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["independence"]["after_stop"]["response"].update(responsive=False))
+
+    def test_target_stop_cannot_change_precursor_configuration_or_window(self):
+        for group, field, replacement in ((None, "topology_sha256", "0" * 64),
+                                           ("profile", "settings_sha256", "0" * 64),
+                                           ("profile", "documents_sha256", "0" * 64),
+                                           ("response", "main", "9")):
+            def mutate(value):
+                observation = value["lifecycle"]["independence"]["after_stop"]
+                (observation[group] if group else observation)[field] = replacement
+            with self.subTest(group=group, field=field):
+                self.assert_invalid_evidence(mutate)
+
+    def test_empty_precursor_settings_cannot_form_an_isolation_baseline(self):
+        def erase_observations(value):
+            for phase in ("precursor_initial", "after_close", "after_stop"):
+                value["lifecycle"]["independence"][phase]["profile"].update(
+                    preferences_count=0, preferences_sha256=None)
+        self.assert_invalid_evidence(erase_observations)
+
+    def test_complete_coordinator_cannot_mask_any_unfinished_worker_or_run(self):
+        for field, replacement in (("worker_count", 1), ("worker_count", True), ("workers_complete", False),
+                                   ("worker_returncodes", {"precursor": 0, "target": 1}),
+                                   ("worker_returncodes", {"precursor": 0, "target": False})):
+            with self.subTest(field=field):
+                self.assert_invalid_evidence(lambda value: value["cleanup"].update({field: replacement}))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["stop_restart"]["first"]["cleanup"].update(complete=False, pending=True))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["independence"]["precursor_final"]["cleanup"].update(output_pipes_eof=False))
 
     @contextlib.contextmanager
     def stages(self, application, *, final_inspection=None, raised=None):
@@ -170,12 +454,13 @@ class FoundationAggregationTests(TemporaryCheck):
 
     def test_partial_gui_file_evidence_stays_incomplete_exit_two(self):
         self.assertEqual(tuple(check.APPLICATION_CHECKS), wayland.REQUIRED_CHECKS)
-        self.assertEqual(tuple(check.FOUNDATION_PENDING), wayland.PENDING_CHECKS)
+        self.assertEqual(tuple(check.FOUNDATION_PENDING),
+                         ("gui_setting_persistence", "protected_settings_gui_readonly"))
         artifact = self.base / "partial"
         with self.stages(self.application()):
             status, result = self.command("--stage", "feasibility", "--artifact-root", str(artifact))
         self.assertEqual((status, result["status"], result["reason"]), (2, "incomplete", "APP_A0_INCOMPLETE"))
-        self.assertEqual(result["pending"], list(wayland.PENDING_CHECKS) + ["v3_acceptance", "quest"])
+        self.assertEqual(result["pending"], list(check.FOUNDATION_PENDING) + ["v3_acceptance", "quest"])
         for key in ("a0_passed", "available", "production_acceptance_passed", "quest_verified"):
             self.assertIs(result[key], False)
         self.assertEqual(json.loads((artifact / "feasibility.json").read_bytes()), result)
@@ -220,6 +505,7 @@ class FoundationAggregationTests(TemporaryCheck):
     def test_application_evidence_must_match_the_inspected_executable(self):
         application = self.application()
         application["mousepad_sha256"] = "c" * 64
+        application["lifecycle"] = self.lifecycle(application)
         with self.stages(application):
             status, result = self.command("--stage", "feasibility", "--artifact-root", str(self.base / "other-executable"))
         self.assertEqual((status, result["status"], result["reason"]), (2, "failed", "APP_WAYLAND_EVIDENCE_MISMATCH"))

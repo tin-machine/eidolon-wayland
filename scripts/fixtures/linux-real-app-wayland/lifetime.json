@@ -1,0 +1,5 @@
+{
+  "run_seconds": 110,
+  "precursor_seconds": 360,
+  "compositor_grace_seconds": 10
+}

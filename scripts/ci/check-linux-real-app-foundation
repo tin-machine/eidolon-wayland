@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CI gate for the implemented foundation, explicitly not the complete A0 gate.
 
-The operator feasibility CLI still exits nonzero while GUI/restart oracles are
+The operator feasibility CLI still exits nonzero while the two GUI oracles are
 pending. This CI gate requires every currently implemented check, the exact
 pending set, and complete actual process cleanup. Runtime failures cannot be
 reclassified as the expected incomplete outcome.
@@ -21,9 +21,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", required=True, type=Path)
     parser.add_argument("--reviewed-package", required=True, type=Path)
+    parser.add_argument("--precursor-hold-check", action="store_true",
+                        help="Require a measured 125-second live precursor hold and fresh GUI response")
     args = parser.parse_args()
     os.umask(0o077)
-    result = check.run_feasibility(args.artifact_root, inspect._read_operator_descriptor(args.reviewed_package))
+    result = check.run_feasibility(args.artifact_root, inspect._read_operator_descriptor(args.reviewed_package),
+                                   precursor_hold_check=args.precursor_hold_check)
     required_settings = {"policy_values_types_and_readonly", "ordinary_notifications_and_transactions",
                          "ordinary_persistence_in_new_process", "separate_profile_isolation",
                          "missing_module_fallback_rejected", "invalid_profile_exits_without_fallback"}
@@ -37,10 +40,15 @@ def main():
              and all(checks.get("recovery", {}).get(name) is True for name in required_recovery)
              and checks.get("recovery", {}).get("application_spawned_for_seeded_recovery") is False)
     if valid:
-        check.validate_application_foundation(checks.get("application"))
+        check.validate_application_foundation(checks.get("application"), require_precursor_hold=args.precursor_hold_check)
+    lifecycle = checks.get("application", {}).get("lifecycle", {})
     print(json.dumps({"schema": 1, "foundation_verified": valid, "a0_passed": False,
                       "reason": result.get("reason"), "pending": result.get("pending"),
                       "application_error": checks.get("application", {}).get("error"),
+                      "restart_outcomes": {name: case.get("outcome") for name, case in lifecycle.get("cases", {}).items()},
+                      "recovery_cases": sorted(lifecycle.get("recovery", {})),
+                      "precursor_hold_ms": (lifecycle.get("independence", {}).get("hold_probe") or {}).get("elapsed_ms"),
+                      "independent_instance": checks.get("application", {}).get("checks", {}).get("independent_instance") is True,
                       "available": False, "quest_verified": False}, sort_keys=True))
     return 0 if valid else 1
 

@@ -234,9 +234,14 @@ class InputAndOracleTests(unittest.TestCase):
 
 
 class ControlTransportTests(unittest.TestCase):
-    def child(self, behavior):
-        ready = {"schema": 1, "event": "ready", "socket_name": "wayland-l7a",
-                 "protocol": "eidolon-a0-control-v1", "server": "Eidolon ProtocolState"}
+    @staticmethod
+    def ready(lifetime="run"):
+        return {"schema": 1, "event": "ready", "socket_name": "wayland-l7a",
+                "protocol": "eidolon-a0-control-v1", "server": "Eidolon ProtocolState",
+                "lifetime": lifetime, "run_limit_seconds": owner._lifetime_limits(lifetime)[1]}
+
+    def child(self, behavior, *, ready=None):
+        ready = self.ready() if ready is None else ready
         script = "import json,sys,time\nprint(" + repr(json.dumps(ready)) + ",flush=True)\n" + behavior
         child = subprocess.Popen([sys.executable, "-c", script], stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -254,25 +259,330 @@ class ControlTransportTests(unittest.TestCase):
     def test_transport_requires_matching_reply_and_drains_auxiliary_pump(self):
         child = self.child("for line in sys.stdin:\n r=json.loads(line)\n print(json.dumps({'id':r['id'],'ok':True,'snapshot':{'windows':[]}}),flush=True)\n")
         pumped = []
-        control = driver.Control(child, pump=lambda: pumped.append(True))
+        control = driver.Control(child, pump=lambda: pumped.append(True),
+                                 lifetime="run", run_limit_seconds=owner._lifetime_limits("run")[1])
         self.assertEqual(control.snapshot(), {"windows": []})
         self.assertTrue(pumped)
 
     def test_sequence_mismatch_rejected(self):
         child = self.child("sys.stdin.readline()\nprint('{\"id\":99,\"ok\":true,\"snapshot\":{\"windows\":[]}}',flush=True)\n")
         with self.assertRaisesRegex(driver.ProbeError, "REPLY_SEQUENCE"):
-            driver.Control(child).snapshot()
+            driver.Control(child, lifetime="run", run_limit_seconds=owner._lifetime_limits("run")[1]).snapshot()
 
     def test_stalled_reply_has_deadline(self):
         child = self.child("sys.stdin.readline()\ntime.sleep(2)\n")
-        control = driver.Control(child, timeout=.2)
+        control = driver.Control(child, timeout=.2,
+                                 lifetime="run", run_limit_seconds=owner._lifetime_limits("run")[1])
         with self.assertRaisesRegex(driver.ProbeError, "CONTROL_TIMEOUT"):
             control.snapshot()
 
     def test_duplicate_json_fields_rejected(self):
         child = self.child("sys.stdin.readline()\nprint('{\"id\":1,\"id\":1,\"ok\":true,\"snapshot\":{\"windows\":[]}}',flush=True)\n")
         with self.assertRaisesRegex(driver.ProbeError, "DUPLICATE_FIELD"):
-            driver.Control(child).snapshot()
+            driver.Control(child, lifetime="run", run_limit_seconds=owner._lifetime_limits("run")[1]).snapshot()
+
+    def test_ready_requires_the_selected_role_and_exact_watchdog_limit(self):
+        for lifetime in ("run", "precursor"):
+            ready = self.ready(lifetime)
+            child = self.child("time.sleep(1)\n", ready=ready)
+            driver.Control(child, lifetime=lifetime, run_limit_seconds=ready["run_limit_seconds"])
+            invalid = [dict(ready, lifetime="precursor" if lifetime == "run" else "run"),
+                       dict(ready, run_limit_seconds=ready["run_limit_seconds"] - 10),
+                       dict(ready, run_limit_seconds=ready["run_limit_seconds"] + 1),
+                       dict(ready, run_limit_seconds=float(ready["run_limit_seconds"])),
+                       dict(ready, run_limit_seconds=True), dict(ready, schema=True),
+                       {k: v for k, v in ready.items() if k not in ("lifetime", "run_limit_seconds")}]
+            for value in invalid:
+                with self.subTest(lifetime=lifetime, ready=value):
+                    child = self.child("time.sleep(1)\n", ready=value)
+                    with self.assertRaisesRegex(driver.ProbeError, "CONTROL_READY"):
+                        driver.Control(child, lifetime=lifetime, run_limit_seconds=ready["run_limit_seconds"])
+
+    def test_ready_expectations_cannot_be_unknown_or_boolean(self):
+        for lifetime, seconds in (("unknown", 370), (True, 370), ("run", True), ("run", 0), ("run", 120.0)):
+            with self.subTest(lifetime=lifetime, seconds=seconds), \
+                 self.assertRaisesRegex(driver.ProbeError, "CONTROL_EXPECTATION"):
+                driver.Control(mock.Mock(), lifetime=lifetime, run_limit_seconds=seconds)
+
+
+class LifetimePolicyTests(unittest.TestCase):
+    def test_fixed_roles_keep_owner_deadline_from_construction(self):
+        for lifetime, budget, compositor in (("run", 110, 120), ("precursor", 360, 370)):
+            with self.subTest(lifetime=lifetime):
+                clock = [40.0]
+                process_owner = mock.Mock()
+                process_owner.finish.return_value = RunCaseCleanupTests.report(True)
+                guard = mock.Mock()
+                def new_owner():
+                    clock[0] += 4  # Later setup must not restart the owner clock.
+                    return process_owner
+                with mock.patch.object(owner.owner_api, "ProcessOwner", side_effect=new_owner), \
+                     mock.patch.object(owner.time, "monotonic", side_effect=lambda: clock[0]):
+                    run = owner._Run(Path("/tmp"), guard, lifetime=lifetime)
+                    try:
+                        self.assertEqual(run.started, 40)
+                        self.assertEqual(run.deadline, 40 + budget)
+                        self.assertEqual(run.owner_limit_seconds, budget)
+                        self.assertEqual(run.compositor_limit_seconds, compositor)
+                        clock[0] = 161  # More than the original compositor's 120 seconds.
+                        if lifetime == "run":
+                            with self.assertRaisesRegex(owner.WaylandError, "APP_WAYLAND_RUN_TIMEOUT"):
+                                run.pump()
+                        else:
+                            run.pump()
+                        self.assertEqual(run.deadline, 40 + budget)
+                        clock[0] = 40 + budget
+                        with self.assertRaisesRegex(owner.WaylandError, "APP_WAYLAND_RUN_TIMEOUT"):
+                            run.pump()
+                    finally:
+                        run.finish()
+                guard.restore.assert_called_once()
+
+    def test_unknown_or_numeric_lifetime_never_creates_an_owner(self):
+        for lifetime in ("unknown", "360", 360, True, None, ["precursor"]):
+            with self.subTest(lifetime=lifetime), \
+                 mock.patch.object(owner.owner_api, "ProcessOwner") as factory:
+                with self.assertRaisesRegex(owner.WaylandError, "APP_WAYLAND_LIFETIME$"):
+                    owner._Run(Path("/tmp"), mock.Mock(), lifetime=lifetime)
+                factory.assert_not_called()
+
+    def test_shared_policy_rejects_unbounded_or_ambiguous_values(self):
+        valid = {"run_seconds": 110, "precursor_seconds": 360, "compositor_grace_seconds": 10}
+        invalid = [dict(valid, run_seconds=0), dict(valid, run_seconds=361),
+                   dict(valid, precursor_seconds=601), dict(valid, precursor_seconds=True),
+                   dict(valid, precursor_seconds=360.0), dict(valid, precursor_seconds="360"),
+                   dict(valid, compositor_grace_seconds=0), dict(valid, compositor_grace_seconds=31),
+                   dict(valid, unexpected=10), {"run_seconds": 110}, [], None]
+        encoded = [json.dumps(value) for value in invalid]
+        encoded.extend(('{"run_seconds":110,"precursor_seconds":360,"precursor_seconds":600,"compositor_grace_seconds":10}',
+                        '{"run_seconds":110,"precursor_seconds":NaN,"compositor_grace_seconds":10}'))
+        with tempfile.TemporaryDirectory() as temporary:
+            policy = Path(temporary) / "lifetime.json"
+            with mock.patch.object(owner, "LIFETIME_SPEC", policy):
+                for value in encoded:
+                    with self.subTest(value=value):
+                        policy.write_text(value)
+                        with self.assertRaisesRegex(owner.WaylandError, "APP_WAYLAND_LIFETIME_POLICY"):
+                            owner._lifetime_limits("precursor")
+
+    def test_run_case_passes_named_lifetime_to_its_internal_compositor(self):
+        for lifetime, budget, watchdog in (("run", 110, 120), ("precursor", 360, 370)):
+            with self.subTest(lifetime=lifetime), RunCaseCleanupTests().prepared() as prepared:
+                repo, artifact, settings, process_owner, holder = prepared
+                commands = []
+                def capture(run, label, command, *_args, **_kwargs):
+                    holder.append(run)
+                    commands.append((label, command))
+                    raise owner.WaylandError("APP_WAYLAND_TEST_ABORT")
+                process_owner.finish.return_value = RunCaseCleanupTests.report(True)
+                with mock.patch.object(owner._Run, "spawn", capture):
+                    result = owner.run_case(repo, artifact, settings, lifetime=lifetime)
+                self.assertEqual(result["error"], "APP_WAYLAND_TEST_ABORT")
+                self.assertEqual(commands[0][0], "compositor")
+                self.assertEqual(commands[0][1][2], "--exec-compositor")
+                self.assertEqual(commands[0][1][-1], lifetime)
+                self.assertEqual(len(commands[0][1][3:]), 5)
+                self.assertEqual(result["lifetime"], lifetime)
+                self.assertEqual(result["owner_limit_seconds"], budget)
+                self.assertEqual(result["compositor_limit_seconds"], watchdog)
+                self.assertTrue(result["cleanup"]["complete"])
+
+    def test_internal_adapter_only_forwards_the_fixed_lifetime_role(self):
+        binary = owner.ROOT / "target/debug/linux-real-app-wayland-probe"
+        with tempfile.TemporaryDirectory(prefix="eidolon-l7a-", dir="/tmp") as temporary:
+            runtime = Path(temporary)
+            fifo = runtime / "control"
+            os.mkfifo(fifo, 0o600)
+            writer = os.open(fifo, os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC)
+            self.addCleanup(os.close, writer)
+            argv = [str(binary), str(runtime), str(runtime / "artifact"), str(fifo)]
+            for lifetime in ("run", "precursor"):
+                with self.subTest(lifetime=lifetime), \
+                     mock.patch.object(owner.os, "dup2") as duplicate, \
+                     mock.patch.object(owner.os, "execve") as execute:
+                    owner._exec_compositor([*argv, lifetime])
+                    duplicate.assert_called_once()
+                    self.assertEqual(execute.call_args.args[0], binary)
+                    self.assertEqual(execute.call_args.args[1], [str(binary), "--runtime-dir", str(runtime),
+                        "--artifact-dir", str(runtime / "artifact"), "--lifetime", lifetime])
+            for invalid in (argv, [*argv, "360"], [*argv, "unknown"], [*argv, 360],
+                            [*argv, "precursor", "--timeout", "9999"]):
+                with self.subTest(invalid=invalid), mock.patch.object(owner.os, "execve") as execute:
+                    with self.assertRaisesRegex(owner.WaylandError, "APP_WAYLAND_INTERNAL_ARGUMENT"):
+                        owner._exec_compositor(invalid)
+                    execute.assert_not_called()
+
+    def test_feasibility_wrapper_preserves_the_explicit_hold_check(self):
+        import linux_real_app_harness as harness
+        repo, artifact, bundle = owner.ROOT, Path("/tmp/fixed-artifact"), Path("/tmp/fixed-bundle")
+        waypipe = Path("/tmp/fixed-waypipe")
+        compositor = repo / "target/debug/linux-real-app-wayland-probe"
+        result = {"synthetic_unit_receipt": True}
+        with mock.patch.object(owner, "_json", return_value={"executable": str(waypipe)}), \
+             mock.patch.object(harness, "run_feasibility", return_value=result) as run:
+            self.assertIs(owner.run_feasibility(repo, artifact, bundle, waypipe=waypipe,
+                compositor=compositor, precursor_hold_check=True), result)
+            run.assert_called_once_with(repo, artifact, bundle, precursor_hold_check=True)
+            run.reset_mock()
+            with self.assertRaisesRegex(owner.WaylandError, "APP_WAYLAND_ARGUMENT"):
+                owner.run_feasibility(repo, artifact, bundle, waypipe=waypipe,
+                                      compositor=compositor, precursor_hold_check=1)
+            run.assert_not_called()
+
+
+class PartialPipeRegistrationTests(unittest.TestCase):
+    """Real pipes/subprocesses around injected registration faults.
+
+    Only the owner factory is replaced, so these descriptor-boundary tests can
+    run under root too. The mandatory non-root lifecycle suite separately
+    verifies the actual frozen ProcessOwner and escaped descendants.
+    """
+    @contextlib.contextmanager
+    def prepared_child(self):
+        class FixedChildOwner:
+            def __init__(self):
+                self.child = None
+
+            def spawn(self, command, *, env):
+                self.child = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
+                                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                              close_fds=True, start_new_session=True)
+                return self.child
+
+            def finish(self, **_kwargs):
+                self.child.wait(timeout=3)
+                return RunCaseCleanupTests.report(True)
+
+        process_owner = FixedChildOwner()
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(owner.owner_api, "ProcessOwner", return_value=process_owner):
+            guard = owner._TerminationGuard()
+            run = owner._Run(Path(temporary), guard)
+            try:
+                yield run, process_owner
+            finally:
+                if process_owner.child is not None:
+                    process_owner.child.wait(timeout=3)
+                if guard.previous:
+                    run.finish()
+
+    @staticmethod
+    def child_command():
+        return [sys.executable, "-I", "-S", "-B", "-c",
+                'import sys; print("synthetic-out", flush=True); print("synthetic-err", file=sys.stderr, flush=True)']
+
+    def assert_drained(self, run, process_owner, receipt, control):
+        self.assertEqual(process_owner.child.returncode, 0)
+        self.assertTrue(receipt["complete"])
+        self.assertTrue(receipt["output_pipes_eof"])
+        self.assertTrue(receipt["root_pidfds_closed"])
+        self.assertEqual(len(run.pipes), 2)
+        self.assertTrue(all(stream.closed for stream in run.pipes))
+        self.assertEqual(len(run.pidfds), 0)
+        self.assertEqual(run.output_bytes["control_stdout_remaining" if control else "synthetic_stdout"],
+                         len(b"synthetic-out\n"))
+        self.assertEqual(run.output_bytes["synthetic_stderr"], len(b"synthetic-err\n"))
+        self.assertFalse(run.termination.previous)
+
+    def test_pidfd_failure_remembers_and_drains_both_real_child_pipes(self):
+        for control in (False, True):
+            with self.subTest(control=control), self.prepared_child() as (run, process_owner):
+                with mock.patch.object(owner.os, "pidfd_open", side_effect=OSError(errno.EMFILE, "synthetic")):
+                    with self.assertRaises(OSError):
+                        run.spawn("synthetic", self.child_command(), {"PATH": "/usr/bin:/bin"}, control=control)
+                self.assertEqual(len(run.pipes), 2)
+                self.assertEqual(len(run.selector.get_map()), 0)
+                self.assert_drained(run, process_owner, run.finish(), control)
+
+    def test_partial_nonblocking_or_selector_registration_is_reconciled(self):
+        for boundary in ("set_blocking", "register"):
+            for control in (False, True):
+                with self.subTest(boundary=boundary, control=control), self.prepared_child() as (run, process_owner):
+                    original_blocking = os.set_blocking
+                    original_register = run.selector.register
+
+                    def failed_blocking(fd, value):
+                        if fd == process_owner.child.stderr.fileno():
+                            raise OSError(errno.EIO, "synthetic")
+                        return original_blocking(fd, value)
+
+                    def failed_register(stream, events, key):
+                        if stream is process_owner.child.stderr:
+                            raise OSError(errno.EIO, "synthetic")
+                        return original_register(stream, events, key)
+
+                    patch = (mock.patch.object(os, "set_blocking", side_effect=failed_blocking)
+                             if boundary == "set_blocking" else
+                             mock.patch.object(run.selector, "register", side_effect=failed_register))
+                    with patch, self.assertRaises(OSError):
+                        run.spawn("synthetic", self.child_command(), {"PATH": "/usr/bin:/bin"}, control=control)
+                    self.assertEqual(len(run.pipes), 2)
+                    with mock.patch.object(run.selector, "register", wraps=original_register) as register:
+                        receipt = run.finish()
+                    keys = [call.args[2] for call in register.call_args_list]
+                    self.assertEqual(keys, ["control_stdout_remaining", "synthetic_stderr"]
+                                     if control else ["synthetic_stderr"])
+                    self.assert_drained(run, process_owner, receipt, control)
+
+    def test_pending_eof_keeps_lock_and_does_not_reregister_drained_pipe(self):
+        readers, writers = [], []
+        for _ in range(2):
+            read_fd, write_fd = os.pipe()
+            readers.append(os.fdopen(read_fd, "rb"))
+            writers.append(write_fd)
+        process_owner = mock.Mock()
+        process_owner.spawn.return_value = mock.Mock(pid=1234, stdout=readers[0], stderr=readers[1])
+        process_owner.finish.return_value = RunCaseCleanupTests.report(True)
+        run = None
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(owner.owner_api, "ProcessOwner", return_value=process_owner):
+            lock = Path(temporary) / "profile.lock"
+            guard = owner._TerminationGuard()
+            try:
+                run = owner._Run(Path(temporary), guard)
+                run.profile_lock = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_CLOEXEC, 0o600)
+                fcntl.flock(run.profile_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                descriptor = os.open(os.devnull, os.O_RDONLY | os.O_CLOEXEC)
+                with mock.patch.object(os, "pidfd_open", return_value=descriptor):
+                    run.spawn("synthetic", ["fixed-test-only"], {})
+                os.write(writers[0], b"already-drained")
+                os.close(writers[0])
+                writers[0] = None
+                run.pump()
+                run.pump()
+                self.assertIn(readers[0], run._pipe_eof)
+                with mock.patch.object(run.selector, "register", wraps=run.selector.register) as register:
+                    with self.assertRaises(owner.CleanupPending) as caught:
+                        run.finish()
+                    register.assert_not_called()
+                self.assertIs(caught.exception.run, run)
+                self.assertFalse(run.cleanup["complete"])
+                self.assertTrue(run.cleanup["pending"])
+                self.assertIs(signal.getsignal(signal.SIGTERM).__self__, guard)
+                probe = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(probe)
+                os.close(writers[1])
+                writers[1] = None
+                with mock.patch.object(run.selector, "register", wraps=run.selector.register) as register:
+                    receipt = owner.retry_cleanup(caught.exception)
+                    register.assert_not_called()
+                self.assertTrue(receipt["output_pipes_eof"])
+                self.assertTrue(all(stream.closed for stream in readers))
+                self.assertIsNone(run.profile_lock)
+                self.assertFalse(guard.previous)
+            finally:
+                for fd in writers:
+                    if fd is not None:
+                        os.close(fd)
+                if run is not None and guard.previous:
+                    run.finish()
+                for stream in readers:
+                    stream.close()
+                guard.restore()
 
 
 class RunCaseCleanupTests(unittest.TestCase):
@@ -423,6 +733,50 @@ class RunCaseCleanupTests(unittest.TestCase):
             self.assertEqual(result["error"], "HELPER_NOT_DEDICATED")
         self.assertEqual({number: signal.getsignal(number) for number in before}, before)
 
+    def test_ready_expectations_and_final_receipt_use_the_selected_lifetime(self):
+        for lifetime in ("run", "precursor"):
+            limit = owner._lifetime_limits(lifetime)[1]
+            valid = {"state": "complete", "client_cleanup_verified": True, "forced_disconnect": False,
+                     "lifetime": lifetime, "run_limit_seconds": limit}
+            mismatches = [dict(valid, lifetime="run" if lifetime == "precursor" else "precursor"),
+                          dict(valid, run_limit_seconds=limit - 10), dict(valid, run_limit_seconds=limit + 1),
+                          dict(valid, run_limit_seconds=float(limit)), dict(valid, run_limit_seconds=True),
+                          {k: v for k, v in valid.items() if k not in ("lifetime", "run_limit_seconds")}]
+            for proof in (valid, *mismatches):
+                with self.subTest(lifetime=lifetime, proof=proof), self.prepared() as prepared:
+                    repo, artifact, settings, process_owner, holder = prepared
+                    def spawn(run, label, *_args, **_kwargs):
+                        if label == "compositor":
+                            holder.append(run)
+                            (artifact / "compositor/result.json").write_text(json.dumps(proof))
+                        elif label == "waypipe_client":
+                            (run.runtime / "channel").touch()
+                        child = mock.Mock()
+                        child.poll.return_value = None
+                        return child
+                    process_owner.finish.return_value = self.report(True)
+                    control = mock.Mock()
+                    control.wait_main.return_value = "1"
+                    control.snapshot.return_value = {"counts": {"clients": 0}, "windows": [], "observed_mapped": []}
+                    control.wait.return_value = {"counts": {"clients": 0}, "windows": [],
+                                                 "input": {"pressed": 0, "focus_window": None}}
+                    with mock.patch.object(owner._Run, "spawn", spawn), \
+                         mock.patch.object(owner._Run, "wait_child", return_value=0), \
+                         mock.patch.object(owner._Run, "signal_root"), \
+                         mock.patch.object(owner.stat, "S_ISSOCK", return_value=True), \
+                         mock.patch.object(driver, "Control", return_value=control) as constructor, \
+                         mock.patch.object(driver, "observe_ready", return_value={"observed_mapped_count": 1}):
+                        result = owner.run_case(repo, artifact, settings, lifetime=lifetime, exercise=False)
+                    self.assertEqual(constructor.call_args.kwargs["lifetime"], lifetime)
+                    self.assertEqual(constructor.call_args.kwargs["run_limit_seconds"], limit)
+                    self.assertTrue(result["cleanup"]["complete"])
+                    if proof is valid:
+                        self.assertEqual(result["state"], "partial")
+                        self.assertIsNone(result["error"])
+                    else:
+                        self.assertEqual(result["state"], "fail")
+                        self.assertEqual(result["error"], "APP_WAYLAND_COMPOSITOR_RECEIPT")
+
     def test_termination_during_final_cleanup_cannot_leave_a_partial_success(self):
         with self.prepared() as prepared:
             repo, artifact, settings, process_owner, holder = prepared
@@ -431,6 +785,7 @@ class RunCaseCleanupTests(unittest.TestCase):
                     holder.append(run)
                     (artifact / "compositor/result.json").write_text(json.dumps({
                         "state": "complete", "client_cleanup_verified": True, "forced_disconnect": False,
+                        "lifetime": run.lifetime, "run_limit_seconds": run.compositor_limit_seconds,
                     }))
                 elif label == "waypipe_client":
                     (run.runtime / "channel").touch()
@@ -443,11 +798,15 @@ class RunCaseCleanupTests(unittest.TestCase):
             process_owner.finish.side_effect = complete_after_signal
             control = mock.Mock()
             control.wait_main.return_value = "1"
+            control.snapshot.return_value = {"counts": {"clients": 0}, "windows": [], "observed_mapped": []}
+            control.wait.return_value = {"counts": {"clients": 0}, "windows": [],
+                                         "input": {"pressed": 0, "focus_window": None}}
             with mock.patch.object(owner._Run, "spawn", spawn_without_process), \
                  mock.patch.object(owner._Run, "wait_child", return_value=0), \
                  mock.patch.object(owner._Run, "signal_root"), \
                  mock.patch.object(owner.stat, "S_ISSOCK", return_value=True), \
                  mock.patch.object(driver, "Control", return_value=control), \
+                 mock.patch.object(driver, "observe_ready", return_value={"observed_mapped_count": 1}), \
                  mock.patch.object(driver, "exercise_open_edit_save", return_value={"synthetic_unit_oracle": True}):
                 result = owner.run_case(repo, artifact, settings)
             self.assertEqual(result["state"], "fail")
