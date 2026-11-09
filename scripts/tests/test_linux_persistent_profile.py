@@ -169,6 +169,8 @@ class RealPersistentProfileTests(unittest.TestCase):
         self.assertEqual(current["identity"], accepted["identity"])
         self.send(reopened, "release")
         self.assertEqual(self.event(reopened), {"event": "released"})
+        _, stderr = reopened.communicate(timeout=5)
+        self.assertEqual(reopened.returncode, 0, stderr)
 
     def test_os_unlock_after_helper_death_does_not_clear_unknown_journal(self):
         home = self.private_home()
@@ -217,6 +219,8 @@ sys.exit(7)
         self.assertEqual(probe.returncode, 0, probe.stderr)
         self.send(first, "pending")
         self.assertEqual(self.event(first), {"event": "pending"})
+        _, stderr = first.communicate(timeout=5)
+        self.assertEqual(first.returncode, 0, stderr)
 
     def test_managed_symlinks_are_never_followed(self):
         for name in (".local", ".local/share", ".local/share/eidolon", "owner.json", "profile.lock", "home",
