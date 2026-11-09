@@ -16,7 +16,8 @@ from typing import Any, Callable
 MAX_REPLY = 128 * 1024
 PHASES = frozenset({"startup", "initial_main", "main_ready", "open_dialog", "open_file",
                     "edit_file", "save_file", "save_as_dialog", "save_as_file",
-                    "file_oracle_complete", "normal_close", "waypipe_cleanup", "compositor_shutdown"})
+                    "file_oracle_complete", "normal_close", "waypipe_cleanup", "compositor_shutdown",
+                    "response_probe", "forced_stop", "app_crash"})
 OPERATIONS = frozenset({"snapshot", "focus", "key", "click", "close", "shutdown"})
 NATIVE_ERRORS = frozenset({"STALE", "NOT_READY", "INPUT_NOT_FOCUSED", "INPUT_NOT_MAPPED",
                           "INPUT_SOURCE", "CLIENTS_REMAIN"})
@@ -344,6 +345,56 @@ def chord(control: Any, window: str, *codes: int) -> None:
                 release_error = error
         if release_error is not None:
             raise release_error
+
+
+def observe_ready(control: Control) -> dict[str, Any]:
+    """Current one-main/frame observation without resetting any latch/history."""
+    state = control.snapshot()
+    control.assert_topology(state)
+    windows = mapped(state)
+    if len(windows) != 1 or windows[0]["window"] != control.main or not has_frame(windows[0]):
+        raise ProbeError("RESPONSE_NOT_SINGLE_MAIN")
+    counts, inputs = state.get("counts", {}), state.get("input", {})
+    if (type(counts.get("clients")) is not int or counts["clients"] != 1
+            or type(inputs.get("delivered")) is not int or inputs["delivered"] < 0
+            or type(inputs.get("pressed")) is not int or inputs["pressed"] != 0):
+        raise ProbeError("RESPONSE_CLIENT_INPUT")
+    observed = state.get("observed_mapped")
+    if not isinstance(observed, list) or not observed:
+        raise ProbeError("RESPONSE_OBSERVATION_HISTORY")
+    return {"window": control.main, "frame": windows[0]["frame"],
+            "app_id": control.expected_app_id, "client_count": counts["clients"],
+            "observed_mapped_count": len(observed),
+            "input_delivered": inputs["delivered"], "pressed": inputs["pressed"]}
+
+
+def exercise_response(control: Control) -> dict[str, Any]:
+    """Application acknowledgement via a real Ctrl+O/Escape dialog round trip.
+
+    A compositor input counter alone cannot prove Mousepad still responds.
+    Require a new transient dialog with an SHM frame, then its removal and the
+    exact original main. No document or preference is edited by this probe.
+    """
+    before = observe_ready(control)
+    control.phase = "response_probe"
+    control.focus(control.main)
+    chord(control, control.main, CTRL, 24)
+    dialog = control.wait_dialog({control.main})
+    control.focus(dialog)
+    control.settle()
+    chord(control, dialog, ESC)
+    control.wait_closed(dialog)
+    control.focus(control.main)
+    control.settle()
+    after = observe_ready(control)
+    if after["input_delivered"] <= before["input_delivered"]:
+        raise ProbeError("RESPONSE_INPUT_NOT_DELIVERED")
+    return {"responsive": True, "main": after["window"], "frame": after["frame"],
+            "input_delivered_before": before["input_delivered"],
+            "input_delivered_after": after["input_delivered"],
+            "window_count": 1, "client_count": after["client_count"], "pressed": after["pressed"],
+            "topology_preserved": after["window"] == before["window"],
+            "dialog_window": dialog}
 
 
 _KEYS = {letter: (code, False) for letter, code in zip(

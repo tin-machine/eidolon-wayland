@@ -5,6 +5,9 @@
 検査で未確認の項目を残し、A0成立前に通常catalogへMousepadを追加しない。
 PR #4後の実装順序・完了条件・次セッション用プロンプトは
 [A0の次工程と引き継ぎ](linux-real-app-a0-next-steps-20261109.md)にまとめる。
+続くPR1のprofile/run分離、通常Close/Stop/異常終了後の再起動、先行instance独立は
+[再起動harnessの実装記録](linux-real-app-a0-restart-20261109.md)を参照する。
+本書のPR #4時点の検証結果と、後続PRのheadに対する検証結果は分けて扱う。
 
 ## このPRの境界
 

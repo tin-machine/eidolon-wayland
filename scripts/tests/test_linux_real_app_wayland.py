@@ -443,11 +443,15 @@ class RunCaseCleanupTests(unittest.TestCase):
             process_owner.finish.side_effect = complete_after_signal
             control = mock.Mock()
             control.wait_main.return_value = "1"
+            control.snapshot.return_value = {"counts": {"clients": 0}, "windows": [], "observed_mapped": []}
+            control.wait.return_value = {"counts": {"clients": 0}, "windows": [],
+                                         "input": {"pressed": 0, "focus_window": None}}
             with mock.patch.object(owner._Run, "spawn", spawn_without_process), \
                  mock.patch.object(owner._Run, "wait_child", return_value=0), \
                  mock.patch.object(owner._Run, "signal_root"), \
                  mock.patch.object(owner.stat, "S_ISSOCK", return_value=True), \
                  mock.patch.object(driver, "Control", return_value=control), \
+                 mock.patch.object(driver, "observe_ready", return_value={"observed_mapped_count": 1}), \
                  mock.patch.object(driver, "exercise_open_edit_save", return_value={"synthetic_unit_oracle": True}):
                 result = owner.run_case(repo, artifact, settings)
             self.assertEqual(result["state"], "fail")

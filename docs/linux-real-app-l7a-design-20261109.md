@@ -8,6 +8,9 @@
 [A/A0実装記録](linux-real-app-a0-foundation-20261109.md)を参照し、通常GUIへの組込み済みと解釈しない。
 PR #4後は[A0の次工程と引き継ぎ](linux-real-app-a0-next-steps-20261109.md)に従い、
 再起動/instance分離、GUI設定検査の順に残項目を進める。
+前者のPR1の実装と独立したcase/receipt契約は
+[同profile再起動と先行instance独立](linux-real-app-a0-restart-20261109.md)へ記録した。
+GUI設定2項目、A0全体および通常v3/Questの完了を意味しない。
 
 [L7aの要求](nx11-nx18-normal-gui-followup-plan-20261108.md#linux-real-app)を、
 [通常GTKデモのL5/L6](normal-linux-gui-l5-l6-20261108.md)から実装できる単位へ分解する。

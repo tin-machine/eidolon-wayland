@@ -1,6 +1,9 @@
 # L7a A0: PR #4後の実装計画と次セッションへの引き継ぎ
 
-更新日: 2026-11-09。状態: **PR #4はmainへマージ済み。以下の次PR案は未実装**。
+更新日: 2026-11-09。状態: **PR #4はmainへマージ済み。PR1の実装を追加、GUI設定2項目とA0全体は未完了**。
+PR1の変更根拠、caseごとのoracle、回収契約、検証入口は
+[再起動・先行instance独立の実装記録](linux-real-app-a0-restart-20261109.md)を参照する。
+実測成功は今回のPR headのCI結果で確認し、以下のPR #4時点の結果から推定しない。
 
 この文書は、Quest 3上の広い作業空間で複数のLinuxアプリを扱うという目標に向け、
 実用アプリ一種のL7aを次の会話・開発セッションから継続するための計画である。
@@ -37,7 +40,7 @@
 実Wayland/Waypipe/Mousepadによるファイル操作と通常Close、pidfd/subreaperによる全子孫回収である。
 対象はCIで固定したMousepad 0.6.3/GTK3構成。対象利用者Linux全般やQuestでの対応を認定していない。
 
-現在の判定は `foundation_verified=true` でも、A0全体は `APP_A0_INCOMPLETE`、
+PR #4時点の判定は `foundation_verified=true` でも、A0全体は `APP_A0_INCOMPLETE`、
 `a0_passed=false` / `available=false` / `production_acceptance_passed=false` / `quest_verified=false`。
 feasibility CLIはexit 2、acceptanceは明示的に未実装である。
 根拠は[現在のaggregator](https://github.com/tin-machine/eidolon-wayland/blob/6fb00482a1f3550f311a6b26700951ac9752c315/scripts/linux_real_app_check.py)と
@@ -51,7 +54,9 @@ feasibility CLIはexit 2、acceptanceは明示的に未実装である。
 | `protected_settings_gui_readonly` | 未確認 | PR2: 実Preferencesの操作不可と実動作 |
 | v3通常起動・Quest受入れ | 未実装/未確認 | A0成立後のB〜F |
 
-このPR1/PR2は今後の分割案であり、GitHubの既存PR番号ではない。
+このPR1/PR2は実装の分割名であり、GitHubの既存PR番号ではない。表の状態はPR #4直後の基準である。
+今回のPR1では `independent_instance` / `clean_close_restart` の実測harnessと対応validatorを追加し、
+成功時のpendingはGUI設定2項目だけになる。各headの実行結果は実装PRへ記録する。
 
 ## 2. 次のPR1: 同じ合成profileでの再起動と先行instanceとの独立
 
