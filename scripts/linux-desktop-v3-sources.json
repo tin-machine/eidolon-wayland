@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "protocol_revision": "eidolon-linux-desktop-v3",
+  "integration": {
+    "c1_commit": null,
+    "c2_commit": null
+  },
+  "sources": {
+    "eidolon-linux-session.py": "scripts/linux/eidolon-linux-session.py",
+    "eidolon_linux_desktop_session_v3.py": "scripts/linux/eidolon_linux_desktop_session_v3.py",
+    "eidolon_linux_desktop_v3.py": "scripts/linux/eidolon_linux_desktop_v3.py",
+    "eidolon_linux_process_owner.py": "scripts/linux/eidolon_linux_process_owner.py",
+    "eidolon_linux_real_app.py": "scripts/linux/eidolon_linux_real_app.py",
+    "eidolon_settings_backend.c": "scripts/linux/eidolon_settings_backend.c",
+    "gtk3-desktop-demo.c": "scripts/fixtures/gtk3-desktop-demo.c",
+    "linux-desktop-v3-bus.conf.in": "scripts/linux/linux-desktop-v3-bus.conf.in",
+    "linux-desktop-v3-sources.json": "scripts/linux-desktop-v3-sources.json",
+    "linux-settings-probe.c": "scripts/fixtures/linux-settings-probe.c",
+    "linux_desktop_v3_bundle.py": "scripts/linux_desktop_v3_bundle.py",
+    "linux_desktop_v3_contract.py": "scripts/linux_desktop_v3_contract.py",
+    "linux_desktop_v3_wire.py": "scripts/linux_desktop_v3_wire.py",
+    "linux_real_app_inspect.py": "scripts/linux_real_app_inspect.py",
+    "linux_real_app_manifest.py": "scripts/linux_real_app_manifest.py"
+  },
+  "generated": [
+    "app-manifest.json",
+    "eidolon-gtk3-desktop",
+    "gio/giomodule.cache",
+    "gio/libeidolon-settings.so",
+    "linux-settings-probe",
+    "package-inspection.json",
+    "reviewed-package.json",
+    "settings-backend.json"
+  ]
+}
