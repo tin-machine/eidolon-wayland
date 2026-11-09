@@ -51,6 +51,12 @@ moduleは固定のMousepad/GTK型、GtkBuildable ID、GtkActionable action-name�
 翻訳された表示文字列、window title、ファイル本文、pixelを対象識別に使わない。
 対象の欠落、複数候補、未map、型不一致を既定値へ読み替えない。
 
+`gtk_window_list_toplevels()`には、[GtkMenuが内部生成するGtkWindow](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkmenu.c#L1344)も含まれる。
+Mousepadは[起動時に複数のmenu modelを展開](https://github.com/xfce-mirror/mousepad/blob/65fbfe0459259f820fcc8b9c4dd454228304842a/mousepad/mousepad-window.c#L1056-L1089)するため、
+このGTK内部列挙数をWaylandのWindowId数と同じ32件へ制限しない。読み取り走査は4096 objectで打ち切り、main/Preferencesそれぞれの一意性は引き続き厳密に要求する。
+display種別、main/Preferences/view/notebook/menubar/targetの重複、走査上限は個別の固定reasonで拒否し、失敗応答にもrun/profile/sequenceと厳密schemaを要求する。
+head `3dda694`の`APP_GUI_OBSERVER_TOPOLOGY`は細分化前の記録であり、この記録だけから特定の拒否理由を断定しない。
+
 | 観測対象 | 固定の根拠と観測内容 |
 | --- | --- |
 | main | `MousepadWindow`。対応する一つのWayland mainと照合する |

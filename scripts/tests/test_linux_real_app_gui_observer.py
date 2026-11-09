@@ -112,9 +112,30 @@ class ObservationSchema(unittest.TestCase):
                     observer.validate_snapshot(value, 1, PROFILE, RUN)
 
     def test_rejects_false_topology_result(self):
+        for reason in observer.OBSERVATION_FAILURES:
+            value = {"schema": 1, "id": 1, "run_id": RUN, "profile_id": PROFILE,
+                     "ok": False, "error": reason}
+            with self.subTest(reason=reason), self.assertRaisesRegex(observer.ObserverError, "^" + reason + "$"):
+                observer.validate_snapshot(value, 1, PROFILE, RUN)
+
+    def test_diagnostics_cannot_include_arbitrary_error_data_or_bypass_correlation(self):
+        valid = {"schema": 1, "id": 1, "run_id": RUN, "profile_id": PROFILE,
+                 "ok": False, "error": "APP_GUI_OBSERVER_DUP_MAIN"}
+        for mutation in (lambda d: d.update(error="/private/profile"),
+                         lambda d: d.update(error="APP_GUI_OBSERVER_UNKNOWN"),
+                         lambda d: d.update(error=["APP_GUI_OBSERVER_DUP_MAIN"]),
+                         lambda d: d.update(path="/private/profile"),
+                         lambda d: d.update(ok=0), lambda d: d.update(id=0),
+                         lambda d: d.update(profile_id="c" * 32)):
+            value = copy.deepcopy(valid)
+            mutation(value)
+            with self.assertRaises(observer.ObserverError) as failure:
+                observer.validate_snapshot(value, 1, PROFILE, RUN)
+            self.assertNotEqual(str(failure.exception), "APP_GUI_OBSERVER_DUP_MAIN")
+            self.assertNotIn("private", str(failure.exception))
         value = snapshot()
-        value["ok"] = False
-        with self.assertRaisesRegex(observer.ObserverError, "APP_GUI_OBSERVER_TOPOLOGY"):
+        value.update(ok=False, error="APP_GUI_OBSERVER_DUP_MAIN")
+        with self.assertRaisesRegex(observer.ObserverError, "^APP_GUI_OBSERVER_INVALID$"):
             observer.validate_snapshot(value, 1, PROFILE, RUN)
 
     def test_menu_observation_needs_a_fixed_target_and_open_menu_before_selection(self):

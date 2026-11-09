@@ -26,6 +26,11 @@ SOCKET_NAME = "gui-observer.sock"
 MAX_REPLY = 16384
 TARGETS = frozenset({"line_numbers", "opening_mode", "session_restore", "always_show_tabs",
                      "make_backup", "tab_view", "tab_window", "tab_file"})
+OBSERVATION_FAILURES = frozenset({
+    "APP_GUI_OBSERVER_WAYLAND_DISPLAY", "APP_GUI_OBSERVER_DUP_MAIN", "APP_GUI_OBSERVER_DUP_PREFS",
+    "APP_GUI_OBSERVER_DUP_VIEW", "APP_GUI_OBSERVER_DUP_NOTEBOOK", "APP_GUI_OBSERVER_DUP_MENUBAR",
+    "APP_GUI_OBSERVER_DUP_TARGET", "APP_GUI_OBSERVER_SCAN_BOUND",
+})
 
 
 class ObserverError(ValueError):
@@ -117,12 +122,16 @@ def validate_snapshot(value, request, profile_id, runtime_id):
             and type(value.get("id")) is int and value["id"] == request
             and value.get("run_id") == runtime_id and value.get("profile_id") == profile_id,
             "APP_GUI_OBSERVER_CORRELATION")
-    if value.get("ok") is not True:
-        raise ObserverError("APP_GUI_OBSERVER_TOPOLOGY")
+    require(type(value.get("ok")) is bool)
+    if value["ok"] is False:
+        require(set(value) == {"schema", "id", "run_id", "profile_id", "ok", "error"}
+                and type(value["error"]) is str and value["error"] in OBSERVATION_FAILURES)
+        raise ObserverError(value["error"])
     require(set(value) == {"schema", "id", "run_id", "profile_id", "ok", "main_count",
                            "preferences_count", "main", "preferences"})
-    for field in ("main_count", "preferences_count"):
-        require(_integer(value[field], 0, 1), "APP_GUI_OBSERVER_TOPOLOGY")
+    for field, reason in (("main_count", "APP_GUI_OBSERVER_DUP_MAIN"),
+                          ("preferences_count", "APP_GUI_OBSERVER_DUP_PREFS")):
+        require(_integer(value[field], 0, 1), reason)
     main = value["main"]
     if value["main_count"] == 0:
         require(main is None)

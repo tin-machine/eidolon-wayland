@@ -25,7 +25,11 @@
 
 #define MAX_WIDGETS 4096
 #define MAX_DEPTH 64
-#define MAX_TOPLEVELS 32
+/* gtk_window_list_toplevels also includes one hidden GtkWindow per GtkMenu
+ * (GTK 3.24.41 gtkmenu.c:1344). Mousepad eagerly expands several copies of its
+ * language/menu models. Bound traversal separately from the strict one-main,
+ * one-Preferences application topology; those checks include hidden matches. */
+#define MAX_TOPLEVELS MAX_WIDGETS
 #define MAX_REPLY 16384
 #define MARKER "gui-observer-v1"
 #define SOCKET_NAME "gui-observer.sock"
@@ -167,6 +171,7 @@ typedef struct {
   GtkWidget *targets[N_TARGETS];
   guint main_count, prefs_count, views, mapped_views, visited;
   gboolean valid;
+  const gchar *failure;
 } Observation;
 
 static gboolean
@@ -176,10 +181,18 @@ named_type (GtkWidget *widget, const gchar *name)
 }
 
 static void
-one_widget (GtkWidget **slot, GtkWidget *widget, Observation *observation)
+reject_observation (Observation *observation, const gchar *failure)
+{
+  observation->valid = FALSE;
+  if (observation->failure == NULL)
+    observation->failure = failure;
+}
+
+static void
+one_widget (GtkWidget **slot, GtkWidget *widget, Observation *observation, const gchar *failure)
 {
   if (*slot != NULL && *slot != widget)
-    observation->valid = FALSE;
+    reject_observation (observation, failure);
   *slot = widget;
 }
 
@@ -189,20 +202,21 @@ scan (GtkWidget *widget, GtkWidget *root, Observation *observation, guint depth)
   const gchar *buildable, *action = NULL;
   if (++observation->visited > MAX_WIDGETS || depth > MAX_DEPTH)
     {
-      observation->valid = FALSE;
+      reject_observation (observation, "APP_GUI_OBSERVER_SCAN_BOUND");
       return;
     }
   if (root == observation->main && GTK_IS_MENU_BAR (widget))
-    one_widget (&observation->menubar, widget, observation);
+    one_widget (&observation->menubar, widget, observation, "APP_GUI_OBSERVER_DUP_MENUBAR");
   if (root == observation->main && named_type (widget, "MousepadView"))
     {
       observation->views++;
       if (gtk_widget_get_mapped (widget))
         {
           observation->mapped_views++;
-          one_widget (&observation->view, widget, observation);
+          one_widget (&observation->view, widget, observation, "APP_GUI_OBSERVER_DUP_VIEW");
           one_widget (&observation->document_notebook,
-                      gtk_widget_get_ancestor (widget, GTK_TYPE_NOTEBOOK), observation);
+                      gtk_widget_get_ancestor (widget, GTK_TYPE_NOTEBOOK), observation,
+                      "APP_GUI_OBSERVER_DUP_NOTEBOOK");
         }
     }
   if (root == observation->prefs)
@@ -211,19 +225,19 @@ scan (GtkWidget *widget, GtkWidget *root, Observation *observation, guint depth)
       if (GTK_IS_ACTIONABLE (widget))
         action = gtk_actionable_get_action_name (GTK_ACTIONABLE (widget));
       if (g_strcmp0 (buildable, "/prefs/main-notebook") == 0 && GTK_IS_NOTEBOOK (widget))
-        one_widget (&observation->prefs_notebook, widget, observation);
+        one_widget (&observation->prefs_notebook, widget, observation, "APP_GUI_OBSERVER_DUP_NOTEBOOK");
       if (g_strcmp0 (buildable, "/prefs/window/notebook/opening-mode-combo") == 0 && GTK_IS_COMBO_BOX (widget))
-        one_widget (&observation->targets[OPENING_MODE], widget, observation);
+        one_widget (&observation->targets[OPENING_MODE], widget, observation, "APP_GUI_OBSERVER_DUP_TARGET");
       if (g_strcmp0 (buildable, "/prefs/file/history/session-combo") == 0 && GTK_IS_COMBO_BOX (widget))
-        one_widget (&observation->targets[SESSION_RESTORE], widget, observation);
+        one_widget (&observation->targets[SESSION_RESTORE], widget, observation, "APP_GUI_OBSERVER_DUP_TARGET");
       if (GTK_IS_TOGGLE_BUTTON (widget))
         {
           if (g_strcmp0 (action, "app.preferences.view.show-line-numbers") == 0)
-            one_widget (&observation->targets[LINE_NUMBERS], widget, observation);
+            one_widget (&observation->targets[LINE_NUMBERS], widget, observation, "APP_GUI_OBSERVER_DUP_TARGET");
           if (g_strcmp0 (action, "app.preferences.window.always-show-tabs") == 0)
-            one_widget (&observation->targets[ALWAYS_SHOW_TABS], widget, observation);
+            one_widget (&observation->targets[ALWAYS_SHOW_TABS], widget, observation, "APP_GUI_OBSERVER_DUP_TARGET");
           if (g_strcmp0 (action, "app.preferences.file.make-backup") == 0)
-            one_widget (&observation->targets[MAKE_BACKUP], widget, observation);
+            one_widget (&observation->targets[MAKE_BACKUP], widget, observation, "APP_GUI_OBSERVER_DUP_TARGET");
         }
     }
   if (GTK_IS_CONTAINER (widget))
@@ -361,21 +375,24 @@ observe (guint64 request)
   GParamSpec *property;
   guint n, count = 0;
   if (!GDK_IS_WAYLAND_DISPLAY (gdk_display_get_default ()))
-    observation.valid = FALSE;
+    reject_observation (&observation, "APP_GUI_OBSERVER_WAYLAND_DISPLAY");
   for (item = windows; item != NULL; item = item->next)
     {
       GtkWidget *widget = GTK_WIDGET (item->data);
       if (++count > MAX_TOPLEVELS)
-        observation.valid = FALSE;
+        {
+          reject_observation (&observation, "APP_GUI_OBSERVER_SCAN_BOUND");
+          break;
+        }
       if (named_type (widget, "MousepadWindow"))
         {
           observation.main_count++;
-          one_widget (&observation.main, widget, &observation);
+          one_widget (&observation.main, widget, &observation, "APP_GUI_OBSERVER_DUP_MAIN");
         }
       if (named_type (widget, "MousepadPrefsDialog"))
         {
           observation.prefs_count++;
-          one_widget (&observation.prefs, widget, &observation);
+          one_widget (&observation.prefs, widget, &observation, "APP_GUI_OBSERVER_DUP_PREFS");
         }
     }
   if (observation.main != NULL)
@@ -399,7 +416,7 @@ observe (guint64 request)
       request, run_id, profile_id, boolean (observation.valid));
   if (!observation.valid)
     {
-      g_string_append (json, ",\"error\":\"APP_GUI_OBSERVER_TOPOLOGY\"}\n");
+      g_string_append_printf (json, ",\"error\":\"%s\"}\n", observation.failure);
       g_list_free (windows);
       return json;
     }
