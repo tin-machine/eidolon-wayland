@@ -2,54 +2,135 @@
 
 > Linuxに肉体を残し、その姿だけを異界へ投影する。
 
-**Status（2026-11-06）: 二枚のfoot、入力・配置・背景・Rustテーマを実装し、通常SDKの回帰検査まで成功。HMDで文字・部屋の表示とUSキーボードの主要操作を確認済み。残りの物理確認を保持し、停止・復旧・初期設定と長時間測定を先行開発中。**
+**Meta Quest 3の広い作業空間で、複数のLinuxアプリを独立したウィンドウとして使う**ことを目指す、実験的な空間Waylandデスクトップです。
+QuestのAndroidアプリにRust製のWayland compositorを組み込み、SSHとWaypipeで受け取ったアプリの画面をMeta Spatial SDKのXRパネルへ描画します。
 
-Meta Quest 3向けの実験的な空間Waylandデスクトップ。QuestのAndroidアプリにWayland compositorを組み込み、**同じQuestのTermuxへlocalhost SSHで接続**し、**Waypipe**で転送した既存Waylandアプリを**Meta Spatial SDKの独立したXRパネル**として表示することを目指します。
+## 現在地（2026-11-10）
 
-Termux上のfootを独立した二枚のパネルへ表示し、キー・ray入力、focus、resize、配置保存、popup・session内clipboardを扱います。Linux PC、WiVRn、root化を通常利用の必須条件にしない設計です。受入範囲は[進捗](docs/progress.md)と[物理確認の記録](docs/phase5-manual-acceptance.md)を分けて管理しています。
+**Termux上のfootを使う経路は、描画・入力・最大9窓・移動・サイズ変更・グループ操作まで実装しています。別Linuxホストには固定GTKデモの通常接続経路があり、実用アプリ第一候補のMousepadはhost上での検証を進めています。**
 
-**起動方法:** Questのライブラリ→「提供元不明 / Unknown Sources」→**Eidolon**。Build124以前は**Eidolon Phase 0**です。再起動後は先にTermuxのSSHサービスを起動します。[利用・初回ペアリング・再起動後の手順](docs/usage.md)を参照してください。
+この概要の実装基準は、[PR #5](https://github.com/tin-machine/eidolon-wayland/pull/5)をマージしたmain [`2efca7b`](https://github.com/tin-machine/eidolon-wayland/commit/2efca7b5347ebd14a38adeceb3a490d8d71e2262)です。未マージの作業は実装済みに含めません。
+下記の実機結果は各記録のBuild・commitに対応します。最新mainの全機能を同じAPKでHMD・物理入力まで再検証した、という意味ではありません。
 
-**現実の部屋を背景にするMR表示**には、Meta Spatial SDKの通常のpassthroughを利用します。OSがカメラ映像とXRパネルを合成し、Eidolonがカメラ画素を取得する必要はありません。今回、最小Composeパネルと背景の同時表示をユーザーがHMD内で確認しました。SDK SurfaceへのRust描画も自動検査を進めています。[背景方式の補足](docs/phase-1-passthrough-background.md)と[最新の受入範囲](docs/progress.md)を参照してください。
+### 実装と確認できている範囲
 
-**実装方針:** KotlinはMeta Spatial SDK / Android adapter、RustはJNI・描画・SSH・Wayland compositor・ウィンドウ管理モデルを担当します。Waypipeは既存実装を再利用し、自作C++は必要性が確認された小さなshimに限定します。これは調査に基づく方針で、実装済みという意味ではありません。
+| 機能 | mainの実装・検証状況 | 残る確認・制約 |
+| --- | --- | --- |
+| **Termux / foot** | 同じQuestのTermuxへlocalhost SSHで接続し、Waypipe経由で描画。公開鍵ペアリング、host key pin、必要時のTermuxサービス起動を実装。文字の可読性とUSキーボードの主要操作はHMDで確認済み。[利用手順](docs/usage.md)・[物理確認](docs/phase5-manual-acceptance.md) | 初回設定とAPKに対応するTermux helperの導入が必要。全キー・全アプリの物理受入れは未完了 |
+| **最大9窓** | 3→6→9窓、上限到達時の拒否、退役後の枠再利用をQuestの固定SDKケースで確認。[9窓の統合検証](docs/nx12d-window-size-menu-20261108.md) | 実機検証は**単一footクライアントを共有する9窓**。9種類の独立した実用アプリ、最大寸法での持続性能・快適性は未受入れ |
+| **配置・サイズ** | 窓ごとの移動ハンドル、サイズメニュー、配置保存、編集終了後の入力復帰を実装。移動・サイズ操作の固定SDK検証が成功。[移動](docs/nx12b-window-move-mode-20261108.md)・[サイズ](docs/nx12d-window-size-menu-20261108.md) | 物理コントローラーでの操作とHMD上の見え方を確認する項目が残る。同じapp_idの複数窓の配置は接続内の保持と永続保存を区別する |
+| **グループ・正面復帰** | 通常メニューに「まとめる」「展開」「前面切替」を統合。2窓のグループ操作と単独窓の正面復帰はQuestの固定ケースで成功。[統合・実機記録](docs/window-group-recenter-integration-20261108.md) | 通常グループメニューの物理操作、複数窓の正面復帰の実機geometryは未受入れ。グループがある間の正面復帰は拒否する |
+| **キー・pointer・popup・clipboard** | US/JIS配列、focus、押下解除、ray入力、popup、session内clipboardを実装し、host・wire・SDKの各検査を用意。[キー](docs/keyboard-checks.md)・[pointer](docs/pointer-checks.md)・[popup / clipboard](docs/popup-clipboard-checks.md) | US配列の主要操作・tmux・2窓の入力先切替はユーザー確認済み。drag/scroll・実copy/pasteなどの物理受入れは残る |
+| **Android IME** | 通常footの「IME入力」入口とCtrl+Space切替、Wayland `text-input-v3`との接続を実装。通常入口のON→BOUND→OFF→直接入力復帰を実機自動検証。[実装](docs/nx09-terminal-ime-entry-20261108.md)・[Build176](docs/build-176-integration-20261108.md) | 既定OFF、通常footが対象。**物理Ctrl+Space・実かな漢字変換・候補のHMD表示は未確認**。別Linuxの一般GUI向けIMEは未対応 |
+| **MR背景・テーマ** | 通常passthroughと単色背景、RustのSVG/CSSテーマを実装。Cyan Orbitは観測したCPU・RSS・I/Oに応じてリングを独立回転。部屋の表示とCPU/RSSリングの見た目はユーザー確認済み。[テーマ](docs/extensions-nx01-nx08-20261107.md)・[I/O実測](docs/workload-io-fixture-20261108.md) | I/Oリングの固定実機検証は成功。共有tmux・多窓での集計やHMD受入れは残る。通常passthroughはOS側の合成を使い、アプリによるカメラ画素取得は不要 |
+| **停止・復旧・観測** | 所有資源の回収、journal、lease、明示再接続、端末・processメトリクスを実装。footの停止20回とGPU計測FD対策を実機検証。[FD対策](docs/gpu-fd-investigation.md)・[観測手順](docs/usage.md) | 長時間動作、100回再接続、Menu/sleep/reboot、署名済みreleaseの実機受入れは残る |
+| **Freedoom** | 固定短demoのSHM転送・SDK更新・自然終了・回収を確認。通常GUI workerとランチャー登録も実装。[固定demo](docs/freedoom-demo128-operator-20261108.md)・[通常経路](docs/freedoom-normal-launcher-20261108.md) | 通常ランチャーからのゲーム起動・操作・終了は未受入れ。登録成功をプレイ可能の確認とは扱わない |
 
-**ビルドと検査:** `scripts/build-android VERSION_CODE`でdebug、`scripts/build-release VERSION_CODE`でunsigned releaseを生成します。versionCodeには端末の導入版以上の正整数を指定してください。JDK 25・compileSdk 36・target API 34・Spatial SDK 0.15.0を採用しています。`scripts/check-host --suite all`がホスト検査、`scripts/quest-check`が固定caseのQuest検査です。native instrumentation・通常SDK・HMD物理確認は別の結果として保存します。詳細は[利用手順](docs/usage.md)、[進捗・失敗記録](docs/progress.md)を参照してください。
+## 別Linuxホストのアプリ対応
 
-**実装設計:** [詳細設計](docs/design/README.md)と[tasks.json](docs/design/tasks.json)にAPI・状態遷移・検証条件を記録しています。Phase 5の通常SDK回帰とテーマの自動検査を終え、残る手動項目を保持したままPhase 6の独立実装を進めています。
+### 通常GUI接続：固定GTKデモまで実装
 
-**本格実装前の小さな検証:** 独立debug APKでAPK UIDのhelper実行、Rust→SDK Surfaceの4色表示と再生成を実機確認しました。[検証・スリープ設定・ADB撮影と入力の記録](docs/native-preflight-20261104.md)に、手順、失敗、確認範囲を残しています。
+**L1〜L6はmainへ統合済み**です。Linux用の接続設定・専用client鍵・host pin・bundle pinsから、明示的なConnect → Inspect → Launch、入力、親子Dialog、Close、Stop、回収・Recoverまで接続しました。
+host/Android CIは成功していますが、**この通常経路での対象Linux＋Questの実配備・実機受入れは未完了**です。
+以前の診断経路で得た別LinuxのGTK描画・入力・Dialog成功は、通常経路の受入れとは別に記録しています。
+根拠と手順は[L1〜L4](docs/normal-linux-gui-l1-l4-20261108.md)、[L5〜L6](docs/normal-linux-gui-l5-l6-20261108.md)、[診断経路の実機記録](docs/build-174-integration-20261108.md)を参照してください。
 
-**次の到達点:** [Phase 6](docs/design/phase-6.md)の停止・障害復旧・初回設定・長時間動作の検査を進めます。テーマの光学的な見え方と残りの物理操作は最後に確認します。
+現在の対象は**IPv4で指定するLinux一台と、固定GTKデモ一種**です。任意コマンド、remote terminal、DNS/IPv6、複数host、detach/resumeは未対応です。
+切断やStopは接続先の作業も終了する契約で、切断後の同一GUIセッション保持は実装していません。
 
-**開発時の接続（2026-11-04実測）:** USBで初回デバッグ承認と端末照合を済ませ、USB-Cを給電器へ回した状態でWi-Fi経由のAPK導入・更新・起動・ログ・Android画像取得とTermux SSHに成功しました。ADBの切断・再接続後もSSHを復旧できました。USB経由のAPK導入、長時間の残量維持、sleep／Quest再起動後の自動復旧は未検証です。
+### 実用アプリ：MousepadのA0検証中
 
-2026-11-01の[追加レビュー](docs/implementation-plan.md#追加レビュー2026-11-01)では、Meta公式サンプルのEGL描画例、Build Toolsの要件、compositor layer数、XR session focus、Android helperの実行制約を反映しました。当時は設計調査のみで、実装・実機結果は上記2026-11-04の記録へ追加しています。
+L7aでは、最初の実用アプリ候補を**Mousepad 0.6.3 / GTK3**に固定しています。A0は、通常ランチャーへ組み込む前に実アプリの動作と隔離条件を確認する段階です。
+[A/A0基盤](docs/linux-real-app-a0-foundation-20261109.md)と[再起動・先行instance独立](docs/linux-real-app-a0-restart-20261109.md)では、実Waypipeと未改変Mousepadを使うhost CIで次を確認しています。
 
-**ローカル環境レビュー:** 既存SDK／NDK、JDK 25、有線LANの複数経路を[実測](docs/phase-0-development-environment.md#30-既存環境の確認結果2026-11-04)し、Quest API 34と新しいビルド用APIを区別しました。SSH手順、SHMの安全な読取り、描画待ちの影響、表示PoCと操作MVPの判定も修正しています。
+- 読み取り専用のpackage検査、専用settings backend、起動前の復元データ保護。
+- Open・編集・Save・Save As、Main/Dialog、通常Closeと全子孫の回収。
+- 同じ合成profileを使うClose / Stop / 異常終了後の再検査・再起動、保存文書の保持。復元データがある場合は起動前に拒否し、データを保持する。
+- 別の先行Mousepad instanceからの独立。CIでは125秒以上の保持と、その後の新しい応答も確認する。
 
-## Docs
+**A0全体はまだ未完了で、MousepadはQuestの通常ランチャーから利用できません。** 現在の判定は `APP_A0_INCOMPLETE`、`a0_passed=false` / `available=false` / `production_acceptance_passed=false` / `quest_verified=false`です。
+残件はGUIから変更した設定の保持、保護設定をPreferencesで操作できないことの実測、v3通常経路、Quest受入れです。専用CIの成功は実装済み基盤の成立を示します。
 
-- [利用・起動・初回ペアリング](docs/usage.md) — ADBなしの公開鍵設定、Termux起動、release、長時間測定
+次は[引き継ぎ計画](docs/linux-real-app-a0-next-steps-20261109.md)と[L7a詳細設計](docs/linux-real-app-l7a-design-20261109.md)に沿って、GUI設定2項目の実測 → A0成立 → v3 bundle/helper → native/SDK → Android通常UI → host/Quest受入れへ進みます。
 
-- [キーボードの検証記録](docs/keyboard-checks.md) — US/JISの実wire・通常Hostの固定入力・押下解除・失敗の切り分けと未確認範囲
+## 動作構成
 
-- [残フェーズの詳細設計・Solへの引継ぎ](docs/design/README.md) — 31タスクの依存順、共通契約、検証条件、一次資料
+| 接続先 | アプリの実行場所と経路 | 現在の対象 |
+| --- | --- | --- |
+| このQuestのTermux | 同じQuest内のTermux → localhost SSH（`127.0.0.1:8022`）・Waypipe → Eidolon | foot、固定GUIの検証 |
+| 別Linuxホスト | Linux → 認証済みSSH・Waypipe → Quest上のEidolon | 通常経路は固定GTKデモ。Mousepadはhost検証段階 |
 
-- [Phase 0の再現手順](docs/phase-0-reproduction.md) — 現在のbuild、Wi-Fi ADB、XR smoke、Termux SSH、復旧
-- [実機・トラブルシューティング記録](docs/phase-0-troubleshooting-20261104.md) — 失敗した試行、原因、修正、検証結果と生ログ索引
-- [アーキテクチャ設計](docs/architecture.md) — Kotlin/Rustの責務、SSH/Waypipe、描画、入力、セキュリティ
-- [実装計画](docs/implementation-plan.md) — 段階的な実装、通信図、技術検証ゲート、受け入れ条件、ADR
-- [開発自動化・デバッグ](docs/development-automation-and-debugging.md) — Codex／ADB／Meta VR CLI、XR画像取得、入力自動化、実機CI、未検証条件とsmoke test案
-- [Phase 0 — 開発環境](docs/phase-0-development-environment.md) — Ubuntuビルド、Rust cdylib、USB初期接続から給電＋Wi-Fi更新への移行検証、Termux/Codexの調査
-- [Phase 1 — Rust描画](docs/phase-1-rust-rendering.md) — JNI、NDK、SDK Surface、EGL/GLES
-- [Phase 1補足 — Passthrough背景](docs/phase-1-passthrough-background.md) — 現実の映像を背景にする方式、SDK設定、MR／VR切替と検証
-- [Phase 2 — Rust SSH](docs/phase-2-rust-ssh.md) — russh、認証、StreamLocal forwarding
-- [Phase 3 — Compositor / Waypipe](docs/phase-3-rust-compositor-waypipe.md) — SmithayのAndroid移植、既存Waypipe再利用
-- [Phase 4 — ウィンドウ描画](docs/phase-4-rust-window-rendering.md) — GlesRenderer、SHM import、Android EGL adapter
-- [Phase 5 — ウィンドウ管理](docs/phase-5-rust-window-manager.md) — Rustの状態モデル、Kotlin adapter、focus・配置・入力
-- [Phase 6 — 寿命と検証](docs/phase-6-rust-lifecycle-testing.md) — スレッド・所有権、再接続、性能・耐障害性
+接続先を切り替える前に、現在の接続と所有資源の回収完了を確認します。Termux経路の通常利用はQuest内で完結し、Linux PC・WiVRn・root化を必要としません。
 
-開発再開時は[詳細設計](docs/design/README.md)・[進捗](docs/progress.md)・[tasks.json](docs/design/tasks.json)を読み、未受入taskの自動/手動の残件を区別して依存順に進めてください。従来のP0スパイクは今回の具体的なtaskへ分解しました。
+KotlinはMeta Spatial SDK、AndroidのUI・入力・IME・権限を担当し、RustはJNI、Wayland compositor、描画、SSH、ウィンドウ管理、テーマと寿命管理を担当します。Waypipeは既存実装を利用しています。
+構成の詳細は[アーキテクチャ](docs/architecture.md)、依存版・patch・licenseは[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)と[native依存lock](native/deps.lock.json)を参照してください。
 
-デバッグ方法・実機テスト・自動化の拡張は[専用文書](docs/development-automation-and-debugging.md)を参照してください。2026-11-03の調査案と、今回実装した最小smokeの範囲を区別しています。
+## 使い始めるには
+
+1. QuestへAPKを導入し、Termuxに**APKと同じbuildのhelper群**と固定版Waypipe・footを準備します。
+2. Eidolonの公開鍵をTermuxへ登録し、username・host key・指紋を照合して初回ペアリングを行います。
+3. 必要時のサービス起動を使う場合は、Termux連携の権限と`allow-external-apps=true`を設定します。
+4. Questのライブラリ →「提供元不明 / Unknown Sources」→ **Eidolon**を開き、「ターミナルを開く」から接続します。
+
+具体的なコマンドと復旧手順は[利用・初回設定](docs/usage.md)と[Termux toolsの版契約](docs/termux-wayland-tools.md)を参照してください。
+初回連携が済んでいれば、接続拒否時に固定helperがTermuxのSSHサービスを必要時起動します。認証失敗やhost key不一致では起動処理へ進みません。
+Linux用の通常接続設定・Inspect・起動手順は[L5〜L6の記録](docs/normal-linux-gui-l5-l6-20261108.md)にあります。
+
+## ビルドと検証
+
+主な固定環境は次のとおりです。実際の依存・導入手順は[CI定義](.github/workflows/check.yml)、[開発環境](docs/phase-0-development-environment.md)、[native依存ビルド](docs/native-dependencies-build.md)を参照してください。
+
+| 項目 | 固定値 |
+| --- | --- |
+| Rust | 1.95.0 / edition 2024 |
+| JDK | 25 |
+| Android | compileSdk 36、minSdk / targetSdk 34、arm64-v8a |
+| NDK / Build Tools | 27.3.13750724 / 35.0.0 |
+| Meta Spatial SDK | 0.15.0 |
+
+リポジトリのrootで実行します。`VERSION_CODE`は端末の導入版以上の正整数に置き換えてください。
+
+```bash
+# debug APK：assemble・lint・JUnit・native/同梱検査
+scripts/build-android VERSION_CODE
+
+# unsigned release APKと同buildのTermux tools
+scripts/build-release VERSION_CODE
+
+# hostのRust/Python・依存・設計検査
+scripts/check-host --suite all
+
+# CIではhost suiteとは別に実行するWaypipe検査
+scripts/check-waypipe-clipboard
+scripts/check-waypipe-ime
+```
+
+releaseへの署名と、そのAPKの実機受入れは別途必要です。開発時はUSBで初回承認・端末照合を済ませ、給電しながらWi-Fi ADBで更新する運用を検証しています。
+Questの固定ケースは`scripts/quest-check`、長時間採取は`scripts/quest-observe`を使います。ケース・前提条件は[開発とデバッグ](docs/development-automation-and-debugging.md)と[利用手順](docs/usage.md)を確認してください。
+
+### CIと実機結果の読み方
+
+| 検証層 | 確認する範囲 |
+| --- | --- |
+| [host / Android CI](.github/workflows/check.yml) | Rust/Python、Waypipe clipboard/IME、debug APK build・lint・JUnit・ELF/版/同梱検査 |
+| [L7a foundation CI](.github/workflows/linux-real-app.yml) | 固定Mousepad・GIO policy・実Waypipe・再起動/独立性・回収。A0の未完了項目も明示的に検査 |
+| Questの固定ケース | native instrumentation、通常SDK、通常UI入口を区別して記録 |
+| HMD・物理操作 | 文字・部屋・候補の見え方、実キーボード・コントローラー操作を装着者が確認 |
+
+実装基準のmain `2efca7b`では、[host/Android CI](https://github.com/tin-machine/eidolon-wayland/actions/runs/42632193815)と[L7a foundation CI](https://github.com/tin-machine/eidolon-wayland/actions/runs/42632193803)が成功しています。
+skip・未実施・採取完了を受入れ成功へ読み替えず、後続commitの結果も個別に確認します。
+
+## ソースとドキュメントの入口
+
+| 場所 | 内容 |
+| --- | --- |
+| [android/](android/) | Questアプリ、Spatial SDK adapter、Compose UI、入力・IME |
+| [native/](native/) | Rustのmodel・core/compositor・render・transport・theme・Android JNI |
+| [scripts/termux/](scripts/termux/) / [scripts/linux/](scripts/linux/) | 接続先helper、起動・process所有・回収 |
+| [scripts/](scripts/) / [scripts/fixtures/](scripts/fixtures/) | ビルド、host/Quest検査、実アプリharness、固定fixture |
+| [docs/design/](docs/design/README.md) / [tasks.json](docs/design/tasks.json) | API・状態遷移・依存順・受入条件 |
+
+開発再開時は、[最新のL7a引き継ぎ計画](docs/linux-real-app-a0-next-steps-20261109.md)、[NX拡張の全体計画](docs/next-phase-termux-startup-linux-gui-plan-20261107.md)、[通常GUIの後続計画](docs/nx11-nx18-normal-gui-followup-plan-20261108.md)、[進捗と失敗の履歴](docs/progress.md)を確認してください。
+既存の手順・進捗には各Build時点の記述が残っています。窓数・統合状況などは本READMEの基準commitと、各機能の新しい実装・検証記録を合わせて確認してください。
+
+今後の主な受入れは、**Mousepadの通常利用、IMEの実変換、窓操作の物理確認、長時間動作と復旧、署名済みrelease**です。[物理確認の残件](docs/phase5-manual-acceptance.md)と[Phase 6の条件](docs/design/phase-6.md)を保持し、実装・自動検証・手動受入れをそれぞれ進めます。
