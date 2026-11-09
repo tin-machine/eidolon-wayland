@@ -38,7 +38,7 @@ host/Android CIは成功していますが、**この通常経路での対象Lin
 現在の対象は**IPv4で指定するLinux一台と、固定GTKデモ一種**です。任意コマンド、remote terminal、DNS/IPv6、複数host、detach/resumeは未対応です。
 切断やStopは接続先の作業も終了する契約で、切断後の同一GUIセッション保持は実装していません。
 
-### 実用アプリ：MousepadのA0検証中
+### 実用アプリ：A0成立、v3共有契約の実装
 
 L7aでは、最初の実用アプリ候補を**Mousepad 0.6.3 / GTK3**に固定しています。A0は、通常ランチャーへ組み込む前に実アプリの動作と隔離条件を確認する段階です。
 [A/A0基盤](docs/linux-real-app-a0-foundation-20261109.md)と[再起動・先行instance独立](docs/linux-real-app-a0-restart-20261109.md)では、実Waypipeと未改変Mousepadを使うhost CIで次を確認しています。
@@ -48,10 +48,14 @@ L7aでは、最初の実用アプリ候補を**Mousepad 0.6.3 / GTK3**に固定�
 - 同じ合成profileを使うClose / Stop / 異常終了後の再検査・再起動、保存文書の保持。復元データがある場合は起動前に拒否し、データを保持する。
 - 別の先行Mousepad instanceからの独立。CIでは125秒以上の保持と、その後の新しい応答も確認する。
 
-**A0全体はまだ未完了で、MousepadはQuestの通常ランチャーから利用できません。** 現在の判定は `APP_A0_INCOMPLETE`、`a0_passed=false` / `available=false` / `production_acceptance_passed=false` / `quest_verified=false`です。
-残件はGUIから変更した設定の保持、保護設定をPreferencesで操作できないことの実測、v3通常経路、Quest受入れです。専用CIの成功は実装済み基盤の成立を示します。
+**A0はPR #6で`APP_A0_PASSED`となりました。** 実GUIによる行番号設定の保持、保護Preferencesの操作不可、同じmainでのtab増加も確認しています。
+[GUI設定の実装記録](docs/linux-real-app-a0-gui-settings-20261109.md)を参照してください。
+`available` / `production_acceptance_passed` / `quest_verified`はfalseで、MousepadはQuestの通常ランチャーからまだ利用できません。
 
-次は[引き継ぎ計画](docs/linux-real-app-a0-next-steps-20261109.md)と[L7a詳細設計](docs/linux-real-app-l7a-design-20261109.md)に沿って、GUI設定2項目の実測 → A0成立 → v3 bundle/helper → native/SDK → Android通常UI → host/Quest受入れへ進みます。
+次工程B1では、[Python/Rustのv3共有契約と固定golden vector](docs/linux-real-app-b1-contract-20261110.md)を隔離して追加しました。
+通常起動・製品bundle・永続profile・Android保存・native/SDKには接続していません。
+[B1引き継ぎ](docs/linux-real-app-b1-handoff-20261110.md)と[L7a詳細設計](docs/linux-real-app-l7a-design-20261109.md)に沿って、
+B2のbundle/protocol、C1→C2の永続profile/helper、E1のAndroid保存モデルへ進みます。
 
 ## 動作構成
 
@@ -113,7 +117,7 @@ Questの固定ケースは`scripts/quest-check`、長時間採取は`scripts/que
 | 検証層 | 確認する範囲 |
 | --- | --- |
 | [host / Android CI](.github/workflows/check.yml) | Rust/Python、Waypipe clipboard/IME、debug APK build・lint・JUnit・ELF/版/同梱検査 |
-| [L7a foundation CI](.github/workflows/linux-real-app.yml) | 固定Mousepad・GIO policy・実Waypipe・再起動/独立性・回収。A0の未完了項目も明示的に検査 |
+| [L7a foundation CI](.github/workflows/linux-real-app.yml) | 固定Mousepad・GIO policy・実Waypipe・再起動/独立性・回収。GUI設定を含むA0全条件と125秒先行保持を必須検査 |
 | Questの固定ケース | native instrumentation、通常SDK、通常UI入口を区別して記録 |
 | HMD・物理操作 | 文字・部屋・候補の見え方、実キーボード・コントローラー操作を装着者が確認 |
 
@@ -130,7 +134,7 @@ skip・未実施・採取完了を受入れ成功へ読み替えず、後続comm
 | [scripts/](scripts/) / [scripts/fixtures/](scripts/fixtures/) | ビルド、host/Quest検査、実アプリharness、固定fixture |
 | [docs/design/](docs/design/README.md) / [tasks.json](docs/design/tasks.json) | API・状態遷移・依存順・受入条件 |
 
-開発再開時は、[最新のL7a引き継ぎ計画](docs/linux-real-app-a0-next-steps-20261109.md)、[NX拡張の全体計画](docs/next-phase-termux-startup-linux-gui-plan-20261107.md)、[通常GUIの後続計画](docs/nx11-nx18-normal-gui-followup-plan-20261108.md)、[進捗と失敗の履歴](docs/progress.md)を確認してください。
+開発再開時は、[最新のL7a引き継ぎ計画](docs/linux-real-app-b1-contract-20261110.md)、[NX拡張の全体計画](docs/next-phase-termux-startup-linux-gui-plan-20261107.md)、[通常GUIの後続計画](docs/nx11-nx18-normal-gui-followup-plan-20261108.md)、[進捗と失敗の履歴](docs/progress.md)を確認してください。
 既存の手順・進捗には各Build時点の記述が残っています。窓数・統合状況などは本READMEの基準commitと、各機能の新しい実装・検証記録を合わせて確認してください。
 
 今後の主な受入れは、**Mousepadの通常利用、IMEの実変換、窓操作の物理確認、長時間動作と復旧、署名済みrelease**です。[物理確認の残件](docs/phase5-manual-acceptance.md)と[Phase 6の条件](docs/design/phase-6.md)を保持し、実装・自動検証・手動受入れをそれぞれ進めます。
