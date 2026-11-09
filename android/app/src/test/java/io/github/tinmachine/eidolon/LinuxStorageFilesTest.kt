@@ -143,6 +143,30 @@ class LinuxStorageFilesTest {
         }
     }
 
+    @Test fun profileUsesLegacyTempAndCannotBypassEitherInterruptedSpelling() {
+        for (spelling in listOf("remote-linux.tmp", "remote-linux.json.tmp")) HostLinuxStorageFixture().use { f ->
+            var usedLegacyTemp = false
+            val profileDirectory = f.directory.resolve("linux-profile")
+            val store = f.files("linux-profile") { stage, _ ->
+                if (stage == LinuxStorageIoStage.TEMP_CREATED) {
+                    usedLegacyTemp = Files.exists(profileDirectory.resolve("remote-linux.tmp")) &&
+                        !Files.exists(profileDirectory.resolve("remote-linux.json.tmp"))
+                }
+            }
+            store.create()
+            store.publish("remote-linux.json", null, first)
+            val interrupted = profileDirectory.resolve(spelling)
+            write(interrupted, "unpublished profile".toByteArray())
+            assertThrows(spelling, IllegalArgumentException::class.java) {
+                store.publish("remote-linux.json", first, second)
+            }
+            assertThrows(spelling, IllegalArgumentException::class.java) { store.read("remote-linux.json") }
+            assertArrayEquals(first, Files.readAllBytes(profileDirectory.resolve("remote-linux.json")))
+            assertArrayEquals("unpublished profile".toByteArray(), Files.readAllBytes(interrupted))
+            assertTrue("new E1 profile writes must share legacy O_EXCL temp", usedLegacyTemp)
+        }
+    }
+
     @Test fun injectedFailureAtEveryPublishBoundaryNeverRollsBackAfterRename() {
         for (point in LinuxStorageIoStage.entries.filter { it != LinuxStorageIoStage.DIRECTORY_CREATED }) {
             HostLinuxStorageFixture().use { f ->

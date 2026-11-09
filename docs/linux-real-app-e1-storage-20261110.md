@@ -28,6 +28,9 @@ B1 Python/Rust・共通golden、固定v2の5 source、v2 pins/profile/journal/Re
 | [LinuxStorageStore.kt](../android/app/src/main/java/io/github/tinmachine/eidolon/LinuxStorageStore.kt) | `Context.noBackupFilesDir`を使うE2向け入口 |
 
 既存保存utilityへの変更は`LinuxProfileStore.AtomicFile`の共通lockを`LinuxStorageIo.lock`へ揃える一箇所だけ。
+E1のprofile保存も既存の`remote-linux.tmp`を使い、残存tempで拒否する既存publishの境界を維持する。
+旧tempとE1初期実装の`remote-linux.json.tmp`のどちらも、残っていれば削除・採用せず拒否する。
+既存v2のreadが旧published profileを返す挙動は変更しない。
 既存credential保存・失敗・回収契約、profileのschema/codec、binding式、canonical host key、revision規則を維持する。
 保存成功を理由に`available` / `production_acceptance_passed` / `quest_verified`をtrueにせず、
 [通常v3 acceptance](../scripts/linux_real_app_check.py)の`APP_V3_NOT_IMPLEMENTED`も維持する。
@@ -205,7 +208,7 @@ UID差替え等の一部拒否入力にはfault adapterを併用するが、mock
 
 | 対象 | 実行結果・記録場所 |
 | --- | --- |
-| Kotlin 2.4.21 / JUnit 4.13.2、host実filesystem | 63件中62成功・1 assumption skip・失敗0。identity11、filesystem14、repository18、既存profile20。skipはrootでは成立しない実EACCES検査 |
+| Kotlin 2.4.21 / JUnit 4.13.2、host実filesystem | 64件中63成功・1 assumption skip・失敗0。identity11、filesystem15、repository18、既存profile20。skipはrootでは成立しない実EACCES検査 |
 | B1 Python/Rust | 新規実行でPython15成功・skip0、Rust8成功・ignored0（114 filtered）。共通fixtureは不変 |
 | check-design / 固定契約 | 31 tasks / 45 checks成功。v2五source・golden、B1 golden、共有lifetime、既存transport/credentials/profile/NativeSessionHostがbyte-for-byte不変 |
 | host/Android CI | 最終PR headの結果をPR本文へ記録。JUnit XMLの全体/E1別集計とartifactを追加し、task成功と実件数を区別する |
@@ -215,3 +218,11 @@ UID差替え等の一部拒否入力にはfault adapterを併用するが、mock
 ローカルはUID0だけをmapしたuser namespaceで、UID65534への切替はJava起動前に`EINVAL`となった。
 非root検査を実行したとは数えず、実EACCESは非rootのAndroid CIで確認する。
 最終PR本文はhead SHA・run/job URL・実行件数・skip理由とともに確定する。
+
+初回head `bc17f0158d23afb17288c26b62e7f30def689f05`の後、既存temp境界の回帰を再現した。
+追加した実filesystem検査は修正前15件中1失敗（残存`remote-linux.tmp`でE1 publishが成功）、
+共有temp名への修正後15件全成功・skip0となった。保存guardを緩めず、E1側の一箇所を修正した。
+初回[host/Android run 42672211103](https://github.com/tin-machine/eidolon-wayland/actions/runs/42672211103)は
+job開始前・0 jobsで失敗し、固定actionlint 1.7.12の両workflow検査はローカル成功した。
+取得可能なAPIには原因診断がなく、Kotlin検査失敗やbilling等の具体的原因とは断定しない。
+この初回CIを後続headの成功証拠へ流用しない。

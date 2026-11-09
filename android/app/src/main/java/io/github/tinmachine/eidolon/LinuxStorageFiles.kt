@@ -66,6 +66,7 @@ internal class SecureLinuxStorageFiles(
     private val root = noBackupDirectory.absoluteFile
     private val directory = directoryName?.let { File(root, it) } ?: root
     private val isRoot = directoryName == null
+    private val sharesLegacyProfile = directoryName == "linux-profile"
 
     init {
         require(directoryName == null || directoryName.matches(Regex("[a-z][a-z0-9-]{0,63}")))
@@ -96,7 +97,7 @@ internal class SecureLinuxStorageFiles(
     override fun read(name: String): ByteArray? = LinuxStorageIo.serialized {
         val file = file(name)
         val identity = checkedDirectory() ?: return@serialized null
-        require(posix.lstat(temporary(name).path) == null) { "STORAGE_INTERRUPTED_WRITE" }
+        requireNoInterruptedWrite(name)
         val bytes = readFileOrAbsent(file)
         require(identity.sameIdentity(checkNotNull(checkedDirectory()))) { "STORAGE_DIRECTORY_CHANGED" }
         bytes
@@ -107,7 +108,7 @@ internal class SecureLinuxStorageFiles(
         val target = file(name)
         val temp = temporary(name)
         val identity = checkNotNull(checkedDirectory()) { "STORAGE_DIRECTORY_MISSING" }
-        require(posix.lstat(temp.path) == null) { "STORAGE_INTERRUPTED_WRITE" }
+        requireNoInterruptedWrite(name)
         require(equal(readFileOrAbsent(target), expected)) { "STORAGE_CHANGED" }
         posix.openDirectory(directory.path).use { directoryFd ->
             require(identity.sameIdentity(directoryFd.stat())) { "STORAGE_DIRECTORY_CHANGED" }
@@ -218,7 +219,18 @@ internal class SecureLinuxStorageFiles(
         require(name.matches(Regex("[a-z0-9][a-z0-9.-]{0,95}")) && !name.contains("..") && !name.endsWith(".tmp"))
         return File(directory, name)
     }
-    private fun temporary(name: String) = File(directory, file(name).name + ".tmp")
+    private fun temporary(name: String): File {
+        val saved = file(name)
+        // Preserve LinuxProfileStore.AtomicFile's O_EXCL boundary across legacy/E1 writes.
+        return File(directory, if (sharesLegacyProfile && name == "remote-linux.json") "remote-linux.tmp" else saved.name + ".tmp")
+    }
+    private fun requireNoInterruptedWrite(name: String) {
+        require(posix.lstat(temporary(name).path) == null) { "STORAGE_INTERRUPTED_WRITE" }
+        // An interrupted earlier E1 write is also evidence, never an excuse to switch temp names.
+        if (sharesLegacyProfile && name == "remote-linux.json") {
+            require(posix.lstat(File(directory, "remote-linux.json.tmp").path) == null) { "STORAGE_INTERRUPTED_WRITE" }
+        }
+    }
     private fun equal(a: ByteArray?, b: ByteArray?) = if (a == null || b == null) a == null && b == null else a.contentEquals(b)
 
     private companion object {
