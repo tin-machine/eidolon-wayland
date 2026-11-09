@@ -178,6 +178,7 @@ class FoundationAggregationTests(TemporaryCheck):
                                      "prelaunch_client_count": 0, "observed_mapped_count": 1,
                                      "input_delivered": 0, "pressed": 0},
                     "profile_before": copy.deepcopy(saved), "profile_after": copy.deepcopy(saved),
+                    "documents_before_termination": saved["documents_sha256"],
                     "app_spawned": True, "cleanup": self.cleanup(),
                     "final_graph": None if ending == "stop" else {"window_count": 0, "client_count": 0,
                                                                     "pressed": 0, "focus_window": None},
@@ -198,7 +199,7 @@ class FoundationAggregationTests(TemporaryCheck):
         for number, kind in enumerate(("session", "autosave", "ambiguous"), 1):
             refused = run(number + 40, profile_id=200 + number)
             refused.update(state="fail", status="failed", error="APP_STATE_RECOVERY_REQUIRED",
-                           app_spawned=False, initial_main=None, final_graph=None,
+                           app_spawned=False, initial_main=None, final_graph=None, documents_before_termination=None,
                            termination={"kind": "close", "observed": False, "app_pidfd_exit": None,
                                         "server_returncode": None, "forced_scope_cleanup": False})
             refused["recovery_guard"].update(clear=False, reason="APP_STATE_RECOVERY_REQUIRED",
@@ -272,6 +273,45 @@ class FoundationAggregationTests(TemporaryCheck):
         for stage, field in (("profile_before", "tree_sha256"), ("profile_after", "documents_sha256")):
             with self.subTest(stage=stage, field=field):
                 self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["close_restart"]["restart"][stage].update({field: "0" * 64}))
+
+    def test_matching_empty_post_shutdown_snapshots_cannot_hide_lost_saved_documents(self):
+        for ending in ("close", "stop", "crash"):
+            for changed in (sha(b"[]"), sha(b"changed saved documents")):
+                def lose_documents(value):
+                    case = value["lifecycle"]["cases"][ending + "_restart"]
+                    case["first"]["profile_after"]["documents_sha256"] = changed
+                    case["restart"]["profile_before"]["documents_sha256"] = changed
+                    case["restart"]["profile_after"]["documents_sha256"] = changed
+                    case["restart"]["documents_before_termination"] = changed
+                with self.subTest(ending=ending, changed=changed):
+                    self.assert_invalid_evidence(lose_documents)
+
+    def test_document_witness_is_required_only_for_executed_endings(self):
+        for replacement in (None, False, "invalid"):
+            with self.subTest(replacement=replacement):
+                self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["stop_restart"]["first"].update(
+                    documents_before_termination=replacement))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["cases"]["close_restart"]["first"].pop(
+            "documents_before_termination"))
+        self.assert_invalid_evidence(lambda value: value["lifecycle"]["recovery"]["session"]["run"].update(
+            documents_before_termination=sha(b"invented pre-termination snapshot")))
+
+    def test_stop_or_crash_protected_refusal_remains_distinct_from_restart_success(self):
+        for ending in ("stop", "crash"):
+            value = self.application()
+            case = value["lifecycle"]["cases"][ending + "_restart"]
+            restart = case["restart"]
+            restart.update(state="fail", status="failed", error="APP_STATE_RECOVERY_REQUIRED",
+                           app_spawned=False, initial_main=None, final_graph=None, documents_before_termination=None,
+                           termination={"kind": "close", "observed": False, "app_pidfd_exit": None,
+                                        "server_returncode": None, "forced_scope_cleanup": False})
+            restart["recovery_guard"].update(clear=False, reason="APP_STATE_RECOVERY_REQUIRED", session_empty=False)
+            case["outcome"] = "recovery_required"
+            with self.subTest(ending=ending):
+                self.assertIs(check.validate_application_foundation(value), value)
+                case["outcome"] = "restarted"
+                with self.assertRaises(check.BuildError):
+                    check.validate_application_foundation(value)
 
     def test_close_setting_preservation_requires_nonempty_flushed_settings(self):
         for stage in ("first", "restart"):

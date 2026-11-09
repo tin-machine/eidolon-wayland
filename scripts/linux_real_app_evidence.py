@@ -14,7 +14,7 @@ INVALID = "APP_WAYLAND_RECEIPT_INVALID"
 PENDING = ("gui_setting_persistence", "protected_settings_gui_readonly")
 RUN_FIELDS = frozenset({
     "state", "status", "error", "run_id", "owner_scope_id", "profile_id", "runtime_id",
-    "termination_kind", "termination", "initial_main", "profile_before", "profile_after",
+    "termination_kind", "termination", "initial_main", "profile_before", "profile_after", "documents_before_termination",
     "app_spawned", "cleanup", "recovery_guard", "mousepad_sha256", "waypipe_sha256", "waypipe_version", "final_graph",
 })
 PROFILE_FIELDS = frozenset({
@@ -102,6 +102,7 @@ def _run(value, *, ending, source, refused=False):
                 and value["initial_main"] is None and guard["clear"] is False
                 and guard["reason"] == "APP_STATE_RECOVERY_REQUIRED"
                 and value["profile_before"] == value["profile_after"]
+                and value["documents_before_termination"] is None
                 and termination["observed"] is False and termination["app_pidfd_exit"] is None
                 and termination["server_returncode"] is None and termination["forced_scope_cleanup"] is False
                 and value["final_graph"] is None,
@@ -112,6 +113,8 @@ def _run(value, *, ending, source, refused=False):
                 and guard["reason"] == "NONE" and guard["session_empty"] is True
                 and guard["recovery_data_empty"] is True and termination["observed"] is True, INVALID)
         _initial(value["initial_main"])
+        require(_hex(value["documents_before_termination"], 64)
+                and value["documents_before_termination"] == value["profile_after"]["documents_sha256"], INVALID)
         if ending == "close":
             require(type(termination["server_returncode"]) is int and termination["server_returncode"] == 0
                     and termination["forced_scope_cleanup"] is False

@@ -275,6 +275,161 @@ class ControlTransportTests(unittest.TestCase):
             driver.Control(child).snapshot()
 
 
+class PartialPipeRegistrationTests(unittest.TestCase):
+    """Real pipes/subprocesses around injected registration faults.
+
+    Only the owner factory is replaced, so these descriptor-boundary tests can
+    run under root too. The mandatory non-root lifecycle suite separately
+    verifies the actual frozen ProcessOwner and escaped descendants.
+    """
+    @contextlib.contextmanager
+    def prepared_child(self):
+        class FixedChildOwner:
+            def __init__(self):
+                self.child = None
+
+            def spawn(self, command, *, env):
+                self.child = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
+                                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                              close_fds=True, start_new_session=True)
+                return self.child
+
+            def finish(self, **_kwargs):
+                self.child.wait(timeout=3)
+                return RunCaseCleanupTests.report(True)
+
+        process_owner = FixedChildOwner()
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(owner.owner_api, "ProcessOwner", return_value=process_owner):
+            guard = owner._TerminationGuard()
+            run = owner._Run(Path(temporary), guard)
+            try:
+                yield run, process_owner
+            finally:
+                if process_owner.child is not None:
+                    process_owner.child.wait(timeout=3)
+                if guard.previous:
+                    run.finish()
+
+    @staticmethod
+    def child_command():
+        return [sys.executable, "-I", "-S", "-B", "-c",
+                'import sys; print("synthetic-out", flush=True); print("synthetic-err", file=sys.stderr, flush=True)']
+
+    def assert_drained(self, run, process_owner, receipt, control):
+        self.assertEqual(process_owner.child.returncode, 0)
+        self.assertTrue(receipt["complete"])
+        self.assertTrue(receipt["output_pipes_eof"])
+        self.assertTrue(receipt["root_pidfds_closed"])
+        self.assertEqual(len(run.pipes), 2)
+        self.assertTrue(all(stream.closed for stream in run.pipes))
+        self.assertEqual(len(run.pidfds), 0)
+        self.assertEqual(run.output_bytes["control_stdout_remaining" if control else "synthetic_stdout"],
+                         len(b"synthetic-out\n"))
+        self.assertEqual(run.output_bytes["synthetic_stderr"], len(b"synthetic-err\n"))
+        self.assertFalse(run.termination.previous)
+
+    def test_pidfd_failure_remembers_and_drains_both_real_child_pipes(self):
+        for control in (False, True):
+            with self.subTest(control=control), self.prepared_child() as (run, process_owner):
+                with mock.patch.object(owner.os, "pidfd_open", side_effect=OSError(errno.EMFILE, "synthetic")):
+                    with self.assertRaises(OSError):
+                        run.spawn("synthetic", self.child_command(), {"PATH": "/usr/bin:/bin"}, control=control)
+                self.assertEqual(len(run.pipes), 2)
+                self.assertEqual(len(run.selector.get_map()), 0)
+                self.assert_drained(run, process_owner, run.finish(), control)
+
+    def test_partial_nonblocking_or_selector_registration_is_reconciled(self):
+        for boundary in ("set_blocking", "register"):
+            for control in (False, True):
+                with self.subTest(boundary=boundary, control=control), self.prepared_child() as (run, process_owner):
+                    original_blocking = os.set_blocking
+                    original_register = run.selector.register
+
+                    def failed_blocking(fd, value):
+                        if fd == process_owner.child.stderr.fileno():
+                            raise OSError(errno.EIO, "synthetic")
+                        return original_blocking(fd, value)
+
+                    def failed_register(stream, events, key):
+                        if stream is process_owner.child.stderr:
+                            raise OSError(errno.EIO, "synthetic")
+                        return original_register(stream, events, key)
+
+                    patch = (mock.patch.object(os, "set_blocking", side_effect=failed_blocking)
+                             if boundary == "set_blocking" else
+                             mock.patch.object(run.selector, "register", side_effect=failed_register))
+                    with patch, self.assertRaises(OSError):
+                        run.spawn("synthetic", self.child_command(), {"PATH": "/usr/bin:/bin"}, control=control)
+                    self.assertEqual(len(run.pipes), 2)
+                    with mock.patch.object(run.selector, "register", wraps=original_register) as register:
+                        receipt = run.finish()
+                    keys = [call.args[2] for call in register.call_args_list]
+                    self.assertEqual(keys, ["control_stdout_remaining", "synthetic_stderr"]
+                                     if control else ["synthetic_stderr"])
+                    self.assert_drained(run, process_owner, receipt, control)
+
+    def test_pending_eof_keeps_lock_and_does_not_reregister_drained_pipe(self):
+        readers, writers = [], []
+        for _ in range(2):
+            read_fd, write_fd = os.pipe()
+            readers.append(os.fdopen(read_fd, "rb"))
+            writers.append(write_fd)
+        process_owner = mock.Mock()
+        process_owner.spawn.return_value = mock.Mock(pid=1234, stdout=readers[0], stderr=readers[1])
+        process_owner.finish.return_value = RunCaseCleanupTests.report(True)
+        run = None
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(owner.owner_api, "ProcessOwner", return_value=process_owner):
+            lock = Path(temporary) / "profile.lock"
+            guard = owner._TerminationGuard()
+            try:
+                run = owner._Run(Path(temporary), guard)
+                run.profile_lock = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_CLOEXEC, 0o600)
+                fcntl.flock(run.profile_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                descriptor = os.open(os.devnull, os.O_RDONLY | os.O_CLOEXEC)
+                with mock.patch.object(os, "pidfd_open", return_value=descriptor):
+                    run.spawn("synthetic", ["fixed-test-only"], {})
+                os.write(writers[0], b"already-drained")
+                os.close(writers[0])
+                writers[0] = None
+                run.pump()
+                run.pump()
+                self.assertIn(readers[0], run._pipe_eof)
+                with mock.patch.object(run.selector, "register", wraps=run.selector.register) as register:
+                    with self.assertRaises(owner.CleanupPending) as caught:
+                        run.finish()
+                    register.assert_not_called()
+                self.assertIs(caught.exception.run, run)
+                self.assertFalse(run.cleanup["complete"])
+                self.assertTrue(run.cleanup["pending"])
+                self.assertIs(signal.getsignal(signal.SIGTERM).__self__, guard)
+                probe = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(probe)
+                os.close(writers[1])
+                writers[1] = None
+                with mock.patch.object(run.selector, "register", wraps=run.selector.register) as register:
+                    receipt = owner.retry_cleanup(caught.exception)
+                    register.assert_not_called()
+                self.assertTrue(receipt["output_pipes_eof"])
+                self.assertTrue(all(stream.closed for stream in readers))
+                self.assertIsNone(run.profile_lock)
+                self.assertFalse(guard.previous)
+            finally:
+                for fd in writers:
+                    if fd is not None:
+                        os.close(fd)
+                if run is not None and guard.previous:
+                    run.finish()
+                for stream in readers:
+                    stream.close()
+                guard.restore()
+
+
 class RunCaseCleanupTests(unittest.TestCase):
     """Real run_case/lock/guard flow, with no application or native dependency.
 

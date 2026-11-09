@@ -251,6 +251,7 @@ class ProfileLaunchTests(unittest.TestCase):
                 self.assertEqual(result["state"], "fail")
                 self.assertFalse(result["app_spawned"])
                 self.assertIsNone(result["initial_main"])
+                self.assertIsNone(result["documents_before_termination"])
                 self.assertEqual(holder, [])
                 process_owner.spawn.assert_not_called()
                 self.assertEqual(result["profile_before"], before)
@@ -288,6 +289,109 @@ class ProfileLaunchTests(unittest.TestCase):
             self.assertFalse(result["app_spawned"])
             self.assertEqual(holder, [])
             process_owner.spawn.assert_not_called()
+
+    def test_saved_documents_are_compared_across_each_termination_not_only_restart(self):
+        # Fixed runtime doubles isolate this byte oracle; genuine app endings
+        # are exercised by the mandatory Mousepad job. Files here are real:
+        # Save writes them, and owner cleanup fault injection removes/changes
+        # them after the pre-termination snapshot but before the final one.
+        for ending in ("close", "stop", "crash"):
+            for mutation in (None, "delete", "change"):
+                with self.subTest(ending=ending, mutation=mutation), \
+                     controller_tests.RunCaseCleanupTests().prepared() as prepared:
+                    repo, artifact, settings, process_owner, holder = prepared
+                    profile = wayland.SyntheticProfile.create(artifact.parent / "reused-profile")
+                    control = mock.Mock()
+                    control.wait_main.return_value = "1"
+                    control.snapshot.return_value = {"counts": {"clients": 0}, "windows": [], "observed_mapped": []}
+                    control.wait.return_value = {"counts": {"clients": 0}, "windows": [],
+                                                 "input": {"pressed": 0, "focus_window": None}}
+
+                    def spawn(run, label, *_args, **_kwargs):
+                        if label == "compositor":
+                            holder.append(run)
+                            (artifact / "compositor/result.json").write_text(json.dumps({
+                                "state": "complete", "client_cleanup_verified": True, "forced_disconnect": False}))
+                        elif label == "waypipe_client":
+                            (run.runtime / "channel").touch()
+                        child = mock.Mock()
+                        child.test_label = label
+                        child.poll.return_value = None
+                        return child
+
+                    def save(_control, source, destination, initial):
+                        expected = initial + b"synthetic saved data\n"
+                        source.write_bytes(expected)
+                        write_private(destination, expected)
+                        return {"synthetic_unit_oracle": True}
+
+                    def cleanup(**_kwargs):
+                        destination = profile.documents / "saved.txt"
+                        if mutation == "delete":
+                            destination.unlink()
+                        elif mutation == "change":
+                            destination.write_bytes(b"unexpected changed bytes\n")
+                        return controller_tests.RunCaseCleanupTests.report(True)
+
+                    process_owner.finish.side_effect = cleanup
+                    with mock.patch.object(wayland._Run, "spawn", spawn), \
+                         mock.patch.object(wayland._Run, "wait_child", side_effect=lambda child, _seconds:
+                                           137 if ending == "crash" and child.test_label == "waypipe_server" else 0), \
+                         mock.patch.object(wayland._Run, "signal_root"), \
+                         mock.patch.object(wayland._Run, "crash_mousepad", return_value=True), \
+                         mock.patch.object(wayland.stat, "S_ISSOCK", return_value=True), \
+                         mock.patch.object(wayland.driver, "Control", return_value=control), \
+                         mock.patch.object(wayland.driver, "observe_ready", return_value={"observed_mapped_count": 1}), \
+                         mock.patch.object(wayland.driver, "exercise_open_edit_save", side_effect=save):
+                        result = wayland.run_case(repo, artifact, settings, profile=profile, ending=ending)
+                    self.assertTrue(result["cleanup"]["complete"])
+                    self.assertEqual(len(result["documents_before_termination"]), 64)
+                    if mutation is None:
+                        self.assertEqual(result["state"], "partial")
+                        self.assertIsNone(result["error"])
+                        self.assertEqual(result["documents_before_termination"],
+                                         result["profile_after"]["documents_sha256"])
+                    else:
+                        self.assertEqual(result["state"], "fail")
+                        self.assertEqual(result["error"], "APP_WAYLAND_DOCUMENTS_CHANGED")
+                        self.assertNotEqual(result["documents_before_termination"],
+                                            result["profile_after"]["documents_sha256"])
+
+    def test_document_loss_does_not_overwrite_original_termination_error(self):
+        with controller_tests.RunCaseCleanupTests().prepared() as prepared:
+            repo, artifact, settings, process_owner, holder = prepared
+            profile = wayland.SyntheticProfile.create(artifact.parent / "reused-profile")
+            document = profile.documents / "saved.txt"
+            write_private(document, b"previously saved document\n")
+            control = mock.Mock()
+            control.wait_main.return_value = "1"
+            control.snapshot.return_value = {"counts": {"clients": 0}, "windows": [], "observed_mapped": []}
+            control.close.side_effect = wayland.driver.ProbeError("SYNTHETIC_CLOSE_ERROR")
+
+            def spawn(run, label, *_args, **_kwargs):
+                if label == "compositor":
+                    holder.append(run)
+                elif label == "waypipe_client":
+                    (run.runtime / "channel").touch()
+                child = mock.Mock()
+                child.poll.return_value = None
+                return child
+
+            def cleanup(**_kwargs):
+                document.unlink()
+                return controller_tests.RunCaseCleanupTests.report(True)
+
+            process_owner.finish.side_effect = cleanup
+            with mock.patch.object(wayland._Run, "spawn", spawn), \
+                 mock.patch.object(wayland.stat, "S_ISSOCK", return_value=True), \
+                 mock.patch.object(wayland.driver, "Control", return_value=control), \
+                 mock.patch.object(wayland.driver, "observe_ready", return_value={"observed_mapped_count": 1}):
+                result = wayland.run_case(repo, artifact, settings, profile=profile, exercise=False)
+            self.assertEqual(result["state"], "fail")
+            self.assertEqual(result["error"], "SYNTHETIC_CLOSE_ERROR")
+            self.assertTrue(result["cleanup"]["complete"])
+            self.assertNotEqual(result["documents_before_termination"],
+                                result["profile_after"]["documents_sha256"])
 
 
 class ResponseOracleTests(unittest.TestCase):

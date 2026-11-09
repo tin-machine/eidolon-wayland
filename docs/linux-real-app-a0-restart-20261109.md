@@ -49,6 +49,8 @@ profile snapshotはlock下でno-follow・件数/深さ/bytes上限付きで読�
 
 [`_pair()` と `_recovery_case()`](../scripts/linux_real_app_harness.py) が各caseを実行する。
 各初回runで、実Waylandのキー入力から未改変MousepadのOpen/編集/Save/Save Asを行い、保存bytesを独立照合する。
+Save完了後・終了操作直前にも同じlock下で文書digestを採取し、終了後および再起動後との一致を必須にする。
+終了後と再起動後が両方とも空になった場合の偽合格を、この終了前の実測証拠で拒否する。
 再起動runではファイルを作り直さず、同じprofileの保存bytesと起動を確認する。
 
 | case | 終了の観測と必要な証拠 |
@@ -108,6 +110,8 @@ SIGINT/SIGTERM/SIGHUPはラッチだけを行い、Popen→子登録→pidfd/pip
 workerのpending JSONは状態通知であり、親への所有移管でも、workerが終了してよい許可でもない。
 全子孫が消えていてもpipe EOF未確認ならpendingを維持し、profile lockとguardを解放しない。
 後で回収できても、最初の検証失敗や記録失敗を成功へ変更しない。
+spawn直後のpidfd取得やselector登録が途中で失敗しても、先に保持した両pipeを回収時に登録し直して実EOFまで読む。
+実subprocessのpipeを使ったEMFILE注入で見つかった「未登録pipeをEOF済みと誤認する」経路も拒否検査に含める。
 
 ## receiptとCI gate
 

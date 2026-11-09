@@ -31,7 +31,7 @@ EVENTS = frozenset({"ready", "observation", "case", "done"})
 OPERATIONS = frozenset({"run", "observe", "close", "stop"})
 COMPACT_FIELDS = (
     "state", "status", "error", "run_id", "owner_scope_id", "profile_id", "runtime_id",
-    "termination_kind", "termination", "initial_main", "profile_before", "profile_after",
+    "termination_kind", "termination", "initial_main", "profile_before", "profile_after", "documents_before_termination",
     "app_spawned", "cleanup", "recovery_guard", "mousepad_sha256", "waypipe_sha256", "waypipe_version", "final_graph",
 )
 _write = app._write
@@ -360,7 +360,8 @@ def _pair(directory, bundle, profile, case):
                     "APP_RESTART_FAILED")
     app.require(_clean(restarted), "APP_RESTART_CLEANUP")
     before, after = first["profile_after"], restarted["profile_after"]
-    documents_preserved = (before["documents_sha256"] == restarted["profile_before"]["documents_sha256"]
+    documents_preserved = (first["documents_before_termination"] == before["documents_sha256"]
+                           == restarted["profile_before"]["documents_sha256"]
                            == after["documents_sha256"])
     settings_preserved = None
     if ending == "close":

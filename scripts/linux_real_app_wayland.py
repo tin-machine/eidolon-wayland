@@ -349,6 +349,8 @@ class _Run:
         self.children = []
         self.pidfds = []
         self.pipes = []
+        self._pipe_keys = {}
+        self._pipe_eof = set()
         self.output_bytes = {}
         self.runtime = None
         self.command_pipe = None
@@ -366,23 +368,40 @@ class _Run:
         self.termination.check()
         child = self.owner.spawn(command, env=env)
         self.children.append((label, child))
-        # Keep a live descriptor immediately, before waiting or inspecting
-        # other processes. Numeric IDs are never recovered from artifacts.
-        self.pidfds.append((label, os.pidfd_open(child.pid, 0)))
+        # Remember both Popen pipes before any descriptor/selector operation
+        # can fail. The owner already holds this child; finish must drain and
+        # close its pipes even if pidfd_open or a later registration fails.
         for name in ("stdout", "stderr"):
             stream = getattr(child, name)
             self.pipes.append(stream)
             if control and name == "stdout":
                 self.control_stdout = stream
-                continue
-            os.set_blocking(stream.fileno(), False)
-            key = label + "_" + name
+                key = "control_stdout_remaining"
+            else:
+                key = label + "_" + name
+            self._pipe_keys[stream] = key
             self.output_bytes[key] = 0
-            self.selector.register(stream, selectors.EVENT_READ, key)
+        # Keep a live descriptor before waiting or inspecting other processes.
+        # Numeric IDs are never recovered from artifacts.
+        self.pidfds.append((label, os.pidfd_open(child.pid, 0)))
+        self._register_pipes()
         # An interrupt received during Popen must not break the handoff from
         # the OS child to its live owner, pidfd and pipe registrations.
         self.termination.check()
         return child
+
+    def _register_pipes(self, *, cleanup=False):
+        """Reconcile partial registrations without reopening observed EOF."""
+        for stream, key in self._pipe_keys.items():
+            if stream in self._pipe_eof or (not cleanup and stream is self.control_stdout):
+                continue
+            try:
+                self.selector.get_key(stream)
+                continue
+            except KeyError:
+                pass
+            os.set_blocking(stream.fileno(), False)
+            self.selector.register(stream, selectors.EVENT_READ, key)
 
     def pump(self, *, enforce=True):
         if enforce:
@@ -397,6 +416,7 @@ class _Run:
                 continue
             if not data:
                 self.selector.unregister(key.fd)
+                self._pipe_eof.add(key.fileobj)
             else:
                 self.output_bytes[key.data] += len(data)
                 if enforce:
@@ -466,10 +486,11 @@ class _Run:
         # including descendants which changed session/process group.
         try:
             self.cleanup = self.owner.finish(timeout=5.0, grace=1.5)
-            if self.control_stdout is not None:
-                self.output_bytes["control_stdout_remaining"] = 0
-                self.selector.register(self.control_stdout, selectors.EVENT_READ, "control_stdout_remaining")
-                self.control_stdout = None
+            # A spawn may have stopped between Popen and pidfd/pipe adoption.
+            # Register every remembered, not-yet-EOF stream before claiming
+            # output completion. The Control stream also joins this drain.
+            self._register_pipes(cleanup=True)
+            self.control_stdout = None
             deadline = time.monotonic() + .5
             while self.selector.get_map() and time.monotonic() < deadline:
                 self.pump(enforce=False)
@@ -546,6 +567,7 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
               "payload_logged": False, "titles_logged": False, "pixels_logged": False,
               "production_ready": False, "run_id": secrets.token_hex(16),
               "app_spawned": False, "initial_main": None, "termination_kind": ending,
+              "documents_before_termination": None,
               "termination": {"kind": ending, "observed": False, "app_pidfd_exit": None,
                               "server_returncode": None, "forced_scope_cleanup": False}}
     run = None
@@ -666,6 +688,11 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
         if on_ready is not None:
             on_ready(run, control, result)
         termination.check()
+        # Save's independent byte oracle precedes termination. Correlate its
+        # resulting Documents tree with the post-cleanup snapshot: comparing
+        # only post-exit/restart snapshots could accept consistent data loss.
+        result["documents_before_termination"] = profile.snapshot(run.profile_lock)["documents_sha256"]
+        termination.check()
         if ending == "stop":
             # The finally block forcibly collects this worker's full scope.
             # It must not fabricate normal-Close or compositor-shutdown proof.
@@ -749,6 +776,11 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
             result["output_bytes"] = run.output_bytes
             if run.profile_after is not None:
                 result["profile_after"] = run.profile_after
+                if (result["documents_before_termination"] is not None
+                        and result["documents_before_termination"] != run.profile_after["documents_sha256"]):
+                    result["state"] = "fail"
+                    if result["error"] is None:
+                        result["error"] = "APP_WAYLAND_DOCUMENTS_CHANGED"
             if run.profile_snapshot_error:
                 result["state"] = "fail"
                 if result["error"] is None:
