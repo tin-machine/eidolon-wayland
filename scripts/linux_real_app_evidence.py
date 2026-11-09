@@ -12,6 +12,7 @@ from linux_real_app_build import require
 
 INVALID = "APP_WAYLAND_RECEIPT_INVALID"
 PENDING = ("gui_setting_persistence", "protected_settings_gui_readonly")
+PRECURSOR_HOLD_MS = 125_000
 RUN_FIELDS = frozenset({
     "state", "status", "error", "run_id", "owner_scope_id", "profile_id", "runtime_id",
     "termination_kind", "termination", "initial_main", "profile_before", "profile_after", "documents_before_termination",
@@ -166,7 +167,7 @@ def _observation(value):
             and response["input_delivered_after"] > response["input_delivered_before"], INVALID)
 
 
-def validate_lifecycle(value, source):
+def validate_lifecycle(value, source, *, require_precursor_hold=False):
     """Require all three measured endings and three independent refusal seeds."""
     _object(value, {"schema", "cases", "recovery", "independence"})
     require(type(value["schema"]) is int and value["schema"] == 1, INVALID)
@@ -210,10 +211,19 @@ def validate_lifecycle(value, source):
         profiles.append(run["profile_id"])
     independent = value["independence"]
     _object(independent, {"precursor_worker_id", "target_worker_id", "precursor_initial",
-                          "after_close", "after_stop", "precursor_final"})
+                          "after_close", "after_stop", "precursor_final", "hold_probe"})
     require(_hex(independent["precursor_worker_id"], 32) and _hex(independent["target_worker_id"], 32)
             and independent["precursor_worker_id"] != independent["target_worker_id"], INVALID)
-    observations = [independent[key] for key in ("precursor_initial", "after_close", "after_stop")]
+    require(type(require_precursor_hold) is bool, INVALID)
+    hold = independent["hold_probe"]
+    require(not require_precursor_hold or hold is not None, INVALID)
+    observations = [independent["precursor_initial"]]
+    if hold is not None:
+        _object(hold, {"elapsed_ms", "observation"})
+        require(_count(hold["elapsed_ms"], minimum=PRECURSOR_HOLD_MS)
+                and hold["elapsed_ms"] < 600_000, INVALID)
+        observations.append(hold["observation"])
+    observations.extend(independent[key] for key in ("after_close", "after_stop"))
     for observation in observations:
         _observation(observation)
     original = observations[0]

@@ -21,6 +21,7 @@ import time
 import uuid
 
 import linux_real_app_wayland as app
+from linux_real_app_evidence import PRECURSOR_HOLD_MS
 
 ROOT = app.ROOT
 MAX_MESSAGE = 128 * 1024
@@ -327,12 +328,12 @@ def _retain_run_cleanup(pending, artifact):
     return receipt
 
 
-def _call_run(directory, bundle, profile, name, *, ending="close", exercise=False, on_ready=None):
+def _call_run(directory, bundle, profile, name, *, ending="close", exercise=False, on_ready=None, lifetime="run"):
     artifact = directory / "runs" / name
     artifact.mkdir(mode=0o700)
     try:
         receipt = app.run_case(ROOT, artifact, bundle, profile=profile,
-                               ending=ending, exercise=exercise, on_ready=on_ready)
+                               ending=ending, exercise=exercise, on_ready=on_ready, lifetime=lifetime)
     except app.CleanupPending as pending:
         receipt = _retain_run_cleanup(pending, artifact)
     return receipt
@@ -530,9 +531,8 @@ def _worker(role, directory, bundle):
         if role == "precursor":
             profile = app.SyntheticProfile.create(directory / "profile")
             def hold(run, control, result):
-                # This one live precursor spans all target cases. Its budget
-                # remains finite, while every target run keeps its own budget.
-                run.deadline = time.monotonic() + 360
+                # The fixed precursor lifetime starts at _Run construction.
+                # Do not reset its origin after the compositor has started.
                 initial = _observation(run, control, result, profile)
                 channel.emit("ready", 0, {"worker_id": worker_id, "observation": initial})
                 while True:
@@ -545,7 +545,7 @@ def _worker(role, directory, bundle):
                         raise app.WaylandError("APP_WORKER_STOP_REQUESTED")
                     else:
                         raise app.WaylandError("APP_WORKER_COMMAND")
-            receipt = _call_run(directory, bundle, profile, "precursor", on_ready=hold)
+            receipt = _call_run(directory, bundle, profile, "precursor", on_ready=hold, lifetime="precursor")
             channel.emit("done", channel.last_id, {"worker_id": worker_id, "run": _compact(receipt)})
             return 0 if receipt.get("state") == "partial" else 1
         channel.emit("ready", 0, {"worker_id": worker_id})
@@ -580,9 +580,41 @@ def _worker(role, directory, bundle):
         guard.restore()
 
 
-def run_suite(repo, artifact, settings_bundle):
+def _same_precursor(initial, observation):
+    app.require(all(initial[key] == observation[key] for key in
+                    ("run_id", "owner_scope_id", "profile_id", "runtime_id", "main",
+                     "app_id", "client_count", "topology_sha256")), "APP_PRECURSOR_CHANGED")
+    app.require(all(initial["profile"][key] == observation["profile"][key] for key in
+                    ("documents_sha256", "settings_sha256", "preferences_sha256")),
+                "APP_PRECURSOR_SETTINGS_CHANGED")
+
+
+def _hold_precursor(coordinator, precursor, initial):
+    """Measure a fixed live hold after ready, then demand a new GUI response.
+
+    This exceeds the former Rust 120-second watchdog. It deliberately starts
+    after receive(ready), whose own 120-second bound is unchanged. Waiting
+    alone, or a live worker PID with a dead compositor, cannot pass the probe.
+    """
+    started = time.monotonic_ns()
+    deadline = started + PRECURSOR_HOLD_MS * 1_000_000
+    while time.monotonic_ns() < deadline:
+        coordinator.pump()
+        app.require(precursor.process.poll() is None, "APP_WORKER_EARLY_EXIT")
+        time.sleep(.02)
+    coordinator.pump()
+    app.require(precursor.process.poll() is None, "APP_WORKER_EARLY_EXIT")
+    request_id = coordinator.send(precursor, "observe")
+    observation = coordinator.receive(precursor, "observation", request_id=request_id)
+    _same_precursor(initial, observation)
+    return {"elapsed_ms": (time.monotonic_ns() - started) // 1_000_000,
+            "observation": observation}
+
+
+def run_suite(repo, artifact, settings_bundle, *, precursor_hold_check=False):
     repo, artifact, settings_bundle = map(Path, (repo, artifact, settings_bundle))
-    app.require(repo.resolve() == ROOT and artifact.is_absolute(), "APP_WAYLAND_ARGUMENT")
+    app.require(repo.resolve() == ROOT and artifact.is_absolute()
+                and type(precursor_hold_check) is bool, "APP_WAYLAND_ARGUMENT")
     app._private(artifact)
     app.require(not any(artifact.iterdir()), "APP_WAYLAND_ARTIFACT_NOT_EMPTY")
     result = {"schema": 1, "stage": "wayland", "state": "fail", "status": "failed", "error": None,
@@ -596,7 +628,10 @@ def run_suite(repo, artifact, settings_bundle):
         precursor = coordinator.spawn("precursor")
         ready = coordinator.receive(precursor, "ready", request_id=0)
         independent = result["lifecycle"]["independence"]
-        independent.update(precursor_worker_id=ready["worker_id"], precursor_initial=ready["observation"])
+        independent.update(precursor_worker_id=ready["worker_id"], precursor_initial=ready["observation"],
+                           hold_probe=None)
+        if precursor_hold_check:
+            independent["hold_probe"] = _hold_precursor(coordinator, precursor, independent["precursor_initial"])
         target = coordinator.spawn("target")
         ready = coordinator.receive(target, "ready", request_id=0)
         independent["target_worker_id"] = ready["worker_id"]
@@ -614,12 +649,7 @@ def run_suite(repo, artifact, settings_bundle):
                 observation = coordinator.receive(precursor, "observation", request_id=request_id)
                 independent["after_close" if case == "close_restart" else "after_stop"] = observation
                 initial = independent["precursor_initial"]
-                app.require(all(initial[key] == observation[key] for key in
-                                ("run_id", "owner_scope_id", "profile_id", "runtime_id", "main",
-                                 "app_id", "client_count", "topology_sha256")), "APP_PRECURSOR_CHANGED")
-                app.require(all(initial["profile"][key] == observation["profile"][key] for key in
-                                ("documents_sha256", "settings_sha256", "preferences_sha256")),
-                            "APP_PRECURSOR_SETTINGS_CHANGED")
+                _same_precursor(initial, observation)
         # This receipt is written while the precursor still owns live GUI
         # processes. Any open/write/fsync failure takes the same finally path.
         _write(artifact / "independence.json", independent)
@@ -647,8 +677,8 @@ def run_suite(repo, artifact, settings_bundle):
     return result
 
 
-def run_feasibility(repo, artifact, settings_bundle):
-    return run_suite(repo, artifact, settings_bundle)
+def run_feasibility(repo, artifact, settings_bundle, *, precursor_hold_check=False):
+    return run_suite(repo, artifact, settings_bundle, precursor_hold_check=precursor_hold_check)
 
 
 if __name__ == "__main__":

@@ -218,7 +218,54 @@ class FoundationAggregationTests(TemporaryCheck):
         return {"schema": 1, "cases": cases, "recovery": recovery,
                 "independence": {"precursor_worker_id": identity(500), "target_worker_id": identity(501),
                                  "precursor_initial": observations[0], "after_close": observations[1],
-                                 "after_stop": observations[2], "precursor_final": final}}
+                                 "after_stop": observations[2], "precursor_final": final, "hold_probe": None}}
+
+    def held_application(self):
+        value = self.application()
+        independent = value["lifecycle"]["independence"]
+        held = copy.deepcopy(independent["after_close"])
+        independent["hold_probe"] = {"elapsed_ms": 125_000, "observation": held}
+        for phase in ("after_close", "after_stop"):
+            response = independent[phase]["response"]
+            response["input_delivered_before"] += 10
+            response["input_delivered_after"] += 10
+            response["dialog_window"] = str(int(response["dialog_window"]) + 1)
+            response["frame"] = str(int(response["frame"]) + 1)
+        return value
+
+    def test_long_hold_requires_measured_time_and_an_additional_response(self):
+        value = self.held_application()
+        self.assertIs(check.validate_application_foundation(value, require_precursor_hold=True), value)
+        for elapsed in (None, True, "125000", -1, 120_000, 124_999, 600_000):
+            forged = copy.deepcopy(value)
+            forged["lifecycle"]["independence"]["hold_probe"]["elapsed_ms"] = elapsed
+            with self.subTest(elapsed=elapsed), self.assertRaises(check.BuildError):
+                check.validate_application_foundation(forged, require_precursor_hold=True)
+
+    def test_long_hold_missing_or_replayed_observation_is_rejected(self):
+        for invalid in (None, {}, {"elapsed_ms": 125_000}):
+            value = self.held_application()
+            value["lifecycle"]["independence"]["hold_probe"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(check.BuildError):
+                check.validate_application_foundation(value, require_precursor_hold=True)
+        for phase in ("precursor_initial", "after_close", "after_stop"):
+            value = self.held_application()
+            independent = value["lifecycle"]["independence"]
+            independent["hold_probe"]["observation"] = copy.deepcopy(independent[phase])
+            with self.subTest(replayed=phase), self.assertRaises(check.BuildError):
+                check.validate_application_foundation(value, require_precursor_hold=True)
+
+    def test_optional_hold_still_validates_any_supplied_measurement(self):
+        value = self.held_application()
+        value["lifecycle"]["independence"]["hold_probe"]["elapsed_ms"] = 1
+        with self.assertRaises(check.BuildError):
+            check.validate_application_foundation(value)
+
+    def test_required_hold_cannot_be_dropped_by_the_feasibility_aggregator(self):
+        with self.stages(self.application()):
+            result = check.run_feasibility(self.base / "missing-hold", None, precursor_hold_check=True)
+        self.assertEqual((result["status"], result["reason"]), ("failed", "APP_WAYLAND_RECEIPT_INVALID"))
+        self.assertFalse(result["a0_passed"])
 
     def assert_invalid_evidence(self, mutate):
         value = self.application()

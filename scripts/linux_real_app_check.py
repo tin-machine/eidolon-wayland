@@ -206,7 +206,7 @@ def waypipe_binary():
         raise BuildError("APP_WAYPIPE_UNVERIFIED") from error
 
 
-def validate_application_foundation(value):
+def validate_application_foundation(value, *, require_precursor_hold=False):
     """This implementation has no full-A0 success path, including forged receipts.
 
     Strictly verify the GUI/file oracle, related restart/instance evidence and
@@ -234,7 +234,7 @@ def validate_application_foundation(value):
             value.get("pixels_logged") is False and value.get("waypipe_ends") == 2 and
             type(value.get("waypipe_ends")) is int and value.get("profile_kind") == "synthetic",
             "APP_WAYLAND_RECEIPT_INVALID")
-    evidence.validate_lifecycle(value.get("lifecycle"), value)
+    evidence.validate_lifecycle(value.get("lifecycle"), value, require_precursor_hold=require_precursor_hold)
     return value
 
 
@@ -272,7 +272,7 @@ def retain_cleanup_owner(pending, artifact):
         time.sleep(.05)
 
 
-def run_feasibility(artifact, descriptor):
+def run_feasibility(artifact, descriptor, *, precursor_hold_check=False):
     artifact = private_artifact_root(artifact)
     result = {"schema": 1, "revision": REVISION, "stage": "feasibility", "status": "failed",
               "reason": "APP_CHECK_NOT_COMPLETED", "a0_passed": False, "available": False,
@@ -297,7 +297,8 @@ def run_feasibility(artifact, descriptor):
         wayland = artifact / "wayland"
         wayland.mkdir(mode=0o700)
         try:
-            result["checks"]["application"] = run_wayland(ROOT, wayland, bundle, waypipe=binary, compositor=compositor)
+            result["checks"]["application"] = run_wayland(ROOT, wayland, bundle, waypipe=binary, compositor=compositor,
+                                                         precursor_hold_check=precursor_hold_check)
         except CleanupPending as pending:
             result["checks"]["application"] = pending.receipt
             result["checks"]["application"]["cleanup"] = retain_cleanup_owner(pending, artifact)
@@ -312,7 +313,7 @@ def run_feasibility(artifact, descriptor):
             token = application.get("error")
             raise BuildError(token if type(token) is str and re.fullmatch(r"APP_[A-Z0-9_]{1,64}", token)
                              else "APP_WAYLAND_FEASIBILITY_FAILED")
-        validate_application_foundation(application)
+        validate_application_foundation(application, require_precursor_hold=precursor_hold_check)
         require(application.get("mousepad_sha256") == observed["executable_sha256"] and
                 application.get("waypipe_sha256") == waypipe_hash and application.get("waypipe_version") == "0.11.3",
                 "APP_WAYLAND_EVIDENCE_MISMATCH")

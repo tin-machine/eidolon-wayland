@@ -311,7 +311,8 @@ class ProfileLaunchTests(unittest.TestCase):
                         if label == "compositor":
                             holder.append(run)
                             (artifact / "compositor/result.json").write_text(json.dumps({
-                                "state": "complete", "client_cleanup_verified": True, "forced_disconnect": False}))
+                                "state": "complete", "client_cleanup_verified": True, "forced_disconnect": False,
+                                "lifetime": run.lifetime, "run_limit_seconds": run.compositor_limit_seconds}))
                         elif label == "waypipe_client":
                             (run.runtime / "channel").touch()
                         child = mock.Mock()

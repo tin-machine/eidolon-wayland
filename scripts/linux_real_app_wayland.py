@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parents[1]
+LIFETIME_SPEC = ROOT / "scripts/fixtures/linux-real-app-wayland/lifetime.json"
 
 # Stable contract consumed by the A0 gate. Values describe observed behavior;
 # no backend API assertion or launch argument can stand in for GUI evidence.
@@ -127,6 +128,27 @@ def _json(path):
         return json.loads(path.read_bytes(), object_pairs_hook=driver._object)
     except (ValueError, UnicodeError, driver.ProbeError) as exc:
         raise WaylandError("APP_WAYLAND_METADATA") from exc
+
+
+def _lifetime_limits(lifetime):
+    """Read the fixed source policy also compiled into the Rust compositor.
+
+    Only named, bounded roles cross the internal exec boundary. The owner
+    clock starts before its compositor is spawned, and Rust adds the shared
+    grace to this same role's budget rather than expiring a live precursor.
+    """
+    require(type(lifetime) is str and lifetime in ("run", "precursor"), "APP_WAYLAND_LIFETIME")
+    try:
+        policy = _json(LIFETIME_SPEC)
+    except (OSError, WaylandError) as exc:
+        raise WaylandError("APP_WAYLAND_LIFETIME_POLICY") from exc
+    fields = {"run_seconds", "precursor_seconds", "compositor_grace_seconds"}
+    require(type(policy) is dict and set(policy) == fields
+            and all(type(value) is int for value in policy.values())
+            and 0 < policy["run_seconds"] <= policy["precursor_seconds"] <= 600
+            and 1 <= policy["compositor_grace_seconds"] <= 30, "APP_WAYLAND_LIFETIME_POLICY")
+    owner_seconds = policy[lifetime + "_seconds"]
+    return owner_seconds, owner_seconds + policy["compositor_grace_seconds"]
 
 
 def _sha(path, maximum=64 * 1024 * 1024):
@@ -341,7 +363,11 @@ class SyntheticProfile:
 
 
 class _Run:
-    def __init__(self, artifact, termination):
+    def __init__(self, artifact, termination, *, lifetime="run"):
+        self.owner_limit_seconds, self.compositor_limit_seconds = _lifetime_limits(lifetime)
+        self.lifetime = lifetime
+        self.started = time.monotonic()
+        self.deadline = self.started + self.owner_limit_seconds
         self.artifact = artifact
         self.termination = termination
         self.owner = owner_api.ProcessOwner()
@@ -361,7 +387,6 @@ class _Run:
         self.profile_snapshot_error = False
         self.owner_scope_id = secrets.token_hex(16)
         self.runtime_id = secrets.token_hex(16)
-        self.deadline = time.monotonic() + 110
         self.cleanup = None
 
     def spawn(self, label, command, env, *, control=False):
@@ -545,7 +570,7 @@ def retry_cleanup(pending):
 
 
 def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_api.WINDOW_APP_ID,
-             profile=None, ending="close", on_ready=None, exercise=True):
+             profile=None, ending="close", on_ready=None, exercise=True, lifetime="run"):
     """Run a fresh owner/Control, optionally reusing our synthetic profile.
 
     repo_root must be this module's checkout, artifact an empty private owner
@@ -608,10 +633,12 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
         profile.validate()
         (artifact / "compositor").mkdir(mode=0o700)
         termination.check()
-        run = _Run(artifact, termination)
+        run = _Run(artifact, termination, lifetime=lifetime)
         run.profile_lock = profile.acquire()
         run.profile = profile
         result.update(profile_id=profile.profile_id, owner_scope_id=run.owner_scope_id,
+                      lifetime=run.lifetime, owner_limit_seconds=run.owner_limit_seconds,
+                      compositor_limit_seconds=run.compositor_limit_seconds,
                       runtime_id=run.runtime_id, mousepad_sha256=executable_hash,
                       waypipe_sha256=metadata["sha256"], waypipe_version="0.11.3",
                       waypipe_ends=2, private_bus=True, profile_kind="synthetic",
@@ -643,8 +670,10 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
         os.mkfifo(fifo, 0o600)
         run.command_pipe = os.fdopen(os.open(fifo, os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC), "wb", buffering=0)
         compositor = run.spawn("compositor", [python, str(Path(__file__).resolve()), "--exec-compositor",
-                         str(binary), str(run.runtime), str(artifact / "compositor"), str(fifo)], env, control=True)
-        control = driver.Control(SimpleNamespace(stdin=run.command_pipe, stdout=compositor.stdout), pump=run.pump)
+                         str(binary), str(run.runtime), str(artifact / "compositor"), str(fifo), run.lifetime],
+                         env, control=True)
+        control = driver.Control(SimpleNamespace(stdin=run.command_pipe, stdout=compositor.stdout), pump=run.pump,
+                                 lifetime=run.lifetime, run_limit_seconds=run.compositor_limit_seconds)
         common = [str(waypipe), "--no-gpu", "--compress", "zstd", "--threads", "2", "--socket", str(run.runtime / "channel")]
         client = run.spawn("waypipe_client", [*common, "client"], env)
         run.wait_until(lambda: (run.runtime / "channel").exists() or client.poll() is not None,
@@ -724,7 +753,11 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
             require(run.wait_child(compositor, 5) == 0, "APP_WAYLAND_COMPOSITOR_EXIT")
             receipt = _json(artifact / "compositor/result.json")
             require(receipt.get("state") == "complete" and receipt.get("client_cleanup_verified") is True
-                    and receipt.get("forced_disconnect") is False, "APP_WAYLAND_COMPOSITOR_RECEIPT")
+                    and receipt.get("forced_disconnect") is False
+                    and receipt.get("lifetime") == run.lifetime
+                    and type(receipt.get("run_limit_seconds")) is int
+                    and receipt["run_limit_seconds"] == run.compositor_limit_seconds,
+                    "APP_WAYLAND_COMPOSITOR_RECEIPT")
             result["termination"]["observed"] = True
         result.update(state="partial", status="incomplete", stage="wayland")
     except (WaylandError, driver.ProbeError, owner_api.OwnershipError, inspect_api.InspectionError) as exc:
@@ -805,7 +838,7 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
     return result
 
 
-def run_feasibility(repo, artifact, settings_bundle, *, waypipe, compositor):
+def run_feasibility(repo, artifact, settings_bundle, *, waypipe, compositor, precursor_hold_check=False):
     """Root orchestrator API. Dependencies are fixed build outputs, no CLI argv.
 
     Supplied paths must be exactly the checkout's verified Waypipe metadata and
@@ -815,19 +848,22 @@ def run_feasibility(repo, artifact, settings_bundle, *, waypipe, compositor):
     repo, waypipe, compositor = map(Path, (repo, waypipe, compositor))
     require(repo.resolve() == ROOT and waypipe.is_absolute() and compositor.is_absolute(),
             "APP_WAYLAND_ARGUMENT")
+    require(type(precursor_hold_check) is bool, "APP_WAYLAND_ARGUMENT")
     require(compositor == ROOT / "target/debug/linux-real-app-wayland-probe",
             "APP_WAYLAND_COMPOSITOR_PATH")
     metadata = _json(ROOT / "native/generated/waypipe-host.json")
     require(str(waypipe) == metadata.get("executable"), "APP_WAYLAND_WAYPIPE_PATH")
     from linux_real_app_harness import run_feasibility as run_harness
-    return run_harness(repo, artifact, settings_bundle)
+    return run_harness(repo, artifact, settings_bundle, precursor_hold_check=precursor_hold_check)
 
 
 def _exec_compositor(args):
     # Internal fixed adapter permits ProcessOwner.spawn's DEVNULL stdin without
     # changing the existing shared owner API or spawning an unowned sibling.
-    require(len(args) == 4, "APP_WAYLAND_INTERNAL_ARGUMENT")
-    binary, runtime, artifact, fifo = map(Path, args)
+    require(len(args) == 5, "APP_WAYLAND_INTERNAL_ARGUMENT")
+    binary, runtime, artifact, fifo = map(Path, args[:4])
+    lifetime = args[4]
+    require(type(lifetime) is str and lifetime in ("run", "precursor"), "APP_WAYLAND_INTERNAL_ARGUMENT")
     require(binary == ROOT / "target/debug/linux-real-app-wayland-probe"
             and runtime.parent == Path("/tmp") and runtime.name.startswith("eidolon-l7a-")
             and fifo == runtime / "control", "APP_WAYLAND_INTERNAL_ARGUMENT")
@@ -836,7 +872,8 @@ def _exec_compositor(args):
     fd = os.open(fifo, os.O_RDONLY | os.O_NOFOLLOW)
     os.dup2(fd, 0)
     os.close(fd)
-    os.execve(binary, [str(binary), "--runtime-dir", str(runtime), "--artifact-dir", str(artifact)], dict(os.environ))
+    os.execve(binary, [str(binary), "--runtime-dir", str(runtime), "--artifact-dir", str(artifact),
+                      "--lifetime", lifetime], dict(os.environ))
 
 
 if __name__ == "__main__":

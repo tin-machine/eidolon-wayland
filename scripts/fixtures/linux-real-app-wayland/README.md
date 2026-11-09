@@ -15,12 +15,14 @@ Both directories must already exist, belong to the caller, have no group/other p
 
 No app environment is needed by this binary. The owner must construct the application environment and configure `GSETTINGS_BACKEND=eidolon-keyfile-v1` / `GIO_EXTRA_MODULES` for the real app as specified by the A0 plan.
 
+The optional final argument `--lifetime run|precursor` selects a fixed lifetime role; omission means `run`. Numeric timeout overrides, unknown roles and extra arguments are rejected. Python reads [lifetime.json](lifetime.json) and Rust compiles the same definition with `include_str!`: owner budgets are 110 seconds (`run`) and 360 seconds (`precursor`), and the compositor adds 10 seconds. The Python clock starts at owner construction before compositor spawn; the Rust clock starts later. The precursor callback never renews the owner deadline, so its 360 seconds include startup.
+
 ## Control protocol
 
 Unbuffered line-delimited JSON on stdin/stdout. The first line is:
 
 ```json
-{"schema":1,"event":"ready","socket_name":"wayland-l7a","protocol":"eidolon-a0-control-v1","server":"Eidolon ProtocolState"}
+{"schema":1,"event":"ready","socket_name":"wayland-l7a","protocol":"eidolon-a0-control-v1","server":"Eidolon ProtocolState","lifetime":"run","run_limit_seconds":120}
 ```
 
 Each request has an increasing positive uint32 `id`. Window IDs are positive decimal **strings**, matching native identifiers. Unknown fields and operations are rejected. Each command gets exactly one `{id,ok,error?,snapshot}` reply. Do not pipeline commands: wait for the matching reply. Native frame callbacks and disconnect cleanup continue while stdin is idle.
@@ -40,7 +42,7 @@ For example, focus the observed main ID, then send evdev 29 down, 24 down/up, an
 
 The snapshot also includes `counts` (`clients,objects,surfaces,windows,pixel_bytes,pool_bytes`), `input` (`focus_window,focus_token,delivered,pressed`), relevant protocol `counters`, and `accepted_clients`. There are no window titles, text contents, filesystem paths or pixels. `app_id` is bounded ASCII metadata; an unexpected string is null with `app_id_valid=false` and must be rejected. An absent app_id is null with `app_id_valid=true`; it is permitted only for a dialog whose real parent chain reaches the latched main.
 
-The owner stops/reaps the application, bus and both Waypipe ends, polls until counts are zero, then sends `shutdown`. The fixture emits a final `finished` event and stores `result.json` mode 0600. Stdin EOF, malformed protocol, signal, output backpressure, or a fixed 120-second whole-run deadline cause failure. Command traffic never renews this deadline. On failure the fixture force-disconnects Wayland clients and records that this was forced; this is not evidence of the owner's normal process cleanup.
+The owner stops/reaps the application, bus and both Waypipe ends, polls until counts are zero, then sends `shutdown`. The fixture emits a final `finished` event and stores `result.json` mode 0600. Stdin EOF, malformed protocol, signal, output backpressure, or expiration of the selected whole-run watchdog (120 seconds for `run`, 370 for `precursor`) cause failure. Command traffic never renews this deadline. Both the ready handshake and final receipt carry `lifetime` and `run_limit_seconds`; the owner verifies them against its policy. On failure the fixture force-disconnects Wayland clients and records that this was forced; this is not evidence of the owner's normal process cleanup.
 
 ## Evidence boundary
 
@@ -56,7 +58,7 @@ Unobserved or unsupported UI steps remain false in `checks` and listed in `pendi
 
 ## Python owner adapter
 
-`driver.py` exports `Control(process)` for an already spawned binary with binary stdin/stdout pipes, `wait_main(expected_app_id)`, actual `focus/key/click/close`, bounded snapshot polling, and `exercise_open_edit_save(control, input_path, output_path, initial_bytes)`. The owner still owns all process lifetimes. Example synthetic input is `b"eidolon-a0-opened\n"`; both paths must be absolute ASCII names in the same private directory, the input must exist with those exact bytes, and output must not exist. The driver opens with Ctrl+O, selects the path with chooser Ctrl+L, edits via evdev seat keys, saves with Ctrl+S and Save As with Ctrl+Shift+S, then independently checks both files. It rejects a new root, lost/replaced main identity, an orphan/cyclic dialog, or a foreign app_id during the sequence.
+`driver.py` exports `Control(process, *, lifetime, run_limit_seconds)` for an already spawned binary with binary stdin/stdout pipes. The owner supplies its policy-derived expectations; a stale or mismatched compositor ready handshake is rejected. It also provides `wait_main(expected_app_id)`, actual `focus/key/click/close`, bounded snapshot polling, and `exercise_open_edit_save(control, input_path, output_path, initial_bytes)`. The owner still owns all process lifetimes. Example synthetic input is `b"eidolon-a0-opened\n"`; both paths must be absolute ASCII names in the same private directory, the input must exist with those exact bytes, and output must not exist. The driver opens with Ctrl+O, selects the path with chooser Ctrl+L, edits via evdev seat keys, saves with Ctrl+S and Save As with Ctrl+Shift+S, then independently checks both files. It rejects a new root, lost/replaced main identity, an orphan/cyclic dialog, or a foreign app_id during the sequence.
 
 The driver returns `state=partial`, `feasibility_verified=false` even if every Open/Save check succeeds. Its fixed `remaining_checks` are `independent_existing_mousepad_instance`, `normal_close_restart`, `preferences_widgets_read_only`, `preferences_transient_parent`, `settings_persist_after_restart`, and `restart_after_forced_stop_has_one_main`. A settings API probe cannot clear the widget item. An aggregate owner additionally needs Waypipe/package provenance and reaped external process groups; the adapter's successful return does not certify those. Unsupported chooser shortcuts or timing fail a bounded step instead of silently downgrading it to pass.
 
@@ -68,30 +70,32 @@ The driver dispatches for 250 ms after typing each chooser path before sending i
 
 ```python
 run_feasibility(repo: Path, artifact: Path, settings_bundle: Path,
-                *, waypipe: Path, compositor: Path) -> dict
+                *, waypipe: Path, compositor: Path, precursor_hold_check=False) -> dict
 ```
 
 The paths must be the current checkout, an empty owner-private artifact directory, the verified settings bundle, the exact Waypipe host metadata executable, and `target/debug/linux-real-app-wayland-probe`. There is no operator option for arbitrary commands. The call requires a dedicated single-threaded, non-root process with no existing children, as required by `ProcessOwner`.
 
-The owner starts both Waypipe ends, a private session bus with no service activation directories, and real Mousepad in a newly created synthetic profile. It holds `profile/profile.lock` from before the read-only recovery guard and app-bearing spawn until every descendant is reaped. The guard is repeated immediately before the app-bearing spawn; a pending cleanup retains the same lock and live owner. Private runtime sockets use a short temporary path. The internal FIFO adapter replaces the compositor child's stdin before `exec`; the PID stays within the same process owner.
+The aggregate coordinator starts separate precursor/target workers. Each run owns both Waypipe ends, a private session bus with no service activation directories, and real Mousepad in an inspector-created synthetic profile. A restart pair shares its profile and lock inode while creating new runtime, owner, Control and artifact scopes. The lock is held from before the read-only recovery guard and app-bearing spawn until every descendant is reaped and output reaches EOF. The guard is repeated immediately before the app-bearing spawn; a pending cleanup retains the same lock and live owner. Private runtime sockets use a short temporary path. The internal FIFO adapter replaces the compositor child's stdin before `exec`; the PID stays within the same process owner.
+
+The dedicated CI enables `precursor_hold_check=True`: after receiving the precursor's initial ready/GUI response, the coordinator measures at least 125 seconds with its guard, pipe pump and worker monitoring active. It then requires a new actual dialog/frame response from the same precursor before starting target cases. The receipt stores `lifecycle.independence.hold_probe` with elapsed milliseconds and that new observation. The CI gate rejects missing/short/replayed evidence. Without this optional regression the field is null; no long-hold success is claimed.
 
 The resulting `wayland.json` contains `status` (`failed` or `incomplete` at this foundation stage), exactly the following boolean `checks`, and `pending` listing every false check in this order:
 
 | Check | Evidence required by this adapter |
 | --- | --- |
 | `private_bus` | Actual app-bearing launch through the newly created private bus |
-| `independent_instance` | Pending: an existing ordinary Mousepad instance must also be exercised |
+| `independent_instance` | A separate synthetic precursor worker retains its identity/profile and responds with new real dialogs after target Close/Stop |
 | `first_main` | Exactly one initial native main with an owned SHM frame and latched lifetime ID |
 | `expected_app_id` | The native main reports exactly the shared `WINDOW_APP_ID` value, `mousepad` |
 | `transient_dialogs` | Actual Open and Save As dialogs have a parent chain to that same main |
 | `open_edit_save_as` | Seat-driven Open/edit/Save/Save As, independently verified exact file bytes |
-| `clean_close_restart` | Pending: normal Close and subsequent restart in the same profile |
+| `clean_close_restart` | Distinct Close/Stop/crash pairs reuse their respective synthetic profiles with fresh run/owner/runtime and preserved saved documents |
 | `gui_setting_persistence` | Pending: independently observed GUI setting after restart |
 | `protected_settings_gui_readonly` | Pending: actual Preferences widget read-only state and transient behavior |
 
 For the pinned Mousepad 0.6.3 / GTK 3.24.41 launch, native `xdg_toplevel.app_id` is exactly `mousepad`: CI run [42502638269](https://github.com/tin-machine/eidolon-wayland/actions/runs/42502638269) observed that value on main window 1 at frame 1 and again at frame 5 after 250 ms. The controller and inspector share `WINDOW_APP_ID` for this exact match. GTK's [Wayland toplevel creation](https://github.com/GNOME/gtk/blob/3.24.41/gdk/wayland/gdkwindow-wayland.c#L2151-L2155) derives this native ID from `g_get_prgname()`. `org.xfce.mousepad` remains the GApplication and GSettings/schema identity.
 
-A successful implemented sequence has five true checks and four pending checks. Its status remains `incomplete`, with `feasibility_verified=false`. The driver's more detailed observations are nested under `evidence`; a successfully launched fresh instance alone does not prove behavior in the presence of an existing ordinary instance. Failure to build or run dependencies yields `failed`, with no passing skip. The A0 parent must require all nine booleans and a successful status before opening the next gate.
+A successful aggregate sequence has seven true checks and two pending GUI checks. Its status remains `incomplete`, with `feasibility_verified=false`. Individual runs alone retain their four pending checks; only the measured aggregate clears restart and independence. File interaction observations are under `evidence` and the correlated case/precursor receipts are under `lifecycle`. Failure to build or run dependencies yields `failed`, with no passing skip. Full A0, production v3 and Quest acceptance remain closed; see the [PR1 record](../../../docs/linux-real-app-a0-restart-20261109.md).
 
 Cleanup uses bounded TERM/KILL/reap attempts on the same live `ProcessOwner`, drains output pipes, closes pidfds, then removes only this run's temporary runtime directory. It makes one bounded retry if the first owner cleanup cannot be verified. If cleanup still cannot be verified, `CleanupPending` carries the live `run` and failed `receipt`; the caller must retain it and call `retry_cleanup` in the same process. It must not discard the owner or recover from stored numeric PIDs. Application stdout/stderr is bounded and drained without retaining its content.
 

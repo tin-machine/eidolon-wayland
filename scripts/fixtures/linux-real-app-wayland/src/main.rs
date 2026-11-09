@@ -27,11 +27,63 @@ const SOCKET_NAME: &str = "wayland-l7a";
 const MAX_LINE: usize = 4096;
 const MAX_OUTPUT: usize = 128 * 1024;
 const MAX_OBSERVATIONS: usize = 64;
-const RUN_LIMIT: Duration = Duration::from_secs(120);
+const LIFETIME_POLICY: &str = include_str!("../lifetime.json");
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn interrupted(_: libc::c_int) {
     STOP_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Lifetime {
+    Run,
+    Precursor,
+}
+impl Lifetime {
+    fn parse(value: &std::ffi::OsStr) -> Result<Self> {
+        match value.to_str() {
+            Some("run") => Ok(Self::Run),
+            Some("precursor") => Ok(Self::Precursor),
+            _ => Err("ARGS"),
+        }
+    }
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Precursor => "precursor",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LifetimePolicy {
+    run_seconds: u64,
+    precursor_seconds: u64,
+    compositor_grace_seconds: u64,
+}
+impl LifetimePolicy {
+    fn parse(source: &str) -> Result<Self> {
+        let policy: Self = serde_json::from_str(source).map_err(|_| "LIFETIME_POLICY")?;
+        if policy.run_seconds == 0 || policy.run_seconds > policy.precursor_seconds
+            || policy.precursor_seconds > 600 || !(1..=30).contains(&policy.compositor_grace_seconds)
+        {
+            return Err("LIFETIME_POLICY");
+        }
+        Ok(policy)
+    }
+    fn compositor_limit(&self, lifetime: Lifetime) -> Duration {
+        let owner_seconds = match lifetime {
+            Lifetime::Run => self.run_seconds,
+            Lifetime::Precursor => self.precursor_seconds,
+        };
+        // Python fixes its owner deadline before spawning this process. This
+        // later-starting watchdog must not terminate an otherwise valid run.
+        Duration::from_secs(owner_seconds + self.compositor_grace_seconds)
+    }
+}
+fn check_lifetime(elapsed: Duration, limit: Duration) -> Result<()> {
+    if elapsed >= limit { Err("FIXTURE_TIMEOUT") } else { Ok(()) }
 }
 
 #[derive(Debug, Deserialize)]
@@ -299,7 +351,8 @@ fn write_receipt(artifact: &Path, proof: &Value) -> Result<()> {
     file.sync_all().map_err(|_| "RESULT_SYNC")
 }
 
-fn run(runtime: &Path, artifact: &Path) -> Result<()> {
+fn run(runtime: &Path, artifact: &Path, lifetime: Lifetime) -> Result<()> {
+    let run_limit = LifetimePolicy::parse(LIFETIME_POLICY)?.compositor_limit(lifetime);
     private_dir(runtime)?;
     private_dir(artifact)?;
     if artifact.join("result.json").exists() { return Err("RESULT_EXISTS"); }
@@ -314,14 +367,15 @@ fn run(runtime: &Path, artifact: &Path) -> Result<()> {
     nonblocking(libc::STDIN_FILENO)?;
     let mut output = Output::new()?;
     output.push(json!({"schema":1,"event":"ready","socket_name":SOCKET_NAME,
-        "protocol":"eidolon-a0-control-v1","server":"Eidolon ProtocolState"}))?;
+        "protocol":"eidolon-a0-control-v1","server":"Eidolon ProtocolState",
+        "lifetime":lifetime.as_str(),"run_limit_seconds":run_limit.as_secs()}))?;
     let started = Instant::now();
     let mut pending = Vec::new();
     let mut last_request = 0;
     let drive = (|| -> Result<()> {
         loop {
             if STOP_REQUESTED.load(Ordering::Relaxed) { return Err("INTERRUPTED"); }
-            if started.elapsed() > RUN_LIMIT { return Err("FIXTURE_TIMEOUT"); }
+            check_lifetime(started.elapsed(), run_limit)?;
             for _ in 0..8 {
                 match listener.accept() {
                     Ok((stream, _)) => {
@@ -370,6 +424,7 @@ fn run(runtime: &Path, artifact: &Path) -> Result<()> {
     let clean_before_forced_disconnect = is_clean(&display, &state);
     let cleanup = teardown(&mut display, &mut state);
     let proof = json!({"schema":1,"fixture_revision":"eidolon-real-app-wayland-v1",
+        "lifetime":lifetime.as_str(),"run_limit_seconds":run_limit.as_secs(),
         "scope":"compositor-and-seat-only","state":if drive.is_ok() && cleanup.is_ok() {"complete"} else {"fail"},
         "drive_error":drive.err(),"cleanup_error":cleanup.err(),
         "client_cleanup_verified":clean_before_forced_disconnect && cleanup.is_ok(),
@@ -382,14 +437,20 @@ fn run(runtime: &Path, artifact: &Path) -> Result<()> {
     output.finish()?;
     drive.and(cleanup)
 }
-fn arguments() -> Result<(PathBuf, PathBuf)> {
-    let mut args = std::env::args_os().skip(1);
+fn arguments_from(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(PathBuf, PathBuf, Lifetime)> {
     if args.next().as_deref() != Some(std::ffi::OsStr::new("--runtime-dir")) { return Err("ARGS"); }
     let runtime = PathBuf::from(args.next().ok_or("ARGS")?);
     if args.next().as_deref() != Some(std::ffi::OsStr::new("--artifact-dir")) { return Err("ARGS"); }
     let artifact = PathBuf::from(args.next().ok_or("ARGS")?);
+    let lifetime = match args.next() {
+        None => Lifetime::Run,
+        Some(option) if option.as_os_str() == std::ffi::OsStr::new("--lifetime") => {
+            Lifetime::parse(&args.next().ok_or("ARGS")?)?
+        }
+        Some(_) => return Err("ARGS"),
+    };
     if args.next().is_some() { return Err("ARGS"); }
-    Ok((runtime, artifact))
+    Ok((runtime, artifact, lifetime))
 }
 fn main() {
     // SAFETY: only a lock-free flag is set in either handler. SIGPIPE becomes an
@@ -399,7 +460,8 @@ fn main() {
         libc::signal(libc::SIGINT, interrupted as libc::sighandler_t);
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
-    let result = arguments().and_then(|(runtime, artifact)| run(&runtime, &artifact));
+    let result = arguments_from(std::env::args_os().skip(1))
+        .and_then(|(runtime, artifact, lifetime)| run(&runtime, &artifact, lifetime));
     if let Err(error) = result {
         eprintln!("{error}");
         std::process::exit(1);
@@ -409,6 +471,68 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lifetime_policy_rejects_unbounded_or_ambiguous_configuration() {
+        for source in [
+            "{}",
+            r#"{"run_seconds":110,"precursor_seconds":360,"compositor_grace_seconds":10,"extra":1}"#,
+            r#"{"run_seconds":110,"run_seconds":110,"precursor_seconds":360,"compositor_grace_seconds":10}"#,
+            r#"{"run_seconds":true,"precursor_seconds":360,"compositor_grace_seconds":10}"#,
+            r#"{"run_seconds":110.0,"precursor_seconds":360,"compositor_grace_seconds":10}"#,
+            r#"{"run_seconds":"110","precursor_seconds":360,"compositor_grace_seconds":10}"#,
+            r#"{"run_seconds":-1,"precursor_seconds":360,"compositor_grace_seconds":10}"#,
+            r#"{"run_seconds":0,"precursor_seconds":360,"compositor_grace_seconds":10}"#,
+            r#"{"run_seconds":361,"precursor_seconds":360,"compositor_grace_seconds":10}"#,
+            r#"{"run_seconds":110,"precursor_seconds":601,"compositor_grace_seconds":10}"#,
+            r#"{"run_seconds":110,"precursor_seconds":360,"compositor_grace_seconds":0}"#,
+            r#"{"run_seconds":110,"precursor_seconds":360,"compositor_grace_seconds":31}"#,
+            r#"{"run_seconds":18446744073709551616,"precursor_seconds":360,"compositor_grace_seconds":10}"#,
+        ] {
+            assert!(LifetimePolicy::parse(source).is_err(), "accepted {source}");
+        }
+        assert!(LifetimePolicy::parse(
+            r#"{"run_seconds":1,"precursor_seconds":600,"compositor_grace_seconds":30}"#).is_ok());
+    }
+
+    #[test]
+    fn normal_and_precursor_watchdogs_have_distinct_bounded_lifetimes() {
+        let policy = LifetimePolicy::parse(LIFETIME_POLICY).unwrap();
+        let normal = policy.compositor_limit(Lifetime::Run);
+        let precursor = policy.compositor_limit(Lifetime::Precursor);
+        assert_eq!(normal, Duration::from_secs(120));
+        assert_eq!(precursor, Duration::from_secs(370));
+        assert_eq!(check_lifetime(Duration::from_secs(120), normal), Err("FIXTURE_TIMEOUT"));
+        assert_eq!(check_lifetime(Duration::from_secs(121), normal), Err("FIXTURE_TIMEOUT"));
+        assert_eq!(check_lifetime(Duration::from_secs(121), precursor), Ok(()));
+        assert_eq!(check_lifetime(precursor - Duration::from_nanos(1), precursor), Ok(()));
+        assert_eq!(check_lifetime(precursor, precursor), Err("FIXTURE_TIMEOUT"));
+    }
+
+    #[test]
+    fn arguments_select_only_fixed_lifetimes_and_reject_numeric_overrides() {
+        fn parse(suffix: &[&str]) -> Result<(PathBuf, PathBuf, Lifetime)> {
+            arguments_from(["--runtime-dir", "/tmp/runtime", "--artifact-dir", "/tmp/artifact"]
+                .into_iter().chain(suffix.iter().copied()).map(std::ffi::OsString::from))
+        }
+        assert_eq!(parse(&[]).unwrap(), (PathBuf::from("/tmp/runtime"), PathBuf::from("/tmp/artifact"), Lifetime::Run));
+        assert_eq!(parse(&["--lifetime", "run"]).unwrap().2, Lifetime::Run);
+        assert_eq!(parse(&["--lifetime", "precursor"]).unwrap().2, Lifetime::Precursor);
+        for suffix in [
+            vec!["--lifetime"],
+            vec!["--lifetime", "unknown"],
+            vec!["--lifetime", "360"],
+            vec!["--run-limit-seconds", "360"],
+            vec!["--lifetime", "precursor", "--lifetime", "run"],
+            vec!["--lifetime", "precursor", "extra"],
+            vec!["--artifact-dir", "/tmp/other"],
+        ] {
+            assert_eq!(parse(&suffix), Err("ARGS"), "accepted {suffix:?}");
+        }
+        assert_eq!(arguments_from(["--runtime-dir", "/tmp/runtime", "--lifetime", "precursor"]
+            .into_iter().map(std::ffi::OsString::from)), Err("ARGS"));
+    }
+
     #[test]
     fn chooser_unmap_between_key_down_and_up_only_accepts_reset_release() {
         use eidolon_shm_fixture::keyboard::{self, Stage};

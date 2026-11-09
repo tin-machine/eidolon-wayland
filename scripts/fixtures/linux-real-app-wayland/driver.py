@@ -134,7 +134,11 @@ def diagnostic_metadata(control: Any) -> dict[str, Any]:
 
 
 class Control:
-    def __init__(self, process: Any, timeout: float = 4.0, pump: Callable[[], None] | None = None):
+    def __init__(self, process: Any, timeout: float = 4.0, pump: Callable[[], None] | None = None,
+                 *, lifetime: str, run_limit_seconds: int):
+        if (type(lifetime) is not str or lifetime not in ("run", "precursor")
+                or type(run_limit_seconds) is not int or run_limit_seconds <= 0):
+            raise ProbeError("CONTROL_EXPECTATION")
         if process.stdin is None or process.stdout is None or not 0 < timeout <= 10:
             raise ProbeError("CONTROL_PIPES")
         self.process = process
@@ -151,8 +155,10 @@ class Control:
         os.set_blocking(process.stdin.fileno(), False)
         os.set_blocking(process.stdout.fileno(), False)
         ready = self._read(time.monotonic() + timeout)
-        if ready != {"schema": 1, "event": "ready", "socket_name": "wayland-l7a",
-                     "protocol": "eidolon-a0-control-v1", "server": "Eidolon ProtocolState"}:
+        if (type(ready.get("schema")) is not int or type(ready.get("run_limit_seconds")) is not int
+                or ready != {"schema": 1, "event": "ready", "socket_name": "wayland-l7a",
+                             "protocol": "eidolon-a0-control-v1", "server": "Eidolon ProtocolState",
+                             "lifetime": lifetime, "run_limit_seconds": run_limit_seconds}):
             raise ProbeError("CONTROL_READY")
 
     def _read(self, deadline: float) -> dict[str, Any]:

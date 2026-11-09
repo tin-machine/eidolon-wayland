@@ -98,6 +98,37 @@ Escapeで閉じて同じmainへ戻るround tripを各回で行う。
 8秒の期限内で観測してからbaselineを確定し、その後に対象workerを起動する。
 後続の観測でも同じ安定条件を使う。時間経過だけで成功にせず、raw設定・通常設定・文書の不変比較を維持する。
 
+### 先行instanceの期限と120秒超の回帰検査
+
+head `cad55b4` のレビューで、Pythonの先行runがmain起動後から360秒へ延長される一方、
+Rust compositorは起動から120秒で終了する不一致が見つかった。
+以前の短時間CIの成功は、120秒超の保持を検証した証拠ではない。
+
+期限は共有の [`lifetime.json`](../scripts/fixtures/linux-real-app-wayland/lifetime.json) にまとめ、
+Pythonは実行時、Rustは `include_str!` によりビルド時に同じ定義を読む。
+任意の数値timeoutをCLIへ渡さず、固定role `run` / `precursor` のみを選択する。
+未知role、余剰引数、不正型・範囲・重複fieldは拒否する。
+
+| role | Python ownerの実行予算 | Rust compositorの監視期限 |
+| --- | --- | --- |
+| `run` | 110秒 | 120秒 |
+| `precursor` | 360秒 | 370秒 |
+
+Pythonの起算点は `_Run` 構築時に固定する。`hold()` callbackでは期限をリセットしない。
+先行側も**起動を含む総run予算360秒**とし、従来の「main起動後から360秒」と区別する。
+Rustの監視期限は、後続のcompositor起動後を起算点に、同じowner予算へ10秒の余裕を加えて導出する。
+したがってPythonが許容する実行中にRustの監視期限が先に切れない。
+期限切れ後も、既存のlive owner・guard・profile lockによる全回収契約は継続する。
+
+専用CIは `check-linux-real-app-foundation --precursor-hold-check` を必須実行する。
+coordinatorが先行側の初回 `ready` と実GUI応答を受けてから、monotonic clockで125秒以上保持する。
+待機中もsignal guard、pipe pump、worker生存確認を継続する。初回 `ready` 受信の120秒上限は変更しない。
+保持後に新しい実Ctrl+O/dialog/SHM frame/Escape応答と同main・profile不変を確認し、
+その後に対象Close/Stop/crash・復元拒否の全caseを実行する。
+`hold_probe.elapsed_ms` と保持後の観測をreceiptへ残し、CI gateは欠落・125秒未満・古い応答の再掲を拒否する。
+通常のfeasibility呼出しでは追加の125秒待機を行わず、`hold_probe=null` として未実施を明示する。
+各headの実測時間、Rust境界テスト、host/Android結果はPR本文に記録する。
+
 coordinatorは最初のworker spawn前からtermination guardとlive ownerを持つ。
 全体中断では全workerに終了を要求し、workerが自分の回収を完了するまで待つ。
 生存workerが `CleanupPending` 中に、coordinatorの子孫全体のfinishでworkerだけをSIGKILLする経路を作らない。

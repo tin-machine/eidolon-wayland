@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -73,6 +74,63 @@ class PrecursorReadinessTests(unittest.TestCase):
                 with self.assertRaisesRegex(app.WaylandError, reason):
                     harness._stable_profile(run, control, profile)
             control.settle.assert_not_called()
+
+
+class PrecursorHoldTests(unittest.TestCase):
+    @staticmethod
+    def observation():
+        value = {key: "same" for key in ("run_id", "owner_scope_id", "profile_id", "runtime_id",
+                                         "main", "app_id", "client_count", "topology_sha256")}
+        value["profile"] = {key: "same" for key in
+                            ("documents_sha256", "settings_sha256", "preferences_sha256")}
+        return value
+
+    def setup_hold(self):
+        clock = [0]
+        precursor = SimpleNamespace(process=mock.Mock())
+        precursor.process.poll.return_value = None
+        coordinator = mock.Mock()
+        coordinator.send.return_value = 1
+        coordinator.receive.return_value = self.observation()
+        return clock, precursor, coordinator
+
+    def test_hold_measures_ready_then_requires_post_deadline_observation(self):
+        clock, precursor, coordinator = self.setup_hold()
+        requested = []
+        coordinator.send.side_effect = lambda *a: requested.append(clock[0]) or 1
+        with mock.patch.object(harness.time, "monotonic_ns", side_effect=lambda: clock[0]), \
+             mock.patch.object(harness.time, "sleep", side_effect=lambda seconds:
+                               clock.__setitem__(0, clock[0] + round(seconds * 1_000_000_000))):
+            proof = harness._hold_precursor(coordinator, precursor, self.observation())
+        self.assertGreaterEqual(proof["elapsed_ms"], 125_000)
+        self.assertGreaterEqual(requested[0], 125_000_000_000)
+        self.assertGreater(coordinator.pump.call_count, 1)
+        coordinator.receive.assert_called_once_with(precursor, "observation", request_id=1)
+        self.assertIs(proof["observation"], coordinator.receive.return_value)
+
+    def test_hold_retains_signal_and_worker_exit_failures_before_wait_completion(self):
+        for failure in ("signal", "worker"):
+            clock, precursor, coordinator = self.setup_hold()
+            if failure == "signal":
+                coordinator.pump.side_effect = app.WaylandError("APP_WAYLAND_INTERRUPTED")
+            else:
+                precursor.process.poll.return_value = 1
+            with self.subTest(failure=failure), \
+                 mock.patch.object(harness.time, "monotonic_ns", side_effect=lambda: clock[0]), \
+                 mock.patch.object(harness.time, "sleep") as sleep:
+                with self.assertRaises(app.WaylandError):
+                    harness._hold_precursor(coordinator, precursor, self.observation())
+            coordinator.receive.assert_not_called()
+            sleep.assert_not_called()
+
+    def test_elapsed_time_does_not_replace_a_live_compositor_response(self):
+        clock, precursor, coordinator = self.setup_hold()
+        coordinator.receive.side_effect = app.WaylandError("APP_WORKER_EARLY_EXIT")
+        with mock.patch.object(harness.time, "monotonic_ns", side_effect=[0, 125_000_000_000]), \
+             mock.patch.object(harness.time, "sleep") as sleep:
+            with self.assertRaisesRegex(app.WaylandError, "APP_WORKER_EARLY_EXIT"):
+                harness._hold_precursor(coordinator, precursor, self.observation())
+        sleep.assert_not_called()
 
 
 class WorkerProtocolTests(unittest.TestCase):

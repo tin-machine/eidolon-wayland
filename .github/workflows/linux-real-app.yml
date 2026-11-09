@@ -88,9 +88,10 @@ jobs:
           python3 scripts/ci/prepare-linux-real-app-fixture --stage inventory --work-directory "$RUNNER_TEMP/mousepad-a0"
           scripts/inspect-linux-real-app --reviewed-package "$RUNNER_TEMP/mousepad-a0/reviewed-package.json" \
             --artifact-root "$RUNNER_TEMP/mousepad-inspection"
-      - name: Observe real Close/Stop/crash restarts, recovery refusals and independent instances
+      - name: Observe 125-second precursor hold, real restarts, recovery refusals and independent instances
         run: |
           python3 scripts/ci/check-linux-real-app-foundation \
+            --precursor-hold-check \
             --reviewed-package "$RUNNER_TEMP/mousepad-a0/reviewed-package.json" \
             --artifact-root "$RUNNER_TEMP/real-app-foundation"
       - name: Fixed-source compiler diagnostics on failure
