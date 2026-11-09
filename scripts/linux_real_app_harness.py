@@ -21,6 +21,7 @@ import time
 import uuid
 
 import linux_real_app_wayland as app
+from linux_real_app_build import BuildError
 from linux_real_app_evidence import PRECURSOR_HOLD_MS
 
 ROOT = app.ROOT
@@ -28,6 +29,7 @@ MAX_MESSAGE = 128 * 1024
 MAX_QUEUE = 8
 CASES = ("close_restart", "stop_restart", "crash_restart")
 RECOVERY_CASES = ("session", "autosave", "ambiguous")
+GUI_CASE = "gui_settings"
 EVENTS = frozenset({"ready", "observation", "case", "done"})
 OPERATIONS = frozenset({"run", "observe", "close", "stop"})
 COMPACT_FIELDS = (
@@ -49,10 +51,11 @@ def _compact(receipt):
     return {key: receipt.get(key) for key in COMPACT_FIELDS}
 
 
-def _worker_command(role, directory, settings_bundle):
+def _worker_command(role, directory, settings_bundle, gui_observer_bundle=None):
     app.require(role in ("precursor", "target"), "APP_WORKER_ROLE")
-    return [app._tool(Path("/usr/bin/python3")), str(Path(__file__).resolve()),
-            "--worker", role, str(directory), str(settings_bundle)]
+    command = [app._tool(Path("/usr/bin/python3")), str(Path(__file__).resolve()),
+               "--worker", role, str(directory), str(settings_bundle)]
+    return command if gui_observer_bundle is None else [*command, str(gui_observer_bundle)]
 
 
 def _decode(line):
@@ -86,8 +89,9 @@ class _Worker:
 
 class _Coordinator:
     """Own all workers while preserving their narrower ownership scopes."""
-    def __init__(self, artifact, settings_bundle):
+    def __init__(self, artifact, settings_bundle, gui_observer_bundle=None):
         self.artifact, self.settings_bundle = Path(artifact), Path(settings_bundle)
+        self.gui_observer_bundle = gui_observer_bundle
         app._private(self.artifact)
         self.workers = []
         self.selector = selectors.DefaultSelector()
@@ -114,7 +118,9 @@ class _Coordinator:
         self.workers.append(worker)
         # No handler throws between Popen and these registrations. Even a later
         # pidfd/pipe registration failure leaves the child in owner.roots.
-        worker.process = self.owner.spawn(_worker_command(role, directory, self.settings_bundle),
+        command = (_worker_command(role, directory, self.settings_bundle) if self.gui_observer_bundle is None
+                   else _worker_command(role, directory, self.settings_bundle, self.gui_observer_bundle))
+        worker.process = self.owner.spawn(command,
                                          env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"})
         worker.stdout, worker.stderr = worker.process.stdout, worker.process.stderr
         worker.pidfd = os.pidfd_open(worker.process.pid, 0)
@@ -141,7 +147,7 @@ class _Coordinator:
             self.termination.check()
         app.require(worker in self.workers and type(op) is str and op in OPERATIONS, "APP_WORKER_COMMAND")
         app.require((set(fields) == {"case"} and type(fields["case"]) is str
-                     and fields["case"] in (*CASES, *RECOVERY_CASES)) if op == "run" else not fields,
+                     and fields["case"] in (*CASES, *RECOVERY_CASES, GUI_CASE)) if op == "run" else not fields,
                     "APP_WORKER_COMMAND")
         worker.next_id += 1
         app.require(worker.next_id <= 64, "APP_WORKER_COMMAND_SEQUENCE")
@@ -328,12 +334,14 @@ def _retain_run_cleanup(pending, artifact):
     return receipt
 
 
-def _call_run(directory, bundle, profile, name, *, ending="close", exercise=False, on_ready=None, lifetime="run"):
+def _call_run(directory, bundle, profile, name, *, ending="close", exercise=False, on_ready=None, lifetime="run",
+              gui_observer_bundle=None):
     artifact = directory / "runs" / name
     artifact.mkdir(mode=0o700)
     try:
         receipt = app.run_case(ROOT, artifact, bundle, profile=profile,
-                               ending=ending, exercise=exercise, on_ready=on_ready, lifetime=lifetime)
+                               ending=ending, exercise=exercise, on_ready=on_ready, lifetime=lifetime,
+                               gui_observer_bundle=gui_observer_bundle)
     except app.CleanupPending as pending:
         receipt = _retain_run_cleanup(pending, artifact)
     return receipt
@@ -435,7 +443,7 @@ class _WorkerChannel:
                             and value["id"] <= 64 and type(value["op"]) is str
                             and value["op"] in OPERATIONS
                             and (set(value) == {"schema", "id", "op", "case"}
-                                 and type(value["case"]) is str and value["case"] in (*CASES, *RECOVERY_CASES)
+                                 and type(value["case"]) is str and value["case"] in (*CASES, *RECOVERY_CASES, GUI_CASE)
                                  if value["op"] == "run" else set(value) == {"schema", "id", "op"}),
                             "APP_WORKER_COMMAND")
                 self.last_id = value["id"]
@@ -516,7 +524,7 @@ def _stable_profile(run, control, profile):
         control.settle(min(.05, deadline - now))
 
 
-def _worker(role, directory, bundle):
+def _worker(role, directory, bundle, gui_observer_bundle=None):
     app.require(role in ("precursor", "target"), "APP_WORKER_ROLE")
     directory, bundle = Path(directory), Path(bundle)
     app._private(directory)
@@ -549,7 +557,7 @@ def _worker(role, directory, bundle):
             channel.emit("done", channel.last_id, {"worker_id": worker_id, "run": _compact(receipt)})
             return 0 if receipt.get("state") == "partial" else 1
         channel.emit("ready", 0, {"worker_id": worker_id})
-        expected = list(CASES) + list(RECOVERY_CASES)
+        expected = list(CASES) + list(RECOVERY_CASES) + ([GUI_CASE] if gui_observer_bundle is not None else [])
         while True:
             command = channel.read(guard.check)
             if command["op"] in ("close", "stop") and "case" not in command:
@@ -571,6 +579,12 @@ def _worker(role, directory, bundle):
                     keys = ("evidence", "recovery_guard", "mousepad_sha256", "waypipe_sha256", "waypipe_version",
                             "waypipe_ends", "private_bus", "profile_kind", "source_argv")
                     data["foundation"] = {key: first[key] for key in keys}
+            elif case == GUI_CASE:
+                from linux_real_app_gui import exercise_suite
+                started = time.monotonic_ns()
+                data = {"name": case, "gui": exercise_suite(directory, bundle, Path(gui_observer_bundle),
+                                                             _call_run, _compact)}
+                data["elapsed_ms"] = (time.monotonic_ns() - started) // 1_000_000
             else:
                 data = {"name": case, "case": _recovery_case(directory, bundle, case)}
             channel.emit("case", command["id"], data)
@@ -611,7 +625,7 @@ def _hold_precursor(coordinator, precursor, initial):
             "observation": observation}
 
 
-def run_suite(repo, artifact, settings_bundle, *, precursor_hold_check=False):
+def run_suite(repo, artifact, settings_bundle, *, precursor_hold_check=False, gui_observer_bundle=None):
     repo, artifact, settings_bundle = map(Path, (repo, artifact, settings_bundle))
     app.require(repo.resolve() == ROOT and artifact.is_absolute()
                 and type(precursor_hold_check) is bool, "APP_WAYLAND_ARGUMENT")
@@ -624,7 +638,8 @@ def run_suite(repo, artifact, settings_bundle, *, precursor_hold_check=False):
               "lifecycle": {"schema": 1, "cases": {}, "recovery": {}, "independence": {}}}
     coordinator = None
     try:
-        coordinator = _Coordinator(artifact, settings_bundle)
+        coordinator = (_Coordinator(artifact, settings_bundle) if gui_observer_bundle is None
+                       else _Coordinator(artifact, settings_bundle, gui_observer_bundle))
         precursor = coordinator.spawn("precursor")
         ready = coordinator.receive(precursor, "ready", request_id=0)
         independent = result["lifecycle"]["independence"]
@@ -653,17 +668,32 @@ def run_suite(repo, artifact, settings_bundle, *, precursor_hold_check=False):
         # This receipt is written while the precursor still owns live GUI
         # processes. Any open/write/fsync failure takes the same finally path.
         _write(artifact / "independence.json", independent)
-        request_id = coordinator.send(target, "close")
-        coordinator.receive(target, "done", request_id=request_id)
         request_id = coordinator.send(precursor, "close")
         final = coordinator.receive(precursor, "done", request_id=request_id)
         independent["precursor_final"] = final["run"]
         app.require(final["run"]["state"] == "partial" and final["run"]["error"] is None
                     and _clean(final["run"]), "APP_PRECURSOR_CLEANUP")
+        # GUI experiments start only once the precursor has fully closed and
+        # released its owner. Their runtime does not consume its fixed 360s
+        # budget; each new GUI run still uses the shared 110/120s policy.
+        if gui_observer_bundle is not None:
+            request_id = coordinator.send(target, "run", case=GUI_CASE)
+            event = coordinator.receive(target, "case", request_id=request_id, seconds=240)
+            app.require(event.get("name") == GUI_CASE, "APP_WORKER_CASE_ORDER")
+            result["gui"] = event["gui"]
+            result["gui_elapsed_ms"] = event["elapsed_ms"]
+            from linux_real_app_gui_evidence import validate_gui
+            validate_gui(result["gui"], result, result["lifecycle"])
+            result["checks"].update(gui_setting_persistence=True, protected_settings_gui_readonly=True)
+        request_id = coordinator.send(target, "close")
+        coordinator.receive(target, "done", request_id=request_id)
         result["checks"].update({key: True for key in app.REQUIRED_CHECKS
                                   if key not in ("gui_setting_persistence", "protected_settings_gui_readonly")})
-        result.update(state="partial", status="incomplete")
-    except (app.WaylandError, app.driver.ProbeError, app.owner_api.OwnershipError) as exc:
+        if all(result["checks"].values()):
+            result.update(state="complete", status="passed", feasibility_verified=True)
+        else:
+            result.update(state="partial", status="incomplete")
+    except (app.WaylandError, app.driver.ProbeError, app.owner_api.OwnershipError, BuildError) as exc:
         token = str(exc)
         result["error"] = token if re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", token) else "APP_HARNESS_FAILED"
     except (OSError, ValueError, KeyError, TypeError):
@@ -677,14 +707,16 @@ def run_suite(repo, artifact, settings_bundle, *, precursor_hold_check=False):
     return result
 
 
-def run_feasibility(repo, artifact, settings_bundle, *, precursor_hold_check=False):
-    return run_suite(repo, artifact, settings_bundle, precursor_hold_check=precursor_hold_check)
+def run_feasibility(repo, artifact, settings_bundle, *, precursor_hold_check=False, gui_observer_bundle=None):
+    return run_suite(repo, artifact, settings_bundle, precursor_hold_check=precursor_hold_check,
+                     gui_observer_bundle=gui_observer_bundle)
 
 
 if __name__ == "__main__":
     try:
-        app.require(len(sys.argv) == 5 and sys.argv[1] == "--worker", "APP_WORKER_INTERNAL_ONLY")
-        raise SystemExit(_worker(sys.argv[2], sys.argv[3], sys.argv[4]))
+        app.require(len(sys.argv) in (5, 6) and sys.argv[1] == "--worker", "APP_WORKER_INTERNAL_ONLY")
+        raise SystemExit(_worker(sys.argv[2], sys.argv[3], sys.argv[4],
+                                sys.argv[5] if len(sys.argv) == 6 else None))
     except (OSError, ValueError, app.WaylandError, app.driver.ProbeError, app.owner_api.OwnershipError):
         print("APP_WORKER_FAILED", file=sys.stderr)
         raise SystemExit(1)

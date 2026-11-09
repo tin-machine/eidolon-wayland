@@ -11,6 +11,8 @@ PR #4後は[A0の次工程と引き継ぎ](linux-real-app-a0-next-steps-20261109
 前者のPR1の実装と独立したcase/receipt契約は
 [同profile再起動と先行instance独立](linux-real-app-a0-restart-20261109.md)へ記録した。
 GUI設定2項目、A0全体および通常v3/Questの完了を意味しない。
+後続PR2では[GUI設定保持・保護設定の実測oracle](linux-real-app-a0-gui-settings-20261109.md)を追加した。
+全A0証拠が揃ったheadだけを `APP_A0_PASSED` と判定し、本書のB〜Fや通常v3/Questの成立へ読み替えない。
 
 [L7aの要求](nx11-nx18-normal-gui-followup-plan-20261108.md#linux-real-app)を、
 [通常GTKデモのL5/L6](normal-linux-gui-l5-l6-20261108.md)から実装できる単位へ分解する。

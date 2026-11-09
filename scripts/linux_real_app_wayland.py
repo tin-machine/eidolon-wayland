@@ -570,7 +570,8 @@ def retry_cleanup(pending):
 
 
 def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_api.WINDOW_APP_ID,
-             profile=None, ending="close", on_ready=None, exercise=True, lifetime="run"):
+             profile=None, ending="close", on_ready=None, exercise=True, lifetime="run",
+             gui_observer_bundle=None):
     """Run a fresh owner/Control, optionally reusing our synthetic profile.
 
     repo_root must be this module's checkout, artifact an empty private owner
@@ -666,6 +667,43 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
                "GIO_USE_VFS": "local", "GTK_USE_PORTAL": "0", "NO_AT_BRIDGE": "1",
                "GTK_IM_MODULE": "gtk-im-context-simple", "GSETTINGS_BACKEND": "eidolon-keyfile-v1",
                "GIO_EXTRA_MODULES": str(settings_bundle / "gio")}
+        if gui_observer_bundle is not None:
+            # Only the explicit synthetic GUI experiments load this read-only
+            # GTK module. Private bus/NO_AT_BRIDGE and the unmodified Mousepad
+            # binary remain identical to the other application experiments.
+            from linux_real_app_gui_observer import Observer, ObserverError, prepare
+            observer_bundle = Path(gui_observer_bundle)
+            _private(observer_bundle)
+            observer_manifest = _json(observer_bundle / "gui-observer.json")
+            observer_binary = observer_bundle / "libeidolon-a0-gui-observer.so"
+            observer_source = ROOT / "scripts/fixtures/linux-real-app-gui-observer.c"
+            require(observer_manifest.get("kind") == "linux-real-app-gui-observer-a0"
+                    and observer_manifest.get("read_only") is True
+                    and observer_manifest.get("production_ready") is False
+                    and observer_manifest.get("files", {}).get(observer_binary.name) == _sha(observer_binary)
+                    and observer_manifest["files"].get(observer_source.name) == _sha(observer_source),
+                    "APP_GUI_OBSERVER_BUNDLE")
+            try:
+                env.update(prepare(run.runtime, profile.root, profile.profile_id, run.runtime_id))
+                expected_mousepad = _inode(Path(mousepad).resolve(strict=True).stat())
+                def observer_peer(pid):
+                    # SO_PEERCRED is used only to correlate this live socket
+                    # with our presently owned application, never to signal a
+                    # numeric PID recovered from a receipt or old process.
+                    rows = owner_api.descendant_snapshot(run.owner.owner)
+                    row = rows.get(pid)
+                    require(row is not None and row["state"] != "Z"
+                            and _inode((Path("/proc") / str(pid) / "exe").stat()) == expected_mousepad
+                            and owner_api.same_process(row, owner_api.identity(pid)),
+                            "APP_GUI_OBSERVER_NOT_OWNED_MOUSEPAD")
+                run.gui_observer = Observer(run.runtime, profile.profile_id, run.runtime_id,
+                                            pump=run.pump, peer_check=observer_peer)
+            except ObserverError as error:
+                raise WaylandError(str(error)) from error
+            env["GTK3_MODULES"] = str(observer_binary)
+            result["gui_observer"] = {"kind": "gtk3-readonly-v1",
+                                      "module_sha256": _sha(observer_binary),
+                                      "source_sha256": _sha(observer_source)}
         fifo = run.runtime / "control"
         os.mkfifo(fifo, 0o600)
         run.command_pipe = os.fdopen(os.open(fifo, os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC), "wb", buffering=0)
@@ -807,6 +845,7 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
                     result["receipt_write_failed"] = True
                 raise
             result["output_bytes"] = run.output_bytes
+            result["elapsed_ms"] = (time.monotonic_ns() - round(run.started * 1_000_000_000)) // 1_000_000
             if run.profile_after is not None:
                 result["profile_after"] = run.profile_after
                 if (result["documents_before_termination"] is not None
@@ -838,7 +877,8 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
     return result
 
 
-def run_feasibility(repo, artifact, settings_bundle, *, waypipe, compositor, precursor_hold_check=False):
+def run_feasibility(repo, artifact, settings_bundle, *, waypipe, compositor, precursor_hold_check=False,
+                    gui_observer_bundle=None):
     """Root orchestrator API. Dependencies are fixed build outputs, no CLI argv.
 
     Supplied paths must be exactly the checkout's verified Waypipe metadata and
@@ -854,7 +894,10 @@ def run_feasibility(repo, artifact, settings_bundle, *, waypipe, compositor, pre
     metadata = _json(ROOT / "native/generated/waypipe-host.json")
     require(str(waypipe) == metadata.get("executable"), "APP_WAYLAND_WAYPIPE_PATH")
     from linux_real_app_harness import run_feasibility as run_harness
-    return run_harness(repo, artifact, settings_bundle, precursor_hold_check=precursor_hold_check)
+    options = {"precursor_hold_check": precursor_hold_check}
+    if gui_observer_bundle is not None:
+        options["gui_observer_bundle"] = gui_observer_bundle
+    return run_harness(repo, artifact, settings_bundle, **options)
 
 
 def _exec_compositor(args):

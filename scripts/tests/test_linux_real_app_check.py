@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -73,10 +74,11 @@ class TemporaryCheck(unittest.TestCase):
         with mock.patch.object(subprocess, "Popen", side_effect=AssertionError("no process may run")) as spawn, \
              mock.patch.object(check, "run_bounded", side_effect=AssertionError("no command may run")) as command, \
              mock.patch.object(check, "build_settings", side_effect=AssertionError("no build may run")) as build, \
+             mock.patch.object(check, "build_gui_observer", side_effect=AssertionError("no observer build may run")) as observer, \
              mock.patch.object(check, "build_compositor", side_effect=AssertionError("no compositor may run")) as compositor, \
              mock.patch.object(wayland, "run_feasibility", side_effect=AssertionError("no app may run")) as application:
             yield
-            for called in (spawn, command, build, compositor, application):
+            for called in (spawn, command, build, observer, compositor, application):
                 called.assert_not_called()
 
 
@@ -231,6 +233,14 @@ class FoundationAggregationTests(TemporaryCheck):
             response["input_delivered_after"] += 10
             response["dialog_window"] = str(int(response["dialog_window"]) + 1)
             response["frame"] = str(int(response["frame"]) + 1)
+        return value
+
+    def complete_application(self, *, held=False):
+        from test_linux_real_app_gui_evidence import gui_specimen
+        value = self.held_application() if held else self.application()
+        value["gui"] = gui_specimen(value)
+        value.update(status="passed", state="complete", feasibility_verified=True, pending=[])
+        value["checks"] = dict.fromkeys(wayland.REQUIRED_CHECKS, True)
         return value
 
     def test_long_hold_requires_measured_time_and_an_additional_response(self):
@@ -434,8 +444,10 @@ class FoundationAggregationTests(TemporaryCheck):
     def stages(self, application, *, final_inspection=None, raised=None):
         compositor = self.base / "compositor-stage-fixture"
         binary = self.base / "waypipe-stage-fixture"
-        write(compositor, b"Compositor stage fixture.\n", 0o500)
-        write(binary, b"Waypipe stage fixture.\n", 0o500)
+        if not compositor.exists():
+            write(compositor, b"Compositor stage fixture.\n", 0o500)
+        if not binary.exists():
+            write(binary, b"Waypipe stage fixture.\n", 0o500)
         observed = self.inspection()
         settings = {"policy_values_types_and_readonly": True, "ordinary_notifications_and_transactions": True,
                     "ordinary_persistence_in_new_process": True, "separate_profile_isolation": True,
@@ -445,6 +457,8 @@ class FoundationAggregationTests(TemporaryCheck):
              mock.patch.object(check, "run_bounded", side_effect=AssertionError("no command may run")), \
              mock.patch.object(check.inspect, "inspect_host", side_effect=[observed, final_inspection or observed]), \
              mock.patch.object(check, "build_settings", return_value={"files": {"gio/libeidolon-settings.so": "b" * 64}}), \
+             mock.patch.object(check, "build_gui_observer", return_value={"files": {
+                 "libeidolon-a0-gui-observer.so": "d" * 64, "linux-real-app-gui-observer.c": "e" * 64}}), \
              mock.patch.object(check, "settings_checks", return_value=settings), \
              mock.patch.object(check, "waypipe_binary", return_value=(binary, sha(binary.read_bytes()))), \
              mock.patch.object(check, "build_compositor", return_value=compositor), \
@@ -474,6 +488,98 @@ class FoundationAggregationTests(TemporaryCheck):
         self.assertEqual((status, result["status"], result["reason"]), (2, "failed", "APP_WAYLAND_RECEIPT_INVALID"))
         self.assertIs(result["a0_passed"], False)
         self.assertIs(result["available"], False)
+
+    def test_complete_measured_gui_evidence_passes_only_a0_with_exit_zero(self):
+        application = self.complete_application()
+        self.assertIs(check.validate_application_foundation(application), application)
+        with self.stages(application):
+            status, result = self.command("--stage", "feasibility", "--artifact-root", str(self.base / "complete"))
+        self.assertEqual((status, result["status"], result["reason"]), (0, "passed", "APP_A0_PASSED"))
+        self.assertIs(result["a0_passed"], True)
+        self.assertEqual(result["pending"], ["v3_acceptance", "quest"])
+        for flag in ("available", "production_acceptance_passed", "quest_verified"):
+            self.assertIs(result[flag], False)
+        self.assertIs(check.validate_feasibility_a0(result), result)
+        with self.assertRaises(check.BuildError):
+            check.validate_feasibility_a0(result, require_precursor_hold=True)
+
+    def test_complete_gui_evidence_keeps_the_real_125_second_hold_requirement(self):
+        application = self.complete_application(held=True)
+        self.assertIs(check.validate_application_foundation(application, require_precursor_hold=True), application)
+        with self.stages(application):
+            result = check.run_feasibility(self.base / "complete-held", None, precursor_hold_check=True)
+        self.assertIs(check.validate_feasibility_a0(result, require_precursor_hold=True), result)
+        self.assertIs(result["a0_passed"], True)
+
+    def test_invalid_gui_cannot_hide_as_pending_partial_evidence(self):
+        application = self.application()
+        application["gui"] = {}
+        with self.assertRaises(check.BuildError):
+            check.validate_application_foundation(application)
+        application["gui"] = self.complete_application()["gui"]
+        with self.assertRaises(check.BuildError):
+            check.validate_application_foundation(application)
+
+    def test_full_a0_requires_every_gui_observation_not_just_bool_and_pending_changes(self):
+        for field in ("persistence", "protected", "observer"):
+            application = self.complete_application()
+            application["gui"].pop(field)
+            with self.subTest(field=field), self.assertRaises(check.BuildError):
+                check.validate_application_foundation(application)
+
+    def test_observer_receipt_must_match_the_built_source_and_module(self):
+        for field in ("module_sha256", "source_sha256"):
+            application = self.complete_application()
+            application["gui"]["observer"][field] = "f" * 64
+            with self.subTest(field=field), self.stages(application):
+                result = check.run_feasibility(self.base / field, None)
+            self.assertEqual((result["status"], result["reason"]), ("failed", "APP_WAYLAND_EVIDENCE_MISMATCH"))
+            self.assertIs(result["a0_passed"], False)
+
+    def test_a0_gate_rejects_missing_backend_or_recovery_evidence_and_production_promotion(self):
+        with self.stages(self.complete_application()):
+            complete = check.run_feasibility(self.base / "gate-result", None)
+        mutations = [
+            lambda value: value.update(a0_passed=1),
+            lambda value: value.update(available=True),
+            lambda value: value.update(production_acceptance_passed=True),
+            lambda value: value.update(quest_verified=True),
+            lambda value: value.update(application_payload_logged=True),
+            lambda value: value.update(pending=[]),
+            lambda value: value["checks"]["recovery"].update(application_spawned_for_seeded_recovery=True),
+            lambda value: value["checks"].update(application=self.application()),
+        ]
+        mutations += [lambda value, name=name: value["checks"]["settings"].update({name: False})
+                      for name in check.SETTINGS_CHECKS]
+        mutations += [lambda value, name=name: value["checks"]["recovery"].update({name: False})
+                      for name in check.RECOVERY_CHECKS]
+        for mutate in mutations:
+            result = copy.deepcopy(complete)
+            mutate(result)
+            with self.subTest(mutation=mutate), self.assertRaises(check.BuildError):
+                check.validate_feasibility_a0(result)
+
+    def test_ci_gate_requires_complete_a0_and_never_promotes_production(self):
+        with self.stages(self.complete_application(held=True)):
+            complete = check.run_feasibility(self.base / "ci-complete", None, precursor_hold_check=True)
+        with self.stages(self.application()):
+            incomplete = check.run_feasibility(self.base / "ci-incomplete", None)
+        namespace = runpy.run_path(str(ROOT / "scripts/ci/check-linux-real-app-foundation"), run_name="test_ci_gate")
+        for result, expected in ((complete, 0), (incomplete, 1)):
+            output = io.StringIO()
+            with self.subTest(status=result["status"]), \
+                 mock.patch.object(sys, "argv", ["gate", "--artifact-root", str(self.base / "unused"),
+                                                "--reviewed-package", str(self.base / "descriptor"), "--precursor-hold-check"]), \
+                 mock.patch.object(check, "run_feasibility", return_value=result), \
+                 mock.patch.object(check.inspect, "_read_operator_descriptor", return_value={}), \
+                 contextlib.redirect_stdout(output):
+                status = namespace["main"]()
+            receipt = json.loads(output.getvalue())
+            self.assertEqual(status, expected)
+            self.assertIs(receipt["foundation_verified"], expected == 0)
+            self.assertIs(receipt["a0_passed"], expected == 0)
+            for flag in ("available", "production_acceptance_passed", "quest_verified"):
+                self.assertIs(receipt[flag], False)
 
     def test_contradictory_or_unfinished_application_receipts_are_rejected(self):
         for mutate in (
