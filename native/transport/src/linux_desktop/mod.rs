@@ -10,10 +10,12 @@ use sha2::{Digest, Sha256};
 
 mod protocol;
 pub use protocol::{Action, Event, Phase, Protocol};
+pub mod dispatch;
 mod journal;
 mod owner;
 mod recovery;
 mod runtime;
+pub mod v3;
 pub use eidolon_model::linux_desktop::Selection;
 pub(crate) use journal::{Pending, pending};
 pub use owner::RemoteReport;

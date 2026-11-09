@@ -1,0 +1,47 @@
+#!/usr/bin/python3
+"""Build a separate immutable v3 bundle or print its verified pins; never start an app."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+
+import linux_desktop_v3_build as build
+import linux_desktop_v3_bundle as bundle
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    operation = parser.add_mutually_exclusive_group()
+    operation.add_argument('--print-pins', action='store_true')
+    operation.add_argument('--source-status', action='store_true', help='report incomplete source dependencies, never pins')
+    parser.add_argument('--build-id', help='previously selected immutable build-id, required for --print-pins')
+    parser.add_argument('--reviewed-package', type=Path, help='existing inspector reviewed-package descriptor for build')
+    args = parser.parse_args(argv)
+    if args.print_pins and (args.build_id is None or args.reviewed_package is not None):
+        parser.error('--print-pins requires only --build-id')
+    if args.source_status and (args.build_id is not None or args.reviewed_package is not None):
+        parser.error('--source-status takes no build inputs')
+    if not args.print_pins and not args.source_status and (args.reviewed_package is None or args.build_id is not None):
+        parser.error('build requires only --reviewed-package')
+    os.umask(0o077)
+    success = False
+    try:
+        if args.source_status:
+            result = bundle.source_status(build.ROOT, bundle.read_regular(build.INVENTORY_PATH, limit=bundle.MANIFEST_LIMIT))
+        elif args.print_pins:
+            result = build.print_pins(args.build_id)
+        else:
+            result = build.build(args.reviewed_package)
+        success = True
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError) as error:
+        reason = str(error)
+        result = {'schema': 1, 'status': 'failed', 'application_executed': False,
+                  'reason': reason if re.fullmatch(r'(BUILD|BUNDLE|APP)_[A-Z_]{1,64}', reason) else 'BUILD_UNAVAILABLE',
+                  'available': False, 'production_acceptance_passed': False, 'quest_verified': False}
+    print(json.dumps(result, sort_keys=True, separators=(',', ':')))
+    return 0 if success else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
