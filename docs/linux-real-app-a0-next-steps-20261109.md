@@ -1,6 +1,10 @@
 # L7a A0: PR #4後の実装計画と次セッションへの引き継ぎ
 
-更新日: 2026-11-09。状態: **PR #4はmainへマージ済み。PR1の実装を追加、GUI設定2項目とA0全体は未完了**。
+更新日: 2026-11-09。状態: **PR #5までmainへマージ済み。PR2のGUI設定oracleと明示的A0成功経路を追加**。
+PR2の観測方式・偽陽性拒否・期限と回収の維持・後続工程の境界は
+[GUI設定保持・保護設定の実装記録](linux-real-app-a0-gui-settings-20261109.md)を参照する。
+A0の成功は当該headの実Mousepad/WaypipeとCIで判断し、実装の存在だけから認定しない。
+以下のPR #4直後の状態表および末尾のPR1向けプロンプトは過去の基準である。
 PR1の変更根拠、caseごとのoracle、回収契約、検証入口は
 [再起動・先行instance独立の実装記録](linux-real-app-a0-restart-20261109.md)を参照する。
 実測成功は今回のPR headのCI結果で確認し、以下のPR #4時点の結果から推定しない。
@@ -141,6 +145,10 @@ worker自身がpidfd/lockを保持して再試行する。IPCの状態通知を�
 このPRではGUI設定2項目を未完了として維持する。A0全体・v3通常起動・Quest成功を宣言しない。
 
 ## 3. 次のPR2: GUI設定の保持と保護設定の操作不可
+
+本節の計画に対応する実測oracle、集約、receipt validator、CI gate、偽陽性拒否testを
+[PR2実装](linux-real-app-a0-gui-settings-20261109.md)で追加した。
+最新headの実行結果は同実装のPR本文を参照する。後続のv3/Android/Quest工程は本節の完了と別である。
 
 PR1の再起動harnessを利用する。現在の[settings_checks()](https://github.com/tin-machine/eidolon-wayland/blob/6fb00482a1f3550f311a6b26700951ac9752c315/scripts/linux_real_app_check.py#L115)は
 固定probeのAPI操作と別process読出しであり、GUIからの変更・再起動後のGUI状態を証明していない。

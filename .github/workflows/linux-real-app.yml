@@ -31,9 +31,14 @@ jobs:
           EIDOLON_REQUIRE_GIO_TESTS: '1'
         run: python3 -m unittest discover -s scripts/tests -p 'test_linux_settings_backend.py' -v
       - name: Read-only package and recovery-data tests
+        env:
+          EIDOLON_REQUIRE_GUI_OBSERVER_TESTS: '1'
         run: |
           python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_inspect.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_check.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_gui.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_gui_observer.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_gui_evidence.py' -v
       - name: Termination and live descendant ownership regressions
         env:
           EIDOLON_REQUIRE_LIFECYCLE_TESTS: '1'
@@ -88,7 +93,7 @@ jobs:
           python3 scripts/ci/prepare-linux-real-app-fixture --stage inventory --work-directory "$RUNNER_TEMP/mousepad-a0"
           scripts/inspect-linux-real-app --reviewed-package "$RUNNER_TEMP/mousepad-a0/reviewed-package.json" \
             --artifact-root "$RUNNER_TEMP/mousepad-inspection"
-      - name: Observe 125-second precursor hold, real restarts, recovery refusals and independent instances
+      - name: Observe A0 GUI persistence, protected Preferences, 125-second hold and lifecycle cases
         run: |
           python3 scripts/ci/check-linux-real-app-foundation \
             --precursor-hold-check \
@@ -100,7 +105,7 @@ jobs:
           python3 - <<'PY'
           import os, pathlib
           base = pathlib.Path(os.environ['RUNNER_TEMP']) / 'real-app-foundation'
-          for relative in ('settings-bundle/build.log', 'compositor-build.log'):
+          for relative in ('settings-bundle/build.log', 'gui-observer/build.log', 'compositor-build.log'):
               path = base / relative
               if path.is_file():
                   text = path.read_bytes()[-16384:].decode('utf-8', errors='replace')

@@ -160,3 +160,46 @@ def build_settings(directory):
                                         for stream in ("stdout", "stderr")}}
     _tools.exclusive_file(directory / "build.json", json.dumps(result, sort_keys=True, separators=(",", ":")).encode() + b"\n", 0o600)
     return result
+
+
+def build_gui_observer(directory):
+    """Build the read-only GTK fixture separately from the GIO-only backend.
+
+    The module is explicitly enabled only for marked synthetic GUI runs. It is
+    not a production bundle component and never changes the Mousepad package.
+    """
+    directory = Path(directory)
+    require(directory.is_absolute() and directory.resolve() == directory, "APP_BUILD_LOCATION_INVALID")
+    directory.mkdir(mode=0o700)
+    env = fixed_environment(directory)
+    cc, pkg = _tool("/usr/bin/cc"), _tool("/usr/bin/pkg-config")
+    source_name = "linux-real-app-gui-observer.c"
+    module_name = "libeidolon-a0-gui-observer.so"
+    source = ROOT / "scripts/fixtures" / source_name
+    inputs = source.read_bytes()
+    require(0 < len(inputs) <= 65536, "APP_BUILD_SOURCE_INVALID")
+    _command([pkg, "--atleast-version=3.24", "gtk+-3.0"], env)
+    version = _command([pkg, "--modversion", "gtk+-3.0"], env)["stdout"].decode("ascii").strip()
+    require(re.fullmatch(r"3\.24\.[0-9]{1,3}", version), "APP_GUI_OBSERVER_GTK_UNSUPPORTED")
+    flags = shlex.split(_command([pkg, "--cflags", "--libs", "gtk+-3.0", "gmodule-2.0"], env)["stdout"].decode("ascii"))
+    require(bool(flags) and all(flag.startswith(("-I", "-L", "-l", "-D", "-pthread", "-Wl,")) for flag in flags),
+            "APP_GUI_OBSERVER_FLAGS_INVALID")
+    _tools.exclusive_file(directory / source_name, inputs, 0o600)
+    module = directory / module_name
+    with (directory / "build.log").open("xb") as log:
+        os.chmod(directory / "build.log", 0o600)
+        _command([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2", "-fPIC", "-shared",
+                  "-Wl,-z,relro,-z,now", "-Wl,-z,defs", str(directory / source_name),
+                  "-o", str(module), *flags], env, log=log)
+    module.chmod(0o500)
+    binary = module.read_bytes()
+    require(64 <= len(binary) <= 4 * 1024 * 1024 and binary[:4] == b"\x7fELF", "APP_GUI_OBSERVER_BINARY_INVALID")
+    require(source.read_bytes() == inputs, "APP_BUILD_INPUT_CHANGED")
+    (directory / source_name).chmod(0o400)
+    manifest = {"schema": 1, "kind": "linux-real-app-gui-observer-a0", "gtk_version": version,
+                "files": {source_name: hashlib.sha256(inputs).hexdigest(),
+                          module_name: hashlib.sha256(binary).hexdigest()},
+                "production_ready": False, "read_only": True}
+    _tools.exclusive_file(directory / "gui-observer.json",
+                          json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode() + b"\n", 0o400)
+    return manifest

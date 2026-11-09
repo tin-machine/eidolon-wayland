@@ -247,13 +247,24 @@ impl Observations {
     fn snapshot(&self, display: &Display<ProtocolState>, state: &ProtocolState) -> Value {
         let windows: Vec<Value> = state.windows().into_iter().map(|w| json!({
             "window": w.window, "parent": w.parent, "app_id": safe_app_id(w.app_id.as_deref()),
-            "app_id_valid": app_id_valid(w.app_id.as_deref()), "life": w.life, "frame": w.frame, "logical_size": w.logical_size, "layers": w.layers
+            "app_id_valid": app_id_valid(w.app_id.as_deref()), "life": w.life, "frame": w.frame,
+            "logical_size": w.logical_size, "layers": w.layers,
+            // GTK widget positions are in the root wl_surface coordinates.
+            // Native pointer UVs address the xdg window geometry, excluding
+            // CSD shadows: subtract this origin before dividing by size.
+            // LogicalPoint is a checked i32 pair; no title/pixel is exposed.
+            "geometry_origin": state.latest_snapshot(w.window).map(|s| s.geometry.origin)
         })).collect();
         let input = state.input_report();
         let c = state.counters;
         json!({"windows": windows, "counts": counts(display, state),
             "input": {"focus_window": input.focus_window, "focus_token": input.focus_token,
-                "delivered": input.delivered, "pressed": input.pressed},
+                "delivered": input.delivered, "pressed": input.pressed,
+                // Keyboard delivered does not count pointer events. Keep the
+                // genuine native pointer counters separate for GUI oracles.
+                "pointer_buttons": input.pointer.buttons, "pointer_motions": input.pointer.motions,
+                "pointer_pressed": input.pointer.pressed,
+                "pointer_window": input.pointer.hover_window},
             "counters": {"commits": c.commits, "configures": c.configures, "acks": c.acks,
                 "copies": c.copies, "releases": c.releases, "callbacks": c.callbacks,
                 "maps": c.maps, "unmaps": c.unmaps, "bad_maps": c.bad_maps,
@@ -638,6 +649,80 @@ mod tests {
         let enter: Vec<_> = report.keys.iter().filter(|(code, _, _)| *code == 28)
             .map(|(_, state, _)| *state).collect();
         assert_eq!(enter, [1, 0], "only key-down and native-reset key-up reach the wire");
+    }
+
+    #[test]
+    fn snapshot_preserves_nonzero_geometry_and_separates_pointer_progress() {
+        use eidolon_model::input::surface_hits;
+        use eidolon_shm_fixture::state::{self as fixture, Scenario, Stage};
+        use std::{os::unix::net::UnixStream, sync::{Arc, mpsc}};
+
+        let mut display = Display::<ProtocolState>::new().unwrap();
+        let mut state = ProtocolState::new(&display.handle(), SessionId::new(1).unwrap());
+        state.configure_keyboard(KeyboardLayout::Us).unwrap();
+        let (server_socket, client_socket) = UnixStream::pair().unwrap();
+        state.accept(&display.handle(), server_socket).unwrap();
+        let (step_tx, steps) = mpsc::sync_channel(1);
+        let (replies, reply_rx) = mpsc::sync_channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let client_stop = stop.clone();
+        let client = thread::spawn(move || fixture::run(client_socket, Scenario::Tree, client_stop,
+            fixture::Control { steps: step_tx, replies: reply_rx }));
+        let started = Instant::now();
+        let mut observations = Observations::default();
+        let outcome = (|| -> Result<()> {
+            let mut checked = false;
+            while !client.is_finished() {
+                dispatch(&mut display, &mut state, &mut observations, started.elapsed())?;
+                if let Ok(stage) = steps.try_recv() {
+                    if stage == Stage::FirstMapped {
+                        // The real fixture commits xdg geometry (2,1,28,30)
+                        // inside a 32x32 root surface, as CSD clients do.
+                        let before = observations.snapshot(&display, &state);
+                        let windows = before["windows"].as_array().ok_or("TEST_WINDOWS")?;
+                        if windows.len() != 1
+                            || windows[0]["geometry_origin"] != json!({"x":2,"y":1})
+                            || windows[0]["logical_size"] != json!({"width":28,"height":30})
+                        {
+                            return Err("TEST_GEOMETRY_METADATA");
+                        }
+                        let window = state.windows()[0].window;
+                        let native = state.latest_snapshot(window).ok_or("TEST_SNAPSHOT")?;
+                        let surface_point = [12., 14.];
+                        let logical_point = [surface_point[0] - 2., surface_point[1] - 1.];
+                        let hit = surface_hits(&native, logical_point[0], logical_point[1])
+                            .next().ok_or("TEST_SURFACE_HIT")?;
+                        if hit.position != surface_point { return Err("TEST_GEOMETRY_SUBTRACTION"); }
+                        apply(&Request::Click { id:1, window,
+                            uv:[logical_point[0] / 28., logical_point[1] / 30.] }, &mut state)?;
+                        let after = observations.snapshot(&display, &state);
+                        // These are native delivery counters, not a claim of
+                        // application/widget acknowledgement; GUI oracles also
+                        // require the independent read-only GTK observation.
+                        if after["input"]["delivered"] != before["input"]["delivered"]
+                            || after["input"]["pointer_buttons"] != 2
+                            || after["input"]["pointer_pressed"] != 0
+                            || after["input"]["pointer_window"] != json!(window)
+                        {
+                            return Err("TEST_POINTER_PROGRESS");
+                        }
+                        checked = true;
+                    }
+                    replies.try_send(()).map_err(|_| "TEST_REPLY")?;
+                }
+                if started.elapsed() > Duration::from_secs(15) { return Err("TEST_TIMEOUT"); }
+                thread::sleep(Duration::from_millis(2));
+            }
+            if !checked { return Err("TEST_GEOMETRY_NOT_OBSERVED"); }
+            Ok(())
+        })();
+        stop.store(true, Ordering::Release);
+        drop(replies);
+        let client_outcome = client.join();
+        let cleanup = teardown(&mut display, &mut state);
+        outcome.unwrap();
+        client_outcome.unwrap().unwrap();
+        cleanup.unwrap();
     }
 
     #[test]

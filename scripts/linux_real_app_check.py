@@ -20,7 +20,8 @@ import time
 
 import linux_real_app_inspect as inspect
 import linux_real_app_evidence as evidence
-from linux_real_app_build import BACKEND_NAME, BuildError, ROOT, build_settings, fixed_environment, require, run_bounded
+import linux_real_app_gui_evidence as gui_evidence
+from linux_real_app_build import BACKEND_NAME, BuildError, ROOT, build_gui_observer, build_settings, fixed_environment, require, run_bounded
 
 REVISION = "eidolon-real-app-feasibility-v2"
 KEYFILE = Path(inspect.SETTINGS_RELATIVE_PATH)
@@ -35,6 +36,14 @@ APPLICATION_CHECKS = (
     "open_edit_save_as", "clean_close_restart", "gui_setting_persistence", "protected_settings_gui_readonly",
 )
 FOUNDATION_PENDING = evidence.PENDING
+SETTINGS_CHECKS = frozenset({
+    "policy_values_types_and_readonly", "ordinary_notifications_and_transactions",
+    "ordinary_persistence_in_new_process", "separate_profile_isolation",
+    "missing_module_fallback_rejected", "invalid_profile_exits_without_fallback",
+})
+RECOVERY_CHECKS = frozenset({
+    "empty_profile_admitted", "nonempty_session_refused", "autosave_refused", "recovery_bytes_preserved",
+})
 CONFLICTING = (b"[org/xfce/mousepad/preferences/file]\nsession-restore='after-a-crash'\nautosave-timer=30\n"
                b"[org/xfce/mousepad/preferences/window]\nopening-mode='window'\n")
 
@@ -207,22 +216,28 @@ def waypipe_binary():
 
 
 def validate_application_foundation(value, *, require_precursor_hold=False):
-    """This implementation has no full-A0 success path, including forged receipts.
+    """Distinguish measured A0 success from an explicitly unperformed GUI stage.
 
-    Strictly verify the GUI/file oracle, related restart/instance evidence and
-    the exact two remaining GUI checks. A per-run receipt is insufficient.
-    Adding an oracle requires changing this gate and its tests in the same PR.
+    A per-run receipt, settings API result or summary boolean cannot certify
+    GUI persistence. Both paths retain every existing lifecycle requirement;
+    only complete relational GUI evidence can remove the two pending checks.
     """
     require(type(value) is dict and type(value.get("schema")) is int and value["schema"] == 1 and
-            value.get("status") == "incomplete" and value.get("state") == "partial" and value.get("stage") == "wayland" and
-            value.get("error") is None and value.get("feasibility_verified") is False and
+            value.get("stage") == "wayland" and value.get("error") is None and
             value.get("physical_input_verified") is False and value.get("production_ready") is False,
             "APP_WAYLAND_RECEIPT_INVALID")
+    complete = value.get("status") == "passed"
+    require((value.get("state") == "complete" and value.get("feasibility_verified") is True
+             and value.get("pending") == []) if complete else
+            (value.get("status") == "incomplete" and value.get("state") == "partial"
+             and value.get("feasibility_verified") is False
+             and value.get("pending") == list(FOUNDATION_PENDING)
+             and value.get("gui") is None), "APP_WAYLAND_RECEIPT_INVALID")
     checks = value.get("checks")
     require(type(checks) is dict and set(checks) == set(APPLICATION_CHECKS) and
             all(type(item) is bool for item in checks.values()) and
-            all(checks[name] is (name not in FOUNDATION_PENDING) for name in APPLICATION_CHECKS) and
-            value.get("pending") == list(FOUNDATION_PENDING), "APP_WAYLAND_RECEIPT_INVALID")
+            all(checks[name] is (complete or name not in FOUNDATION_PENDING) for name in APPLICATION_CHECKS),
+            "APP_WAYLAND_RECEIPT_INVALID")
     evidence.validate_cleanup(value.get("cleanup"))
     cleanup = value["cleanup"]
     require(cleanup.get("workers_complete") is True and type(cleanup.get("worker_count")) is int
@@ -235,6 +250,33 @@ def validate_application_foundation(value, *, require_precursor_hold=False):
             type(value.get("waypipe_ends")) is int and value.get("profile_kind") == "synthetic",
             "APP_WAYLAND_RECEIPT_INVALID")
     evidence.validate_lifecycle(value.get("lifecycle"), value, require_precursor_hold=require_precursor_hold)
+    if complete:
+        gui_evidence.validate_gui(value.get("gui"), value)
+    return value
+
+
+def validate_feasibility_a0(value, *, require_precursor_hold=False):
+    """The CI gate requires measured A0, keeping production and Quest separate."""
+    require(type(value) is dict and type(value.get("schema")) is int and value["schema"] == 1
+            and value.get("stage") == "feasibility" and value.get("status") == "passed"
+            and value.get("reason") == "APP_A0_PASSED" and value.get("a0_passed") is True
+            and value.get("available") is False and value.get("production_acceptance_passed") is False
+            and value.get("quest_verified") is False and value.get("application_payload_logged") is False
+            and value.get("pending") == ["v3_acceptance", "quest"], "APP_A0_RECEIPT_INVALID")
+    checks = value.get("checks")
+    require(type(checks) is dict and set(checks) == {"settings", "recovery", "application"}
+            and type(checks.get("settings")) is dict and type(checks.get("recovery")) is dict
+            and all(checks["settings"].get(name) is True for name in SETTINGS_CHECKS)
+            and all(checks["recovery"].get(name) is True for name in RECOVERY_CHECKS)
+            and checks["recovery"].get("application_spawned_for_seeded_recovery") is False,
+            "APP_A0_RECEIPT_INVALID")
+    application = validate_application_foundation(checks["application"], require_precursor_hold=require_precursor_hold)
+    require(application["status"] == "passed" and application["feasibility_verified"] is True,
+            "APP_A0_RECEIPT_INVALID")
+    observer = application["gui"]["observer"]
+    require(value.get("gui_observer_module_sha256") == observer["module_sha256"]
+            and value.get("gui_observer_source_sha256") == observer["source_sha256"],
+            "APP_WAYLAND_EVIDENCE_MISMATCH")
     return value
 
 
@@ -289,6 +331,10 @@ def run_feasibility(artifact, descriptor, *, precursor_hold_check=False):
         result["settings_module_sha256"] = built["files"]["gio/libeidolon-settings.so"]
         result["checks"]["settings"] = settings_checks(artifact, bundle)
         result["checks"]["recovery"] = recovery_checks(artifact)
+        gui_observer_bundle = artifact / "gui-observer"
+        gui_built = build_gui_observer(gui_observer_bundle)
+        result["gui_observer_module_sha256"] = gui_built["files"]["libeidolon-a0-gui-observer.so"]
+        result["gui_observer_source_sha256"] = gui_built["files"]["linux-real-app-gui-observer.c"]
         binary, waypipe_hash = waypipe_binary()
         compositor = build_compositor(artifact)
         result["waypipe_sha256"] = waypipe_hash
@@ -298,7 +344,8 @@ def run_feasibility(artifact, descriptor, *, precursor_hold_check=False):
         wayland.mkdir(mode=0o700)
         try:
             result["checks"]["application"] = run_wayland(ROOT, wayland, bundle, waypipe=binary, compositor=compositor,
-                                                         precursor_hold_check=precursor_hold_check)
+                                                         precursor_hold_check=precursor_hold_check,
+                                                         gui_observer_bundle=gui_observer_bundle)
         except CleanupPending as pending:
             result["checks"]["application"] = pending.receipt
             result["checks"]["application"]["cleanup"] = retain_cleanup_owner(pending, artifact)
@@ -317,10 +364,16 @@ def run_feasibility(artifact, descriptor, *, precursor_hold_check=False):
         require(application.get("mousepad_sha256") == observed["executable_sha256"] and
                 application.get("waypipe_sha256") == waypipe_hash and application.get("waypipe_version") == "0.11.3",
                 "APP_WAYLAND_EVIDENCE_MISMATCH")
-        result.update(status="incomplete", reason="APP_A0_INCOMPLETE",
-                      pending=list(FOUNDATION_PENDING) + ["v3_acceptance", "quest"], frozen_v2_source_sha256=before)
+        if application["feasibility_verified"] is True:
+            result.update(status="passed", reason="APP_A0_PASSED", a0_passed=True,
+                          pending=["v3_acceptance", "quest"], frozen_v2_source_sha256=before)
+            validate_feasibility_a0(result, require_precursor_hold=precursor_hold_check)
+        else:
+            result.update(status="incomplete", reason="APP_A0_INCOMPLETE",
+                          pending=list(FOUNDATION_PENDING) + ["v3_acceptance", "quest"], frozen_v2_source_sha256=before)
     except (OSError, ValueError, KeyError, TypeError, ImportError) as error:
         token = str(error)
+        result.update(status="failed", a0_passed=False)
         result["reason"] = token if re.fullmatch(r"(?:APP|SETTINGS|BUILD|STATE)_[A-Z0-9_]{1,64}", token) else "APP_CHECK_UNAVAILABLE"
     write_json(artifact / "feasibility.json", result)
     return result

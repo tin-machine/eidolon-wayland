@@ -8,6 +8,9 @@ PR #4後の実装順序・完了条件・次セッション用プロンプトは
 続くPR1のprofile/run分離、通常Close/Stop/異常終了後の再起動、先行instance独立は
 [再起動harnessの実装記録](linux-real-app-a0-restart-20261109.md)を参照する。
 本書のPR #4時点の検証結果と、後続PRのheadに対する検証結果は分けて扱う。
+続くPR2のGUI状態読取り、実Wayland操作、設定保持・保護2widgetのoracleとA0成功経路は
+[GUI設定の実装記録](linux-real-app-a0-gui-settings-20261109.md)を参照する。
+本書内のGUI pendingと常時incompleteの説明はPR #4時点の基準であり、現在のgateは完全な実測証拠を要求する。
 
 ## このPRの境界
 

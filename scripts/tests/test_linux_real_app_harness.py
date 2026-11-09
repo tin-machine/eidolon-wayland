@@ -377,5 +377,115 @@ class OwnershipBoundaryTests(unittest.TestCase):
         self.assertEqual(value["pending"], list(app.REQUIRED_CHECKS))
 
 
+class GuiOrchestrationTests(unittest.TestCase):
+    """Control-flow mocks only; these tests do not certify real GUI behavior."""
+
+    def exercise_suite(self, *, failure=None, precursor_clean=True):
+        import linux_real_app_gui_evidence as gui_evidence
+        from linux_real_app_build import BuildError
+        trace = []
+        observation = PrecursorHoldTests.observation()
+        workers = {role: SimpleNamespace(role=role, output_bytes=0, process=mock.Mock(returncode=0))
+                   for role in ("precursor", "target")}
+        pending = {}
+        coordinator = mock.Mock()
+        coordinator.workers = list(workers.values())
+        coordinator.termination.requested = None
+        coordinator.spawn.side_effect = lambda role: workers[role]
+
+        def send(worker, operation, **fields):
+            trace.append(("send", worker.role, operation, fields.get("case")))
+            pending[worker.role] = (operation, fields.get("case"))
+            return len(trace)
+
+        def receive(worker, event_name, **fields):
+            if event_name == "ready":
+                return {"worker_id": worker.role, **({"observation": observation} if worker.role == "precursor" else {})}
+            operation, case = pending[worker.role]
+            if event_name == "observation":
+                return observation
+            if worker.role == "precursor" and operation == "close":
+                trace.append(("received", "precursor", "cleanup", precursor_clean))
+                return {"run": {"state": "partial", "error": None,
+                                "cleanup": {**CLEAN, "complete": precursor_clean, "pending": not precursor_clean}}}
+            if event_name == "case":
+                if case == harness.GUI_CASE:
+                    trace.append(("received", "target", "gui", None))
+                    if failure == "worker":
+                        raise app.WaylandError("APP_GUI_FIRST_FAILED")
+                    return {"name": case, "gui": {"synthetic_control_flow_double": True}, "elapsed_ms": 1}
+                return {"name": case, "case": {}, "foundation": {}}
+            return {}
+
+        def validate(value, source, lifecycle):
+            trace.append(("validated", "target", "gui", None))
+            self.assertIs(lifecycle, source["lifecycle"])
+            self.assertEqual(value, {"synthetic_control_flow_double": True})
+            if failure == "validator":
+                raise BuildError("APP_WAYLAND_RECEIPT_INVALID")
+            return value
+
+        def finish():
+            trace.append(("finish", tuple(worker.role for worker in coordinator.workers), None, None))
+            return dict(CLEAN)
+
+        coordinator.send.side_effect = send
+        coordinator.receive.side_effect = receive
+        coordinator.finish.side_effect = finish
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.object(harness, "_Coordinator", return_value=coordinator) as constructor, \
+             mock.patch.object(harness, "_write"), \
+             mock.patch.object(gui_evidence, "validate_gui", side_effect=validate) as validator:
+            artifact = Path(temporary)
+            result = harness.run_suite(ROOT, artifact, artifact / "settings", gui_observer_bundle=artifact / "observer")
+            constructor.assert_called_once_with(artifact, artifact / "settings", artifact / "observer")
+        return result, trace, coordinator, validator
+
+    def test_gui_starts_after_precursor_final_cleanup_before_target_close(self):
+        result, trace, coordinator, validator = self.exercise_suite()
+        before = trace.index(("received", "precursor", "cleanup", True))
+        gui_start = trace.index(("send", "target", "run", harness.GUI_CASE))
+        validated = trace.index(("validated", "target", "gui", None))
+        target_close = trace.index(("send", "target", "close", None))
+        finished = trace.index(("finish", ("precursor", "target"), None, None))
+        self.assertLess(before, gui_start)
+        self.assertLess(gui_start, validated)
+        self.assertLess(validated, target_close)
+        self.assertLess(target_close, finished)
+        coordinator.finish.assert_called_once()
+        validator.assert_called_once()
+        self.assertEqual((result["state"], result["status"]), ("complete", "passed"))
+        self.assertIs(result["feasibility_verified"], True)
+        self.assertEqual(result["pending"], [])
+        self.assertIs(result["production_ready"], False)
+
+    def test_gui_worker_failure_and_receipt_rejection_both_finish_all_workers(self):
+        for failure in ("worker", "validator"):
+            with self.subTest(failure=failure):
+                result, trace, coordinator, validator = self.exercise_suite(failure=failure)
+                coordinator.finish.assert_called_once()
+                self.assertEqual(trace[-1], ("finish", ("precursor", "target"), None, None))
+                self.assertNotIn(("send", "target", "close", None), trace)
+                self.assertEqual(validator.call_count, 0 if failure == "worker" else 1)
+                self.assertEqual((result["state"], result["status"]), ("fail", "failed"))
+                self.assertIs(result["feasibility_verified"], False)
+                self.assertIs(result["production_ready"], False)
+                self.assertIs(result["checks"]["gui_setting_persistence"], False)
+                self.assertIs(result["checks"]["protected_settings_gui_readonly"], False)
+                self.assertIn("gui_setting_persistence", result["pending"])
+                self.assertIn("protected_settings_gui_readonly", result["pending"])
+                self.assertEqual(result["cleanup"], CLEAN)
+                self.assertIsNotNone(result["error"])
+
+    def test_gui_never_starts_before_precursor_cleanup_is_proven(self):
+        result, trace, coordinator, validator = self.exercise_suite(precursor_clean=False)
+        self.assertNotIn(("send", "target", "run", harness.GUI_CASE), trace)
+        validator.assert_not_called()
+        coordinator.finish.assert_called_once()
+        self.assertEqual(trace[-1], ("finish", ("precursor", "target"), None, None))
+        self.assertEqual(result["error"], "APP_PRECURSOR_CLEANUP")
+        self.assertIs(result["feasibility_verified"], False)
+
+
 if __name__ == "__main__":
     unittest.main()

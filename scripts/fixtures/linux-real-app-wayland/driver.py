@@ -17,7 +17,8 @@ MAX_REPLY = 128 * 1024
 PHASES = frozenset({"startup", "initial_main", "main_ready", "open_dialog", "open_file",
                     "edit_file", "save_file", "save_as_dialog", "save_as_file",
                     "file_oracle_complete", "normal_close", "waypipe_cleanup", "compositor_shutdown",
-                    "response_probe", "forced_stop", "app_crash"})
+                    "response_probe", "forced_stop", "app_crash", "gui_preferences",
+                    "gui_line_numbers", "gui_protected", "gui_open_tab"})
 OPERATIONS = frozenset({"snapshot", "focus", "key", "click", "close", "shutdown"})
 NATIVE_ERRORS = frozenset({"STALE", "NOT_READY", "INPUT_NOT_FOCUSED", "INPUT_NOT_MAPPED",
                           "INPUT_SOURCE", "CLIENTS_REMAIN"})
