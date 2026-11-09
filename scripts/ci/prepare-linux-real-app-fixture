@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Build an unmodified, pinned Mousepad test package on an ephemeral CI runner.
+
+This is explicit test provisioning, separate from the read-only inspector and
+the operator's check command. It never installs a package. The workflow performs
+the visible dpkg install after this step. This package is not a supported remote
+deployment or a substitute for verification of the user's actual Linux host.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+import linux_real_app_inspect as inspect
+
+COMMIT = "65fbfe0459259f820fcc8b9c4dd454228304842a"
+VERSION = "0.6.3-0eidolon.a0.1"
+ARCHITECTURE = "amd64"
+MULTIARCH = "x86_64-linux-gnu"
+
+
+def run(argv, *, cwd=None, env=None, capture=False):
+    return subprocess.run(argv, cwd=cwd, env=env, check=True, text=True,
+                          stdout=subprocess.PIPE if capture else None, timeout=600).stdout
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def write_json(path, value):
+    with path.open("x", encoding="utf-8") as output:
+        output.write(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+    path.chmod(0o600)
+
+
+def build(work):
+    work.mkdir(mode=0o700)
+    for part in ("home", "tmp", "source", "package"):
+        (work / part).mkdir(mode=0o700)
+    env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+           "HOME": str(work / "home"), "TMPDIR": str(work / "tmp")}
+    source, staging = work / "source", work / "package"
+    run(["git", "init", "--quiet", str(source)], env=env)
+    run(["git", "-C", str(source), "fetch", "--depth=1", "https://github.com/xfce-mirror/mousepad.git", COMMIT], env=env)
+    run(["git", "-C", str(source), "checkout", "--detach", "--quiet", "FETCH_HEAD"], env=env)
+    assert run(["git", "rev-parse", "HEAD"], cwd=source, env=env, capture=True).strip() == COMMIT
+    # Xfce's release version generation may inspect tags. Keep the real tag,
+    # but reject any future retargeting instead of changing the source input.
+    run(["git", "-C", str(source), "fetch", "--depth=1", "https://github.com/xfce-mirror/mousepad.git",
+         "refs/tags/mousepad-0.6.3:refs/tags/mousepad-0.6.3"], env=env)
+    assert run(["git", "rev-parse", "mousepad-0.6.3^{commit}"], cwd=source, env=env, capture=True).strip() == COMMIT
+    assert {name: sha(source / name) for name in inspect.SOURCE_HASHES} == inspect.SOURCE_HASHES
+    # configure.ac treats *either* keyfile-settings option as enabled. Omitting
+    # it is intentional; --disable-keyfile-settings would defeat this test.
+    configure = ["./autogen.sh", "--prefix=/usr", "--libdir=/usr/lib/" + MULTIARCH,
+                 "--enable-gtksourceview4", "--disable-polkit", "--disable-plugin-gspell",
+                 "--disable-plugin-shortcuts", "--disable-plugin-test", "--disable-debug"]
+    run(configure, cwd=source, env=env)
+    run(["make", "-j2", "V=1"], cwd=source, env=env)
+    run(["make", "install", "DESTDIR=" + str(staging)], cwd=source, env=env)
+    assert {name: sha(source / name) for name in inspect.SOURCE_HASHES} == inspect.SOURCE_HASHES
+    generated = (source / "mousepad/Makefile").read_bytes()
+    active = b"\n".join(line for line in generated.splitlines() if not line.lstrip().startswith(b"#"))
+    assert re.search(rb"(?m)^libmousepad_la_CFLAGS\s*=", active), "missing effective compiler flags"
+    assert b"MOUSEPAD_SETTINGS_KEYFILE_BACKEND" not in active, "active keyfile backend define"
+    docs = staging / "usr/share/doc/mousepad"
+    docs.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source / "COPYING", docs / "copyright")
+    # Retain actual generated build inputs; do not manufacture a config.h undef.
+    shutil.copyfile(source / "config.h", docs / "eidolon-config.h")
+    shutil.copyfile(source / "mousepad/Makefile", docs / "eidolon-mousepad-Makefile")
+    evidence = {
+        "schema": 1, "package": "mousepad", "version": VERSION, "architecture": ARCHITECTURE,
+        "upstream_version": "0.6.3", "settings_backend": "default",
+        "executable_sha256": sha(staging / "usr/bin/mousepad"),
+        "makefile_sha256": sha(source / "mousepad/Makefile"), "source_commit": COMMIT,
+        "source_sha256": inspect.SOURCE_HASHES,
+    }
+    # Evidence fields are kept aligned with the static inspector's schema below.
+    write_json(docs / "eidolon-build-evidence.json", evidence)
+    for path in docs.iterdir():
+        path.chmod(0o644)
+    control = staging / "DEBIAN"
+    control.mkdir(mode=0o755)
+    (control / "control").write_text(
+        "Package: mousepad\nVersion: " + VERSION + "\nArchitecture: " + ARCHITECTURE +
+        "\nMaintainer: Eidolon CI <noreply@localhost>\nSection: editors\nPriority: optional\n"
+        "Description: Unmodified Mousepad 0.6.3 for isolated Eidolon A0 tests\n")
+    staging.chmod(0o755)
+    for path in staging.rglob("*"):
+        if path.is_dir() and not path.is_symlink():
+            path.chmod(0o755)
+    # dpkg-deb root-owner-group makes the installed test binary/system evidence
+    # root-owned without running the upstream build as root.
+    run(["dpkg-deb", "--root-owner-group", "--build", str(staging), str(work / "mousepad-a0.deb")], env=env)
+    write_json(work / "build-inputs.json", {"schema": 1, "source_commit": COMMIT,
+               "package_version": VERSION, "package_sha256": sha(work / "mousepad-a0.deb"),
+               "configure": configure[1:], "application_modified": False})
+
+
+def package_for(path):
+    # dpkg may retain pre-usrmerge names although installed files are under /usr.
+    names = [str(path)]
+    if str(path).startswith("/usr/lib/"):
+        names.append(str(path)[4:])
+    if str(path).startswith("/usr/bin/"):
+        names.append(str(path)[4:])
+    for name in names:
+        found = subprocess.run(["dpkg-query", "--search", name], text=True, capture_output=True, timeout=10)
+        if found.returncode == 0:
+            owners = [line.rsplit(": ", 1)[0] for line in found.stdout.splitlines() if line.rsplit(": ", 1)[-1] == name]
+            if len(owners) == 1:
+                details = run(["dpkg-query", "--show", "--showformat=${Package}\t${Version}\t${Architecture}", owners[0]], capture=True).split("\t")
+                assert len(details) == 3
+                return details
+    raise RuntimeError("fixture dependency has no unique installed package")
+
+
+def inventory(work):
+    assert Path("/usr/bin/mousepad").is_file()
+    libraries = {}
+    for role, pkg, filename in (("gtk", "gtk+-3.0", "libgtk-3.so"), ("glib", "glib-2.0", "libglib-2.0.so"),
+                                 ("gio", "gio-2.0", "libgio-2.0.so"), ("gtksourceview", "gtksourceview-4", "libgtksourceview-4.so")):
+        libdir = Path(run(["pkg-config", "--variable=libdir", pkg], capture=True).strip())
+        libraries[(libdir / filename).resolve(strict=True)] = role
+    # ldd is used only here on our freshly built pinned source, never by Inspect.
+    loader_output = run(["ldd", "/usr/bin/mousepad"], capture=True)
+    assert "not found" not in loader_output
+    for line in loader_output.splitlines():
+        paths = re.findall(r"(?:=>\s+)?(/[A-Za-z0-9_./+-]+)\s+\(", line)
+        for path in paths:
+            libraries.setdefault(Path(path).resolve(strict=True), "dependency")
+    libraries.update({Path("/usr/bin/dbus-daemon"): "dbus_daemon", Path("/usr/bin/dbus-run-session"): "dbus_run_session",
+                      Path(inspect.SCHEMA_PATH): "schema_xml"})
+    dependencies = []
+    for path, role in sorted(libraries.items()):
+        package, version, architecture = package_for(path)
+        dependencies.append({"role": role, "path": str(path), "sha256": sha(path),
+                             "package": package, "version": version, "architecture": architecture})
+    # The compiled schema is a root-generated cache, not a dpkg-owned payload.
+    package, version, architecture = package_for(Path("/usr/bin/glib-compile-schemas").resolve(strict=True))
+    dependencies.append({"role": "schema_compiled", "path": inspect.COMPILED_SCHEMA_PATH,
+                         "sha256": sha(inspect.COMPILED_SCHEMA_PATH),
+                         "package": package, "version": version, "architecture": architecture})
+    value = {"schema": 1, "app_id": inspect.APP_ID, "package": "mousepad", "package_version": VERSION,
+             "architecture": ARCHITECTURE, "upstream_version": "0.6.3", "executable_sha256": sha(inspect.EXECUTABLE),
+             "source_evidence_sha256": sha(inspect.BUILD_EVIDENCE_PATH), "dependencies": dependencies}
+    inspect.validate_reviewed_package(value)
+    write_json(work / "reviewed-package.json", value)
+    print(json.dumps({"schema": 1, "fixture": "mousepad-a0", "source_commit": COMMIT,
+                      "descriptor_sha256": inspect.digest(value), "dependencies": len(dependencies),
+                      "production_ready": False}, sort_keys=True))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stage", required=True, choices=("build", "inventory"))
+    parser.add_argument("--work-directory", required=True, type=Path)
+    args = parser.parse_args()
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_OS") != "Linux" or os.geteuid() == 0:
+        parser.error("this provisioner runs only as an unprivileged ephemeral GitHub Actions Linux job")
+    assert args.work_directory.is_absolute() and args.work_directory.parent.resolve() == args.work_directory.parent
+    os.umask(0o077)
+    {"build": build, "inventory": inventory}[args.stage](args.work_directory)
+
+
+if __name__ == "__main__":
+    main()

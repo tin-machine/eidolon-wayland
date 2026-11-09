@@ -1,14 +1,16 @@
 # L7a: 別Linuxの実用アプリ一種の詳細設計
 
-状態: **詳細設計レビュー反映済み・A0成立性検査待ち・実装未着手・対象Linux/Questでの実用アプリ受入れ前**。2026-11-09作成・改訂。
+状態: **詳細設計レビュー反映済み・A/A0検査基盤を実装中・A0全体は未完了・対象Linux/Questでの実用アプリ受入れ前**。2026-11-09作成・改訂。
 基準revisionはPR #2/#3マージ後の `3bcd6cfb44dd21e8c9979a106f93434b52fa396c`。
 改訂ではmain `1a92b5c6864f38f7901419d1d93de3d004c9051d` の実装とMousepad 0.6.3の上流sourceを照合した。
 本文の実装根拠はこのrevision/tagへ固定する。新しい対策の動作確認済みという意味ではない。
-本書の新設API、schema、コマンドは実装契約案であり、現在利用可能という意味ではない。
+本書のv3 API/schemaは実装契約案である。追加した検査CLIとsettings moduleの範囲は
+[A/A0実装記録](linux-real-app-a0-foundation-20261109.md)を参照し、通常GUIへの組込み済みと解釈しない。
 
 [L7aの要求](nx11-nx18-normal-gui-followup-plan-20261108.md#linux-real-app)を、
 [通常GTKデモのL5/L6](normal-linux-gui-l5-l6-20261108.md)から実装できる単位へ分解する。
-今回は設計とpushまでを行い、実用アプリの実装・対象hostへのpackage導入・配備は次の作業に残す。
+最初の実装PRでread-only事前検査、settings module/probe、復元データguard、実Waylandの検査基盤を追加する。
+対象hostへのpackage導入・配備とB〜Fは、A0全項目の成立後に進める。
 
 ## 採用案と成立条件
 
@@ -177,8 +179,16 @@ canonical化は既存Pythonのsorted keys、compact separators、UTF-8方式に�
 | `settings_kind`, `settings_policy` | 固定 `eidolon-keyfile-v1`、`mousepad-single-main-no-restore-v1`。packageは既定GSettings backend利用版に限定 |
 | `settings_module_sha256` | A0で検証したmodule binaryのSHA256。source/固定probe/登録情報はdesktop bundleにも含める |
 | `settings_relative_path` | 固定 `config/glib-2.0/settings/keyfile`。moduleの委譲先と一致させる |
-| `window_app_ids` | 当該GTK版で観測したmainの固定ID集合。初期候補 `org.xfce.mousepad`。空/未知をmainとして採用しない |
+| `window_app_ids` | 当該GTK版で観測したmainの固定ID集合。CIのMousepad 0.6.3 / GTK 3.24.41 / NON_UNIQUE起動では `["mousepad"]`。空/未知をmainとして採用しない |
 | `launch_policy`, `state_policy` | 固定 `mousepad-private-bus-v1`、`persistent-keyfile-locked-v1` |
+
+初期候補の `org.xfce.mousepad` はGApplication/schemaの識別子だったが、
+[実Waypipeを通したCIの初回window観測](https://github.com/tin-machine/eidolon-wayland/actions/runs/42502638269)
+ではWayland `app_id` は `mousepad` だった。最初のMapped frameと250ms後の両方で同じ値を確認した。
+この結果に合わせ、CI用packageの厳密なwindow IDは `mousepad` 一つへ固定する。
+[GTK 3.24.41の実装](https://github.com/GNOME/gtk/blob/3.24.41/gdk/wayland/gdkwindow-wayland.c#L2151-L2155)も、
+`g_get_prgname()` からWaylandのapp_idを設定している。詳細な識別子経路は[A/A0実装記録](linux-real-app-a0-foundation-20261109.md#waylandの識別子は実測で固定する)を参照。
+別のpackage/GTK版へ値を推測適用せず、対象構成のA0で再確認する。GApplication IDやtitleからWayland IDを補完しない。
 
 manifestからcommand、env、cwdを自由生成しない。これらはhelperの固定policyから組み立てる。
 依存fingerprintの入力形式もschema化し、package名・版・対象schema/moduleのhashをsortして固定する。
@@ -486,7 +496,8 @@ fixture起動timeoutはstderr長・process状態・probe段階を本文なしで
 
 ### 再現手順とQuestの最終確認
 
-以下は**実装後の順番**。現時点では `inspect-linux-real-app` / `check-linux-real-app` は存在しない。
+以下は**v3実装後の順番**。`inspect-linux-real-app` / `check-linux-real-app` は最初のPRで追加するが、
+feasibilityの未確認項目と未実装acceptanceを成功にはしない。
 
 1. 対象Linuxをread-only事前検査し、OS/arch/package版/hash・GTK/backend・schema・dbus toolのreceiptを保存する。
 2. A0の実package/settings module検査後、v3実装のhost acceptanceを成功させ、そのreceiptに対応するmanifest/pinsをbuilderから出力する。
@@ -511,8 +522,8 @@ HMD/物理入力/remote IME/長時間/L7bの未実施をhost成功で埋めな�
 
 ## 設計時点の未確定事項
 
-- 対象LinuxとMousepad/GLib package版は未固定。参照0.6.3/2.80.5との差、既定backend利用、main app_id、追加dialogのparentをA/A0で確定する。
-- 専用GIO settings module・固定probeは未実装。公開APIの委譲/通知、実GUIの設定変更不可、復元データ保護がA0で成立するまで対応済みにしない。
+- 対象LinuxとMousepad/GLib package版は未固定。参照0.6.3/2.80.5との差、既定backend利用、CIで観測したmain app_id `mousepad` が対象構成でも成立すること、追加dialogのparentをA/A0で確定する。
+- 専用GIO settings module・固定probeはA0検査基盤として追加する。公開APIの委譲/通知、実GUIの設定変更不可、復元データ保護がA0全体で成立するまで対応済みにしない。
 - Mousepad独自keyfile backendを使うbuildはL7aでは未対応。別経路への対応は別設計とし、未知pathをmanifestから許可しない。
 - 専用busの最小configとWaypipeの終了連鎖は実host試験で確定する。想定外serviceが必要ならcatalogを有効化せず設計を見直す。
 - native origin・固定main役割・SDK表示watchdogは未実装。20秒/10秒は初期設計値で、対象Questで検証する。

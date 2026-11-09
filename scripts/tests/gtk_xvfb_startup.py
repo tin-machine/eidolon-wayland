@@ -21,8 +21,9 @@ class StderrCount:
         return self.bytes
 
 
-def wait_ready(read_fd, child, probe, stderr, *, timeout=5, clock=time.monotonic, pause=time.sleep):
-    deadline = clock() + timeout
+def wait_ready(read_fd, child, probe, stderr, *, timeout=5, startup_timeout=None,
+               clock=time.monotonic, pause=time.sleep):
+    deadline = clock() + (timeout if startup_timeout is None else startup_timeout)
     data, display, attempts, probe_bytes = bytearray(), None, 0, 0
 
     def fail(reason, probe_code=None):

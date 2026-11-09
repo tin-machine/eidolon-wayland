@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Read-only inspection; explicit A0 feasibility is a separate command."""
+from linux_real_app_inspect import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())

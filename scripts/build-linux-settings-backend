@@ -1,0 +1,30 @@
+#!/usr/bin/python3
+"""Build the isolated L7a A0 settings module/probe; never launch applications."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+
+from linux_real_app_build import build_settings
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output-directory', type=Path, required=True,
+                        help='new private absolute directory for A0 artifacts (must not exist)')
+    arguments = parser.parse_args()
+    os.umask(0o077)
+    try:
+        result = build_settings(arguments.output_directory)
+    except (OSError, ValueError, UnicodeError) as error:
+        reason = str(error)
+        result = {'schema': 1, 'status': 'failed', 'production_ready': False,
+                  'reason': reason if re.fullmatch(r'APP_[A-Z_]{1,64}', reason)
+                  else 'APP_SETTINGS_BUILD_UNAVAILABLE'}
+    print(json.dumps(result, separators=(',', ':')))
+    return 0 if result['status'] == 'built' else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
