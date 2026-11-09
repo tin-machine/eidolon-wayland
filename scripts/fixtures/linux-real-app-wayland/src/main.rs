@@ -93,6 +93,7 @@ enum Request {
     Focus { id: u32, window: WindowId },
     Key { id: u32, window: WindowId, evdev: u32, pressed: bool },
     Click { id: u32, window: WindowId, uv: [f64; 2] },
+    Button { id: u32, window: WindowId, uv: [f64; 2], pressed: bool },
     Close { id: u32, window: WindowId },
     Shutdown { id: u32 },
 }
@@ -100,7 +101,8 @@ impl Request {
     fn id(&self) -> u32 {
         match self {
             Self::Snapshot { id } | Self::Focus { id, .. } | Self::Key { id, .. }
-            | Self::Click { id, .. } | Self::Close { id, .. } | Self::Shutdown { id } => *id,
+            | Self::Click { id, .. } | Self::Button { id, .. }
+            | Self::Close { id, .. } | Self::Shutdown { id } => *id,
         }
     }
 }
@@ -117,7 +119,7 @@ fn parse_request(line: &[u8], previous: u32) -> Result<Request> {
     {
         return Err("CONTROL_KEY");
     }
-    if let Request::Click { uv, .. } = &request
+    if let Request::Click { uv, .. } | Request::Button { uv, .. } = &request
         && uv.iter().any(|v| !v.is_finite() || !(0.0..1.0).contains(v))
     {
         return Err("CONTROL_COORDINATE");
@@ -317,6 +319,21 @@ fn apply(request: &Request, state: &mut ProtocolState) -> Result<()> {
             for event in [PointerEvent::Move,
                 PointerEvent::Buttons { changed: 1, state: 1 },
                 PointerEvent::Buttons { changed: 1, state: 0 }]
+            {
+                state.pointer(window, PointerPacket { source, uv: Some(uv), event,
+                    time_ms: key_time() }, size.width as i32, size.height as i32)?;
+            }
+            Ok(())
+        }
+        Request::Button { window, uv, pressed, .. } => {
+            // A real menu popup may request its grab after receiving button
+            // down. Keep that primary-button state across separate controller
+            // requests so dispatch can process the client's grab before up.
+            // The owner still bounds the run and resets input on teardown.
+            let size = state.latest_snapshot(window).ok_or("INPUT_NOT_MAPPED")?.logical_size;
+            let source = InputSourceId::new(1).map_err(|_| "INPUT_SOURCE")?;
+            for event in [PointerEvent::Move,
+                PointerEvent::Buttons { changed: 1, state: u8::from(pressed) }]
             {
                 state.pointer(window, PointerPacket { source, uv: Some(uv), event,
                     time_ms: key_time() }, size.width as i32, size.height as i32)?;
@@ -718,6 +735,15 @@ mod tests {
 
     #[test]
     fn snapshot_pointer_progress_matches_actual_client_events() {
+        check_pointer_progress(false);
+    }
+
+    #[test]
+    fn phased_button_holds_across_client_dispatch_and_releases_on_wire() {
+        check_pointer_progress(true);
+    }
+
+    fn check_pointer_progress(phased: bool) {
         use eidolon_shm_fixture::pointer::{self as fixture, Event, Stage};
         use std::{os::unix::net::UnixStream, sync::{Arc, mpsc}};
 
@@ -734,13 +760,18 @@ mod tests {
             fixture::Control { steps: step_tx, replies: reply_rx }));
         let started = Instant::now();
         let mut observations = Observations::default();
-        let mut click_input = Value::Null;
+        let mut observed_input = Value::Null;
         let outcome = (|| -> Result<()> {
             let mut checked = false;
             while !client.is_finished() {
                 dispatch(&mut display, &mut state, &mut observations, started.elapsed())?;
                 if let Ok(stage) = steps.try_recv() {
-                    if matches!(stage, Stage::Mapped) {
+                    let send = match stage {
+                        Stage::Mapped => Some(true),
+                        Stage::HoverChild if phased => Some(false),
+                        _ => None,
+                    };
+                    if let Some(pressed) = send {
                         // This fixture creates root_a first and binds both
                         // wl_pointer and wl_keyboard. (4,4) is on root_a,
                         // outside its child at (8,6), so the wire target is
@@ -748,26 +779,38 @@ mod tests {
                         let window = WindowId::new(1).map_err(|_| "TEST_ID")?;
                         let before = observations.snapshot(&display, &state);
                         let size = state.latest_snapshot(window).ok_or("TEST_SNAPSHOT")?.logical_size;
-                        apply(&Request::Click { id: 1, window,
-                            uv: [4. / f64::from(size.width), 4. / f64::from(size.height)] }, &mut state)?;
+                        let uv = [4. / f64::from(size.width), 4. / f64::from(size.height)];
+                        if phased {
+                            // HoverChild is reached only after the real client
+                            // has synchronized and received the preceding down.
+                            if !pressed && before["input"]["pointer_pressed"] != 1 {
+                                return Err("TEST_POINTER_NOT_HELD_ACROSS_DISPATCH");
+                            }
+                            apply(&Request::Button { id: 1, window, uv, pressed }, &mut state)?;
+                        } else {
+                            apply(&Request::Click { id: 1, window, uv }, &mut state)?;
+                        }
                         let after = observations.snapshot(&display, &state);
-                        click_input = after["input"].clone();
+                        observed_input = after["input"].clone();
                         if after["input"]["delivered"] != before["input"]["delivered"] {
                             return Err("TEST_POINTER_COUNTED_AS_KEYBOARD");
                         }
-                        if after["input"]["pointer_buttons"] != 2 {
+                        let held = phased && pressed;
+                        let expected_buttons = if held { 1 } else { 2 };
+                        let expected_pressed = if held { 1 } else { 0 };
+                        if after["input"]["pointer_buttons"] != expected_buttons {
                             return Err("TEST_POINTER_BUTTON_COUNT");
                         }
                         if after["input"]["pointer_motions"].as_u64().is_none_or(|n| n == 0) {
                             return Err("TEST_POINTER_MOTION_COUNT");
                         }
-                        if after["input"]["pointer_pressed"] != 0 {
-                            return Err("TEST_POINTER_STILL_PRESSED");
+                        if after["input"]["pointer_pressed"] != expected_pressed {
+                            return Err("TEST_POINTER_HELD_STATE");
                         }
                         if after["input"]["pointer_window"] != json!(window) {
                             return Err("TEST_POINTER_WRONG_WINDOW");
                         }
-                        checked = true;
+                        checked = !held;
                     }
                     replies.try_send(()).map_err(|_| "TEST_REPLY")?;
                 }
@@ -781,9 +824,17 @@ mod tests {
         drop(replies);
         let client_outcome = client.join();
         let cleanup = teardown(&mut display, &mut state);
-        assert_eq!(outcome, Ok(()), "synthetic pointer metadata: {click_input}");
+        assert_eq!(outcome, Ok(()), "synthetic pointer metadata: {observed_input}");
         let report = client_outcome.unwrap().unwrap();
         cleanup.unwrap();
+        if phased {
+            let checkpoint = report.checkpoints.iter().find(|c| c.stage == "HoverChild").unwrap();
+            let held_buttons: Vec<_> = report.events[..checkpoint.events].iter().filter_map(|event| match event {
+                Event::Button { surface, code, state, .. } => Some((*surface, *code, *state)),
+                _ => None,
+            }).collect();
+            assert_eq!(held_buttons, vec![(Some("root_a"), 0x110, 1)]);
+        }
         assert!(report.events.iter().any(|event| matches!(event,
             Event::Enter { surface: "root_a", position } if *position == [4., 4.])));
         let buttons: Vec<_> = report.events.iter().filter_map(|event| match event {
@@ -802,12 +853,17 @@ mod tests {
             r#"{"op":"focus","id":2,"window":"01"}"#,
             r#"{"op":"key","id":2,"window":"1","evdev":0,"pressed":true}"#,
             r#"{"op":"click","id":2,"window":"1","uv":[1,0.5]}"#,
+            r#"{"op":"button","id":2,"window":"1","uv":[1,0.5],"pressed":true}"#,
+            r#"{"op":"button","id":2,"window":"1","uv":[0.5,0.5],"pressed":1}"#,
+            r#"{"op":"button","id":2,"window":"1","uv":[0.5,0.5],"pressed":true,"button":2}"#,
             r#"{"op":"exec","id":2}"#,
         ] {
             assert!(parse_request(line.as_bytes(), 1).is_err());
         }
         assert!(parse_request(br#"{"op":"snapshot","id":1}"#, 1).is_err());
         assert!(parse_request(br#"{"op":"key","id":2,"window":"1","evdev":30,"pressed":true}"#, 1).is_ok());
+        assert!(parse_request(br#"{"op":"button","id":2,"window":"1","uv":[0.5,0.5],"pressed":true}"#, 1).is_ok());
+        assert!(parse_request(br#"{"op":"button","id":3,"window":"1","uv":[0.5,0.5],"pressed":false}"#, 2).is_ok());
         assert!(parse_request(&vec![b' '; MAX_LINE + 1], 0).is_err());
     }
     #[test]

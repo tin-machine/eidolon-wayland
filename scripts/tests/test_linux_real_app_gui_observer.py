@@ -36,7 +36,11 @@ def snapshot(request=1):
     return {"schema": 1, "id": request, "run_id": RUN, "profile_id": PROFILE, "ok": True,
             "main_count": 1, "preferences_count": 1,
             "main": {"mapped": True, "view_count": 2, "mapped_view_count": 1, "line_numbers": False,
-                     "document_tabs": 2, "toplevel_size": [650, 500]},
+                     "document_tabs": 2, "toplevel_size": [650, 500],
+                     "edit_menu": {"present": True, "mapped": True, "sensitive": True,
+                                   "center": [75, 12], "size": [40, 24], "active": None,
+                                   "expected_value": None, "value_digest": None},
+                     "edit_menu_open": False, "preferences_selected": False},
             "preferences": {"mapped": True, "transient_for_main": True, "page": 0, "pages": 5,
                             "toplevel_size": [600, 700], "targets": targets}}
 
@@ -112,6 +116,16 @@ class ObservationSchema(unittest.TestCase):
         value["ok"] = False
         with self.assertRaisesRegex(observer.ObserverError, "APP_GUI_OBSERVER_TOPOLOGY"):
             observer.validate_snapshot(value, 1, PROFILE, RUN)
+
+    def test_menu_observation_needs_a_fixed_target_and_open_menu_before_selection(self):
+        for mutation in (lambda m: m.update(preferences_selected=True),
+                         lambda m: m.update(edit_menu_open=1),
+                         lambda m: m["edit_menu"].update(action="app.preferences"),
+                         lambda m: m["edit_menu"].update(active=True)):
+            value = snapshot()
+            mutation(value["main"])
+            with self.assertRaises(observer.ObserverError):
+                observer.validate_snapshot(value, 1, PROFILE, RUN)
 
 
 class SyntheticScope(unittest.TestCase):

@@ -80,6 +80,54 @@ class DiskOracleTests(unittest.TestCase):
 
 
 class GuiObservationRefusalTests(unittest.TestCase):
+    def menu_experiment(self, *, mapped=True, selected=True, released=True):
+        # A control-flow failure fixture, not evidence of a real GUI action.
+        experiment = object.__new__(gui.Experiment)
+        experiment.main = "1"
+        experiment.control = mock.Mock()
+        experiment.control.assert_topology = mock.Mock()
+        target = {"present": True, "mapped": True, "sensitive": True,
+                  "center": [20, 10], "size": [20, 10]}
+        base = {"edit_menu": target, "edit_menu_open": False, "preferences_selected": False}
+        experiment.private_snapshot = mock.Mock(side_effect=[
+            {"main": base}, {"main": dict(base, edit_menu_open=mapped)},
+            {"main": dict(base, edit_menu_open=True, preferences_selected=selected)}])
+        window = {"window": "1", "parent": None, "life": "Mapped", "layers": 1,
+                  "geometry_origin": {"x": 0, "y": 0}, "logical_size": {"width": 200, "height": 100}}
+        experiment.control.snapshot.side_effect = [
+            {"windows": [window], "input": {"pointer_buttons": 0}},
+            {"windows": [dict(window, layers=2)]}]
+        experiment.control.button.return_value = {"input": {
+            "pointer_buttons": 2, "pointer_pressed": 0 if released else 1, "pressed": 0}}
+        def immediate_wait(reader, predicate, reason, seconds=4):
+            value = reader()
+            app.require(predicate(value), reason)
+            return value
+        experiment.wait = immediate_wait
+        return experiment
+
+    def test_unmapped_menu_releases_held_pointer_and_never_selects_preferences(self):
+        experiment = self.menu_experiment(mapped=False)
+        with self.assertRaisesRegex(app.WaylandError, "APP_GUI_MENU_NOT_MAPPED"):
+            experiment.open_preferences()
+        self.assertEqual([call.args[-1] for call in experiment.control.button.call_args_list], [True, False])
+        experiment.control.key.assert_not_called()
+        experiment.control.wait_dialog.assert_not_called()
+
+    def test_stuck_menu_button_never_reaches_keyboard_selection(self):
+        experiment = self.menu_experiment(released=False)
+        with self.assertRaisesRegex(app.WaylandError, "APP_GUI_MENU_INPUT_RELEASE"):
+            experiment.open_preferences()
+        experiment.control.key.assert_not_called()
+
+    def test_end_without_observed_preferences_selection_never_sends_enter(self):
+        experiment = self.menu_experiment(selected=False)
+        with self.assertRaisesRegex(app.WaylandError, "APP_GUI_PREFERENCES_NOT_SELECTED"):
+            experiment.open_preferences()
+        self.assertEqual(experiment.control.key.call_args_list,
+                         [mock.call("1", gui.driver.END, True), mock.call("1", gui.driver.END, False)])
+        experiment.control.wait_dialog.assert_not_called()
+
     def test_click_point_subtracts_shadow_origin_once_and_refuses_outside_or_unknown(self):
         widget = {"present": True, "mapped": True, "center": [42, 31], "size": [10, 8]}
         window = {"geometry_origin": {"x": 2, "y": 1}, "logical_size": {"width": 80, "height": 60}}

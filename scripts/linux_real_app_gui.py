@@ -167,12 +167,46 @@ class Experiment:
     def open_preferences(self):
         self.control.phase = "gui_preferences"
         self.control.focus(self.main)
-        # Pinned Mousepad 0.6.3's Edit menu ends in Preferences. No GAction,
-        # GSettings setter or accessibility action is used to open it.
-        driver.chord(self.control, self.main, driver.ALT, 18)  # Alt+E
-        self.control.settle(.12)
-        driver.chord(self.control, self.main, driver.END)
+        private = self.private_snapshot()
+        state = self.control.snapshot()
+        self.control.assert_topology(state)
+        windows = driver.mapped(state)
+        app.require(len(windows) == 1 and windows[0]["window"] == self.main
+                    and private["main"]["edit_menu_open"] is False,
+                    "APP_GUI_MENU_INITIAL")
+        window = windows[0]
+        target = private["main"]["edit_menu"]
+        app.require(target["sensitive"] is True, "APP_GUI_MENU_INSENSITIVE")
+        u, v = self.point(target, window)
+        initial_buttons = state["input"]["pointer_buttons"]
+        # The native popup policy requires a live pointer press serial. GTK's
+        # keyboard menu shortcuts cannot establish that grab. Hold a genuine
+        # press while GTK maps the Edit submenu, then release before keynav.
+        # The observer reads only the pinned model/action/selection structure.
+        try:
+            self.control.button(self.main, u, v, True)
+            def menu_mapped():
+                observed = self.private_snapshot()
+                graph = self.control.snapshot()
+                self.control.assert_topology(graph)
+                mapped = driver.mapped(graph)
+                app.require(len(mapped) == 1 and mapped[0]["window"] == self.main,
+                            "APP_GUI_MENU_TOPOLOGY")
+                return (observed["main"]["edit_menu_open"] is True
+                        and mapped[0]["layers"] > window["layers"])
+            self.wait(menu_mapped, bool, "APP_GUI_MENU_NOT_MAPPED")
+        finally:
+            released = self.control.button(self.main, u, v, False)
+        app.require(released["input"]["pointer_buttons"] >= initial_buttons + 2
+                    and released["input"]["pointer_pressed"] == 0
+                    and released["input"]["pressed"] == 0,
+                    "APP_GUI_MENU_INPUT_RELEASE")
         self.control.settle(.08)
+        driver.chord(self.control, self.main, driver.END)
+        self.wait(self.private_snapshot,
+                  lambda value: value["main"]["edit_menu_open"] is True
+                    and value["main"]["preferences_selected"] is True,
+                  "APP_GUI_PREFERENCES_NOT_SELECTED")
         driver.chord(self.control, self.main, driver.ENTER)
         self.prefs = self.control.wait_dialog({self.main})
         self.control.focus(self.prefs)

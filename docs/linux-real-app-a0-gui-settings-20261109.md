@@ -54,6 +54,7 @@ moduleは固定のMousepad/GTK型、GtkBuildable ID、GtkActionable action-name�
 | 観測対象 | 固定の根拠と観測内容 |
 | --- | --- |
 | main | `MousepadWindow`。対応する一つのWayland mainと照合する |
+| Edit menu | 一つのGtkMenuBar、固定GMenuModelの`edit`と`edit.preferences`、leaf action `app.preferences`を照合し、実submenuのmapped状態と選択項目を読む |
 | Preferences | `MousepadPrefsDialog`。GTKの実transient parentとWaylandのparentをmainへ照合する |
 | 行番号checkbutton | action-name `app.preferences.view.show-line-numbers`。mapped、実効sensitive、activeを読む |
 | editorの行番号 | mainのmapped `MousepadView` / GtkSourceViewが持つ `show-line-numbers`。checkbuttonの値だけで描画設定を推定しない |
@@ -73,6 +74,25 @@ moduleは固定のMousepad/GTK型、GtkBuildable ID、GtkActionable action-name�
 [gtk_widget_is_sensitive()](https://docs.gtk.org/gtk3/method.Widget.is_sensitive.html)でancestorを含む実効sensitivityを読む。
 comboの値は[gtk_combo_box_get_active_id()](https://docs.gtk.org/gtk3/method.ComboBox.get_active_id.html)から取得し、固定の許容値と照合する。
 NULLや未知値をpolicy成立へ変換しない。
+
+### Preferencesを開く実入力
+
+head `5a07a43e084beb08972f9f4843fb4f050062e224`の[専用CI](https://github.com/tin-machine/eidolon-wayland/actions/runs/42638603870)では、
+従来の実アプリcaseと125秒保持後の応答まで進み、追加GUI caseの`Alt+E`によるPreferences起動が`DIALOG_TIMEOUT`になった。
+A0はfalseのままであり、失敗したGUI runと両workerの回収完了をreceiptで確認した。
+
+[現在のnative popup policy](../native/core/src/compositor/popup.rs)は、grabをbutton serialかつpointer押下中に限定している。
+一方、GTK 3.24.41の[popup生成](https://github.com/GNOME/gtk/blob/3.24.41/gdk/wayland/gdkwindow-wayland.c#L3025-L3036)は、
+[最新のkeyboardまたはpointer serial](https://github.com/GNOME/gtk/blob/3.24.41/gdk/wayland/gdkdevice-wayland.c#L5430-L5467)を使う。
+keyboard由来のメニューgrabはこのnative条件を満たさない。単にF10へ置き換えても解決したとは扱わない。
+
+fixtureの固定`button`要求でprimary pressとreleaseを分け、実Edit menu上でpressを継続する。
+固定modelと対応した実submenuのmapped状態、およびcompositorのpopup layer増加を待ち、`finally`でreleaseする。
+その間にfocusを再設定して押下をresetしない。releaseを確認した後に実End keyを送り、固定Preferences項目の選択を読み取ってからEnterで開く。
+GActionのactivate、GTK setter、メニューlabelの読み取りは使用しない。
+実wire回帰検査では、downのみをclientが受信したcheckpointを挟んでupを送り、最終press/releaseとnative countを照合する。
+
+この変更はfixtureの入力手順と読み取り観測に限定する。productionのkeyboard起点popupの扱いは別の検討事項として残り、A0成功から通常UIの全経路を受入れ済みとはしない。
 
 ### 観測のfreshnessと入力座標
 

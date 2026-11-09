@@ -19,7 +19,7 @@ PHASES = frozenset({"startup", "initial_main", "main_ready", "open_dialog", "ope
                     "file_oracle_complete", "normal_close", "waypipe_cleanup", "compositor_shutdown",
                     "response_probe", "forced_stop", "app_crash", "gui_preferences",
                     "gui_line_numbers", "gui_protected", "gui_open_tab"})
-OPERATIONS = frozenset({"snapshot", "focus", "key", "click", "close", "shutdown"})
+OPERATIONS = frozenset({"snapshot", "focus", "key", "click", "button", "close", "shutdown"})
 NATIVE_ERRORS = frozenset({"STALE", "NOT_READY", "INPUT_NOT_FOCUSED", "INPUT_NOT_MAPPED",
                           "INPUT_SOURCE", "CLIENTS_REMAIN"})
 PENDING_CHECKS = (
@@ -247,6 +247,11 @@ class Control:
 
     def click(self, window: str, u: float, v: float) -> dict[str, Any]:
         return self.request("click", window=window, uv=[u, v])
+
+    def button(self, window: str, u: float, v: float, pressed: bool) -> dict[str, Any]:
+        # A menu grab needs GTK to process the actual down event before up.
+        # Callers release in finally; no widget/API activation is performed.
+        return self.request("button", window=window, uv=[u, v], pressed=pressed)
 
     def close(self, window: str) -> dict[str, Any]:
         return self.request("close", window=window)

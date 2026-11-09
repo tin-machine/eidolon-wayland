@@ -163,6 +163,7 @@ static const gchar *target_names[N_TARGETS] = {
 
 typedef struct {
   GtkWidget *main, *prefs, *view, *document_notebook, *prefs_notebook;
+  GtkWidget *menubar, *edit_menu, *edit_submenu, *preferences_item;
   GtkWidget *targets[N_TARGETS];
   guint main_count, prefs_count, views, mapped_views, visited;
   gboolean valid;
@@ -191,6 +192,8 @@ scan (GtkWidget *widget, GtkWidget *root, Observation *observation, guint depth)
       observation->valid = FALSE;
       return;
     }
+  if (root == observation->main && GTK_IS_MENU_BAR (widget))
+    one_widget (&observation->menubar, widget, observation);
   if (root == observation->main && named_type (widget, "MousepadView"))
     {
       observation->views++;
@@ -230,6 +233,70 @@ scan (GtkWidget *widget, GtkWidget *root, Observation *observation, guint depth)
         scan (GTK_WIDGET (item->data), root, observation, depth + 1);
       g_list_free (children);
     }
+}
+
+static void
+observe_edit_menu (Observation *observation)
+{
+  GtkApplication *application;
+  GMenuModel *menubar, *edit = NULL, *section = NULL;
+  GMenu *named_edit, *named_preferences;
+  GList *items = NULL, *entries = NULL, *last;
+  GtkWidget *item, *submenu;
+  gchar *action = NULL;
+  gint count;
+
+  if (observation->main == NULL || observation->menubar == NULL)
+    return;
+  application = gtk_window_get_application (GTK_WINDOW (observation->main));
+  if (application == NULL)
+    return;
+  menubar = gtk_application_get_menubar (application);
+  named_edit = gtk_application_get_menu_by_id (application, "edit");
+  named_preferences = gtk_application_get_menu_by_id (application, "edit.preferences");
+  if (menubar == NULL || named_edit == NULL || named_preferences == NULL
+      || g_menu_model_get_n_items (menubar) != 6)
+    return;
+
+  /* The pinned resource has File/Edit/Search/View/Document/Help, in that
+   * order. Verify the second model link is the named Edit menu, whose last
+   * section has exactly the fixed Preferences action. No label is read. */
+  edit = g_menu_model_get_item_link (menubar, 1, G_MENU_LINK_SUBMENU);
+  if (edit != G_MENU_MODEL (named_edit))
+    goto out;
+  count = g_menu_model_get_n_items (edit);
+  if (count < 1 || count > 32)
+    goto out;
+  section = g_menu_model_get_item_link (edit, count - 1, G_MENU_LINK_SECTION);
+  if (section != G_MENU_MODEL (named_preferences) || g_menu_model_get_n_items (section) != 1
+      || !g_menu_model_get_item_attribute (section, 0, G_MENU_ATTRIBUTE_ACTION, "s", &action)
+      || g_strcmp0 (action, "app.preferences") != 0)
+    goto out;
+
+  items = gtk_container_get_children (GTK_CONTAINER (observation->menubar));
+  if (g_list_length (items) != 6)
+    goto out;
+  item = g_list_nth_data (items, 1);
+  if (!GTK_IS_MENU_ITEM (item))
+    goto out;
+  submenu = gtk_menu_item_get_submenu (GTK_MENU_ITEM (item));
+  if (!GTK_IS_MENU (submenu))
+    goto out;
+  entries = gtk_container_get_children (GTK_CONTAINER (submenu));
+  last = g_list_last (entries);
+  if (last == NULL || !GTK_IS_MENU_ITEM (last->data) || GTK_IS_SEPARATOR_MENU_ITEM (last->data)
+      || !gtk_widget_get_visible (GTK_WIDGET (last->data))
+      || !gtk_widget_is_sensitive (GTK_WIDGET (last->data)))
+    goto out;
+  observation->edit_menu = item;
+  observation->edit_submenu = submenu;
+  observation->preferences_item = last->data;
+out:
+  g_free (action);
+  g_list_free (entries);
+  g_list_free (items);
+  g_clear_object (&section);
+  g_clear_object (&edit);
 }
 
 static const gchar *
@@ -315,6 +382,7 @@ observe (guint64 request)
     scan (observation.main, observation.main, &observation, 0);
   if (observation.prefs != NULL)
     scan (observation.prefs, observation.prefs, &observation, 0);
+  observe_edit_menu (&observation);
   if (observation.prefs_notebook != NULL)
     {
       const gint pages[] = {0, 2, 3};
@@ -353,10 +421,16 @@ observe (guint64 request)
         }
       else
         g_string_append (json, "null");
-      g_string_append_printf (json, ",\"document_tabs\":%d,\"toplevel_size\":[%d,%d]}",
+      g_string_append_printf (json, ",\"document_tabs\":%d,\"toplevel_size\":[%d,%d],\"edit_menu\":",
           observation.document_notebook == NULL ? 0
             : gtk_notebook_get_n_pages (GTK_NOTEBOOK (observation.document_notebook)),
           gtk_widget_get_allocated_width (observation.main), gtk_widget_get_allocated_height (observation.main));
+      append_target (json, observation.edit_menu, observation.main, N_TARGETS);
+      g_string_append_printf (json, ",\"edit_menu_open\":%s,\"preferences_selected\":%s}",
+          boolean (observation.edit_submenu != NULL && gtk_widget_get_mapped (observation.edit_submenu)),
+          boolean (observation.edit_submenu != NULL && gtk_widget_get_mapped (observation.edit_submenu)
+                   && gtk_menu_shell_get_selected_item (GTK_MENU_SHELL (observation.edit_submenu))
+                      == observation.preferences_item));
     }
   g_string_append (json, ",\"preferences\":");
   if (observation.prefs == NULL)

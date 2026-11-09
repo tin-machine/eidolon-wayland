@@ -88,6 +88,28 @@ def _pair(value, minimum=0, maximum=32768):
     return type(value) is list and len(value) == 2 and all(_integer(x, minimum, maximum) for x in value)
 
 
+def _target(target, kind):
+    require(type(target) is dict and set(target) == {"present", "mapped", "sensitive", "center",
+                                                    "size", "active", "expected_value", "value_digest"})
+    require(all(type(target[k]) is bool for k in ("present", "mapped", "sensitive")))
+    require((target["center"] is None and target["size"] is None)
+            or (_pair(target["center"], -32768) and _pair(target["size"], 1)))
+    require(target["active"] is None or type(target["active"]) is bool)
+    require(target["expected_value"] is None or type(target["expected_value"]) is bool)
+    require(target["value_digest"] is None or type(target["value_digest"]) is str
+            and re.fullmatch(r"[0-9a-f]{64}", target["value_digest"]) is not None)
+    if not target["present"]:
+        require(not target["mapped"] and not target["sensitive"]
+                and all(target[k] is None for k in ("center", "size", "active", "expected_value", "value_digest")))
+    elif kind == "combo":
+        require(target["active"] is None and type(target["expected_value"]) is bool)
+    elif kind == "plain":
+        require(all(target[k] is None for k in ("active", "expected_value", "value_digest")))
+    else:
+        require(type(target["active"]) is bool and target["expected_value"] is None
+                and target["value_digest"] is None)
+
+
 def validate_snapshot(value, request, profile_id, runtime_id):
     """Reject stale, ambiguous, oversized and free-form observer replies."""
     require(type(value) is dict)
@@ -106,12 +128,17 @@ def validate_snapshot(value, request, profile_id, runtime_id):
         require(main is None)
     else:
         require(type(main) is dict and set(main) == {"mapped", "view_count", "mapped_view_count",
-                                                   "line_numbers", "document_tabs", "toplevel_size"})
+                                                   "line_numbers", "document_tabs", "toplevel_size",
+                                                   "edit_menu", "edit_menu_open", "preferences_selected"})
         require(type(main["mapped"]) is bool and _integer(main["view_count"], 0, 32)
                 and _integer(main["mapped_view_count"], 0, 1)
                 and main["mapped_view_count"] <= main["view_count"]
                 and (type(main["line_numbers"]) is bool or main["line_numbers"] is None)
-                and _integer(main["document_tabs"], 0, 32) and _pair(main["toplevel_size"], 1))
+                and _integer(main["document_tabs"], 0, 32) and _pair(main["toplevel_size"], 1)
+                and type(main["edit_menu_open"]) is bool and type(main["preferences_selected"]) is bool)
+        _target(main["edit_menu"], "plain")
+        require(not main["edit_menu_open"] or main["edit_menu"]["present"])
+        require(not main["preferences_selected"] or main["edit_menu_open"])
     prefs = value["preferences"]
     if value["preferences_count"] == 0:
         require(prefs is None)
@@ -123,25 +150,9 @@ def validate_snapshot(value, request, profile_id, runtime_id):
                 and prefs["page"] < prefs["pages"] and _pair(prefs["toplevel_size"], 1)
                 and type(prefs["targets"]) is dict and set(prefs["targets"]) == TARGETS)
         for name, target in prefs["targets"].items():
-            require(type(target) is dict and set(target) == {"present", "mapped", "sensitive", "center",
-                                                            "size", "active", "expected_value", "value_digest"})
-            require(all(type(target[k]) is bool for k in ("present", "mapped", "sensitive")))
-            require((target["center"] is None and target["size"] is None)
-                    or (_pair(target["center"], -32768) and _pair(target["size"], 1)))
-            require(target["active"] is None or type(target["active"]) is bool)
-            require(target["expected_value"] is None or type(target["expected_value"]) is bool)
-            require(target["value_digest"] is None or type(target["value_digest"]) is str
-                    and re.fullmatch(r"[0-9a-f]{64}", target["value_digest"]) is not None)
-            if not target["present"]:
-                require(not target["mapped"] and not target["sensitive"]
-                        and all(target[k] is None for k in ("center", "size", "active", "expected_value", "value_digest")))
-            elif name in ("opening_mode", "session_restore"):
-                require(target["active"] is None and type(target["expected_value"]) is bool)
-            elif name.startswith("tab_"):
-                require(all(target[k] is None for k in ("active", "expected_value", "value_digest")))
-            else:
-                require(type(target["active"]) is bool and target["expected_value"] is None
-                        and target["value_digest"] is None)
+            kind = ("combo" if name in ("opening_mode", "session_restore")
+                    else "plain" if name.startswith("tab_") else "toggle")
+            _target(target, kind)
     return value
 
 
