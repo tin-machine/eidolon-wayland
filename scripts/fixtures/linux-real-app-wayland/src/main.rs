@@ -652,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_preserves_nonzero_geometry_and_separates_pointer_progress() {
+    fn snapshot_preserves_nonzero_geometry_from_actual_wayland_client() {
         use eidolon_model::input::surface_hits;
         use eidolon_shm_fixture::state::{self as fixture, Scenario, Stage};
         use std::{os::unix::net::UnixStream, sync::{Arc, mpsc}};
@@ -693,19 +693,10 @@ mod tests {
                         let hit = surface_hits(&native, logical_point[0], logical_point[1])
                             .next().ok_or("TEST_SURFACE_HIT")?;
                         if hit.position != surface_point { return Err("TEST_GEOMETRY_SUBTRACTION"); }
-                        apply(&Request::Click { id:1, window,
-                            uv:[logical_point[0] / 28., logical_point[1] / 30.] }, &mut state)?;
-                        let after = observations.snapshot(&display, &state);
-                        // These are native delivery counters, not a claim of
-                        // application/widget acknowledgement; GUI oracles also
-                        // require the independent read-only GTK observation.
-                        if after["input"]["delivered"] != before["input"]["delivered"]
-                            || after["input"]["pointer_buttons"] != 2
-                            || after["input"]["pointer_pressed"] != 0
-                            || after["input"]["pointer_window"] != json!(window)
-                        {
-                            return Err("TEST_POINTER_PROGRESS");
-                        }
+                        // Tree does not bind wl_pointer. This fixture proves
+                        // the nonzero geometry transform, not input delivery.
+                        // A separate pointer client below checks actual wire
+                        // events together with the exposed native counters.
                         checked = true;
                     }
                     replies.try_send(()).map_err(|_| "TEST_REPLY")?;
@@ -723,6 +714,84 @@ mod tests {
         outcome.unwrap();
         client_outcome.unwrap().unwrap();
         cleanup.unwrap();
+    }
+
+    #[test]
+    fn snapshot_pointer_progress_matches_actual_client_events() {
+        use eidolon_shm_fixture::pointer::{self as fixture, Event, Stage};
+        use std::{os::unix::net::UnixStream, sync::{Arc, mpsc}};
+
+        let mut display = Display::<ProtocolState>::new().unwrap();
+        let mut state = ProtocolState::new(&display.handle(), SessionId::new(1).unwrap());
+        state.configure_keyboard(KeyboardLayout::Us).unwrap();
+        let (server_socket, client_socket) = UnixStream::pair().unwrap();
+        state.accept(&display.handle(), server_socket).unwrap();
+        let (step_tx, steps) = mpsc::sync_channel(1);
+        let (replies, reply_rx) = mpsc::sync_channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let client_stop = stop.clone();
+        let client = thread::spawn(move || fixture::run(client_socket, client_stop,
+            fixture::Control { steps: step_tx, replies: reply_rx }));
+        let started = Instant::now();
+        let mut observations = Observations::default();
+        let mut click_input = Value::Null;
+        let outcome = (|| -> Result<()> {
+            let mut checked = false;
+            while !client.is_finished() {
+                dispatch(&mut display, &mut state, &mut observations, started.elapsed())?;
+                if let Ok(stage) = steps.try_recv() {
+                    if matches!(stage, Stage::Mapped) {
+                        // This fixture creates root_a first and binds both
+                        // wl_pointer and wl_keyboard. (4,4) is on root_a,
+                        // outside its child at (8,6), so the wire target is
+                        // unambiguous and independent of child input regions.
+                        let window = WindowId::new(1).map_err(|_| "TEST_ID")?;
+                        let before = observations.snapshot(&display, &state);
+                        let size = state.latest_snapshot(window).ok_or("TEST_SNAPSHOT")?.logical_size;
+                        apply(&Request::Click { id: 1, window,
+                            uv: [4. / f64::from(size.width), 4. / f64::from(size.height)] }, &mut state)?;
+                        let after = observations.snapshot(&display, &state);
+                        click_input = after["input"].clone();
+                        if after["input"]["delivered"] != before["input"]["delivered"] {
+                            return Err("TEST_POINTER_COUNTED_AS_KEYBOARD");
+                        }
+                        if after["input"]["pointer_buttons"] != 2 {
+                            return Err("TEST_POINTER_BUTTON_COUNT");
+                        }
+                        if after["input"]["pointer_motions"].as_u64().is_none_or(|n| n == 0) {
+                            return Err("TEST_POINTER_MOTION_COUNT");
+                        }
+                        if after["input"]["pointer_pressed"] != 0 {
+                            return Err("TEST_POINTER_STILL_PRESSED");
+                        }
+                        if after["input"]["pointer_window"] != json!(window) {
+                            return Err("TEST_POINTER_WRONG_WINDOW");
+                        }
+                        checked = true;
+                    }
+                    replies.try_send(()).map_err(|_| "TEST_REPLY")?;
+                }
+                if started.elapsed() > Duration::from_secs(15) { return Err("TEST_TIMEOUT"); }
+                thread::sleep(Duration::from_millis(2));
+            }
+            if !checked { return Err("TEST_POINTER_NOT_OBSERVED"); }
+            Ok(())
+        })();
+        stop.store(true, Ordering::Release);
+        drop(replies);
+        let client_outcome = client.join();
+        let cleanup = teardown(&mut display, &mut state);
+        assert_eq!(outcome, Ok(()), "synthetic pointer metadata: {click_input}");
+        let report = client_outcome.unwrap().unwrap();
+        cleanup.unwrap();
+        assert!(report.events.iter().any(|event| matches!(event,
+            Event::Enter { surface: "root_a", position } if *position == [4., 4.])));
+        let buttons: Vec<_> = report.events.iter().filter_map(|event| match event {
+            Event::Button { surface, code, state, .. } => Some((*surface, *code, *state)),
+            _ => None,
+        }).collect();
+        assert_eq!(buttons, vec![(Some("root_a"), 0x110, 1), (Some("root_a"), 0x110, 0)]);
+        assert!(report.keyboard.keys.is_empty());
     }
 
     #[test]
