@@ -34,6 +34,13 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_inspect.py' -v
           python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_check.py' -v
+      - name: Termination and live descendant ownership regressions
+        env:
+          EIDOLON_REQUIRE_LIFECYCLE_TESTS: '1'
+        run: |
+          test "$(id -u)" -ne 0
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_wayland.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_lifecycle.py' -v
 
   mousepad:
     name: Pinned Mousepad and real Waypipe foundation

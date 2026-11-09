@@ -6,6 +6,7 @@ The frozen-v2 fixture was captured from remote e401918, not computed by a build
 or regenerated from the checkout under test.
 """
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -254,6 +255,144 @@ class FoundationAggregationTests(TemporaryCheck):
         self.assertEqual(pending, {"schema": 1, "stage": "cleanup", "complete": False,
                                    "reason": "APP_WAYLAND_CLEANUP_PENDING", "available": False})
         self.assertNotIn("private transient descriptor text", json.dumps(result))
+
+    def assert_cleanup_marker_failure_keeps_owner(self, error_number):
+        application = self.application()
+        application.update(state="fail", status="failed", error="APP_WAYLAND_CLEANUP_PENDING")
+        application["cleanup"] = dict(self.cleanup(), complete=False, pending=True, open_pidfds=1)
+        run = mock.Mock()
+        first, subsequent = wayland.CleanupPending(run), wayland.CleanupPending(run)
+        first.receipt = application
+        run.finish.side_effect = [OSError(errno.EIO, "private cleanup descriptor"), subsequent, self.cleanup()]
+        artifact = self.base / "marker-io-failure"
+        marker_attempts, retried = [], []
+        real_write, real_retry = check.write_json, wayland.retry_cleanup
+
+        def write_with_marker_failure(path, value):
+            if path.name == "cleanup-pending.json":
+                marker_attempts.append(value)
+                raise OSError(error_number, "private marker write detail")
+            return real_write(path, value)
+
+        def retry_same_owner(pending):
+            self.assertIs(pending.run, run)
+            retried.append(pending)
+            return real_retry(pending)
+
+        with self.stages(application, raised=first), \
+             mock.patch.object(check, "write_json", side_effect=write_with_marker_failure), \
+             mock.patch.object(wayland, "retry_cleanup", side_effect=retry_same_owner), \
+             mock.patch.object(check.time, "sleep", return_value=None):
+            status, result = self.command("--stage", "feasibility", "--artifact-root", str(artifact))
+        self.assertEqual(retried, [first, first, subsequent])
+        self.assertEqual(run.finish.call_count, 3)
+        self.assertEqual(marker_attempts, [{"schema": 1, "stage": "cleanup", "complete": False,
+                                           "reason": "APP_WAYLAND_CLEANUP_PENDING", "available": False}])
+        self.assertFalse((artifact / "cleanup-pending.json").exists())
+        self.assertEqual((status, result["status"], result["reason"]), (2, "failed", "APP_WAYLAND_CLEANUP_PENDING"))
+        self.assertFalse(result["a0_passed"])
+        self.assertFalse(result["available"])
+        self.assertEqual(result["checks"]["application"]["error"], "APP_WAYLAND_CLEANUP_PENDING")
+        self.assertTrue(result["checks"]["application"]["cleanup"]["complete"])
+        self.assertEqual(json.loads((artifact / "feasibility.json").read_bytes()), result)
+        self.assertNotIn("private cleanup descriptor", json.dumps(result))
+        self.assertNotIn("private marker write detail", json.dumps(result))
+
+    def test_cleanup_marker_enospc_does_not_interrupt_retry(self):
+        self.assert_cleanup_marker_failure_keeps_owner(errno.ENOSPC)
+
+    def test_cleanup_marker_edquot_does_not_interrupt_retry(self):
+        self.assert_cleanup_marker_failure_keeps_owner(errno.EDQUOT)
+
+    def test_cleanup_marker_eio_does_not_interrupt_retry(self):
+        self.assert_cleanup_marker_failure_keeps_owner(errno.EIO)
+
+    def test_termination_guard_survives_handoff_marker_failure_and_repeated_retries(self):
+        application = self.application()
+        application.update(state="fail", status="failed", error="APP_WAYLAND_CLEANUP_PENDING")
+        application["cleanup"] = dict(self.cleanup(), complete=False, pending=True, open_pidfds=1)
+        run = mock.Mock()
+        first, subsequent = wayland.CleanupPending(run), wayland.CleanupPending(run)
+        first.receipt = application
+        artifact = self.base / "interrupted-pending-cleanup"
+        signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+        original = {number: signal.getsignal(number) for number in signals}
+        chained, phases, retried = [], [], []
+        guard = None
+
+        def previous_handler(number, _frame):
+            chained.append(number)
+
+        try:
+            # A recording prior handler also makes an accidental early restore
+            # observable without terminating the test runner itself.
+            for number in signals:
+                signal.signal(number, previous_handler)
+            guard = wayland._TerminationGuard()
+            run.termination = guard
+
+            def request_stop(phase):
+                phases.append(phase)
+                for number in signals * 2:
+                    self.assertEqual(signal.getsignal(number), guard._request)
+                    signal.raise_signal(number)
+                self.assertEqual(guard.requested, signal.SIGTERM)
+
+            def transfer(*_args, **_kwargs):
+                request_stop("handoff")
+                raise first
+
+            real_write, real_retry = check.write_json, wayland.retry_cleanup
+
+            def write_with_marker_failure(path, value):
+                if path.name == "cleanup-pending.json":
+                    request_stop("marker_write")
+                    raise OSError(errno.ENOSPC, "private marker detail")
+                return real_write(path, value)
+
+            def retry_same_owner(pending):
+                self.assertIs(pending.run, run)
+                retried.append(pending)
+                return real_retry(pending)
+
+            def finish():
+                attempt = run.finish.call_count
+                request_stop("retry_" + str(attempt))
+                if attempt == 1:
+                    raise OSError(errno.EIO, "private cleanup detail")
+                if attempt == 2:
+                    raise subsequent
+                self.assertEqual(attempt, 3)
+                # Production _Run.finish restores this guard only after the
+                # descendant closure is proved gone. No outer handler stack
+                # may subsequently reinstall the now-completed run's guard.
+                guard.restore()
+                return self.cleanup()
+
+            run.finish.side_effect = finish
+            with self.stages(application, raised=transfer), \
+                 mock.patch.object(check, "write_json", side_effect=write_with_marker_failure), \
+                 mock.patch.object(wayland, "retry_cleanup", side_effect=retry_same_owner), \
+                 mock.patch.object(check.time, "sleep", return_value=None):
+                status, result = self.command("--stage", "feasibility", "--artifact-root", str(artifact))
+            self.assertEqual(phases, ["handoff", "marker_write", "retry_1", "retry_2", "retry_3"])
+            self.assertEqual(retried, [first, first, subsequent])
+            self.assertEqual(run.finish.call_count, 3)
+            self.assertEqual(chained, [])
+            self.assertEqual({number: signal.getsignal(number) for number in signals},
+                             dict.fromkeys(signals, previous_handler))
+            self.assertEqual((status, result["status"], result["reason"]),
+                             (2, "failed", "APP_WAYLAND_CLEANUP_PENDING"))
+            self.assertTrue(result["checks"]["application"]["cleanup"]["complete"])
+            self.assertFalse(result["a0_passed"])
+            self.assertFalse(result["available"])
+            self.assertNotIn("private marker detail", json.dumps(result))
+            self.assertNotIn("private cleanup detail", json.dumps(result))
+        finally:
+            if guard is not None:
+                guard.restore()
+            for number, handler in original.items():
+                signal.signal(number, handler)
 
 
 class ArtifactSafetyTests(TemporaryCheck):

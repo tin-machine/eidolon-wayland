@@ -1,8 +1,12 @@
 """Controller invariants; live Mousepad feasibility is a separate explicit gate."""
+import contextlib
+import errno
+import fcntl
 import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -269,6 +273,189 @@ class ControlTransportTests(unittest.TestCase):
         child = self.child("sys.stdin.readline()\nprint('{\"id\":1,\"id\":1,\"ok\":true,\"snapshot\":{\"windows\":[]}}',flush=True)\n")
         with self.assertRaisesRegex(driver.ProbeError, "DUPLICATE_FIELD"):
             driver.Control(child).snapshot()
+
+
+class RunCaseCleanupTests(unittest.TestCase):
+    """Real run_case/lock/guard flow, with no application or native dependency.
+
+    The dedicated live-process suite independently covers actual descendants;
+    these faults isolate receipt open, partial write and fsync failures.
+    """
+    @contextlib.contextmanager
+    def prepared(self):
+        with tempfile.TemporaryDirectory() as temporary, contextlib.ExitStack() as stack:
+            base = Path(temporary)
+            repo, artifact, settings = (base / name for name in ("repo", "artifact", "settings"))
+            artifact.mkdir(mode=0o700)
+            (settings / "gio").mkdir(mode=0o700, parents=True)
+            settings.chmod(0o700)
+            module = settings / "gio/libeidolon-settings.so"
+            module.write_bytes(b"fixed settings test bytes")
+            (settings / "settings-backend.json").write_text(json.dumps({
+                "kind": "linux-real-app-settings-a0", "settings_kind": "eidolon-keyfile-v1",
+                "settings_policy": "mousepad-single-main-no-restore-v1",
+                "files": {"gio/libeidolon-settings.so": owner._sha(module)},
+            }))
+            (repo / "target/debug").mkdir(parents=True)
+            binary = repo / "target/debug/linux-real-app-wayland-probe"
+            binary.write_bytes(b"fixed executable test bytes")
+            binary.chmod(0o500)
+            (repo / "native/generated").mkdir(parents=True)
+            (repo / "native/generated/waypipe-host.json").write_text(json.dumps({
+                "executable": str(binary), "target": "host", "version": "0.11.3",
+                "sha256": owner._sha(binary),
+            }))
+            actual_require = owner.require
+            def permit_test_uid(value, reason):
+                if reason != "APP_WAYLAND_NONROOT_REQUIRED":
+                    actual_require(value, reason)
+            # Permit this dependency-free unit fixture under root as well;
+            # real ProcessOwner is replaced, not its production constraints.
+            stack.enter_context(mock.patch.object(owner, "ROOT", repo))
+            stack.enter_context(mock.patch.object(owner, "require", side_effect=permit_test_uid))
+            stack.enter_context(mock.patch.object(owner, "_tool", return_value=str(binary)))
+            process_owner = stack.enter_context(mock.patch.object(owner.owner_api, "ProcessOwner")).return_value
+            run_holder = []
+            def abort_before_child(run, *_args, **_kwargs):
+                run_holder.append(run)
+                raise owner.WaylandError("APP_WAYLAND_TEST_ABORT")
+            stack.enter_context(mock.patch.object(owner._Run, "spawn", abort_before_child))
+            try:
+                yield repo, artifact, settings, process_owner, run_holder
+            finally:
+                if run_holder and run_holder[0].termination.previous:
+                    process_owner.finish.side_effect = None
+                    process_owner.finish.return_value = self.report(True)
+                    run_holder[0].finish()
+
+    @staticmethod
+    def report(complete):
+        return {"schema": 1, "complete": complete, "pending": not complete,
+                "reason": "COMPLETED" if complete else "CLEANUP_TIMEOUT",
+                "open_pidfds": 0, "term_signals": 0, "kill_signals": 0, "reaped": 0}
+
+    def assert_locked(self, run):
+        fd = os.open(run.artifact / "profile/profile.lock", os.O_RDWR | os.O_CLOEXEC)
+        try:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+
+    def test_pending_receipt_io_failure_preserves_exact_pending_and_lock(self):
+        signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+        before = {number: signal.getsignal(number) for number in signals}
+        for number in (errno.ENOSPC, errno.EDQUOT, errno.EIO):
+            for boundary in ("open", "partial_write", "fsync"):
+                with self.subTest(errno=number, boundary=boundary), self.prepared() as prepared:
+                    repo, artifact, settings, process_owner, holder = prepared
+                    attempts, caught = [], []
+                    def finish(**_kwargs):
+                        attempts.append(True)
+                        return self.report(len(attempts) > 2)
+                    process_owner.finish.side_effect = finish
+                    original_finish, original_write = owner._Run.finish, owner._write
+                    def record_pending(run):
+                        try:
+                            return original_finish(run)
+                        except owner.CleanupPending as pending:
+                            caught.append(pending)
+                            raise
+                    def failed_receipt(path, value):
+                        self.assert_locked(holder[0])
+                        self.assertIs(signal.getsignal(signal.SIGTERM).__self__, holder[0].termination)
+                        failure = OSError(number, "private disk diagnostic must not escape")
+                        if boundary == "open":
+                            with mock.patch.object(owner.os, "open", side_effect=failure):
+                                original_write(path, value)
+                        elif boundary == "partial_write":
+                            path.write_bytes(b'{"schema":')
+                            raise failure
+                        else:
+                            with mock.patch.object(owner.os, "fsync", side_effect=failure):
+                                original_write(path, value)
+                    with mock.patch.object(owner._Run, "finish", record_pending), \
+                         mock.patch.object(owner, "_write", side_effect=failed_receipt):
+                        with self.assertRaises(owner.CleanupPending) as raised:
+                            owner.run_case(repo, artifact, settings)
+                    pending = raised.exception
+                    self.assertEqual(len(caught), 2)
+                    self.assertIs(pending, caught[1])
+                    self.assertIs(pending.run, holder[0])
+                    self.assertEqual(pending.receipt["error"], "APP_WAYLAND_CLEANUP_PENDING")
+                    self.assertEqual(pending.receipt["status"], "failed")
+                    self.assertIs(pending.receipt["receipt_write_failed"], True)
+                    self.assertNotIn("private disk diagnostic", json.dumps(pending.receipt))
+                    self.assert_locked(pending.run)
+                    if boundary == "open":
+                        self.assertFalse((artifact / "wayland.json").exists())
+                    else:
+                        self.assertTrue((artifact / "wayland.json").exists())
+                    result = owner.retry_cleanup(pending)
+                    self.assertTrue(result["complete"])
+                    self.assertIsNone(pending.run.profile_lock)
+                    self.assertEqual({item: signal.getsignal(item) for item in signals}, before)
+
+    def test_cleanup_io_error_retains_guard_and_lock_until_retry(self):
+        with self.prepared() as prepared:
+            repo, artifact, settings, process_owner, holder = prepared
+            process_owner.finish.side_effect = [OSError(errno.EIO, "private scan text"),
+                                                 OSError(errno.EIO, "private scan text"), self.report(True)]
+            with self.assertRaises(owner.CleanupPending) as raised:
+                owner.run_case(repo, artifact, settings)
+            self.assertIs(raised.exception.run, holder[0])
+            self.assert_locked(holder[0])
+            self.assertTrue(holder[0].termination.previous)
+            self.assertTrue(owner.retry_cleanup(raised.exception)["complete"])
+            self.assertFalse(holder[0].termination.previous)
+
+    def test_guard_installed_before_owner_and_restored_after_constructor_refusal(self):
+        before = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        with self.prepared() as prepared:
+            repo, artifact, settings, _process_owner, _holder = prepared
+            def refuse():
+                for number in before:
+                    self.assertIsInstance(signal.getsignal(number).__self__, owner._TerminationGuard)
+                raise owner.owner_api.OwnershipError("HELPER_NOT_DEDICATED")
+            with mock.patch.object(owner.owner_api, "ProcessOwner", side_effect=refuse):
+                result = owner.run_case(repo, artifact, settings)
+            self.assertEqual(result["state"], "fail")
+            self.assertEqual(result["error"], "HELPER_NOT_DEDICATED")
+        self.assertEqual({number: signal.getsignal(number) for number in before}, before)
+
+    def test_termination_during_final_cleanup_cannot_leave_a_partial_success(self):
+        with self.prepared() as prepared:
+            repo, artifact, settings, process_owner, holder = prepared
+            def spawn_without_process(run, label, *_args, **_kwargs):
+                if label == "compositor":
+                    holder.append(run)
+                    (artifact / "compositor/result.json").write_text(json.dumps({
+                        "state": "complete", "client_cleanup_verified": True, "forced_disconnect": False,
+                    }))
+                elif label == "waypipe_client":
+                    (run.runtime / "channel").touch()
+                child = mock.Mock()
+                child.poll.return_value = None
+                return child
+            def complete_after_signal(**_kwargs):
+                signal.raise_signal(signal.SIGTERM)
+                return self.report(True)
+            process_owner.finish.side_effect = complete_after_signal
+            control = mock.Mock()
+            control.wait_main.return_value = "1"
+            with mock.patch.object(owner._Run, "spawn", spawn_without_process), \
+                 mock.patch.object(owner._Run, "wait_child", return_value=0), \
+                 mock.patch.object(owner._Run, "signal_root"), \
+                 mock.patch.object(owner.stat, "S_ISSOCK", return_value=True), \
+                 mock.patch.object(driver, "Control", return_value=control), \
+                 mock.patch.object(driver, "exercise_open_edit_save", return_value={"synthetic_unit_oracle": True}):
+                result = owner.run_case(repo, artifact, settings)
+            self.assertEqual(result["state"], "fail")
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["error"], "APP_WAYLAND_INTERRUPTED")
+            self.assertEqual(result["termination_signal"], signal.SIGTERM)
+            self.assertTrue(result["cleanup"]["complete"])
+            self.assertFalse(holder[0].termination.previous)
 
 
 if __name__ == "__main__":

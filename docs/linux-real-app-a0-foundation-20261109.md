@@ -117,6 +117,34 @@ Documentsや復元候補を読出して公開したり、削除・修正した�
 から、既存の未保存文書を守るための起動前gateである。
 通常helperへの組込みはC工程で行う。process回収のRecover認証へ現在のapp package検査を追加するものではない。
 
+## 終了要求と記録失敗でも所有を継続する
+
+PR #4の `f91c253` へのレビューで、検証中のSIGTERMがcleanupを通らず親を終了させる経路と、
+未回収時のreceipt書込み失敗が `CleanupPending` を置き換える経路を確認した。
+どちらも通常のOpen/Save成功では検出できないため、異常経路の契約と回帰テストを追加する。
+
+`SIGINT` / `SIGTERM` / `SIGHUP` は、最初の子を起動する前から同じrun所有のguardで捕捉する。
+handlerは最初の終了要求を記憶するだけで、例外を投げない。
+[Python公式のsignalと例外に関する注意](https://docs.python.org/3/library/signal.html#note-on-signal-handlers-and-exceptions)
+のとおり、handlerからの例外は任意のbytecode境界へ入り得るためである。
+既存 `ProcessOwner.spawn()` の `Popen()` とroot登録の間を中断させず、起動前・子/pidfd/pipe登録後・
+通常のpumpという安全な境界で終了要求を処理する。終了要求を受けた検証は `APP_WAYLAND_INTERRUPTED` で失敗とする。
+
+cleanupでは終了要求を再送されても処理を中断しない。未完了なら同じ `CleanupPending.run` と
+pidfd owner・signal guard・profile flockを上位の再試行へ渡す。全子孫の回収が確認できてからlockを解放し、
+元のsignal handlerへ戻す。上位処理で別のhandlerを重ねて登録・復元しない。
+scan/pipe drainのI/O例外も、所有終了の証拠とせず同じrunのpendingとして扱う。
+
+`wayland.json` のopen・書込み・fsyncが失敗しても、メモリ上のreceiptと**同一の `CleanupPending`**を
+必ず上位へ渡す。`receipt_write_failed=true` だけを加え、pathを含む例外本文は保存しない。
+途中まで作られたreceiptの再作成や、上位 `cleanup-pending.json` の書込み成功を、回収継続の条件にしない。
+後から回収が完了しても、最初の `APP_WAYLAND_CLEANUP_PENDING` を検証成功へ変更しない。
+
+回帰テストは、終了要求の登録前後・起動と所有登録の境界・pending中の繰り返しシグナル、
+別processからのflock取得拒否と回収後の解放、session/groupを移動する実子孫の回収、
+`ENOSPC` / `EDQUOT` / `EIO` による記録失敗を対象とする。
+実process検査は専用の非root helperで動かし、固定v2 sourceの変更や保存PIDからの回収は行わない。
+
 ## v2互換の固定
 
 既存pendingのRecoverで使用する5 sourceは、main `e401918fa657fa91c2256353b7992c4376d47f43` のbytesを固定fixtureへ記録し、

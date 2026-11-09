@@ -62,6 +62,37 @@ class CleanupPending(RuntimeError):
         self.run = run
 
 
+class _TerminationGuard:
+    """Latch requests without interrupting child adoption or cleanup.
+
+    This dedicated process installs the guard before creating its owner. The
+    live run retains it across CleanupPending; only completed cleanup restores
+    the previous handlers. A Python signal-handler exception could otherwise
+    interrupt Popen before ProcessOwner has registered the child.
+    """
+    def __init__(self):
+        self.requested = None
+        self.previous = {}
+        try:
+            for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                self.previous[number] = signal.signal(number, self._request)
+        except BaseException:
+            self.restore()
+            raise
+
+    def _request(self, number, _frame):
+        if self.requested is None:
+            self.requested = number
+
+    def check(self):
+        require(self.requested is None, "APP_WAYLAND_INTERRUPTED")
+
+    def restore(self):
+        for number, handler in self.previous.items():
+            signal.signal(number, handler)
+        self.previous.clear()
+
+
 def require(value, reason):
     if not value:
         raise WaylandError(reason)
@@ -109,8 +140,9 @@ def _write(path, value):
 
 
 class _Run:
-    def __init__(self, artifact):
+    def __init__(self, artifact, termination):
         self.artifact = artifact
+        self.termination = termination
         self.owner = owner_api.ProcessOwner()
         self.selector = selectors.DefaultSelector()
         self.children = []
@@ -125,6 +157,7 @@ class _Run:
         self.cleanup = None
 
     def spawn(self, label, command, env, *, control=False):
+        self.termination.check()
         child = self.owner.spawn(command, env=env)
         self.children.append((label, child))
         # Keep a live descriptor immediately, before waiting or inspecting
@@ -140,10 +173,14 @@ class _Run:
             key = label + "_" + name
             self.output_bytes[key] = 0
             self.selector.register(stream, selectors.EVENT_READ, key)
+        # An interrupt received during Popen must not break the handoff from
+        # the OS child to its live owner, pidfd and pipe registrations.
+        self.termination.check()
         return child
 
     def pump(self, *, enforce=True):
         if enforce:
+            self.termination.check()
             require(time.monotonic() < self.deadline, "APP_WAYLAND_RUN_TIMEOUT")
         # Fair and bounded reads; application stderr/stdout contents are never
         # decoded, persisted, or included in exceptions.
@@ -181,35 +218,44 @@ class _Run:
     def finish(self):
         # The existing owner captures/reaps the full descendant closure,
         # including descendants which changed session/process group.
-        self.cleanup = self.owner.finish(timeout=5.0, grace=1.5)
-        if self.control_stdout is not None:
-            self.output_bytes["control_stdout_remaining"] = 0
-            self.selector.register(self.control_stdout, selectors.EVENT_READ, "control_stdout_remaining")
-            self.control_stdout = None
-        deadline = time.monotonic() + .5
-        while self.selector.get_map() and time.monotonic() < deadline:
-            self.pump(enforce=False)
-            time.sleep(.01)
+        try:
+            self.cleanup = self.owner.finish(timeout=5.0, grace=1.5)
+            if self.control_stdout is not None:
+                self.output_bytes["control_stdout_remaining"] = 0
+                self.selector.register(self.control_stdout, selectors.EVENT_READ, "control_stdout_remaining")
+                self.control_stdout = None
+            deadline = time.monotonic() + .5
+            while self.selector.get_map() and time.monotonic() < deadline:
+                self.pump(enforce=False)
+                time.sleep(.01)
+        except (OSError, ValueError, owner_api.OwnershipError) as exc:
+            # A failed scan/drain is not evidence that ownership can end.
+            raise CleanupPending(self) from exc
         if not self.cleanup["complete"]:
             raise CleanupPending(self)
-        pipes_eof = not self.selector.get_map()
-        for _, fd in self.pidfds:
-            os.close(fd)
-        self.pidfds.clear()
-        if self.command_pipe is not None:
-            self.command_pipe.close()
-        for pipe in self.pipes:
-            pipe.close()
-        self.selector.close()
-        if self.profile_lock is not None:
-            os.close(self.profile_lock)
-            self.profile_lock = None
-        if self.runtime is not None:
-            # Only this live run's mkdtemp subtree, never a user profile.
-            import shutil
-            shutil.rmtree(self.runtime)
-        return {**self.cleanup, "root_pidfds_closed": True,
-                "output_pipes_eof": pipes_eof}
+        try:
+            pipes_eof = not self.selector.get_map()
+            for _, fd in self.pidfds:
+                os.close(fd)
+            self.pidfds.clear()
+            if self.command_pipe is not None:
+                self.command_pipe.close()
+            for pipe in self.pipes:
+                pipe.close()
+            self.selector.close()
+            if self.profile_lock is not None:
+                os.close(self.profile_lock)
+                self.profile_lock = None
+            if self.runtime is not None:
+                # Only this live run's mkdtemp subtree, never a user profile.
+                import shutil
+                shutil.rmtree(self.runtime)
+            return {**self.cleanup, "root_pidfds_closed": True,
+                    "output_pipes_eof": pipes_eof}
+        finally:
+            # All descendants are proven gone. Even a later artifact-removal
+            # error must not leave our process-global handlers installed.
+            self.termination.restore()
 
 
 def retry_cleanup(pending):
@@ -237,9 +283,11 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
               "production_ready": False}
     run = None
     control = None
+    termination = None
     try:
         require(sys.platform == "linux" and os.getuid() == os.geteuid() != 0,
                 "APP_WAYLAND_NONROOT_REQUIRED")
+        termination = _TerminationGuard()
         require(expected_app_id == inspect_api.WINDOW_APP_ID, "APP_WAYLAND_APP_ID")
         _private(settings_bundle)
         manifest = _json(settings_bundle / "settings-backend.json")
@@ -265,7 +313,8 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
         executable_hash = _sha(Path(mousepad).resolve())
         for subdir in ("profile", "profile/home", "profile/config", "profile/data", "profile/state", "files", "compositor"):
             (artifact / subdir).mkdir(mode=0o700)
-        run = _Run(artifact)
+        termination.check()
+        run = _Run(artifact, termination)
         run.profile_lock = os.open(artifact / "profile/profile.lock",
                                    os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         fcntl.flock(run.profile_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -373,13 +422,28 @@ def run_case(repo_root, artifact, settings_bundle, *, expected_app_id=inspect_ap
                 result["pending"] = [name for name in REQUIRED_CHECKS if not result["checks"][name]]
                 result["error"] = "APP_WAYLAND_CLEANUP_PENDING"
                 result["cleanup"] = run.cleanup
+                if termination.requested is not None:
+                    result["termination_signal"] = termination.requested
                 pending.receipt = result
-                _write(artifact / "wayland.json", result)
+                try:
+                    _write(artifact / "wayland.json", result)
+                except (OSError, ValueError):
+                    # ENOSPC, a partial file or failed fsync cannot replace
+                    # the live handle needed by the caller's retry loop.
+                    result["receipt_write_failed"] = True
                 raise
             result["output_bytes"] = run.output_bytes
             if not result["cleanup"]["output_pipes_eof"]:
                 result["state"] = "fail"
                 result["error"] = "APP_WAYLAND_OUTPUT_EOF"
+        elif termination is not None:
+            # A prerequisite/constructor failure created no owned children.
+            termination.restore()
+        if termination is not None and termination.requested is not None:
+            result["termination_signal"] = termination.requested
+            result["state"] = "fail"
+            if result["error"] is None:
+                result["error"] = "APP_WAYLAND_INTERRUPTED"
         if result["state"] == "fail":
             result["status"] = "failed"
         result["pending"] = [name for name in REQUIRED_CHECKS if not result["checks"][name]]

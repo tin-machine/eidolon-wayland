@@ -15,7 +15,6 @@ from pathlib import Path
 import pwd
 import re
 import shutil
-import signal
 import sys
 import time
 
@@ -252,26 +251,22 @@ def retain_cleanup_owner(pending, artifact):
     except (OSError, ValueError):
         # Writing evidence must never interrupt ownership of live descendants.
         pass
-    previous = {}
-    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        previous[number] = signal.signal(number, lambda _number, _frame: None)
-    try:
-        while True:
-            try:
-                result = retry_cleanup(pending)
-                if result.get("complete") is True:
-                    return result
-            except CleanupPending as current:
-                pending = current
-            except (OSError, ValueError):
-                # A transient scan/descriptor error is still an unresolved live
-                # owner. Retain it just as for an explicit pending result.
-                pass
-            # The unresolved handle remains live; no stored PID is used.
-            time.sleep(.05)
-    finally:
-        for number, handler in previous.items():
-            signal.signal(number, handler)
+    # The run installed its latch-only handlers before the first spawn and
+    # retains them through this handoff and the receipt write above. Only its
+    # completed finish restores them; a nested guard would restore stale ones.
+    while True:
+        try:
+            result = retry_cleanup(pending)
+            if result.get("complete") is True:
+                return result
+        except CleanupPending as current:
+            pending = current
+        except (OSError, ValueError):
+            # A transient scan/descriptor error is still an unresolved live
+            # owner. Retain it just as for an explicit pending result.
+            pass
+        # The unresolved handle remains live; no stored PID is used.
+        time.sleep(.05)
 
 
 def run_feasibility(artifact, descriptor):
