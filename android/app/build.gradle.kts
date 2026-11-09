@@ -55,6 +55,8 @@ android {
         disable += "ExpiredTargetSdkVersion"
     }
     packaging { resources.excludes += "META-INF/LICENSE" }
+    // Read B1's shared golden directly. Keep one source of truth for Python/Rust/Kotlin.
+    sourceSets["test"].resources.srcDir("../../scripts/tests/fixtures")
     packaging { jniLibs.useLegacyPackaging = true }
     // APK検査で照合するhashを保持する。debug/releaseで同じcopyを使用しない。
     packaging { jniLibs.keepDebugSymbols += setOf("**/libeidolon_native.so", "**/libeidolon_probe_bin.so", "**/libwaypipe_bin.so") }

@@ -23,7 +23,7 @@ class LinuxProfileStore(context: Context, installation: String) {
         private val temporary = File(directory, "$name.tmp")
         init { require(name in setOf("remote-linux", "desktop-pins")) }
         // 別Store instanceも同じatomic境界に入る。UI/ネットワークcallbackはこのlock内で呼ばない。
-        companion object { private val lock = Any() }
+        companion object { private val lock = LinuxStorageIo.lock }
 
         override fun read(): ByteArray? = synchronized(lock) {
             checkDirectory()
