@@ -1,6 +1,8 @@
 # L7a A0 PR2: GUI設定の保持と保護設定の操作不可
 
-2026-11-09。状態: **PR2の実装記録。今回のheadに対する実Mousepad・専用CI・host/Android CIの検証結果は、末尾の検証欄とPR本文で確定する**。
+2026-11-09実装、2026-11-10（日本時間）状態更新。**PR #6はマージ済み。実Mousepad/WaypipeでA0成功、専用・host/Android CIも成功**。
+head/merge/treeとマージ後main CIの記録、次のB1の範囲は[B1引き継ぎ](linux-real-app-b1-handoff-20261110.md)を参照する。
+case別の検証結果・skip・限定範囲は[PR #6本文](https://github.com/tin-machine/eidolon-wayland/pull/6)に記録した。
 実装したoracleの存在と、そのoracleが実環境で成立したことを区別する。
 A0が成立した場合も、v3通常起動・Android通常UI・Quest実機受入れは未完了のままである。
 

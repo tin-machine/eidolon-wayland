@@ -1,16 +1,18 @@
 # L7a: 別Linuxの実用アプリ一種の詳細設計
 
-状態: **詳細設計レビュー反映済み・A/A0検査基盤はPR #4でmainへマージ済み・A0全体は未完了・対象Linux/Questでの実用アプリ受入れ前**。2026-11-09作成・改訂。
+状態: **PR #6までmainへマージ済み・固定CI構成でA0実測成功・B1以降の通常v3/Quest受入れ前**。2026-11-10（日本時間）状態更新。
+最新の基準commit/CIと次の作業単位は[B1の引き継ぎ](linux-real-app-b1-handoff-20261110.md)を参照する。
+以下の設計根拠と当時の状態は2026-11-09時点の記録であり、B〜Fの実装済みを意味しない。
 基準revisionはPR #2/#3マージ後の `3bcd6cfb44dd21e8c9979a106f93434b52fa396c`。
 改訂ではmain `1a92b5c6864f38f7901419d1d93de3d004c9051d` の実装とMousepad 0.6.3の上流sourceを照合した。
 本文の実装根拠はこのrevision/tagへ固定する。新しい対策の動作確認済みという意味ではない。
 本書のv3 API/schemaは実装契約案である。追加した検査CLIとsettings moduleの範囲は
 [A/A0実装記録](linux-real-app-a0-foundation-20261109.md)を参照し、通常GUIへの組込み済みと解釈しない。
 PR #4後は[A0の次工程と引き継ぎ](linux-real-app-a0-next-steps-20261109.md)に従い、
-再起動/instance分離、GUI設定検査の順に残項目を進める。
+再起動/instance分離、GUI設定検査の順に残項目を実装した。
 前者のPR1の実装と独立したcase/receipt契約は
 [同profile再起動と先行instance独立](linux-real-app-a0-restart-20261109.md)へ記録した。
-GUI設定2項目、A0全体および通常v3/Questの完了を意味しない。
+PR1単独ではGUI設定2項目、A0全体および通常v3/Questの完了を意味しない。
 後続PR2では[GUI設定保持・保護設定の実測oracle](linux-real-app-a0-gui-settings-20261109.md)を追加した。
 全A0証拠が揃ったheadだけを `APP_A0_PASSED` と判定し、本書のB〜Fや通常v3/Questの成立へ読み替えない。
 
