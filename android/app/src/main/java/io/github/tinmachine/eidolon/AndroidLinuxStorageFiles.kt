@@ -26,10 +26,21 @@ private object AndroidStoragePosix : LinuxStoragePosix {
         OsConstants.O_RDONLY or OsConstants.O_NONBLOCK or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 0))
     override fun createExclusive(path: String): LinuxStoragePosix.Descriptor = Descriptor(Os.open(path,
         OsConstants.O_WRONLY or OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 384))
-    override fun openDirectory(path: String): LinuxStoragePosix.Descriptor = Descriptor(Os.open(path,
-        OsConstants.O_RDONLY or OsConstants.O_DIRECTORY or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 0))
+    override fun openDirectory(path: String): LinuxStoragePosix.Descriptor {
+        // O_DIRECTORY is not public Android SDK API. Verify the opened descriptor instead;
+        // O_NONBLOCK prevents a raced FIFO from blocking before its type can be rejected.
+        val descriptor = Os.open(path,
+            OsConstants.O_RDONLY or OsConstants.O_NONBLOCK or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC, 0)
+        try {
+            require(OsConstants.S_ISDIR(Os.fstat(descriptor).st_mode)) { "STORAGE_DIRECTORY_INVALID" }
+            return Descriptor(descriptor)
+        } catch (failure: Throwable) {
+            try { Os.close(descriptor) } catch (closeFailure: Throwable) { failure.addSuppressed(closeFailure) }
+            throw failure
+        }
+    }
     override fun rename(source: String, destination: String) = Os.rename(source, destination)
-    override fun unlink(path: String) = Os.unlink(path)
+    override fun unlink(path: String) = Os.remove(path)
 
     private class Descriptor(private val descriptor: FileDescriptor) : LinuxStoragePosix.Descriptor {
         override fun stat() = stat(Os.fstat(descriptor))

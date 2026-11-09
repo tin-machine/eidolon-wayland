@@ -147,6 +147,9 @@ noBackup rootは自UIDの0700、または自UID/自GIDの0771を許す。
 `getNoBackupFilesDir` / `ensurePrivateDirExists`に合わせたframework rootだけの扱いで、E1 childの条件を緩めない。
 
 file openは`O_NOFOLLOW`、readは`O_NONBLOCK`も付け、tempは`O_CREAT|O_EXCL|O_NOFOLLOW`で排他作成する。
+directoryのopenも公開flagで行い、直後に公開[`fstat`](https://developer.android.com/reference/android/system/Os#fstat(java.io.FileDescriptor))と
+[`S_ISDIR`](https://developer.android.com/reference/android/system/OsConstants#S_ISDIR(int))を検査し、失敗時はdescriptorを閉じる。
+公開SDKにない`O_DIRECTORY`や`unlink`へ依存せず、所有tempの削除は公開[`Os.remove`](https://developer.android.com/reference/android/system/Os#remove(java.lang.String))を使う。
 `lstat/fstat`とread後再検査、file fsync、temp readback、expected bytesとdirectory identityの再照合、
 同directory内rename、directory fsync、保存先readbackを行う。
 中断したtempは自動採用せず、失敗時に消すのは今回作った同inodeのtempだけ。
@@ -209,6 +212,8 @@ UID差替え等の一部拒否入力にはfault adapterを併用するが、mock
 | 対象 | 実行結果・記録場所 |
 | --- | --- |
 | Kotlin 2.4.21 / JUnit 4.13.2、host実filesystem | 64件中63成功・1 assumption skip・失敗0。identity11、filesystem15、repository18、既存profile20。skipはrootでは成立しない実EACCES検査 |
+| 既存LinuxCredentialCaptureTest | 別途3成功・skip0。合成credential capture/one-shotの検査であり、秘密鍵や実SSH認証は実行しない |
+| Android API 36の型・公開API compile | E1と既存LinuxProfileStore/profile依存の11 Kotlin sourceを公式android.jarでcompile成功。Android実行・APK build・lintの代替ではない |
 | B1 Python/Rust | 新規実行でPython15成功・skip0、Rust8成功・ignored0（114 filtered）。共通fixtureは不変 |
 | check-design / 固定契約 | 31 tasks / 45 checks成功。v2五source・golden、B1 golden、共有lifetime、既存transport/credentials/profile/NativeSessionHostがbyte-for-byte不変 |
 | host/Android CI | 最終PR headの結果をPR本文へ記録。JUnit XMLの全体/E1別集計とartifactを追加し、task成功と実件数を区別する |
@@ -226,3 +231,10 @@ UID差替え等の一部拒否入力にはfault adapterを併用するが、mock
 job開始前・0 jobsで失敗し、固定actionlint 1.7.12の両workflow検査はローカル成功した。
 取得可能なAPIには原因診断がなく、Kotlin検査失敗やbilling等の具体的原因とは断定しない。
 この初回CIを後続headの成功証拠へ流用しない。
+
+host/Android CIがjobを開始しないため、公式[SDK repository manifest](https://dl.google.com/android/repository/repository2-3.xml)の
+platforms;android-36 revision 2を使ってAndroid固有sourceも型検査した。
+archiveは`platform-36_r02.zip`、65,878,410 bytes、manifest SHA1は`2c1a80dd4d9f7d0e6dd336ec603d9b5c55a6f576`。
+展開したandroid.jarのSHA256は`d9eb9da824d9e247a352f570f01e1169e725b2954bca9e283a71786c59b59f9a`。
+この検査で`O_DIRECTORY` / `Os.unlink`が公開SDKにないことを検出し、上記公開APIへの修正後にcompile成功を確認した。
+JVMの実filesystem成功だけでAndroid adapterのcompileや端末動作を認定しない。
