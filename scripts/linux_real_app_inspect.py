@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -25,13 +26,17 @@ import struct
 import sys
 import xml.etree.ElementTree as ET
 
-APP_ID = "mousepad-editor-v1"
-# Observed Wayland identity for the pinned --disable-server launch, distinct
-# from the catalog and GApplication IDs: CI run 42502638269, initial/settled map.
-WINDOW_APP_ID = "mousepad"
+# Fixed sibling, including when loaded by the A0 fixture under an alias.
+# Never resolve a policy module through an operator-controlled sys.path.
+_manifest_spec = importlib.util.spec_from_file_location(
+    "eidolon_fixed_manifest", Path(__file__).with_name("linux_real_app_manifest.py"))
+_manifest = importlib.util.module_from_spec(_manifest_spec)
+_manifest_spec.loader.exec_module(_manifest)
+APP_ID = _manifest.APP_ID
+WINDOW_APP_ID = _manifest.WINDOW_APP_ID
 UPSTREAM_VERSION = "0.6.3"
 UPSTREAM_COMMIT = "65fbfe0459259f820fcc8b9c4dd454228304842a"
-EXECUTABLE = "/usr/bin/mousepad"
+EXECUTABLE = _manifest.EXECUTABLE
 SCHEMA_PATH = "/usr/share/glib-2.0/schemas/org.xfce.mousepad.gschema.xml"
 COMPILED_SCHEMA_PATH = "/usr/share/glib-2.0/schemas/gschemas.compiled"
 BUILD_EVIDENCE_PATH = "/usr/share/doc/mousepad/eidolon-build-evidence.json"
@@ -41,12 +46,12 @@ REQUIRED_WRITABLE_KEYS = frozenset({
     b"/org/xfce/mousepad/preferences/view/show-line-numbers",
     b"/org/xfce/mousepad/preferences/view/font-name",
 })
-SETTINGS_RELATIVE_PATH = "config/glib-2.0/settings/keyfile"
+SETTINGS_RELATIVE_PATH = _manifest.SETTINGS_RELATIVE_PATH
 SESSION_GROUP = "org/xfce/mousepad/state/application"
 SESSION_KEY = "session"
 RECOVERY_DIRECTORY = "data/Mousepad"
-SETTINGS_KIND = "eidolon-keyfile-v1"
-SETTINGS_POLICY = "mousepad-single-main-no-restore-v1"
+SETTINGS_KIND = _manifest.SETTINGS_KIND
+SETTINGS_POLICY = _manifest.SETTINGS_POLICY
 MAX_JSON_BYTES = 128 * 1024
 MAX_KEYFILE_BYTES = 128 * 1024
 MAX_SYSTEM_BYTES = 128 * 1024 * 1024
@@ -72,7 +77,7 @@ DEPENDENCY_ROLES = REQUIRED_ROLES | {"gio_module", "dependency"}
 DESCRIPTOR_FIELDS = frozenset({"schema", "app_id", "package", "package_version", "architecture", "upstream_version", "executable_sha256", "source_evidence_sha256", "dependencies"})
 DEPENDENCY_FIELDS = frozenset({"role", "path", "sha256", "package", "version", "architecture"})
 EVIDENCE_FIELDS = frozenset({"schema", "package", "version", "architecture", "upstream_version", "settings_backend", "executable_sha256", "makefile_sha256", "source_sha256", "source_commit"})
-MANIFEST_FIELDS = frozenset({"schema", "app_id", "package", "package_version", "architecture", "executable", "executable_sha256", "dependency_fingerprint", "settings_kind", "settings_policy", "settings_module_sha256", "settings_relative_path", "window_app_ids", "launch_policy", "state_policy"})
+MANIFEST_FIELDS = _manifest.MANIFEST_FIELDS
 REASONS = frozenset({"NONE", "APP_NOT_INSTALLED", "APP_PACKAGE_UNSUPPORTED", "APP_DEPENDENCY_CHANGED", "APP_BACKEND_UNSUPPORTED", "APP_SETTINGS_UNVERIFIED", "APP_STATE_INVALID", "APP_STATE_RECOVERY_REQUIRED", "STATE_LIMIT"})
 
 
@@ -402,16 +407,11 @@ def validate_reviewed_package(descriptor, *, system_root=Path("/")):
 
 
 def validate_manifest(value):
-    """Strict schema for a manifest produced only after the separate A0 gate."""
-    require(type(value) is dict and set(value) == MANIFEST_FIELDS and type(value["schema"]) is int and value["schema"] == 1 and
-            value["app_id"] == APP_ID and value["package"] == "mousepad" and _ascii(value["package_version"]) and
-            _ascii(value["architecture"]) and value["executable"] == EXECUTABLE and
-            all(_hash(value[k]) for k in ("executable_sha256", "dependency_fingerprint", "settings_module_sha256")) and
-            value["settings_kind"] == SETTINGS_KIND and value["settings_policy"] == SETTINGS_POLICY and
-            value["settings_relative_path"] == SETTINGS_RELATIVE_PATH and value["window_app_ids"] == [WINDOW_APP_ID] and
-            value["launch_policy"] == "mousepad-private-bus-v1" and value["state_policy"] == "persistent-keyfile-locked-v1",
-            "APP_PACKAGE_UNSUPPORTED")
-    return value
+    """Same pure schema as B1; retain the A/A0 public exception contract."""
+    try:
+        return _manifest.validate_manifest(value)
+    except ValueError as error:
+        raise InspectionError("APP_PACKAGE_UNSUPPORTED") from error
 
 
 def _private_optional_dir(parent_fd, name, uid):

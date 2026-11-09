@@ -10,6 +10,7 @@ pub mod keyboard;
 pub mod layout;
 pub mod limits;
 pub mod linux_desktop;
+pub mod linux_desktop_v3;
 pub mod pixels;
 pub mod pointer;
 pub mod resize;
