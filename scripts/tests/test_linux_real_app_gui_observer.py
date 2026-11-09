@@ -165,7 +165,7 @@ class ObserverTransport(unittest.TestCase):
                 raise AssertionError("A0 GUI observer requires actual local UNIX sockets") from error
             raise unittest.SkipTest("local UNIX sockets are prohibited; dedicated CI requires these transport tests") from error
 
-    def exchange(self, responses, checks, *, peer_check=None):
+    def exchange(self, responses, checks, *, peer_check=None, expect_request_eof=False):
         with tempfile.TemporaryDirectory(prefix="a0-gui-") as temporary:
             runtime = Path(temporary)
             server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -191,7 +191,14 @@ class ObserverTransport(unittest.TestCase):
                                     break
                                 line.extend(chunk)
                             requests.append(bytes(line))
-                            connection.sendall(response)
+                            if expect_request_eof:
+                                # Peer rejection closes before sending a request.
+                                # EOF is the oracle; do not reply to that closed peer.
+                                self.assertEqual(bytes(line), b"")
+                                self.assertEqual(response, b"")
+                            else:
+                                self.assertTrue(line.endswith(b"\n"))
+                                connection.sendall(response)
                 except (OSError, AssertionError) as error:
                     errors.append(error)
 
@@ -226,7 +233,7 @@ class ObserverTransport(unittest.TestCase):
         def checks(client):
             with self.assertRaisesRegex(observer.ObserverError, "APP_GUI_OBSERVER_WRONG_EXECUTABLE"):
                 client.snapshot()
-        self.assertEqual(self.exchange([b""], checks, peer_check=reject), [b""])
+        self.assertEqual(self.exchange([b""], checks, peer_check=reject, expect_request_eof=True), [b""])
 
     def test_duplicate_json_fields_are_rejected(self):
         data = json.dumps(snapshot()).replace('"id": 1', '"id": 1, "id": 1').encode() + b"\n"
