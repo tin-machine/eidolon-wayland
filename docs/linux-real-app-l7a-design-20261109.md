@@ -1,15 +1,17 @@
 # L7a: 別Linuxの実用アプリ一種の詳細設計
 
-状態: **詳細設計レビュー反映済み・A/A0検査基盤を実装中・A0全体は未完了・対象Linux/Questでの実用アプリ受入れ前**。2026-11-09作成・改訂。
+状態: **詳細設計レビュー反映済み・A/A0検査基盤はPR #4でmainへマージ済み・A0全体は未完了・対象Linux/Questでの実用アプリ受入れ前**。2026-11-09作成・改訂。
 基準revisionはPR #2/#3マージ後の `3bcd6cfb44dd21e8c9979a106f93434b52fa396c`。
 改訂ではmain `1a92b5c6864f38f7901419d1d93de3d004c9051d` の実装とMousepad 0.6.3の上流sourceを照合した。
 本文の実装根拠はこのrevision/tagへ固定する。新しい対策の動作確認済みという意味ではない。
 本書のv3 API/schemaは実装契約案である。追加した検査CLIとsettings moduleの範囲は
 [A/A0実装記録](linux-real-app-a0-foundation-20261109.md)を参照し、通常GUIへの組込み済みと解釈しない。
+PR #4後は[A0の次工程と引き継ぎ](linux-real-app-a0-next-steps-20261109.md)に従い、
+再起動/instance分離、GUI設定検査の順に残項目を進める。
 
 [L7aの要求](nx11-nx18-normal-gui-followup-plan-20261108.md#linux-real-app)を、
 [通常GTKデモのL5/L6](normal-linux-gui-l5-l6-20261108.md)から実装できる単位へ分解する。
-最初の実装PRでread-only事前検査、settings module/probe、復元データguard、実Waylandの検査基盤を追加する。
+PR #4でread-only事前検査、settings module/probe、復元データguard、実Waylandの検査基盤を追加した。
 対象hostへのpackage導入・配備とB〜Fは、A0全項目の成立後に進める。
 
 ## 採用案と成立条件
