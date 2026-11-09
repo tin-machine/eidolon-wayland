@@ -94,7 +94,10 @@ keyboard由来のメニューgrabはこのnative条件を満たさない。単�
 
 fixtureの固定`button`要求でprimary pressとreleaseを分け、実Edit menu上でpressを継続する。
 固定modelと対応した実submenuのmapped状態、およびcompositorのpopup layer増加を待ち、`finally`でreleaseする。
-その間にfocusを再設定して押下をresetしない。releaseを確認した後に実End keyを送り、固定Preferences項目の選択を読み取ってからEnterで開く。
+その間にfocusを再設定して押下をresetしない。releaseを確認した後に実Down keyでsubmenuへ入り、End keyで固定Preferences項目を選択する。選択を読み取ってからEnterで開く。
+[GTKの未選択submenuはkeyを親へ転送](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkmenushell.c#L952-L965)するため、
+[Downによるsubmenuへの移動](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkmenubar.c#L197-L201)を挟む。
+head `891432b`ではsubmenuの実mapped/layer増加を確認した後、EndだけではPreferences選択を証明できず`APP_GUI_PREFERENCES_NOT_SELECTED`で停止している。
 GActionのactivate、GTK setter、メニューlabelの読み取りは使用しない。
 実wire回帰検査では、downのみをclientが受信したcheckpointを挟んでupを送り、最終press/releaseとnative countを照合する。
 

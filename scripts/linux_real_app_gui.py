@@ -202,6 +202,10 @@ class Experiment:
                     and released["input"]["pressed"] == 0,
                     "APP_GUI_MENU_INPUT_RELEASE")
         self.control.settle(.08)
+        # An unselected pointer-opened submenu forwards keys to its menubar.
+        # Down first enters the submenu; End can then select its last item.
+        driver.chord(self.control, self.main, 108)  # Down
+        self.control.settle(.08)
         driver.chord(self.control, self.main, driver.END)
         self.wait(self.private_snapshot,
                   lambda value: value["main"]["edit_menu_open"] is True

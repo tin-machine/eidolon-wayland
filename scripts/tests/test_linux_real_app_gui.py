@@ -125,7 +125,8 @@ class GuiObservationRefusalTests(unittest.TestCase):
         with self.assertRaisesRegex(app.WaylandError, "APP_GUI_PREFERENCES_NOT_SELECTED"):
             experiment.open_preferences()
         self.assertEqual(experiment.control.key.call_args_list,
-                         [mock.call("1", gui.driver.END, True), mock.call("1", gui.driver.END, False)])
+                         [mock.call("1", 108, True), mock.call("1", 108, False),
+                          mock.call("1", gui.driver.END, True), mock.call("1", gui.driver.END, False)])
         experiment.control.wait_dialog.assert_not_called()
 
     def test_click_point_subtracts_shadow_origin_once_and_refuses_outside_or_unknown(self):
