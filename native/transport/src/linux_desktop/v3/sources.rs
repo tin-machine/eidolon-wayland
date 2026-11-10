@@ -239,11 +239,9 @@ mod tests {
             modified.insert(name.clone(), "0".repeat(64));
             assert!(validate_hashes(&modified).is_err());
         }
-        for name in ["unknown.py"] {
-            let mut extra = expected.clone();
-            extra.insert(name.to_owned(), "1".repeat(64));
-            assert!(validate_hashes(&extra).is_err());
-        }
+        let mut extra = expected.clone();
+        extra.insert("unknown.py".to_owned(), "1".repeat(64));
+        assert!(validate_hashes(&extra).is_err());
     }
 
     #[test]
