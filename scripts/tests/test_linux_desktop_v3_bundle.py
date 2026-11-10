@@ -39,7 +39,7 @@ def pure_bundle_manifest():
 class SourceClosureTests(unittest.TestCase):
     def test_dependency_status_is_explicit_and_not_product_pins(self):
         status = B.source_status(ROOT, RAW)
-        self.assertEqual(status["missing_sources"], sorted(B.C_SOURCES))
+        self.assertEqual(status["missing_sources"], [])
         self.assertEqual(status["integration"], {"c1_commit": None, "c2_commit": None})
         self.assertFalse(status["integration_complete"])
         self.assertTrue(all(status[k] is False for k in ("available", "production_acceptance_passed", "quest_verified")))
@@ -56,10 +56,10 @@ class SourceClosureTests(unittest.TestCase):
         with self.assertRaisesRegex(B.BundleError, "BUNDLE_INTEGRATION_INCOMPLETE"):
             B.require_integrated(SPEC)
 
-    def test_incomplete_snapshot_option_does_not_ignore_missing_sources(self):
-        for complete in (False, True):
-            with self.assertRaisesRegex(B.BundleError, "BUNDLE_INTEGRATION_INCOMPLETE"):
-                B.source_snapshot(ROOT, RAW, require_complete=complete)
+    def test_complete_sources_still_require_final_integration_pins(self):
+        self.assertEqual(set(B.source_snapshot(ROOT, RAW, require_complete=False)), B.REQUIRED_SOURCES)
+        with self.assertRaisesRegex(B.BundleError, "BUNDLE_INTEGRATION_INCOMPLETE"):
+            B.source_snapshot(ROOT, RAW, require_complete=True)
 
     def test_known_real_source_graph_includes_transitive_b1_manifest(self):
         contents = {name: (ROOT / path).read_bytes() for name, path in SPEC["sources"].items()
