@@ -63,6 +63,8 @@ MousepadのNON_UNIQUE起動とGSettings設計根拠はL7a設計の固定0.6.3 so
 B2 wireのleaseは15秒。heartbeat/commandを受けるたび更新し、期限切れ、stdin EOF、Stop、
 app rootの終了をそれぞれB1 `StopReason`へ写像する。helperに総runtime上限は置かない。
 各commandはB2のstrict decoderを通し、eventも送信前にB2 parserへ再入力する。
+protocol event/Recover receiptのstdout送信はnonblocking化し、2秒以内に進まないbackpressureを失敗として
+所有・回収へ進める。local reader停止でremote helperが無期限にlease処理を止めない。
 
 stdout/stderrはselectorで継続drainする。**累積bytesには上限を置かない**。
 各streamは1MiB/sのtoken bucketと5秒分のburst allowanceを持ち、それを超えた場合だけ
