@@ -73,6 +73,39 @@ class PureC2Tests(unittest.TestCase):
         self.assertNotIn(b"<include", raw)
         self.assertNotIn(b"<includedir", raw)
 
+    def test_dbus_printed_address_accepts_guid_and_binds_exact_path(self):
+        path = "/home/test user/.eidolon-desktop-v3/s-" + "a" * 16 + "/b"
+        escaped = core._dbus_escape_path(path)
+        self.assertIn("%20", escaped)
+        self.assertEqual(core._validate_bus_address("unix:path=" + escaped, path),
+                         "unix:path=" + escaped)
+        with_guid = "unix:path=" + escaped + ",guid=" + "a" * 32
+        self.assertEqual(core._validate_bus_address(with_guid, path), with_guid)
+        for bad in (
+            "unix:path=" + escaped + ",guid=" + "a" * 31,
+            "unix:path=/wrong,guid=" + "a" * 32,
+            "unix:path=" + escaped + ";unix:path=/other",
+        ):
+            with self.assertRaises(core.HelperError):
+                core._validate_bus_address(bad, path)
+
+    def test_output_limiter_is_rate_based_not_cumulative(self):
+        now = [0.0]
+        drain = core.Drain(clock=lambda: now[0])
+        stream = object()
+        drain.rate[stream] = (float(core.OUTPUT_BURST_BYTES), now[0])
+        drain._charge(stream, core.OUTPUT_BURST_BYTES)
+        now[0] += 4.0
+        drain._charge(stream, 4 * core.OUTPUT_RATE_BYTES_PER_SEC)
+        now[0] += 1.0
+        drain._charge(stream, core.OUTPUT_RATE_BYTES_PER_SEC)
+        # More than the former cumulative 8 MiB is accepted when spread over time.
+        self.assertGreater(core.OUTPUT_BURST_BYTES + 5 * core.OUTPUT_RATE_BYTES_PER_SEC,
+                           8 * 1024 * 1024)
+        with self.assertRaisesRegex(core.HelperError, "APP_OUTPUT_RATE_LIMIT"):
+            drain._charge(stream, 1)
+        drain.close()
+
 
 @unittest.skipUnless(
     sys.platform == "linux" and os.getuid() != 0 and hasattr(os, "pidfd_open"),
@@ -161,6 +194,33 @@ class RealC2Tests(unittest.TestCase):
         self.assertEqual(value["origin_boot_id"], ORIGIN)
         self.assertFalse(value["pipes_eof"])
         self.assertFalse(paths.session.exists())
+
+    @unittest.skipUnless(Path("/usr/bin/dbus-daemon").is_file(), "dbus-daemon is required")
+    def test_real_private_bus_prints_canonical_address_and_is_reclaimed(self):
+        owner = ProcessOwner()
+        paths, barrier, home_fd, state_fd, session_fd = self.prepare()
+        handle = profile_api.PersistentProfileRepository().acquire(
+            self.binding.context, process_owner=owner, barrier=barrier)
+        drain = core.Drain()
+        template = (ROOT / "scripts/linux/linux-desktop-v3-bus.conf.in").read_bytes()
+        fake_bundle = SimpleNamespace(files={core.BUS_TEMPLATE: template}, directory=ROOT)
+        core.render_bus_config(fake_bundle, paths, session_fd, self.uid)
+        env = core.launch_environment(handle, paths, fake_bundle)
+        bus, address = core.start_private_bus(
+            owner, handle, drain, env, paths.bus_config, paths.bus_socket)
+        self.assertIsNone(bus.poll())
+        self.assertTrue(address.startswith("unix:path="))
+        self.assertIn(",guid=", address)
+        self.assertTrue(paths.bus_socket.exists())
+        report, evidence = core.cleanup_owner(owner, drain, handle)
+        self.assertTrue(report["complete"])
+        self.assertTrue(handle.closed)
+        self.assertGreaterEqual(evidence.roots, 1)
+        returned_home, returned_state = core._remove_session(
+            paths, (home_fd, state_fd, session_fd))
+        os.close(returned_state)
+        os.close(returned_home)
+        drain.close()
 
     def test_real_child_pipe_eof_precedes_profile_release(self):
         owner = ProcessOwner()
