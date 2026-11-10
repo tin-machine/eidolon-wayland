@@ -41,8 +41,10 @@ settingsはbundle内の固定 `linux-settings-probe --check` をsynthetic config
 `EidolonKeyfileV1Backend` と保護キーを実行時に確認する。
 
 Startはpackageとrecovery guardを再検査し、実profile環境でもsettings probeを再実行した後、
-もう一度recovery guardを通す。private D-Busは固定 `dbus-daemon --nofork --nopidfile` と
-bundle内の固定templateから起動する。Mousepadのargvは `/usr/bin/mousepad --disable-server` のみで、
+もう一度recovery guardを通す。private D-Busは固定 `dbus-daemon --nofork --nopidfile --print-address=1` と
+bundle内の固定templateから起動する。`--print-address` のconnectable addressは固定socket pathへ一致させ、
+D-Bus仕様で正当な `,guid=<16-byte hex>` suffixを許可する。他path・複数addressは拒否する。
+Mousepadのargvは `/usr/bin/mousepad --disable-server` のみで、
 ファイル名、URI、追加argvをwireから受け取らない。Waypipeは既存base bundleの固定binaryを使い、
 remote forwarding socketとprivate runtime displayを接続する。
 
@@ -50,8 +52,9 @@ C1が返すHOME/XDG_CONFIG_HOME/XDG_DATA_HOME/XDG_STATE_HOMEへ、C2が
 XDG_CACHE_HOME/TMPDIR/XDG_RUNTIME_DIR、GDK/GIO/GSettings、private busを追加する。
 SSH agent、呼出元PATH、desktop/session busなどのambient environmentは子へ引き継がない。
 
-D-Busの設定構文とprivate busの寿命は upstream `dbus-daemon` の仕様に従う:
+D-Busの設定構文とprivate busの寿命は upstream `dbus-daemon` とaddress仕様に従う:
 https://dbus.freedesktop.org/doc/dbus-daemon.1.html
+https://dbus.freedesktop.org/doc/dbus-specification.html#addresses
 MousepadのNON_UNIQUE起動とGSettings設計根拠はL7a設計の固定0.6.3 source参照を維持する:
 `docs/linux-real-app-l7a-design-20261109.md`。
 
@@ -61,8 +64,10 @@ B2 wireのleaseは15秒。heartbeat/commandを受けるたび更新し、期限�
 app rootの終了をそれぞれB1 `StopReason`へ写像する。helperに総runtime上限は置かない。
 各commandはB2のstrict decoderを通し、eventも送信前にB2 parserへ再入力する。
 
-stdout/stderrはselectorで継続drainし、総量8MiBを超えた場合は
-`APP_OUTPUT_RATE_LIMIT` として回収へ移る。terminal eventを出す前にProcessOwnerの二回empty scan、
+stdout/stderrはselectorで継続drainする。**累積bytesには上限を置かない**。
+各streamは1MiB/sのtoken bucketと5秒分のburst allowanceを持ち、それを超えた場合だけ
+`APP_OUTPUT_RATE_LIMIT` として回収へ移る。これにより低速ログを出す長時間GUIが累積量だけで停止しない。
+terminal eventを出す前にProcessOwnerの二回empty scan、
 pidfd close、全tracked root exit、全pipe EOF、C1 barrier/release、ephemeral cleanup、receipt fsyncを要求する。
 
 ## Recover
