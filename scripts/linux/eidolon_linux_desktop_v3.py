@@ -18,7 +18,9 @@ from eidolon_linux_persistent_profile import JournalBarrier, ProfileIdentity, st
 STATE_DIR = ".eidolon-desktop-v3"
 LEASE_MS = W.LEASE_MS
 LEASE_SECONDS = LEASE_MS / 1000.0
-MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+OUTPUT_RATE_BYTES_PER_SEC = 1024 * 1024
+OUTPUT_BURST_SECONDS = 5.0
+OUTPUT_BURST_BYTES = int(OUTPUT_RATE_BYTES_PER_SEC * OUTPUT_BURST_SECONDS)
 MAX_STATE_ENTRIES = 128
 BUS_TEMPLATE = "linux-desktop-v3-bus.conf.in"
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
@@ -288,12 +290,34 @@ def _safe_template(bundle):
     return raw
 
 
+_DBUS_OPTIONAL = frozenset(b"-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_/.*")
+
+
+def _dbus_escape_path(path):
+    raw = os.fsencode(path)
+    require(raw and b"\x00" not in raw, "APP_STATE_INVALID", "tool_inspection")
+    return "".join(chr(byte) if byte in _DBUS_OPTIONAL else f"%{byte:02X}" for byte in raw)
+
+
+def _validate_bus_address(address, socket_path):
+    require(type(address) is str and "\n" not in address and "\r" not in address and ";" not in address,
+            "APP_STATE_INVALID", "tool_inspection")
+    expected = "unix:path=" + _dbus_escape_path(socket_path)
+    if address == expected:
+        return address
+    prefix = expected + ",guid="
+    require(address.startswith(prefix) and re.fullmatch(r"[0-9a-f]{32}", address[len(prefix):]) is not None,
+            "APP_STATE_INVALID", "tool_inspection")
+    return address
+
+
 def render_bus_config(bundle, paths, session_fd, uid):
     socket_path = str(paths.bus_socket)
-    require(len(socket_path.encode()) <= 100 and "\x00" not in socket_path,
+    require(len(os.fsencode(socket_path)) <= 100 and "\x00" not in socket_path,
             "APP_STATE_INVALID", "tool_inspection")
+    escaped = _dbus_escape_path(socket_path)
     raw = _safe_template(bundle).replace(b"@EIDOLON_BUS_SOCKET@",
-                                         xml_escape(socket_path).encode("utf-8"))
+                                         xml_escape(escaped).encode("ascii"))
     _write_new(session_fd, "bus.conf", raw, uid)
     return paths.bus_config
 
@@ -312,17 +336,37 @@ def launch_environment(profile, paths, bundle, bus_address=None):
 
 
 class Drain:
-    def __init__(self):
+    """Continuously drain output with a per-stream 1 MiB/s token bucket.
+
+    Each stream may burst up to five seconds of allowance, but total bytes are
+    intentionally unbounded so a long-lived GUI cannot fail merely because its
+    lifetime output eventually exceeds a cumulative threshold.
+    """
+    def __init__(self, clock=None):
         self.selector = selectors.DefaultSelector()
-        self.total = 0
+        self.clock = time.monotonic if clock is None else clock
         self.streams = set()
         self.eof = set()
+        self.rate = {}
 
     def add(self, child):
+        now = self.clock()
         for stream in (child.stdout, child.stderr):
             os.set_blocking(stream.fileno(), False)
             self.selector.register(stream, selectors.EVENT_READ)
             self.streams.add(stream)
+            self.rate[stream] = (float(OUTPUT_BURST_BYTES), now)
+
+    def _charge(self, stream, size):
+        require(stream in self.rate and type(size) is int and size >= 0,
+                "APP_STATE_INVALID", "pipe_eof")
+        now = self.clock()
+        tokens, last = self.rate[stream]
+        require(now >= last, "APP_STATE_INVALID", "pipe_eof")
+        tokens = min(float(OUTPUT_BURST_BYTES),
+                     tokens + (now - last) * OUTPUT_RATE_BYTES_PER_SEC)
+        require(size <= tokens, "APP_OUTPUT_RATE_LIMIT", "pipe_eof")
+        self.rate[stream] = (tokens - size, now)
 
     def pump(self, timeout=0):
         for key, _ in self.selector.select(timeout):
@@ -331,8 +375,7 @@ class Drain:
             except BlockingIOError:
                 continue
             if data:
-                self.total += len(data)
-                require(self.total <= MAX_OUTPUT_BYTES, "APP_OUTPUT_RATE_LIMIT", "pipe_eof")
+                self._charge(key.fileobj, len(data))
             else:
                 try:
                     self.selector.unregister(key.fileobj)
@@ -373,15 +416,14 @@ def _wait_line(child, drain, deadline):
     raise HelperError("APP_STATE_INVALID", "tool_inspection")
 
 
-def start_private_bus(owner, profile, drain, env, config):
+def start_private_bus(owner, profile, drain, env, config, socket_path):
     child = owner.spawn([FIXED_DBUS, "--nofork", "--nopidfile", "--print-address=1",
                          "--config-file=" + str(config)], env=env)
     profile.track_process(child)
     address = _wait_line(child, drain, time.monotonic() + 3)
     drain.add(child)
-    require(address.startswith("unix:path=") and "," not in address and "\n" not in address,
-            "APP_STATE_INVALID", "tool_inspection")
-    return child, address
+    require(child.poll() is None, "APP_STATE_INVALID", "tool_inspection")
+    return child, _validate_bus_address(address, socket_path)
 
 
 def run_settings_probe(owner, profile, drain, env, bundle, synthetic=True):
