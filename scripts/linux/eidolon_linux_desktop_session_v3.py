@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import select
 import stat
 import sys
 import time
@@ -27,6 +28,35 @@ def _event(binding, sequence, request_sequence, kind, payload):
     })
 
 
+def _write_bounded(fd, raw, timeout=2.0):
+    """Never let protocol backpressure pin the remote owner indefinitely."""
+    core.require(type(fd) is int and fd >= 0 and type(raw) in (bytes, bytearray) and
+                 0 < len(raw) <= W.MAX_FRAME_BYTES + 1 and 0 < timeout <= 2.0,
+                 "APP_STATE_INVALID", "protocol")
+    was_blocking = os.get_blocking(fd)
+    deadline = time.monotonic() + timeout
+    view = memoryview(raw)
+    try:
+        if was_blocking:
+            os.set_blocking(fd, False)
+        while view:
+            try:
+                written = os.write(fd, view)
+            except BlockingIOError:
+                written = 0
+            if written:
+                view = view[written:]
+                continue
+            remaining = deadline - time.monotonic()
+            core.require(remaining > 0, "APP_STATE_INVALID", "protocol")
+            _, writable, _ = select.select([], [fd], [], min(.1, remaining))
+            core.require(writable or time.monotonic() < deadline,
+                         "APP_STATE_INVALID", "protocol")
+    finally:
+        if was_blocking:
+            os.set_blocking(fd, True)
+
+
 class Emitter:
     def __init__(self, binding):
         self.binding = binding
@@ -42,11 +72,7 @@ class Emitter:
         self.sequence += 1
         raw = _event(self.binding, self.sequence, request_sequence, kind, payload)
         W.parse_event(raw, self.binding, self.evidence)
-        view = memoryview(raw + b"\n")
-        while view:
-            written = os.write(sys.stdout.fileno(), view)
-            core.require(written > 0, "APP_STATE_INVALID", "protocol")
-            view = view[written:]
+        _write_bounded(sys.stdout.fileno(), raw + b"\n")
 
 
 def _public(error):
@@ -303,11 +329,7 @@ def main(argv, verified_bundle=None, source_hashes=None):
         if bootstrap.operation == "recover":
             raw, status = core.recovery_receipt(
                 binding, source_hashes, bootstrap.expected_boot_id)
-            view = memoryview(raw)
-            while view:
-                written = os.write(sys.stdout.fileno(), view)
-                core.require(written > 0)
-                view = view[written:]
+            _write_bounded(sys.stdout.fileno(), raw)
             return status
         core.require(bootstrap.operation == "serve")
         return serve(bootstrap, verified_bundle, source_hashes)
