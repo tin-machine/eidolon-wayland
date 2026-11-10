@@ -254,7 +254,7 @@ def serve(bootstrap, verified_bundle, source_hashes):
                         core.require(recovery.get("clear") is True,
                                      recovery.get("reason", "APP_STATE_RECOVERY_REQUIRED"), "start")
                         bus, address = core.start_private_bus(
-                            owner, profile, drain, base_env, paths.bus_config)
+                            owner, profile, drain, base_env, paths.bus_config, paths.bus_socket)
                         env = core.launch_environment(profile, paths, verified_bundle, address)
                         app_id = selection.record()["app_id"]
                         if app_id == C.EDITOR:
