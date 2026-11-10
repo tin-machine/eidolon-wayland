@@ -29,7 +29,7 @@ GENERATED = frozenset({"app-manifest.json", "eidolon-gtk3-desktop", "gio/giomodu
                        "gio/libeidolon-settings.so", "linux-settings-probe", "package-inspection.json",
                        "reviewed-package.json", "settings-backend.json"})
 C_SOURCES = frozenset({"eidolon_linux_desktop_session_v3.py", "eidolon_linux_desktop_v3.py",
-                       "eidolon_linux_real_app.py", "linux-desktop-v3-bus.conf.in"})
+                       "eidolon_linux_persistent_profile.py", "linux-desktop-v3-bus.conf.in"})
 _IMPORT_STATE = frozenset({"path", "modules", "meta_path", "path_hooks", "path_importer_cache", "__dict__"})
 REQUIRED_SOURCES = C_SOURCES | frozenset({INVENTORY_NAME, "eidolon-linux-session.py",
     "eidolon_linux_process_owner.py", "eidolon_settings_backend.c", "gtk3-desktop-demo.c",

@@ -51,14 +51,14 @@ class SourceClosureTests(unittest.TestCase):
              mock.patch.object(subprocess, "Popen", side_effect=AssertionError("process spawned")), \
              mock.patch.object(os, "execve", side_effect=AssertionError("app executed")):
             for call in (lambda: D.build(Path("/not-read.json")), lambda: D.print_pins("a" * 64)):
-                with self.assertRaisesRegex(B.BundleError, "BUNDLE_SOURCE_MISSING"):
+                with self.assertRaisesRegex(B.BundleError, "BUNDLE_INTEGRATION_INCOMPLETE"):
                     call()
         with self.assertRaisesRegex(B.BundleError, "BUNDLE_INTEGRATION_INCOMPLETE"):
             B.require_integrated(SPEC)
 
     def test_incomplete_snapshot_option_does_not_ignore_missing_sources(self):
         for complete in (False, True):
-            with self.assertRaisesRegex(B.BundleError, "BUNDLE_SOURCE_MISSING"):
+            with self.assertRaisesRegex(B.BundleError, "BUNDLE_INTEGRATION_INCOMPLETE"):
                 B.source_snapshot(ROOT, RAW, require_complete=complete)
 
     def test_known_real_source_graph_includes_transitive_b1_manifest(self):

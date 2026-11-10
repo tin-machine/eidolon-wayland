@@ -76,28 +76,27 @@ const COMPILED: &[Source] = &[
         "linux_real_app_manifest.py",
         "scripts/linux_real_app_manifest.py"
     ),
+    source!(
+        "eidolon_linux_persistent_profile.py",
+        "scripts/linux/eidolon_linux_persistent_profile.py"
+    ),
+    source!(
+        "eidolon_linux_desktop_session_v3.py",
+        "scripts/linux/eidolon_linux_desktop_session_v3.py"
+    ),
+    source!(
+        "eidolon_linux_desktop_v3.py",
+        "scripts/linux/eidolon_linux_desktop_v3.py"
+    ),
+    source!(
+        "linux-desktop-v3-bus.conf.in",
+        "scripts/linux/linux-desktop-v3-bus.conf.in"
+    ),
 ];
 
 // This is an explicit integration debt list, NOT an allowed-missing runtime
 // source set. No source in this list can be executed by the current APK.
-const PENDING: &[(&str, &str)] = &[
-    (
-        "eidolon_linux_desktop_session_v3.py",
-        "scripts/linux/eidolon_linux_desktop_session_v3.py",
-    ),
-    (
-        "eidolon_linux_desktop_v3.py",
-        "scripts/linux/eidolon_linux_desktop_v3.py",
-    ),
-    (
-        "eidolon_linux_real_app.py",
-        "scripts/linux/eidolon_linux_real_app.py",
-    ),
-    (
-        "linux-desktop-v3-bus.conf.in",
-        "scripts/linux/linux-desktop-v3-bus.conf.in",
-    ),
-];
+const PENDING: &[(&str, &str)] = &[];
 
 pub fn inventory_bytes() -> &'static [u8] {
     INVENTORY
@@ -220,8 +219,8 @@ mod tests {
     fn inventory_and_compiled_closure_are_one_exact_set() {
         fixed_inventory().unwrap();
         validate_hashes(&current_hashes()).unwrap();
-        assert_eq!(COMPILED.len(), 11);
-        assert_eq!(PENDING.len(), 4);
+        assert_eq!(COMPILED.len(), 15);
+        assert_eq!(PENDING.len(), 0);
         assert_eq!(require_complete(), Err("APP_V3_SOURCE_INCOMPLETE"));
         assert_eq!(
             current_hashes()["linux-desktop-v3-sources.json"],
@@ -240,7 +239,7 @@ mod tests {
             modified.insert(name.clone(), "0".repeat(64));
             assert!(validate_hashes(&modified).is_err());
         }
-        for name in ["unknown.py", PENDING[0].0] {
+        for name in ["unknown.py"] {
             let mut extra = expected.clone();
             extra.insert(name.to_owned(), "1".repeat(64));
             assert!(validate_hashes(&extra).is_err());

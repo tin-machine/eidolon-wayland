@@ -1,0 +1,10 @@
+<busconfig>
+  <type>session</type>
+  <listen>unix:path=@EIDOLON_BUS_SOCKET@</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*"/>
+    <allow receive_sender="*"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
