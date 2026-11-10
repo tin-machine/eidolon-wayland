@@ -2,17 +2,13 @@
 from __future__ import annotations
 
 import json
+import ast
+import ctypes
 import os
 from pathlib import Path
-import socket
-import stat
 import subprocess
 import sys
-import tempfile
-import time
 import unittest
-from types import SimpleNamespace
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -129,142 +125,45 @@ class PureC2Tests(unittest.TestCase):
     "C2 real ownership tests require a non-root Linux account with pidfd",
 )
 class RealC2Tests(unittest.TestCase):
-    def setUp(self):
-        self.uid = os.getuid()
-        self.temp = tempfile.TemporaryDirectory(prefix=".eidolon-c2-test-", dir=Path.home())
-        self.home = Path(self.temp.name)
-        self.home.chmod(0o700)
-        self.account = SimpleNamespace(pw_uid=self.uid, pw_dir=str(self.home))
-        self.patches = [
-            mock.patch.object(core.pwd, "getpwuid", return_value=self.account),
-            mock.patch.object(profile_api.pwd, "getpwuid", return_value=self.account),
-        ]
-        for patch in self.patches:
-            patch.start()
-        self.binding = binding(self.uid)
-
-    def tearDown(self):
-        for patch in reversed(self.patches):
-            patch.stop()
-        for path in sorted(self.home.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-            try:
-                mode = path.lstat().st_mode
-                if path.is_symlink() or stat.S_ISREG(mode) or stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode):
-                    path.unlink()
-                else:
-                    path.rmdir()
-            except FileNotFoundError:
-                pass
-        self.temp.cleanup()
-
-    def prepare(self, origin=ORIGIN):
-        with mock.patch.object(core, "boot_id", return_value=origin):
-            return core.prepare_session(self.binding.context)
-
-    def test_real_ephemeral_tree_cleanup_is_bounded_and_profile_separate(self):
-        paths, barrier, home_fd, state_fd, session_fd = self.prepare()
-        (paths.cache / "nested").mkdir(mode=0o700)
-        data = paths.cache / "nested/data"
-        data.write_bytes(b"cache")
-        data.chmod(0o600)
-        os.mkfifo(paths.runtime / "fifo", 0o600)
-        sock = socket.socket(socket.AF_UNIX)
-        sock.bind(str(paths.runtime / "socket"))
-        sock.close()
-
-        returned_home, returned_state = core._remove_session(
-            paths, (home_fd, state_fd, session_fd))
-        self.assertFalse(paths.session.exists())
-        os.close(returned_state)
-        os.close(returned_home)
-
-    def test_second_os_process_refuses_stale_session(self):
-        paths, barrier, home_fd, state_fd, session_fd = self.prepare()
-        worker = ROOT / "scripts/tests/fixtures/linux_desktop_v3_c2_worker.py"
-        raw = C.canonical_json(self.binding.context.record()).decode()
+    def run_case(self, name):
+        library = ctypes.CDLL(None)
+        def subreaper():
+            status = ctypes.c_int()
+            self.assertEqual(library.prctl(37, ctypes.byref(status), 0, 0, 0), 0)
+            return status.value
+        before_subreaper = subreaper()
+        before_mask = os.umask(0o077)
+        os.umask(before_mask)
         result = subprocess.run(
-            [sys.executable, str(worker), str(self.home), raw],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=10,
+            [sys.executable, "-I", "-S", "-B", str(CASE_WORKER), name],
+            capture_output=True, text=True, timeout=30,
         )
-        self.assertEqual(result.returncode, 3, result.stderr)
-        self.assertEqual(result.stdout.strip(), "APP_STATE_RECOVERY_REQUIRED")
-        os.close(session_fd)
-        os.close(state_fd)
-        os.close(home_fd)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(subreaper(), before_subreaper)
+        after_mask = os.umask(before_mask)
+        self.assertEqual(after_mask, before_mask)
+        for reason in json.loads(result.stdout)["skipped"]:
+            self.skipTest(reason)
 
-    def test_boot_change_recover_uses_barrier_without_saved_pid(self):
-        paths, barrier, home_fd, state_fd, session_fd = self.prepare(ORIGIN)
-        barrier.before_acquire()
-        os.close(session_fd)
-        os.close(state_fd)
-        os.close(home_fd)
 
-        with mock.patch.object(core, "boot_id", return_value=CURRENT):
-            raw, status = core.recovery_receipt(self.binding, SOURCES, "-")
-        self.assertEqual(status, 0)
-        value = W.parse_receipt(raw, self.binding, SOURCES, "-", 0)
-        self.assertEqual(value["process_evidence"], "boot_changed")
-        self.assertEqual(value["origin_boot_id"], ORIGIN)
-        self.assertFalse(value["pipes_eof"])
-        self.assertFalse(paths.session.exists())
+CASE_WORKER = ROOT / "scripts/tests/fixtures/linux_desktop_v3_c2_cases.py"
+# Only discover names here. Kernel ownership and filesystem fixtures execute
+# inside the worker, so no prctl/umask/global owner escapes into this runner.
+_CASE_AST = ast.parse(CASE_WORKER.read_text())
+_CASE_CLASS = next(node for node in _CASE_AST.body
+                   if isinstance(node, ast.ClassDef) and node.name == "RealC2Cases")
 
-    @unittest.skipUnless(Path("/usr/bin/dbus-daemon").is_file(), "dbus-daemon is required")
-    def test_real_private_bus_prints_canonical_address_and_is_reclaimed(self):
-        owner = ProcessOwner()
-        paths, barrier, home_fd, state_fd, session_fd = self.prepare()
-        handle = profile_api.PersistentProfileRepository().acquire(
-            self.binding.context, process_owner=owner, barrier=barrier)
-        drain = core.Drain()
-        template = (ROOT / "scripts/linux/linux-desktop-v3-bus.conf.in").read_bytes()
-        fake_bundle = SimpleNamespace(files={core.BUS_TEMPLATE: template}, directory=ROOT)
-        core.render_bus_config(fake_bundle, paths, session_fd, self.uid)
-        env = core.launch_environment(handle, paths, fake_bundle)
-        bus, address = core.start_private_bus(
-            owner, handle, drain, env, paths.bus_config, paths.bus_socket)
-        self.assertIsNone(bus.poll())
-        self.assertTrue(address.startswith("unix:path="))
-        self.assertIn(",guid=", address)
-        self.assertTrue(paths.bus_socket.exists())
-        report, evidence = core.cleanup_owner(owner, drain, handle)
-        self.assertTrue(report["complete"])
-        self.assertTrue(handle.closed)
-        self.assertGreaterEqual(evidence.roots, 1)
-        returned_home, returned_state = core._remove_session(
-            paths, (home_fd, state_fd, session_fd))
-        os.close(returned_state)
-        os.close(returned_home)
-        drain.close()
 
-    def test_real_child_pipe_eof_precedes_profile_release(self):
-        owner = ProcessOwner()
-        paths, barrier, home_fd, state_fd, session_fd = self.prepare()
-        handle = profile_api.PersistentProfileRepository().acquire(
-            self.binding.context, process_owner=owner, barrier=barrier)
-        drain = core.Drain()
-        child = core.spawn_tracked(
-            owner,
-            handle,
-            drain,
-            [sys.executable, "-c", "import sys; print('c2'); print('e', file=sys.stderr)"],
-            {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
-        )
-        deadline = time.monotonic() + 5
-        while child.poll() is None and time.monotonic() < deadline:
-            drain.pump(.01)
+def _isolated_case(name):
+    def test(self):
+        self.run_case(name)
+    test.__name__ = name
+    return test
 
-        report, evidence = core.cleanup_owner(owner, drain, handle)
-        self.assertTrue(report["complete"])
-        self.assertTrue(handle.closed)
-        self.assertGreaterEqual(evidence.roots, 1)
-        returned_home, returned_state = core._remove_session(
-            paths, (home_fd, state_fd, session_fd))
-        os.close(returned_state)
-        os.close(returned_home)
-        drain.close()
+
+for _case in _CASE_CLASS.body:
+    if isinstance(_case, ast.FunctionDef) and _case.name.startswith("test_"):
+        setattr(RealC2Tests, _case.name, _isolated_case(_case.name))
 
 
 if __name__ == "__main__":

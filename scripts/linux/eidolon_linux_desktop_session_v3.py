@@ -108,11 +108,8 @@ def _cleanup(binding, source_hashes, origin_boot, request_sequence, emitter, own
         if profile is not None and not profile.closed:
             raise core.HelperError("APP_STATE_RECOVERY_REQUIRED", "process_ownership")
         if fds is not None:
-            home_fd, state_fd = core._remove_session(paths, fds)
-            value = core.receipt(binding, source_hashes, "-", origin_boot, core.boot_id(),
-                                 "receipt", "complete", True, True, True, True)
-            core.write_final_receipt(state_fd, binding.context.record()["nonce"], value,
-                                     binding, source_hashes, "-")
+            home_fd, state_fd = core.finish_session_cleanup(
+                paths, fds, binding, source_hashes, origin_boot)
             os.close(state_fd)
             os.close(home_fd)
             fds = None
@@ -145,11 +142,8 @@ def _before_prepared_reclaim(binding, source_hashes, origin_boot, owner, profile
         if drain is None:
             drain = core.Drain()
         core.cleanup_owner(owner, drain, profile)
-        home_fd, state_fd = core._remove_session(paths, fds)
-        value = core.receipt(binding, source_hashes, "-", origin_boot, core.boot_id(),
-                             "receipt", "complete", True, True, True, True)
-        core.write_final_receipt(state_fd, binding.context.record()["nonce"], value,
-                                 binding, source_hashes, "-")
+        home_fd, state_fd = core.finish_session_cleanup(
+            paths, fds, binding, source_hashes, origin_boot)
         os.close(state_fd)
         os.close(home_fd)
     except BaseException:

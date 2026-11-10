@@ -10,7 +10,7 @@ C1の永続profile所有をB2のv3 wire/Recoverへ接続するC2実装を記録�
 C2はremote側の一つのhelper processを所有者とする。`ProcessOwner`、C1 `ProfileHandle`、
 `~/.eidolon-desktop-v3/s-<nonce>` のephemeral sessionを同じ寿命で保持する。
 全spawn rootは `ProcessOwner.spawn()` の直後に `ProfileHandle.track_process()` へ登録する。
-解放順序は **descendant回収 → stdout/stderr EOF → C1 `release()` → ephemeral session削除 → final receipt publish** である。
+解放順序は **descendant回収 → stdout/stderr EOF → C1 `release()` → cleanup proof永続化 → ephemeral session削除 → final receipt publish → cleanup proof退役** である。
 途中のI/O失敗は成功へ変換せず、B2 native journalをpendingのままにする。
 
 C1のprofile rootは永続領域であり、C2のcleanupはそこを再帰削除しない。C2が削除できるのは
@@ -69,6 +69,8 @@ protocol event/Recover receiptのstdout送信はnonblocking化し、2秒以内�
 stdout/stderrはselectorで継続drainする。**累積bytesには上限を置かない**。
 各streamは1MiB/sのtoken bucketと5秒分のburst allowanceを持ち、それを超えた場合だけ
 `APP_OUTPUT_RATE_LIMIT` として回収へ移る。これにより低速ログを出す長時間GUIが累積量だけで停止しない。
+回収中はrate判定を行わず出力を捨てながらdrainを続ける。元の上限超過は失敗として保持し、
+同じ上限エラーが `ProcessOwner.finish()` やEOF確認への到達を妨げないようにする。
 terminal eventを出す前にProcessOwnerの二回empty scan、
 pidfd close、全tracked root exit、全pipe EOF、C1 barrier/release、ephemeral cleanup、receipt fsyncを要求する。
 
@@ -85,6 +87,33 @@ Recoverは現在のMousepad/GTK/D-Bus packageを検査せず、app/processを起
 Prepared ACK喪失でB2のexpected bootが `-` の場合も、`barrier.json` のorigin bootを使って
 boot-changeを証明できる。unknownをflock成功や同UIDという理由でcompleteへ昇格しない。
 B2側はさらにchannel close、forward退役、router drainを確認して初めてnative journalをclearする。
+
+### 再試行とクラッシュ整合性（2026-11-11修正）
+
+`~/.eidolon-desktop-v3/` のdirectory FDをServe/Recoverが排他flockし、操作の終了まで保持する。
+live ServeとRecover、複数Recoverによる削除・publishの競合を拒否する。既存receiptのnonceを
+新しいServeが再利用することも拒否する。
+
+session削除前に、同じcontext/pins/source hashesに束縛した `c-<nonce>.json` を永続化する。
+これはB2の15-field receipt形式を使う内部cleanup proofで、`status=pending`、
+`remote_cleaned=false`、`receipt_written=true` とする。live ownerの回収・C1 release完了時には
+`process_evidence=receipt` / `pipes_eof=true`、boot変更時には
+`process_evidence=boot_changed` / `pipes_eof=false` を記録する。未知ownerをこの状態へ昇格しない。
+
+cleanup proofとfinal `r-<nonce>.json` は固定一時fileへのwrite/fsync、rename、親directory fsyncで
+publishする。部分writeを正式recordとして読み込まない。失敗で残った固定一時fileは、同じnonceの
+RecoverがUID/mode/typeを検証してから作り直す。session内の `.barrier.json.tmp` もC2自身の
+固定一時fileとしてbounded cleanupの対象に含める。
+
+session削除またはfinal receipt書込みが失敗しても、cleanup proofを残す。
+次回Recoverは同bootでもこの確定済み証拠からcleanupを再開できる。final receiptが永続化できた後に
+cleanup proofを退役させる。rename後のfsync失敗やproof退役の失敗も、再読込とfsyncから再試行する。
+新しいServeは未退役のproof・staging fileがある間は拒否される。
+
+保存receipt自身の `expected_boot_id` を検証した後、originを今回のRecover requestへ照合する。
+応答ではrequestのexpected bootと現在bootを更新するが、保存した `process_evidence` と `pipes_eof` は
+維持する。特にboot変更だけで得た証拠を、再試行時にpipe EOF確認済みへ書き換えない。
+final receiptとsessionが同時に存在する矛盾は成功にせずpendingにする。
 
 ## source closureとB2 final integration
 
@@ -114,7 +143,7 @@ B2 bootstrapは `validate_bundle()` が返した `VerifiedBundle` とcompiled `s
 | app/bus異常終了 | 同ownerでbounded drain/回収。完全証拠が揃わなければpending |
 | pipe EOF未確認 | profile lockをreleaseせずpending |
 | C1 release/barrier I/O failure | pending。永続profileを削除しない |
-| ephemeral cleanup/receipt fsync failure | pending。B2 journalをclearする証拠を出さない |
+| ephemeral cleanup/receipt fsync failure | pending。永続cleanup proofから再試行し、完了までB2 journalをclearしない |
 | 同boot Recover unknown | pending。保存PIDへsignalしない |
 | boot変更 | old process deathのみ証明し、`pipes_eof=false`。B2側のboot-change規則で扱う |
 
@@ -124,6 +153,17 @@ B2 bootstrapは `validate_bundle()` が返した `VerifiedBundle` とcompiled `s
 固定bus templateを検査する。非root Linuxではさらに実filesystemを使い、bounded ephemeral cleanup、
 別OS processによるstale session拒否、Prepared ACK喪失相当のboot-change Recover、
 実`ProcessOwner` child + pipe EOF + C1 release順序を検査する。
+
+実process/kernel状態を使うcaseは `fixtures/linux_desktop_v3_c2_cases.py` の専用processで実行する。
+共有unittest runnerにsubreaper/umaskを残さないことを親側でも検査する。2026-11-11の回帰検査では、
+出力超過後の実child回収、known/unknown bootのRecover再試行、部分write、削除途中失敗、rename後の
+fsync失敗、同bootのlive-owner proof再利用、別bootへの再移行、binding不一致、live Serveとの競合を含める。
+保存したDocumentsがcleanup/Recoverで変化しないことも実filesystemで確認する。
+
+```bash
+python3 -m unittest discover -s scripts/tests -p test_linux_desktop_v3_c2.py -v
+python3 -m unittest discover -s scripts/tests -v
+```
 
 既存B1/B2/C1、v2 frozen source/golden、A0 125秒保持を変更しない。C2 PR headではhost/Androidと
 専用A0 CIも再実行し、skipを成功件数へ含めない。Quest実機・physical input・通常v3 acceptanceは

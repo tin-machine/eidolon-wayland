@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fcntl
 import os
 from pathlib import Path
 import pwd
@@ -30,6 +31,9 @@ FIXED_WAYPIPE_ARGS = ("--no-gpu", "--compress", "none", "--threads", "1")
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
 _SESSION = re.compile(r"s-[0-9a-f]{16}\Z")
 _RECEIPT = re.compile(r"r-[0-9a-f]{16}\.json\Z")
+_CLEANUP = re.compile(r"(?:c-[0-9a-f]{16}\.json|\.[cr]-[0-9a-f]{16}\.json\.tmp)\Z")
+_SESSION_CONTENTS = {"runtime", "cache", "tmp", "bus.conf", "barrier.json",
+                     ".barrier.json.tmp", "b", "p"}
 
 
 class HelperError(RuntimeError):
@@ -235,6 +239,15 @@ class RemoteSessionBarrier(JournalBarrier):
         self.phase = "release_authorized"
 
 
+def _lock_state(state_fd):
+    # Keep this FD open through publication. Serve and Recover must not race
+    # session deletion or the fixed-name atomic receipt staging files.
+    try:
+        fcntl.flock(state_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise HelperError("APP_STATE_RECOVERY_REQUIRED", "process_ownership") from None
+
+
 def prepare_session(context):
     value = context.record()
     uid = value["uid"]
@@ -244,6 +257,7 @@ def prepare_session(context):
     session_fd = None
     try:
         state_fd = _ensure_dir(home_fd, STATE_DIR, uid)
+        _lock_state(state_fd)
         count = 0
         with os.scandir(state_fd) as entries:
             for entry in entries:
@@ -252,11 +266,13 @@ def prepare_session(context):
                 info = entry.stat(follow_symlinks=False)
                 require(info.st_uid == uid and not stat.S_ISLNK(info.st_mode),
                         "APP_STATE_INVALID", "directory_cleanup")
-                if _SESSION.fullmatch(entry.name):
+                if _SESSION.fullmatch(entry.name) or _CLEANUP.fullmatch(entry.name):
                     raise HelperError("APP_STATE_RECOVERY_REQUIRED", "process_ownership")
                 require(_RECEIPT.fullmatch(entry.name) is not None and
                         stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and
                         info.st_nlink == 1, "APP_STATE_INVALID", "directory_cleanup")
+                require(entry.name != "r-" + value["nonce"] + ".json",
+                        "CAPABILITY_STALE", "protocol")
         name = "s-" + value["nonce"]
         os.mkdir(name, 0o700, dir_fd=state_fd)
         os.fsync(state_fd)
@@ -368,14 +384,15 @@ class Drain:
         require(size <= tokens, "APP_OUTPUT_RATE_LIMIT", "pipe_eof")
         self.rate[stream] = (tokens - size, now)
 
-    def pump(self, timeout=0):
+    def pump(self, timeout=0, *, enforce_rate=True):
         for key, _ in self.selector.select(timeout):
             try:
                 data = os.read(key.fd, 16384)
             except BlockingIOError:
                 continue
             if data:
-                self._charge(key.fileobj, len(data))
+                if enforce_rate:
+                    self._charge(key.fileobj, len(data))
             else:
                 try:
                     self.selector.unregister(key.fileobj)
@@ -386,6 +403,8 @@ class Drain:
 
     def close(self):
         self.selector.close()
+        for stream in self.streams:
+            stream.close()
 
 
 def spawn_tracked(owner, profile, drain, command, env, cwd=None):
@@ -464,16 +483,18 @@ def cleanup_owner(owner, drain, profile, deadline_seconds=5.0):
     deadline = time.monotonic() + deadline_seconds
     report = None
     while time.monotonic() < deadline:
-        drain.pump(.01)
+        # The original rate error remains the terminal failure. During owned
+        # cleanup, discard output so that it cannot prevent signals or EOF.
+        drain.pump(.01, enforce_rate=False)
         report = owner.finish(timeout=.12, grace=.03)
-        drain.pump(.01)
+        drain.pump(.01, enforce_rate=False)
         if report["complete"]:
-            while time.monotonic() < deadline and not drain.pump(.01):
+            while time.monotonic() < deadline and not drain.pump(.01, enforce_rate=False):
                 pass
             break
     require(report is not None and report["complete"] is True,
             "APP_STATE_RECOVERY_REQUIRED", "process_ownership")
-    require(drain.pump(0), "APP_STATE_RECOVERY_REQUIRED", "pipe_eof")
+    require(drain.pump(0, enforce_rate=False), "APP_STATE_RECOVERY_REQUIRED", "pipe_eof")
     evidence = profile.release()
     return report, evidence
 
@@ -516,10 +537,9 @@ def _remove_tree_at(parent_fd, name, uid, budget, depth=0):
 def _remove_session(paths, fds):
     home_fd, state_fd, session_fd = fds
     uid = os.getuid()
-    allowed = {"runtime", "cache", "tmp", "bus.conf", "barrier.json", "b", "p"}
     with os.scandir(session_fd) as entries:
         names = {entry.name for entry in entries}
-    require(names <= allowed, "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")
+    require(names <= _SESSION_CONTENTS, "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")
     budget = [1024, 32 * 1024 * 1024]
     for name in sorted(names):
         _remove_tree_at(session_fd, name, uid, budget)
@@ -545,8 +565,99 @@ def write_final_receipt(state_fd, nonce, value, binding, source_hashes, expected
     raw = canonical(value) + b"\n"
     W.parse_receipt(raw, binding, source_hashes, expected_boot,
                     0 if value["status"] == "complete" else 1)
-    _write_new(state_fd, "r-" + nonce + ".json", raw, os.getuid())
+    require(value["status"] == "complete" and nonce == binding.context.record()["nonce"])
+    _publish_record(state_fd, "r-" + nonce + ".json", raw, os.getuid())
     return raw
+
+
+def _discard_staging(state_fd, name, uid):
+    try:
+        info = os.stat(name, dir_fd=state_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    require(stat.S_ISREG(info.st_mode) and info.st_uid == uid and info.st_nlink == 1 and
+            stat.S_IMODE(info.st_mode) == 0o600 and info.st_size <= 65536,
+            "APP_STATE_RECOVERY_REQUIRED", "receipt_write")
+    os.unlink(name, dir_fd=state_fd)
+
+
+def _publish_record(state_fd, name, raw, uid):
+    """Caller holds the state flock; no partial record becomes authoritative."""
+    try:
+        existing = _read_at(state_fd, name, uid)
+    except FileNotFoundError:
+        existing = None
+    if existing is not None:
+        require(existing == raw, "APP_STATE_RECOVERY_REQUIRED", "receipt_write")
+    else:
+        staging = "." + name + ".tmp"
+        _discard_staging(state_fd, staging, uid)
+        _write_new(state_fd, staging, raw, uid)
+        os.rename(staging, name, src_dir_fd=state_fd, dst_dir_fd=state_fd)
+    # Also retry fsync after a previous rename succeeded but its fsync failed.
+    os.fsync(state_fd)
+    require(_read_at(state_fd, name, uid) == raw,
+            "APP_STATE_RECOVERY_REQUIRED", "receipt_write")
+
+
+def _write_cleanup_proof(state_fd, binding, source_hashes, origin, current, proof, pipes_eof):
+    value = receipt(binding, source_hashes, "-", origin, current, proof, "pending",
+                    True, pipes_eof, False, True)
+    raw = canonical(value) + b"\n"
+    W.parse_receipt(raw, binding, source_hashes, "-", 1)
+    _publish_record(state_fd, "c-" + binding.context.record()["nonce"] + ".json",
+                    raw, os.getuid())
+    return value
+
+
+def _discard_cleanup_proof(state_fd, nonce, uid):
+    # Final receipt is durable before these retry records can be retired.
+    for name in ("c-" + nonce + ".json", ".c-" + nonce + ".json.tmp",
+                 ".r-" + nonce + ".json.tmp"):
+        _discard_staging(state_fd, name, uid)
+    os.fsync(state_fd)
+
+
+def _complete_cleanup(state_fd, binding, source_hashes, saved):
+    value = dict(saved, status="complete", remote_cleaned=True)
+    nonce = binding.context.record()["nonce"]
+    write_final_receipt(state_fd, nonce, value, binding, source_hashes,
+                        value["expected_boot_id"])
+    _discard_cleanup_proof(state_fd, nonce, os.getuid())
+    return value
+
+
+def finish_session_cleanup(paths, fds, binding, source_hashes, origin):
+    """Call only after live owner/EOF proof and C1 release have completed."""
+    saved = _write_cleanup_proof(fds[1], binding, source_hashes, origin, boot_id(),
+                                 "receipt", True)
+    home_fd, state_fd = _remove_session(paths, fds)
+    _complete_cleanup(state_fd, binding, source_hashes, saved)
+    return home_fd, state_fd
+
+
+def _read_proof(state_fd, name, binding, source_hashes, expected_boot, complete):
+    raw = _read_at(state_fd, name, os.getuid())
+    candidate = C.parse_json(raw)
+    require(type(candidate) is dict and "expected_boot_id" in candidate)
+    # The persisted record may have been written for a different Recover
+    # request (known boot or Prepared ACK loss). Validate its own binding first.
+    saved = W.parse_receipt(raw, binding, source_hashes, candidate["expected_boot_id"],
+                            0 if complete else 1)
+    require(saved["process_evidence"] in {"receipt", "boot_changed"} and
+            saved["process_complete"] and saved["receipt_written"] and
+            saved["remote_cleaned"] is complete and
+            (expected_boot == "-" or saved["origin_boot_id"] == expected_boot),
+            "APP_STATE_RECOVERY_REQUIRED", "process_ownership")
+    return saved
+
+
+def _recovery_reply(saved, binding, source_hashes, expected_boot, current):
+    # Preserve actual evidence: a reboot never proves pipe EOF.
+    value = dict(saved, expected_boot_id=expected_boot, boot_id=current)
+    raw = canonical(value) + b"\n"
+    W.parse_receipt(raw, binding, source_hashes, expected_boot, 0)
+    return raw, 0
 
 
 def _remote_barrier_origin(session_fd, binding, uid):
@@ -576,10 +687,9 @@ def _recover_remove_session(state_fd, session_name, uid):
         require(stat.S_ISDIR(info.st_mode) and info.st_uid == uid and
                 stat.S_IMODE(info.st_mode) == 0o700 and _id(info) == _id(named),
                 "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")
-        allowed = {"runtime", "cache", "tmp", "bus.conf", "barrier.json", "b", "p"}
         with os.scandir(sfd) as entries:
             names = {entry.name for entry in entries}
-        require(names <= allowed, "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")
+        require(names <= _SESSION_CONTENTS, "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")
         budget = [1024, 32 * 1024 * 1024]
         for name in sorted(names):
             _remove_tree_at(sfd, name, uid, budget)
@@ -611,21 +721,39 @@ def recovery_receipt(binding, source_hashes, expected_boot):
         require(stat.S_ISDIR(info.st_mode) and info.st_uid == uid and
                 stat.S_IMODE(info.st_mode) == 0o700 and _id(info) == _id(named),
                 "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")
+        _lock_state(state_fd)
         nonce = binding.context.record()["nonce"]
-        try:
-            saved = W.parse_receipt(_read_at(state_fd, "r-" + nonce + ".json", uid),
-                                    binding, source_hashes, "-", 0)
-            origin = saved["origin_boot_id"]
-            require(origin is not None and (expected_boot == "-" or origin == expected_boot),
-                    "APP_STATE_RECOVERY_REQUIRED", "process_ownership")
-            value = receipt(binding, source_hashes, expected_boot, origin, current, "receipt",
-                            "complete", True, True, True, True)
-            raw = canonical(value) + b"\n"
-            W.parse_receipt(raw, binding, source_hashes, expected_boot, 0)
-            return raw, 0
-        except FileNotFoundError:
-            pass
         session_name = "s-" + nonce
+        try:
+            saved = _read_proof(state_fd, "r-" + nonce + ".json", binding, source_hashes,
+                                expected_boot, True)
+        except FileNotFoundError:
+            saved = None
+        if saved is not None:
+            try:
+                os.stat(session_name, dir_fd=state_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                os.fsync(state_fd)
+                _discard_cleanup_proof(state_fd, nonce, uid)
+                return _recovery_reply(saved, binding, source_hashes, expected_boot, current)
+            raise HelperError("APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")
+        try:
+            saved = _read_proof(state_fd, "c-" + nonce + ".json", binding, source_hashes,
+                                expected_boot, False)
+        except FileNotFoundError:
+            saved = None
+        if saved is not None:
+            # A published cleanup proof may outlive both its session and the
+            # helper that observed EOF. Re-sync it before deleting anything.
+            os.fsync(state_fd)
+            try:
+                os.stat(session_name, dir_fd=state_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                _recover_remove_session(state_fd, session_name, uid)
+            final = _complete_cleanup(state_fd, binding, source_hashes, saved)
+            return _recovery_reply(final, binding, source_hashes, expected_boot, current)
         origin = None
         try:
             sfd = os.open(session_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -640,13 +768,11 @@ def recovery_receipt(binding, source_hashes, expected_boot):
         require(expected_boot == "-" or origin is None or origin == expected_boot,
                 "APP_STATE_RECOVERY_REQUIRED", "process_ownership")
         if origin is not None and origin != current:
+            saved = _write_cleanup_proof(state_fd, binding, source_hashes, origin, current,
+                                         "boot_changed", False)
             _recover_remove_session(state_fd, session_name, uid)
-            value = receipt(binding, source_hashes, expected_boot, origin, current, "boot_changed",
-                            "complete", True, False, True, True)
-            raw = canonical(value) + b"\n"
-            W.parse_receipt(raw, binding, source_hashes, expected_boot, 0)
-            _write_new(state_fd, "r-" + nonce + ".json", raw, uid)
-            return raw, 0
+            final = _complete_cleanup(state_fd, binding, source_hashes, saved)
+            return _recovery_reply(final, binding, source_hashes, expected_boot, current)
         value = receipt(binding, source_hashes, expected_boot, origin, current, "unknown",
                         "pending", False, False, False, False)
         raw = canonical(value) + b"\n"
