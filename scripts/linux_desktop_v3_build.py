@@ -20,6 +20,7 @@ import tempfile
 from linux_desktop_v3_contract import Manifest, Pins, REVISION, canonical_json, hexadecimal, parse_json
 import linux_desktop_v3_bundle as bundle
 import linux_real_app_inspect as inspector
+from linux_desktop_v3_configuration import ConnectionConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY_PATH = ROOT / "scripts" / bundle.INVENTORY_NAME
@@ -213,7 +214,7 @@ def build(reviewed_package):
             "pins": selected.record(), "available": False, "production_acceptance_passed": False, "quest_verified": False}
 
 
-def print_pins(build_id):
+def verified_export(build_id):
     """Read-only static export. It never runs Mousepad, --version or a probe."""
     bundle.require(hexadecimal(build_id, 64), "BUILD_ID_INVALID")
     raw = bundle.read_regular(INVENTORY_PATH, limit=bundle.MANIFEST_LIMIT)
@@ -231,4 +232,13 @@ def print_pins(build_id):
     verified = bundle.validate_bundle(home, selected, {name: bundle.sha(data) for name, data in sources.items()}, raw)
     bundle.validate_launch_package(verified)
     bundle.require(bundle.source_snapshot(ROOT, raw) == sources, "BUILD_INPUT_CHANGED")
-    return selected.record()
+    return verified
+
+
+def print_pins(build_id):
+    return verified_export(build_id).pins.record()
+
+
+def print_config(build_id):
+    verified = verified_export(build_id)
+    return ConnectionConfig.capture(verified.pins, verified.manifest).record()

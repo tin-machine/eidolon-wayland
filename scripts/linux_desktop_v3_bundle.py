@@ -256,6 +256,8 @@ def check_source_hashes(contents, expected):
 
 def source_snapshot(root, raw, *, require_complete=True):
     spec = inventory(raw)
+    if require_complete:
+        require_integrated(spec)
     contents = {}
     for name, relative in spec["sources"].items():
         try:
@@ -264,8 +266,6 @@ def source_snapshot(root, raw, *, require_complete=True):
             raise BundleError("BUNDLE_SOURCE_MISSING") from error
     require(contents[INVENTORY_NAME] == raw, "BUNDLE_SOURCE_CHANGED")
     check_python_closure(contents)
-    if require_complete:
-        require_integrated(spec)
     return contents
 
 

@@ -107,12 +107,14 @@ else:
         W.Binding(values["context"], values["pins"])
         assert base.REVISION == "eidolon-linux-shm-v1"
         inventory = B.inventory(payload["inventory"].encode())
+        B.require_integrated(inventory)
+        inventory["integration"]["c2_commit"] = None
         try:
             B.require_integrated(inventory)
         except B.BundleError as error:
             assert str(error) == "BUNDLE_INTEGRATION_INCOMPLETE"
         else:
-            raise AssertionError("unit test unexpectedly enabled incomplete product sources")
+            raise AssertionError("incomplete integration accepted")
     elif case == "reject":
         for name in ("untrusted_site_policy", "eidolon_linux_real_app",
                      "eidolon_linux_desktop_v3_unpinned", "linux_desktop_v3_contract.unpinned"):

@@ -1,4 +1,4 @@
-"""B2 pre-integration tests. Publication bytes are not a synthetic product bundle.
+"""B2 source integration tests. Publication fixtures are not product bundles.
 
 No empty/fake C helper is used to make product build/print-pins succeed. The
 existing B1 manifest vector remains read-only; no golden value is regenerated.
@@ -40,26 +40,35 @@ class SourceClosureTests(unittest.TestCase):
     def test_dependency_status_is_explicit_and_not_product_pins(self):
         status = B.source_status(ROOT, RAW)
         self.assertEqual(status["missing_sources"], [])
-        self.assertEqual(status["integration"], {"c1_commit": None, "c2_commit": None})
-        self.assertFalse(status["integration_complete"])
+        for commit in status["integration"].values():
+            self.assertRegex(commit, r"^[0-9a-f]{40}$")
+        self.assertTrue(status["integration_complete"])
         self.assertTrue(all(status[k] is False for k in ("available", "production_acceptance_passed", "quest_verified")))
         self.assertNotIn("pins", status)
 
     def test_public_builder_and_export_refuse_before_tools_or_writes(self):
+        incomplete = copy.deepcopy(SPEC)
+        incomplete["integration"]["c2_commit"] = None
         with mock.patch.object(D, "_build_tools", side_effect=AssertionError("compiler or base helper imported")), \
              mock.patch.object(D, "account_home", side_effect=AssertionError("product filesystem touched")), \
              mock.patch.object(subprocess, "Popen", side_effect=AssertionError("process spawned")), \
-             mock.patch.object(os, "execve", side_effect=AssertionError("app executed")):
-            for call in (lambda: D.build(Path("/not-read.json")), lambda: D.print_pins("a" * 64)):
+             mock.patch.object(os, "execve", side_effect=AssertionError("app executed")), \
+             mock.patch.object(B, "read_regular", return_value=canonical_json(incomplete)):
+            for call in (lambda: D.build(Path("/not-read.json")), lambda: D.print_pins("a" * 64),
+                         lambda: D.print_config("a" * 64)):
                 with self.assertRaisesRegex(B.BundleError, "BUNDLE_INTEGRATION_INCOMPLETE"):
                     call()
         with self.assertRaisesRegex(B.BundleError, "BUNDLE_INTEGRATION_INCOMPLETE"):
-            B.require_integrated(SPEC)
+            B.require_integrated(incomplete)
 
     def test_complete_sources_still_require_final_integration_pins(self):
         self.assertEqual(set(B.source_snapshot(ROOT, RAW, require_complete=False)), B.REQUIRED_SOURCES)
-        with self.assertRaisesRegex(B.BundleError, "BUNDLE_INTEGRATION_INCOMPLETE"):
-            B.source_snapshot(ROOT, RAW, require_complete=True)
+        self.assertEqual(set(B.source_snapshot(ROOT, RAW)), B.REQUIRED_SOURCES)
+        for key in ("c1_commit", "c2_commit"):
+            incomplete = copy.deepcopy(SPEC)
+            incomplete["integration"][key] = None
+            with self.assertRaisesRegex(B.BundleError, "BUNDLE_INTEGRATION_INCOMPLETE"):
+                B.source_snapshot(ROOT, canonical_json(incomplete))
 
     def test_known_real_source_graph_includes_transitive_b1_manifest(self):
         contents = {name: (ROOT / path).read_bytes() for name, path in SPEC["sources"].items()
@@ -161,10 +170,12 @@ class BundleSchemaTests(unittest.TestCase):
 
     def test_recover_gate_cannot_succeed_with_missing_integration_or_touch_package(self):
         pins = Pins.parse(RECORDS["pins"]["raw"].encode())
+        incomplete = copy.deepcopy(SPEC)
+        incomplete["integration"]["c1_commit"] = None
         with mock.patch.object(B.inspector, "validate_reviewed_package", side_effect=AssertionError("current package inspected")), \
              mock.patch.object(subprocess, "Popen", side_effect=AssertionError("app spawned")):
             with self.assertRaisesRegex(B.BundleError, "BUNDLE_INTEGRATION_INCOMPLETE"):
-                B.validate_bundle(Path("/not-read"), pins, {}, RAW)
+                B.validate_bundle(Path("/not-read"), pins, {}, canonical_json(incomplete))
 
 
 class ImmutablePublicationTests(unittest.TestCase):

@@ -3,13 +3,16 @@ use super::*;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 #[test]
-fn incomplete_sources_cannot_publish_a_product_reservation() {
+fn integrated_sources_can_reserve_but_not_claim_cleanup_or_a_second_owner() {
     let dir = Temp::new();
+    let mut journal = Journal::reserve(&dir.0, &binding()).unwrap();
+    assert!(dir.0.join(DIRECTORY).exists());
+    assert!(pending(&dir.0).unwrap().is_some());
+    assert_eq!(journal.clear(), Err("DESKTOP_CLEANUP_PENDING"));
     assert!(matches!(
         Journal::reserve(&dir.0, &binding()),
-        Err("APP_V3_SOURCE_INCOMPLETE")
+        Err("DESKTOP_V3_JOURNAL_BUSY")
     ));
-    assert!(!dir.0.join(DIRECTORY).exists());
 }
 #[test]
 fn strict_versioned_record_rejects_duplicate_shape_and_source_replacement() {

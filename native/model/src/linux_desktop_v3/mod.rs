@@ -681,6 +681,7 @@ impl Bootstrap {
 }
 
 pub mod presentation;
+pub mod configuration;
 
 #[cfg(test)]
 mod tests;

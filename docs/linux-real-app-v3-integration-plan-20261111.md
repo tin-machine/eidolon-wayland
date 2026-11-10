@@ -1,6 +1,7 @@
 # L7a: 通常v3統合からQuest自動検証までの実装計画
 
-2026-11-11（日本時間）。状態: **詳細計画。以下の新規統合は未実装・未検証**。
+2026-11-11（日本時間）。状態: **I1の静的設定・source固定を実装。通常v3/Quest統合は進行中**。
+実装済み範囲と検証は22節へ追記する。本文の型/API案を、製品配線済みと解釈しない。
 基準main: `55bba9bd02043241e46bf8e9df5997d470f885c7`（PR #11 merge）。
 
 目的は、C1/C2のsource pinningを終えるだけでなく、通常ランチャーからMousepadを起動し、
@@ -694,7 +695,7 @@ dialog/save file oracle→Close→remote/local/SDK回収を順に判定する。
 
 一つのcommitへすべてを詰めず、各単位で実装差分・検証・未実施を残す。
 privateな環境値や詳細run artifactはwork-rootへ、設計修正と再利用できる結果は本書または関連記録へ追記する。
-本書の設計完了はA〜Fの実装完了ではない。現時点では**計画のみ**で、V01〜V12とHは未実施である。
+本書の設計完了はA〜Fの実装完了ではない。実施結果は次節以降に記録し、未記録のcaseを合格として扱わない。
 
 ### 検証コマンドの使い分け
 
@@ -724,3 +725,40 @@ scripts/quest-check-linux-real-app --serial "$EIDOLON_QUEST_SERIAL" \
 環境変数にはI0で確認した対象とprivate artifact directoryを設定し、sample IPや推測build-idを使わない。
 新規通常v3 CIは`.github/workflows/linux-real-app.yml`に追加し、既存A0 jobを置換しない。
 `.github/workflows/check.yml`のhost/Android結果と、実通常v3 jobの結果を同じheadへ束縛する。
+
+## 22. I1の静的統合の実装・検証記録
+
+2026-11-11。C1/C2の完成commitをinventoryへ固定し、15 sourceのcompiled集合と
+Pythonのimport closureを照合した。未確定commit・欠落・改変の拒否gateは維持している。
+`--print-config --build-id`、Python/Rust/Kotlinのconfiguration codec、共通25 vectorを追加した。
+既存v2設定・remote wireは変更していない。通常controller/UIへの配線はI2以降に残る。
+
+確認した結果:
+
+- Python全体869件: 862成功、7 skip（実APKを指定するpackage検査。後続のAPK検査で実施する）。
+  追加した隔離環境の拒否検査2件は別実行で成功。v3対象75件の成功も確認した。
+- Rust B1/v3 model 9件、v2/v3 transport 68件、JVM storage/configuration 47件は失敗・skipなし。
+- 設計検査31 tasks/45 checks、差分の空白検査が成功。
+- 専用Ubuntu 24.04 containerで固定Mousepad 0.6.3 packageをcompile・導入し、
+  実packageのread-only inspection、実settings module/probe/demoのcompile、immutable v3 bundle生成が成功。
+  build-id: `0a0b7f46dfecdb942d38e7b22f2aebc9823f745f8bcd45b402147caa442d441b`。
+  これは静的bundleの証拠であり、実C2/SSH経由の起動・SDK表示・Quest操作の合格ではない。
+
+試行錯誤と再現上の注意:
+
+1. 元checkoutのsourceがgroup-writableで、実bundle検証が`BUNDLE_FILE_INVALID`を返した。
+   検証を緩めず、inventoryに含む自分のsourceだけからgroup/other writeを除いた。
+2. 既存のpackage provisionerはGitHub Actions専用だった。CI環境変数を偽装せず、
+   非root・Linux・root所有のDocker markerを検査する明示`--isolated-container`を追加した。
+   hostでの暗黙実行・root実行・不正markerを拒否する。packageのinstall自体はこのCLIへ追加していない。
+3. Ubuntuの最小containerはdpkgの除外設定により`/usr/share/doc`のbuild evidenceを配備しなかった。
+   専用fixture packageのinstallに`--path-include=/usr/share/doc/mousepad/eidolon-*`を指定して再実行した。
+   通常desktopのpackageや検査条件を変更せず、実証跡を読めるようにした。
+4. inventory生成は完了を待ってからinspection/buildを実行する。生成途中の先行実行は
+   `APP_STATE_INVALID`/`BUILD_UNAVAILABLE`になったため、失敗logを残し、完了後に新runとして再検証した。
+
+実際のcontainer image digest、配備先、実行recipe、初回失敗と再試行log、package descriptor・exportは
+codex-work-rootの`eidolon-v3-integration-20261111`へ保存した。
+QuestはWi-Fi ADB・起動・AC給電を確認したが、通常Linux profile/pinsの保存先は空だった。
+今回の段階ではAPKや通常接続設定を変更していない。対象hostとして専用検証containerを準備し、
+後続の通常controller配線後に実接続・自動操作を行う。

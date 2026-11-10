@@ -40,7 +40,8 @@ internal object LinuxStorageJson {
     const val MAX_DEPTH = 32
     fun decode(bytes: ByteArray): Any? = parse(bytes)
     fun parse(bytes: ByteArray, maxBytes: Int = LinuxStorageIdentityCodec.MAX_BYTES): Any? = try {
-        require(maxBytes in 1..LinuxStorageIdentityCodec.MAX_BYTES && bytes.size in 1..maxBytes)
+        // Storage callers keep the 16 KiB default; the local configuration envelope permits 32 KiB.
+        require(maxBytes in 1..32768 && bytes.size in 1..maxBytes)
         val text = Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString()
         Reader(text).read()

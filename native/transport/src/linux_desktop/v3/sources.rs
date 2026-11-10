@@ -1,7 +1,7 @@
 //! APK source pins and the single B2/C source inventory.
 //!
 //! The hashes below attest only to compiled bytes, never to a complete product
-//! bundle. C1/C2 have not been integrated. Every execution/journal reservation
+//! bundle or GUI acceptance. Every execution/journal reservation
 //! boundary must additionally call `require_complete`; missing sources are not
 //! replaced with empty files or synthetic hashes.
 use eidolon_model::linux_desktop_v3::{MAX_RECORD_BYTES, REVISION, parse_json};
@@ -198,6 +198,10 @@ pub fn validate_hashes(hashes: &SourceHashes) -> Result<(), &'static str> {
 /// have been integrated. A remote self-report cannot satisfy this boundary.
 pub fn require_complete() -> Result<(), &'static str> {
     let inventory = fixed_inventory()?;
+    require_integration(&inventory)
+}
+
+fn require_integration(inventory: &Value) -> Result<(), &'static str> {
     if inventory["sources"].as_object().map(|v| v.len()) != Some(COMPILED.len())
         || !inventory["integration"]["c1_commit"]
             .as_str()
@@ -221,7 +225,14 @@ mod tests {
         validate_hashes(&current_hashes()).unwrap();
         assert_eq!(COMPILED.len(), 15);
         assert_eq!(PENDING.len(), 0);
-        assert_eq!(require_complete(), Err("APP_V3_SOURCE_INCOMPLETE"));
+        require_complete().unwrap();
+        for key in ["c1_commit", "c2_commit"] {
+            for value in [Value::Null, json!("invalid")] {
+                let mut changed = fixed_inventory().unwrap();
+                changed["integration"][key] = value;
+                assert_eq!(require_integration(&changed), Err("APP_V3_SOURCE_INCOMPLETE"));
+            }
+        }
         assert_eq!(
             current_hashes()["linux-desktop-v3-sources.json"],
             hash(INVENTORY)
