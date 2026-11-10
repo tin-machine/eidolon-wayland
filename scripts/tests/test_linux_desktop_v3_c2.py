@@ -106,6 +106,23 @@ class PureC2Tests(unittest.TestCase):
             drain._charge(stream, 1)
         drain.close()
 
+    def test_protocol_write_is_bounded_when_reader_stops(self):
+        import eidolon_linux_desktop_session_v3 as session
+        reader, writer = os.pipe()
+        try:
+            os.set_blocking(writer, False)
+            block = b"x" * 4096
+            while True:
+                try:
+                    os.write(writer, block)
+                except BlockingIOError:
+                    break
+            with self.assertRaisesRegex(core.HelperError, "APP_STATE_INVALID"):
+                session._write_bounded(writer, b"{}\n", timeout=.01)
+        finally:
+            os.close(writer)
+            os.close(reader)
+
 
 @unittest.skipUnless(
     sys.platform == "linux" and os.getuid() != 0 and hasattr(os, "pidfd_open"),
