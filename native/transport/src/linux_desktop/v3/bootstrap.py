@@ -207,6 +207,6 @@ importlib.util.spec_from_file_location = fixed_spec
 import linux_desktop_v3_contract as contract
 import linux_desktop_v3_bundle as validator
 captured = contract.Pins.parse(contract.canonical_json(pins))
-validator.validate_bundle(home, captured, source_hashes, inventory_raw.encode("utf-8"))
+verified_bundle = validator.validate_bundle(home, captured, source_hashes, inventory_raw.encode("utf-8"))
 import eidolon_linux_desktop_session_v3 as helper
-raise SystemExit(helper.main(argv))
+raise SystemExit(helper.main(argv, verified_bundle=verified_bundle, source_hashes=source_hashes))

@@ -10,7 +10,7 @@
     "eidolon_linux_desktop_session_v3.py": "scripts/linux/eidolon_linux_desktop_session_v3.py",
     "eidolon_linux_desktop_v3.py": "scripts/linux/eidolon_linux_desktop_v3.py",
     "eidolon_linux_process_owner.py": "scripts/linux/eidolon_linux_process_owner.py",
-    "eidolon_linux_real_app.py": "scripts/linux/eidolon_linux_real_app.py",
+    "eidolon_linux_persistent_profile.py": "scripts/linux/eidolon_linux_persistent_profile.py",
     "eidolon_settings_backend.c": "scripts/linux/eidolon_settings_backend.c",
     "gtk3-desktop-demo.c": "scripts/fixtures/gtk3-desktop-demo.c",
     "linux-desktop-v3-bus.conf.in": "scripts/linux/linux-desktop-v3-bus.conf.in",

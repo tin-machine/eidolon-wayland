@@ -1,8 +1,8 @@
 """Execute the actual snapshot loader with existing reviewed B1/B2 sources.
 
 This extracts the loader AST from the product bootstrap; it does not copy/fork
-its implementation, invent a C2 helper, run main(), publish pins, or lift the
-complete-source gate. Whole bootstrap/real helper acceptance remains pending.
+its implementation, run main(), publish pins, or lift the final integration
+commit gate. Whole bootstrap/real helper acceptance remains pending.
 """
 import hashlib
 import json
@@ -42,8 +42,9 @@ assert len(require) == 1
 selected = ast.Module(body=prefix + require + section, type_ignores=[])
 snapshot = {name: bytes.fromhex(data) for name, data in payload["snapshot"].items()}
 assert all(hashlib.sha256(data).hexdigest() == payload["source_hashes"][name] for name, data in snapshot.items())
-assert "eidolon_linux_desktop_session_v3.py" not in snapshot
-assert "eidolon_linux_desktop_v3.py" not in snapshot
+for required in ("eidolon_linux_desktop_session_v3.py", "eidolon_linux_desktop_v3.py",
+                 "eidolon_linux_persistent_profile.py"):
+    assert required in snapshot
 assert "eidolon_linux_real_app.py" not in snapshot
 bundle = pathlib.Path(payload["virtual_bundle"])
 assert not bundle.exists()
@@ -76,10 +77,16 @@ else:
     I = importlib.import_module("linux_real_app_inspect")
     base = importlib.import_module("eidolon_linux_session")
     owner = importlib.import_module("eidolon_linux_process_owner")
+    profile = importlib.import_module("eidolon_linux_persistent_profile")
+    core = importlib.import_module("eidolon_linux_desktop_v3")
+    helper = importlib.import_module("eidolon_linux_desktop_session_v3")
     for module, name in ((C, "linux_desktop_v3_contract.py"), (M, "linux_real_app_manifest.py"),
                          (B, "linux_desktop_v3_bundle.py"), (W, "linux_desktop_v3_wire.py"),
                          (I, "linux_real_app_inspect.py"), (base, "eidolon-linux-session.py"),
-                         (owner, "eidolon_linux_process_owner.py")):
+                         (owner, "eidolon_linux_process_owner.py"),
+                         (profile, "eidolon_linux_persistent_profile.py"),
+                         (core, "eidolon_linux_desktop_v3.py"),
+                         (helper, "eidolon_linux_desktop_session_v3.py")):
         assert module.__spec__.loader is loader
         assert module.__file__ == str(bundle / name)
     assert I._manifest.__spec__.loader is loader
@@ -107,8 +114,8 @@ else:
         else:
             raise AssertionError("unit test unexpectedly enabled incomplete product sources")
     elif case == "reject":
-        for name in ("untrusted_site_policy", "eidolon_linux_desktop_session_v3", "eidolon_linux_real_app",
-                     "linux_desktop_v3_contract.unpinned"):
+        for name in ("untrusted_site_policy", "eidolon_linux_real_app",
+                     "eidolon_linux_desktop_v3_unpinned", "linux_desktop_v3_contract.unpinned"):
             try:
                 importlib.import_module(name)
             except (ImportError, ModuleNotFoundError):
@@ -146,7 +153,9 @@ class BootstrapSnapshotLoaderTests(unittest.TestCase):
         spec = json.loads(inventory_raw)
         snapshot = {name: (ROOT / path).read_bytes() for name, path in spec["sources"].items()
                     if name.endswith(".py") and name not in missing and (ROOT / path).is_file()}
-        self.assertNotIn("eidolon_linux_desktop_session_v3.py", snapshot)
+        for required in ("eidolon_linux_desktop_session_v3.py", "eidolon_linux_desktop_v3.py",
+                         "eidolon_linux_persistent_profile.py"):
+            self.assertIn(required, snapshot)
         with tempfile.TemporaryDirectory() as temporary:
             payload = {"bootstrap": BOOTSTRAP.read_text(), "snapshot": {name: data.hex() for name, data in snapshot.items()},
                        "source_hashes": {name: hashlib.sha256(data).hexdigest() for name, data in snapshot.items()},
