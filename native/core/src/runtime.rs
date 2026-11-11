@@ -1040,6 +1040,11 @@ impl Runtime {
                                     }
                                 }
 
+                                // PR-01 defines the typed v3 wire only. The dedicated I2
+                                // controller must be installed before accepting requests.
+                                Command::LinuxDesktopV3Inspect { .. }
+                                | Command::LinuxDesktopV3Launch { .. }
+                                | Command::LinuxDesktopV3Recover { .. } => Status::NotReady,
                                 Command::LinuxDesktopInspect { session, request_id, .. } => {
                                     if native_busy || helper.is_some() || dependencies.is_some() || compositor.is_some() { Status::Busy }
                                     else { io.inspect_linux_desktop(*session, *request_id) }
