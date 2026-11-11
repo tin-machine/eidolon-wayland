@@ -74,6 +74,9 @@ pub struct Snapshot {
     pub app_forward: Option<forward_app::Report>,
     pub desktop: Option<linux_desktop::Report>,
     pub desktop_recovery: Option<linux_desktop::RecoveryReport>,
+    /// I2–I5 typed v3 evidence; absent until a real v3 controller emits it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desktop_v3: Option<eidolon_model::linux_desktop_v3::report::V3Report>,
     /// Dedicated normal Linux owner; independent from Termux pending_cleanup.
     pub desktop_pending: bool,
     #[cfg(any(test, feature = "debug-fixtures"))]
