@@ -24,6 +24,10 @@ pub struct RuntimeConfig {
     pub linux_profile_v2: Option<String>,
     #[serde(default)]
     pub linux_desktop_pins: Option<String>,
+    /// Strict v3 runtime envelope: B1 ConnectionConfig + E1 StorageRecord.
+    /// Selection is local; a malformed v3 value must never fall back to v2.
+    #[serde(default)]
+    pub linux_desktop_v3: Option<String>,
     /// Debug専用保存profile。nested JSONも重複keyを失わずProfile::parseへ渡す。
     #[serde(default)]
     pub debug_probe_profile_v2: Option<String>,
@@ -43,6 +47,7 @@ impl Default for RuntimeConfig {
             profiles: Vec::new(),
             linux_profile_v2: None,
             linux_desktop_pins: None,
+            linux_desktop_v3: None,
             debug_probe_profile_v2: None,
             debug_linux_shm_pins: None,
             debug_linux_gtk_pins: None,
@@ -102,7 +107,10 @@ impl RuntimeConfig {
         {
             return Err(Status::InvalidArgument);
         }
-        if self.linux_profile_v2.is_some() != self.linux_desktop_pins.is_some()
+        let selected_v2 = self.linux_desktop_pins.is_some();
+        let selected_v3 = self.linux_desktop_v3.is_some();
+        if (selected_v2 && selected_v3)
+            || self.linux_profile_v2.is_some() != (selected_v2 || selected_v3)
             || self
                 .linux_desktop_pins
                 .as_ref()
@@ -122,6 +130,15 @@ impl RuntimeConfig {
                 || profile.backend() != crate::connection_profile::Backend::LinuxSsh
             {
                 return Err(Status::InvalidArgument);
+            }
+            if let Some(raw) = &self.linux_desktop_v3 {
+                let binding = crate::linux_desktop_v3::configuration::RuntimeBinding::parse(
+                    raw.as_bytes(),
+                )
+                .map_err(|_| Status::InvalidArgument)?;
+                binding
+                    .matches_profile(&profile)
+                    .map_err(|_| Status::InvalidArgument)?;
             }
         }
         if [
@@ -432,6 +449,22 @@ pub enum Command {
         request_id: CommandSeq,
         session: crate::ids::SessionId,
     },
+    LinuxDesktopV3Inspect {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+    },
+    LinuxDesktopV3Launch {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        selection: crate::linux_desktop_v3::Selection,
+    },
+    LinuxDesktopV3Recover {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+    },
     LaunchTerminal {
         schema: u32,
         request_id: CommandSeq,
@@ -703,6 +736,9 @@ impl Command {
             | Self::LinuxDesktopInspect { schema, .. }
             | Self::LinuxDesktopLaunch { schema, .. }
             | Self::LinuxDesktopRecover { schema, .. }
+            | Self::LinuxDesktopV3Inspect { schema, .. }
+            | Self::LinuxDesktopV3Launch { schema, .. }
+            | Self::LinuxDesktopV3Recover { schema, .. }
             | Self::LaunchTerminal { schema, .. }
             | Self::ShowWindow { schema, .. }
             | Self::CloseWindow { schema, .. }
@@ -816,6 +852,9 @@ impl Command {
             Self::LinuxDesktopLaunch { selection, .. } if !selection.valid() => {
                 return Err(Status::InvalidArgument);
             }
+            // The B1 Selection decoder already rejects unknown IDs, malformed
+            // hashes, unknown fields, and positional arrays. A live context
+            // check happens on I2's inspected catalog, not in the wire parser.
             Self::LaunchTerminal { target, .. } if !target.valid() => {
                 return Err(Status::InvalidArgument);
             }
@@ -887,6 +926,9 @@ impl Command {
             | Self::LinuxDesktopInspect { request_id, .. }
             | Self::LinuxDesktopLaunch { request_id, .. }
             | Self::LinuxDesktopRecover { request_id, .. }
+            | Self::LinuxDesktopV3Inspect { request_id, .. }
+            | Self::LinuxDesktopV3Launch { request_id, .. }
+            | Self::LinuxDesktopV3Recover { request_id, .. }
             | Self::LaunchTerminal { request_id, .. }
             | Self::ShowWindow { request_id, .. }
             | Self::CloseWindow { request_id, .. }
