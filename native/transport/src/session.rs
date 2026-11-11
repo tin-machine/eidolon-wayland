@@ -1451,7 +1451,7 @@ async fn connection(
                         &connect.router,
                         linux_desktop::Inspection {
                             binding: &captured,
-                            files: files,
+                            files,
                         },
                         requests,
                         &connect.cancel,
@@ -1514,11 +1514,11 @@ async fn connection(
                         &client,
                         &connect.router,
                         linux_desktop::Recovery {
-                            profile: profile,
+                            profile,
                             session: connect.session,
                             uid,
-                            files: files,
-                            pins: pins,
+                            files,
+                            pins,
                             // A pending helper always ended connection() above.
                             // owner() dropped that runtime before accepting this
                             // new Connect, and no helper is active on this one.
