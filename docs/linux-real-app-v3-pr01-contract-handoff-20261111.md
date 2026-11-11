@@ -81,11 +81,10 @@ New Rust regression tests cover v2/v3 runtime mutual exclusion; matching and sta
 
 Run after checkout:
 ```sh
-cd native
+# Execute from the repository root (the Cargo workspace root).
 cargo fmt --all --check
 cargo test --locked
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cd ..
 python3 scripts/check-design
 scripts/check-host --suite all
 git diff --check
