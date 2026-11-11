@@ -680,8 +680,8 @@ impl Bootstrap {
     }
 }
 
-pub mod presentation;
 pub mod configuration;
+pub mod presentation;
 
 #[cfg(test)]
 mod tests;

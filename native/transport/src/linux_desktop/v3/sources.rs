@@ -230,7 +230,10 @@ mod tests {
             for value in [Value::Null, json!("invalid")] {
                 let mut changed = fixed_inventory().unwrap();
                 changed["integration"][key] = value;
-                assert_eq!(require_integration(&changed), Err("APP_V3_SOURCE_INCOMPLETE"));
+                assert_eq!(
+                    require_integration(&changed),
+                    Err("APP_V3_SOURCE_INCOMPLETE")
+                );
             }
         }
         assert_eq!(
