@@ -1,0 +1,146 @@
+{
+  "schema":1,
+  "kind":"curved-workspace-design-lifecycle",
+  "note":"Pure-model expectations. No SDK/process/disk success is asserted by these synthetic observations. Each trace starts from a fresh world.",
+  "base":{
+    "operation":"100","next_geometry_revision":"1","input_epoch_before":7,
+    "targets":{
+      "C":{"session":"2","window":"10","scene":"3","generation":"4"},
+      "R":{"session":"2","window":"11","scene":"3","generation":"5"},
+      "L":{"session":"2","window":"12","scene":"3","generation":"6"}
+    },
+    "scope_valid":true,"geometry_unchanged":true,"visible":true,
+    "native_neutral":true,"persistent_unique_placements":true,
+    "deadlines_ms":{"quiesce":2000,"apply":5000,"rearm":2000,"restore_total":5000}
+  },
+  "event_semantics":{
+    "begin":"Valid capture and proposal, operation 100. Revision becomes 1 and input epoch 8.",
+    "all":"Expand to C,R,L full TargetKeys in one observation tick; not a product ACK API.",
+    "quiesced":"Adapter-neutral observation for the stated revision and targets.",
+    "applied":"Exact desired pose/size and sufficient same-target frame for the stated revision and targets.",
+    "input_ready":"New listener preparation for exact revision and input_epoch. Native gate remains closed until every member is ready.",
+    "sdk_failure":"Actual failure observation in this synthetic model; first_failure latches.",
+    "tick":"Advance only the monotonic clock with unchanged world.",
+    "retired":"All native targets and SDK binding resources for the given captured targets have independently completed retirement in the model input.",
+    "save_result":"Completion of a previously emitted SaveIntent for operation 100, not an actual filesystem test.",
+    "cancel":"Explicit cancel for operation 100 and supplied expected_revision. Completed operations return STALE.",
+    "geometry_changed":"Change captured physical/canvas geometry; ordinary content-only frame increments are a separate event.",
+    "content_advanced":"Increase content frame without changing physical/logical/canvas geometry. Capture stays valid.",
+    "shutdown":"Admission gate must allow the normal shutdown command even when layout is blocked. Does not fabricate cleanup."
+  },
+  "traces":[
+    {
+      "id":"S01-normal",
+      "events":[
+        {"at_ms":0,"event":"begin","expect":{"phase":"quiescing","revision":"1","input_epoch":8,"input_allowed":false,"base_commits":0,"save_intents":0}},
+        {"at_ms":100,"event":"quiesced","revision":"1","targets":"all","expect":{"phase":"applying","base_commits":0}},
+        {"at_ms":200,"event":"applied","revision":"1","targets":"all","expect":{"phase":"rearming","input_allowed":false,"base_commits":0}},
+        {"at_ms":300,"event":"input_ready","revision":"1","input_epoch":8,"targets":"all","expect":{"phase":"idle","last_outcome":"applied","base_commits":1,"save_intents":1,"focus":null,"undo_available":true}},
+        {"at_ms":400,"event":"save_result","status":"saved","expect":{"phase":"idle","last_outcome":"applied","persistence":"saved"}}
+      ]
+    },
+    {
+      "id":"S02-partial-ack",
+      "events":[
+        {"at_ms":0,"event":"begin"},
+        {"at_ms":100,"event":"quiesced","revision":"1","targets":"all"},
+        {"at_ms":200,"event":"applied","revision":"1","targets":["C","R"],"expect":{"phase":"applying","input_allowed":false,"base_commits":0,"save_intents":0}},
+        {"at_ms":300,"event":"applied","revision":"1","targets":["L"],"expect":{"phase":"rearming","input_allowed":false,"base_commits":0}}
+      ]
+    },
+    {
+      "id":"S03-deadline-wins-over-last-ack",
+      "events":[
+        {"at_ms":0,"event":"begin"},
+        {"at_ms":100,"event":"quiesced","revision":"1","targets":"all"},
+        {"at_ms":5100,"event":"applied","revision":"1","targets":"all","expect":{"phase":"restoring","revision":"2","input_epoch":9,"first_failure":"CW_APPLY_TIMEOUT","input_allowed":false,"base_commits":0,"save_intents":0}}
+      ]
+    },
+    {
+      "id":"S04-old-round-rejected",
+      "events":[
+        {"at_ms":0,"event":"begin"},
+        {"at_ms":100,"event":"quiesced","revision":"1","targets":"all"},
+        {"at_ms":200,"event":"applied","revision":"99","targets":"all","expect":{"phase":"applying","command_status":"STALE","base_commits":0}},
+        {"at_ms":300,"event":"applied","revision":"1","targets":"all","override_target":{"alias":"C","generation":"3"},"expect":{"phase":"applying","command_status":"STALE","base_commits":0}}
+      ]
+    },
+    {
+      "id":"S05-sdk-failure-restores",
+      "events":[
+        {"at_ms":0,"event":"begin"},
+        {"at_ms":100,"event":"quiesced","revision":"1","targets":"all"},
+        {"at_ms":200,"event":"sdk_failure","reason":"CW_SDK_PROBE_FAILED","expect":{"phase":"restoring","revision":"2","first_failure":"CW_SDK_PROBE_FAILED"}},
+        {"at_ms":300,"event":"quiesced","revision":"2","targets":"all","expect":{"phase":"restoring"}},
+        {"at_ms":400,"event":"applied","revision":"2","targets":"all","expect":{"phase":"restoring","input_allowed":false}},
+        {"at_ms":500,"event":"input_ready","revision":"2","input_epoch":9,"targets":"all","expect":{"phase":"idle","last_outcome":"restored","first_failure":"CW_SDK_PROBE_FAILED","base_commits":0,"save_intents":0,"undo_available":false}}
+      ]
+    },
+    {
+      "id":"S06-restore-timeout-does-not-block-stop",
+      "events":[
+        {"at_ms":0,"event":"begin"},
+        {"at_ms":100,"event":"quiesced","revision":"1","targets":"all"},
+        {"at_ms":200,"event":"sdk_failure","reason":"CW_SDK_PROBE_FAILED"},
+        {"at_ms":5200,"event":"tick","expect":{"phase":"blocked","first_failure":"CW_SDK_PROBE_FAILED","cleanup_failure":"CW_RESTORE_TIMEOUT","input_allowed":false,"base_commits":0}},
+        {"at_ms":5300,"event":"shutdown","expect":{"shutdown_allowed":true,"phase":"blocked","save_intents":0}},
+        {"at_ms":5400,"event":"retired","targets":"all","expect":{"phase":"idle","active_capture":false,"retained_targets":0,"last_outcome":"blocked"}}
+      ]
+    },
+    {
+      "id":"S07-quiesce-timeout-before-motion",
+      "events":[
+        {"at_ms":0,"event":"begin"},
+        {"at_ms":2000,"event":"tick","expect":{"phase":"restoring","first_failure":"CW_QUIESCE_TIMEOUT","base_commits":0,"save_intents":0}}
+      ]
+    },
+    {
+      "id":"S08-rearm-timeout-no-commit",
+      "events":[
+        {"at_ms":0,"event":"begin"},
+        {"at_ms":100,"event":"quiesced","revision":"1","targets":"all"},
+        {"at_ms":200,"event":"applied","revision":"1","targets":"all"},
+        {"at_ms":2200,"event":"input_ready","revision":"1","input_epoch":8,"targets":"all","expect":{"phase":"restoring","first_failure":"CW_REARM_TIMEOUT","base_commits":0,"save_intents":0}}
+      ]
+    },
+    {
+      "id":"S09-content-vs-geometry",
+      "events":[
+        {"at_ms":0,"event":"begin"},
+        {"at_ms":100,"event":"quiesced","revision":"1","targets":"all"},
+        {"at_ms":200,"event":"content_advanced","expect":{"phase":"applying","first_failure":null}},
+        {"at_ms":300,"event":"geometry_changed","expect":{"phase":"restoring","first_failure":"CW_GEOMETRY_CHANGED","base_commits":0}}
+      ]
+    },
+    {
+      "id":"S10-explicit-cancel",
+      "events":[
+        {"at_ms":0,"event":"begin"},
+        {"at_ms":10,"event":"cancel","expected_revision":"1","expect":{"phase":"restoring","revision":"2","first_failure":"CW_CANCELLED"}},
+        {"at_ms":20,"event":"quiesced","revision":"2","targets":"all"},
+        {"at_ms":30,"event":"applied","revision":"2","targets":"all"},
+        {"at_ms":40,"event":"input_ready","revision":"2","input_epoch":9,"targets":"all","expect":{"phase":"idle","last_outcome":"cancelled","base_commits":0,"save_intents":0}}
+      ]
+    },
+    {
+      "id":"S11-late-cancel",
+      "events":[
+        {"at_ms":0,"event":"begin"},
+        {"at_ms":100,"event":"quiesced","revision":"1","targets":"all"},
+        {"at_ms":200,"event":"applied","revision":"1","targets":"all"},
+        {"at_ms":300,"event":"input_ready","revision":"1","input_epoch":8,"targets":"all"},
+        {"at_ms":400,"event":"cancel","expected_revision":"1","expect":{"phase":"idle","command_status":"STALE","last_outcome":"applied","base_commits":1}}
+      ]
+    },
+    {
+      "id":"S12-save-failure-not-layout-failure",
+      "events":[
+        {"at_ms":0,"event":"begin"},
+        {"at_ms":100,"event":"quiesced","revision":"1","targets":"all"},
+        {"at_ms":200,"event":"applied","revision":"1","targets":"all"},
+        {"at_ms":300,"event":"input_ready","revision":"1","input_epoch":8,"targets":"all"},
+        {"at_ms":400,"event":"save_result","status":"failed","expect":{"phase":"idle","last_outcome":"applied","persistence":"failed","base_commits":1,"undo_available":true}}
+      ]
+    }
+  ]
+}

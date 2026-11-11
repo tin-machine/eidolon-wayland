@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "kind": "curved-workspace-design-geometry",
+  "provenance": "Independent mathematical design values; not SDK measurements or executed product tests.",
+  "tolerance": {"f64_abs": 1e-9, "f32_component_abs": 2e-6},
+  "radial_three": [
+    {
+      "id": "G01-symmetric",
+      "center_pose": {"position_m": [0,1.5,1.5], "rotation_xyzw": [0,0,0,1]},
+      "distance_m": 1.5, "gap_deg": 3,
+      "envelopes": {"center": [-0.6,0.6,-0.45,0.45], "right": [-0.6,0.6,-0.45,0.45], "left": [-0.6,0.6,-0.45,0.45]},
+      "expected": {
+        "eye_m": [0,1.5,0],
+        "center": {"theta_rad": 0, "position_m": [0,1.5,1.5], "rotation_xyzw": [0,0,0,1]},
+        "right": {"theta_rad": 0.8133726317845595, "position_m": [1.089912712561722,1.5,1.0305776433614056], "rotation_xyzw": [0,0.3955680963873748,0,0.9184366505755683]},
+        "left": {"theta_rad": -0.8133726317845595, "position_m": [-1.089912712561722,1.5,1.0305776433614056], "rotation_xyzw": [0,-0.3955680963873748,0,0.9184366505755683]},
+        "total_span_deg": 136.80845691811086
+      }
+    },
+    {
+      "id": "G02-yaw90",
+      "center_pose": {"position_m": [2,1.5,0], "rotation_xyzw": [0,0.7071067811865475,0,0.7071067811865476]},
+      "distance_m": 1.5, "gap_deg": 3,
+      "envelopes": {"center": [-0.6,0.6,-0.45,0.45], "right": [-0.6,0.6,-0.45,0.45], "left": [-0.6,0.6,-0.45,0.45]},
+      "expected": {
+        "eye_m": [0.5,1.5,0],
+        "right": {"position_m": [1.5305776433614056,1.5,-1.089912712561722], "rotation_xyzw": [0,0.9291416670888105,0,0.3697239003356775]},
+        "left": {"position_m": [1.5305776433614056,1.5,1.089912712561722], "rotation_xyzw": [0,0.3697239003356774,0,0.9291416670888105]}
+      }
+    },
+    {
+      "id": "G03-asymmetric",
+      "center_pose": {"position_m": [0,1.5,1.5], "rotation_xyzw": [0,0,0,1]},
+      "distance_m": 1.5, "gap_deg": 3,
+      "envelopes": {"center": [-0.6,0.8,-0.45,0.45], "right": [-0.4,0.9,-0.45,0.45], "left": [-0.7,0.5,-0.45,0.45]},
+      "expected": {"left_theta_rad": -0.7546168090688369, "right_theta_rad": 0.8029195955608991, "gap_deg": 3}
+    }
+  ],
+  "rejections": [
+    {"id":"G04-near-too-wide","base":"G01-symmetric","replace":{"distance_m":1.0},"reason":"CW_NO_FIT"},
+    {"id":"G05-distance-range","base":"G01-symmetric","replace":{"distance_m":0.9},"reason":"CW_INVALID_ARGUMENT"},
+    {"id":"G06-gap-range","base":"G01-symmetric","replace":{"gap_deg":9.0},"reason":"CW_INVALID_ARGUMENT"},
+    {"id":"G07-world-bounds","base":"G01-symmetric","replace":{"center_pose.position_m":[9.9,1.5,1.5]},"reason":"CW_NO_FIT"},
+    {"id":"G08-tilted-reference","base":"G01-symmetric","replace":{"center_pose.rotation_xyzw":[0.17364817766693033,0,0,0.984807753012208]},"reason":"CW_REFERENCE_TILTED"}
+  ],
+  "cylinder_points": {
+    "arc_m":1.2,"height_m":0.9,"radius_m":1.5,
+    "samples":[
+      {"uv":[0.5,0.5],"point_m":[0,0,0]},
+      {"uv":[0.25,0.25],"point_m":[-0.29800399619259177,0.225,-0.02990013323813756]},
+      {"uv":[0.75,0.75],"point_m":[0.29800399619259177,-0.225,-0.02990013323813756]},
+      {"uv":[0,0],"point_m":[-0.5841275134629758,0.45,-0.11840850899567235]}
+    ]
+  },
+  "canvas_alignment": {
+    "body_center_in_unfolded_canvas_m":[-0.15,0.1],"radius_m":1.5,
+    "expected_canvas_in_body": {
+      "position_m":[0.1497501249702422,-0.1,-0.007493752082961429],
+      "rotation_xyzw":[0,0.049979169270678324,0,0.9987502603949663]
+    }
+  },
+  "viewport": {
+    "logical_px":[1024,768],"target_px":[1280,1280],
+    "samples":[
+      {"uv":[0.5,0.5],"logical":[512,384]},
+      {"uv":[0.25,0.25],"logical":[256,128]},
+      {"uv":[0.5,0.125],"logical":[512,0]},
+      {"uv":[0.5,0.124],"logical":null},
+      {"uv":[1,0.5],"logical":null}
+    ]
+  }
+}

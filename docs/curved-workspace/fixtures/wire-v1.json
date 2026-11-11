@@ -1,0 +1,33 @@
+{
+  "schema":1,
+  "kind":"curved-workspace-design-wire",
+  "note":"Parse expectations only. Runtime admission requires current target and resource evidence. Mutations operate on raw UTF-8 text before parsing.",
+  "valid":[
+    {
+      "id":"W01-start",
+      "raw":"{\"schema\":1,\"type\":\"workspace_layout\",\"request_id\":\"100\",\"expected_revision\":null,\"controls_revision\":0,\"preset\":\"radial_three\",\"reference\":\"center\",\"distance_m\":1.5,\"gap_deg\":3.0,\"members\":[{\"role\":\"center\",\"target\":{\"session\":\"2\",\"window\":\"10\",\"scene\":\"3\",\"generation\":\"4\"}},{\"role\":\"right\",\"target\":{\"session\":\"2\",\"window\":\"11\",\"scene\":\"3\",\"generation\":\"5\"}},{\"role\":\"left\",\"target\":{\"session\":\"2\",\"window\":\"12\",\"scene\":\"3\",\"generation\":\"6\"}}]}"
+    },
+    {"id":"W02-quiesced","raw":"{\"schema\":1,\"type\":\"workspace_layout_quiesced\",\"request_id\":\"101\",\"operation\":\"100\",\"revision\":\"1\",\"target\":{\"session\":\"2\",\"window\":\"10\",\"scene\":\"3\",\"generation\":\"4\"}}"},
+    {"id":"W03-applied","raw":"{\"schema\":1,\"type\":\"workspace_layout_applied\",\"request_id\":\"102\",\"operation\":\"100\",\"revision\":\"1\",\"target\":{\"session\":\"2\",\"window\":\"10\",\"scene\":\"3\",\"generation\":\"4\"},\"pose\":{\"position_m\":[0,1.5,1.5],\"rotation_xyzw\":[0,0,0,1]},\"physical_size\":{\"width_m\":1.2,\"height_m\":0.9},\"content_frame\":\"20\"}"},
+    {"id":"W04-ready","raw":"{\"schema\":1,\"type\":\"workspace_layout_input_ready\",\"request_id\":\"103\",\"operation\":\"100\",\"revision\":\"1\",\"target\":{\"session\":\"2\",\"window\":\"10\",\"scene\":\"3\",\"generation\":\"4\"},\"input_epoch\":8}"},
+    {"id":"W05-failure","raw":"{\"schema\":1,\"type\":\"workspace_layout_failed\",\"request_id\":\"104\",\"operation\":\"100\",\"revision\":\"1\",\"target\":{\"session\":\"2\",\"window\":\"10\",\"scene\":\"3\",\"generation\":\"4\"},\"reason\":\"CW_SDK_PROBE_FAILED\"}"},
+    {"id":"W06-undo","raw":"{\"schema\":1,\"type\":\"workspace_layout_undo\",\"request_id\":\"105\",\"expected_operation\":\"100\",\"expected_revision\":\"1\"}"},
+    {"id":"W07-cancel","raw":"{\"schema\":1,\"type\":\"workspace_layout_cancel\",\"request_id\":\"106\",\"operation\":\"100\",\"expected_revision\":\"1\"}"}
+  ],
+  "invalid_mutations":[
+    {"id":"W08-duplicate-root","base":"W01-start","replace_once":["\"gap_deg\":3.0","\"gap_deg\":3.0,\"gap_deg\":4.0"],"status":"INVALID_ARGUMENT"},
+    {"id":"W09-duplicate-nested","base":"W01-start","replace_once":["\"window\":\"10\"","\"window\":\"10\",\"window\":\"11\""],"status":"INVALID_ARGUMENT"},
+    {"id":"W10-extra","base":"W01-start","replace_once":["\"schema\":1","\"schema\":1,\"unsafe\":true"],"status":"INVALID_ARGUMENT"},
+    {"id":"W11-bool-float","base":"W01-start","replace_once":["\"distance_m\":1.5","\"distance_m\":true"],"status":"INVALID_ARGUMENT"},
+    {"id":"W12-string-float","base":"W01-start","replace_once":["\"distance_m\":1.5","\"distance_m\":\"1.5\""],"status":"INVALID_ARGUMENT"},
+    {"id":"W13-infinite","base":"W01-start","replace_once":["\"distance_m\":1.5","\"distance_m\":1e309"],"status":"INVALID_ARGUMENT"},
+    {"id":"W14-id-number","base":"W01-start","replace_once":["\"request_id\":\"100\"","\"request_id\":100"],"status":"INVALID_ARGUMENT"},
+    {"id":"W15-id-leading-zero","base":"W01-start","replace_once":["\"request_id\":\"100\"","\"request_id\":\"0100\""],"status":"INVALID_ARGUMENT"},
+    {"id":"W16-id-overflow","base":"W01-start","replace_once":["\"request_id\":\"100\"","\"request_id\":\"9223372036854775808\""],"status":"INVALID_ARGUMENT"},
+    {"id":"W17-enum-object","base":"W01-start","replace_once":["\"preset\":\"radial_three\"","\"preset\":{\"radial_three\":null}"],"status":"INVALID_ARGUMENT"},
+    {"id":"W18-unknown-preset","base":"W01-start","replace_once":["\"preset\":\"radial_three\"","\"preset\":\"cylinder\""],"status":"INVALID_ARGUMENT"},
+    {"id":"W19-missing-gap","base":"W01-start","replace_once":[",\"gap_deg\":3.0",""],"status":"INVALID_ARGUMENT"},
+    {"id":"W20-unknown-reason","base":"W05-failure","replace_once":["CW_SDK_PROBE_FAILED","SUCCESS"],"status":"INVALID_ARGUMENT"},
+    {"id":"W21-position-array","base":"W02-quiesced","replace_once":["{\"session\":\"2\",\"window\":\"10\",\"scene\":\"3\",\"generation\":\"4\"}","[\"2\",\"10\",\"3\",\"4\"]"],"status":"INVALID_ARGUMENT"}
+  ]
+}
