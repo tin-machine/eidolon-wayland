@@ -5,8 +5,8 @@ Date: 2026-11-11 JST. Scope: **shared types and pure validators only; no v3 prod
 ## Source of truth and dependency
 
 - Main HEAD at start: `1434f46e7ba95ab71cfcf26040b4fbb4e43756ad`.
-- PR-00: [#12](https://github.com/tin-machine/eidolon-wayland/pull/12), validated head `65f9fa38b3cf2f6d99c5c5244e4d4f4d47ce3a4d`, **unmerged at branch creation**.
-- PR-01 is deliberately **stacked on PR-00** for a green Host fmt baseline. Retarget to main after PR-00 is merged; do not force-push or drop PR-00's formatting patch.
+- PR-00: [#12](https://github.com/tin-machine/eidolon-wayland/pull/12), validated head `65f9fa38b3cf2f6d99c5c5244e4d4f4d47ce3a4d`; **merged into main** at `f894d796a06bcf0fafb1567718cd180ecf29009b`.
+- PR-01 was initially stacked on PR-00. Following that merge, PR #13 was retargeted to **main**, and main was merged into the PR branch without altering its nine-file functional diff. I2–I5 should branch from the eventual merged PR-01, not from this open PR.
 - Primary plan: [linux-real-app-v3-integration-plan-20261111.md](linux-real-app-v3-integration-plan-20261111.md), especially §§3, 7–10, 16–21.
 - Existing B1/B2/C1/C2/E1 contracts remain authoritative. I1 `ConnectionConfig` and existing v3 `StorageRecord` are reused; no new wire/journal/hash/source format is defined.
 
