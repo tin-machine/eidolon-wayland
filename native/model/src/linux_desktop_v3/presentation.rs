@@ -30,6 +30,18 @@ impl NativeOrigin {
         decode(raw, MAX_RECORD_BYTES)
     }
     record_methods!();
+    pub fn runtime(&self) -> RuntimeHandle {
+        self.runtime
+    }
+    pub fn session(&self) -> SessionId {
+        self.session
+    }
+    pub fn request(&self) -> CommandSeq {
+        self.request
+    }
+    pub fn app_id(&self) -> AppId {
+        self.app_id
+    }
     pub fn matches(&self, context: &Context, selection: &Selection, pins: &Pins) -> Result<()> {
         selection.matches(context, pins)?;
         require(
@@ -264,6 +276,13 @@ pub enum PresentationState {
     Stopping,
     Pending,
 }
+string_enum!(PresentationState, {
+    AwaitingMain => "awaiting_main",
+    AwaitingSdk => "awaiting_sdk",
+    Ready => "ready",
+    Stopping => "stopping",
+    Pending => "pending"
+});
 
 #[derive(Clone)]
 pub struct Startup {
