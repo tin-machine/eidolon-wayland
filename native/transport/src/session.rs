@@ -375,6 +375,15 @@ impl Controller {
         if self.signals.stop.load(Ordering::Acquire) || self.worker.is_finished() {
             return Status::NotReady;
         }
+        // I2 owns v3 execution. Never run an admitted v3 capture through the
+        // existing v2 SSH actor while this PR defines only shared contracts.
+        if profile
+            .desktop
+            .as_ref()
+            .is_some_and(|config| config.version() == linux_desktop::dispatch::Version::V3)
+        {
+            return Status::NotReady;
+        }
         if s.busy {
             return Status::Busy;
         }
@@ -384,7 +393,10 @@ impl Controller {
                 if profile
                     .desktop
                     .as_ref()
-                    .is_none_or(|config| !pending.matches(&config.profile, &config.pins))
+                    .is_none_or(|config| match config {
+                        DesktopConfig::V2 { profile, pins, .. } => !pending.matches(profile, pins),
+                        DesktopConfig::V3 { .. } => true,
+                    })
                 {
                     s.report.state = State::CleanupPending;
                     s.report.error = Some("DESKTOP_CLEANUP_SCOPE_MISMATCH");
@@ -1411,15 +1423,23 @@ async fn connection(
                 .desktop
                 .as_ref()
                 .ok_or("DESKTOP_BACKEND_MISMATCH")?;
+            let (profile, pins, files) = match config {
+                DesktopConfig::V2 {
+                    profile,
+                    pins,
+                    files,
+                } => (profile, pins, files),
+                DesktopConfig::V3 { .. } => return Err("DESKTOP_VERSION_SELECTION"),
+            };
             match work {
                 DesktopWork::Inspect(request) => {
                     let nonce = format!("{:016x}", rand::random::<u64>());
                     let captured = linux_desktop::Binding::capture(
-                        &config.profile,
+                        profile,
                         connect.session,
                         uid,
                         &nonce,
-                        config.pins.clone(),
+                        pins.clone(),
                     )?;
                     let (sender, requests) = tokio::sync::mpsc::channel(1);
                     signals.update(|s| s.desktop_launches = Some(sender));
@@ -1428,7 +1448,7 @@ async fn connection(
                         &connect.router,
                         linux_desktop::Inspection {
                             binding: &captured,
-                            files: &config.files,
+                            files: files,
                         },
                         requests,
                         &connect.cancel,
@@ -1491,11 +1511,11 @@ async fn connection(
                         &client,
                         &connect.router,
                         linux_desktop::Recovery {
-                            profile: &config.profile,
+                            profile: profile,
                             session: connect.session,
                             uid,
-                            files: &config.files,
-                            pins: &config.pins,
+                            files: files,
+                            pins: pins,
                             // A pending helper always ended connection() above.
                             // owner() dropped that runtime before accepting this
                             // new Connect, and no helper is active on this one.
@@ -1510,7 +1530,7 @@ async fn connection(
                         report.pending = true;
                         report.error = Some("DESKTOP_JOURNAL_OWNER_CHANGED");
                     }
-                    let pending = linux_desktop::pending(&config.files);
+                    let pending = linux_desktop::pending(files);
                     signals.update(|s| {
                         s.forward_busy = false;
                         s.desktop_pending = if report.pending && matches!(pending, Ok(None)) {
