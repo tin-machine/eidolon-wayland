@@ -1478,7 +1478,7 @@ mod tests {
         });
         let binding = RuntimeBinding::parse(envelope.to_string().as_bytes()).unwrap();
         binding.matches_profile(&profile).unwrap();
-        assert_eq!(binding.configuration().pins(), config.pins());
+        assert!(binding.configuration().pins() == config.pins());
         assert_eq!(format!("{binding:?}"), "RuntimeBinding(<private>)");
         let mut runtime = RuntimeConfig {
             installation: Some("1".repeat(32)),
@@ -1509,7 +1509,7 @@ mod tests {
         runtime.linux_desktop_v3 = Some(wrong_manifest.to_string());
         assert!(runtime.validate().is_err(), "manifest not a free executable");
         let dup = format!(
-            "{{\\"configuration\\":{},\\"configuration\\":{},\\"storage\\":{}}}",
+            r#"{{"configuration":{},"configuration":{},"storage":{}}}"#,
             envelope["configuration"], envelope["configuration"], envelope["storage"]
         );
         runtime.linux_desktop_v3 = Some(dup);
@@ -1559,7 +1559,7 @@ mod tests {
             assert!(Command::parse(&invalid.to_string()).is_err(), "{kind}");
         }
         let duplicated = launch.to_string().replacen(
-            "\\"schema\\":1", "\\"schema\\":1,\\"schema\\":1", 1
+            r#""schema":1"#, r#""schema":1,"schema":1"#, 1
         );
         assert!(Command::parse(&duplicated).is_err());
     }
