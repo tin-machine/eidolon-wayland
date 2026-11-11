@@ -173,11 +173,18 @@ impl V3Report {
         if let Some(presentation) = &self.presentation {
             if presentation.state == PresentationState::Ready {
                 require(
-                    presentation.startup_completed
+                    self.transport.phase == TransportPhase::Started
+                        && self.transport.launch_accepted
+                        && !self.transport.journal_pending
+                        && !self.cleanup_pending
+                        && presentation.startup_completed
                         && presentation.main.is_some()
                         && !presentation.cleanup_pending
                         && self.sdk_target.as_ref().is_some_and(|t| {
-                            t.acknowledged && t.binding_present && t.renderer_frame_seen
+                            presentation.main == Some(t.target.window)
+                                && t.acknowledged
+                                && t.binding_present
+                                && t.renderer_frame_seen
                         }),
                     "CONTRACT_INVALID",
                 )?;
@@ -295,7 +302,13 @@ mod tests {
         assert!(r.validate().is_err(), "ACK and binding alone are not Ready");
         r.sdk_target.as_mut().unwrap().renderer_frame_seen = true;
         r.presentation.as_mut().unwrap().cleanup_pending = false;
+        assert!(r.validate().is_err(), "cleanup pending cannot be Ready");
+        r.cleanup_pending = false;
+        r.transport.journal_pending = false;
         assert!(r.validate().is_ok(), "typed evidence can be consistent");
+        r.sdk_target.as_mut().unwrap().target.window = WindowId::new(2).unwrap();
+        assert!(r.validate().is_err(), "different window cannot supply main evidence");
+        r.sdk_target.as_mut().unwrap().target.window = WindowId::new(1).unwrap();
         r.sdk_target.as_mut().unwrap().runtime = RuntimeHandle::new(999).unwrap();
         assert!(r.validate().is_err(), "foreign runtime target");
     }
