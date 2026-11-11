@@ -201,33 +201,50 @@ mod tests {
         use eidolon_model::linux_desktop_v3::{StorageCapture, configuration::ConnectionConfig};
         let host_key =
             include_str!("../../../android/app/src/test/resources/connection-profiles-v2.tsv")
-                .lines().find(|line| line.starts_with("linux-")).unwrap()
-                .split('\t').nth(7).unwrap();
+                .lines()
+                .find(|line| line.starts_with("linux-"))
+                .unwrap()
+                .split('\t')
+                .nth(7)
+                .unwrap();
         let profile_json = serde_json::json!({
             "schema":2,"installation":"1".repeat(32),"profile_id":"remote-linux",
             "revision":"1","display_name":"v3","backend":"linux_ssh",
             "host":"192.0.2.1","port":22,"username":"fixture","host_key":host_key
-        }).to_string();
+        })
+        .to_string();
         let profile = Profile::parse(&profile_json, &"1".repeat(32)).unwrap();
         let f: serde_json::Value = serde_json::from_str(include_str!(
             "../../../scripts/tests/fixtures/linux-desktop-v3-configuration.json"
-        )).unwrap();
-        let config = ConnectionConfig::parse(f["valid"][0]["raw"].as_str().unwrap().as_bytes()).unwrap();
+        ))
+        .unwrap();
+        let config =
+            ConnectionConfig::parse(f["valid"][0]["raw"].as_str().unwrap().as_bytes()).unwrap();
         let mut storage = StorageCapture::from_profile(&profile).unwrap().record();
         storage["schema"] = serde_json::json!(1);
         storage["installation_id"] = serde_json::json!("a".repeat(32));
         storage["profile_storage_id"] = serde_json::json!("b".repeat(32));
         let record = StorageRecord::parse(storage.to_string().as_bytes()).unwrap();
         let spec = ConnectSpec::linux_desktop_v3(
-            profile.clone(), config.clone(), record.clone(), PathBuf::from("/tmp/eidolon")
-        ).unwrap();
+            profile.clone(),
+            config.clone(),
+            record.clone(),
+            PathBuf::from("/tmp/eidolon"),
+        )
+        .unwrap();
         assert!(matches!(
-            spec.desktop,
+            spec.desktop.as_ref(),
             Some(DesktopConfig::V3 { .. })
         ));
         let captured = spec.desktop.as_ref().unwrap();
         assert_eq!(captured.version(), linux_desktop::dispatch::Version::V3);
-        if let DesktopConfig::V3 { profile: p, configuration: c, storage: st, files } = captured {
+        if let DesktopConfig::V3 {
+            profile: p,
+            configuration: c,
+            storage: st,
+            files,
+        } = captured
+        {
             assert!(p == &profile && c == &config && st == &record);
             assert_eq!(files, &PathBuf::from("/tmp/eidolon"));
         } else {
@@ -237,8 +254,12 @@ mod tests {
         stale["profile_binding"] = serde_json::json!("f".repeat(64));
         let stale = StorageRecord::parse(stale.to_string().as_bytes()).unwrap();
         assert!(matches!(
-            ConnectSpec::linux_desktop_v3(profile.clone(), config.clone(), stale,
-                PathBuf::from("/tmp/eidolon")),
+            ConnectSpec::linux_desktop_v3(
+                profile.clone(),
+                config.clone(),
+                stale,
+                PathBuf::from("/tmp/eidolon")
+            ),
             Err(PrepareError::InvalidProfile)
         ));
         assert!(matches!(
