@@ -233,6 +233,8 @@ impl V3Report {
             binding_present: e.binding_present,
             renderer_frame_seen: e.renderer_frame_seen,
         });
+        // A mismatched current Create cannot disappear into a null Report.
+        require(!observation.has_current_create() || expected_target.is_some(), "PRESENTATION_STALE")?;
         // Even a structurally valid Report with a former generation is stale.
         require(self.sdk_target == expected_target, "PRESENTATION_STALE")?;
         if self.relaunch_allowed {
