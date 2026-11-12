@@ -10,6 +10,7 @@ import shutil
 
 from native_build import ABI, API, NDK, ROOT, TARGET, canonical, identity
 import theme_licenses
+import apk_license_compliance
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--version", type=int, required=True)
@@ -89,6 +90,7 @@ for component in ("libxkbcommon", "xkeyboard-config", "smithay", "waypipe", "lz4
     licenses[name] = hashlib.sha256(source.read_bytes()).hexdigest()
 metadata["dependencies"]["licenses"] = licenses
 metadata["dependencies"]["theme"] = theme_licenses.write(args.assets)
+metadata["dependencies"]["distribution"] = apk_license_compliance.write(args.assets, metadata["dependencies"]["theme"])
 args.assets.mkdir(parents=True, exist_ok=True)
 (args.assets / "native-build.json").write_text(json.dumps(metadata, indent=2) + "\n")
 print(canonical(metadata))

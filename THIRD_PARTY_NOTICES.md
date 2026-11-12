@@ -56,3 +56,9 @@ GitHub Actionsからダウンロード可能なdebug APKにはMeta SDKを含む�
 **未完了の項目:** Android/GradleとRust/Cargoの推移依存のライセンス・NOTICE棚卸し、実APKに含まれるMeta SDKの配布条件、`META-INF/LICENSE`除外後の通知の完全性、SDKに含まれるテスト証明書・鍵の用途確認。正式配布前に各項目を検証します。
 
 [OSSライセンス・公開前レビュー（2026-11-12）](docs/oss-license-publication-review-20261112.md)に調査結果と判断基準を記録しています。
+
+## APK内の配布通知（APK License Compliance）
+
+ビルド時に`assets/licenses/eidolon/`へEidolon自身のMIT全文、Apache-2.0本文、Meta SDKの権利表示・規約リンク、MPL-2.0該当crateの版・source URL・SHA-256、既存の第三者通知を同梱します。Gradleで解決したvariant別runtime依存は`assets/licenses/android/runtime-modules.json`に記録し、未知のグループはCIのartifact公開前に拒否します。
+
+これは**検査済みの通知の存在・一致を担保する仕組み**であって、Meta SDK、Gradle推移依存、全Cargo依存の個々のライセンスを法的に認定するものではありません。特に`META-INF/LICENSE`除外後のupstream NOTICEの完全性とAPK配布前の第三者素材監査は引き続き必要です。[APK License Complianceの実装・残件](docs/apk-license-compliance-20261112.md)を参照してください。

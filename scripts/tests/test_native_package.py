@@ -38,6 +38,10 @@ class PackageTests(unittest.TestCase):
                         data += b"invalid fixture"
                     if item.filename.startswith("assets/licenses/theme/") and variant == "theme-license":
                         data += b"invalid fixture"
+                    if item.filename == "assets/licenses/eidolon/LICENSE-MIT.txt" and variant == "eidolon-license":
+                        data += b"invalid fixture"
+                    if item.filename == "assets/licenses/android/runtime-modules.json" and variant == "android-runtime":
+                        data = b'{"schema":1,"variant":"debug","modules":[]}'
                     # writestrはZipInfoを更新するので、元archiveのlookupを壊さない。
                     out.writestr(copy.copy(item), data)
                 if variant == "duplicate":
@@ -67,3 +71,9 @@ class PackageTests(unittest.TestCase):
 
     def test_corrupt_theme_license_is_rejected(self):
         self.reject("theme-license", "theme license asset hash")
+
+    def test_corrupt_eidolon_mit_is_rejected(self):
+        self.reject("eidolon-license", "APK license asset")
+
+    def test_incorrect_android_runtime_manifest_is_rejected(self):
+        self.reject("android-runtime", "Android runtime modules")
