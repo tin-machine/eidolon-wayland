@@ -331,6 +331,7 @@ impl Owner {
         Ok(())
     }
     fn event(&mut self, event: Event) {
+        let was_terminal = self.report.terminal_event;
         self.report.phase = match self.phase() {
             Phase::AwaitingPrepared => "awaiting_prepared",
             Phase::Prepared => "prepared",
@@ -395,7 +396,9 @@ impl Owner {
         // Keep the first close deadline: a series of late EOF/status events
         // may not extend an otherwise bounded teardown indefinitely.
         if self.report.terminal_event {
-            self.deadline.get_or_insert(Instant::now() + CLOSE_TIMEOUT);
+            if !was_terminal {
+                self.deadline = Some(Instant::now() + CLOSE_TIMEOUT);
+            }
         } else {
             self.deadline = None;
         }

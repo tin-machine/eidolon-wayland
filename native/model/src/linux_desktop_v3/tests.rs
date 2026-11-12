@@ -368,3 +368,17 @@ fn presentation_sequences_use_the_same_owner_target_deadline_and_failure_vectors
         }
     }
 }
+
+#[test]
+fn native_origin_capture_binds_exact_verified_selection() {
+    let f = fixture();
+    let context = Context::parse(&raw(&f, "context")).unwrap();
+    let pins = Pins::parse(&raw(&f, "pins")).unwrap();
+    let selection = Selection::parse(&raw(&f, "selection")).unwrap();
+    let origin = NativeOrigin::parse(&raw(&f, "origin")).unwrap();
+    let constructed = NativeOrigin::capture(
+        origin.runtime(), origin.request(), &context, &selection, &pins,
+    ).unwrap();
+    assert_eq!(constructed.record(), origin.record());
+    assert!(constructed.matches(&context, &selection, &pins).is_ok());
+}

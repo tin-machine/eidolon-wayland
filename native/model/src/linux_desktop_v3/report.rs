@@ -24,6 +24,31 @@ pub enum TransportPhase {
 }
 
 /// Strictly a transport observation; not a presentation or renderer verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControllerFault {
+    SshIo,
+    CommandTimeout,
+    ChannelIncomplete,
+    ForwardRequest,
+    ForwardRetirement,
+    RouterDrain,
+    JournalReserve,
+    JournalUpdate,
+    JournalClear,
+    PreviousIoPending,
+    LocalAdmissionUnavailable,
+    LocalRetirementTimeout,
+    ScopeMismatch,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControllerFaults {
+    pub first: Option<ControllerFault>,
+    pub cleanup: Option<ControllerFault>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransportState {
@@ -151,6 +176,9 @@ pub struct V3Report {
     pub runtime_reclamation: RuntimeReclamation,
     pub first_failure: Option<Reason>,
     pub cleanup_error: Option<FailureReason>,
+    /// Failures owned by the SSH/controller and local finalizer are not C2
+    /// FailureReason values; first origin fault is never overwritten.
+    pub controller_faults: ControllerFaults,
     pub cleanup_pending: bool,
     pub relaunch_allowed: bool,
 }
@@ -268,6 +296,7 @@ mod tests {
             },
             first_failure: None,
             cleanup_error: None,
+            controller_faults: ControllerFaults::default(),
             cleanup_pending: true,
             relaunch_allowed: false,
         }

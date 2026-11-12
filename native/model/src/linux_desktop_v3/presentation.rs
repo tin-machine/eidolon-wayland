@@ -29,6 +29,27 @@ impl NativeOrigin {
     pub fn parse(raw: &[u8]) -> Result<Self> {
         decode(raw, MAX_RECORD_BYTES)
     }
+    /// Native-only capture of a request against a verified context and fixed
+    /// selection. UI and remote metadata cannot supply these fields.
+    pub fn capture(
+        runtime: RuntimeHandle,
+        request: CommandSeq,
+        context: &Context,
+        selection: &Selection,
+        pins: &Pins,
+    ) -> Result<Self> {
+        selection.matches(context, pins)?;
+        let origin = Self::parse(&canonical_json(&json!({
+            "runtime": runtime,
+            "session": context.record()["session"],
+            "request": request,
+            "nonce": context.record()["nonce"],
+            "scope": context.scope(),
+            "app_id": selection.record()["app_id"],
+        }))?)?;
+        origin.matches(context, selection, pins)?;
+        Ok(origin)
+    }
     record_methods!();
     pub fn runtime(&self) -> RuntimeHandle {
         self.runtime

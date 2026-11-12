@@ -284,11 +284,15 @@ pub(crate) async fn serve<H: client::Handler>(
         };
         match current.finish(proof).and_then(|()| current.durable_complete()) {
             Ok(Some(_)) => {
-                report.remote_complete = true;
-                deferred = Some(
-                    DeferredReclamation::from_remote(current, request.binding)
-                        .expect("durable Complete must admit a deferred owner"),
-                );
+                match DeferredReclamation::from_remote(current, request.binding) {
+                    Ok(value) => {
+                        report.remote_complete = true;
+                        deferred = Some(value);
+                    }
+                    Err(error) => {
+                        report.error.get_or_insert(error);
+                    }
+                }
             }
             Ok(None) => {
                 report.error.get_or_insert("DESKTOP_CLEANUP_PENDING");
