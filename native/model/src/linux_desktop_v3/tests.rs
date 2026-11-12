@@ -368,3 +368,88 @@ fn presentation_sequences_use_the_same_owner_target_deadline_and_failure_vectors
         }
     }
 }
+
+
+#[test]
+fn native_observation_builder_rejects_foreign_evidence_and_unfresh_frames() {
+    use crate::{
+        ids::{CommandSeq, SceneEpoch, WindowId},
+        surface::TargetKey,
+    };
+    use presentation::{
+        Life, NativeAckFact, NativeCreateIdentity, NativeFrameFact, NativePanelFact,
+        NativeSdkFact, NativeWindowFact, PresentationState, Role,
+    };
+    let f = fixture();
+    let owner = NativeOrigin::parse(&raw(&f, "origin")).unwrap();
+    let main = WindowId::new(42).unwrap();
+    let scene = SceneEpoch::new(8).unwrap();
+    let good_target = TargetKey::from_raw(owner.session().get(), 42, 8, 1).unwrap();
+    let stale_target = TargetKey::from_raw(owner.session().get(), 42, 8, 2).unwrap();
+    let create = NativeCreateIdentity {
+        runtime: owner.runtime(), target: good_target,
+        command_seq: CommandSeq::new(7).unwrap(),
+    };
+    let adopted = Observation::native_builder(owner.clone(), 1001)
+        .lifecycle(true, Some(scene), true)
+        .transport(Some(owner.clone()), None, false, false)
+        .windows(1, vec![NativeWindowFact {
+            origin: owner.clone(), window: main, role: Role::Main,
+            life: Life::Mapped, app_id: Some("mousepad".into()),
+            parent: Parent::None {},
+        }])
+        .finish().unwrap();
+    let startup = Startup::begin(owner.clone(), 1000, vec![])
+        .unwrap().advance(&adopted).unwrap();
+    assert_eq!(startup.summary()["state"], "awaiting_sdk");
+    // Native accepted ACK, an app binding and a current *content* frame are
+    // distinct. A blank swap or a diagnostic frame cannot be made Ready.
+    let make = |target: TargetKey, content_frame_seen: bool, windows_mode: bool,
+                diagnostic: bool, ack: bool, now: u64| {
+        Observation::native_builder(owner.clone(), now)
+            .lifecycle(true, Some(scene), true)
+            .windows(1, vec![NativeWindowFact {
+                origin: owner.clone(), window: main, role: Role::Main,
+                life: Life::Mapped, app_id: Some("mousepad".into()),
+                parent: Parent::None {},
+            }])
+            .current_create(Some(create.clone()))
+            .panel(Some(NativePanelFact {
+                create: create.clone(), applied: true, error: false,
+            }))
+            .ack(ack.then_some(NativeAckFact {
+                create: create.clone(), success: true,
+            }))
+            .sdk(Some(NativeSdkFact {
+                runtime: owner.runtime(), target: good_target, bound: true, diagnostic,
+            }))
+            .frame(Some(NativeFrameFact {
+                runtime: owner.runtime(), target, frames: 9, paused: false,
+                presentation_paused: false, windows_mode, content_frame_seen,
+            }))
+            .finish()
+    };
+    assert_eq!(make(good_target, false, true, false, true, 1100).unwrap()
+        .current_evidence().unwrap().renderer_frame_seen, false);
+    assert_eq!(make(good_target, true, false, false, true, 1100).unwrap()
+        .current_evidence().unwrap().renderer_frame_seen, false);
+    let no_ack = startup.advance(&make(good_target, true, true, false, false, 1100).unwrap()).unwrap();
+    assert_eq!(no_ack.summary()["state"], "awaiting_sdk");
+    let diagnostic = startup.advance(&make(good_target, true, true, true, true, 1100).unwrap()).unwrap();
+    assert_eq!(diagnostic.summary()["state"], "awaiting_sdk");
+    assert_eq!(make(stale_target, true, true, false, true, 1100).err().unwrap().0, "PRESENTATION_STALE");
+    let ready = startup.advance(&make(good_target, true, true, false, true, 1100).unwrap()).unwrap();
+    assert_eq!(ready.summary()["state"], "ready");
+    let timeout = startup.advance(&make(good_target, true, true, false, true, 11001).unwrap()).unwrap();
+    assert_eq!(timeout.summary()["state"], "stopping");
+    assert_eq!(timeout.summary()["first_failure"], "APP_PRESENTATION_TIMEOUT");
+    let cancelled = ready.advance(&Observation::native_builder(owner, 1101)
+        .lifecycle(false, Some(scene), false).transport(None, None, true, false)
+        .windows(1, vec![NativeWindowFact {
+            origin: ready.origin().clone(), window: main, role: Role::Main,
+            life: Life::Mapped, app_id: Some("mousepad".into()), parent: Parent::None {},
+        }]).finish().unwrap()).unwrap();
+    assert_eq!(cancelled.summary()["state"], "stopping");
+    assert!(cancelled.summary()["first_failure"].is_null(),
+        "normal post-Ready Stop must not manufacture startup cancellation");
+}
