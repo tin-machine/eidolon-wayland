@@ -25,8 +25,8 @@ class SdkEvidenceBridgeTest {
         other.nativeBindingReleased(key)
         other.auxiliaryDisposed(key)
         other.sealRuntime(7)
-        assertFalse(other.runtimeProgress(7).allRetired,
-            "Entity.destroy() return is not an observed SDK deletion")
+        assertFalse("Entity.destroy() return is not an observed SDK deletion",
+            other.runtimeProgress(7).allRetired)
         other.sdkCleanupPass(11, 4, 1)
         other.deleteObserved(key, 1)
         assertFalse(other.runtimeProgress(7).allRetired)
@@ -67,12 +67,12 @@ class SdkEvidenceBridgeTest {
         assertEquals(40, ledger.sceneProgress(11, 4).issued)
         assertTrue(ledger.sceneProgress(11, 4).allRetired)
         assertFalse(ledger.reserve(id(41)))
-        assertTrue(ledger.reserve(id(1, adapter = 22)),
-            "different adapter must not share Scene ownership")
-        assertFalse(ledger.runtimeProgress(7).allRetired, "runtime not sealed")
+        assertTrue("different adapter must not share Scene ownership",
+            ledger.reserve(id(1, adapter = 22)))
+        assertFalse("runtime not sealed", ledger.runtimeProgress(7).allRetired)
         ledger.sealRuntime(7)
-        assertFalse(ledger.runtimeProgress(7).allRetired,
-            "different adapter pending registration must not be hidden")
+        assertFalse("different adapter pending registration must not be hidden",
+            ledger.runtimeProgress(7).allRetired)
         ledger.registrationRejected(id(1, adapter = 22))
         assertTrue(ledger.runtimeProgress(7).allRetired)
     }
