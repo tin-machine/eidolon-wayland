@@ -1,4 +1,3 @@
-pub mod startup_observation;
 pub mod compositor;
 pub mod diagnostics;
 pub mod helper;
@@ -7,6 +6,7 @@ pub mod preferences;
 pub mod runtime;
 pub mod session;
 pub mod shutdown;
+pub mod startup_observation;
 pub mod theme;
 mod theme_store;
 pub mod waypipe;

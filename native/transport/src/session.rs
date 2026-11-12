@@ -393,14 +393,10 @@ impl Controller {
         match &s.desktop_pending {
             Ok(None) => (),
             Ok(Some(pending)) => {
-                if profile
-                    .desktop
-                    .as_ref()
-                    .is_none_or(|config| match config {
-                        DesktopConfig::V2 { profile, pins, .. } => !pending.matches(profile, pins),
-                        DesktopConfig::V3 { .. } => true,
-                    })
-                {
+                if profile.desktop.as_ref().is_none_or(|config| match config {
+                    DesktopConfig::V2 { profile, pins, .. } => !pending.matches(profile, pins),
+                    DesktopConfig::V3 { .. } => true,
+                }) {
                     s.report.state = State::CleanupPending;
                     s.report.error = Some("DESKTOP_CLEANUP_SCOPE_MISMATCH");
                     return Status::NotReady;

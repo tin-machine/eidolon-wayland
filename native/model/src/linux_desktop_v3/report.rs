@@ -1,8 +1,9 @@
 //! Pure I2–I5 snapshot contract. No SSH/Wayland/SDK callback is synthesized here.
 //! A launch ACK does not imply Started; Started does not imply SDK-visible Ready.
 use super::{
-    AppId, Error, FailureReason, Reason, REVISION, Result, MAX_RECORD_BYTES, decode, require,
+    AppId, Error, FailureReason, MAX_RECORD_BYTES, REVISION, Reason, Result, decode,
     presentation::{NativeOrigin, Observation, PresentationState, Startup},
+    require,
 };
 use crate::{
     ids::{CommandSeq, RuntimeHandle, WindowId},
@@ -20,8 +21,7 @@ pub enum TransportPhase {
     Started,
     Stopping,
     CleanupPending,
-    Complete,
-}
+    Complete,}
 
 /// Strictly a transport observation; not a presentation or renderer verdict.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,7 +202,6 @@ impl V3Report {
         Ok(())
     }
 
-
     /// Enforce provenance against the native owner's same-tick Observation and
     /// the one B1 Startup. validate() alone deliberately cannot prove freshness.
     /// The three admission flags must be supplied by the live native owner.
@@ -238,7 +237,10 @@ impl V3Report {
         // Even a structurally valid Report with a former generation is stale.
         require(self.sdk_target == expected_target, "PRESENTATION_STALE")?;
         if self.relaunch_allowed {
-            require(runtime_live && !stop_intent && admission_open, "RECOVERY_REQUIRED")?;
+            require(
+                runtime_live && !stop_intent && admission_open,
+                "RECOVERY_REQUIRED",
+            )?;
         }
         Ok(())
     }
@@ -259,8 +261,12 @@ mod tests {
             "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
         ))
         .unwrap();
-        let record = fixture["records"].as_array().unwrap().iter()
-            .find(|v| v["id"] == "origin").unwrap();
+        let record = fixture["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == "origin")
+            .unwrap();
         NativeOrigin::parse(record["raw"].as_str().unwrap().as_bytes()).unwrap()
     }
 
@@ -345,7 +351,10 @@ mod tests {
         r.cleanup_pending = false;
         assert!(r.validate().is_ok(), "live journal does not forbid Ready");
         r.sdk_target.as_mut().unwrap().target.window = WindowId::new(2).unwrap();
-        assert!(r.validate().is_err(), "different window cannot supply main evidence");
+        assert!(
+            r.validate().is_err(),
+            "different window cannot supply main evidence"
+        );
         r.sdk_target.as_mut().unwrap().target.window = WindowId::new(1).unwrap();
         r.sdk_target.as_mut().unwrap().runtime = RuntimeHandle::new(999).unwrap();
         assert!(r.validate().is_err(), "foreign runtime target");
@@ -361,18 +370,32 @@ mod tests {
         r.transport.phase = TransportPhase::Complete;
         r.transport.journal_pending = false;
         r.cleanup_pending = false;
-        assert!(r.validate().is_err(), "completed transport alone insufficient");
+        assert!(
+            r.validate().is_err(),
+            "completed transport alone insufficient"
+        );
         r.remote_cleanup = RemoteCleanup {
-            process_complete: true, pipes_eof: true, receipt_written: true,
-            ssh_channel_complete: true, forward_retired: true, router_drained: true,
+            process_complete: true,
+            pipes_eof: true,
+            receipt_written: true,
+            ssh_channel_complete: true,
+            forward_retired: true,
+            router_drained: true,
         };
         r.local_retirement = LocalRetirement {
-            waypipe_stopped: true, listener_retired: true, windows_retired: true,
-            sdk_bindings_released: true, sdk_entities_disposed: true,
+            waypipe_stopped: true,
+            listener_retired: true,
+            windows_retired: true,
+            sdk_bindings_released: true,
+            sdk_entities_disposed: true,
         };
         r.runtime_reclamation = RuntimeReclamation {
-            connections_stopped: true, workers_stopped: true, panels_released: true,
-            targets_released: true, shutdown_complete: true, native_destroy_accepted: true,
+            connections_stopped: true,
+            workers_stopped: true,
+            panels_released: true,
+            targets_released: true,
+            shutdown_complete: true,
+            native_destroy_accepted: true,
         };
         assert!(r.validate().is_ok());
         let bytes = serde_json::to_vec(&r).unwrap();
@@ -382,8 +405,10 @@ mod tests {
         let mut wrong = serde_json::to_value(&r).unwrap();
         wrong["protocol_revision"] = json!("unsupported-v4");
         assert!(V3Report::parse(wrong.to_string().as_bytes()).is_err());
-        let duplicated = format!(r#"{{"protocol_revision":"{}","protocol_revision":"{}"}}"#,
-            REVISION, REVISION);
+        let duplicated = format!(
+            r#"{{"protocol_revision":"{}","protocol_revision":"{}"}}"#,
+            REVISION, REVISION
+        );
         assert!(V3Report::parse(duplicated.as_bytes()).is_err());
     }
     #[test]
@@ -393,12 +418,19 @@ mod tests {
         r.transport.journal_pending = false;
         r.cleanup_pending = false;
         r.remote_cleanup = RemoteCleanup {
-            process_complete: true, pipes_eof: true, receipt_written: true,
-            ssh_channel_complete: true, forward_retired: true, router_drained: true,
+            process_complete: true,
+            pipes_eof: true,
+            receipt_written: true,
+            ssh_channel_complete: true,
+            forward_retired: true,
+            router_drained: true,
         };
         r.local_retirement = LocalRetirement {
-            waypipe_stopped: true, listener_retired: true, windows_retired: true,
-            sdk_bindings_released: true, sdk_entities_disposed: true,
+            waypipe_stopped: true,
+            listener_retired: true,
+            windows_retired: true,
+            sdk_bindings_released: true,
+            sdk_entities_disposed: true,
         };
         // Runtime is intentionally still live for the next origin lease.
         assert!(!r.runtime_reclamation.complete());
@@ -407,13 +439,29 @@ mod tests {
         let startup = Startup::begin(r.origin.clone(), 1000, vec![]).unwrap();
         r.presentation = Some(PresentationSummary::from_startup(&startup).unwrap());
         let observed = Observation::native_builder(r.origin.clone(), 1000)
-            .finish().unwrap();
-        assert!(r.validate_current(&observed, &startup, true, false, true).is_ok());
-        assert!(r.validate_current(&observed, &startup, false, false, true).is_err());
-        assert!(r.validate_current(&observed, &startup, true, true, true).is_err());
-        assert!(r.validate_current(&observed, &startup, true, false, false).is_err());
+            .finish()
+            .unwrap();
+        assert!(
+            r.validate_current(&observed, &startup, true, false, true)
+                .is_ok()
+        );
+        assert!(
+            r.validate_current(&observed, &startup, false, false, true)
+                .is_err()
+        );
+        assert!(
+            r.validate_current(&observed, &startup, true, true, true)
+                .is_err()
+        );
+        assert!(
+            r.validate_current(&observed, &startup, true, false, false)
+                .is_err()
+        );
         r.local_retirement.sdk_entities_disposed = false;
-        assert!(r.validate().is_err(), "incomplete local retirement forbids next launch");
+        assert!(
+            r.validate().is_err(),
+            "incomplete local retirement forbids next launch"
+        );
     }
 
     #[test]
@@ -423,18 +471,30 @@ mod tests {
         let startup = Startup::begin(r.origin.clone(), 1000, vec![]).unwrap();
         r.presentation = Some(PresentationSummary::from_startup(&startup).unwrap());
         let observed = Observation::native_builder(r.origin.clone(), 1000)
-            .finish().unwrap();
-        assert!(r.validate_current(&observed, &startup, true, false, true).is_ok());
+            .finish()
+            .unwrap();
+        assert!(
+            r.validate_current(&observed, &startup, true, false, true)
+                .is_ok()
+        );
         let id = TargetKey::from_raw(r.origin.session().get(), 1, 1, 2).unwrap();
         r.sdk_target = Some(SdkTarget {
-            runtime: r.origin.runtime(), target: id,
+            runtime: r.origin.runtime(),
+            target: id,
             create_command: CommandSeq::new(4).unwrap(),
-            action: SdkAction::Create, acknowledged: false,
-            binding_present: false, renderer_frame_seen: false,
+            action: SdkAction::Create,
+            acknowledged: false,
+            binding_present: false,
+            renderer_frame_seen: false,
         });
-        assert!(r.validate().is_ok(), "structural validation is not freshness validation");
+        assert!(
+            r.validate().is_ok(),
+            "structural validation is not freshness validation"
+        );
         assert_eq!(
-            r.validate_current(&observed, &startup, true, false, true).unwrap_err().0,
+            r.validate_current(&observed, &startup, true, false, true)
+                .unwrap_err()
+                .0,
             "PRESENTATION_STALE"
         );
     }

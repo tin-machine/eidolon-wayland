@@ -267,5 +267,4 @@ mod tests {
             Err(PrepareError::InvalidProfile)
         ));
     }
-
 }

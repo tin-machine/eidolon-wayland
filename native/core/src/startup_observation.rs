@@ -26,7 +26,9 @@ pub struct ObservedPresentation {
 
 impl V3PresentationObserver {
     pub fn begin(origin: NativeOrigin, accepted_at_ms: u64, before: Vec<WindowId>) -> Result<Self> {
-        Ok(Self { startup: Startup::begin(origin, accepted_at_ms, before)? })
+        Ok(Self {
+            startup: Startup::begin(origin, accepted_at_ms, before)?,
+        })
     }
 
     pub fn tick(&mut self, observation: &Observation) -> Result<ObservedPresentation> {
@@ -51,16 +53,21 @@ impl V3PresentationObserver {
             binding_present: e.binding_present,
             renderer_frame_seen: e.renderer_frame_seen,
         });
-        let newly_adopted_main =
-            if previous.main.is_none() { presentation.main } else { None };
-        let main_input_eligible =
-            presentation.state == PresentationState::Ready
-                && presentation.startup_completed
-                && current.as_ref().is_some_and(|e| {
-                    e.acknowledged && e.binding_present && e.renderer_frame_seen
-                });
+        let newly_adopted_main = if previous.main.is_none() {
+            presentation.main
+        } else {
+            None
+        };
+        let main_input_eligible = presentation.state == PresentationState::Ready
+            && presentation.startup_completed
+            && current
+                .as_ref()
+                .is_some_and(|e| e.acknowledged && e.binding_present && e.renderer_frame_seen);
         Ok(ObservedPresentation {
-            presentation, sdk_target, newly_adopted_main, main_input_eligible,
+            presentation,
+            sdk_target,
+            newly_adopted_main,
+            main_input_eligible,
         })
     }
 
@@ -93,9 +100,14 @@ mod tests {
     fn origin() -> NativeOrigin {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
-        )).unwrap();
-        let item = fixture["records"].as_array().unwrap().iter()
-            .find(|v| v["id"] == "origin").unwrap();
+        ))
+        .unwrap();
+        let item = fixture["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == "origin")
+            .unwrap();
         NativeOrigin::parse(item["raw"].as_str().unwrap().as_bytes()).unwrap()
     }
 
@@ -108,21 +120,34 @@ mod tests {
         let first = Observation::native_builder(owner.clone(), 1500)
             .lifecycle(true, Some(scene), true)
             .transport(Some(owner.clone()), None, false, false)
-            .finish().unwrap();
+            .finish()
+            .unwrap();
         let result = observer.tick(&first).unwrap();
         assert_eq!(result.presentation.state, PresentationState::AwaitingMain);
         assert_eq!(result.newly_adopted_main, None);
         let mapped = Observation::native_builder(owner.clone(), 1600)
             .lifecycle(true, Some(scene), true)
             .transport(Some(owner.clone()), None, false, false)
-            .windows(1, vec![NativeWindowFact {
-                origin: owner.clone(), window: main, role: Role::Main, life: Life::Mapped,
-                app_id: Some("mousepad".into()), parent: Parent::None {},
-            }]).finish().unwrap();
+            .windows(
+                1,
+                vec![NativeWindowFact {
+                    origin: owner.clone(),
+                    window: main,
+                    role: Role::Main,
+                    life: Life::Mapped,
+                    app_id: Some("mousepad".into()),
+                    parent: Parent::None {},
+                }],
+            )
+            .finish()
+            .unwrap();
         let result = observer.tick(&mapped).unwrap();
         assert_eq!(result.newly_adopted_main, Some(main));
         assert_eq!(result.presentation.state, PresentationState::AwaitingSdk);
-        assert!(result.sdk_target.is_none(), "main adoption is not SDK proof");
+        assert!(
+            result.sdk_target.is_none(),
+            "main adoption is not SDK proof"
+        );
         assert!(!result.main_input_eligible);
         let repeated = observer.tick(&mapped);
         assert!(repeated.is_ok(), "same tick time is monotonic");
@@ -135,18 +160,34 @@ mod tests {
         let mut observer = V3PresentationObserver::begin(owner.clone(), 1000, vec![]).unwrap();
         let scene = SceneEpoch::new(1).unwrap();
         let good = Observation::native_builder(owner.clone(), 1001)
-            .lifecycle(true, Some(scene), true).finish().unwrap();
+            .lifecycle(true, Some(scene), true)
+            .finish()
+            .unwrap();
         observer.tick(&good).unwrap();
         let clock_reversal = Observation::native_builder(owner.clone(), 999)
-            .lifecycle(true, Some(scene), true).finish().unwrap();
-        assert_eq!(observer.tick(&clock_reversal).err().unwrap().0, "CLOCK_STALE");
-        assert_eq!(observer.snapshot().unwrap().state, PresentationState::Pending);
-        assert_eq!(observer.snapshot().unwrap().first_failure,
-            Some(eidolon_model::linux_desktop_v3::Reason::AppPresentationFailed));
+            .lifecycle(true, Some(scene), true)
+            .finish()
+            .unwrap();
+        assert_eq!(
+            observer.tick(&clock_reversal).err().unwrap().0,
+            "CLOCK_STALE"
+        );
+        assert_eq!(
+            observer.snapshot().unwrap().state,
+            PresentationState::Pending
+        );
+        assert_eq!(
+            observer.snapshot().unwrap().first_failure,
+            Some(eidolon_model::linux_desktop_v3::Reason::AppPresentationFailed)
+        );
         observer.tick(&good).unwrap();
-        assert!(matches!(observer.snapshot().unwrap().state,
-            PresentationState::Stopping | PresentationState::Pending));
-        assert_eq!(observer.snapshot().unwrap().first_failure,
-            Some(eidolon_model::linux_desktop_v3::Reason::AppPresentationFailed));
+        assert!(matches!(
+            observer.snapshot().unwrap().state,
+            PresentationState::Stopping | PresentationState::Pending
+        ));
+        assert_eq!(
+            observer.snapshot().unwrap().first_failure,
+            Some(eidolon_model::linux_desktop_v3::Reason::AppPresentationFailed)
+        );
     }
 }

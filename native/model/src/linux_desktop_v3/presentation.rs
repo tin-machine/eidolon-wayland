@@ -222,7 +222,6 @@ impl Observation {
     record_methods!();
 }
 
-
 /// Native-only facts. The identity is never inferred from window title, app_id,
 /// SDK Entity ID, or a JSON fixture.
 #[derive(Clone, PartialEq, Eq)]
@@ -311,11 +310,23 @@ pub struct NativeObservationBuilder {
 impl NativeObservationBuilder {
     fn new(origin: NativeOrigin, now_ms: u64) -> Self {
         Self {
-            origin, now_ms, started: None, terminal: None, cancelled: false,
-            cleanup_pending: false, activity_visible: false, scene: None,
-            xr_focused: false, global_window_count: 0, windows: Vec::new(),
-            current_create: None, panel: None, ack: None, sdk: None,
-            frame: None, fallback: false,
+            origin,
+            now_ms,
+            started: None,
+            terminal: None,
+            cancelled: false,
+            cleanup_pending: false,
+            activity_visible: false,
+            scene: None,
+            xr_focused: false,
+            global_window_count: 0,
+            windows: Vec::new(),
+            current_create: None,
+            panel: None,
+            ack: None,
+            sdk: None,
+            frame: None,
+            fallback: false,
         }
     }
     pub fn lifecycle(mut self, visible: bool, scene: Option<SceneEpoch>, focused: bool) -> Self {
@@ -373,22 +384,38 @@ impl NativeObservationBuilder {
                 && self.windows.iter().all(|v| v.origin == self.origin),
             "APP_ORIGIN_UNKNOWN",
         )?;
-        let current = self.current_create.clone().map(NativeCreateIdentity::into_create);
+        let current = self
+            .current_create
+            .clone()
+            .map(NativeCreateIdentity::into_create);
         if let Some(identity) = &current {
             require(
                 identity.runtime == self.origin.runtime
                     && identity.target.session == self.origin.session
                     && Some(identity.target.scene) == self.scene
-                    && self.panel.as_ref().is_none_or(|v| v.create.clone().into_create() == *identity)
-                    && self.ack.as_ref().is_none_or(|v| v.create.clone().into_create() == *identity)
-                    && self.sdk.as_ref().is_none_or(|v| v.runtime == identity.runtime && v.target == identity.target)
-                    && self.frame.as_ref().is_none_or(|v| v.runtime == identity.runtime && v.target == identity.target),
+                    && self
+                        .panel
+                        .as_ref()
+                        .is_none_or(|v| v.create.clone().into_create() == *identity)
+                    && self
+                        .ack
+                        .as_ref()
+                        .is_none_or(|v| v.create.clone().into_create() == *identity)
+                    && self.sdk.as_ref().is_none_or(|v| {
+                        v.runtime == identity.runtime && v.target == identity.target
+                    })
+                    && self.frame.as_ref().is_none_or(|v| {
+                        v.runtime == identity.runtime && v.target == identity.target
+                    }),
                 "PRESENTATION_STALE",
             )?;
         } else {
             require(
-                self.panel.is_none() && self.ack.is_none() && self.sdk.is_none()
-                    && self.frame.is_none() && !self.fallback,
+                self.panel.is_none()
+                    && self.ack.is_none()
+                    && self.sdk.is_none()
+                    && self.frame.is_none()
+                    && !self.fallback,
                 "PRESENTATION_STALE",
             )?;
         }
@@ -396,34 +423,52 @@ impl NativeObservationBuilder {
             now_ms: self.now_ms,
             origin: self.origin,
             started: self.started,
-            terminal: self.terminal.map(|(origin, reason)| Terminal { origin, reason }),
+            terminal: self
+                .terminal
+                .map(|(origin, reason)| Terminal { origin, reason }),
             cancelled: self.cancelled,
             cleanup_pending: self.cleanup_pending,
             activity_visible: self.activity_visible,
             scene: self.scene,
             xr_focused: self.xr_focused,
             global_window_count: self.global_window_count,
-            windows: self.windows.into_iter().map(|v| Window {
-                origin: v.origin, window: v.window, role: v.role,
-                life: v.life, app_id: v.app_id, parent: v.parent,
-            }).collect(),
+            windows: self
+                .windows
+                .into_iter()
+                .map(|v| Window {
+                    origin: v.origin,
+                    window: v.window,
+                    role: v.role,
+                    life: v.life,
+                    app_id: v.app_id,
+                    parent: v.parent,
+                })
+                .collect(),
             current_create: current,
             evidence: Evidence {
                 panel: self.panel.map(|v| Panel {
-                    create: v.create.into_create(), applied: v.applied, error: v.error,
+                    create: v.create.into_create(),
+                    applied: v.applied,
+                    error: v.error,
                 }),
                 ack: self.ack.map(|v| Ack {
-                    create: v.create.into_create(), success: v.success,
+                    create: v.create.into_create(),
+                    success: v.success,
                 }),
                 sdk: self.sdk.map(|v| Sdk {
-                    runtime: v.runtime, target: v.target, bound: v.bound,
+                    runtime: v.runtime,
+                    target: v.target,
+                    bound: v.bound,
                     diagnostic: v.diagnostic,
                 }),
                 // A GL swap without window content is not a presentation frame.
                 frame: self.frame.and_then(|v| {
                     (v.windows_mode && v.content_frame_seen).then_some(Frame {
-                        runtime: v.runtime, target: v.target, frames: v.frames,
-                        paused: v.paused, presentation_paused: v.presentation_paused,
+                        runtime: v.runtime,
+                        target: v.target,
+                        frames: v.frames,
+                        paused: v.paused,
+                        presentation_paused: v.presentation_paused,
                     })
                 }),
             },
@@ -451,8 +496,12 @@ impl Observation {
         let e = &self.evidence;
         let compatible = e.panel.as_ref().is_none_or(|p| p.create == *current)
             && e.ack.as_ref().is_none_or(|a| a.create == *current)
-            && e.sdk.as_ref().is_none_or(|s| s.runtime == current.runtime && s.target == current.target)
-            && e.frame.as_ref().is_none_or(|f| f.runtime == current.runtime && f.target == current.target);
+            && e.sdk
+                .as_ref()
+                .is_none_or(|s| s.runtime == current.runtime && s.target == current.target)
+            && e.frame
+                .as_ref()
+                .is_none_or(|f| f.runtime == current.runtime && f.target == current.target);
         if !compatible
             || Some(current.target.scene) != self.scene
             || current.runtime != self.origin.runtime
@@ -467,7 +516,10 @@ impl Observation {
             acknowledged: e.panel.as_ref().is_some_and(|p| p.applied && !p.error)
                 && e.ack.as_ref().is_some_and(|a| a.success),
             binding_present: e.sdk.as_ref().is_some_and(|s| s.bound && !s.diagnostic),
-            renderer_frame_seen: e.frame.as_ref().is_some_and(|f| f.frames > 0 && !f.paused && !f.presentation_paused),
+            renderer_frame_seen: e
+                .frame
+                .as_ref()
+                .is_some_and(|f| f.frames > 0 && !f.paused && !f.presentation_paused),
         })
     }
 }
@@ -578,7 +630,9 @@ impl Startup {
             fallback_used: false,
         })
     }
-    pub fn origin(&self) -> &NativeOrigin { &self.origin }
+    pub fn origin(&self) -> &NativeOrigin {
+        &self.origin
+    }
     pub fn fail_observation(&self, error: &Error, cleanup_pending: bool) -> Self {
         let mut stopped = self.clone();
         stopped.cleanup_pending |= cleanup_pending;
