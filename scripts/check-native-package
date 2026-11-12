@@ -13,6 +13,7 @@ import zipfile
 
 from native_build import ABI, API, NDK, ROOT, TARGET, canonical
 import theme_licenses
+import apk_license_compliance
 
 
 def note_bytes(dump):
@@ -63,6 +64,8 @@ def inspect(apk):
                 or not re.fullmatch(r"[0-9a-f]{64}", dependencies.get("xkbcommon_static_sha256", ""))):
             raise ValueError("native dependencyの固定source情報が不一致です")
         theme_licenses.validate(archive, dependencies.get("theme"))
+        apk_license_compliance.validate(archive, dependencies.get("distribution"), dependencies["theme"])
+        apk_license_compliance.validate_android(archive, info["profile"])
         for name, entry in dependencies["keymaps"].items():
             path = "assets/keymaps/" + name + ".xkb"
             if names.count(path) != 1:

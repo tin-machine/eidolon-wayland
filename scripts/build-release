@@ -34,6 +34,7 @@ python3 "$repo_root/scripts/check-build-tools" | tee "$run_dir/build-tools.log"
   :app:assembleRelease :app:lintRelease :app:testReleaseUnitTest 2>&1 | tee "$run_dir/build.log"
 cp app/build/outputs/apk/release/app-release-unsigned.apk "$run_dir/eidolon-release-unsigned.apk"
 python3 "$repo_root/scripts/check-native-package" --apk "$run_dir/eidolon-release-unsigned.apk" | tee "$run_dir/native-package.json"
+python3 "$repo_root/scripts/check-apk-license" --apk "$run_dir/eidolon-release-unsigned.apk" | tee "$run_dir/apk-license-compliance.json"
 sha256sum "$run_dir/eidolon-release-unsigned.apk" | tee "$run_dir/apk.sha256"
 python3 - "$repo_root" "$run_dir" <<'PY'
 from pathlib import Path

@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Validate redistribution metadata in the actual built APK (no SDK or network needed)."""
+import argparse
+import json
+from pathlib import Path
+import zipfile
+
+import apk_license_compliance
+
+
+def inspect(apk):
+    with zipfile.ZipFile(apk) as archive:
+        names = archive.namelist()
+        if names.count("assets/native-build.json") != 1:
+            raise ValueError("APK native dependency inventory missing")
+        info = json.loads(archive.read("assets/native-build.json"))
+        deps = info.get("dependencies", {})
+        return {
+            "status": "pass",
+            "schema": 1,
+            "variant": info["build_info"]["profile"],
+            "mpl_source_records": apk_license_compliance.validate(
+                archive, deps.get("distribution"), deps.get("theme")),
+            "android_runtime_modules": apk_license_compliance.validate_android(
+                archive, info["build_info"]["profile"]),
+            "redistribution_gate": "known-notices-and-runtime-groups",
+            "legal_signoff": "not-implied",
+        }
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--apk", type=Path, required=True)
+    args = parser.parse_args()
+    print(json.dumps(inspect(args.apk), indent=2, ensure_ascii=False))
