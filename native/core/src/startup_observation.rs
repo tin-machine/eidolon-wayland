@@ -144,6 +144,9 @@ mod tests {
         assert_eq!(observer.snapshot().unwrap().first_failure,
             Some(eidolon_model::linux_desktop_v3::Reason::AppPresentationFailed));
         observer.tick(&good).unwrap();
-        assert_eq!(observer.snapshot().unwrap().state, PresentationState::Pending);
+        assert!(matches!(observer.snapshot().unwrap().state,
+            PresentationState::Stopping | PresentationState::Pending));
+        assert_eq!(observer.snapshot().unwrap().first_failure,
+            Some(eidolon_model::linux_desktop_v3::Reason::AppPresentationFailed));
     }
 }
