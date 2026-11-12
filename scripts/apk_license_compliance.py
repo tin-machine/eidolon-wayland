@@ -27,6 +27,14 @@ ANDROID_POLICY = {
     "com.squareup.moshi": ("Apache-2.0", "https://github.com/square/moshi"),
     "com.google.code.gson": ("Apache-2.0", "https://github.com/google/gson"),
 }
+# Explicitly approved exact Maven artifacts, not their entire publisher groups.
+# Both have published Apache-2.0 source/license declarations.
+ANDROID_EXACT_POLICY = {
+    "com.google.guava:listenablefuture:1.0": (
+        "Apache-2.0", "https://github.com/google/guava/tree/master/listenablefuture"),
+    "org.jetbrains:annotations:23.0.0": (
+        "Apache-2.0", "https://github.com/JetBrains/java-annotations"),
+}
 
 
 def digest(data):
@@ -135,6 +143,11 @@ def _android_policy_text():
     ]
     for group, (license_id, link) in sorted(ANDROID_POLICY.items()):
         lines.append(f"| {group} | {license_id} | {link} |")
+    lines.extend(["", "Specific reviewed Maven coordinates (not a publisher-wide allowlist):", "",
+                  "| Maven coordinate | Expected license | Upstream reference |",
+                  "| --- | --- | --- |"])
+    for coordinate, (license_id, link) in sorted(ANDROID_EXACT_POLICY.items()):
+        lines.append(f"| {coordinate} | {license_id} | {link} |")
     lines.extend([
         "", "This APK includes the Apache-2.0 text and a Meta SDK notice separately.",
         "Source distribution and APK release remain subject to the complete",
@@ -169,7 +182,10 @@ def validate(archive, stored, theme):
     return len(_source_records(theme))
 
 
-def _policy(group):
+def _policy(group, name, version):
+    exact = ANDROID_EXACT_POLICY.get(f"{group}:{name}:{version}")
+    if exact is not None:
+        return exact
     matches = [(key, value) for key, value in ANDROID_POLICY.items()
                if group == key or group.startswith(key + ".")]
     if not matches:
@@ -201,7 +217,7 @@ def validate_android(archive, profile):
                    for value in (group, name, version)):
             raise ValueError("Android runtime coordinate malformed")
         coordinates.append(f"{group}:{name}:{version}")
-        if _policy(group) is None:
+        if _policy(group, name, version) is None:
             unknown.append(coordinates[-1])
         if group == "com.meta.spatial":
             meta.add(name)

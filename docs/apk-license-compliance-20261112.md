@@ -30,7 +30,15 @@ Review the precise Maven coordinate in a PR, assess the upstream license and
 its notices, and only then update the documented policy in
 scripts/apk_license_compliance.py.
 
-The current allowlist is a **group-level expected license family**. A match
+Two additional **exact coordinates** are reviewed as Apache-2.0 based on their
+upstream license declarations: `com.google.guava:listenablefuture:1.0`
+(https://github.com/google/guava/tree/master/listenablefuture) and
+`org.jetbrains:annotations:23.0.0`
+(https://github.com/JetBrains/java-annotations).
+Their publisher groups are NOT implicitly allowlisted for other artifacts
+or versions.
+
+The current group-based policy is an **expected license family**. A match
 does NOT prove every upstream AAR/POM's license text, embedded assets or
 NOTICE requirements have been completely reviewed. The Apache-2.0 copy and
 Meta SDK link are provided, but neither overrides any upstream rights.
@@ -63,6 +71,10 @@ https://www.mozilla.org/en-US/MPL/2.0/FAQ/
 - scripts/build-android and scripts/build-release run both checks.
 - The GitHub Actions Android job runs the explicit check **before** uploading
   debug APK; a failing gate prevents the new artifact from being published.
+- **Public repositories never upload new debug APK artifacts** through this
+  workflow, even on a passing license check. Private repository builds retain
+  debug APK delivery. Publishing binaries to Public requires a separate
+  affirmative decision after full notice review.
 - scripts/tests/test_apk_license_compliance.py exercises accepted records and
   negative cases (missing/mutated notice, unknown Maven group, missing Meta
   module, incorrect variant, duplicate runtime module, modified MPL source).

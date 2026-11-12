@@ -29,6 +29,7 @@ def runtime(modules=None):
         *[{"group": "com.meta.spatial", "name": name, "version": "0.15.0"}
           for name in sorted(compliance.META_MODULES)],
     ]
+    modules = sorted(modules, key=lambda m: f'{m["group"]}:{m["name"]}:{m["version"]}')
     return compliance.canonical({"schema": 1, "variant": "debug", "modules": modules})
 
 
@@ -84,6 +85,29 @@ class APKComplianceTests(unittest.TestCase):
         entries = json.loads(runtime())
         entries["modules"].append({"group": "example.unknown", "name": "rogue", "version": "1.0"})
         entries["modules"].sort(key=lambda x: f"{x['group']}:{x['name']}:{x['version']}")
+        files[compliance.ANDROID_MANIFEST] = compliance.canonical(entries)
+        with archive(files) as apk, self.assertRaisesRegex(ValueError, "requires review"):
+            compliance.validate_android(apk, "debug")
+
+    def test_reviewed_exact_android_artifacts_are_allowed(self):
+        _, files = self.prepare()
+        entries = json.loads(runtime())
+        entries["modules"].extend([
+            {"group": "com.google.guava", "name": "listenablefuture", "version": "1.0"},
+            {"group": "org.jetbrains", "name": "annotations", "version": "23.0.0"},
+        ])
+        entries["modules"].sort(key=lambda m: f'{m["group"]}:{m["name"]}:{m["version"]}')
+        files[compliance.ANDROID_MANIFEST] = compliance.canonical(entries)
+        with archive(files) as apk:
+            self.assertEqual(compliance.validate_android(apk, "debug"), 7)
+
+    def test_other_versions_of_exact_artifacts_are_rejected(self):
+        _, files = self.prepare()
+        entries = json.loads(runtime())
+        entries["modules"].append({
+            "group": "org.jetbrains", "name": "annotations", "version": "24.0.0",
+        })
+        entries["modules"].sort(key=lambda m: f'{m["group"]}:{m["name"]}:{m["version"]}')
         files[compliance.ANDROID_MANIFEST] = compliance.canonical(entries)
         with archive(files) as apk, self.assertRaisesRegex(ValueError, "requires review"):
             compliance.validate_android(apk, "debug")
