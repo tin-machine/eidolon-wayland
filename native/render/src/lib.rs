@@ -622,6 +622,20 @@ impl Drop for Controller {
     }
 }
 
+/// Reset only the current-content proof when EGL context is lost. Cumulative
+/// draw counters remain diagnostic, not proof of a frame on the new context.
+fn invalidate_content_evidence(state: &State, active: &mut [Active]) {
+    for target in active.iter_mut() {
+        target.report.content_frame = None;
+        target.needs_redraw = true;
+    }
+    update(state, |shared| {
+        for target in &mut shared.snapshot.targets {
+            target.content_frame = None;
+        }
+    });
+}
+
 fn update(state: &State, action: impl FnOnce(&mut Shared)) {
     action(&mut state.0.lock().unwrap_or_else(|e| e.into_inner()));
 }
@@ -872,9 +886,9 @@ fn owner(state: &State) {
             }
             // この要求の失敗では旧themeを維持する。再要求またはcontext再生成時だけ再試行。
             if result == Err("EGL_CONTEXT_LOST") {
-                for target in &mut active {
-                    target.needs_redraw = true;
-                }
+                // The old EGL context must never lend its content frame to a
+                // later I4 presentation observation before a real redraw.
+                invalidate_content_evidence(state, &mut active);
                 theme_context_lost = true;
             } else if current {
                 theme_revision = requested_revision;
@@ -1040,6 +1054,9 @@ fn owner(state: &State) {
             }
             if lost.iter().any(|(_, error)| *error == "EGL_CONTEXT_LOST") {
                 lost.clear();
+                // Publish the invalidation *before* blocking on GPU rebuild:
+                // other threads may snapshot targets while EGL is rebuilding.
+                invalidate_content_evidence(state, &mut active);
                 busy(state, || {
                     if let Some(device) = device.as_mut() {
                         let _ = device.clear();
