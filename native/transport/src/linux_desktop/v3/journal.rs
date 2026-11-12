@@ -532,7 +532,7 @@ impl Journal {
     /// Only a trusted local/SDK finalizer may call clear. If unlink succeeds
     /// but directory fsync fails, the same owner retries the sync without a
     /// second unlink or pretending a missing path is proof of success.
-    pub fn clear(&mut self) -> Result<(), &'static str> {
+    pub(super) fn clear(&mut self) -> Result<(), &'static str> {
         if self.record.stage != Stage::Complete || !self.record.cleanup.complete() {
             return Err("DESKTOP_CLEANUP_PENDING");
         }

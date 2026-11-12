@@ -681,7 +681,7 @@ impl Controller {
         if s.report.session != Some(session) {
             return Status::Stale;
         }
-        if !matches!(s.desktop_profile, Some(DesktopConfig::V3 { .. }))
+        if !matches!(s.desktop_profile.as_ref(), Some(DesktopConfig::V3 { .. }))
             || s.report.state != State::ProbeReady
             || s.report.desktop_pending
             || !s.report.pending_cleanup.is_empty()
@@ -713,7 +713,7 @@ impl Controller {
         if s.report.session != Some(session) {
             return Status::Stale;
         }
-        if !matches!(s.desktop_profile, Some(DesktopConfig::V2 { .. }))
+        if !matches!(s.desktop_profile.as_ref(), Some(DesktopConfig::V2 { .. }))
             || s.report.state != State::ProbeReady
             || s.report.desktop_pending
             || !s.report.pending_cleanup.is_empty()
@@ -838,7 +838,7 @@ impl Controller {
         if s.report.session != Some(session) {
             return Status::Stale;
         }
-        if !matches!(s.desktop_profile, Some(DesktopConfig::V3 { .. }))
+        if !matches!(s.desktop_profile.as_ref(), Some(DesktopConfig::V3 { .. }))
             || s.report.state != State::CleanupPending
             || !s.report.desktop_pending
             || s.report.owned_connections != 1
@@ -866,7 +866,7 @@ impl Controller {
         if s.report.session != Some(session) {
             return Status::Stale;
         }
-        if !matches!(s.desktop_profile, Some(DesktopConfig::V2 { .. }))
+        if !matches!(s.desktop_profile.as_ref(), Some(DesktopConfig::V2 { .. }))
             || s.report.state != State::CleanupPending
             || !s.report.desktop_pending
             || s.report.owned_connections != 1
@@ -1631,7 +1631,7 @@ async fn connection(
                             &connect.cancel,
                         ).await;
                         let report = recovery.report;
-                        drop(recovery.journal);
+                        drop(recovery.deferred);
                         let pending = v3::journal::pending(files);
                         signals.update(|s| {
                             s.forward_busy = false;

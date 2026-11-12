@@ -7,6 +7,7 @@ use super::{
     owner::{self, OwnerTurn},
 };
 use crate::forward;
+use super::reclamation::DeferredReclamation;
 use eidolon_model::ids::{CommandSeq, SessionId};
 use russh::client;
 use serde::Serialize;
@@ -64,7 +65,7 @@ pub struct Report {
 /// owns the durable remote proof; only the trusted retirement actor may clear.
 pub struct RunOutcome {
     pub report: Report,
-    pub deferred: Option<Journal>,
+    pub deferred: Option<DeferredReclamation>,
 }
 
 pub(crate) async fn serve<H: client::Handler>(
@@ -284,7 +285,10 @@ pub(crate) async fn serve<H: client::Handler>(
         match current.finish(proof).and_then(|()| current.durable_complete()) {
             Ok(Some(_)) => {
                 report.remote_complete = true;
-                deferred = Some(current);
+                deferred = Some(
+                    DeferredReclamation::from_remote(current, request.binding)
+                        .expect("durable Complete must admit a deferred owner"),
+                );
             }
             Ok(None) => {
                 report.error.get_or_insert("DESKTOP_CLEANUP_PENDING");

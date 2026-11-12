@@ -3,6 +3,7 @@
 use super::{
     Pins, Receipt,
     journal::{Cleanup, Journal, Stage},
+    reclamation::DeferredReclamation,
     owner, sources,
 };
 use crate::forward;
@@ -51,7 +52,7 @@ pub struct RecoveryReport {
 /// or forward lease crosses this boundary.
 pub struct RemoteRecovery {
     pub report: RecoveryReport,
-    pub journal: Option<Journal>,
+    pub deferred: Option<DeferredReclamation>,
 }
 
 pub async fn recover_remote<H: client::Handler>(
@@ -60,7 +61,7 @@ pub async fn recover_remote<H: client::Handler>(
     request: Recovery<'_>,
     cancel: &CancellationToken,
 ) -> RemoteRecovery {
-    let mut deferred_journal = None;
+    let mut deferred = None;
     let mut report = RecoveryReport {
         session: request.session,
         origin_session: None,
@@ -104,7 +105,7 @@ pub async fn recover_remote<H: client::Handler>(
             report.receipt_written = proof.receipt_written;
             report.channel_complete = proof.channel_complete;
             report.router_drained = proof.router_drained;
-            deferred_journal = Some(journal);
+            deferred = Some(DeferredReclamation::from_remote(journal, &binding)?);
             return Ok(());
         }
         report.boot_identity_known = expected_boot != "-";
@@ -172,11 +173,11 @@ pub async fn recover_remote<H: client::Handler>(
         })?;
         // This proof is independent of Waypipe, local windows and SDK.
         journal.durable_complete()?.ok_or("DESKTOP_CLEANUP_PENDING")?;
-        deferred_journal = Some(journal);
+        deferred = Some(DeferredReclamation::from_remote(journal, &binding)?);
         Ok(())
     }.await;
     report.error = result.err();
-    RemoteRecovery { report, journal: deferred_journal }
+    RemoteRecovery { report, deferred }
 }
 
 /// Compatibility observation: without trusted local/SDK evidence this API
