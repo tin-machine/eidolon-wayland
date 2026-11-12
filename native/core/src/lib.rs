@@ -1,3 +1,4 @@
+pub mod startup_observation;
 pub mod compositor;
 pub mod diagnostics;
 pub mod helper;
