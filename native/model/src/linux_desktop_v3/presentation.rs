@@ -441,6 +441,9 @@ impl Observation {
     pub fn origin(&self) -> &NativeOrigin {
         &self.origin
     }
+    pub fn has_current_create(&self) -> bool {
+        self.current_create.is_some()
+    }
     /// Exact current Create, accepted ACK, bound app SDK target, and fresh content
     /// frame are required. Never use a previous target's successful facts.
     pub fn current_evidence(&self) -> Option<CurrentEvidence> {
