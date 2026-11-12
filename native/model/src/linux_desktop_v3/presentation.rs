@@ -222,6 +222,253 @@ impl Observation {
     record_methods!();
 }
 
+
+/// Native-only facts. The identity is never inferred from window title, app_id,
+/// SDK Entity ID, or a JSON fixture.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeCreateIdentity {
+    pub runtime: RuntimeHandle,
+    pub target: TargetKey,
+    pub command_seq: CommandSeq,
+}
+impl NativeCreateIdentity {
+    fn into_create(self) -> Create {
+        Create {
+            runtime: self.runtime,
+            target: self.target,
+            command_seq: self.command_seq,
+            action: Action::Create,
+        }
+    }
+}
+
+pub struct NativeWindowFact {
+    pub origin: NativeOrigin,
+    pub window: WindowId,
+    pub role: Role,
+    pub life: Life,
+    pub app_id: Option<String>,
+    pub parent: Parent,
+}
+pub struct NativePanelFact {
+    pub create: NativeCreateIdentity,
+    pub applied: bool,
+    pub error: bool,
+}
+pub struct NativeAckFact {
+    pub create: NativeCreateIdentity,
+    pub success: bool,
+}
+pub struct NativeSdkFact {
+    pub runtime: RuntimeHandle,
+    pub target: TargetKey,
+    pub bound: bool,
+    pub diagnostic: bool,
+}
+/// The caller must obtain windows_mode and content_frame_seen from the
+/// renderer's *current* target report, not from a cumulative frame counter.
+pub struct NativeFrameFact {
+    pub runtime: RuntimeHandle,
+    pub target: TargetKey,
+    pub frames: u64,
+    pub paused: bool,
+    pub presentation_paused: bool,
+    pub windows_mode: bool,
+    pub content_frame_seen: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct CurrentEvidence {
+    pub runtime: RuntimeHandle,
+    pub target: TargetKey,
+    pub create_command: CommandSeq,
+    pub acknowledged: bool,
+    pub binding_present: bool,
+    pub renderer_frame_seen: bool,
+}
+
+/// Build Observation from native owner snapshots without serializing a fixture
+/// or manufacturing a matching identity for evidence that came from elsewhere.
+pub struct NativeObservationBuilder {
+    now_ms: u64,
+    origin: NativeOrigin,
+    started: Option<NativeOrigin>,
+    terminal: Option<(NativeOrigin, StopReason)>,
+    cancelled: bool,
+    cleanup_pending: bool,
+    activity_visible: bool,
+    scene: Option<SceneEpoch>,
+    xr_focused: bool,
+    global_window_count: u32,
+    windows: Vec<NativeWindowFact>,
+    current_create: Option<NativeCreateIdentity>,
+    panel: Option<NativePanelFact>,
+    ack: Option<NativeAckFact>,
+    sdk: Option<NativeSdkFact>,
+    frame: Option<NativeFrameFact>,
+    fallback: bool,
+}
+impl NativeObservationBuilder {
+    fn new(origin: NativeOrigin, now_ms: u64) -> Self {
+        Self {
+            origin, now_ms, started: None, terminal: None, cancelled: false,
+            cleanup_pending: false, activity_visible: false, scene: None,
+            xr_focused: false, global_window_count: 0, windows: Vec::new(),
+            current_create: None, panel: None, ack: None, sdk: None,
+            frame: None, fallback: false,
+        }
+    }
+    pub fn lifecycle(mut self, visible: bool, scene: Option<SceneEpoch>, focused: bool) -> Self {
+        self.activity_visible = visible;
+        self.scene = scene;
+        self.xr_focused = focused;
+        self
+    }
+    pub fn transport(
+        mut self,
+        started: Option<NativeOrigin>,
+        terminal: Option<(NativeOrigin, StopReason)>,
+        cancelled: bool,
+        cleanup_pending: bool,
+    ) -> Self {
+        self.started = started;
+        self.terminal = terminal;
+        self.cancelled = cancelled;
+        self.cleanup_pending = cleanup_pending;
+        self
+    }
+    pub fn windows(mut self, global_count: u32, windows: Vec<NativeWindowFact>) -> Self {
+        self.global_window_count = global_count;
+        self.windows = windows;
+        self
+    }
+    pub fn current_create(mut self, create: Option<NativeCreateIdentity>) -> Self {
+        self.current_create = create;
+        self
+    }
+    pub fn panel(mut self, panel: Option<NativePanelFact>) -> Self {
+        self.panel = panel;
+        self
+    }
+    pub fn ack(mut self, ack: Option<NativeAckFact>) -> Self {
+        self.ack = ack;
+        self
+    }
+    pub fn sdk(mut self, sdk: Option<NativeSdkFact>) -> Self {
+        self.sdk = sdk;
+        self
+    }
+    pub fn frame(mut self, frame: Option<NativeFrameFact>) -> Self {
+        self.frame = frame;
+        self
+    }
+    pub fn fallback(mut self, allowed: bool) -> Self {
+        self.fallback = allowed;
+        self
+    }
+    pub fn finish(self) -> Result<Observation> {
+        require(
+            self.started.as_ref().is_none_or(|v| v == &self.origin)
+                && self.terminal.as_ref().is_none_or(|v| v.0 == self.origin)
+                && self.windows.iter().all(|v| v.origin == self.origin),
+            "APP_ORIGIN_UNKNOWN",
+        )?;
+        let current = self.current_create.clone().map(NativeCreateIdentity::into_create);
+        if let Some(identity) = &current {
+            require(
+                identity.runtime == self.origin.runtime
+                    && identity.target.session == self.origin.session
+                    && Some(identity.target.scene) == self.scene
+                    && self.panel.as_ref().is_none_or(|v| v.create.clone().into_create() == *identity)
+                    && self.ack.as_ref().is_none_or(|v| v.create.clone().into_create() == *identity)
+                    && self.sdk.as_ref().is_none_or(|v| v.runtime == identity.runtime && v.target == identity.target)
+                    && self.frame.as_ref().is_none_or(|v| v.runtime == identity.runtime && v.target == identity.target),
+                "PRESENTATION_STALE",
+            )?;
+        } else {
+            require(
+                self.panel.is_none() && self.ack.is_none() && self.sdk.is_none()
+                    && self.frame.is_none() && !self.fallback,
+                "PRESENTATION_STALE",
+            )?;
+        }
+        let observation = Observation {
+            now_ms: self.now_ms,
+            origin: self.origin,
+            started: self.started,
+            terminal: self.terminal.map(|(origin, reason)| Terminal { origin, reason }),
+            cancelled: self.cancelled,
+            cleanup_pending: self.cleanup_pending,
+            activity_visible: self.activity_visible,
+            scene: self.scene,
+            xr_focused: self.xr_focused,
+            global_window_count: self.global_window_count,
+            windows: self.windows.into_iter().map(|v| Window {
+                origin: v.origin, window: v.window, role: v.role,
+                life: v.life, app_id: v.app_id, parent: v.parent,
+            }).collect(),
+            current_create: current,
+            evidence: Evidence {
+                panel: self.panel.map(|v| Panel {
+                    create: v.create.into_create(), applied: v.applied, error: v.error,
+                }),
+                ack: self.ack.map(|v| Ack {
+                    create: v.create.into_create(), success: v.success,
+                }),
+                sdk: self.sdk.map(|v| Sdk {
+                    runtime: v.runtime, target: v.target, bound: v.bound,
+                    diagnostic: v.diagnostic,
+                }),
+                // A GL swap without window content is not a presentation frame.
+                frame: self.frame.and_then(|v| {
+                    (v.windows_mode && v.content_frame_seen).then_some(Frame {
+                        runtime: v.runtime, target: v.target, frames: v.frames,
+                        paused: v.paused, presentation_paused: v.presentation_paused,
+                    })
+                }),
+            },
+            fallback: self.fallback,
+        };
+        observation.validate()?;
+        Ok(observation)
+    }
+}
+
+impl Observation {
+    pub fn native_builder(origin: NativeOrigin, now_ms: u64) -> NativeObservationBuilder {
+        NativeObservationBuilder::new(origin, now_ms)
+    }
+    pub fn origin(&self) -> &NativeOrigin {
+        &self.origin
+    }
+    /// Exact current Create, accepted ACK, bound app SDK target, and fresh content
+    /// frame are required. Never use a previous target's successful facts.
+    pub fn current_evidence(&self) -> Option<CurrentEvidence> {
+        let current = self.current_create.as_ref()?;
+        let e = &self.evidence;
+        let compatible = e.panel.as_ref().is_none_or(|p| p.create == *current)
+            && e.ack.as_ref().is_none_or(|a| a.create == *current)
+            && e.sdk.as_ref().is_none_or(|s| s.runtime == current.runtime && s.target == current.target)
+            && e.frame.as_ref().is_none_or(|f| f.runtime == current.runtime && f.target == current.target);
+        if !compatible
+            || Some(current.target.scene) != self.scene
+            || current.runtime != self.origin.runtime
+            || current.target.session != self.origin.session
+        {
+            return None;
+        }
+        Some(CurrentEvidence {
+            runtime: current.runtime,
+            target: current.target,
+            create_command: current.command_seq,
+            acknowledged: e.panel.as_ref().is_some_and(|p| p.applied && !p.error)
+                && e.ack.as_ref().is_some_and(|a| a.success),
+            binding_present: e.sdk.as_ref().is_some_and(|s| s.bound && !s.diagnostic),
+            renderer_frame_seen: e.frame.as_ref().is_some_and(|f| f.frames > 0 && !f.paused && !f.presentation_paused),
+        })
+    }
+}
+
 fn topology(windows: &[Window], main: WindowId, origin: &NativeOrigin) -> bool {
     let nodes: BTreeMap<_, _> = windows.iter().map(|w| (w.window, w)).collect();
     for window in windows.iter().filter(|w| w.life != Life::Destroyed) {
@@ -328,6 +575,17 @@ impl Startup {
             fallback_used: false,
         })
     }
+    pub fn origin(&self) -> &NativeOrigin { &self.origin }
+    pub fn fail_observation(&self, error: &Error, cleanup_pending: bool) -> Self {
+        let mut stopped = self.clone();
+        stopped.cleanup_pending |= cleanup_pending;
+        let reason = match error.0 {
+            "APP_ORIGIN_UNKNOWN" => Reason::AppOriginUnknown,
+            "APP_WINDOW_UNSUPPORTED" => Reason::AppWindowUnsupported,
+            _ => Reason::AppPresentationFailed,
+        };
+        stopped.stop(Some(reason))
+    }
     pub fn summary(&self) -> Value {
         json!({"state":self.phase,"main":self.main,"first_adopted_ms":self.first_adopted_ms,
             "startup_completed":self.startup_completed,"first_failure":self.first_failure,
@@ -372,7 +630,8 @@ impl Startup {
             || (!self.startup_completed
                 && (!v.activity_visible || v.scene.is_none() || !v.xr_focused))
         {
-            return Ok(s.stop(Some(Reason::AppStartupCancelled)));
+            let reason = (!self.startup_completed).then_some(Reason::AppStartupCancelled);
+            return Ok(s.stop(reason));
         }
         if !self.startup_completed {
             let deadline = self
