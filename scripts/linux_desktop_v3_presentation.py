@@ -195,7 +195,7 @@ class Startup:
             return stop(None if self.startup_completed else Reason.APP_STARTUP_CANCELLED.value)
         if v["cancelled"] or (not self.startup_completed and
                 (not v["activity_visible"] or v["scene"] is None or not v["xr_focused"])):
-            return stop(Reason.APP_STARTUP_CANCELLED.value)
+            return stop(None if self.startup_completed else Reason.APP_STARTUP_CANCELLED.value)
         if not self.startup_completed:
             deadline = self.t0_ms + MAIN_WAIT_MS if self.main is None else self.first_adopted_ms + SDK_WAIT_MS
             if v["now_ms"] >= deadline:
