@@ -182,6 +182,13 @@ pub fn check_v2_barrier(files: &Path) -> Result<(), &'static str> {
         Ok(())
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClearState {
+    Linked,
+    UnlinkedNeedsSync,
+    Cleared,
+}
+
 pub struct Journal {
     directory: PathBuf,
     path: PathBuf,
@@ -190,6 +197,7 @@ pub struct Journal {
     device: u64,
     inode: u64,
     record: Record,
+    clear_state: ClearState,
 }
 fn check_directory(path: &Path, private: bool) -> Result<(), &'static str> {
     let m = std::fs::symlink_metadata(path).map_err(|_| "DESKTOP_V3_JOURNAL_INVALID")?;
@@ -415,6 +423,7 @@ impl Journal {
             device: m.dev(),
             inode: m.ino(),
             record,
+            clear_state: ClearState::Linked,
         })
     }
     fn unchanged(&self) -> Result<(), &'static str> {
@@ -490,6 +499,26 @@ impl Journal {
         next.stage = Stage::Unknown;
         self.persist(next)
     }
+    /// Complete is durable remote/transport proof only. The caller must
+    /// separately establish local and SDK retirement before clearing.
+    /// Revalidation also handles a finish() whose rename succeeded but the
+    /// final directory fsync failed.
+    pub fn durable_complete(&self) -> Result<Option<Cleanup>, &'static str> {
+        if self.record.stage != Stage::Complete {
+            return Ok(None);
+        }
+        if !self.record.cleanup.complete() {
+            return Err("DESKTOP_CLEANUP_PENDING");
+        }
+        self.unchanged()?;
+        sync(&self.directory)?;
+        Ok(Some(self.record.cleanup.clone()))
+    }
+
+    pub fn stage(&self) -> Stage {
+        self.record.stage
+    }
+
     pub fn finish(&mut self, cleanup: Cleanup) -> Result<(), &'static str> {
         let mut next = self.record.clone();
         next.stage = if cleanup.complete() {
@@ -500,13 +529,32 @@ impl Journal {
         next.cleanup = cleanup;
         self.persist(next)
     }
+    /// Only a trusted local/SDK finalizer may call clear. If unlink succeeds
+    /// but directory fsync fails, the same owner retries the sync without a
+    /// second unlink or pretending a missing path is proof of success.
     pub fn clear(&mut self) -> Result<(), &'static str> {
         if self.record.stage != Stage::Complete || !self.record.cleanup.complete() {
             return Err("DESKTOP_CLEANUP_PENDING");
         }
-        self.unchanged()?;
-        std::fs::remove_file(&self.path).map_err(|_| "DESKTOP_V3_JOURNAL_CLEAR_FAILED")?;
-        sync(&self.directory)
+        match self.clear_state {
+            ClearState::Cleared => return Ok(()),
+            ClearState::Linked => {
+                self.unchanged()?;
+                std::fs::remove_file(&self.path)
+                    .map_err(|_| "DESKTOP_V3_JOURNAL_CLEAR_FAILED")?;
+                self.clear_state = ClearState::UnlinkedNeedsSync;
+            }
+            ClearState::UnlinkedNeedsSync => {
+                check_directory(&self.directory, true)?;
+                match std::fs::symlink_metadata(&self.path) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    _ => return Err("DESKTOP_V3_JOURNAL_OWNER_CHANGED"),
+                }
+            }
+        }
+        sync(&self.directory)?;
+        self.clear_state = ClearState::Cleared;
+        Ok(())
     }
 }
 

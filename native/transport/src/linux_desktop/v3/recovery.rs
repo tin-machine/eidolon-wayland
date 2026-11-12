@@ -2,7 +2,7 @@
 //! successful receipt or a verified previous boot can retire remote ownership.
 use super::{
     Pins, Receipt,
-    journal::{Cleanup, Journal},
+    journal::{Cleanup, Journal, Stage},
     owner, sources,
 };
 use crate::forward;
@@ -47,12 +47,20 @@ pub struct RecoveryReport {
     pub error: Option<&'static str>,
 }
 
-pub async fn recover<H: client::Handler>(
+/// Durable remote proof with the still-owned journal. No SSH handle, Router
+/// or forward lease crosses this boundary.
+pub struct RemoteRecovery {
+    pub report: RecoveryReport,
+    pub journal: Option<Journal>,
+}
+
+pub async fn recover_remote<H: client::Handler>(
     client: &client::Handle<H>,
     router: &Arc<forward::Router>,
     request: Recovery<'_>,
     cancel: &CancellationToken,
-) -> RecoveryReport {
+) -> RemoteRecovery {
+    let mut deferred_journal = None;
     let mut report = RecoveryReport {
         session: request.session,
         origin_session: None,
@@ -84,6 +92,21 @@ pub async fn recover<H: client::Handler>(
         };
         report.origin_session = Some(binding.session());
         let expected_boot = journal.boot_id().unwrap_or("-").to_owned();
+        // Persisted Complete may be reused after authentication/capture
+        // matching. Never rerun C2 or downgrade to Unknown.
+        if journal.stage() == Stage::Complete {
+            let proof = journal.durable_complete()?.ok_or("DESKTOP_CLEANUP_PENDING")?;
+            report.boot_identity_known = expected_boot != "-";
+            report.boot_changed = proof.boot_changed;
+            report.process_complete = proof.process_complete;
+            report.pipes_eof = proof.pipes_eof;
+            report.remote_cleaned = proof.remote_cleaned;
+            report.receipt_written = proof.receipt_written;
+            report.channel_complete = proof.channel_complete;
+            report.router_drained = proof.router_drained;
+            deferred_journal = Some(journal);
+            return Ok(());
+        }
         report.boot_identity_known = expected_boot != "-";
         let bootstrap=Bootstrap::recover(binding.context().clone(),binding.pins().clone(),&expected_boot).map_err(|e|e.0)?;
         let command = owner::command(&binding, &bootstrap)?;
@@ -147,11 +170,24 @@ pub async fn recover<H: client::Handler>(
             channel_complete: report.channel_complete, forward_retired: request.previous_connection_closed,
             router_drained: report.router_drained, boot_changed: report.boot_changed,
         })?;
-        journal.clear()?; report.pending = false;
+        // This proof is independent of Waypipe, local windows and SDK.
+        journal.durable_complete()?.ok_or("DESKTOP_CLEANUP_PENDING")?;
+        deferred_journal = Some(journal);
         Ok(())
     }.await;
     report.error = result.err();
-    report
+    RemoteRecovery { report, journal: deferred_journal }
+}
+
+/// Compatibility observation: without trusted local/SDK evidence this API
+/// does not clear Complete, and pending therefore remains true.
+pub async fn recover<H: client::Handler>(
+    client: &client::Handle<H>,
+    router: &Arc<forward::Router>,
+    request: Recovery<'_>,
+    cancel: &CancellationToken,
+) -> RecoveryReport {
+    recover_remote(client, router, request, cancel).await.report
 }
 
 #[cfg(test)]

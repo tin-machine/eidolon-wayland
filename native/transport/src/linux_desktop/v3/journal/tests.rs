@@ -224,3 +224,38 @@ fn recovery_dispatch_selects_captured_journal_and_rejects_cross_version() {
     );
     assert!(validate_recovery_selection(&dir.0, Version::V2).is_ok());
 }
+
+#[test]
+fn durable_complete_can_resume_without_pretending_local_retirement() {
+    let dir = Temp::new();
+    let mut journal = Journal::reserve_record(&dir.0, &binding()).unwrap();
+    journal.prepared(BOOT).unwrap();
+    journal.finish(complete()).unwrap();
+    let proof = journal.durable_complete().unwrap().unwrap();
+    assert!(proof.process_complete && proof.remote_cleaned);
+    assert!(pending(&dir.0).unwrap().is_some());
+    drop(journal);
+    let profile = profile();
+    let binding = binding();
+    let storage = storage();
+    let (mut resumed, _) =
+        Journal::matching(&request(&dir.0, &profile, binding.pins(), &storage))
+            .unwrap().unwrap();
+    assert!(matches!(resumed.stage(), Stage::Complete));
+    assert!(resumed.durable_complete().unwrap().is_some());
+    resumed.clear().unwrap();
+    assert!(pending(&dir.0).unwrap().is_none());
+}
+
+#[test]
+fn interrupted_unlink_resumes_at_directory_sync() {
+    let dir = Temp::new();
+    let mut journal = Journal::reserve_record(&dir.0, &binding()).unwrap();
+    journal.finish(complete()).unwrap();
+    // Simulate successful unlink followed by directory fsync failure.
+    std::fs::remove_file(&journal.path).unwrap();
+    journal.clear_state = ClearState::UnlinkedNeedsSync;
+    journal.clear().unwrap();
+    assert_eq!(journal.clear_state, ClearState::Cleared);
+    journal.clear().unwrap();
+}
