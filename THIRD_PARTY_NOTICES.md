@@ -1,5 +1,7 @@
 # Third-party components
 
+Eidolon Waylandの独自コードのうちライセンスを付与できる部分は、ルートの[MIT License](LICENSE)で公開しています。このMITは、以下の第三者コンポーネントを再ライセンスするものではありません。コピー・改変・リンク・バンドルした素材には、それぞれの上流ライセンスと権利表示が引き続き適用されます。
+
 ## L7a host test fixture
 
 `scripts/tests/fixtures/mousepad-0.6.3.gschema.xml` は Mousepad 0.6.3 の
@@ -44,3 +46,13 @@ debug専用のSHM clientはwayland-client 0.31.14（MIT）を使う。
 Meta Spatial SDK、AndroidX/Compose等はGradleから取得する依存で、それぞれの利用条件が適用される。SDKのバイナリをこのrepositoryへ取り込まない。製品配布時のライセンス一覧・同梱noticeの監査は今後の受入項目である。
 
 SDKの接続方法・版選定は[Meta公式samplesの固定commit](https://github.com/meta-quest/Meta-Spatial-SDK-Samples/tree/822f4d1ec967d4975ae8db386502b60cda5218c0)と公式文書を参照した。Termux APKは[公式release](https://github.com/termux/termux-app/releases/tag/v0.118.3)から端末へ別途導入し、repositoryには同梱しない。
+
+## ソース公開とAPK配布の区別
+
+ルートの[LICENSE](LICENSE)はEidolonの独自実装に対するMITライセンスであり、Meta Spatial SDK、AndroidX、Cargoの依存、第三者のfixtureやassetsを一括してMITにするものではありません。
+
+GitHub Actionsからダウンロード可能なdebug APKにはMeta SDKを含むバイナリ依存が入っています。リポジトリのPublic化は、保存中のActions artifactを第三者に公開する可能性があるため、ReleasesでAPKを配布しない場合も再配布条件を確認する必要があります。
+
+**未完了の項目:** Android/GradleとRust/Cargoの推移依存のライセンス・NOTICE棚卸し、実APKに含まれるMeta SDKの配布条件、`META-INF/LICENSE`除外後の通知の完全性、SDKに含まれるテスト証明書・鍵の用途確認。正式配布前に各項目を検証します。
+
+[OSSライセンス・公開前レビュー（2026-11-12）](docs/oss-license-publication-review-20261112.md)に調査結果と判断基準を記録しています。
