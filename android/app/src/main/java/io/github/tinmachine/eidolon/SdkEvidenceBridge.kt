@@ -36,6 +36,7 @@ internal class SdkEvidenceBridge {
     private data class Record(
         val lease: Lease,
         var sealed: Boolean = false,
+        var registrationResolved: Boolean = false,
         var bindingRegistered: Boolean = false,
         var bindingReleased: Boolean = false,
         var entityCreated: Boolean = false,
@@ -49,7 +50,7 @@ internal class SdkEvidenceBridge {
         var failed: Boolean = false,
     ) {
         fun complete(): Boolean =
-            sealed && !failed && callbacks == 0 && producers == 0 &&
+            sealed && registrationResolved && !failed && callbacks == 0 && producers == 0 &&
                 (!bindingRegistered || bindingReleased) &&
                 (!bindingRegistered || rendererDetached) &&
                 (!entityCreated || (entityDestroyRequested &&
@@ -110,7 +111,14 @@ internal class SdkEvidenceBridge {
         }
     }
 
-    fun registered(id: Lease) = update(id) { it.bindingRegistered = true }
+    fun registered(id: Lease) = update(id) {
+        it.registrationResolved = true
+        it.bindingRegistered = true
+    }
+    fun registrationRejected(id: Lease) = update(id) {
+        require(!it.bindingRegistered)
+        it.registrationResolved = true
+    }
     fun entityCreated(id: Lease) = update(id) { it.entityCreated = true }
     fun rendererDetached(id: Lease) = update(id) { it.rendererDetached = true }
     fun destroyRequested(id: Lease) = update(id) {
