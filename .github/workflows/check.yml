@@ -14,7 +14,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  scope:
+    name: CI scope (host/android)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      host: ${{ steps.paths.outputs.host }}
+      android: ${{ steps.paths.outputs.android }}
+      settings: ${{ steps.paths.outputs.settings }}
+      mousepad: ${{ steps.paths.outputs.mousepad }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Classify changed paths (baseline-controlled PR classifier)
+        id: paths
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          script=scripts/ci/ci_scope.py
+          # On PRs, prefer the trusted base branch copy: changing the gate
+          # itself must not allow the submitted PR to suppress its own tests.
+          if [[ "$CI_EVENT" == "pull_request" ]] && git cat-file -e "${CI_BASE_SHA}:scripts/ci/ci_scope.py" 2>/dev/null; then
+            git show "${CI_BASE_SHA}:scripts/ci/ci_scope.py" > "$RUNNER_TEMP/ci_scope.py"
+            script="$RUNNER_TEMP/ci_scope.py"
+          fi
+          python3 "$script"
   host:
+    needs: scope
+    if: ${{ needs.scope.outputs.host == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -43,6 +75,8 @@ jobs:
         run: scripts/check-waypipe-ime
 
   android:
+    needs: scope
+    if: ${{ needs.scope.outputs.android == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -144,8 +178,8 @@ jobs:
           compression-level: 0
 
   report:
-    if: ${{ always() && github.event_name != 'pull_request' }}
-    needs: [host, android]
+    if: ${{ always() && github.event_name != 'pull_request' && needs.scope.result == 'success' && (needs.scope.outputs.host == 'true' || needs.scope.outputs.android == 'true') }}
+    needs: [scope, host, android]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -155,6 +189,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CI_NEEDS: ${{ toJSON(needs) }}
+          CI_SCOPE_OUTPUTS: ${{ toJSON(needs.scope.outputs) }}
           CI_REPOSITORY: ${{ github.repository }}
           CI_SHA: ${{ github.sha }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -162,9 +197,13 @@ jobs:
           python3 - <<'PY'
           import json, os, urllib.request
           results = json.loads(os.environ['CI_NEEDS'])
+          required = json.loads(os.environ['CI_SCOPE_OUTPUTS'])
           endpoint = 'https://api.github.com/repos/' + os.environ['CI_REPOSITORY'] + '/statuses/' + os.environ['CI_SHA']
           for job in ('host', 'android'):
               outcome = results[job]['result']
+              if outcome == 'skipped' and required[job] == 'false':
+                  print(job + ': not applicable (scoped out)')
+                  continue
               state = {'success': 'success', 'failure': 'failure'}.get(outcome, 'error')
               payload = {'state': state, 'context': 'eidolon/' + job, 'description': job + ': ' + outcome, 'target_url': os.environ['CI_RUN_URL']}
               request = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10'})
