@@ -139,7 +139,7 @@ mod tests {
         observer.tick(&good).unwrap();
         let clock_reversal = Observation::native_builder(owner.clone(), 999)
             .lifecycle(true, Some(scene), true).finish().unwrap();
-        assert_eq!(observer.tick(&clock_reversal).unwrap_err().0, "CLOCK_STALE");
+        assert_eq!(observer.tick(&clock_reversal).err().unwrap().0, "CLOCK_STALE");
         assert_eq!(observer.snapshot().unwrap().state, PresentationState::Pending);
         assert_eq!(observer.snapshot().unwrap().first_failure,
             Some(eidolon_model::linux_desktop_v3::Reason::AppPresentationFailed));
