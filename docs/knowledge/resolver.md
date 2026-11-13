@@ -1,6 +1,6 @@
 # D3 — deterministic documentation resolver
 
-Implementation: [scripts/docs.py](../../scripts/docs.py). D3 is a **read-only, offline** helper. D1's 167-row inventory is not a managed-document registry; legacy files are not automatically elevated to approved contracts. D4 adds an unconditional `Documentation integrity` CI job; marking it as a required Ruleset check is an administrator operation. D5 Linux Desktop v3 migration is **not yet implemented**.
+Implementation: [scripts/docs.py](../../scripts/docs.py). D3 is a **read-only, offline** helper. D1's 167-row inventory is not a managed-document registry; legacy files are not automatically elevated to approved contracts. D4 adds an unconditional `Documentation integrity` CI job; marking it as a required Ruleset check is an administrator operation. D5 registers 10 selected Linux Desktop v3 documents with **proposed/historical** metadata; it does not approve designs or verify unmerged I2/I4 code. See [v3 feature index](../features/linux-desktop-v3/README.md).
 
 ## Usage
 
@@ -13,13 +13,14 @@ python3 scripts/docs.py drift --feature documentation-system --task D3
 python3 -m unittest discover -s scripts/tests -p test_docs_resolver.py -v
 ~~~
 
-When Linux Desktop v3 is registered in D5, the following interface becomes available:
+D5 now registers a bounded Linux Desktop v3 task graph. For I4, resolve I2 and I4 **separately** to respect the 250,000-byte default context limit; I4's implementation prerequisites still include I2/I3 and cannot be inferred from the narrower I4 listing alone:
 
 ~~~sh
+python3 scripts/docs.py context --feature linux-desktop-v3 --task I2
 python3 scripts/docs.py context --feature linux-desktop-v3 --task I4
 ~~~
 
-**Before D5, that command deliberately fails** with an unregistered-feature error. Do not infer contract validity by scanning filenames.
+Unregistered tasks (including I3/I5) deliberately return a nonzero error. A registered document still requires a source/PR status check; do not infer design acceptance from IDs or dates.
 
 ## Security and supported YAML subset
 
@@ -35,6 +36,6 @@ A document's baseline SHA and related source patterns are not a proof of current
 
 ## D3 boundaries
 
-The only live feature manifest in this PR is \`documentation-system\`, a low-risk self-test of the resolver. It references the architecture proposal, whose \`design_status\` remains \`proposed\`. It deliberately does not register older Phase 0–6 files or Linux Desktop v3 contracts: those require D5 review of authoritative status, baseline, dependency IDs and ongoing I2/I3/I4 implementation work.
+The initial `documentation-system` smoke-test remains proposed. D5 adds `linux-desktop-v3` with selected B1/B2/C1/C2/E1/I2/I4 records and source associations, preserving original files and historical observations. Neither feature index registers Phase 0–6 or grants accepted design authority. D5's source baseline and PR #13/#16 boundary are documented in the [v3 index](../features/linux-desktop-v3/README.md).
 
 Existing \`scripts/check-design\`, CI scope classification, workflows and Phase task specs are preserved. The Python unit suite is discovered by existing \`scripts/check-host --suite all\`; D4 also runs these focused tests as a fast independent required-check candidate. 
