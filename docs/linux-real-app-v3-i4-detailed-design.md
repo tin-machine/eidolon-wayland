@@ -1,3 +1,21 @@
+---
+id: linux-desktop-v3-i4
+title: Linux Desktop v3 I4 startup and SDK evidence detailed design
+type: detailed-design
+design_status: proposed
+feature: linux-desktop-v3
+component: startup-observation
+phase: I4
+created: "2026-11-12"
+last_reviewed: "2026-11-13"
+baseline_commit: 151639486d41f6117a7e44c2d977af19ee430ee6
+depends_on: [linux-desktop-v3-b1-presentation]
+related_sources:
+  - native/core/src/runtime.rs
+  - native/core/src/panels.rs
+  - android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt
+  - native/render/src/lib.rs
+---
 # Linux Desktop v3 I4 詳細設計 — Startup Observation / Spatial SDK Evidence
 
 ## 0. 調査基準と設計の位置づけ
