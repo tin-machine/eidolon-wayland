@@ -11,7 +11,7 @@ Eidolon Wayland aims to operate Linux GUI applications as independently controll
 | Project overview and actual high-level state | [Repository README](../README.md) |
 | Cross-cutting architecture (historical baselines may be embedded) | [Architecture](architecture.md) |
 | Initial Phase 0–6 implementation contract | [Design README](design/README.md), [contracts](design/contracts.md), [tasks.json](design/tasks.json) |
-| Linux Desktop v3 ongoing integration | [v3 integration plan](linux-real-app-v3-integration-plan-20261111.md), [I2](linux-real-app-v3-i2-detailed-design.md), [I4](linux-real-app-v3-i4-detailed-design.md) |
+| Linux Desktop v3 (D5 registered graph; designs proposed) | [Feature index](features/linux-desktop-v3/README.md), [integration plan](linux-real-app-v3-integration-plan-20261111.md), [I2](linux-real-app-v3-i2-detailed-design.md), [I4](linux-real-app-v3-i4-detailed-design.md) |
 | Curved Workspace detailed design | [Curved Workspace README](curved-workspace/README.md) |
 | Spatial Anchor / SA0 proposal | [Spatial Anchor design](spatial-anchor-linux-design-20261111.md) |
 | User operations | [Usage](usage.md) |
@@ -21,16 +21,18 @@ Eidolon Wayland aims to operate Linux GUI applications as independently controll
 
 ## What is implemented now?
 
-The LLM-first documentation structure is **being introduced in stages**. D1–D2 inventory/schemas and the D3 **read-only resolver** are available. Use [D3 resolver instructions](knowledge/resolver.md) and `python3 scripts/docs.py validate`; only **explicitly registered features** have active manifests (the initial `documentation-system` smoke-test). Linux Desktop v3 and initial Phase 0–6 remain unregistered for the resolver until D5 migration. Do not treat the proposed directory tree as real, or assume context discovery is available for arbitrary legacy features.
+The LLM-first documentation structure is **being introduced in stages**. D1–D2 inventory/schemas, D3 **read-only resolver**, and D4 **always-on documentation integrity CI** are available. D5 registers the [Linux Desktop v3 feature index](features/linux-desktop-v3/README.md) alongside the original `documentation-system` smoke-test. The v3 task IDs B1/B2/C1/C2/E1/I1/I2/I4 resolve; **I3/I5 and initial Phase 0–6 are still unregistered**. V3 design status is conservative (`proposed` or `historical`); the resolver does not prove accepted design, current implementation, or Quest verification. For I4, read **both separate I2 and I4 contexts** and check PR #13/#16 state. Use [D3 resolver instructions](knowledge/resolver.md) and `python3 scripts/docs.py validate`; unregistered legacy documents still need manual review.
 
 The snapshot inventory is [knowledge/inventory-20261113.csv](knowledge/inventory-20261113.csv). It lists every original `docs/` blob at its recorded commit, with **non-authoritative classification candidates**. It is not an acceptance or implementation report.
 
-### D3 quick usage
+### D3/D5 quick usage
 
 ```bash
 python3 scripts/docs.py validate
 python3 scripts/docs.py context --feature documentation-system --task D3
-python3 scripts/docs.py affected --path scripts/docs.py
+python3 scripts/docs.py context --feature linux-desktop-v3 --task I2
+python3 scripts/docs.py context --feature linux-desktop-v3 --task I4
+python3 scripts/docs.py affected --path native/core/src/runtime.rs
 ```
 
 A missing manifest/ID returns a **nonzero error**. It does not automatically select similarly named legacy files. The original architecture design is still `proposed`, independent of tool implementation.
