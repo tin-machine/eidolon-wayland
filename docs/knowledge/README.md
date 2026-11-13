@@ -1,6 +1,6 @@
 # Documentation Knowledge System — D1/D2 foundation
 
-Status: **D1/D2 inventory/contracts, D3 resolver, D4 docs CI, D5 scoped Linux Desktop v3 registration**  
+Status: **D1/D2 inventory/contracts, D3 resolver, D4 docs CI, D5 Linux Desktop v3 and D6 curated feature migration**  
 Snapshot commit: `78e760a5e3d15d8e7002229948d665260c4f1484` (2026-11-13 JST)  
 Parent design: [LLM-first Documentation Knowledge Architecture](../documentation-knowledge-base-design-20261113.md)
 
@@ -102,7 +102,7 @@ A document is not an accepted contract just because it appears in the inventory 
 | D3 | `scripts/docs.py validate/context/affected/drift`, unit tests, explicitly managed ID graph | **Yes (registered documents only)** |
 | D4 | Unconditional lightweight docs CI and scoped manifest classifier | **Yes (GitHub Ruleset change remains manual)** |
 | D5 | Reviewed Linux Desktop v3 metadata/manifest and links | **Yes (10 docs; proposed/historical, not acceptance)** |
-| D6 | Complete gradual migration of other feature areas | **No** |
+| D6 | Curved Workspace, Spatial Anchor, Android IME, initial Phase 0–6 curated migration | **Implemented for four feature indices; remaining legacy docs stay unregistered** |
 
 ## Migration / compatibility gates
 
@@ -118,4 +118,4 @@ A document is not an accepted contract just because it appears in the inventory 
 
 At the snapshot SHA, the inventory must include **167 distinct paths**, all under `docs/`, matching Git exactly and retaining three JSON fixtures plus the existing `design/tasks.json`. Both schema files must be syntactically valid JSON with unique properties/enums. Repository paths referenced by the two README files and AGENTS.md must exist in the PR. Existing `scripts/check-design` and CI sources must remain byte-for-byte unchanged.
 
-D3 validates **only explicitly registered** features/documents. D5 adds [Linux Desktop v3's 10-document, 8-task graph](../features/linux-desktop-v3/README.md) without rewriting or approving the original designs. Other legacy features remain unregistered. D4 documentation CI is integrated; Ruleset required-check activation must be performed separately by an authorized admin.
+D6 adds [Curved Workspace](../features/curved-workspace/README.md), [SA0](../features/spatial-anchor/README.md), [Android IME](../features/android-ime/README.md), and [initial Phase 0–6](../features/initial-phases/README.md) as deliberately bounded navigation indices. The 31 initial task IDs are projected from the unmodified `docs/design/tasks.json`; D6 does not rewrite task status, historical evidence or fixture JSON. Additional legacy notes and experiments remain unregistered.\n\nD3 validates **only explicitly registered** features/documents. D5 adds [Linux Desktop v3's 10-document, 8-task graph](../features/linux-desktop-v3/README.md) without rewriting or approving the original designs. Other legacy features remain unregistered. D4 documentation CI is integrated; Ruleset required-check activation must be performed separately by an authorized admin.
