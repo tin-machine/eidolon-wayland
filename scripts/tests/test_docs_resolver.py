@@ -184,5 +184,76 @@ class ResolverTests(unittest.TestCase):
             self.load()
 
 
+
+class LinuxDesktopV3RegistryTests(unittest.TestCase):
+    """D5 smoke tests against actual tracked docs, not generated fixture authority."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.registry, cls.features = docs.docs_and_manifests(REPO)
+
+    def test_registered_manifest_and_real_document_identities(self):
+        self.assertIn("linux-desktop-v3", self.features)
+        expected = {
+            "b1-contract", "b1-presentation", "b1-storage-identity",
+            "b2-bundle", "c1-profile", "c2-helper", "e1-storage",
+            "integration-plan", "i2", "i4",
+        }
+        actual = {
+            docid.removeprefix("linux-desktop-v3-")
+            for docid, (_, meta) in self.registry.items()
+            if meta["feature"] == "linux-desktop-v3"
+        }
+        self.assertEqual(actual, expected)
+        for docid in ("linux-desktop-v3-i2", "linux-desktop-v3-i4"):
+            self.assertEqual(self.registry[docid][1]["design_status"], "proposed")
+        for docid in ("linux-desktop-v3-b2-bundle",
+                      "linux-desktop-v3-c1-profile",
+                      "linux-desktop-v3-c2-helper",
+                      "linux-desktop-v3-e1-storage"):
+            self.assertEqual(self.registry[docid][1]["type"], "historical")
+            self.assertNotEqual(self.registry[docid][1].get("design_status"), "accepted")
+
+    def test_every_registered_task_resolves_under_default_context_bounds(self):
+        tasks = self.features["linux-desktop-v3"][1]["tasks"]
+        self.assertEqual(set(tasks), {"B1", "B2", "C1", "C2", "E1", "I1", "I2", "I4"})
+        for task in sorted(tasks):
+            with self.subTest(task=task):
+                ctx = docs.context(REPO, self.registry, self.features,
+                                   "linux-desktop-v3", task)
+                ids = [item["id"] for item in ctx["documents"]]
+                self.assertEqual(len(ids), len(set(ids)))
+                self.assertIn(tasks[task]["document"], ids)
+                self.assertLessEqual(ctx["total_bytes"], docs.MAX_BYTES)
+                self.assertLessEqual(len(ids), docs.MAX_DOCS)
+                self.assertEqual(ctx["feature"], "linux-desktop-v3")
+
+    def test_i2_i4_reading_sets_do_not_claim_unmerged_implementation(self):
+        i2 = docs.context(REPO, self.registry, self.features,
+                          "linux-desktop-v3", "I2")
+        i4 = docs.context(REPO, self.registry, self.features,
+                          "linux-desktop-v3", "I4")
+        i2ids = {item["id"] for item in i2["documents"]}
+        i4ids = {item["id"] for item in i4["documents"]}
+        self.assertIn("linux-desktop-v3-i2", i2ids)
+        self.assertIn("linux-desktop-v3-c2-helper", i2ids)
+        self.assertIn("linux-desktop-v3-i4", i4ids)
+        self.assertIn("linux-desktop-v3-b1-presentation", i4ids)
+        self.assertNotIn("linux-desktop-v3-i2", i4ids)
+        self.assertTrue(i2["warnings"] and i4["warnings"])
+        index = (REPO / "docs/features/linux-desktop-v3/README.md").read_text()
+        self.assertIn("first run", index)
+        self.assertIn("task I2", index.replace("--task I2", "task I2"))
+
+    def test_source_reverse_lookup_and_unregistered_task_fail_closed(self):
+        answer = docs.affected(self.registry, self.features,
+                               "native/core/src/runtime.rs")
+        self.assertIn("linux-desktop-v3", answer["features"])
+        self.assertIn("linux-desktop-v3-i4",
+                      {item["document_id"] for item in answer["documents"]})
+        with self.assertRaisesRegex(docs.KnowledgeError, "unregistered task"):
+            docs.context(REPO, self.registry, self.features, "linux-desktop-v3", "I3")
+
+
 if __name__ == "__main__":
     unittest.main()

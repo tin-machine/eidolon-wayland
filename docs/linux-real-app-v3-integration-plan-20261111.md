@@ -1,3 +1,19 @@
+---
+id: linux-desktop-v3-integration-plan
+title: Linux Desktop v3 Product integration plan
+type: architecture
+design_status: proposed
+feature: linux-desktop-v3
+component: integration
+phase: I1-I5
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: 151639486d41f6117a7e44c2d977af19ee430ee6
+depends_on: [linux-desktop-v3-b1-contract]
+related_sources:
+  - native/core/src/runtime.rs
+  - scripts/linux_real_app_check.py
+---
 # L7a: 通常v3統合からQuest自動検証までの実装計画
 
 2026-11-11（日本時間）。状態: **I1の静的設定・source固定を実装。通常v3/Quest統合は進行中**。
