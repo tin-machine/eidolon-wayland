@@ -70,7 +70,7 @@ jobs:
     needs: scope
     if: ${{ needs.scope.outputs.host == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -86,9 +86,7 @@ jobs:
       - name: Rust固定版を導入
         run: rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --target aarch64-linux-android
       - name: SSH・GTK fixture用の依存を導入
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y openssh-server ninja-build bison perl patch cmake pkg-config libgtk-3-dev xvfb
+        run: python3 scripts/ci/install_apt_deps.py openssh-server ninja-build bison perl patch cmake pkg-config libgtk-3-dev xvfb
       - name: host suiteを検証
         run: scripts/check-host --suite all
       - name: Waypipe経由clipboardの上限と仲介bufferの範囲を確認
@@ -100,7 +98,7 @@ jobs:
     needs: scope
     if: ${{ needs.scope.outputs.android == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -122,9 +120,7 @@ jobs:
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --target aarch64-linux-android
           cargo install cargo-ndk --version 4.1.2 --locked
       - name: native・host GTK検査の依存を導入
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build bison patch cmake pkg-config libgtk-3-dev xvfb
+        run: python3 scripts/ci/install_apt_deps.py ninja-build bison patch cmake pkg-config libgtk-3-dev xvfb
       - name: Android SDK・NDK固定版を導入
         run: |
           python3 - <<'PY'
