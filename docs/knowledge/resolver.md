@@ -1,6 +1,6 @@
 # D3 — deterministic documentation resolver
 
-Implementation: [scripts/docs.py](../../scripts/docs.py). D3 is a **read-only, offline** helper. D1's 167-row inventory is not a managed-document registry; legacy files are not automatically elevated to approved contracts. D4 adds an unconditional `Documentation integrity` CI job; marking it as a required Ruleset check is an administrator operation. D5 registers 10 selected Linux Desktop v3 documents with **proposed/historical** metadata; it does not approve designs or verify unmerged I2/I4 code. See [v3 feature index](../features/linux-desktop-v3/README.md).
+Implementation: [scripts/docs.py](../../scripts/docs.py). D3 is a **read-only, offline** helper. D1's 167-row inventory is not a managed-document registry; legacy files are not automatically elevated to approved contracts. D4 adds an unconditional `Documentation integrity` CI job; marking it as a required Ruleset check is an administrator operation. D5 registers 10 selected Linux Desktop v3 documents with **proposed/historical** metadata; it does not approve designs or verify unmerged I2/I4 code. See [v3 feature index](../features/linux-desktop-v3/README.md). D6 additionally registers curated [Curved Workspace](../features/curved-workspace/README.md), [SA0](../features/spatial-anchor/README.md), [IME](../features/android-ime/README.md), and [initial Phase 0–6](../features/initial-phases/README.md) reading sets. The original Phase task JSON and Curved Workspace fixture JSON remain unmodified authorities; unregistered historic files are not automatically elevated.
 
 ## Usage
 
@@ -36,6 +36,6 @@ A document's baseline SHA and related source patterns are not a proof of current
 
 ## D3 boundaries
 
-The initial `documentation-system` smoke-test remains proposed. D5 adds `linux-desktop-v3` with selected B1/B2/C1/C2/E1/I2/I4 records and source associations, preserving original files and historical observations. Neither feature index registers Phase 0–6 or grants accepted design authority. D5's source baseline and PR #13/#16 boundary are documented in the [v3 index](../features/linux-desktop-v3/README.md).
+D6 adds four curated feature indices while keeping historical evidence separate from implementation status. The initial `documentation-system` smoke-test remains proposed. D5 adds `linux-desktop-v3` with selected B1/B2/C1/C2/E1/I2/I4 records and source associations, preserving original files and historical observations. Neither feature index registers Phase 0–6 or grants accepted design authority. D5's source baseline and PR #13/#16 boundary are documented in the [v3 index](../features/linux-desktop-v3/README.md).
 
 Existing \`scripts/check-design\`, CI scope classification, workflows and Phase task specs are preserved. The Python unit suite is discovered by existing \`scripts/check-host --suite all\`; D4 also runs these focused tests as a fast independent required-check candidate. 
