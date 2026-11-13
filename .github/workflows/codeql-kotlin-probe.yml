@@ -36,7 +36,7 @@ jobs:
           distribution: temurin
           java-version: '25'
 
-      # A bare Kotlin compile must not require the native/EGL/Waypipe/APK toolchain.
+      # Kotlin-only compilation must not require the native/EGL/Waypipe/APK toolchain.
       - name: Install Android SDK platform for Kotlin compile
         run: |
           python3 - <<'PY'
@@ -63,9 +63,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew --no-daemon --console=plain :app:compileDebugKotlin --dry-run \
+          # Include production variants, the independent probe APK's Kotlin, and
+          # both main + variant-local JVM unit tests. Do not run tests on a Quest.
+          tasks=(
+            :app:compileDebugKotlin
+            :app:compileReleaseKotlin
+            :probe:compileDebugKotlin
+            :app:compileDebugUnitTestKotlin
+          )
+          printf 'Probed tasks: %s\n' "${tasks[*]}"
+          ./gradlew --no-daemon --console=plain "${tasks[@]}" --dry-run \
             | tee "$RUNNER_TEMP/kotlin-task-graph.txt"
-          if grep -E '(^|[[:space:]]):[^[:space:]]*build(Debug|Release)EidolonNative([[:space:]]|$)' "$RUNNER_TEMP/kotlin-task-graph.txt"; then
+          if grep -E '(^|[[:space:]]):[^[:space:]]*(build(Debug|Release)EidolonNative|nativeProbe)([[:space:]]|$)' "$RUNNER_TEMP/kotlin-task-graph.txt"; then
             echo "::error::Kotlin compile task graph includes native/APK build; aborting probe"
             exit 1
           fi
@@ -81,18 +90,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew --no-daemon --console=plain --rerun-tasks :app:compileDebugKotlin
-          classes="app/build/tmp/kotlin-classes/debug"
-          test -d "$classes" || {
-            echo "::error::Kotlin compiler output is missing: $classes"
-            exit 1
-          }
-          count="$(find "$classes" -type f -name '*.class' | wc -l)"
-          echo "Kotlin/JVM class files: $count"
-          test "$count" -gt 0 || {
-            echo "::error::No Kotlin class files were compiled"
-            exit 1
-          }
+          tasks=(
+            :app:compileDebugKotlin
+            :app:compileReleaseKotlin
+            :probe:compileDebugKotlin
+            :app:compileDebugUnitTestKotlin
+          )
+          ./gradlew --no-daemon --console=plain --rerun-tasks "${tasks[@]}"
+          for classes in \
+            app/build/tmp/kotlin-classes/debug \
+            app/build/tmp/kotlin-classes/release \
+            probe/build/tmp/kotlin-classes/debug \
+            app/build/tmp/kotlin-classes/debugUnitTest
+          do
+            test -d "$classes" || {
+              echo "::error::Kotlin compiler output is missing: $classes"
+              exit 1
+            }
+            count="$(find "$classes" -type f -name '*.class' | wc -l)"
+            echo "Kotlin/JVM class files in $classes: $count"
+            test "$count" -gt 0 || {
+              echo "::error::No Kotlin class files compiled: $classes"
+              exit 1
+            }
+          done
 
       # Default setup currently owns Code scanning for the other four languages.
       # Uploading analysis from this separate workflow would conflict with it.
