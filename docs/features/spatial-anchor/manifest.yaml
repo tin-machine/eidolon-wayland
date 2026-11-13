@@ -1,0 +1,12 @@
+schema: 1
+feature: spatial-anchor
+entrypoint: README.md
+contracts: []
+tasks:
+  SA0:
+    document: spatial-anchor-sa0-design
+    requires: []
+    test_plans: []
+source_paths:
+  - native/core/src/workspace.rs
+  - android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt

@@ -1,3 +1,16 @@
+---
+id: android-ime-implementation-record
+title: Android IME implementation and validation history
+type: historical
+feature: android-ime
+created: "2026-11-07"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [android-ime-design]
+related_sources:
+  - android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt
+  - native/core/src/compositor/ime.rs
+---
 # 日本語入力の実装・検証記録
 
 2026-11-07開始、2026-11-08更新。基準`795f184`。[設計](android-ime-wayland-plan-20261107.md)のNX09をユーザー指示で再開した。

@@ -25,7 +25,27 @@ class AptDependencySetupTests(unittest.TestCase):
                 "azure.archive.ubuntu.com", "archive.ubuntu.com", "security.ubuntu.com"
             ])
 
-    def test_dns_preflight_accepts_available_fallback_mirror(self):
+    def test_unrelated_third_party_dns_cannot_mask_ubuntu_outage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sources = root / "sources.list.d"
+            sources.mkdir()
+            (sources / "microsoft-prod.list").write_text(
+                "deb https://packages.microsoft.com/ubuntu/24.04/prod noble main\n"
+            )
+            (sources / "vendor.list").write_text(
+                "deb https://packages.example.org/apt noble main\n"
+            )
+            (sources / "ubuntu.sources").write_text(
+                "Types: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt https://security.ubuntu.com/ubuntu\n"
+            )
+            (root / "apt-mirrors.txt").write_text(
+                "http://azure.archive.ubuntu.com/ubuntu\n"
+            )
+            self.assertEqual(ci_apt.mirror_hosts(root),
+                             ["azure.archive.ubuntu.com", "security.ubuntu.com"])
+
+        def test_dns_preflight_accepts_available_fallback_mirror(self):
         calls = []
 
         def runner(argv, **kwargs):

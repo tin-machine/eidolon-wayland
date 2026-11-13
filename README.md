@@ -138,3 +138,15 @@ skip・未実施・採取完了を受入れ成功へ読み替えず、後続comm
 既存の手順・進捗には各Build時点の記述が残っています。窓数・統合状況などは本READMEの基準commitと、各機能の新しい実装・検証記録を合わせて確認してください。
 
 今後の主な受入れは、**Mousepadの通常利用、IMEの実変換、窓操作の物理確認、長時間動作と復旧、署名済みrelease**です。[物理確認の残件](docs/phase5-manual-acceptance.md)と[Phase 6の条件](docs/design/phase-6.md)を保持し、実装・自動検証・手動受入れをそれぞれ進めます。
+
+## ライセンス
+
+Eidolon Waylandの独自コード・ドキュメントのうち、プロジェクトがライセンスを付与できる部分は[MIT License](LICENSE)（`Copyright (c) 2026 tin-machine`）で公開しています。MITは改変・商用利用・再配布を許可しますが、著作権表示とライセンス文面の保持が必要です。
+
+**MITは、リポジトリ内のすべての素材や依存ライブラリ、ビルド済みAPKに含まれるSDKへ一律に適用されるものではありません。** Smithay、Waypipe、Mousepadのテストfixtureなど、第三者由来のコード・素材は元のライセンスに従います。[第三者ライセンス一覧](THIRD_PARTY_NOTICES.md)を参照してください。特にMeta Spatial SDKは[Meta Platform Technologies SDK License Agreement](https://developers.meta.com/vr/licenses/oculussdk/)に従い、EidolonのMITによって再ライセンスされません。
+
+GitHub Actionsで生成するdebug APKにも、Meta SDKやその他の依存ライブラリが含まれます。**Publicリポジトリへの変更により、保持中のActions artifactを第三者がダウンロードできる可能性があります。** ソースコードのMIT適用は、APK配布に必要な全依存ライセンス・NOTICE・SDK配布条件の監査完了を意味しません。詳細は[OSS公開前ライセンスレビュー](docs/oss-license-publication-review-20261112.md)を参照してください。
+
+APKにはMIT本文、第三者のNOTICE、MPL該当依存のソース取得先、Gradle実runtime依存一覧を生成・同梱し、CIのAPK artifactアップロード前に検査します。[仕組みと配布前の残件](docs/apk-license-compliance-20261112.md)を参照してください。CIゲートの成功だけで全第三者ライセンスの法的適合性が保証されるわけではありません。
+
+安全上、**リポジトリがPublicのときはCIが新規debug APK artifactをアップロードしません**。Private時のみ維持し、将来のPublic配布は全依存の通知確認後に別途承認・実装します。既存のartifactは公開前に期限・取得可能性を別途確認してください。

@@ -1,3 +1,16 @@
+---
+id: curved-workspace-work-items
+title: Curved Workspace CW00 to CW25 task handoff
+type: task
+feature: curved-workspace
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [curved-workspace-contracts]
+related_sources:
+  - native/core/src/runtime.rs
+  - android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt
+---
 # 08 — 小さい実装単位と引継ぎ
 
 [入口](README.md)。全票は設計時点で **not_started**。実装者は一票を完了して止まり、次票を自動で実装しない。許可fileに加えて、必要なmodule登録とその票に直結するtestだけ変更可。範囲外の修正が必要なら理由と差分を引継ぎに残し、既存成功gateを緩めない。

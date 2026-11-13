@@ -1,3 +1,16 @@
+---
+id: initial-phases-phase-3
+title: Initial phases Wayland compositor and Waypipe design
+type: detailed-design
+design_status: proposed
+feature: initial-phases
+created: "2026-11-04"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [initial-phases-contracts]
+related_sources:
+  - native/core/src/session.rs
+---
 # Phase 3 — Android compositorとWaypipe
 
 P3の大きな移植をW01〜W05へ分割する。最初にprotocolだけを成立させ、描画とfootを後から接続する。既存Waypipeを再利用し、転送protocolを作り直さない。

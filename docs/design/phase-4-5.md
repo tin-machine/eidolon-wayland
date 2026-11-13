@@ -1,3 +1,17 @@
+---
+id: initial-phases-phase-4-5
+title: Initial phases renderer input and spatial windows design
+type: detailed-design
+design_status: proposed
+feature: initial-phases
+created: "2026-11-04"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [initial-phases-phase-3]
+related_sources:
+  - native/core/src/panels.rs
+  - native/render/src/lib.rs
+---
 # Phase 4・5 — 描画、入力、空間window
 
 描画PoCはD02、単一windowの操作はI04、複数window等はI05〜I07で判定する。独立した成功条件を一度にまとめて実装しない。

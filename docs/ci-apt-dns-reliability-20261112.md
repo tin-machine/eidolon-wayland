@@ -1,5 +1,11 @@
 # CI APT/DNS resilience — 2026-11-12
 
+> **Operational runbook (unregistered legacy document).** Indexed under
+> [Build and CI behavior](README.md); not yet registered in a
+> `docs/features/<feature>/manifest.yaml` graph. Retains its original path
+> to preserve links and incident evidence. The live job-selection policy is
+> [CI change scope](ci-change-scope-20261113.md).
+
 ## Incident evidence (PR-01)
 
 The latest PR-01 `検証` run [43040295629](https://github.com/tin-machine/eidolon-wayland/actions/runs/43040295629)
@@ -41,6 +47,15 @@ and `.github/workflows/linux-real-app.yml`. All package names are unchanged.
    45 minutes, leaving the existing report job at 5 minutes. The DNS/APT
    portion **still fails within its own small budget** on an outage.
 
+The mirror preflight checks **Ubuntu mirror hosts only**, not unrelated
+third-party APT sources such as `packages.microsoft.com`. During PR #14's
+first CI run ([Host/Android 43051152279](https://github.com/tin-machine/eidolon-wayland/actions/runs/43051152279),
+[L7a 43051152724](https://github.com/tin-machine/eidolon-wayland/actions/runs/43051152724)),
+the old preflight resolved that unrelated hostname while all four jobs
+timed out in `apt-get update` after 90 seconds. This update corrects that
+false-positive signal; it does **not** treat a successful DNS query as proof
+that Ubuntu packages can be downloaded.
+
 The DNS preflight is diagnostic, not proof that downloads will succeed.
 Resolution can succeed while HTTP downloads fail. Bounded `apt-get` and
 its nonzero exit status remain the source of truth.
@@ -52,7 +67,13 @@ commands and no network/root. They cover mirror detection, resolver
 fallback, full DNS outage, update failure preventing install, install
 deadline, success path preserving package identities and invalid inputs.
 They are picked up by the existing `scripts/check-host --suite all` Python
-test discovery.
+test discovery. A new regression also ensures that successful resolution of
+unrelated third-party sources cannot mask an Ubuntu mirror DNS failure.
+Under the current [scoped CI policy](ci-change-scope-20261113.md), both
+workflow files and `scripts/**` force all relevant build jobs to run;
+the always-on `Documentation integrity` check must continue to pass.
+Do not copy the legacy workflow YAML from this PR's old base over current
+main, since that would remove change-scope and documentation checks.
 
 Operator checks:
 

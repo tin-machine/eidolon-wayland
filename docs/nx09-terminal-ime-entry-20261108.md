@@ -1,3 +1,15 @@
+---
+id: android-ime-nx09-terminal-entry
+title: NX09 terminal IME entry implementation record
+type: historical
+feature: android-ime
+created: "2026-11-08"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [android-ime-design, android-ime-implementation-record]
+related_sources:
+  - android/app/src/test/java/io/github/tinmachine/eidolon/ImeSessionConnectionTest.kt
+---
 # NX09: 通常ターミナルの IME 入力入口
 
 2026-11-08。通常の foot に対して、メインパネルの「IME入力」または物理キーボードの Ctrl+Space で Android IME の入力経路を開始・終了できる実装。Android が選択した IME を使い、アプリ側で日本語や特定の変換方式を自動選択しない。画面の表示も「IME入力」とし、接続成立をかな漢字変換の成功と同一視しない。

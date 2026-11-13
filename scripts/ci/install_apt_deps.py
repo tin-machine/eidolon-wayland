@@ -33,9 +33,10 @@ class AptSetupError(Exception):
 
 
 def mirror_hosts(apt_root: Path = Path("/etc/apt")) -> list[str]:
-    """Read mirror hostnames, including Ubuntu runner's mirror+file list.
+    """Read Ubuntu mirror hostnames, including runner's mirror+file list.
 
-    Hostnames only are returned. No repository URLs, auth or tokens are logged.
+    Do not count unrelated third-party APT sources as an Ubuntu DNS success.
+    Only hostnames are returned; no URLs, auth or tokens are logged.
     If sources cannot be inspected, bounded APT commands remain authoritative.
     """
     files = [apt_root / "apt-mirrors.txt", apt_root / "sources.list"]
@@ -52,10 +53,19 @@ def mirror_hosts(apt_root: Path = Path("/etc/apt")) -> list[str]:
             line = line.split("#", 1)[0]
             for match in re.finditer(r"https?://[^\s]+", line):
                 try:
-                    host = urlsplit(match.group(0)).hostname
+                    parsed = urlsplit(match.group(0))
+                    host = parsed.hostname
+                    # Ubuntu runner images also list third-party package
+                    # repositories (e.g. packages.microsoft.com). Resolving
+                    # those cannot establish that Ubuntu APT mirrors work.
+                    is_ubuntu_mirror = bool(host) and (
+                        host == "ubuntu.com"
+                        or host.endswith(".ubuntu.com")
+                        or "/ubuntu" in parsed.path
+                    )
                 except ValueError:
-                    host = None
-                if host and host not in hosts:
+                    host, is_ubuntu_mirror = None, False
+                if is_ubuntu_mirror and host not in hosts:
                     hosts.append(host)
     return hosts[:DNS_HOST_LIMIT]
 

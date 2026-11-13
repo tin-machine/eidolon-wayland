@@ -14,7 +14,61 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  scope:
+    name: CI scope (host/android)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      host: ${{ steps.paths.outputs.host }}
+      android: ${{ steps.paths.outputs.android }}
+      settings: ${{ steps.paths.outputs.settings }}
+      mousepad: ${{ steps.paths.outputs.mousepad }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Classify changed paths (baseline-controlled PR classifier)
+        id: paths
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          script=scripts/ci/ci_scope.py
+          # On PRs, prefer the trusted base branch copy: changing the gate
+          # itself must not allow the submitted PR to suppress its own tests.
+          if [[ "$CI_EVENT" == "pull_request" ]] && git cat-file -e "${CI_BASE_SHA}:scripts/ci/ci_scope.py" 2>/dev/null; then
+            git show "${CI_BASE_SHA}:scripts/ci/ci_scope.py" > "$RUNNER_TEMP/ci_scope.py"
+            script="$RUNNER_TEMP/ci_scope.py"
+          fi
+          python3 "$script"
+  docs:
+    # Always present (even on code-only PRs) so this is a stable required check.
+    # Never gate it behind workflow paths-ignore or a conditional job skip.
+    name: Documentation integrity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate managed documentation registry and dependencies
+        run: python3 scripts/docs.py validate
+      - name: Preserve legacy Phase 0-6 task contracts and anchors
+        run: python3 scripts/check-design
+      - name: Verify documentation resolver and change-scope guard tests
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_docs_resolver.py -v
+          python3 -m unittest discover -s scripts/tests -p test_ci_scope.py -v
+      - name: Resolve the registered documentation-system smoke-test
+        run: python3 scripts/docs.py context --feature documentation-system --task D3 --format json
+
   host:
+    needs: scope
+    if: ${{ needs.scope.outputs.host == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -22,7 +76,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Actionsの構文・contextを検証
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= .github/workflows/check.yml .github/workflows/linux-real-app.yml
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= .github/workflows/check.yml .github/workflows/linux-real-app.yml .github/workflows/codeql-kotlin-probe.yml .github/workflows/codeql-advanced.yml
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: |
@@ -41,6 +95,8 @@ jobs:
         run: scripts/check-waypipe-ime
 
   android:
+    needs: scope
+    if: ${{ needs.scope.outputs.android == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -126,7 +182,12 @@ jobs:
         env:
           EIDOLON_TEST_APK: android/app/build/outputs/apk/debug/app-debug.apk
         run: python3 -m unittest discover -s scripts/tests -v
+      - name: License and NOTICE gate (APK download/publication)
+        run: python3 scripts/check-apk-license --apk android/app/build/outputs/apk/debug/app-debug.apk
+      # Source may become public before every third-party APK notice is reviewed.
+      # Never expose newly built debug APKs from a public repository automatically.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ success() && github.event.repository.private }}
         with:
           name: eidolon-debug-${{ github.sha }}
           path: android/app/build/outputs/apk/debug/app-debug.apk
@@ -135,8 +196,8 @@ jobs:
           compression-level: 0
 
   report:
-    if: ${{ always() && github.event_name != 'pull_request' }}
-    needs: [host, android]
+    if: ${{ always() && github.event_name != 'pull_request' && needs.scope.result == 'success' && (needs.scope.outputs.host == 'true' || needs.scope.outputs.android == 'true') }}
+    needs: [scope, host, android]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -146,6 +207,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CI_NEEDS: ${{ toJSON(needs) }}
+          CI_SCOPE_OUTPUTS: ${{ toJSON(needs.scope.outputs) }}
           CI_REPOSITORY: ${{ github.repository }}
           CI_SHA: ${{ github.sha }}
           CI_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -153,9 +215,13 @@ jobs:
           python3 - <<'PY'
           import json, os, urllib.request
           results = json.loads(os.environ['CI_NEEDS'])
+          required = json.loads(os.environ['CI_SCOPE_OUTPUTS'])
           endpoint = 'https://api.github.com/repos/' + os.environ['CI_REPOSITORY'] + '/statuses/' + os.environ['CI_SHA']
           for job in ('host', 'android'):
               outcome = results[job]['result']
+              if outcome == 'skipped' and required[job] == 'false':
+                  print(job + ': not applicable (scoped out)')
+                  continue
               state = {'success': 'success', 'failure': 'failure'}.get(outcome, 'error')
               payload = {'state': state, 'context': 'eidolon/' + job, 'description': job + ': ' + outcome, 'target_url': os.environ['CI_RUN_URL']}
               request = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10'})

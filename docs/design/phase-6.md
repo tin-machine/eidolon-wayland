@@ -1,3 +1,17 @@
+---
+id: initial-phases-phase-6
+title: Initial phases shutdown recovery and acceptance design
+type: detailed-design
+design_status: proposed
+feature: initial-phases
+created: "2026-11-04"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [initial-phases-contracts]
+related_sources:
+  - native/core/src/session.rs
+  - scripts/check-host
+---
 # Phase 6 — 停止・復旧・検証・配布
 
 本書の時間・回数・予算は**採用する合格基準**であり、現時点の測定結果ではない。B03の診断基盤を各taskで拡張し、L01まで停止処理を先送りしない。
