@@ -1,3 +1,17 @@
+---
+id: curved-workspace-android-input
+title: Curved Workspace Android input leases and SDK design
+type: detailed-design
+design_status: proposed
+feature: curved-workspace
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [curved-workspace-contracts, curved-workspace-runtime]
+related_sources:
+  - android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt
+  - android/app/src/main/java/io/github/tinmachine/eidolon/InputAdapter.kt
+---
 # 04 — Kotlin SDK adapterと入力lease
 
 [入口](README.md) / [wire](01-contracts.md) / [owner](03-runtime.md)。Kotlinでsolverや保存済みbaseを作らない。SDK操作は既存UI/SDK thread、native command提出は既存Hostのserial経路を通す。
