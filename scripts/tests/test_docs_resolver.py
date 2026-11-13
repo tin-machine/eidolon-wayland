@@ -255,5 +255,103 @@ class LinuxDesktopV3RegistryTests(unittest.TestCase):
             docs.context(REPO, self.registry, self.features, "linux-desktop-v3", "I3")
 
 
+
+class AdditionalFeatureRegistryTests(unittest.TestCase):
+    """D6 original-file registration, task projection and bounded contexts."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.registered, cls.manifests = docs.docs_and_manifests(REPO)
+
+    def test_curated_features_and_proposed_status_are_explicit(self):
+        expected = {"curved-workspace": 10, "spatial-anchor": 1,
+                    "android-ime": 6, "initial-phases": 9}
+        for feature, count in expected.items():
+            with self.subTest(feature=feature):
+                self.assertIn(feature, self.manifests)
+                items = [(key, data) for key, (_, data) in self.registered.items()
+                         if data["feature"] == feature]
+                self.assertEqual(len(items), count)
+                for key, meta in items:
+                    if meta["type"] in ("contract", "architecture", "detailed-design"):
+                        self.assertEqual(meta.get("design_status"), "proposed", key)
+                    self.assertNotEqual(meta.get("design_status"), "accepted", key)
+
+    def test_curved_cw00_to_cw25_are_exact_reading_pointers(self):
+        manifest = self.manifests["curved-workspace"][1]
+        expected = {f"CW{n:02}" for n in range(26)}
+        self.assertEqual(set(manifest["tasks"]), expected)
+        task_text = (REPO / "docs/curved-workspace/08-work-items.md").read_text()
+        for task in sorted(expected):
+            with self.subTest(task=task):
+                self.assertIn(f"### {task} ", task_text)
+                self.assertIn(manifest["tasks"][task]["document"], self.registered)
+        for fixture in ("geometry-v1.json", "wire-v1.json", "lifecycle-v1.json"):
+            with self.subTest(fixture=fixture):
+                path = REPO / "docs/curved-workspace/fixtures" / fixture
+                self.assertIsInstance(json.loads(path.read_text()), dict)
+
+    def test_initial_phase_manifest_uses_tasks_json_without_mutation(self):
+        spec = json.loads((REPO / "docs/design/tasks.json").read_text())
+        manifest = self.manifests["initial-phases"][1]
+        task_ids = {task["id"] for task in spec["tasks"]}
+        self.assertEqual(len(task_ids), 31)
+        self.assertEqual(set(manifest["tasks"]),
+                         task_ids | {f"TH0{n}" for n in range(6)})
+        for task in spec["tasks"]:
+            with self.subTest(task=task["id"]):
+                record = manifest["tasks"][task["id"]]
+                path = self.registered[record["document"]][0]
+                self.assertEqual(path.relative_to(REPO).as_posix(),
+                                 task["spec"].split("#", 1)[0])
+                # Runtime acceptance status is owned by tasks.json, not the index.
+                self.assertIn(task["status"],
+                              {"planned", "in_progress", "blocked", "done"})
+        self.assertIn("docs/design/tasks.json", manifest["source_paths"])
+
+    def test_d6_task_contexts_fit_fixed_limits_without_truncation(self):
+        feature_sizes = {"curved-workspace": 26, "spatial-anchor": 1,
+                         "android-ime": 6, "initial-phases": 37}
+        for feature, count in feature_sizes.items():
+            manifest = self.manifests[feature][1]
+            self.assertEqual(len(manifest["tasks"]), count)
+            for task, record in sorted(manifest["tasks"].items()):
+                with self.subTest(feature=feature, task=task):
+                    selected = docs.closure(self.registered,
+                                            manifest["contracts"]
+                                            + record["requires"]
+                                            + record.get("test_plans", [])
+                                            + [record["document"]])
+                    total = sum(self.registered[key][0].stat().st_size
+                                for key in selected)
+                    self.assertLessEqual(len(selected), docs.MAX_DOCS)
+                    self.assertLessEqual(total, docs.MAX_BYTES)
+                    self.assertIn(record["document"], selected)
+        for feature, task in (("curved-workspace", "CW25"),
+                              ("spatial-anchor", "SA0"),
+                              ("android-ime", "NX09"),
+                              ("initial-phases", "W03")):
+            with self.subTest(feature=feature):
+                result = docs.context(REPO, self.registered, self.manifests,
+                                      feature, task)
+                self.assertEqual(result["task"], task)
+                self.assertLessEqual(result["total_bytes"], docs.MAX_BYTES)
+
+    def test_source_reverse_lookup_and_unregistered_tasks_fail_closed(self):
+        overlap = docs.affected(self.registered, self.manifests,
+                                "native/core/src/runtime.rs")
+        self.assertTrue({"curved-workspace", "initial-phases",
+                         "linux-desktop-v3"} <= set(overlap["features"]))
+        self.assertIn("android-ime",
+                      docs.affected(self.registered, self.manifests,
+                                    "native/core/src/compositor/ime.rs")["features"])
+        self.assertIn("spatial-anchor",
+                      docs.affected(self.registered, self.manifests,
+                                    "native/core/src/workspace.rs")["features"])
+        with self.assertRaisesRegex(docs.KnowledgeError, "unregistered task"):
+            docs.context(REPO, self.registered, self.manifests,
+                         "spatial-anchor", "SA1")
+
+
 if __name__ == "__main__":
     unittest.main()

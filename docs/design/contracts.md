@@ -1,3 +1,17 @@
+---
+id: initial-phases-contracts
+title: Initial phases shared protocol and lifecycle contracts
+type: contract
+design_status: proposed
+feature: initial-phases
+created: "2026-11-04"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: []
+related_sources:
+  - native/model/src/commands.rs
+  - native/core/src/runtime.rs
+---
 # 共通契約 v1
 
 本書の型・関数・event名は**これから実装するEidolon独自API**。SDK/crateのAPIは[sources.md](sources.md)で区別する。数値上限は初期の設計値で、測定値ではない。

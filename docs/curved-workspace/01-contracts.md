@@ -1,3 +1,17 @@
+---
+id: curved-workspace-contracts
+title: Curved Workspace identity and wire contracts
+type: contract
+design_status: proposed
+feature: curved-workspace
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [curved-workspace-plan]
+related_sources:
+  - native/model/src/commands.rs
+  - native/core/src/workspace.rs
+---
 # 01 — 型・wire・公開境界
 
 [入口](README.md)。本書のCW専用APIは追加設計。既存APIはREADMEのsource参照を正本とする。

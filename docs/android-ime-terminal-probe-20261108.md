@@ -1,3 +1,15 @@
+---
+id: android-ime-terminal-probe
+title: Android IME terminal debug probe runbook
+type: runbook
+feature: android-ime
+created: "2026-11-08"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [android-ime-design, android-ime-implementation-record]
+related_sources:
+  - scripts/quest-ime-terminal
+---
 # 端末IMEとCtrl+Spaceのdebug検証
 
 2026-11-08。対象は[NX09のAndroid IME計画](android-ime-wayland-plan-20261107.md)。
