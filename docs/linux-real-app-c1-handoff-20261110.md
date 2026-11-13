@@ -1,3 +1,17 @@
+---
+id: linux-desktop-v3-c1-profile
+title: Linux Desktop v3 C1 persistent profile handoff record
+type: historical
+feature: linux-desktop-v3
+component: remote-profile
+phase: C1
+created: "2026-11-10"
+last_reviewed: "2026-11-13"
+baseline_commit: 151639486d41f6117a7e44c2d977af19ee430ee6
+depends_on: [linux-desktop-v3-b1-contract]
+related_sources:
+  - scripts/linux/eidolon_linux_persistent_profile.py
+---
 # L7a C1: remote永続profile・所有handle・排他とC2への引継ぎ
 
 2026-11-10（日本時間）。C1の対象は、B1の純粋契約を消費する**remote永続profileの実I/O境界**である。
