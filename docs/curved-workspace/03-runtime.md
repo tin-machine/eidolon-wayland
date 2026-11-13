@@ -1,3 +1,17 @@
+---
+id: curved-workspace-runtime
+title: Curved Workspace batch runtime and rollback design
+type: detailed-design
+design_status: proposed
+feature: curved-workspace
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [curved-workspace-contracts, curved-workspace-geometry]
+related_sources:
+  - native/core/src/runtime.rs
+  - native/core/src/workspace.rs
+---
 # 03 — 一括操作owner・失敗・Undo・保存境界
 
 [入口](README.md) / [型とwire](01-contracts.md)。実装はsingle core worker上。SDK callbackを待ってMutexを保持しない。SSH ownerへlayoutの完了待ちを持ち込まない。
