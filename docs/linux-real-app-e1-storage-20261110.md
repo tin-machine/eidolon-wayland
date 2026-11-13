@@ -1,3 +1,18 @@
+---
+id: linux-desktop-v3-e1-storage
+title: Linux Desktop v3 E1 Android storage implementation record
+type: historical
+feature: linux-desktop-v3
+component: android-storage
+phase: E1
+created: "2026-11-10"
+last_reviewed: "2026-11-13"
+baseline_commit: 151639486d41f6117a7e44c2d977af19ee430ee6
+depends_on: [linux-desktop-v3-b1-storage-identity]
+related_sources:
+  - android/app/src/main/java/io/github/tinmachine/eidolon/LinuxStorageRepository.kt
+  - android/app/src/main/java/io/github/tinmachine/eidolon/LinuxStorageStore.kt
+---
 # L7a E1: Android v3 storage identity・保存モデル
 
 2026-11-10（日本時間）。E1はKotlinのstrict codec、capture、repository、noBackup実storeを追加する。
