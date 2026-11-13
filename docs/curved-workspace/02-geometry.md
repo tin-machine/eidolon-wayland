@@ -1,3 +1,17 @@
+---
+id: curved-workspace-geometry
+title: Curved Workspace geometry and solver design
+type: detailed-design
+design_status: proposed
+feature: curved-workspace
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [curved-workspace-contracts]
+related_sources:
+  - native/model/src/layout.rs
+  - native/core/src/workspace.rs
+---
 # 02 — 配置solverと曲面の数学
 
 [入口](README.md) / [契約](01-contracts.md)。実装先は `model/workspace_layout/geometry.rs`。計算はf64、PanelPose生成時だけf32。epsilonを大きくして不適切な配置を通さない。
