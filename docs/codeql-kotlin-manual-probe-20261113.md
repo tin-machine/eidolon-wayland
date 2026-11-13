@@ -64,3 +64,7 @@ The probe now compiles `:app:compileDebugKotlin`, `:app:compileReleaseKotlin`, `
 This is **compile-only**: neither instrumentation nor JVM tests are run, no Quest device is used, and no APK is built. SARIF stays local via `upload: never`. A green build alone does not prove that every file is extracted: compare the CodeQL log's `CodeQL scanned X out of Y Kotlin files` statement with the baseline and investigate non-extracted source sets. If any task unexpectedly requires native packaging, preserve the guard and change the plan rather than installing the full native build chain just to make the probe green.
 
 Only after this evidence passes should a separate PR introduce full five-language Advanced setup. Do not change the current Default setup while validating PR-A.
+
+### Verified implementation evidence — PR #22
+
+On 2026-11-13, [CodeQL Kotlin coverage run #43431320588](https://github.com/tin-machine/eidolon-wayland/actions/runs/43431320588) **succeeded**. The Gradle dry-run task graph had no native/APK build, CodeQL manual initialization succeeded, four Kotlin compiler outputs contained 485 debug, 334 release, 6 probe, and 85 unit-test JVM class files, and local `java.sarif` had one CodeQL run. Crucially, CodeQL itself printed **`CodeQL scanned 215 out of 219 Kotlin files in this invocation`**. This is the observed static analysis coverage of Kotlin sources in this PR, not a Quest/HMD test and not uploaded Code scanning results. The remaining four files are Gradle Kotlin DSL scripts that need separate supply-chain/build-integrity controls.
