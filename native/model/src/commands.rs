@@ -1520,7 +1520,7 @@ mod tests {
         runtime.linux_desktop_v3 = Some(unescaped);
         assert!(runtime.validate().is_err(), "bounded runtime envelope");
         assert!(
-            ConnectionConfig::parse(&fixed["valid"][2]["raw"].as_str().unwrap().as_bytes()).is_ok(),
+            ConnectionConfig::parse(fixed["valid"][2]["raw"].as_str().unwrap().as_bytes()).is_ok(),
             "import raw remains valid independently of JNI limit"
         );
         assert!(RuntimeConfig::parse(&"x".repeat(COMMAND_BYTES + 1)).is_err());
