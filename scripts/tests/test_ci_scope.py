@@ -45,7 +45,10 @@ class ClassifierTests(unittest.TestCase):
 
     def test_renamed_build_input_into_manifest_keeps_build_gate(self):
         paths = ci_scope.decode_name_status(
-            b"R100\\0native/old.rs\\0docs/features/v3/manifest.yaml\\0"
+            bytes([0]).join([
+                b"R100", b"native/old.rs",
+                b"docs/features/v3/manifest.yaml", b"",
+            ])
         )
         self.assert_jobs(paths, ci_scope.ALL)
 
