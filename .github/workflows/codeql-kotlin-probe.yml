@@ -21,6 +21,9 @@ concurrency:
 
 jobs:
   kotlin-manual-probe:
+    # Retire redundant PR scans once the five-language Advanced setup is live;
+    # keep explicit workflow_dispatch for offline diagnostics on demand.
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.EIDOLON_CODEQL_ADVANCED_ENABLED != 'true' }}
     name: Kotlin compile / CodeQL dry run (no upload)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
