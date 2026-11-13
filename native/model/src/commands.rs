@@ -132,10 +132,9 @@ impl RuntimeConfig {
                 return Err(Status::InvalidArgument);
             }
             if let Some(raw) = &self.linux_desktop_v3 {
-                let binding = crate::linux_desktop_v3::configuration::RuntimeBinding::parse(
-                    raw.as_bytes(),
-                )
-                .map_err(|_| Status::InvalidArgument)?;
+                let binding =
+                    crate::linux_desktop_v3::configuration::RuntimeBinding::parse(raw.as_bytes())
+                        .map_err(|_| Status::InvalidArgument)?;
                 binding
                     .matches_profile(&profile)
                     .map_err(|_| Status::InvalidArgument)?;
@@ -1458,15 +1457,15 @@ mod tests {
             "revision":"1","display_name":"日本語\\\" desk","backend":"linux_ssh",
             "host":"192.0.2.1","port":22,"username":"fixture","host_key":host_key
         });
-        let profile = crate::connection_profile::Profile::parse(
-            &profile_json.to_string(), &"1".repeat(32)
-        ).unwrap();
+        let profile =
+            crate::connection_profile::Profile::parse(&profile_json.to_string(), &"1".repeat(32))
+                .unwrap();
         let fixed: serde_json::Value = serde_json::from_str(include_str!(
             "../../../scripts/tests/fixtures/linux-desktop-v3-configuration.json"
-        )).unwrap();
-        let config = ConnectionConfig::parse(
-            fixed["valid"][0]["raw"].as_str().unwrap().as_bytes()
-        ).unwrap();
+        ))
+        .unwrap();
+        let config =
+            ConnectionConfig::parse(fixed["valid"][0]["raw"].as_str().unwrap().as_bytes()).unwrap();
         let capture = StorageCapture::from_profile(&profile).unwrap();
         let mut storage_wire = capture.record();
         storage_wire["schema"] = serde_json::json!(1);
@@ -1507,7 +1506,10 @@ mod tests {
         wrong_manifest["configuration"]["app_manifest"]["executable"] =
             serde_json::json!("/bin/sh");
         runtime.linux_desktop_v3 = Some(wrong_manifest.to_string());
-        assert!(runtime.validate().is_err(), "manifest not a free executable");
+        assert!(
+            runtime.validate().is_err(),
+            "manifest not a free executable"
+        );
         let dup = format!(
             r#"{{"configuration":{},"configuration":{},"storage":{}}}"#,
             envelope["configuration"], envelope["configuration"], envelope["storage"]
@@ -1517,9 +1519,10 @@ mod tests {
         let unescaped = format!("{}{}", envelope, " ".repeat(16 * 1024));
         runtime.linux_desktop_v3 = Some(unescaped);
         assert!(runtime.validate().is_err(), "bounded runtime envelope");
-        assert!(ConnectionConfig::parse(
-            &fixed["valid"][2]["raw"].as_str().unwrap().as_bytes()
-        ).is_ok(), "import raw remains valid independently of JNI limit");
+        assert!(
+            ConnectionConfig::parse(&fixed["valid"][2]["raw"].as_str().unwrap().as_bytes()).is_ok(),
+            "import raw remains valid independently of JNI limit"
+        );
         assert!(RuntimeConfig::parse(&"x".repeat(COMMAND_BYTES + 1)).is_err());
     }
 
@@ -1534,7 +1537,15 @@ mod tests {
             Command::parse(&launch.to_string()),
             Ok(Command::LinuxDesktopV3Launch { .. })
         ));
-        for key in ["argv","executable","source_hash","storage_id","ready","nonce","origin"] {
+        for key in [
+            "argv",
+            "executable",
+            "source_hash",
+            "storage_id",
+            "ready",
+            "nonce",
+            "origin",
+        ] {
             let mut other = launch.clone();
             other[key] = serde_json::json!("injected");
             assert!(Command::parse(&other.to_string()).is_err(), "{key}");
@@ -1558,10 +1569,10 @@ mod tests {
             invalid["selection"] = launch["selection"].clone();
             assert!(Command::parse(&invalid.to_string()).is_err(), "{kind}");
         }
-        let duplicated = launch.to_string().replacen(
-            r#""schema":1"#, r#""schema":1,"schema":1"#, 1
-        );
+        let duplicated =
+            launch
+                .to_string()
+                .replacen(r#""schema":1"#, r#""schema":1,"schema":1"#, 1);
         assert!(Command::parse(&duplicated).is_err());
     }
-
 }

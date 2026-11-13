@@ -1,8 +1,9 @@
 //! Pure I2–I5 snapshot contract. No SSH/Wayland/SDK callback is synthesized here.
 //! A launch ACK does not imply Started; Started does not imply SDK-visible Ready.
 use super::{
-    AppId, Error, FailureReason, Reason, REVISION, Result, MAX_RECORD_BYTES, decode, require,
+    AppId, Error, FailureReason, MAX_RECORD_BYTES, REVISION, Reason, Result, decode,
     presentation::{NativeOrigin, PresentationState, Startup},
+    require,
 };
 use crate::{
     ids::{CommandSeq, RuntimeHandle, WindowId},
@@ -220,8 +221,12 @@ mod tests {
             "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
         ))
         .unwrap();
-        let record = fixture["records"].as_array().unwrap().iter()
-            .find(|v| v["id"] == "origin").unwrap();
+        let record = fixture["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == "origin")
+            .unwrap();
         NativeOrigin::parse(record["raw"].as_str().unwrap().as_bytes()).unwrap()
     }
 
@@ -307,7 +312,10 @@ mod tests {
         r.transport.journal_pending = false;
         assert!(r.validate().is_ok(), "typed evidence can be consistent");
         r.sdk_target.as_mut().unwrap().target.window = WindowId::new(2).unwrap();
-        assert!(r.validate().is_err(), "different window cannot supply main evidence");
+        assert!(
+            r.validate().is_err(),
+            "different window cannot supply main evidence"
+        );
         r.sdk_target.as_mut().unwrap().target.window = WindowId::new(1).unwrap();
         r.sdk_target.as_mut().unwrap().runtime = RuntimeHandle::new(999).unwrap();
         assert!(r.validate().is_err(), "foreign runtime target");
@@ -323,18 +331,32 @@ mod tests {
         r.transport.phase = TransportPhase::Complete;
         r.transport.journal_pending = false;
         r.cleanup_pending = false;
-        assert!(r.validate().is_err(), "completed transport alone insufficient");
+        assert!(
+            r.validate().is_err(),
+            "completed transport alone insufficient"
+        );
         r.remote_cleanup = RemoteCleanup {
-            process_complete: true, pipes_eof: true, receipt_written: true,
-            ssh_channel_complete: true, forward_retired: true, router_drained: true,
+            process_complete: true,
+            pipes_eof: true,
+            receipt_written: true,
+            ssh_channel_complete: true,
+            forward_retired: true,
+            router_drained: true,
         };
         r.local_retirement = LocalRetirement {
-            waypipe_stopped: true, listener_retired: true, windows_retired: true,
-            sdk_bindings_released: true, sdk_entities_disposed: true,
+            waypipe_stopped: true,
+            listener_retired: true,
+            windows_retired: true,
+            sdk_bindings_released: true,
+            sdk_entities_disposed: true,
         };
         r.runtime_reclamation = RuntimeReclamation {
-            connections_stopped: true, workers_stopped: true, panels_released: true,
-            targets_released: true, shutdown_complete: true, native_destroy_accepted: true,
+            connections_stopped: true,
+            workers_stopped: true,
+            panels_released: true,
+            targets_released: true,
+            shutdown_complete: true,
+            native_destroy_accepted: true,
         };
         assert!(r.validate().is_ok());
         let bytes = serde_json::to_vec(&r).unwrap();
@@ -344,8 +366,10 @@ mod tests {
         let mut wrong = serde_json::to_value(&r).unwrap();
         wrong["protocol_revision"] = json!("unsupported-v4");
         assert!(V3Report::parse(wrong.to_string().as_bytes()).is_err());
-        let duplicated = format!(r#"{{"protocol_revision":"{}","protocol_revision":"{}"}}"#,
-            REVISION, REVISION);
+        let duplicated = format!(
+            r#"{{"protocol_revision":"{}","protocol_revision":"{}"}}"#,
+            REVISION, REVISION
+        );
         assert!(V3Report::parse(duplicated.as_bytes()).is_err());
     }
 }
