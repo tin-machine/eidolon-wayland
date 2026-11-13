@@ -16,7 +16,8 @@ Changed files are determined by `git diff --name-status -z --find-renames` with 
 
 | Changed paths | host | Android / APK | GIO settings | Mousepad / Waypipe |
 | --- | :---: | :---: | :---: | :---: |
-| Only `README.md`, `.github/SECURITY.md`, ordinary `docs/**/*.md` | — | — | — | — |\n| Explicit `docs/features/<feature>/manifest.yaml` | — | — | — | — |
+| Only `README.md`, `.github/SECURITY.md`, ordinary `docs/**/*.md` | — | — | — | — |
+| Explicit `docs/features/<feature>/manifest.yaml` | — | — | — | — |
 | `docs/design/**` | ✓ | — | — | — |
 | `android/**` | — | ✓ | — | — |
 | `android/gradle/**`, Gradle wrapper scripts | ✓ | ✓ | — | — |
@@ -26,7 +27,11 @@ Changed files are determined by `git diff --name-status -z --find-renames` with 
 | `docs/**` non-Markdown fixtures such as JSON; any unknown file | ✓ | ✓ | ✓ | ✓ |
 | Invalid/ambiguous/missing Git diff, empty diff, or manual dispatch | ✓ | ✓ | ✓ | ✓ |
 
-The **D4 documentation integrity job runs on every PR and push to main**, including code-only diffs. It checks the managed registry and dependencies via `scripts/docs.py validate`, the legacy Phase 0–6 task contracts via `scripts/check-design`, the resolver and CI scope regression tests, and the documentation-system context smoke test. Unregistered legacy docs are **not** automatically accepted or covered by the managed-graph validator.\n\nOnly the exact per-feature `docs/features/<feature>/manifest.yaml` shape is treated as documentation-only. `docs/design/**` retains its host check, all JSON/other YAML/fixture inputs remain full build triggers, as do `AGENTS.md`, `scripts/**`, schema JSONs, and CI changes. There is **no broad `docs/**/*.yaml` exclusion**.\n\nThis classifier is **conservative**: skipping fewer jobs is acceptable, but missing a dependency is not. In particular, all `scripts/**` changes are treated as shared because test/fixture/build entrypoints can affect all workflows. `LICENSE` and `THIRD_PARTY_NOTICES.md` are APK inputs, **not** inert documentation. The `docs/design` exception exists because `scripts/check-design` reads its contracts and link targets.
+The **D4 documentation integrity job runs on every PR and push to main**, including code-only diffs. It checks the managed registry and dependencies via `scripts/docs.py validate`, the legacy Phase 0–6 task contracts via `scripts/check-design`, the resolver and CI scope regression tests, and the documentation-system context smoke test. Unregistered legacy docs are **not** automatically accepted or covered by the managed-graph validator.
+
+Only the exact per-feature `docs/features/<feature>/manifest.yaml` shape is treated as documentation-only. `docs/design/**` retains its host check, all JSON/other YAML/fixture inputs remain full build triggers, as do `AGENTS.md`, `scripts/**`, schema JSONs, and CI changes. There is **no broad `docs/**/*.yaml` exclusion**.
+
+This classifier is **conservative**: skipping fewer jobs is acceptable, but missing a dependency is not. In particular, all `scripts/**` changes are treated as shared because test/fixture/build entrypoints can affect all workflows. `LICENSE` and `THIRD_PARTY_NOTICES.md` are APK inputs, **not** inert documentation. The `docs/design` exception exists because `scripts/check-design` reads its contracts and link targets.
 
 The classifier itself is `scripts/ci/ci_scope.py`, with pure Python regression tests in `scripts/tests/test_ci_scope.py`. On a PR, the scope job runs the **base branch** version of the classifier if it exists, rather than trusting a newly edited classifier from the PR being tested. On the initial PR introducing the classifier, the base version does not exist: the script path is an unknown/shared input so all builds execute. Unknown event types, invalid SHAs, absent merge-base, git failures, and empty diffs trigger all jobs.
 
