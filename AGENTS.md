@@ -7,7 +7,8 @@ This repository implements an experimental spatial Wayland desktop for Quest 3. 
 - Start with [docs/README.md](docs/README.md) for documentation discovery. Read only the relevant feature contracts and their prerequisites; avoid loading all of `docs/`.
 - For legacy Phase 0–6 work, [docs/design/README.md](docs/design/README.md), [docs/design/contracts.md](docs/design/contracts.md), and [docs/design/tasks.json](docs/design/tasks.json) retain their existing authority.
 - For Linux Desktop v3, begin with [the integration plan](docs/linux-real-app-v3-integration-plan-20261111.md), then the relevant B1/B2/C1/C2/E1/I2/I4 specifications. Verify actual merged implementation against current source.
-- [The LLM-first documentation architecture](docs/documentation-knowledge-base-design-20261113.md) is **proposed**, not yet implemented. The new manifest/resolver commands are not available until later PRs. Do **not** claim they ran.
+- [The LLM-first documentation architecture](docs/documentation-knowledge-base-design-20261113.md) remains **proposed**; the D3 CLI implements only deterministic read-only discovery/validation, **not** automatic design approval.
+- For explicitly registered features, run `python3 scripts/docs.py context --feature FEATURE --task TASK` and inspect dependencies, warnings and drift. See [resolver contract](docs/knowledge/resolver.md). Unregistered features (including Linux Desktop v3 until D5) must use the current manual document entrypoints; do not invent manifest results.
 - [docs/knowledge/inventory-20261113.csv](docs/knowledge/inventory-20261113.csv) contains **candidates only**. An inventory row does not grant authority, acceptance, implementation, or verification.
 - Historical design baselines and CI logs are not proof about the current HEAD. Check changes in the affected source and report unverified work honestly.
 

@@ -1,6 +1,6 @@
 # Documentation Knowledge System — D1/D2 foundation
 
-Status: **Foundation prepared; D3 resolver and D4 CI integration not yet implemented**  
+Status: **D1/D2 foundation + D3 read-only resolver; D4 docs CI not yet implemented**  
 Snapshot commit: `78e760a5e3d15d8e7002229948d665260c4f1484` (2026-11-13 JST)  
 Parent design: [LLM-first Documentation Knowledge Architecture](../documentation-knowledge-base-design-20261113.md)
 
@@ -41,9 +41,9 @@ The complete inventory remains the CSV; these **ten seed IDs do not imply that r
 ## D2 — Proposed machine-readable contracts
 
 - [Document Metadata v1 JSON Schema](schemas/document-metadata.schema.json): the **YAML Front Matter mapping** of a managed document. Only applies after an explicit migration.
-- [Feature Manifest v1 JSON Schema](schemas/feature-manifest.schema.json): a **future** `docs/features/<feature>/manifest.yaml` entry, mapping tasks and dependencies to stable document IDs.
+- [Feature Manifest v1 JSON Schema](schemas/feature-manifest.schema.json): per-feature `docs/features/<feature>/manifest.yaml` entries, mapping tasks and dependencies to stable document IDs; **only explicitly migrated features are active**.
 
-Both schemas use JSON Schema draft 2020-12. YAML files should be parsed with a **safe** parser and then validated as JSON-compatible mappings; no custom object constructors, executables, external URL imports or arbitrary YAML tags. YAML ISO dates must be quoted so a parser that implicitly converts scalars to date objects cannot change the field type. D3 chooses a parser/validator and tests interoperability.
+Both schemas use JSON Schema draft 2020-12. YAML files should be parsed with a **safe** parser and then validated as JSON-compatible mappings; no custom object constructors, executables, external URL imports or arbitrary YAML tags. YAML ISO dates must be quoted so a parser that implicitly converts scalars to date objects cannot change the field type. D3 uses a limited, fail-closed standard-library parser and validator; read [resolver.md](resolver.md) for the accepted YAML subset and tested behavior.
 
 The schemas intentionally cover **shape and enums** only. Syntax-level acceptance does **not** establish authority, implementation, or verification; the D3 semantic validator must enforce referential integrity, source path traversal/symlink safety, Git SHA existence/ancestry, duplicate IDs, dependency cycles, supersession, authority overlap, Markdown anchors and stale scope.
 
@@ -70,7 +70,7 @@ related_sources:
 
 **Important:** `design_status` is about the design only. Task implementation status remains in the task's source of truth, such as the existing `docs/design/tasks.json` for Phase work. Verification results require separate evidence with a pinned commit, build and runtime environment. No `verified: true` shortcut.
 
-### Feature manifest example (illustrative; file does not exist)
+### Feature manifest example (illustrative; Linux Desktop v3 file does not exist)
 
 ~~~yaml
 schema: 1
@@ -99,7 +99,7 @@ A document is not an accepted contract just because it appears in the inventory 
 | --- | --- | --- |
 | D1 | Static Git inventory and candidate labels | Yes |
 | D2 | Schema definitions, docs entrance, root `AGENTS.md` | Yes |
-| D3 | `scripts/docs.py validate/context/affected/drift`, unit tests, complete ID graph | **No** |
+| D3 | `scripts/docs.py validate/context/affected/drift`, unit tests, explicitly managed ID graph | **Yes (registered documents only)** |
 | D4 | Lightweight docs CI, scope/classifier changes, required check coordination | **No** |
 | D5 | Reviewed Linux Desktop v3 metadata/manifest and links | **No** |
 | D6 | Complete gradual migration of other feature areas | **No** |
@@ -111,11 +111,11 @@ A document is not an accepted contract just because it appears in the inventory 
 3. Existing [CI change scope](../ci-change-scope-20261113.md) treats new `docs/**/*.json` and a root `AGENTS.md` conservatively (expensive jobs may run). D4 must update scope rules only with fail-open regression tests; **do not hide all documentation via workflow path ignores**.
 4. Do not assert that historic GitHub `/blob/main/docs/old-path` URLs redirect after renames. Retain a small stub when link consumers need compatibility.
 5. Historical probe/acceptance records retain original experiment/build/commit identity. Host tests never substitute for Quest/HMD acceptance.
-6. D3 should add deterministic discovery (topological order + ID tie-break), explicit unknown IDs, machine-readable output, and maximum context bounds before enabling agent automation.
+6. D3 provides deterministic dependency discovery (topological order + ID tie-break), explicit unknown IDs, machine-readable output, and bounded context. Unregistered legacy documents remain outside automatic resolution until D5.
 7. Codex instructions are routed from the root `AGENTS.md`; do not assume a document subtree instruction implicitly governs edits in `native/` or `android/`.
 
 ## Acceptance / self-check
 
 At the snapshot SHA, the inventory must include **167 distinct paths**, all under `docs/`, matching Git exactly and retaining three JSON fixtures plus the existing `design/tasks.json`. Both schema files must be syntactically valid JSON with unique properties/enums. Repository paths referenced by the two README files and AGENTS.md must exist in the PR. Existing `scripts/check-design` and CI sources must remain byte-for-byte unchanged.
 
-This D2 foundation is **not a verified D3 resolver** and cannot validate a feature's full design dependency DAG. It only prepares a safe migration substrate.
+D3 validates **only explicitly registered** features/documents, and cannot validate a legacy feature's complete dependency DAG until its D5 registration is reviewed. D4 CI integration remains separate.

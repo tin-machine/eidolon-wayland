@@ -21,9 +21,19 @@ Eidolon Wayland aims to operate Linux GUI applications as independently controll
 
 ## What is implemented now?
 
-The LLM-first documentation structure is **being introduced in stages**. As of this D1–D2 foundation, the legacy layout and existing Phase contracts remain in place. There is **no working resolver CLI**, automatic drift analysis, automatic source-to-document index, feature manifest deployment, or global front matter migration. Do not attempt `scripts/docs.py` or treat the proposed directory tree as real.
+The LLM-first documentation structure is **being introduced in stages**. D1–D2 inventory/schemas and the D3 **read-only resolver** are available. Use [D3 resolver instructions](knowledge/resolver.md) and `python3 scripts/docs.py validate`; only **explicitly registered features** have active manifests (the initial `documentation-system` smoke-test). Linux Desktop v3 and initial Phase 0–6 remain unregistered for the resolver until D5 migration. Do not treat the proposed directory tree as real, or assume context discovery is available for arbitrary legacy features.
 
 The snapshot inventory is [knowledge/inventory-20261113.csv](knowledge/inventory-20261113.csv). It lists every original `docs/` blob at its recorded commit, with **non-authoritative classification candidates**. It is not an acceptance or implementation report.
+
+### D3 quick usage
+
+```bash
+python3 scripts/docs.py validate
+python3 scripts/docs.py context --feature documentation-system --task D3
+python3 scripts/docs.py affected --path scripts/docs.py
+```
+
+A missing manifest/ID returns a **nonzero error**. It does not automatically select similarly named legacy files. The original architecture design is still `proposed`, independent of tool implementation.
 
 ## How to decide what to read
 
