@@ -14,7 +14,7 @@ This repository has no self-hosted runner registered; the current CI uses `ubunt
 
 ## Evidence: actual PR check names
 
-The following names were read from completed workflow **jobs** on the exact baseline commit (not guessed from YAML job IDs):
+The following four *build* names were read from completed workflow **jobs** on the exact baseline commit (not guessed from YAML job IDs). With change-scoped CI, **two additional lightweight gate checks** must also be required: `CI scope (host/android)` and `CI scope (L7a)`. The latter two are introduced by the [change-scope CI update](ci-change-scope-20261113.md) and must be checked in a live PR before enabling the Ruleset:
 
 | Workflow | Actual GitHub check/job name | Run | Result |
 | --- | --- | --- | --- |
@@ -32,7 +32,7 @@ The second workflow uses `jobs.settings` / `jobs.mousepad` **internally**, but o
 - A required check absent on PRs can leave a PR permanently blocked.
 - `workflow_dispatch`-only job checks do not satisfy PR branch rulesets; the existing workflows also use `pull_request`, which is appropriate.
 
-Both workflows currently have unfiltered `pull_request` triggers; if future changes add `paths`, `branches`, or other skip conditions, re-evaluate every required check first. A check must have succeeded in the repository in the preceding seven days for selection.
+Both workflows have unfiltered `pull_request` triggers and lightweight always-running scope jobs. Expensive jobs are skipped with job-level `if`; they may legitimately return **Skipped**, which GitHub considers successful. **Require the two scope checks as well as all four build checks** so a classifier failure cannot be masked by skipped dependent jobs. Do not introduce workflow-level `paths` filtering for these required checks. See [change-scoped CI](ci-change-scope-20261113.md). A check must have succeeded in the repository in the preceding seven days for selection.
 
 ## `protect-main` recommended branch ruleset
 
@@ -50,7 +50,7 @@ Go to **Settings → Rules → Rulesets → New ruleset → New branch ruleset**
 | Block force pushes / non-fast-forward | **ON** | Preserve branch history |
 | Require a pull request before merging | **ON** | Direct push to `main` blocked by the rule |
 | Required approving reviews | **0** | Solo maintainer can merge their own PR |
-| Require status checks to pass | **ON** | Enforce the four checks in the table above |
+| Require status checks to pass | **ON** | Enforce the four checks in the table above **plus two CI scope checks**, six total |
 | Expected source of each check | **GitHub Actions**, if selectable and verified | Avoid a similarly named arbitrary external status |
 | Require branches to be up to date | **OFF** initially (loose) | Avoid unnecessary full rebuilds for each concurrent merge |
 | Require merge queue | **OFF** | Workflows do not declare `merge_group` |
@@ -67,7 +67,7 @@ With **zero approvals**, PRs and checks are still enforced. An empty bypass list
 
 1. **Before Public:** complete other publication gates, including verifying that no publicly downloadable debug-APK artifact remains; rerun the artifact inventory immediately before changing visibility because new Private CI can upload more APKs. Keep licensing audit decisions in their separate workstream. Obtain the owner's explicit approval before switching visibility.
 2. **After Public:** promptly enable Secret scanning and Push protection (as available to this repository), then Dependency graph / Dependabot alerts. Do not automatically enable Dependabot-generated PRs while the update/CI policy is being reviewed.
-3. In **Settings → Rules → Rulesets**, create the branch ruleset with the values above. Verify each of the four required check names in the UI and set expected app source when possible. Keep `main` changes frozen between Public change and ruleset activation.
+3. In **Settings → Rules → Rulesets**, create the branch ruleset with the values above. Verify the two scope checks and four build-check names in the UI and set expected app source when possible. Keep `main` changes frozen between Public change and ruleset activation.
 4. Enable **Private vulnerability reporting** in **Settings → Security and quality → Advanced Security**. Verify the public **Report a vulnerability** control. The new `.github/SECURITY.md` is guidance, **not** the mechanism that turns on private reporting.
 5. Check that `Collaborators only` is still effective, external fork workflow approval is appropriately restrictive, Issue submission is possible, and there are no workflows triggered by untrusted Issue text or `pull_request_target` with privileged checkout.
 6. Verify `main` ruleset shows **Active**. Open a harmless collaborator PR and confirm that the four actual checks are created, that merging is blocked until they succeed, and that a zero-reviewer solo merge is possible. Do not simulate unsafe force pushes or bypass the ruleset.
@@ -86,7 +86,7 @@ With **zero approvals**, PRs and checks are still enforced. An empty bypass list
 | First-party `SECURITY.md` | Added by this PR when merged | Recommended before Public |
 | Private vulnerability reporting | Not enabled by this PR; Public required | Enable immediately after Public |
 | Branch ruleset `protect-main` | Planned only; private-plan restriction | Enable immediately after Public |
-| 4 required PR check jobs | Green on baseline main, **not protected** | Names verified; enforce after Public |
+| 6 required PR check jobs (2 scope + 4 build) | Build checks green on baseline main; scope checks introduced by the change-scope PR, **not protected** | Names verified; enforce after Public |
 | GitHub secret scanning / push protection | Settings not changed by this PR | Verify and enable after Public |
 | Existing APK artifacts | Not deleted or re-audited by this PR | Must be resolved in publication gate before Public |
 | Third-party APK license audit | Separate workstream; not certified here | Follow existing release/publication decisions |
