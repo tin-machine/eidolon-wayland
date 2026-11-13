@@ -1,3 +1,20 @@
+---
+id: linux-desktop-v3-i2
+title: Linux Desktop v3 I2 SSH controller detailed design
+type: detailed-design
+design_status: proposed
+feature: linux-desktop-v3
+component: ssh-controller
+phase: I2
+created: "2026-11-12"
+last_reviewed: "2026-11-13"
+baseline_commit: 151639486d41f6117a7e44c2d977af19ee430ee6
+depends_on: [linux-desktop-v3-b2-bundle, linux-desktop-v3-c2-helper]
+related_sources:
+  - native/transport/src/linux_desktop/v3/owner.rs
+  - native/transport/src/linux_desktop/v3/recovery.rs
+  - native/transport/src/linux_desktop/dispatch.rs
+---
 # Eidolon Wayland — I2: v3 SSH Controller詳細設計
 
 - 設計日：2026-11-12 JST
