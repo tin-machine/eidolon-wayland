@@ -50,7 +50,7 @@ class ResolverTests(unittest.TestCase):
                 "feature: sample\n"
                 'created: "2026-11-13"\n'
                 'last_reviewed: "2026-11-13"\n'
-                f"baseline_commit: {'1' * 40}\n"
+                f"baseline_commit: \"{'1' * 40}\"\n"
                 f"depends_on: [{', '.join(depends)}]\n"
                 f"related_sources:\n  - {related}\n"
                 "---\n"
@@ -112,6 +112,11 @@ class ResolverTests(unittest.TestCase):
         self.write_doc("docs/contract.md", "sample-contract", "contract", depends=["missing"])
         with self.assertRaisesRegex(docs.KnowledgeError, "unknown document ID"):
             self.load()
+
+    def test_numeric_only_sha_requires_quotes(self):
+        raw = "1" * 40
+        self.assertIsInstance(docs.yaml_subset("baseline_commit: " + raw + "\n")["baseline_commit"], int)
+        self.assertEqual(docs.yaml_subset('baseline_commit: "' + raw + '"\n')["baseline_commit"], raw)
 
     def test_unsafe_yaml_constructs_and_duplicates(self):
         for text in ("id: one\nid: two\n", "value: !!python/object/x\n",
