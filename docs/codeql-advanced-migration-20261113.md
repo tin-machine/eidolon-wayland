@@ -21,7 +21,7 @@ The repository variable `EIDOLON_CODEQL_ADVANCED_ENABLED` is an explicit activat
 | Push to main | Jobs skipped | Five-language analysis and upload |
 | Weekly schedule (Monday 03:17 UTC) | Jobs skipped | Five-language analysis and upload |
 
-This is a staging mechanism, not a permanent production toggle: it must remain false during PR-B review and its initial merge; the maintainers should enable it shortly after disabling GitHub's Default setup. The five-language results MUST be confirmed green in PR-B **before** attempting the cutover.
+This is a staging mechanism, not a permanent production toggle: it must remain false during PR-B review and its initial merge; the maintainers should enable it shortly after disabling GitHub's Default setup. The five-language results MUST be confirmed green in PR-B **before** attempting the cutover. Once the variable is true, the legacy Kotlin probe skips ordinary PR events, avoiding two full Kotlin scans per PR. It remains manually runnable through `workflow_dispatch` for diagnostics.
 
 Uploading is controlled by the CodeQL Action `upload` input; `never` also suppresses unsuccessful-execution reporting (unlike legacy `false`). There are no SARIF, database or APK artifacts published by the dry run. A temporarily ignored CodeQL job is not considered accepted; the local SARIF file count and actual CodeQL scan log must be inspected.
 
