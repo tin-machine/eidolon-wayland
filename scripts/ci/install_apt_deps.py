@@ -58,10 +58,11 @@ def mirror_hosts(apt_root: Path = Path("/etc/apt")) -> list[str]:
                     # Ubuntu runner images also list third-party package
                     # repositories (e.g. packages.microsoft.com). Resolving
                     # those cannot establish that Ubuntu APT mirrors work.
+                    # Only standard Ubuntu mirror domains are preflight
+                    # candidates. Unknown custom mirrors fall through to
+                    # bounded APT rather than being declared healthy.
                     is_ubuntu_mirror = bool(host) and (
-                        host == "ubuntu.com"
-                        or host.endswith(".ubuntu.com")
-                        or "/ubuntu" in parsed.path
+                        host == "ubuntu.com" or host.endswith(".ubuntu.com")
                     )
                 except ValueError:
                     host, is_ubuntu_mirror = None, False

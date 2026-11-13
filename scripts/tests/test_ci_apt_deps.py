@@ -45,7 +45,7 @@ class AptDependencySetupTests(unittest.TestCase):
             self.assertEqual(ci_apt.mirror_hosts(root),
                              ["azure.archive.ubuntu.com", "security.ubuntu.com"])
 
-        def test_dns_preflight_accepts_available_fallback_mirror(self):
+    def test_dns_preflight_accepts_available_fallback_mirror(self):
         calls = []
 
         def runner(argv, **kwargs):
