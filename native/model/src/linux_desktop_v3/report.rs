@@ -171,25 +171,25 @@ impl V3Report {
                 "APP_ORIGIN_UNKNOWN",
             )?;
         }
-        if let Some(presentation) = &self.presentation {
-            if presentation.state == PresentationState::Ready {
-                require(
-                    self.transport.phase == TransportPhase::Started
-                        && self.transport.launch_accepted
-                        && !self.transport.journal_pending
-                        && !self.cleanup_pending
-                        && presentation.startup_completed
-                        && presentation.main.is_some()
-                        && !presentation.cleanup_pending
-                        && self.sdk_target.as_ref().is_some_and(|t| {
-                            presentation.main == Some(t.target.window)
-                                && t.acknowledged
-                                && t.binding_present
-                                && t.renderer_frame_seen
-                        }),
-                    "CONTRACT_INVALID",
-                )?;
-            }
+        if let Some(presentation) = &self.presentation
+            && presentation.state == PresentationState::Ready
+        {
+            require(
+                self.transport.phase == TransportPhase::Started
+                    && self.transport.launch_accepted
+                    && !self.transport.journal_pending
+                    && !self.cleanup_pending
+                    && presentation.startup_completed
+                    && presentation.main.is_some()
+                    && !presentation.cleanup_pending
+                    && self.sdk_target.as_ref().is_some_and(|t| {
+                        presentation.main == Some(t.target.window)
+                            && t.acknowledged
+                            && t.binding_present
+                            && t.renderer_frame_seen
+                    }),
+                "CONTRACT_INVALID",
+            )?;
         }
         if self.relaunch_allowed {
             require(
