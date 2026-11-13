@@ -15,7 +15,7 @@ Eidolon Wayland aims to operate Linux GUI applications as independently controll
 | Curved Workspace detailed design | [Curved Workspace README](curved-workspace/README.md) |
 | Spatial Anchor / SA0 proposal | [Spatial Anchor design](spatial-anchor-linux-design-20261111.md) |
 | User operations | [Usage](usage.md) |
-| Build and CI behavior | [CI change scope](ci-change-scope-20261113.md), [CodeQL Kotlin probe](codeql-kotlin-manual-probe-20261113.md), [development and debugging](development-automation-and-debugging.md) |
+| Build and CI behavior | [CI change scope](ci-change-scope-20261113.md), [CodeQL Kotlin probe](codeql-kotlin-manual-probe-20261113.md), [CodeQL Advanced migration](codeql-advanced-migration-20261113.md), [development and debugging](development-automation-and-debugging.md) |
 | Implementation history | [Progress](progress.md) |
 | Knowledge architecture and future migration | [Full design](documentation-knowledge-base-design-20261113.md), [D1–D2 foundation](knowledge/README.md) |
 
