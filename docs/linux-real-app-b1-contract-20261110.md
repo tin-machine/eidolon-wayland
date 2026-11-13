@@ -1,3 +1,19 @@
+---
+id: linux-desktop-v3-b1-contract
+title: Linux Desktop v3 B1 shared contract
+type: contract
+design_status: proposed
+feature: linux-desktop-v3
+component: shared-contract
+phase: B1
+created: "2026-11-10"
+last_reviewed: "2026-11-13"
+baseline_commit: 151639486d41f6117a7e44c2d977af19ee430ee6
+depends_on: []
+related_sources:
+  - native/model/src/linux_desktop_v3/mod.rs
+  - scripts/linux_desktop_v3_contract.py
+---
 # L7a B1: v3共有契約と固定golden vector
 
 2026-11-10（日本時間）。B1は**隔離された純粋な契約moduleと互換性fixture**を追加する。
