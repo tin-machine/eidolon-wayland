@@ -1,3 +1,16 @@
+---
+id: initial-phases-theme-animation
+title: Initial phases theme animation extension design
+type: detailed-design
+design_status: proposed
+feature: initial-phases
+created: "2026-11-06"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [initial-phases-contracts]
+related_sources:
+  - native/theme/src/timeline.rs
+---
 # テーマ・独立アニメーション・作業負荷の実装
 
 2026-11-06。基底は`12bad86`。Phase 5の残る手動受入れを保持し、この追加機能をPhase 6の全耐久・release完了より先に実装する。

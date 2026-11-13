@@ -1,3 +1,18 @@
+---
+id: linux-desktop-v3-c2-helper
+title: Linux Desktop v3 C2 remote helper implementation record
+type: historical
+feature: linux-desktop-v3
+component: remote-helper
+phase: C2
+created: "2026-11-10"
+last_reviewed: "2026-11-13"
+baseline_commit: 151639486d41f6117a7e44c2d977af19ee430ee6
+depends_on: [linux-desktop-v3-b2-bundle, linux-desktop-v3-c1-profile]
+related_sources:
+  - scripts/linux/eidolon_linux_desktop_v3.py
+  - scripts/linux/eidolon_linux_desktop_session_v3.py
+---
 # L7a C2: 通常v3 helper・remote回収barrier
 
 2026-11-10（日本時間）。基準mainは `b43896446d6682ba1b78c05d4096a21d9cbc998b`。

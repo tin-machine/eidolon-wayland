@@ -1,3 +1,19 @@
+---
+id: linux-desktop-v3-b1-presentation
+title: Linux Desktop v3 B1 presentation evidence contract
+type: contract
+design_status: proposed
+feature: linux-desktop-v3
+component: presentation
+phase: B1
+created: "2026-11-10"
+last_reviewed: "2026-11-13"
+baseline_commit: 151639486d41f6117a7e44c2d977af19ee430ee6
+depends_on: [linux-desktop-v3-b1-contract]
+related_sources:
+  - native/model/src/linux_desktop_v3/presentation.rs
+  - scripts/linux_desktop_v3_presentation.py
+---
 # L7a B1: origin・parent・表示成立の共有契約
 
 2026-11-10（日本時間）。対象は[B1引き継ぎ](linux-real-app-b1-handoff-20261110.md)の純粋な型・検証・固定vectorである。

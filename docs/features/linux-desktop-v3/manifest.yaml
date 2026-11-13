@@ -1,0 +1,44 @@
+schema: 1
+feature: linux-desktop-v3
+entrypoint: README.md
+contracts: [linux-desktop-v3-b1-contract, linux-desktop-v3-integration-plan]
+tasks:
+  B1:
+    document: linux-desktop-v3-b1-contract
+    requires: []
+    test_plans: []
+  B2:
+    document: linux-desktop-v3-b2-bundle
+    requires: [linux-desktop-v3-b1-contract]
+    test_plans: []
+  C1:
+    document: linux-desktop-v3-c1-profile
+    requires: [linux-desktop-v3-b1-contract]
+    test_plans: []
+  C2:
+    document: linux-desktop-v3-c2-helper
+    requires: [linux-desktop-v3-b2-bundle, linux-desktop-v3-c1-profile]
+    test_plans: []
+  E1:
+    document: linux-desktop-v3-e1-storage
+    requires: [linux-desktop-v3-b1-storage-identity]
+    test_plans: []
+  I1:
+    document: linux-desktop-v3-integration-plan
+    requires: [linux-desktop-v3-b1-contract]
+    test_plans: []
+  I2:
+    document: linux-desktop-v3-i2
+    requires: [linux-desktop-v3-b2-bundle, linux-desktop-v3-c2-helper]
+    test_plans: []
+  I4:
+    document: linux-desktop-v3-i4
+    requires: [linux-desktop-v3-b1-presentation]
+    test_plans: []
+source_paths:
+  - native/model/src/linux_desktop_v3/mod.rs
+  - native/transport/src/linux_desktop/v3/owner.rs
+  - native/core/src/runtime.rs
+  - native/render/src/lib.rs
+  - scripts/linux/eidolon_linux_desktop_v3.py
+  - android/app/src/main/java/io/github/tinmachine/eidolon/LinuxStorageRepository.kt

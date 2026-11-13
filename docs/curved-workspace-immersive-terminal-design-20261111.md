@@ -1,3 +1,16 @@
+---
+id: curved-workspace-plan
+title: Curved Workspace design and staged feasibility plan
+type: architecture
+design_status: proposed
+feature: curved-workspace
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: []
+related_sources:
+  - native/core/src/workspace.rs
+---
 # Eidolon Wayland — Curved Workspace / Immersive Terminal 設計・検証・段階導入計画
 
 > **Status: Design / Proposed — 未実装・未Quest実機検証**

@@ -1,3 +1,16 @@
+---
+id: initial-phases-phase-2
+title: Initial phases Termux SSH transport design
+type: detailed-design
+design_status: proposed
+feature: initial-phases
+created: "2026-11-04"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [initial-phases-contracts]
+related_sources:
+  - native/transport/src/session.rs
+---
 # Phase 2 — APKからTermuxへのSSH
 
 前提はB03。[PC開発用SSH](../phase-0-reproduction.md)とは別の接続・鍵・試験を作る。製品endpointは`127.0.0.1:8022`に固定し、MVPに任意remote host設定を追加しない。

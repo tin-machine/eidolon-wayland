@@ -1,0 +1,152 @@
+name: CodeQL Kotlin manual-build probe
+
+# This is an isolated, non-uploading experiment while CodeQL Default setup
+# remains enabled for Rust, Python, C/C++ and Actions. Not a replacement for
+# Advanced setup and not a required branch-protection check.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/codeql-kotlin-probe.yml
+      - android/**
+      - scripts/native-build-inputs
+      - scripts/native_build.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-kotlin-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kotlin-manual-probe:
+    # Retire redundant PR scans once the five-language Advanced setup is live;
+    # keep explicit workflow_dispatch for offline diagnostics on demand.
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.EIDOLON_CODEQL_ADVANCED_ENABLED != 'true' }}
+    name: Kotlin compile / CodeQL dry run (no upload)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Gradle 9.4.1 / AGP 8.11.1 / Kotlin 2.4.21 are already exercised with JDK 25
+      # in check.yml. Do not introduce a second, unrelated JDK version here.
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # Kotlin-only compilation must not require the native/EGL/Waypipe/APK toolchain.
+      - name: Install Android SDK platform for Kotlin compile
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+
+          sdk = pathlib.Path(os.environ['ANDROID_HOME'])
+          manager = sdk / 'cmdline-tools/latest/bin/sdkmanager'
+          assert manager.is_file(), 'Android SDK command-line tools are missing'
+          subprocess.run(
+              [str(manager), '--sdk_root=' + str(sdk), '--licenses'],
+              input='y\n' * 100, text=True, check=True,
+          )
+          subprocess.run(
+              [str(manager), '--sdk_root=' + str(sdk),
+               'platforms;android-36', 'build-tools;35.0.0'],
+              check=True,
+          )
+          PY
+
+      - name: Ensure Kotlin task graph does not invoke native build
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Include production variants, the independent probe APK's Kotlin, and
+          # both main + variant-local JVM unit tests. Do not run tests on a Quest.
+          tasks=(
+            :app:compileDebugKotlin
+            :app:compileReleaseKotlin
+            :probe:compileDebugKotlin
+            :app:compileDebugUnitTestKotlin
+          )
+          printf 'Probed tasks: %s\n' "${tasks[*]}"
+          ./gradlew --no-daemon --console=plain "${tasks[@]}" --dry-run \
+            | tee "$RUNNER_TEMP/kotlin-task-graph.txt"
+          if grep -E '(^|[[:space:]]):[^[:space:]]*(build(Debug|Release)EidolonNative|nativeProbe)([[:space:]]|$)' "$RUNNER_TEMP/kotlin-task-graph.txt"; then
+            echo "::error::Kotlin compile task graph includes native/APK build; aborting probe"
+            exit 1
+          fi
+
+      - name: Initialize CodeQL Kotlin with manual build
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: java-kotlin
+          build-mode: manual
+
+      - name: Compile Kotlin under CodeQL instrumentation
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          tasks=(
+            :app:compileDebugKotlin
+            :app:compileReleaseKotlin
+            :probe:compileDebugKotlin
+            :app:compileDebugUnitTestKotlin
+          )
+          ./gradlew --no-daemon --console=plain --rerun-tasks "${tasks[@]}"
+          for classes in \
+            app/build/tmp/kotlin-classes/debug \
+            app/build/tmp/kotlin-classes/release \
+            probe/build/tmp/kotlin-classes/debug \
+            app/build/tmp/kotlin-classes/debugUnitTest
+          do
+            test -d "$classes" || {
+              echo "::error::Kotlin compiler output is missing: $classes"
+              exit 1
+            }
+            count="$(find "$classes" -type f -name '*.class' | wc -l)"
+            echo "Kotlin/JVM class files in $classes: $count"
+            test "$count" -gt 0 || {
+              echo "::error::No Kotlin class files compiled: $classes"
+              exit 1
+            }
+          done
+
+      # Default setup currently owns Code scanning for the other four languages.
+      # Uploading analysis from this separate workflow would conflict with it.
+      # 'never' also suppresses failure-report uploads (unlike 'false').
+      - name: Analyze Kotlin locally (no Code scanning upload)
+        id: codeql-analyze
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          upload: never
+          upload-database: false
+          output: ${{ runner.temp }}/kotlin-codeql-results
+
+      - name: Verify a local CodeQL SARIF result was produced
+        env:
+          CODEQL_SARIF_DIR: ${{ steps.codeql-analyze.outputs.sarif-output }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output = Path(os.environ['CODEQL_SARIF_DIR'])
+          files = sorted(output.rglob('*.sarif'))
+          assert files, f'No SARIF results found beneath {output}'
+          runs = []
+          for file in files:
+              data = json.loads(file.read_text())
+              assert data.get('version') == '2.1.0', file
+              runs.extend(data.get('runs', []))
+          assert runs, 'CodeQL produced no SARIF run'
+          print('Local CodeQL SARIF generated:', ', '.join(p.name for p in files))
+          print('CodeQL runs:', len(runs))
+          PY

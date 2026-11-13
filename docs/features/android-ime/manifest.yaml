@@ -1,0 +1,35 @@
+schema: 1
+feature: android-ime
+entrypoint: README.md
+contracts: [android-ime-design]
+tasks:
+  A1:
+    document: android-ime-compare-probe
+    requires: []
+    test_plans: []
+  A2:
+    document: android-ime-compare-probe
+    requires: []
+    test_plans: []
+  NX09:
+    document: android-ime-nx09-terminal-entry
+    requires: [android-ime-implementation-record]
+    test_plans: []
+  NORMAL-PROBE:
+    document: android-ime-nx09-normal-probe
+    requires: []
+    test_plans: []
+  TERMINAL-PROBE:
+    document: android-ime-terminal-probe
+    requires: []
+    test_plans: []
+  IMPLEMENTATION:
+    document: android-ime-implementation-record
+    requires: []
+    test_plans: []
+source_paths:
+  - native/core/src/compositor/ime.rs
+  - native/model/src/ime.rs
+  - scripts/quest-ime-probe
+  - scripts/quest-ime-terminal
+  - android/app/src/test/java/io/github/tinmachine/eidolon/ImeSessionConnectionTest.kt

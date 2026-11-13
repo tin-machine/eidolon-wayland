@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tin-machine/eidolon-wayland/blob/main/docs/knowledge/schemas/feature-manifest.schema.json",
+  "title": "Eidolon feature manifest v1",
+  "description": "Per-feature index; documents are referenced by stable IDs, not positional date or path. Path resolution and graph checks belong to D3.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "feature",
+    "entrypoint",
+    "contracts",
+    "tasks",
+    "source_paths"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "feature": {
+      "$ref": "#/$defs/id"
+    },
+    "entrypoint": {
+      "$ref": "#/$defs/local_path"
+    },
+    "contracts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "tasks": {
+      "type": "object",
+      "patternProperties": {
+        "^[A-Z][A-Z0-9-]*$": {
+          "$ref": "#/$defs/task"
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/repo_path"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "maxLength": 120
+    },
+    "local_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*\\s)(?!.*//).+$"
+    },
+    "repo_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*\\s)(?!.*//).+$"
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document",
+        "requires"
+      ],
+      "properties": {
+        "document": {
+          "$ref": "#/$defs/id"
+        },
+        "requires": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "test_plans": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    }
+  }
+}

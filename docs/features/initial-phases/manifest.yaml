@@ -1,0 +1,159 @@
+schema: 1
+feature: initial-phases
+entrypoint: README.md
+contracts: [initial-phases-contracts]
+tasks:
+  B01:
+    document: initial-phases-phase-0-1
+    requires: []
+    test_plans: []
+  B02:
+    document: initial-phases-phase-0-1
+    requires: []
+    test_plans: []
+  B03:
+    document: initial-phases-phase-0-1
+    requires: []
+    test_plans: []
+  C01:
+    document: initial-phases-phase-6
+    requires: [initial-phases-phase-0-1]
+    test_plans: []
+  H01:
+    document: initial-phases-phase-0-1
+    requires: []
+    test_plans: []
+  R01:
+    document: initial-phases-phase-0-1
+    requires: []
+    test_plans: []
+  R02:
+    document: initial-phases-phase-0-1
+    requires: []
+    test_plans: []
+  R03:
+    document: initial-phases-phase-0-1
+    requires: []
+    test_plans: []
+  T01:
+    document: initial-phases-phase-2
+    requires: [initial-phases-phase-0-1]
+    test_plans: []
+  T02:
+    document: initial-phases-phase-2
+    requires: []
+    test_plans: []
+  T03:
+    document: initial-phases-phase-2
+    requires: []
+    test_plans: []
+  T04:
+    document: initial-phases-phase-2
+    requires: []
+    test_plans: []
+  W01:
+    document: initial-phases-phase-3
+    requires: [initial-phases-phase-0-1]
+    test_plans: []
+  W02:
+    document: initial-phases-phase-3
+    requires: [initial-phases-phase-0-1]
+    test_plans: []
+  W03:
+    document: initial-phases-phase-3
+    requires: []
+    test_plans: []
+  W04:
+    document: initial-phases-phase-3
+    requires: [initial-phases-phase-0-1]
+    test_plans: []
+  W05:
+    document: initial-phases-phase-3
+    requires: [initial-phases-phase-2]
+    test_plans: []
+  D01:
+    document: initial-phases-phase-4-5
+    requires: [initial-phases-phase-0-1, initial-phases-phase-3]
+    test_plans: []
+  D02:
+    document: initial-phases-phase-4-5
+    requires: [initial-phases-phase-3]
+    test_plans: []
+  I01:
+    document: initial-phases-phase-4-5
+    requires: []
+    test_plans: []
+  I02:
+    document: initial-phases-phase-4-5
+    requires: [initial-phases-phase-3]
+    test_plans: []
+  I03:
+    document: initial-phases-phase-4-5
+    requires: []
+    test_plans: []
+  I04:
+    document: initial-phases-phase-4-5
+    requires: []
+    test_plans: []
+  I05:
+    document: initial-phases-phase-4-5
+    requires: []
+    test_plans: []
+  I06:
+    document: initial-phases-phase-4-5
+    requires: []
+    test_plans: []
+  I07:
+    document: initial-phases-phase-4-5
+    requires: []
+    test_plans: []
+  L01:
+    document: initial-phases-phase-6
+    requires: [initial-phases-phase-0-1, initial-phases-phase-2, initial-phases-phase-4-5]
+    test_plans: []
+  L02:
+    document: initial-phases-phase-6
+    requires: []
+    test_plans: []
+  L03:
+    document: initial-phases-phase-6
+    requires: []
+    test_plans: []
+  L04:
+    document: initial-phases-phase-6
+    requires: [initial-phases-phase-4-5]
+    test_plans: []
+  C02:
+    document: initial-phases-phase-6
+    requires: []
+    test_plans: []
+  TH00:
+    document: initial-phases-theme-animation
+    requires: []
+    test_plans: []
+  TH01:
+    document: initial-phases-theme-animation
+    requires: []
+    test_plans: []
+  TH02:
+    document: initial-phases-theme-animation
+    requires: []
+    test_plans: []
+  TH03:
+    document: initial-phases-theme-animation
+    requires: []
+    test_plans: []
+  TH04:
+    document: initial-phases-theme-animation
+    requires: []
+    test_plans: []
+  TH05:
+    document: initial-phases-theme-animation
+    requires: []
+    test_plans: []
+source_paths:
+  - docs/design/tasks.json
+  - scripts/check-design
+  - native/core/src/runtime.rs
+  - native/core/src/session.rs
+  - native/transport/src/session.rs

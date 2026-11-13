@@ -1,0 +1,114 @@
+schema: 1
+feature: curved-workspace
+entrypoint: README.md
+contracts: [curved-workspace-contracts]
+tasks:
+  CW00:
+    document: curved-workspace-work-items
+    requires: []
+    test_plans: []
+  CW01:
+    document: curved-workspace-contracts
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW02:
+    document: curved-workspace-geometry
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW03:
+    document: curved-workspace-runtime
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW04:
+    document: curved-workspace-runtime
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW05:
+    document: curved-workspace-runtime
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW06:
+    document: curved-workspace-android-input
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW07:
+    document: curved-workspace-android-input
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW08:
+    document: curved-workspace-android-input
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW09:
+    document: curved-workspace-runtime
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW10:
+    document: curved-workspace-tests
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW11:
+    document: curved-workspace-runtime
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW12:
+    document: curved-workspace-tests
+    requires: [curved-workspace-work-items]
+    test_plans: [curved-workspace-tests]
+  CW13:
+    document: curved-workspace-geometry
+    requires: [curved-workspace-work-items, curved-workspace-persistence]
+    test_plans: []
+  CW14:
+    document: curved-workspace-persistence
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW15:
+    document: curved-workspace-persistence
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW16:
+    document: curved-workspace-persistence
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW17:
+    document: curved-workspace-persistence
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW18:
+    document: curved-workspace-tests
+    requires: [curved-workspace-work-items]
+    test_plans: [curved-workspace-tests]
+  CW19:
+    document: curved-workspace-cylinder
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW20:
+    document: curved-workspace-cylinder
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW21:
+    document: curved-workspace-cylinder
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW22:
+    document: curved-workspace-cylinder
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW23:
+    document: curved-workspace-cylinder
+    requires: [curved-workspace-work-items]
+    test_plans: []
+  CW24:
+    document: curved-workspace-cylinder
+    requires: [curved-workspace-work-items, curved-workspace-persistence]
+    test_plans: []
+  CW25:
+    document: curved-workspace-tests
+    requires: [curved-workspace-work-items, curved-workspace-persistence]
+    test_plans: [curved-workspace-tests]
+source_paths:
+  - native/core/src/workspace.rs
+  - native/core/src/runtime.rs
+  - android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt
+  - docs/curved-workspace/fixtures/*.json

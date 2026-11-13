@@ -1,3 +1,17 @@
+---
+id: spatial-anchor-sa0-design
+title: Spatial Anchor SA0 feasibility and evidence design
+type: architecture
+design_status: proposed
+feature: spatial-anchor
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: []
+related_sources:
+  - native/core/src/workspace.rs
+  - android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt
+---
 # Eidolon Wayland — Spatial Anchor × Linux 設計・SA0検証計画
 
 Status: **Design / SA0 proposed**  

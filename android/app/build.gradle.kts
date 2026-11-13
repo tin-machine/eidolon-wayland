@@ -18,6 +18,7 @@ val nativeTasks = listOf("debug", "release").associateWith { profile ->
     val task = tasks.register<Exec>("build${title}EidolonNative") {
         inputs.property("buildInfo", buildInfo)
         inputs.property("ndk", "27.3.13750724")
+        inputs.files(file("../../LICENSE"), file("../../THIRD_PARTY_NOTICES.md"), file("../../ci/licenses/Apache-2.0.txt"))
         inputs.property("api", 34)
         inputs.property("abi", "arm64-v8a")
         outputs.dir(nativeOutput)
@@ -25,6 +26,21 @@ val nativeTasks = listOf("debug", "release").associateWith { profile ->
         doFirst {
             commandLine("python3", file("../../scripts/build-native"), "--version", eidolonVersion.get(), "--profile", profile,
                 "--output", nativeOutput.get().asFile, "--assets", assetOutput.get().asFile)
+        }
+        // Persist the *resolved* runtime graph of the APK being packaged, not a
+        // hand-maintained list of direct Gradle declarations or debug test deps.
+        // The native APK license checker fails closed on unknown Maven groups.
+        doLast {
+            val artifacts = configurations.getByName("${profile}RuntimeClasspath").resolvedConfiguration.resolvedArtifacts
+            val modules = artifacts.map { artifact ->
+                val id = artifact.moduleVersion.id
+                mapOf("group" to id.group, "name" to id.name, "version" to id.version)
+            }.distinct().sortedBy { module -> "${module["group"]}:${module["name"]}:${module["version"]}" }
+            require(modules.isNotEmpty()) { "APK runtime dependency graph is empty" }
+            val report = mapOf("schema" to 1, "variant" to profile, "modules" to modules)
+            val output = assetOutput.get().asFile.resolve("licenses/android/runtime-modules.json")
+            output.parentFile.mkdirs()
+            output.writeText(JsonOutput.prettyPrint(JsonOutput.toJson(report)) + "\n")
         }
     }
     Triple(task, assetOutput, buildInfo)

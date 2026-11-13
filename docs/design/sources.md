@@ -1,3 +1,15 @@
+---
+id: initial-phases-sources
+title: Initial phases reference source index
+type: index
+feature: initial-phases
+created: "2026-11-04"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: []
+related_sources:
+  - native/core/src/runtime.rs
+---
 # 根拠・固定版・未確定事項
 
 確認日: 2026-11-04。API/配布sourceの確認は、その組合せがQuestで動いた証拠ではない。実機済みの基準は[Phase 0記録](../phase-0-troubleshooting-20261104.md)。今回の設計調査ではAPK更新、端末設定変更、Rust実装を行っていない。

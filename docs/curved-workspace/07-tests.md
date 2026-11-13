@@ -1,3 +1,16 @@
+---
+id: curved-workspace-tests
+title: Curved Workspace fixture and acceptance test plan
+type: test-plan
+feature: curved-workspace
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [curved-workspace-geometry, curved-workspace-runtime, curved-workspace-cylinder]
+related_sources:
+  - docs/curved-workspace/fixtures/*.json
+  - scripts/tests/test_layout_result.py
+---
 # 07 — 固定fixture・回帰・実機受入れ
 
 [入口](README.md)。ここに列挙するテストは**実装時に追加する検査**。文書追加時に製品テストを実行したという意味ではない。

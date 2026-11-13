@@ -1,3 +1,16 @@
+---
+id: initial-phases-index
+title: Initial phases implementation design entry
+type: index
+feature: initial-phases
+created: "2026-11-04"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: []
+related_sources:
+  - scripts/check-design
+  - docs/design/tasks.json
+---
 # 残フェーズの詳細設計と実装の入口
 
 設計日: 2026-11-04。基準revision: `76baac2ca860aeb89bd51d61a23084e2fe88b285`。

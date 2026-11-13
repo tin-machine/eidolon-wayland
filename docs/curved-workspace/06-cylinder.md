@@ -1,3 +1,16 @@
+---
+id: curved-workspace-cylinder
+title: Curved Workspace Cylinder feasibility and SDK design
+type: detailed-design
+design_status: proposed
+feature: curved-workspace
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [curved-workspace-geometry, curved-workspace-android-input]
+related_sources:
+  - android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt
+---
 # 06 — Cylinderの隔離PoCと条件付き製品統合
 
 [入口](README.md)。Flat完成の前提条件ではない。最初にSDK能力を測り、不成立ならFlat製品を維持する。独自OpenXR runtimeや新rendererをCylinderのために追加しない。
