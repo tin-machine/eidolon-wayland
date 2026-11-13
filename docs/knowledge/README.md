@@ -1,6 +1,6 @@
 # Documentation Knowledge System — D1/D2 foundation
 
-Status: **D1/D2 foundation, D3 read-only resolver, D4 docs CI and scoped manifests**  
+Status: **D1/D2 inventory/contracts, D3 resolver, D4 docs CI, D5 scoped Linux Desktop v3 registration**  
 Snapshot commit: `78e760a5e3d15d8e7002229948d665260c4f1484` (2026-11-13 JST)  
 Parent design: [LLM-first Documentation Knowledge Architecture](../documentation-knowledge-base-design-20261113.md)
 
@@ -17,7 +17,7 @@ The snapshot includes 3 Curved Workspace fixture JSON files and `docs/design/tas
 
 The original directory layout is **not** an authority ranking. For current tasks use [the documentation entry](../README.md). Candidate sorting does **not** indicate `accepted`, `implemented`, or `verified`.
 
-Do not treat this dated snapshot as live state. D3 should regenerate/compare the Git inventory using `git ls-tree -r --name-only <commit> docs/` (or equivalent) and flag additions, deletions, and renames.
+Do not treat this dated snapshot as live state. A later inventory refresh may regenerate/compare the Git inventory using `git ls-tree -r --name-only <commit> docs/` (or equivalent) and flag additions, deletions, and renames.
 
 ## D1 — Provisional stable-ID seeds (not registered)
 
@@ -101,7 +101,7 @@ A document is not an accepted contract just because it appears in the inventory 
 | D2 | Schema definitions, docs entrance, root `AGENTS.md` | Yes |
 | D3 | `scripts/docs.py validate/context/affected/drift`, unit tests, explicitly managed ID graph | **Yes (registered documents only)** |
 | D4 | Unconditional lightweight docs CI and scoped manifest classifier | **Yes (GitHub Ruleset change remains manual)** |
-| D5 | Reviewed Linux Desktop v3 metadata/manifest and links | **No** |
+| D5 | Reviewed Linux Desktop v3 metadata/manifest and links | **Yes (10 docs; proposed/historical, not acceptance)** |
 | D6 | Complete gradual migration of other feature areas | **No** |
 
 ## Migration / compatibility gates
@@ -118,4 +118,4 @@ A document is not an accepted contract just because it appears in the inventory 
 
 At the snapshot SHA, the inventory must include **167 distinct paths**, all under `docs/`, matching Git exactly and retaining three JSON fixtures plus the existing `design/tasks.json`. Both schema files must be syntactically valid JSON with unique properties/enums. Repository paths referenced by the two README files and AGENTS.md must exist in the PR. Existing `scripts/check-design` and CI sources must remain byte-for-byte unchanged.
 
-D3 validates **only explicitly registered** features/documents, and cannot validate a legacy feature's complete dependency DAG until its D5 registration is reviewed. D4 documentation CI is integrated; Ruleset required-check activation must be performed separately by an authorized admin.
+D3 validates **only explicitly registered** features/documents. D5 adds [Linux Desktop v3's 10-document, 8-task graph](../features/linux-desktop-v3/README.md) without rewriting or approving the original designs. Other legacy features remain unregistered. D4 documentation CI is integrated; Ruleset required-check activation must be performed separately by an authorized admin.
