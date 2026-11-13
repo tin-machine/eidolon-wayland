@@ -1,3 +1,16 @@
+---
+id: initial-phases-phase-0-1
+title: Initial phases build JNI and Surface design
+type: detailed-design
+design_status: proposed
+feature: initial-phases
+created: "2026-11-04"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [initial-phases-contracts]
+related_sources:
+  - native/core/src/runtime.rs
+---
 # Phase 0残作業・Phase 1 — build、JNI、Surface
 
 前提は[共通契約](contracts.md)。この文書のファイルは既存と明記したもの以外は新規作成予定。現行`MainActivity.kt`のCompose表示とpassthroughを回帰確認できる状態で増やす。
