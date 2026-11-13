@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/tin-machine/eidolon-wayland/blob/main/docs/knowledge/schemas/document-metadata.schema.json",
+  "title": "Eidolon managed documentation metadata v1",
+  "description": "Front Matter contents, not the enclosing Markdown. Managed docs only. D2 schema does not retroactively apply to legacy docs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "title",
+    "type",
+    "feature",
+    "created",
+    "last_reviewed"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "#/$defs/id"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "type": {
+      "enum": [
+        "architecture",
+        "contract",
+        "detailed-design",
+        "task",
+        "test-plan",
+        "evidence",
+        "decision",
+        "runbook",
+        "historical",
+        "index",
+        "fixture"
+      ]
+    },
+    "design_status": {
+      "enum": [
+        "proposed",
+        "accepted",
+        "superseded",
+        "retired"
+      ]
+    },
+    "feature": {
+      "$ref": "#/$defs/id"
+    },
+    "component": {
+      "$ref": "#/$defs/id"
+    },
+    "phase": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "created": {
+      "$ref": "#/$defs/date"
+    },
+    "last_reviewed": {
+      "$ref": "#/$defs/date"
+    },
+    "baseline_commit": {
+      "$ref": "#/$defs/sha"
+    },
+    "depends_on": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "default": []
+    },
+    "supersedes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "default": []
+    },
+    "related_sources": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/repo_path"
+      },
+      "default": []
+    },
+    "authority_keys": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      },
+      "default": []
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "architecture",
+              "contract",
+              "detailed-design",
+              "decision"
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "design_status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "contract",
+              "detailed-design"
+            ]
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "baseline_commit"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "design_status"
+        ],
+        "properties": {
+          "design_status": {
+            "enum": [
+              "superseded"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "supersedes"
+        ],
+        "properties": {
+          "supersedes": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+      "maxLength": 120
+    },
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "date": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "repo_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "^[^/\\\\\\s][^\\\\\\s]*$"
+    }
+  }
+}
