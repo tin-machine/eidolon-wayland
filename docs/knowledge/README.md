@@ -19,6 +19,25 @@ The original directory layout is **not** an authority ranking. For current tasks
 
 Do not treat this dated snapshot as live state. D3 should regenerate/compare the Git inventory using `git ls-tree -r --name-only <commit> docs/` (or equivalent) and flag additions, deletions, and renames.
 
+## D1 — Provisional stable-ID seeds (not registered)
+
+These are **candidates** for a future reviewer to reconcile with current source and with any existing Front Matter. They reserve neither authority nor ownership; no D3 resolver currently consumes them. Before D5, check for collisions, actual current scope, and supersession.
+
+| Proposed stable ID | Existing path | Review requirement |
+| --- | --- | --- |
+| `docs-knowledge-architecture-20261113` | `docs/documentation-knowledge-base-design-20261113.md` | Existing Front Matter; proposed system design, not an accepted contract |
+| `eidolon-system-architecture` | `docs/architecture.md` | Review stale phase-specific assertions before claiming current architecture |
+| `initial-phase-contracts` | `docs/design/contracts.md` | Must preserve `scripts/check-design` behavior |
+| `initial-phase-task-index` | `docs/design/tasks.json` | Task JSON is not YAML Front Matter; support as registered structured source if needed |
+| `linux-desktop-v3-integration-plan` | `docs/linux-real-app-v3-integration-plan-20261111.md` | Baseline/source drift and status review |
+| `linux-desktop-v3-b1-contract` | `docs/linux-real-app-b1-contract-20261110.md` | Confirm contract precedence with other B1 docs |
+| `linux-desktop-v3-i2` | `docs/linux-real-app-v3-i2-detailed-design.md` | Review against merged I2 implementations before acceptance |
+| `linux-desktop-v3-i4` | `docs/linux-real-app-v3-i4-detailed-design.md` | Review against current I3/I4 PR and B1 observation API |
+| `workspace-curved-design-index` | `docs/curved-workspace/README.md` | Preserve fixtures and explicit 01–08 reading order |
+| `workspace-spatial-anchor-sa0` | `docs/spatial-anchor-linux-design-20261111.md` | SA0 is an observation-only proposal, not Quest-proven |
+
+The complete inventory remains the CSV; these **ten seed IDs do not imply that remaining files should be ignored**. Other documents receive stable IDs only when reviewed during feature migration.
+
 ## D2 — Proposed machine-readable contracts
 
 - [Document Metadata v1 JSON Schema](schemas/document-metadata.schema.json): the **YAML Front Matter mapping** of a managed document. Only applies after an explicit migration.
