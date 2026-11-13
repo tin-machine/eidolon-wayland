@@ -1,3 +1,18 @@
+---
+id: linux-desktop-v3-b2-bundle
+title: Linux Desktop v3 B2 bundle implementation record
+type: historical
+feature: linux-desktop-v3
+component: remote-bundle
+phase: B2
+created: "2026-11-10"
+last_reviewed: "2026-11-13"
+baseline_commit: 151639486d41f6117a7e44c2d977af19ee430ee6
+depends_on: [linux-desktop-v3-b1-contract]
+related_sources:
+  - scripts/linux_desktop_v3_bundle.py
+  - native/transport/src/linux_desktop/v3/sources.rs
+---
 # B2: v3 bundle、source closureとimmutable配置
 
 2026-11-10（日本時間）。**C1/C2の完成source・commitが未提供であり、B2の最終統合は未完了**。
