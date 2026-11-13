@@ -1,6 +1,6 @@
 # D3 — deterministic documentation resolver
 
-Implementation: [scripts/docs.py](../../scripts/docs.py). D3 is a **read-only, offline** helper. D1's 167-row inventory is not a managed-document registry; legacy files are not automatically elevated to approved contracts. D4 documentation-specific required CI checks and D5 Linux Desktop v3 feature migration are **not yet implemented**.
+Implementation: [scripts/docs.py](../../scripts/docs.py). D3 is a **read-only, offline** helper. D1's 167-row inventory is not a managed-document registry; legacy files are not automatically elevated to approved contracts. D4 adds an unconditional `Documentation integrity` CI job; marking it as a required Ruleset check is an administrator operation. D5 Linux Desktop v3 migration is **not yet implemented**.
 
 ## Usage
 
@@ -37,4 +37,4 @@ A document's baseline SHA and related source patterns are not a proof of current
 
 The only live feature manifest in this PR is \`documentation-system\`, a low-risk self-test of the resolver. It references the architecture proposal, whose \`design_status\` remains \`proposed\`. It deliberately does not register older Phase 0–6 files or Linux Desktop v3 contracts: those require D5 review of authoritative status, baseline, dependency IDs and ongoing I2/I3/I4 implementation work.
 
-Existing \`scripts/check-design\`, CI scope classification, workflows and Phase task specs are preserved. The Python unit suite is discovered by existing \`scripts/check-host --suite all\`; this does not replace D4's dedicated docs CI job. 
+Existing \`scripts/check-design\`, CI scope classification, workflows and Phase task specs are preserved. The Python unit suite is discovered by existing \`scripts/check-host --suite all\`; D4 also runs these focused tests as a fast independent required-check candidate. 

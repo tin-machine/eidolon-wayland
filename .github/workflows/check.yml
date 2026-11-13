@@ -44,6 +44,28 @@ jobs:
             script="$RUNNER_TEMP/ci_scope.py"
           fi
           python3 "$script"
+  docs:
+    # Always present (even on code-only PRs) so this is a stable required check.
+    # Never gate it behind workflow paths-ignore or a conditional job skip.
+    name: Documentation integrity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate managed documentation registry and dependencies
+        run: python3 scripts/docs.py validate
+      - name: Preserve legacy Phase 0-6 task contracts and anchors
+        run: python3 scripts/check-design
+      - name: Verify documentation resolver and change-scope guard tests
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_docs_resolver.py -v
+          python3 -m unittest discover -s scripts/tests -p test_ci_scope.py -v
+      - name: Resolve the registered documentation-system smoke-test
+        run: python3 scripts/docs.py context --feature documentation-system --task D3 --format json
+
   host:
     needs: scope
     if: ${{ needs.scope.outputs.host == 'true' }}

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Select expensive CI jobs using the actual Git diff, without third-party Actions.
 
-Unknown inputs fail open to full testing. Intentionally inert Markdown documents
-are the only broad exclusion; these are NOT a general "*.md" ignore rule.
+Unknown inputs fail open to full testing. Intentionally inert Markdown and explicit feature manifests are excluded from
+expensive jobs only when the always-on documentation integrity job covers them.
+These are NOT general "*.md" or "*.yaml" ignore rules.
 """
 import json
 import os
@@ -28,8 +29,15 @@ def classify(paths):
             continue
         if path.startswith("docs/design/"):
             jobs.add("host")  # scripts/check-design reads these files.
+        elif (path.startswith("docs/features/")
+              and len(path.split("/")) == 4
+              and path.endswith("/manifest.yaml")):
+            # Only these explicit machine-readable feature indices are docs-only.
+            # Documentation integrity always validates them; all other YAML and
+            # JSON fixtures remain unknown/shared and trigger every build job.
+            continue
         elif path.startswith("docs/") and path.endswith(".md"):
-            continue  # other Markdown is not an input; JSON fixtures are.
+            continue  # docs job validates managed Markdown; fixtures are inputs.
         elif path == ".github/workflows/check.yml":
             jobs.update(("host", "android"))
         elif path == ".github/workflows/linux-real-app.yml":
