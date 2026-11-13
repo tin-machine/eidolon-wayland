@@ -31,11 +31,12 @@ class ClassifierTests(unittest.TestCase):
             "docs/knowledge/schemas/feature-manifest.schema.json",
             "docs/knowledge/fixture.yaml",
             "docs/knowledge/inventory-20261113.csv",
-            "docs/design/protocol/manifest.yaml",
             "AGENTS.md",
         ):
             with self.subTest(path=path):
                 self.assert_jobs([path], ci_scope.ALL)
+        # Preserve the existing legacy Phase-0–6 contract: docs/design/** -> host.
+        self.assert_jobs(["docs/design/protocol/manifest.yaml"], ["host"])
 
     def test_manifest_and_product_change_does_not_hide_build(self):
         self.assert_jobs(["docs/features/v3/manifest.yaml", "native/core/src/main.rs"],
