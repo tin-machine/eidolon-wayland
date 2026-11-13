@@ -1,6 +1,6 @@
 # Documentation Knowledge System — D1/D2 foundation
 
-Status: **D1/D2 foundation + D3 read-only resolver; D4 docs CI not yet implemented**  
+Status: **D1/D2 foundation, D3 read-only resolver, D4 docs CI and scoped manifests**  
 Snapshot commit: `78e760a5e3d15d8e7002229948d665260c4f1484` (2026-11-13 JST)  
 Parent design: [LLM-first Documentation Knowledge Architecture](../documentation-knowledge-base-design-20261113.md)
 
@@ -100,7 +100,7 @@ A document is not an accepted contract just because it appears in the inventory 
 | D1 | Static Git inventory and candidate labels | Yes |
 | D2 | Schema definitions, docs entrance, root `AGENTS.md` | Yes |
 | D3 | `scripts/docs.py validate/context/affected/drift`, unit tests, explicitly managed ID graph | **Yes (registered documents only)** |
-| D4 | Lightweight docs CI, scope/classifier changes, required check coordination | **No** |
+| D4 | Unconditional lightweight docs CI and scoped manifest classifier | **Yes (GitHub Ruleset change remains manual)** |
 | D5 | Reviewed Linux Desktop v3 metadata/manifest and links | **No** |
 | D6 | Complete gradual migration of other feature areas | **No** |
 
@@ -108,7 +108,7 @@ A document is not an accepted contract just because it appears in the inventory 
 
 1. Preserve `docs/design/tasks.json`, all spec anchors, and [`scripts/check-design`](../../scripts/check-design); they are **already consumed by CI**.
 2. Do not move `docs/curved-workspace/fixtures/*.json` or other fixtures without reviewing test inputs.
-3. Existing [CI change scope](../ci-change-scope-20261113.md) treats new `docs/**/*.json` and a root `AGENTS.md` conservatively (expensive jobs may run). D4 must update scope rules only with fail-open regression tests; **do not hide all documentation via workflow path ignores**.
+3. [CI change scope](../ci-change-scope-20261113.md) treats explicit `docs/features/<feature>/manifest.yaml` as docs-only because an unconditional documentation CI job validates it. JSON fixture/schema, other YAML, and root `AGENTS.md` remain conservative full-build inputs. **No workflow path-ignore filter or broad YAML/JSON exemption.**
 4. Do not assert that historic GitHub `/blob/main/docs/old-path` URLs redirect after renames. Retain a small stub when link consumers need compatibility.
 5. Historical probe/acceptance records retain original experiment/build/commit identity. Host tests never substitute for Quest/HMD acceptance.
 6. D3 provides deterministic dependency discovery (topological order + ID tie-break), explicit unknown IDs, machine-readable output, and bounded context. Unregistered legacy documents remain outside automatic resolution until D5.
@@ -118,4 +118,4 @@ A document is not an accepted contract just because it appears in the inventory 
 
 At the snapshot SHA, the inventory must include **167 distinct paths**, all under `docs/`, matching Git exactly and retaining three JSON fixtures plus the existing `design/tasks.json`. Both schema files must be syntactically valid JSON with unique properties/enums. Repository paths referenced by the two README files and AGENTS.md must exist in the PR. Existing `scripts/check-design` and CI sources must remain byte-for-byte unchanged.
 
-D3 validates **only explicitly registered** features/documents, and cannot validate a legacy feature's complete dependency DAG until its D5 registration is reviewed. D4 CI integration remains separate.
+D3 validates **only explicitly registered** features/documents, and cannot validate a legacy feature's complete dependency DAG until its D5 registration is reviewed. D4 documentation CI is integrated; Ruleset required-check activation must be performed separately by an authorized admin.

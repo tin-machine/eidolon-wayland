@@ -16,6 +16,43 @@ class ClassifierTests(unittest.TestCase):
         self.assert_jobs(["README.md", ".github/SECURITY.md",
                           "docs/architecture.md", "docs/oss-publication-github-security-settings-20261113.md"], [])
 
+    def test_feature_manifests_are_docs_only(self):
+        self.assert_jobs(["docs/features/linux-desktop-v3/manifest.yaml"], [])
+        self.assert_jobs(["docs/features/documentation-system/manifest.yaml",
+                          "docs/features/linux-desktop-v3/README.md"], [])
+
+    def test_manifest_allowlist_is_exact_and_no_fixtures_are_skipped(self):
+        for path in (
+            "docs/features/manifest.yaml",
+            "docs/features/v3/nested/manifest.yaml",
+            "docs/features/v3/tasks.yaml",
+            "docs/features/v3/fixture.json",
+            "docs/knowledge/schemas/document-metadata.schema.json",
+            "docs/knowledge/schemas/feature-manifest.schema.json",
+            "docs/knowledge/fixture.yaml",
+            "docs/knowledge/inventory-20261113.csv",
+            "AGENTS.md",
+        ):
+            with self.subTest(path=path):
+                self.assert_jobs([path], ci_scope.ALL)
+        # Preserve the existing legacy Phase-0–6 contract: docs/design/** -> host.
+        self.assert_jobs(["docs/design/protocol/manifest.yaml"], ["host"])
+
+    def test_manifest_and_product_change_does_not_hide_build(self):
+        self.assert_jobs(["docs/features/v3/manifest.yaml", "native/core/src/main.rs"],
+                         ci_scope.ALL)
+        self.assert_jobs(["docs/features/v3/manifest.yaml", "android/app/build.gradle.kts"],
+                         ["android"])
+
+    def test_renamed_build_input_into_manifest_keeps_build_gate(self):
+        paths = ci_scope.decode_name_status(
+            bytes([0]).join([
+                b"R100", b"native/old.rs",
+                b"docs/features/v3/manifest.yaml", b"",
+            ])
+        )
+        self.assert_jobs(paths, ci_scope.ALL)
+
     def test_design_docs_have_host_check(self):
         self.assert_jobs(["docs/design/contracts.md", "docs/design/tasks.json"], ["host"])
 
