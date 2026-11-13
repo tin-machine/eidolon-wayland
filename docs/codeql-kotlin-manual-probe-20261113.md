@@ -51,3 +51,16 @@ After this probe passes, plan a distinct migration PR with a complete CodeQL Adv
 - [CodeQL — Default/Advanced setup collision](https://docs.github.com/en/code-security/reference/code-scanning/troubleshoot-analysis-errors/results-different-than-expected)
 - [CodeQL Action analyze inputs — `upload: never`](https://github.com/github/codeql-action/blob/main/analyze/action.yml)
 - [CodeQL — Advanced setup configuration](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/configure-code-scanning/configuring-advanced-setup-for-code-scanning)
+
+
+## Coverage expansion (PR-A, 2026-11-13; pending CI evidence)
+
+The initial local CodeQL scan reported **153/219** Kotlin files scanned, coinciding with `android/app/src/main` (78) and `android/app/src/debug` (75). This is not necessarily proof that exactly those individual files were extracted; use CodeQL's file coverage when drawing that conclusion.
+
+Source-set inventory at the PR-A base: app main 78, debug 75, release 1, app JVM test 39, app debug-specific JVM test 20, probe main 2; four Gradle Kotlin DSL scripts. The theoretical total for runtime and test Kotlin is **215/219**, if all requested variants compile and CodeQL extracts them. The remaining four Gradle Kotlin DSL scripts are security-sensitive build configuration and are *not* necessarily extracted as application Kotlin by the CodeQL Java/Kotlin tracer.
+
+The probe now compiles `:app:compileDebugKotlin`, `:app:compileReleaseKotlin`, `:probe:compileDebugKotlin`, and `:app:compileDebugUnitTestKotlin` under a single manual CodeQL run. It checks the **full dry-run task graph first** and refuses to proceed if any `build(Debug|Release)EidolonNative` or `nativeProbe` task is present. All four Kotlin output directories must contain JVM classes.
+
+This is **compile-only**: neither instrumentation nor JVM tests are run, no Quest device is used, and no APK is built. SARIF stays local via `upload: never`. A green build alone does not prove that every file is extracted: compare the CodeQL log's `CodeQL scanned X out of Y Kotlin files` statement with the baseline and investigate non-extracted source sets. If any task unexpectedly requires native packaging, preserve the guard and change the plan rather than installing the full native build chain just to make the probe green.
+
+Only after this evidence passes should a separate PR introduce full five-language Advanced setup. Do not change the current Default setup while validating PR-A.
