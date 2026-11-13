@@ -1,7 +1,7 @@
 ---
 id: docs-knowledge-architecture-20261113
 title: Eidolon Documentation Knowledge Architecture
-type: architecture-design
+type: architecture
 design_status: proposed
 feature: documentation-system
 created: 2026-11-13
