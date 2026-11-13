@@ -1,3 +1,17 @@
+---
+id: android-ime-design
+title: Android IME and Wayland text input design
+type: architecture
+design_status: proposed
+feature: android-ime
+created: "2026-11-07"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: []
+related_sources:
+  - native/core/src/compositor/ime.rs
+  - native/model/src/ime.rs
+---
 # 日本語入力計画: Android IMEを先に検証し、Wayland text-input-v3へ接続する
 
 作成日: 2026-11-07。状態: **ユーザー指定で実装を再開。A1/A2の限定試作とC1を準備中。案A採用・実機IME受入れは未完了**。
