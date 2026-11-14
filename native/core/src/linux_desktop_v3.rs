@@ -326,10 +326,21 @@ impl WindowHistory {
                 parent: e.sample.parent,
             });
         }
+        // A destroyed dialog's slot is still owned until *both* native and
+        // SDK retirement are certified. Preserve slots for unmapped live
+        // windows as well. Otherwise a new dialog can steal a retiring
+        // panel's slot before its renderer/SDK generation is reaped.
+        let held_slots = self
+            .entries
+            .values()
+            .filter(|e| e.retirement_pending || e.sample.life == Life::Unmapped)
+            .count();
+        let free_slots = 9usize.saturating_sub(held_slots);
         let admitted = if self.started && self.fixed_main.is_some() && self.admission_open {
             windows
                 .iter()
                 .filter(|w| w.life == Life::Mapped)
+                .take(free_slots)
                 .map(|w| w.window)
                 .collect()
         } else {
@@ -695,6 +706,55 @@ mod tests {
         assert_eq!(h.observe(&[main, overflow]), Err("APP_WINDOW_UNSUPPORTED"));
         assert!(!h.is_open());
         assert_eq!(h.retained_entries(), MAX_RETAINED_WINDOWS);
+    }
+
+    #[test]
+    fn retiring_dialog_reserves_slot_until_both_acks_without_revoking_survivors() {
+        let o = origin();
+        let mut h = WindowHistory::new(o.clone(), []);
+        let main = sample(&o, 1, Parent::None {}, Life::Mapped);
+        h.started();
+        h.observe(std::slice::from_ref(&main)).unwrap();
+        h.commit_main(main.window).unwrap();
+        let mut nine = vec![main.clone()];
+        for id in 2..=9 {
+            nine.push(sample(
+                &o,
+                id,
+                Parent::Resolved {
+                    window: main.window,
+                },
+                Life::Mapped,
+            ));
+        }
+        h.observe(&nine).unwrap();
+        assert_eq!(h.cut().unwrap().admitted.len(), 9);
+
+        let retired = nine.pop().unwrap();
+        h.observe(&nine).unwrap();
+        assert_eq!(h.pending_retirements(), 1);
+        let new_dialog = sample(
+            &o,
+            10,
+            Parent::Resolved {
+                window: main.window,
+            },
+            Life::Mapped,
+        );
+        nine.push(new_dialog.clone());
+        h.observe(&nine).unwrap();
+        let pending_cut = h.cut().unwrap();
+        assert_eq!(pending_cut.global_window_count, 9);
+        assert_eq!(pending_cut.admitted.len(), 8);
+        assert!(!pending_cut.admitted.contains(&new_dialog.window));
+        assert!(pending_cut.admitted.contains(&main.window));
+        assert!(!h.confirm_retired(retired.window, true, false));
+        assert_eq!(h.cut().unwrap().admitted.len(), 8);
+        assert!(h.confirm_retired(retired.window, true, true));
+        let released_cut = h.cut().unwrap();
+        assert_eq!(released_cut.admitted.len(), 9);
+        assert!(released_cut.admitted.contains(&new_dialog.window));
+        assert!(!h.confirm_retired(retired.window, true, true));
     }
 
     #[test]

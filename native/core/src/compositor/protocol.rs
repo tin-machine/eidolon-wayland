@@ -1119,4 +1119,137 @@ mod v3_accept_tests {
         assert!(!history.confirm_retired(main.unwrap(), true, false));
         assert_eq!(history.pending_retirements(), 1);
     }
+    #[test]
+    fn real_v3_nine_toplevels_reject_tenth_and_hold_slot_until_retired() {
+        use crate::linux_desktop_v3::WindowHistory;
+        use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
+        use eidolon_shm_fixture::capacity::{Control, Stage};
+        use std::{
+            sync::{Arc, atomic::AtomicBool, mpsc},
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let origin = captured_fixture_origin();
+        let mut display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let mut protocol = ProtocolState::new(&display.handle(), origin.session());
+        let (server, client) = UnixStream::pair().unwrap();
+        protocol
+            .accept_with_origin(&display.handle(), server, &origin)
+            .unwrap();
+        let (steps_tx, steps_rx) = mpsc::sync_channel(1);
+        let (replies_tx, replies_rx) = mpsc::sync_channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let fixture_stop = stop.clone();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let result = eidolon_shm_fixture::capacity::run_v3(
+                client,
+                9,
+                fixture_stop,
+                Control {
+                    steps: steps_tx,
+                    replies: replies_rx,
+                },
+            );
+            let _ = result_tx.send(result);
+        });
+
+        let mut history = WindowHistory::new(origin.clone(), []);
+        history.started();
+        let mut original_last = None;
+        let mut stages = Vec::new();
+        let mut ended_capacity_stages = false;
+        let mut result = None;
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(26) {
+            display.dispatch_clients(&mut protocol).unwrap();
+            protocol.finish_dispatch(&display.handle());
+            let samples = protocol.v3_samples();
+            assert!(samples.iter().all(|s| s.origin.as_ref() == Some(&origin)));
+            if !ended_capacity_stages {
+                history.observe(&samples).unwrap();
+                if history.fixed_main().is_none() {
+                    let cut = history.cut().unwrap();
+                    if let Some(main) = cut
+                        .windows
+                        .iter()
+                        .find(|w| w.role == Role::Main && w.life == Life::Mapped)
+                        .map(|w| w.window)
+                    {
+                        history.commit_main(main).unwrap();
+                    }
+                }
+            }
+            if let Ok(stage) = steps_rx.try_recv() {
+                stages.push(stage);
+                let cut = history.cut().unwrap();
+                match stage {
+                    Stage::Full => {
+                        assert_eq!(samples.len(), 9);
+                        assert_eq!(cut.admitted.len(), 9);
+                        original_last = samples.iter().map(|s| s.window).max();
+                    }
+                    Stage::RejectedCommit => {
+                        assert_eq!(samples.len(), 9);
+                        assert_eq!(protocol.rejected_toplevel_count(), 1);
+                        assert_eq!(cut.admitted.len(), 9);
+                    }
+                    Stage::RejectedDestroyed | Stage::SurvivorUpdated => {
+                        assert_eq!(cut.admitted.len(), 9);
+                    }
+                    Stage::Vacancy => {
+                        assert_eq!(samples.len(), 8);
+                        assert_eq!(history.pending_retirements(), 1);
+                        assert_eq!(cut.admitted.len(), 8);
+                    }
+                    Stage::Replacement => {
+                        assert_eq!(samples.len(), 9);
+                        assert_eq!(history.pending_retirements(), 1);
+                        assert_eq!(cut.admitted.len(), 8);
+                        let survivor = cut.fixed_main.unwrap();
+                        assert!(cut.admitted.contains(&survivor));
+                        // This is an explicitly test-supplied double receipt,
+                        // NOT evidence from an SDK or a product finalizer.
+                        let old = original_last.unwrap();
+                        assert!(!history.confirm_retired(old, true, false));
+                        assert_eq!(history.cut().unwrap().admitted.len(), 8);
+                        assert!(history.confirm_retired(old, true, true));
+                        assert_eq!(history.cut().unwrap().admitted.len(), 9);
+                        ended_capacity_stages = true;
+                    }
+                }
+                replies_tx.send(()).unwrap();
+            }
+            for window in protocol.windows() {
+                protocol.frame_callbacks(
+                    window.window,
+                    Duration::from_millis(started.elapsed().as_millis() as u64 + 1),
+                    true,
+                    true,
+                    true,
+                );
+            }
+            display.flush_clients().unwrap();
+            if let Ok(done) = result_rx.try_recv() {
+                result = Some(done.unwrap());
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        if result.is_none() {
+            stop.store(true, std::sync::atomic::Ordering::Release);
+        }
+        worker.join().unwrap();
+        let report = result.expect("real capacity fixture timed out");
+        assert_eq!(stages.len(), 6);
+        assert_eq!(report.accepted, 9);
+        assert_eq!(report.closed, 1);
+        assert!(report.rejected_released);
+        assert!(report.survivor_updated);
+        assert!(report.replacement_mapped);
+    }
+
 }

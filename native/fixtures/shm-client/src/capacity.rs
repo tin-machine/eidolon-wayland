@@ -100,16 +100,40 @@ pub fn run(
     stop: Arc<AtomicBool>,
     control: Control,
 ) -> Result<Report, &'static str> {
+    run_inner(stream, capacity, stop, control, false)
+}
+
+/// Real Wayland v3 variant: one verified Mousepad root with child xdg_toplevels.
+/// All wire stages remain identical to the legacy capacity test.
+pub fn run_v3(
+    stream: UnixStream,
+    capacity: usize,
+    stop: Arc<AtomicBool>,
+    control: Control,
+) -> Result<Report, &'static str> {
+    run_inner(stream, capacity, stop, control, true)
+}
+
+fn run_inner(
+    stream: UnixStream,
+    capacity: usize,
+    stop: Arc<AtomicBool>,
+    control: Control,
+    v3: bool,
+) -> Result<Report, &'static str> {
     if !(2..=16).contains(&capacity) {
         return Err("CAPACITY_INVALID");
     }
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut c = ClientFixture::new(stream, &stop, deadline)?;
-    c.top.set_app_id("fixture.capacity.root".into());
+    c.top.set_app_id(if v3 { "mousepad" } else { "fixture.capacity.root" }.into());
     c.sync(&stop, deadline)?;
     let mut windows = Vec::new();
     for n in 1..capacity {
         let window = Window::new(&mut c, &format!("fixture.capacity.{n}"));
+        if v3 {
+            window.top.set_parent(Some(&c.top));
+        }
         window.map(&mut c, &stop, deadline)?;
         windows.push(window);
     }
@@ -155,6 +179,9 @@ pub fn run(
     c.sync(&stop, deadline)?;
     step(&mut c, &control, Stage::Vacancy, &stop, deadline)?;
     let replacement = Window::new(&mut c, "fixture.capacity.replacement");
+    if v3 {
+        replacement.top.set_parent(Some(&c.top));
+    }
     replacement.map(&mut c, &stop, deadline)?;
     step(&mut c, &control, Stage::Replacement, &stop, deadline)?;
     replacement.destroy();
