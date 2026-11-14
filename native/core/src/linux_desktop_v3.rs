@@ -234,8 +234,11 @@ impl WindowHistory {
             let Some(ancestor) = self.entries.get(&parent) else {
                 return false;
             };
+            // A mapped child cannot remain admitted through an unmapped
+            // parent. Its native surface may survive, but the parent chain
+            // is no longer a live *mapped* display path (I3-T06/T07/T09).
             if ancestor.sample.origin.as_ref() != Some(&self.origin)
-                || ancestor.sample.life == Life::Destroyed
+                || ancestor.sample.life != Life::Mapped
             {
                 return false;
             }
@@ -465,6 +468,84 @@ mod tests {
                 .contains(&WindowId::new(2).unwrap())
         );
     }
+    #[test]
+    fn ancestor_unmap_revokes_mapped_descendants_and_remap_keeps_window_ids() {
+        let o = origin();
+        let mut h = WindowHistory::new(o.clone(), []);
+        let main = sample(&o, 1, Parent::None {}, Life::Mapped);
+        let child_parent = Parent::Resolved {
+            window: WindowId::new(1).unwrap(),
+        };
+        let grandchild_parent = Parent::Resolved {
+            window: WindowId::new(2).unwrap(),
+        };
+        let child = sample(&o, 2, child_parent, Life::Mapped);
+        let grandchild = sample(&o, 3, grandchild_parent, Life::Mapped);
+        h.started();
+        h.observe(std::slice::from_ref(&main)).unwrap();
+        h.commit_main(main.window).unwrap();
+        h.observe(&[main.clone(), child.clone(), grandchild.clone()])
+            .unwrap();
+        assert_eq!(h.cut().unwrap().admitted.len(), 3);
+
+        // A still-mapped grandchild cannot bypass its unmapped intermediate
+        // parent and continue receiving input under the old parent chain.
+        h.observe(&[
+            main.clone(),
+            sample(&o, 2, child_parent, Life::Unmapped),
+            grandchild.clone(),
+        ])
+        .unwrap();
+        assert_eq!(h.cut().unwrap().admitted, BTreeSet::from([main.window]));
+        assert_eq!(h.retained_entries(), 3);
+
+        h.observe(&[main.clone(), child.clone(), grandchild.clone()])
+            .unwrap();
+        assert_eq!(h.cut().unwrap().admitted.len(), 3);
+        assert_eq!(h.retained_entries(), 3);
+        // A remap does not mint a new WindowId or erase the dialog role.
+        h.observe(&[
+            main.clone(),
+            sample(&o, 2, Parent::Unresolved {}, Life::Mapped),
+            grandchild,
+        ])
+        .unwrap();
+        assert_eq!(h.cut().unwrap().admitted, BTreeSet::from([main.window]));
+        assert_eq!(
+            h.observe(&[
+                main,
+                sample(&o, 2, Parent::None {}, Life::Mapped)
+            ]),
+            Err("APP_WINDOW_UNSUPPORTED")
+        );
+    }
+
+    #[test]
+    fn parent_unmap_revokes_even_when_child_remains_mapped() {
+        let o = origin();
+        let mut h = WindowHistory::new(o.clone(), []);
+        let main = sample(&o, 11, Parent::None {}, Life::Mapped);
+        let dialog = sample(
+            &o,
+            12,
+            Parent::Resolved {
+                window: main.window,
+            },
+            Life::Mapped,
+        );
+        h.started();
+        h.observe(std::slice::from_ref(&main)).unwrap();
+        h.commit_main(main.window).unwrap();
+        h.observe(&[main.clone(), dialog.clone()]).unwrap();
+        assert_eq!(h.cut().unwrap().admitted.len(), 2);
+        h.observe(&[
+            sample(&o, 11, Parent::None {}, Life::Unmapped),
+            dialog,
+        ])
+        .unwrap();
+        assert!(h.cut().unwrap().admitted.is_empty());
+    }
+
     #[test]
     fn retired_id_cannot_reappear_while_an_older_main_remains_live() {
         let o = origin();

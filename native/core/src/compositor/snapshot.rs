@@ -897,8 +897,21 @@ impl ProtocolState {
             .iter()
             .map(|(object, record)| {
                 let actual_parent = record.surface.parent().map(|parent| parent.id());
-                let raw_parent = actual_parent.or_else(|| record.pre_unmap_parent.clone());
-                let parent = match raw_parent {
+                // Smithay can implicitly reparent a child when its parent is
+                // unmapped. That is not a client-authorized set_parent event:
+                // the new snapshot parent must not silently replace the
+                // previously captured xdg parent in I3's identity proof.
+                // Until the protocol owner can certify a new explicit parent,
+                // keep the role unresolved rather than promote it to a root
+                // or to a different dialog chain.
+                let parent = if record.pre_unmap_parent.is_some()
+                    && record.pre_unmap_parent != actual_parent
+                {
+                    V3Parent::Unresolved {}
+                } else {
+                    let raw_parent =
+                        actual_parent.or_else(|| record.pre_unmap_parent.clone());
+                    match raw_parent {
                     Some(parent) if parent == *object => V3Parent::Invalid {},
                     Some(parent) => match self.toplevels.get(&parent) {
                         Some(ancestor)
@@ -912,6 +925,7 @@ impl ProtocolState {
                         None => V3Parent::Unresolved {},
                     },
                     None => V3Parent::None {},
+                    }
                 };
                 let app_id = with_states(record.surface.wl_surface(), |states| {
                     states
