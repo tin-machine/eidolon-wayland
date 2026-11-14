@@ -152,6 +152,9 @@ pub struct ProtocolState {
     popup_grabs: Vec<ObjectId>,
     popup_focused: Option<WlSurface>,
     session: SessionId,
+    // Captured by Session::start_v3 before the first listener accept. No
+    // second same-session "origin" can be substituted through this port.
+    verified_origin: Option<NativeOrigin>,
     // One-way v3 admission fence. Existing clients remain for cleanup.
     new_roles_open: bool,
     next_window: Option<WindowId>,
@@ -249,6 +252,7 @@ impl ProtocolState {
             popup_grabs: vec![],
             popup_focused: None,
             session,
+            verified_origin: None,
             new_roles_open: true,
             next_window: WindowId::new(1).ok(),
             next_surface: SurfaceId::new(1).ok(),
@@ -269,6 +273,19 @@ impl ProtocolState {
     pub fn pixel_bytes(&self) -> usize {
         self.pixel_budget.used_bytes()
     }
+    /// The I2-owned Session installs a unique, immutable native origin before
+    /// accepting its first client. Only the Session/permit path may call it.
+    pub fn bind_v3_origin(&mut self, origin: &NativeOrigin) -> Result<(), &'static str> {
+        if !self.new_roles_open
+            || self.verified_origin.is_some()
+            || origin.session() != self.session
+        {
+            return Err("APP_ORIGIN_UNKNOWN");
+        }
+        self.verified_origin = Some(origin.clone());
+        Ok(())
+    }
+
     /// Close new v3 clients/roles without discarding existing protocol state,
     /// window history, callbacks or native/SDK retirement evidence.
     pub fn seal_new_roles(&mut self) {
@@ -281,6 +298,9 @@ impl ProtocolState {
         dh: &DisplayHandle,
         stream: std::os::unix::net::UnixStream,
     ) -> Result<Client, &'static str> {
+        if self.verified_origin.is_some() {
+            return Err("APP_ORIGIN_UNKNOWN");
+        }
         self.accept_captured(dh, stream, None)
     }
 
@@ -292,7 +312,9 @@ impl ProtocolState {
         stream: std::os::unix::net::UnixStream,
         origin: &NativeOrigin,
     ) -> Result<Client, &'static str> {
-        if origin.session() != self.session {
+        if origin.session() != self.session
+            || self.verified_origin.as_ref() != Some(origin)
+        {
             return Err("APP_ORIGIN_UNKNOWN");
         }
         self.accept_captured(dh, stream, Some(origin.clone()))
@@ -982,16 +1004,23 @@ mod v3_accept_tests {
         let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
         let handle = display.handle();
         let mut protocol = ProtocolState::new(&handle, origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
         let (server, _remote) = UnixStream::pair().unwrap();
         let verified = protocol
             .accept_with_origin(&handle, server, &origin)
             .unwrap();
         assert!(verified.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin));
 
-        // Same Linux uid and protocol handler do not grant the other client
-        // the verified origin. v2/Termux accepts remain untagged.
+        // A v3 display must *reject*, not silently downgrade, an unverified
+        // client. v2/Termux use a separately owned protocol/listener.
+        let (server, _unverified_v3) = UnixStream::pair().unwrap();
+        assert_eq!(protocol.accept(&handle, server).err(), Some("APP_ORIGIN_UNKNOWN"));
+        let legacy_display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let legacy_handle = legacy_display.handle();
+        let mut legacy = ProtocolState::new(&legacy_handle, origin.session());
         let (server, _termux) = UnixStream::pair().unwrap();
-        let unverified = protocol.accept(&handle, server).unwrap();
+        let unverified = legacy.accept(&legacy_handle, server).unwrap();
         assert!(
             unverified
                 .get_data::<ClientState>()
@@ -1007,6 +1036,7 @@ mod v3_accept_tests {
         let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
         let handle = display.handle();
         let mut protocol = ProtocolState::new(&handle, origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
         let (server, _client) = UnixStream::pair().unwrap();
         let accepted = protocol
             .accept_with_origin(&handle, server, &origin)
@@ -1026,12 +1056,37 @@ mod v3_accept_tests {
     }
 
     #[test]
+    fn a_second_origin_with_the_same_session_is_not_a_valid_listener_capture() {
+        let origin = captured_fixture_origin();
+        let mut alternate = origin.record();
+        alternate["request"] = serde_json::json!("18");
+        let alternate = NativeOrigin::parse(alternate.to_string().as_bytes()).unwrap();
+        assert!(alternate != origin);
+        assert_eq!(alternate.session(), origin.session());
+
+        let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let handle = display.handle();
+        let mut protocol = ProtocolState::new(&handle, origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
+        assert_eq!(protocol.bind_v3_origin(&alternate), Err("APP_ORIGIN_UNKNOWN"));
+        let (server, _client) = UnixStream::pair().unwrap();
+        assert_eq!(
+            protocol.accept_with_origin(&handle, server, &alternate).err(),
+            Some("APP_ORIGIN_UNKNOWN")
+        );
+        let (server, _client) = UnixStream::pair().unwrap();
+        let original = protocol.accept_with_origin(&handle, server, &origin).unwrap();
+        assert!(original.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin));
+    }
+
+    #[test]
     fn foreign_session_origin_is_not_assigned_at_accept() {
         let origin = captured_fixture_origin();
         let session = SessionId::new(origin.session().get() + 1).unwrap();
         let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
         let handle = display.handle();
         let mut protocol = ProtocolState::new(&handle, session);
+        assert_eq!(protocol.bind_v3_origin(&origin), Err("APP_ORIGIN_UNKNOWN"));
         let (server, _remote) = UnixStream::pair().unwrap();
         assert!(
             protocol
@@ -1055,6 +1110,7 @@ mod v3_accept_tests {
         let mut display =
             smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
         let mut protocol = ProtocolState::new(&display.handle(), origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
         let (server, client) = UnixStream::pair().unwrap();
         protocol
             .accept_with_origin(&display.handle(), server, &origin)
@@ -1184,6 +1240,7 @@ mod v3_accept_tests {
         let mut display =
             smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
         let mut protocol = ProtocolState::new(&display.handle(), origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
         let (server, client) = UnixStream::pair().unwrap();
         protocol
             .accept_with_origin(&display.handle(), server, &origin)
@@ -1284,6 +1341,7 @@ mod v3_accept_tests {
         let mut display =
             smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
         let mut protocol = ProtocolState::new(&display.handle(), origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
         let (server, client) = UnixStream::pair().unwrap();
         protocol
             .accept_with_origin(&display.handle(), server, &origin)

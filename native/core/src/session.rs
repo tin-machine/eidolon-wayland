@@ -142,7 +142,18 @@ impl Session {
         // immutable provenance is installed before dispatch is possible.
         if !current.report.startup_failed {
             current.v3_history = Some(WindowHistory::new(origin.clone(), []));
-            current.v3_origin = Some(origin);
+            current.v3_origin = Some(origin.clone());
+            // The native I2 permit determines the *only* origin for this
+            // display before any listener accept, even when two candidates
+            // carry the same numeric SessionId.
+            let binding = current
+                .protocol
+                .as_mut()
+                .ok_or("NOT_READY")
+                .and_then(|protocol| protocol.bind_v3_origin(&origin));
+            if let Err(error) = binding {
+                current.fail(error);
+            }
         }
         current
     }
