@@ -91,6 +91,16 @@ impl LaunchPermit {
     pub fn origin(&self) -> &NativeOrigin {
         &self.origin
     }
+    /// Native-only borrowed capture for I3 preparation and later ownership checks.
+    /// Neither this reference nor the move-only permit grants a remote/UI command.
+    pub fn captured_context(&self) -> &super::Context {
+        self.capture.binding.context()
+    }
+    /// The exact validated nonce used by NativeOrigin::capture for this permit.
+    /// I3 must not reconstruct it from report JSON or an Android input field.
+    pub fn local_nonce(&self) -> &eidolon_model::linux_desktop_v3::Nonce {
+        self.captured_context().nonce()
+    }
     pub fn selection(&self) -> &Selection {
         &self.selection
     }
@@ -271,6 +281,45 @@ mod tests {
         drop(permit);
         assert!(cancel.is_cancelled());
     }
+    #[test]
+    fn local_nonce_and_context_are_from_the_same_native_capture() {
+        let (admission, _rx, _cancel, selection) = setup();
+        let permit = reserve(&admission, &selection);
+        assert_eq!(permit.captured_context(), admission.capture.binding.context());
+        assert_eq!(permit.local_nonce(), permit.captured_context().nonce());
+        assert_eq!(
+            permit.origin().record()["nonce"].as_str(),
+            Some(permit.local_nonce().as_str())
+        );
+        assert_eq!(permit.generation(), admission.capture.generation);
+    }
+
+    #[test]
+    fn full_mailbox_fails_closed_without_a_second_start() {
+        let (admission, _rx, cancel, selection) = setup();
+        let (other, _other_rx, _other_cancel, other_selection) = setup();
+        assert!(admission.sender.try_send(Launch {
+            permit: reserve(&other, &other_selection),
+            local_socket: PathBuf::from("/tmp/eidolon-v3-other.sock"),
+        }).is_ok());
+        let permit = reserve(&admission, &selection);
+        assert!(matches!(
+            admission.enqueue(permit, Path::new("/tmp/eidolon-v3-test.sock")),
+            Err("DESKTOP_COMMANDS_FULL")
+        ));
+        assert!(cancel.is_cancelled(), "a failed send must seal the helper");
+        assert!(!admission.gate_open());
+    }
+
+    #[test]
+    fn stop_seals_a_reserved_permit_before_enqueue() {
+        let (admission, _rx, cancel, selection) = setup();
+        let permit = reserve(&admission, &selection);
+        admission.seal();
+        assert!(admission.enqueue(permit, Path::new("/tmp/eidolon-v3-test.sock")).is_err());
+        assert!(cancel.is_cancelled());
+    }
+
     #[tokio::test]
     async fn dequeuing_does_not_reopen_launch_gate() {
         let (admission, mut rx, cancel, selection) = setup();

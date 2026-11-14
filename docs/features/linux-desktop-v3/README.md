@@ -12,6 +12,12 @@
 - B2/C1/C2/E1 documents are registered as **`historical`** implementation/handoff records, not current implementation authority. Their historical statements must be verified against the current source.
 - **No** `design_status: accepted`, `quest_verified`, `production_acceptance_passed`, or `available` decision is made by this index. Real-device verification requires independently pinned evidence.
 
+## I3 design proposal (manual discovery; not registered)
+
+- [I3 detailed design — listener origin, WindowHistory and admission](../../linux-real-app-v3-i3-detailed-design.md) is a **proposed**, implementation-oriented design reviewed against I2 [PR #28](https://github.com/tin-machine/eidolon-wayland/pull/28) and I4 [PR #16](https://github.com/tin-machine/eidolon-wayland/pull/16) heads as observed on 2026-11-14. It includes a cross-PR change-request matrix, bounded ownership design, and V06–V08 tests.
+- **I3 remains unregistered in this D5 manifest**; do not invoke `context --feature linux-desktop-v3 --task I3` expecting success. Follow the manual document and verify current PR heads. The document is not approved, implemented, or Quest-tested merely because it is linked here.
+- Before joining I3 and I4, also read the [I2 design](../../linux-real-app-v3-i2-detailed-design.md), [I4 design](../../linux-real-app-v3-i4-detailed-design.md), and [B1 presentation contract](../../linux-real-app-b1-presentation-20261110.md) independently.
+
 ## Use with the deterministic resolver
 
 ```sh

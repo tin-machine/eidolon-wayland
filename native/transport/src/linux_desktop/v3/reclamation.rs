@@ -83,16 +83,22 @@ impl DeferredReclamation {
 }
 
 impl ReclamationAuthority {
+    /// I3 may compare its retained native capture and I/O generation before
+    /// trusting any locally observed retirement. Unknown is never success.
+    pub fn matches_capture(&self, context: &Context, generation: u64) -> bool {
+        self.generation == generation && &self.key.context == context
+    }
+
     /// This must be called by the trusted core *after closing admission* and
     /// observing retirement of ALL owned windows, dialogs, fallback targets,
     /// listeners, renderer bindings and SDK Entities. The booleans are only
     /// an observation summary, never a UI/remote-authorized proof by themselves.
-    pub fn confirm(self, observed: &LocalRetirement) -> Result<LocalReclaimed, &'static str> {
+    pub fn confirm(&self, observed: &LocalRetirement) -> Result<LocalReclaimed, &'static str> {
         if !observed.complete() {
             return Err("DESKTOP_LOCAL_RETIREMENT_PENDING");
         }
         Ok(LocalReclaimed {
-            key: self.key,
+            key: self.key.clone(),
             generation: self.generation,
         })
     }
@@ -155,6 +161,32 @@ mod tests {
         assert!(authority.confirm(&not_ready).is_err());
         assert!(super::super::journal::pending(&dir.0).unwrap().is_some());
         drop(deferred);
+    }
+
+    #[test]
+    fn incomplete_retirement_can_be_rechecked_without_losing_authority() {
+        let dir = Temp::new();
+        let binding = binding();
+        let mut journal = Journal::reserve(&dir.0, &binding).unwrap();
+        journal.prepared(BOOT).unwrap();
+        journal.finish(complete()).unwrap();
+        let ReclamationHandoff {
+            mut deferred,
+            authority,
+        } = DeferredReclamation::from_complete(journal, &binding, 7).unwrap();
+        assert!(authority.matches_capture(binding.context(), 7));
+        assert!(!authority.matches_capture(binding.context(), 8));
+        let mut foreign = binding.context().record();
+        foreign["nonce"] = serde_json::json!("ffffffffffffffff");
+        let foreign = Context::parse(&super::super::canonical(&foreign).unwrap()).unwrap();
+        assert!(!authority.matches_capture(&foreign, 7));
+        let mut incomplete = retired();
+        incomplete.sdk_bindings_released = false;
+        assert!(authority.confirm(&incomplete).is_err());
+        assert!(super::super::journal::pending(&dir.0).unwrap().is_some());
+        let local = authority.confirm(&retired()).unwrap();
+        assert_eq!(finalize_reclaimed(&mut deferred, &local).unwrap().generation(), 7);
+        assert!(super::super::journal::pending(&dir.0).unwrap().is_none());
     }
 
     #[test]
