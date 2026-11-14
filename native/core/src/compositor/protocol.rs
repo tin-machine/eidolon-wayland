@@ -991,4 +991,129 @@ mod v3_accept_tests {
                 .is_err()
         );
     }
+    #[test]
+    fn real_xdg_toplevel_propagates_captured_origin_through_map_and_destroy() {
+        use crate::linux_desktop_v3::WindowHistory;
+        use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
+        use eidolon_shm_fixture::{FRAMES, Mode};
+        use std::{
+            sync::{
+                Arc,
+                atomic::AtomicBool,
+                mpsc,
+            },
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let origin = captured_fixture_origin();
+        let mut display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let mut protocol = ProtocolState::new(&display.handle(), origin.session());
+        let (server, client) = UnixStream::pair().unwrap();
+        protocol
+            .accept_with_origin(&display.handle(), server, &origin)
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::sync_channel(1);
+        let fixture_stop = stop.clone();
+        let worker = thread::spawn(move || {
+            let outcome = eidolon_shm_fixture::run_with_app_id(
+                client,
+                Mode::Pattern,
+                fixture_stop,
+                "mousepad",
+            );
+            let _ = tx.send(outcome);
+        });
+
+        let mut history = WindowHistory::new(origin.clone(), []);
+        history.started();
+        let mut main = None;
+        let mut mapped = false;
+        let mut destroyed = false;
+        let mut completed = false;
+        let started = Instant::now();
+
+        while started.elapsed() < Duration::from_secs(24) {
+            display.dispatch_clients(&mut protocol).unwrap();
+            protocol.finish_dispatch(&display.handle());
+            let samples = protocol.v3_samples();
+            assert!(samples.iter().all(|sample| sample.origin.as_ref() == Some(&origin)));
+
+            if !destroyed {
+                let observed = history.observe(&samples);
+                if main.is_some() && samples.is_empty() {
+                    // The actual xdg_toplevel destroy seals the adopted main;
+                    // neither a replacement root nor input is admitted.
+                    assert_eq!(observed, Err("APP_WINDOW_UNSUPPORTED"));
+                    destroyed = true;
+                    assert!(!history.is_open());
+                } else {
+                    observed.unwrap();
+                    let cut = history.cut().unwrap();
+                    if main.is_none() {
+                        if let Some(found) = cut
+                            .windows
+                            .iter()
+                            .find(|window| window.role == Role::Main && window.life == Life::Mapped)
+                            .map(|window| window.window)
+                        {
+                            // Stand-in for an I4 B1 adoption result: this
+                            // protocol test does NOT simulate SDK readiness.
+                            history.commit_main(found).unwrap();
+                            main = Some(found);
+                        }
+                    }
+                    if let Some(id) = main {
+                        mapped |= cut
+                            .windows
+                            .iter()
+                            .any(|window| window.window == id && window.life == Life::Mapped);
+                    }
+                }
+            }
+
+            let tick = Duration::from_nanos(
+                (started.elapsed().as_millis() as u64 + 1) * 16_666_667,
+            );
+            for window in protocol.windows() {
+                protocol.frame_callbacks(window.window, tick, true, true, true);
+            }
+            display.flush_clients().unwrap();
+            match rx.try_recv() {
+                Ok(result) => {
+                    let report = result.unwrap();
+                    assert_eq!(report.frames, FRAMES);
+                    assert!(!report.protocol_error);
+                    completed = true;
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => panic!("Wayland client result lost"),
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        if !completed {
+            stop.store(true, std::sync::atomic::Ordering::Release);
+        }
+        worker.join().unwrap();
+        assert!(completed, "real Wayland lifecycle timed out");
+        assert!(mapped && main.is_some(), "actual mapped main was never observed");
+        if !destroyed {
+            display.dispatch_clients(&mut protocol).unwrap();
+            protocol.finish_dispatch(&display.handle());
+            assert_eq!(history.observe(&protocol.v3_samples()), Err("APP_WINDOW_UNSUPPORTED"));
+            destroyed = true;
+        }
+        assert!(destroyed);
+        assert_eq!(history.pending_retirements(), 1);
+        // Real Destroy is not evidence of SDK retirement, even when the
+        // compositor has removed the window record.
+        assert!(!history.confirm_retired(main.unwrap(), true, false));
+        assert_eq!(history.pending_retirements(), 1);
+    }
+
 }

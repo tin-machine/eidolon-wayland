@@ -183,6 +183,17 @@ fn sync(
 }
 
 pub fn run(stream: UnixStream, mode: Mode, stop: Arc<AtomicBool>) -> Result<Report, &'static str> {
+    run_with_app_id(stream, mode, stop, "eidolon.shm.fixture")
+}
+
+/// Host-only real xdg_toplevel lifecycle probe. The production fixture retains
+/// its original app_id; this override is supplied by native-controlled tests.
+pub fn run_with_app_id(
+    stream: UnixStream,
+    mode: Mode,
+    stop: Arc<AtomicBool>,
+    app_id: &str,
+) -> Result<Report, &'static str> {
     // 転送protocolのrevision文字列と、APKへclient実装をlinkした証拠を分ける。
     std::hint::black_box("eidolon-local-shm-fixture-code-v1");
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -201,7 +212,7 @@ pub fn run(stream: UnixStream, mode: Mode, stop: Arc<AtomicBool>) -> Result<Repo
     let xdg = shell.get_xdg_surface(&surface, &qh, ());
     let toplevel = xdg.get_toplevel(&qh, ());
     toplevel.set_title("再現用SHM fixture".repeat(100));
-    toplevel.set_app_id("eidolon.shm.fixture".into());
+    toplevel.set_app_id(app_id.into());
     surface.commit();
     pump(&connection, &mut queue, &mut state, &stop, deadline, |s| {
         s.configured
