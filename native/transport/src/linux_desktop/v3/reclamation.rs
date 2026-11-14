@@ -38,7 +38,10 @@ pub struct LocalReclaimed {
 }
 
 pub struct FinalizedReclamation {
-    pub generation: u64,
+    generation: u64,
+}
+impl FinalizedReclamation {
+    pub fn generation(&self) -> u64 { self.generation }
 }
 
 impl DeferredReclamation {
@@ -137,7 +140,7 @@ mod tests {
         let wrong = LocalReclaimed { key: local.key.clone(), generation: 8 };
         assert!(finalize_reclaimed(&mut deferred, &wrong).is_err());
         assert!(super::super::journal::pending(&dir.0).unwrap().is_some());
-        assert_eq!(finalize_reclaimed(&mut deferred, &local).unwrap().generation, 7);
+        assert_eq!(finalize_reclaimed(&mut deferred, &local).unwrap().generation(), 7);
         assert!(super::super::journal::pending(&dir.0).unwrap().is_none());
         assert!(finalize_reclaimed(&mut deferred, &local).is_err());
     }
