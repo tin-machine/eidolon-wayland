@@ -1347,6 +1347,33 @@ fn owner(
             });
             s.router = Some(connect.router.clone());
         });
+        // The v3 lock precedes every SSH handle and Tokio runtime in this
+        // generation. Its Drop must follow the runtime's Drop, not block inside
+        // the SSH actor waiting for core-owned SDK resources.
+        let mut v3_io_fence = match &connect.profile.desktop {
+            Some(DesktopConfig::V3 { files, .. }) => {
+                match desktop_v3::io_fence::IoGenerationFence::acquire(
+                    files, connect.session, connect.session.get(),
+                ) {
+                    Ok(fence) => Some(fence),
+                    Err(error) => {
+                        signals.update(|s| {
+                            s.busy = false;
+                            s.active_connect_request = None;
+                            s.cancel = None;
+                            s.router = None;
+                            s.credential_scope = None;
+                            s.report.state = State::CleanupPending;
+                            s.report.error = Some(error);
+                            s.report.owned_connections = 0;
+                        });
+                        continue;
+                    }
+                }
+            }
+            _ => None,
+        };
+        let previous_io = v3_io_fence.as_mut().and_then(|fence| fence.take_previous());
         let (start, end) = (signals.clone(), signals.clone());
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -1363,15 +1390,25 @@ fn owner(
         let result = match runtime {
             Ok(runtime) => {
                 let result =
-                    runtime.block_on(connection(signals, &connect, deadlines, &mut journal));
+                    runtime.block_on(connection(signals, &connect, deadlines, &mut journal, previous_io.as_ref()));
                 // UI/coreではなくownerでdrop。未完SSH task/FD/秘密keyとTokio workerを回収。
                 drop(runtime);
                 result
             }
             Err(_) => Err("SSH_IO_FAILED"),
         };
+        // The fence outlives the entire SSH runtime, including worker tasks.
+        drop(v3_io_fence);
+        let was_v3 = matches!(connect.profile.desktop, Some(DesktopConfig::V3 { .. }));
         let desktop_pending = root.map(linux_desktop::pending).unwrap_or(Ok(None));
+        let desktop_v3_pending = root.map(desktop_v3::journal::pending).unwrap_or(Ok(None));
         signals.update(|s| {
+            if was_v3 {
+                s.desktop_v3_io_retired = true;
+                if let Some(report) = &mut s.report.desktop_v3_transport {
+                    report.io_retired = true;
+                }
+            }
             s.credential = None;
             s.credential_scope = None;
             s.cancel = None;
@@ -1382,15 +1419,28 @@ fn owner(
             s.desktop_work = None;
             s.desktop_launches = None;
             s.desktop_launch_queued = false;
+            s.desktop_v3_work = None;
+            s.desktop_v3_launch = None;
+            s.desktop_v3_selection = None;
             s.catalog = CatalogUi::default();
-            s.desktop_pending = if s.report.desktop_pending && matches!(desktop_pending, Ok(None)) {
+            s.desktop_pending = if !was_v3 && s.report.desktop_pending && matches!(desktop_pending, Ok(None)) {
                 // A file disappearing without the actor/recovery's proof must
                 // not turn Unknown into Clean at connection retirement.
                 Err("DESKTOP_JOURNAL_OWNER_CHANGED")
             } else {
                 desktop_pending
             };
-            s.report.desktop_pending = !matches!(s.desktop_pending, Ok(None));
+            s.desktop_v3_pending = if was_v3
+                && s.report.desktop_v3_transport.as_ref().is_some_and(|r| r.transport.journal_pending)
+                && matches!(desktop_v3_pending, Ok(None))
+            {
+                Err("DESKTOP_V3_JOURNAL_OWNER_CHANGED")
+            } else {
+                desktop_v3_pending
+            };
+            s.report.desktop_pending = !matches!(s.desktop_pending, Ok(None))
+                || !matches!(s.desktop_v3_pending, Ok(None))
+                || s.desktop_v3_finalization_pending;
             #[cfg(any(test, feature = "debug-fixtures"))]
             {
                 s.linux = None;
@@ -1515,6 +1565,7 @@ async fn connection(
     connect: &Connect,
     deadlines: Deadlines,
     journal: &mut journal::Journal,
+    previous_io: Option<&desktop_v3::io_fence::PreviousIoClosed>,
 ) -> Result<(), &'static str> {
     signals.update(|s| s.report.owned_connections = 1);
     let mismatch = Arc::new(AtomicBool::new(false));
