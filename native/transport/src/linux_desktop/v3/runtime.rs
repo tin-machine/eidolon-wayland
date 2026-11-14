@@ -285,7 +285,7 @@ mod tests {
     fn local_nonce_and_context_are_from_the_same_native_capture() {
         let (admission, _rx, _cancel, selection) = setup();
         let permit = reserve(&admission, &selection);
-        assert_eq!(permit.captured_context(), admission.capture.binding.context());
+        assert!(permit.captured_context() == admission.capture.binding.context());
         assert_eq!(permit.local_nonce(), permit.captured_context().nonce());
         assert_eq!(
             permit.origin().record()["nonce"].as_str(),
@@ -298,10 +298,11 @@ mod tests {
     fn full_mailbox_fails_closed_without_a_second_start() {
         let (admission, _rx, cancel, selection) = setup();
         let (other, _other_rx, _other_cancel, other_selection) = setup();
-        assert!(admission.sender.try_send(Launch {
+        let foreign = Launch {
             permit: reserve(&other, &other_selection),
             local_socket: PathBuf::from("/tmp/eidolon-v3-other.sock"),
-        }).is_ok());
+        };
+        assert!(admission.sender.try_send(foreign).is_ok());
         let permit = reserve(&admission, &selection);
         assert!(matches!(
             admission.enqueue(permit, Path::new("/tmp/eidolon-v3-test.sock")),
