@@ -81,6 +81,8 @@ pub struct Snapshot {
     /// I2 transport only; no SDK-visible Ready can be inferred from this.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desktop_v3_transport: Option<desktop_v3::runtime::TransportSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desktop_v3_recovery: Option<desktop_v3::recovery::RecoveryReport>,
     /// Dedicated normal Linux owner; independent from Termux pending_cleanup.
     pub desktop_pending: bool,
     #[cfg(any(test, feature = "debug-fixtures"))]
@@ -1688,6 +1690,119 @@ async fn connection(
             .unwrap_or_else(|e| e.into_inner())
             .desktop_work
             .take();
+        let desktop_v3_work = signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .desktop_v3_work
+            .take();
+        if let Some(work) = desktop_v3_work {
+            let (profile, configuration, storage, files) = match connect.profile.desktop.as_ref() {
+                Some(DesktopConfig::V3 { profile, configuration, storage, files }) =>
+                    (profile, configuration, storage, files),
+                _ => return Err("DESKTOP_VERSION_SELECTION"),
+            };
+            match work {
+                DesktopV3Work::Inspect(inspect_request) => {
+                    let nonce = format!("{:016x}", rand::random::<u64>());
+                    let binding = desktop_v3::Binding::capture(
+                        profile, connect.session, uid, &nonce,
+                        configuration.pins().clone(), storage,
+                    )?;
+                    let evidence = desktop_v3::ExpectedEvidence::capture(
+                        configuration.pins(), configuration.manifest(),
+                        &desktop_v3::sources::current_hashes(),
+                    )?;
+                    let capture = desktop_v3::runtime::RunCapture::new(
+                        binding, evidence, inspect_request, connect.session.get(),
+                    )?;
+                    let (sender, launches) = tokio::sync::mpsc::channel(1);
+                    let admission = Arc::new(desktop_v3::runtime::LaunchAdmission::new(
+                        capture, sender, connect.cancel.clone(),
+                    ));
+                    let capture = admission.capture();
+                    signals.update(|s| s.desktop_v3_launch = Some(admission));
+                    let outcome = desktop_v3::runtime::serve(
+                        &client,
+                        &connect.router,
+                        desktop_v3::runtime::Inspection { capture, files },
+                        launches,
+                        &connect.cancel,
+                        |report| {
+                            signals.update(|s| {
+                                s.report.desktop_v3_transport = Some(report.clone());
+                                s.report.desktop_pending = report.transport.journal_pending;
+                                if matches!(report.transport.phase,
+                                    eidolon_model::linux_desktop_v3::report::TransportPhase::Stopping
+                                    | eidolon_model::linux_desktop_v3::report::TransportPhase::CleanupPending
+                                    | eidolon_model::linux_desktop_v3::report::TransportPhase::Complete)
+                                {
+                                    s.catalog.desktop_v3 = None;
+                                    s.desktop_v3_selection = None;
+                                    s.catalog.pending = false;
+                                    s.report.state = State::CleanupPending;
+                                }
+                            });
+                        },
+                        |selection| {
+                            signals.update(|s| {
+                                if s.report.session == Some(connect.session)
+                                    && s.catalog.request_id == Some(inspect_request)
+                                    && !connect.cancel.is_cancelled()
+                                {
+                                    s.catalog.pending = false;
+                                    s.catalog.desktop_v3 = Some(V3CatalogUi {
+                                        namespace: "linux-desktop",
+                                        selection: selection.clone(),
+                                        label: "Mousepad", mode: "gui", instance_limit: 1,
+                                    });
+                                    s.desktop_v3_selection = Some(selection.clone());
+                                    s.report.state = State::DesktopReady;
+                                }
+                            });
+                        },
+                    ).await;
+                    let fault = outcome.report.error;
+                    signals.update(|s| {
+                        s.forward_busy = false;
+                        s.desktop_v3_launch = None;
+                        s.desktop_v3_selection = None;
+                        s.catalog.desktop_v3 = None;
+                        s.catalog.pending = false;
+                        s.report.desktop_v3_transport = Some(outcome.report);
+                        s.desktop_v3_handoff = outcome.handoff;
+                        s.report.state = State::CleanupPending;
+                        s.report.desktop_pending = true;
+                        s.report.error = fault;
+                    });
+                    return if connect.cancel.is_cancelled() { Err("CANCELLED") }
+                        else if let Some(error) = fault { Err(error) } else { Ok(()) };
+                }
+                DesktopV3Work::Recover(_recover_request) => {
+                    let previous = previous_io.ok_or("DESKTOP_PREVIOUS_CONNECTION_UNPROVEN")?;
+                    let outcome = desktop_v3::recovery::recover_remote(
+                        &client, &connect.router,
+                        desktop_v3::recovery::Recovery {
+                            profile, session: connect.session, uid, files,
+                            pins: configuration.pins(), storage,
+                            previous_connection_closed: false,
+                        },
+                        previous, connect.session.get(), &connect.cancel,
+                    ).await;
+                    let fault = outcome.report.error;
+                    signals.update(|s| {
+                        s.forward_busy = false;
+                        s.report.desktop_v3_recovery = Some(outcome.report);
+                        s.desktop_v3_handoff = outcome.handoff;
+                        s.report.state = State::CleanupPending;
+                        s.report.desktop_pending = true;
+                        s.report.error = fault;
+                    });
+                    return if connect.cancel.is_cancelled() { Err("CANCELLED") }
+                        else if let Some(error) = fault { Err(error) } else { Ok(()) };
+                }
+            }
+        }
         if let Some(work) = desktop_work {
             let config = connect
                 .profile
