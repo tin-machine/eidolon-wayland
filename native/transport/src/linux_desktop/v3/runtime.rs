@@ -219,7 +219,7 @@ impl LaunchAdmission {
 }
 
 mod serve;
-pub use serve::{RunOutcome, TransportSnapshot, serve};
+pub use serve::{Inspection, RunOutcome, TransportSnapshot, serve};
 
 #[cfg(test)]
 mod tests {

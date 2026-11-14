@@ -463,8 +463,9 @@ impl Controller {
                 }
             }
             Err(error) => {
+                let error = *error;
                 s.report.state = State::CleanupPending;
-                s.report.error = Some(*error);
+                s.report.error = Some(error);
                 return Status::NotReady;
             }
         }

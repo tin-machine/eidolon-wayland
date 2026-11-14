@@ -144,7 +144,7 @@ mod tests {
         journal.prepared(BOOT).unwrap();
         journal.finish(complete()).unwrap();
         let ReclamationHandoff {
-            mut deferred,
+            deferred,
             authority,
         } = DeferredReclamation::from_complete(journal, &binding, 7).unwrap();
         assert!(super::super::journal::pending(&dir.0).unwrap().is_some());

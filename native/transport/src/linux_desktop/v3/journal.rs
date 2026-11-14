@@ -28,7 +28,7 @@ use std::{
 const DIRECTORY: &str = "linux-desktop-v3-state";
 const LIMIT: usize = 32768;
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     Reserved,
