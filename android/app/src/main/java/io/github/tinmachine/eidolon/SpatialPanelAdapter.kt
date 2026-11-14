@@ -263,23 +263,23 @@ class SpatialPanelAdapter {
         val sdkScene = runtimeScene ?: return
         val ownerKey = if(plan==null) key() else JSONObject(plan.getJSONObject("target").toString())
         val strict = plan?.optBoolean("v3_evidence_required", false) == true
-        val lease = if (strict) SdkEvidenceBridge.Lease(handle,ownerKey.getString("session").toLong(),
+        // Runtime saving owns diagnostics/legacy panels as well as v3 app panels.
+        // Reserve all producers before the first SDK effect. Only v3 has a native Create receipt.
+        val lease = SdkEvidenceBridge.Lease(handle,ownerKey.getString("session").toLong(),
             ownerKey.getString("window").toLong(),ownerKey.getString("scene").toLong(),
-            ownerKey.getString("generation").toLong(),checkNotNull(plan).getString("command_seq").toLong(),adapterOwner) else null
-        val fence = if (strict) deletionFence?.takeIf { it.owns(sdkScene) } ?: return else null
-        if (lease != null && !evidence.reserve(lease)) return
-        val scope = lease?.let { SdkResourceScope(it,evidence,checkNotNull(fence)) {
-            NativeSessionHost.sdkEvidence(it,"retiring")
-        } }
-        val registration = if (lease != null) NativeSessionHost.registerSdkLease(lease)
+            ownerKey.getString("generation").toLong(),if (strict) checkNotNull(plan).getString("command_seq").toLong() else null,adapterOwner)
+        val fence = deletionFence?.takeIf { it.owns(sdkScene) } ?: return
+        if (!evidence.reserve(lease)) return
+        val scope = SdkResourceScope(lease,evidence,fence) {
+            if (lease.createCommand != null) NativeSessionHost.sdkEvidence(lease,"retiring")
+        }
+        val registration = if (strict) NativeSessionHost.registerSdkLease(lease)
             else NativeSessionHost.sdkBinding(ownerKey,handle,true,diagnostic=plan==null)
         if (registration != NativeBridge.ACCEPTED) {
-            if (lease != null) {
-                evidence.registrationRejected(lease);evidence.sealLease(lease);evidence.collectCompleted(lease)
-            }
+            evidence.registrationRejected(lease);evidence.sealLease(lease);evidence.collectCompleted(lease)
             return
         }
-        if (lease != null) evidence.registered(lease)
+        evidence.registered(lease)
         var entity: Entity? = null
         var binding: Binding? = null
         try {
@@ -288,7 +288,7 @@ class SpatialPanelAdapter {
             // can immediately invoke SDK producers on another thread.
             val allocate = { if (decoration == null) Entity.create(listOf(Transform(pose)))
                 else Entity.create(listOf(Mesh(android.net.Uri.parse(ThemeHitMesh.URI), ThemeHitMesh.COLLISION), Transform(pose))) }
-            val createdEntity = scope?.createEntity(allocate) ?: allocate()
+            val createdEntity = scope.createEntity(allocate)
             entity = createdEntity
             check(reservePanelEntity(sdkScene,createdEntity.id)) { "SDK_PANEL_ENTITY_REUSED" }
             val current = if (plan == null) Binding(createdEntity, handle, ownerKey, sdkScene, scope) else
@@ -312,7 +312,7 @@ class SpatialPanelAdapter {
                 val offset = Vector3(((cw-w-2*origin.getInt(0))*.6/w).toFloat(), (-(ch-h-2*origin.getInt(1))*.45/h).toFloat(), 0f)
                 val allocateVisual = { Entity.create(listOf(Transform(Pose(offset)), TransformParent(createdEntity),
                     Scale(Vector3((cw/w).toFloat(),(ch/h).toFloat(),1f)), Hittable(MeshCollision.NoCollision),Visible(current.groupVisible))) }
-                val visual = scope?.createEntity(allocateVisual) ?: allocateVisual()
+                val visual = scope.createEntity(allocateVisual)
                 current.visual = visual
                 check(reservePanelEntity(sdkScene,visual.id)) { "SDK_PANEL_ENTITY_REUSED" }
                 callbackOwners[SceneEntity(sdkScene,visual.id)] = CallbackOwner(current,sdkScene)
@@ -324,17 +324,13 @@ class SpatialPanelAdapter {
                     if (failure == null && obj != null) objectReady(current,obj)
                     else { NativeSessionHost.ackPanel(checkNotNull(plan),handle,false); beginRetirement(current); current.destroy=true }
                 }
-                if (scope != null) scope.sceneObject(
-                    { system.getSceneObject(createdEntity) ?: system.replaceOrReuseSceneObjectFuture(createdEntity) },live,received)
-                else (system.getSceneObject(createdEntity) ?: system.replaceOrReuseSceneObjectFuture(createdEntity)).whenComplete { obj, failure ->
-                    ui.post { if (live()) received(obj,failure) }
-                }
+                scope.sceneObject({ system.getSceneObject(createdEntity) ?: system.replaceOrReuseSceneObjectFuture(createdEntity) },live,received)
             }
         } catch (failure: Exception) {
-            if (failure !is SdkLeaseRevoked) scope?.failed()
+            if (failure !is SdkLeaseRevoked) scope.failed()
             val current=binding
             if(current!=null) {beginRetirement(current);current.destroy=true}
-            else if (scope != null) {
+            else {
                 if (failure is SdkLeaseRevoked && entity == null) {
                     // Native registration won its race with Stop, but the
                     // SDK admission was revoked before any Entity allocation.
@@ -345,10 +341,7 @@ class SpatialPanelAdapter {
                     // reservation and native binding rather than invent no-effect.
                     scope.seal()
                 }
-                NativeSessionHost.sdkEvidence(scope.lease,"retiring")
-            } else {
-                entity?.destroy()
-                NativeSessionHost.sdkBinding(ownerKey,handle,false)
+                if (strict) NativeSessionHost.sdkEvidence(scope.lease,"retiring")
             }
             if (failure !is SdkLeaseRevoked) plan?.let { NativeSessionHost.ackPanel(it,handle,false) }
             throw failure
@@ -359,12 +352,13 @@ class SpatialPanelAdapter {
         val scope = current.scope ?: return
         scope.seal()
         current.evidenceCurrent = false
-        if (!current.retirementSent) current.retirementSent =
+        if (scope.lease.createCommand != null && !current.retirementSent) current.retirementSent =
             NativeSessionHost.sdkEvidence(scope.lease,"retiring") == NativeBridge.ACCEPTED
     }
 
     private fun publishCurrent(current: Binding) {
         val scope = current.scope ?: return
+        if (scope.lease.createCommand == null) return
         if (current.retire || current.destroy || closed || current.sdkDisposed || !scope.open()) {
             beginRetirement(current)
             return
@@ -475,11 +469,13 @@ class SpatialPanelAdapter {
             // admitted; native still verifies its exact renderer fence.
             if (!current.everAttached) scope.rendererDetached()
             if (!scope.readyToRelease()) return
-            if (NativeSessionHost.sdkEvidence(scope.lease,"retired") != NativeBridge.ACCEPTED) return
+            val released = if (scope.lease.createCommand != null) NativeSessionHost.sdkEvidence(scope.lease,"retired")
+                else NativeSessionHost.sdkBinding(current.ownerKey,current.handle,false)
+            if (released != NativeBridge.ACCEPTED) return
             scope.nativeReleased()
         } else {
             val code=NativeSessionHost.sdkBinding(current.ownerKey,current.handle,false)
-            if(code!=NativeBridge.ACCEPTED && code!=NativeBridge.STALE) return
+            if(code!=NativeBridge.ACCEPTED) return
         }
         bindings.remove(current.allocation)
         if(retired.size==32) retired.removeFirst()
@@ -501,7 +497,10 @@ class SpatialPanelAdapter {
     private fun tick() {
         val now = SystemClock.elapsedRealtime()
         for ((lease,scope) in cancelledReservations.toList()) {
-            if (scope.readyToRelease() && NativeSessionHost.sdkEvidence(lease,"retired") == NativeBridge.ACCEPTED) {
+            val target = JSONObject().put("session",lease.session.toString()).put("window",lease.window.toString())
+                .put("scene",lease.scene.toString()).put("generation",lease.generation.toString())
+            if (scope.readyToRelease() && (if (lease.createCommand != null) NativeSessionHost.sdkEvidence(lease,"retired")
+                    else NativeSessionHost.sdkBinding(target,lease.runtime,false)) == NativeBridge.ACCEPTED) {
                 scope.nativeReleased();cancelledReservations.remove(lease)
             }
         }
@@ -547,7 +546,7 @@ class SpatialPanelAdapter {
                     if (current.listener != null && (0 until targets.length()).any {
                         val frame=targets.getJSONObject(it)
                         sameKey(frame.getJSONObject("key"), current.key) && frame.getLong("frames") > 0 &&
-                            (current.scope == null || current.evidenceCurrent && frame.optString("role")=="windows" &&
+                            (current.scope?.lease?.createCommand == null || current.evidenceCurrent && frame.optString("role")=="windows" &&
                                 !frame.isNull("content_frame") && !frame.optBoolean("presentation_paused") && !render.optBoolean("paused"))
                     })
                         NativeSessionHost.ackPanel(plan, current.handle)
@@ -602,7 +601,8 @@ class SpatialPanelAdapter {
                     NativeSessionHost.ackPanel(plan, handle)
             }
         }
-        if (!closed && scene > 0 && host?.optString("state") == "Ready" && host.optString("scene") == scene.toString()) {
+        if (!closed && scene > 0 && host?.optString("state") == "Ready" && host.optString("scene") == scene.toString() &&
+            !evidence.runtimeProgress(handle).sealed) {
             if (windows && bindings.values.none { it.role == "diagnostic" }) {
                 for (plan in desired) {
                     if (bindings.size >= WindowBudget.MAX_WINDOWS) break
