@@ -264,7 +264,7 @@ class LinuxDesktopSettingsRepositoryTest {
         for (target in listOf("linux-desktop/active-backend.json", "linux-desktop-v3/connection.json",
             "linux-desktop-v3/transaction.json", "linux-storage-v3-anchor.json")) HostLinuxStorageFixture().use { fs ->
             val repository = repo(fs); save(repository)
-            Files.writeString(fs.directory.resolve(target), "{bad")
+            Files.write(fs.directory.resolve(target), "{bad".toByteArray(Charsets.UTF_8))
             assertBlocked(repository.load())
         }
         HostLinuxStorageFixture().use { fs ->
@@ -291,8 +291,8 @@ class LinuxDesktopSettingsRepositoryTest {
         assertThrows(IllegalArgumentException::class.java) { repository.prepare(snapshot.captureToken, null, LinuxDesktopBackend.V3, config, true) }
         // Neither a matching profile binding nor an old valid marker authorizes unrelated content.
         val markerPath = fs.directory.resolve("linux-desktop/active-backend.json")
-        val marker = JSONObject(Files.readString(markerPath)).put("configuration_sha256", "f".repeat(64))
-        Files.writeString(markerPath, marker.toString())
+        val marker = JSONObject(String(Files.readAllBytes(markerPath), Charsets.UTF_8)).put("configuration_sha256", "f".repeat(64))
+        Files.write(markerPath, marker.toString().toByteArray(Charsets.UTF_8))
         assertBlocked(repository.load())
     }
 
