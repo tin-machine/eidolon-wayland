@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, atomic::{AtomicU8, Ordering}},
 };
-use tokio::{sync::mpsc, time::Instant};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 const OPEN: u8 = 0;
@@ -169,6 +169,9 @@ impl LaunchAdmission {
         self.gate.seal();
     }
 }
+
+mod serve;
+pub use serve::{RunOutcome, TransportSnapshot, serve};
 
 #[cfg(test)]
 mod tests {
