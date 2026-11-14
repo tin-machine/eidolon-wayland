@@ -44,9 +44,13 @@ pub(crate) enum DesktopConfig {
         pins: linux_desktop::Pins,
         files: PathBuf,
     },
+    // The full immutable capture is intentionally inert until the I2 v3
+    // controller is connected. When I2 reads these fields in production,
+    // this lint expectation will need to be removed.
+    #[cfg_attr(not(test), expect(dead_code, reason = "I2 v3 controller not integrated yet"))]
     V3 {
         profile: Profile,
-        configuration: ConnectionConfig,
+        configuration: Box<ConnectionConfig>,
         storage: StorageRecord,
         files: PathBuf,
     },
@@ -141,7 +145,7 @@ impl ConnectSpec {
         let mut spec = Self::from_v2(&profile)?;
         spec.desktop = Some(DesktopConfig::V3 {
             profile,
-            configuration,
+            configuration: Box::new(configuration),
             storage,
             files,
         });
@@ -245,7 +249,7 @@ mod tests {
             files,
         } = captured
         {
-            assert!(p == &profile && c == &config && st == &record);
+            assert!(p == &profile && c.as_ref() == &config && st == &record);
             assert_eq!(files, &PathBuf::from("/tmp/eidolon"));
         } else {
             panic!("local v3 selection must be immutable");
