@@ -155,6 +155,8 @@ pub struct ProtocolState {
     // Captured by Session::start_v3 before the first listener accept. No
     // second same-session "origin" can be substituted through this port.
     verified_origin: Option<NativeOrigin>,
+    // An empty display after disconnect is not a fresh listener ownership epoch.
+    accepted_any: bool,
     // One-way v3 admission fence. Existing clients remain for cleanup.
     new_roles_open: bool,
     next_window: Option<WindowId>,
@@ -253,6 +255,7 @@ impl ProtocolState {
             popup_focused: None,
             session,
             verified_origin: None,
+            accepted_any: false,
             new_roles_open: true,
             next_window: WindowId::new(1).ok(),
             next_surface: SurfaceId::new(1).ok(),
@@ -277,6 +280,7 @@ impl ProtocolState {
     /// accepting its first client. Only the Session/permit path may call it.
     pub fn bind_v3_origin(&mut self, origin: &NativeOrigin) -> Result<(), &'static str> {
         if !self.new_roles_open
+            || self.accepted_any
             || self.verified_origin.is_some()
             || origin.session() != self.session
         {
@@ -333,7 +337,8 @@ impl ProtocolState {
             self.counters.client_rejections += 1;
             return Err("RESOURCE_LIMIT");
         }
-        dh.clone()
+        let client = dh
+            .clone()
             .insert_client(
                 stream,
                 Arc::new(ClientState {
@@ -341,7 +346,9 @@ impl ProtocolState {
                     origin,
                 }),
             )
-            .map_err(|_| "CLIENT_ACCEPT")
+            .map_err(|_| "CLIENT_ACCEPT")?;
+        self.accepted_any = true;
+        Ok(client)
     }
     pub fn pool_usage(&self) -> Usage {
         self.pools.usage()
@@ -956,7 +963,6 @@ impl Dispatch<WlDataDeviceManager, ()> for ProtocolState {
         }
     }
 }
-
 delegate_compositor!(ProtocolState);
 use smithay::reexports::wayland_protocols::xdg::shell::server::{
     xdg_popup::XdgPopup, xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel, xdg_wm_base::XdgWmBase,
@@ -1036,11 +1042,45 @@ mod v3_accept_tests {
     }
 
     #[test]
+    fn legacy_accept_permanently_prevents_late_v3_origin_binding() {
+        let origin = captured_fixture_origin();
+        let mut display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let handle = display.handle();
+        let mut protocol = ProtocolState::new(&handle, origin.session());
+        let (server, peer) = UnixStream::pair().unwrap();
+        let legacy = protocol.accept(&handle, server).unwrap();
+        assert_eq!(protocol.bind_v3_origin(&origin), Err("APP_ORIGIN_UNKNOWN"));
+        assert!(legacy.get_data::<ClientState>().unwrap().origin.is_none());
+
+        handle
+            .backend_handle()
+            .kill_client(legacy.id(), DisconnectReason::ConnectionClosed);
+        drop(peer);
+        display.dispatch_clients(&mut protocol).unwrap();
+        protocol.finish_dispatch(&handle);
+        let mut clients = 0;
+        handle.backend_handle().with_all_clients(|_| clients += 1);
+        assert_eq!(clients, 0);
+        assert_eq!(protocol.bind_v3_origin(&origin), Err("APP_ORIGIN_UNKNOWN"));
+
+        // The failed upgrade never changes the ordinary v2/Termux accept path.
+        let (server, _peer) = UnixStream::pair().unwrap();
+        let next = protocol.accept(&handle, server).unwrap();
+        assert!(next.get_data::<ClientState>().unwrap().origin.is_none());
+    }
+
+    #[test]
     fn sealed_listener_refuses_new_accept_but_keeps_original_capture() {
         let origin = captured_fixture_origin();
         let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
         let handle = display.handle();
         let mut protocol = ProtocolState::new(&handle, origin.session());
+        let (server, _unbound) = UnixStream::pair().unwrap();
+        assert_eq!(
+            protocol.accept_with_origin(&handle, server, &origin).err(),
+            Some("APP_ORIGIN_UNKNOWN")
+        );
         protocol.bind_v3_origin(&origin).unwrap();
         let (server, _client) = UnixStream::pair().unwrap();
         let accepted = protocol
@@ -1056,6 +1096,12 @@ mod v3_accept_tests {
             Some("STALE")
         );
         assert!(accepted.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin));
+        let mut never_bound = ProtocolState::new(&handle, origin.session());
+        never_bound.seal_new_roles();
+        assert_eq!(
+            never_bound.bind_v3_origin(&origin),
+            Err("APP_ORIGIN_UNKNOWN")
+        );
     }
 
     #[test]
@@ -1205,14 +1251,17 @@ mod v3_accept_tests {
                     break;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => panic!("Wayland client result lost"),
+                Err(mpsc::TryRecvError::Disconnected) => break,
             }
             thread::sleep(Duration::from_millis(2));
         }
 
-        worker.join().unwrap();
+        let joined = worker.join();
         v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
-        let report = completed.expect("real Wayland lifecycle timed out").unwrap();
+        joined.unwrap();
+        let report = completed
+            .expect("real Wayland lifecycle timed out")
+            .unwrap();
         assert_eq!(report.frames, FRAMES);
         assert!(!report.protocol_error);
         assert!(
@@ -1325,17 +1374,20 @@ mod v3_accept_tests {
                 );
             }
             display.flush_clients().unwrap();
-            if let Ok(result) = rx.try_recv() {
-                completed = Some(result);
-                break;
+            match rx.try_recv() {
+                Ok(result) => {
+                    completed = Some(result);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => break,
             }
             thread::sleep(Duration::from_millis(2));
         }
-        worker.join().unwrap();
+        let joined = worker.join();
         v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
-        let report = completed
-            .expect("real mutation fixture timed out")
-            .unwrap();
+        joined.unwrap();
+        let report = completed.expect("real mutation fixture timed out").unwrap();
         assert_eq!(report.frames, FRAMES);
         assert!(!report.protocol_error);
         assert!(rejected_mutation, "app_id mutation did not revoke main");
@@ -1456,17 +1508,20 @@ mod v3_accept_tests {
                 );
             }
             display.flush_clients().unwrap();
-            if let Ok(done) = result_rx.try_recv() {
-                result = Some(done);
-                break;
+            match result_rx.try_recv() {
+                Ok(done) => {
+                    result = Some(done);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => break,
             }
             thread::sleep(Duration::from_millis(2));
         }
-        worker.join().unwrap();
+        let joined = worker.join();
         v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
-        result
-            .expect("real xdg parent fixture timed out")
-            .unwrap();
+        joined.unwrap();
+        result.expect("real xdg parent fixture timed out").unwrap();
         assert_eq!(stages.len(), 4);
         assert_eq!(history.pending_retirements(), 1);
     }
@@ -1590,17 +1645,20 @@ mod v3_accept_tests {
                 );
             }
             display.flush_clients().unwrap();
-            if let Ok(done) = result_rx.try_recv() {
-                result = Some(done);
-                break;
+            match result_rx.try_recv() {
+                Ok(done) => {
+                    result = Some(done);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => break,
             }
             thread::sleep(Duration::from_millis(2));
         }
-        worker.join().unwrap();
+        let joined = worker.join();
         v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
-        let report = result
-            .expect("real capacity fixture timed out")
-            .unwrap();
+        joined.unwrap();
+        let report = result.expect("real capacity fixture timed out").unwrap();
         assert_eq!(stages.len(), 6);
         assert_eq!(report.accepted, 9);
         assert_eq!(report.closed, 1);

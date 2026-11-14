@@ -98,7 +98,9 @@ pub(super) fn drain_fixture(display: &mut Display<ProtocolState>, protocol: &mut
 fn assertion_unwind_cancels_and_joins_fixture_worker() {
     use std::io::Read;
     let (_server, mut client) = UnixStream::pair().unwrap();
-    client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
     let interrupt = client.try_clone().unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let exited = Arc::new(AtomicBool::new(false));
@@ -115,6 +117,17 @@ fn assertion_unwind_cancels_and_joins_fixture_worker() {
     assert!(result.is_err());
     assert!(stop.load(Ordering::Acquire));
     assert!(exited.load(Ordering::Acquire));
+}
+
+#[test]
+fn explicit_join_preserves_fixture_worker_failure() {
+    let (_server, client) = UnixStream::pair().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker = FixtureWorker::spawn(client, stop.clone(), || {
+        panic!("intentional fixture worker failure");
+    });
+    assert!(worker.join().is_err());
+    assert!(stop.load(Ordering::Acquire));
 }
 
 #[test]
