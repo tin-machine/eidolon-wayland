@@ -334,7 +334,8 @@ pub fn run_with_app_id_mutation(
                 parent.destroy();
             } else {
                 for frame in 0..if mode == Mode::Pattern { FRAMES } else { 1 } {
-                    if mode == Mode::Pattern && frame == FRAMES / 2
+                    if mode == Mode::Pattern
+                        && frame == FRAMES / 2
                         && let Some(changed) = change_app_id
                     {
                         toplevel.set_app_id(changed.to_owned());
