@@ -42,6 +42,10 @@ pub struct WindowHistory {
     origin: NativeOrigin,
     before: BTreeSet<WindowId>,
     entries: BTreeMap<WindowId, Entry>,
+    // The compositor's per-session WindowId allocator (snapshot.rs::register_toplevel)
+    // uses checked_next() and never reuses an ID. Preserve the highest
+    // *confirmed retired* ID without retaining an unbounded tombstone set.
+    // Live entries may have lower IDs than this floor.
     retired_floor: i64,
     fixed_main: Option<WindowId>,
     started: bool,
@@ -99,6 +103,8 @@ impl WindowHistory {
         if !confirmed {
             return false;
         }
+        // A retired ID can never be admitted again within this session.
+        // Importantly, raising the floor must not revoke *other live IDs*.
         self.entries.remove(&window);
         self.retired_floor = self.retired_floor.max(window.get());
         true
@@ -122,7 +128,11 @@ impl WindowHistory {
         for sample in samples {
             if sample.origin.as_ref() != Some(&self.origin)
                 || !seen.insert(sample.window)
-                || sample.window.get() <= self.retired_floor
+                // Existing live IDs predate a newer dialog's retirement and
+                // remain valid. An unknown ID below the retired high-water
+                // mark is a stale/reused ID and must be rejected instead.
+                || (sample.window.get() <= self.retired_floor
+                    && !self.entries.contains_key(&sample.window))
             {
                 return Err("APP_ORIGIN_UNKNOWN");
             }
@@ -442,6 +452,122 @@ mod tests {
                 .contains(&WindowId::new(2).unwrap())
         );
     }
+    #[test]
+    fn retired_id_cannot_reappear_while_an_older_main_remains_live() {
+        let o = origin();
+        let mut h = WindowHistory::new(o.clone(), []);
+        let main = sample(&o, 1, Parent::None {}, Life::Mapped);
+        let dialog = sample(
+            &o,
+            2,
+            Parent::Resolved {
+                window: WindowId::new(1).unwrap(),
+            },
+            Life::Mapped,
+        );
+        h.started();
+        h.observe(&[main.clone()]).unwrap();
+        h.commit_main(main.window).unwrap();
+        h.observe(&[main.clone(), dialog.clone()]).unwrap();
+        h.observe(&[main.clone()]).unwrap();
+        assert!(!h.confirm_retired(dialog.window, true, false));
+        assert_eq!(h.pending_retirements(), 1);
+        assert!(h.confirm_retired(dialog.window, true, true));
+        for _ in 0..10 {
+            h.observe(&[main.clone()]).unwrap();
+            assert_eq!(h.cut().unwrap().admitted.len(), 1);
+        }
+        assert_eq!(h.observe(&[main, dialog]), Err("APP_ORIGIN_UNKNOWN"));
+    }
+
+    #[test]
+    fn retired_dialog_below_main_and_out_of_order_samples_preserve_identity() {
+        let o = origin();
+        let mut h = WindowHistory::new(o.clone(), []);
+        let main = sample(&o, 10, Parent::None {}, Life::Mapped);
+        let older_dialog = sample(
+            &o,
+            3,
+            Parent::Resolved {
+                window: WindowId::new(10).unwrap(),
+            },
+            Life::Mapped,
+        );
+        h.started();
+        h.observe(&[older_dialog.clone(), main.clone()]).unwrap();
+        h.commit_main(main.window).unwrap();
+        h.observe(&[main.clone()]).unwrap();
+        assert!(h.confirm_retired(older_dialog.window, true, true));
+        let newer_dialog = sample(
+            &o,
+            12,
+            Parent::Resolved {
+                window: WindowId::new(10).unwrap(),
+            },
+            Life::Mapped,
+        );
+        h.observe(&[newer_dialog.clone(), main.clone()]).unwrap();
+        h.observe(&[main.clone()]).unwrap();
+        assert!(h.confirm_retired(newer_dialog.window, true, true));
+        h.observe(&[main]).unwrap();
+        assert_eq!(h.cut().unwrap().admitted.len(), 1);
+        assert_eq!(h.observe(&[older_dialog]), Err("APP_ORIGIN_UNKNOWN"));
+    }
+
+    #[test]
+    fn missing_retirement_ack_keeps_tombstone_and_blocks_id_reuse() {
+        let o = origin();
+        let mut h = WindowHistory::new(o.clone(), []);
+        let main = sample(&o, 1, Parent::None {}, Life::Mapped);
+        let dialog = sample(
+            &o,
+            2,
+            Parent::Resolved {
+                window: WindowId::new(1).unwrap(),
+            },
+            Life::Mapped,
+        );
+        h.started();
+        h.observe(&[main.clone()]).unwrap();
+        h.commit_main(main.window).unwrap();
+        h.observe(&[main.clone(), dialog.clone()]).unwrap();
+        h.observe(&[main.clone()]).unwrap();
+        assert!(!h.confirm_retired(dialog.window, false, true));
+        assert!(!h.confirm_retired(dialog.window, true, false));
+        assert_eq!(h.pending_retirements(), 1);
+        assert_eq!(
+            h.observe(&[main.clone(), dialog.clone()]),
+            Err("APP_WINDOW_UNSUPPORTED")
+        );
+        assert!(h.confirm_retired(dialog.window, true, true));
+        assert!(!h.confirm_retired(dialog.window, true, true));
+        h.observe(&[main]).unwrap();
+        assert_eq!(h.retained_entries(), 1);
+    }
+
+    #[test]
+    fn fresh_history_never_inherits_previous_session_retirements() {
+        // WindowId uniqueness is scoped to ProtocolState/Session rather than
+        // globally. Reusing numeric IDs in a *fresh* owner is permitted; old
+        // origin/SDK evidence still needs independent generation validation.
+        let o = origin();
+        let mut old = WindowHistory::new(o.clone(), []);
+        old.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)])
+            .unwrap();
+        old.observe(&[]).unwrap();
+        assert!(old.confirm_retired(WindowId::new(1).unwrap(), true, true));
+        assert_eq!(
+            old.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)]),
+            Err("APP_ORIGIN_UNKNOWN")
+        );
+
+        let mut fresh = WindowHistory::new(o.clone(), []);
+        fresh
+            .observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)])
+            .unwrap();
+        assert_eq!(fresh.retained_entries(), 1);
+    }
+
     #[test]
     fn churn_requires_retirement_proof_and_remains_bounded() {
         let o = origin();
