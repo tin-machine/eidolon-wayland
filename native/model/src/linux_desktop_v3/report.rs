@@ -556,8 +556,14 @@ mod tests {
             (true, false, false),
         ] {
             assert_eq!(
-                r.validate_current(&observation, &startup, runtime_live, stop_intent, admission_open)
-                    .unwrap_err()
+                r.validate_current(
+                    &observation,
+                    &startup,
+                    runtime_live,
+                    stop_intent,
+                    admission_open,
+                )
+                .unwrap_err()
                     .0,
                 "PRESENTATION_STALE"
             );
@@ -570,5 +576,4 @@ mod tests {
             "PRESENTATION_STALE"
         );
     }
-
 }
