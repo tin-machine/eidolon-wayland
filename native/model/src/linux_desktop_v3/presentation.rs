@@ -665,8 +665,10 @@ impl Startup {
     /// without weakening remap or main-identity invariants.
     /// B1 golden vectors retain their existing semantics and role histories.
     pub fn retire_confirmed_dialog(&mut self, window: WindowId) -> Result<()> {
-        require(self.main != Some(window) && !self.before.contains(&window),
-            "APP_WINDOW_UNSUPPORTED")?;
+        require(
+            self.main != Some(window) && !self.before.contains(&window),
+            "APP_WINDOW_UNSUPPORTED",
+        )?;
         self.roles.remove(&window);
         Ok(())
     }

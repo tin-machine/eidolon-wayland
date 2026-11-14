@@ -122,11 +122,21 @@ impl Session {
         let origin = permit.origin().clone();
         let nonce = permit.local_nonce().as_str();
         if origin.session() != session {
-            return Self::failed_start(session, nonce, AppMode::LinuxDesktop,
-                options.virtual_clock, "APP_ORIGIN_UNKNOWN");
+            return Self::failed_start(
+                session,
+                nonce,
+                AppMode::LinuxDesktop,
+                options.virtual_clock,
+                "APP_ORIGIN_UNKNOWN",
+            );
         }
         let mut current = Self::start(
-            session, files, executable, nonce, AppMode::LinuxDesktop, options
+            session,
+            files,
+            executable,
+            nonce,
+            AppMode::LinuxDesktop,
+            options,
         );
         // No client can be accepted until the owner's first dispatch, so the
         // immutable provenance is installed before dispatch is possible.
@@ -302,7 +312,10 @@ impl Session {
     }
 
     pub fn v3_commit_main(&mut self, main: WindowId) -> Result<(), &'static str> {
-        self.v3_history.as_mut().ok_or("NOT_READY")?.commit_main(main)
+        self.v3_history
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .commit_main(main)
     }
 
     /// Caller may only supply I4 current-target evidence. This method is the
@@ -869,7 +882,9 @@ impl Session {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let accepted = match self.v3_origin.as_ref() {
-                            Some(origin) => state.accept_with_origin(&display.handle(), stream, origin),
+                            Some(origin) => {
+                                state.accept_with_origin(&display.handle(), stream, origin)
+                            }
                             None => state.accept(&display.handle(), stream),
                         };
                         match accepted {
@@ -959,9 +974,15 @@ impl Session {
             self.report.remote_gui_verified = false;
             self.v3_input_allowed.clear();
         } else if self.v3_origin.is_some() {
-            let v3_result = self.v3_history.as_mut().ok_or("NOT_READY")
-                .and_then(|history| history.observe(&state.v3_samples())
-                    .and_then(|()| history.cut()));
+            let v3_result = self
+                .v3_history
+                .as_mut()
+                .ok_or("NOT_READY")
+                .and_then(|history| {
+                    history
+                        .observe(&state.v3_samples())
+                        .and_then(|()| history.cut())
+                });
             match v3_result {
                 Ok(cut) => {
                     self.report.gui_windows = cut.admitted.into_iter().collect();

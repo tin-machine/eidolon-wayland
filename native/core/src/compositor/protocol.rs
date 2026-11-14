@@ -939,10 +939,16 @@ mod v3_accept_tests {
     fn captured_fixture_origin() -> NativeOrigin {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
-        )).unwrap();
-        let raw = fixture["records"].as_array().unwrap().iter()
-            .find(|record| record["id"] == "origin").unwrap()["raw"]
-            .as_str().unwrap();
+        ))
+        .unwrap();
+        let raw = fixture["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["id"] == "origin")
+            .unwrap()["raw"]
+            .as_str()
+            .unwrap();
         NativeOrigin::parse(raw.as_bytes()).unwrap()
     }
 
@@ -953,14 +959,22 @@ mod v3_accept_tests {
         let handle = display.handle();
         let mut protocol = ProtocolState::new(&handle, origin.session());
         let (server, _remote) = UnixStream::pair().unwrap();
-        let verified = protocol.accept_with_origin(&handle, server, &origin).unwrap();
+        let verified = protocol
+            .accept_with_origin(&handle, server, &origin)
+            .unwrap();
         assert!(verified.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin));
 
         // Same Linux uid and protocol handler do not grant the other client
         // the verified origin. v2/Termux accepts remain untagged.
         let (server, _termux) = UnixStream::pair().unwrap();
         let unverified = protocol.accept(&handle, server).unwrap();
-        assert!(unverified.get_data::<ClientState>().unwrap().origin.is_none());
+        assert!(
+            unverified
+                .get_data::<ClientState>()
+                .unwrap()
+                .origin
+                .is_none()
+        );
     }
 
     #[test]
@@ -971,6 +985,10 @@ mod v3_accept_tests {
         let handle = display.handle();
         let mut protocol = ProtocolState::new(&handle, session);
         let (server, _remote) = UnixStream::pair().unwrap();
-        assert!(protocol.accept_with_origin(&handle, server, &origin).is_err());
+        assert!(
+            protocol
+                .accept_with_origin(&handle, server, &origin)
+                .is_err()
+        );
     }
 }

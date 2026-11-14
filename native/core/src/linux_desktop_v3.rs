@@ -78,7 +78,10 @@ impl WindowHistory {
         self.admission_open
     }
     pub fn pending_retirements(&self) -> usize {
-        self.entries.values().filter(|e| e.retirement_pending).count()
+        self.entries
+            .values()
+            .filter(|e| e.retirement_pending)
+            .count()
     }
     pub fn retained_entries(&self) -> usize {
         self.entries.len()
@@ -88,7 +91,10 @@ impl WindowHistory {
     /// Only the owner supplying both proofs may release the tombstone.
     pub fn confirm_retired(&mut self, window: WindowId, native: bool, sdk: bool) -> bool {
         if !(native && sdk)
-            || !self.entries.get(&window).is_some_and(|e| e.retirement_pending)
+            || !self
+                .entries
+                .get(&window)
+                .is_some_and(|e| e.retirement_pending)
         {
             return false;
         }
@@ -102,7 +108,11 @@ impl WindowHistory {
     /// Smithay clears role attributes on unmap/destroy.
     pub fn observe(&mut self, samples: &[WindowSample]) -> Result<(), &'static str> {
         if !self.admission_open {
-            return if samples.is_empty() { Ok(()) } else { Err("STALE") };
+            return if samples.is_empty() {
+                Ok(())
+            } else {
+                Err("STALE")
+            };
         }
         if samples.len() > 9 {
             return Err("APP_WINDOW_UNSUPPORTED");
@@ -120,10 +130,9 @@ impl WindowHistory {
                     || old.sample.origin != sample.origin
                     || (old.sample.life == Life::Destroyed && sample.life != Life::Destroyed)
                     || (old.role == Some(Role::Main)
-                        && (!matches!(sample.parent, Parent::None { })
+                        && (!matches!(sample.parent, Parent::None {})
                             || sample.app_id.as_deref() != Some(self.main_app_id().as_str())))
-                    || (old.role == Some(Role::Dialog)
-                        && matches!(sample.parent, Parent::None { }))
+                    || (old.role == Some(Role::Dialog) && matches!(sample.parent, Parent::None {}))
                 {
                     return Err("APP_WINDOW_UNSUPPORTED");
                 }
@@ -138,8 +147,8 @@ impl WindowHistory {
         for sample in samples {
             if let Some(entry) = self.entries.get_mut(&sample.window) {
                 // Never promote an unresolved/lost parent to an explicit root.
-                if !matches!(entry.sample.parent, Parent::None { })
-                    && matches!(sample.parent, Parent::None { })
+                if !matches!(entry.sample.parent, Parent::None {})
+                    && matches!(sample.parent, Parent::None {})
                 {
                     return Err("APP_WINDOW_UNSUPPORTED");
                 }
@@ -148,15 +157,20 @@ impl WindowHistory {
                     entry.retirement_pending = true;
                 }
             } else {
-                self.entries.insert(sample.window, Entry {
-                    sample: sample.clone(),
-                    role: None,
-                    retirement_pending: sample.life == Life::Destroyed,
-                });
+                self.entries.insert(
+                    sample.window,
+                    Entry {
+                        sample: sample.clone(),
+                        role: None,
+                        retirement_pending: sample.life == Life::Destroyed,
+                    },
+                );
             }
         }
         if self.fixed_main.is_some_and(|main| {
-            self.entries.get(&main).is_none_or(|e| e.sample.life == Life::Destroyed)
+            self.entries
+                .get(&main)
+                .is_none_or(|e| e.sample.life == Life::Destroyed)
         }) {
             self.seal();
             return Err("APP_WINDOW_UNSUPPORTED");
@@ -180,7 +194,9 @@ impl WindowHistory {
         let mut visited = BTreeSet::from([id]);
         let mut cursor = id;
         loop {
-            let Some(entry) = self.entries.get(&cursor) else { return false };
+            let Some(entry) = self.entries.get(&cursor) else {
+                return false;
+            };
             if entry.sample.life == Life::Destroyed
                 || entry.sample.origin.as_ref() != Some(&self.origin)
             {
@@ -189,14 +205,20 @@ impl WindowHistory {
             let Parent::Resolved { window: parent } = entry.sample.parent else {
                 return false;
             };
-            if !visited.insert(parent) { return false; }
-            let Some(ancestor) = self.entries.get(&parent) else { return false };
+            if !visited.insert(parent) {
+                return false;
+            }
+            let Some(ancestor) = self.entries.get(&parent) else {
+                return false;
+            };
             if ancestor.sample.origin.as_ref() != Some(&self.origin)
                 || ancestor.sample.life == Life::Destroyed
             {
                 return false;
             }
-            if parent == main { return true; }
+            if parent == main {
+                return true;
+            }
             cursor = parent;
         }
     }
@@ -204,23 +226,38 @@ impl WindowHistory {
     /// Candidate facts for the one B1 Startup reducer; not a second admission
     /// state machine. Call only after this tick's Wayland dispatch and I2 cut.
     pub fn cut(&mut self) -> Result<I3WindowCut, &'static str> {
-        let active = self.entries.values()
+        let active = self
+            .entries
+            .values()
             .filter(|e| e.sample.life != Life::Destroyed)
             .count();
-        if active > 9 { return Err("APP_WINDOW_UNSUPPORTED"); }
+        if active > 9 {
+            return Err("APP_WINDOW_UNSUPPORTED");
+        }
         let main_app = self.main_app_id();
         // Any second explicit root (even with a forged app_id) is unsupported.
-        let all_roots: Vec<_> = self.entries.iter()
-            .filter(|(_, e)| e.sample.life != Life::Destroyed
-                && matches!(e.sample.parent, Parent::None { }))
-            .map(|(id, _)| *id).collect();
-        let roots: Vec<_> = all_roots.iter().copied()
-            .filter(|id| self.entries.get(id).is_some_and(|e|
-                e.sample.app_id.as_deref() == Some(main_app.as_str())
-                && !self.before.contains(id)))
+        let all_roots: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| {
+                e.sample.life != Life::Destroyed && matches!(e.sample.parent, Parent::None {})
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        let roots: Vec<_> = all_roots
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.entries.get(id).is_some_and(|e| {
+                    e.sample.app_id.as_deref() == Some(main_app.as_str())
+                        && !self.before.contains(id)
+                })
+            })
             .collect();
         if all_roots.len() > 1
-            || self.fixed_main.is_some_and(|main| all_roots.iter().any(|id| *id != main))
+            || self
+                .fixed_main
+                .is_some_and(|main| all_roots.iter().any(|id| *id != main))
         {
             self.seal();
             return Err("APP_WINDOW_UNSUPPORTED");
@@ -232,7 +269,8 @@ impl WindowHistory {
         }
         if let Some(main) = candidate {
             for (id, entry) in &self.entries {
-                if *id != main && entry.sample.life != Life::Destroyed
+                if *id != main
+                    && entry.sample.life != Life::Destroyed
                     && self.chain_to_main(*id, main)
                 {
                     eligible.insert(*id, Role::Dialog);
@@ -263,8 +301,11 @@ impl WindowHistory {
             });
         }
         let admitted = if self.started && self.fixed_main.is_some() && self.admission_open {
-            windows.iter().filter(|w| w.life == Life::Mapped)
-                .map(|w| w.window).collect()
+            windows
+                .iter()
+                .filter(|w| w.life == Life::Mapped)
+                .map(|w| w.window)
+                .collect()
         } else {
             BTreeSet::new()
         };
@@ -284,8 +325,10 @@ impl WindowHistory {
             return Err("APP_WINDOW_UNSUPPORTED");
         }
         let cut = self.cut()?;
-        if !cut.windows.iter().any(|w| w.window == id
-            && w.role == Role::Main && w.life == Life::Mapped)
+        if !cut
+            .windows
+            .iter()
+            .any(|w| w.window == id && w.role == Role::Main && w.life == Life::Mapped)
         {
             return Err("APP_WINDOW_UNSUPPORTED");
         }
@@ -300,15 +343,25 @@ mod tests {
     fn origin() -> NativeOrigin {
         let f: serde_json::Value = serde_json::from_str(include_str!(
             "../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
-        )).unwrap();
-        let raw = f["records"].as_array().unwrap().iter()
-            .find(|r| r["id"] == "origin").unwrap()["raw"].as_str().unwrap();
+        ))
+        .unwrap();
+        let raw = f["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "origin")
+            .unwrap()["raw"]
+            .as_str()
+            .unwrap();
         NativeOrigin::parse(raw.as_bytes()).unwrap()
     }
     fn sample(origin: &NativeOrigin, id: i64, parent: Parent, life: Life) -> WindowSample {
         WindowSample {
-            origin: Some(origin.clone()), window: WindowId::new(id).unwrap(),
-            app_id: Some("mousepad".into()), parent, life
+            origin: Some(origin.clone()),
+            window: WindowId::new(id).unwrap(),
+            app_id: Some("mousepad".into()),
+            parent,
+            life,
         }
     }
     #[test]
@@ -316,13 +369,24 @@ mod tests {
         for started_first in [true, false] {
             let o = origin();
             let mut h = WindowHistory::new(o.clone(), []);
-            if started_first { h.started() }
-            h.observe(&[sample(&o, 42, Parent::None {}, Life::Mapped)]).unwrap();
-            if !started_first { h.started() }
+            if started_first {
+                h.started()
+            }
+            h.observe(&[sample(&o, 42, Parent::None {}, Life::Mapped)])
+                .unwrap();
+            if !started_first {
+                h.started()
+            }
             let cut = h.cut().unwrap();
+
             assert!(cut.admitted.is_empty());
             h.commit_main(WindowId::new(42).unwrap()).unwrap();
-            assert!(h.cut().unwrap().admitted.contains(&WindowId::new(42).unwrap()));
+            assert!(
+                h.cut()
+                    .unwrap()
+                    .admitted
+                    .contains(&WindowId::new(42).unwrap())
+            );
             assert!(h.commit_main(WindowId::new(42).unwrap()).is_err());
         }
     }
@@ -331,16 +395,22 @@ mod tests {
         let o = origin();
         let mut h = WindowHistory::new(o.clone(), []);
         h.started();
-        h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)]).unwrap();
+        h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)])
+            .unwrap();
         h.commit_main(WindowId::new(1).unwrap()).unwrap();
         h.observe(&[
             sample(&o, 1, Parent::None {}, Life::Mapped),
             sample(&o, 2, Parent::None {}, Life::Mapped),
-        ]).unwrap();
+        ])
+        .unwrap();
         assert!(h.cut().is_err());
         let mut h = WindowHistory::new(o.clone(), []);
-        h.observe(&[sample(&o, 1, Parent::Unresolved {}, Life::Unmapped)]).unwrap();
-        assert!(h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)]).is_err());
+        h.observe(&[sample(&o, 1, Parent::Unresolved {}, Life::Unmapped)])
+            .unwrap();
+        assert!(
+            h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)])
+                .is_err()
+        );
     }
     #[test]
     fn foreign_origin_and_unknown_parent_never_admitted() {
@@ -350,31 +420,55 @@ mod tests {
         s.origin = None;
         assert!(h.observe(&[s]).is_err());
         h.started();
-        h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)]).unwrap();
+        h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)])
+            .unwrap();
         h.commit_main(WindowId::new(1).unwrap()).unwrap();
         h.observe(&[
             sample(&o, 1, Parent::None {}, Life::Mapped),
-            sample(&o, 2, Parent::Resolved { window: WindowId::new(99).unwrap() }, Life::Mapped),
-        ]).unwrap();
-        assert!(!h.cut().unwrap().admitted.contains(&WindowId::new(2).unwrap()));
+            sample(
+                &o,
+                2,
+                Parent::Resolved {
+                    window: WindowId::new(99).unwrap(),
+                },
+                Life::Mapped,
+            ),
+        ])
+        .unwrap();
+        assert!(
+            !h.cut()
+                .unwrap()
+                .admitted
+                .contains(&WindowId::new(2).unwrap())
+        );
     }
     #[test]
     fn churn_requires_retirement_proof_and_remains_bounded() {
         let o = origin();
         let mut h = WindowHistory::new(o.clone(), []);
         h.started();
-        h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)]).unwrap();
+        h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)])
+            .unwrap();
         h.commit_main(WindowId::new(1).unwrap()).unwrap();
         for id in 2..=1002 {
-            let dialog = sample(&o, id, Parent::Resolved {window: WindowId::new(1).unwrap()}, Life::Mapped);
-            h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped),dialog]).unwrap();
-            assert_eq!(h.cut().unwrap().admitted.len(),2);
-            h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)]).unwrap();
-            assert_eq!(h.pending_retirements(),1);
+            let dialog = sample(
+                &o,
+                id,
+                Parent::Resolved {
+                    window: WindowId::new(1).unwrap(),
+                },
+                Life::Mapped,
+            );
+            h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped), dialog])
+                .unwrap();
+            assert_eq!(h.cut().unwrap().admitted.len(), 2);
+            h.observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)])
+                .unwrap();
+            assert_eq!(h.pending_retirements(), 1);
             let id = WindowId::new(id).unwrap();
-            assert!(!h.confirm_retired(id,true,false));
-            assert!(h.confirm_retired(id,true,true));
-            assert_eq!(h.retained_entries(),1);
+            assert!(!h.confirm_retired(id, true, false));
+            assert!(h.confirm_retired(id, true, true));
+            assert_eq!(h.retained_entries(), 1);
         }
     }
 }

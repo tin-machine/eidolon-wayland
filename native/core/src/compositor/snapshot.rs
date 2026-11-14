@@ -223,9 +223,11 @@ impl ProtocolState {
         self.next_window = id.checked_next();
         let initial = surface.current_state();
         surface.with_pending_state(|state| state.size = Some((1024, 768).into()));
-        let origin = surface.wl_surface().client()
-            .and_then(|client| client.get_data::<super::ClientState>()
-                .and_then(|data| data.origin.clone()));
+        let origin = surface.wl_surface().client().and_then(|client| {
+            client
+                .get_data::<super::ClientState>()
+                .and_then(|data| data.origin.clone())
+        });
         self.toplevels.insert(
             surface.wl_surface().id(),
             WindowRecord {
@@ -413,7 +415,11 @@ impl ProtocolState {
             .with_pending_state(|state| state.size = Some((1024, 768).into()));
         self.counters.unmaps += 1;
         for child in self.toplevels.values_mut() {
-            if child.surface.parent().is_some_and(|parent| parent.id() == surface.id()) {
+            if child
+                .surface
+                .parent()
+                .is_some_and(|parent| parent.id() == surface.id())
+            {
                 child.pre_unmap_parent = Some(surface.id());
             }
             with_states(child.surface.wl_surface(), |states| {
@@ -895,10 +901,12 @@ impl ProtocolState {
                 let parent = match raw_parent {
                     Some(parent) if parent == *object => V3Parent::Invalid {},
                     Some(parent) => match self.toplevels.get(&parent) {
-                        Some(ancestor) if ancestor.origin == record.origin
-                            && ancestor.origin.is_some() =>
+                        Some(ancestor)
+                            if ancestor.origin == record.origin && ancestor.origin.is_some() =>
                         {
-                            V3Parent::Resolved { window: ancestor.id }
+                            V3Parent::Resolved {
+                                window: ancestor.id,
+                            }
                         }
                         Some(_) => V3Parent::Invalid {},
                         None => V3Parent::Unresolved {},
