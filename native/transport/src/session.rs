@@ -831,7 +831,7 @@ impl Controller {
         let mut s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
         if !s.desktop_v3_finalization_pending || s.busy
             || !s.desktop_v3_io_retired
-            || s.report.session.is_none_or(|id| id.get() != result.generation())
+            || s.report.session.is_none_or(|id| id.get() as u64 != result.generation())
         {
             return Status::Stale;
         }
@@ -1355,7 +1355,7 @@ fn owner(
         let mut v3_io_fence = match &connect.profile.desktop {
             Some(DesktopConfig::V3 { files, .. }) => {
                 match desktop_v3::io_fence::IoGenerationFence::acquire(
-                    files, connect.session, connect.session.get(),
+                    files, connect.session, connect.session.get() as u64,
                 ) {
                     Ok(fence) => Some(fence),
                     Err(error) => {
@@ -1714,7 +1714,7 @@ async fn connection(
                         &desktop_v3::sources::current_hashes(),
                     )?;
                     let capture = desktop_v3::runtime::RunCapture::new(
-                        binding, evidence, inspect_request, connect.session.get(),
+                        binding, evidence, inspect_request, connect.session.get() as u64,
                     )?;
                     let (sender, launches) = tokio::sync::mpsc::channel(1);
                     let admission = Arc::new(desktop_v3::runtime::LaunchAdmission::new(
@@ -1787,7 +1787,7 @@ async fn connection(
                             pins: configuration.pins(), storage,
                             previous_connection_closed: false,
                         },
-                        previous, connect.session.get(), &connect.cancel,
+                        previous, connect.session.get() as u64, &connect.cancel,
                     ).await;
                     let fault = outcome.report.error;
                     signals.update(|s| {
