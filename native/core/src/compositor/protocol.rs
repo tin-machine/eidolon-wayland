@@ -1333,7 +1333,9 @@ mod v3_accept_tests {
         }
         worker.join().unwrap();
         v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
-        let report = completed.expect("real mutation fixture timed out").unwrap();
+        let report = completed
+            .expect("real mutation fixture timed out")
+            .unwrap();
         assert_eq!(report.frames, FRAMES);
         assert!(!report.protocol_error);
         assert!(rejected_mutation, "app_id mutation did not revoke main");
@@ -1462,7 +1464,9 @@ mod v3_accept_tests {
         }
         worker.join().unwrap();
         v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
-        result.expect("real xdg parent fixture timed out").unwrap();
+        result
+            .expect("real xdg parent fixture timed out")
+            .unwrap();
         assert_eq!(stages.len(), 4);
         assert_eq!(history.pending_retirements(), 1);
     }
@@ -1594,7 +1598,9 @@ mod v3_accept_tests {
         }
         worker.join().unwrap();
         v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
-        let report = result.expect("real capacity fixture timed out").unwrap();
+        let report = result
+            .expect("real capacity fixture timed out")
+            .unwrap();
         assert_eq!(stages.len(), 6);
         assert_eq!(report.accepted, 9);
         assert_eq!(report.closed, 1);

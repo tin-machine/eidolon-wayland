@@ -98,9 +98,7 @@ pub(super) fn drain_fixture(display: &mut Display<ProtocolState>, protocol: &mut
 fn assertion_unwind_cancels_and_joins_fixture_worker() {
     use std::io::Read;
     let (_server, mut client) = UnixStream::pair().unwrap();
-    client
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
+    client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     let interrupt = client.try_clone().unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let exited = Arc::new(AtomicBool::new(false));
