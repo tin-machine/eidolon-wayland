@@ -360,6 +360,39 @@ mod tests {
     }
 
     #[test]
+    fn native_origin_capture_matches_b1_golden_vector() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
+        ))
+        .unwrap();
+        let raw = |id: &str| {
+            fixture["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|record| record["id"] == id)
+                .unwrap()["raw"]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+                .to_vec()
+        };
+        let context = super::super::Context::parse(&raw("context")).unwrap();
+        let pins = super::super::Pins::parse(&raw("pins")).unwrap();
+        let selection = super::super::Selection::parse(&raw("selection")).unwrap();
+        let expected = origin();
+        let captured = NativeOrigin::capture(
+            expected.runtime(),
+            expected.request(),
+            &context,
+            &selection,
+            &pins,
+        )
+        .unwrap();
+        assert_eq!(captured.record(), expected.record());
+    }
+
+    #[test]
     fn remote_reboot_is_not_fabricated_pipe_eof() {
         let mut cleanup = report().remote_cleanup;
         cleanup.process_complete = true;
