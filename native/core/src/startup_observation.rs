@@ -167,9 +167,10 @@ mod tests {
     fn uncertified_dialog_churn_fails_closed_before_b1_role_history_grows_unbounded() {
         let owner = origin();
         let scene = SceneEpoch::new(1).unwrap();
-        let main = NativeWindowFact {
+        let main_window = WindowId::new(1).unwrap();
+        let main = || NativeWindowFact {
             origin: owner.clone(),
-            window: WindowId::new(1).unwrap(),
+            window: main_window,
             role: Role::Main,
             life: Life::Mapped,
             app_id: Some("mousepad".into()),
@@ -179,7 +180,7 @@ mod tests {
         let started = Observation::native_builder(owner.clone(), 2)
             .lifecycle(true, Some(scene), true)
             .transport(Some(owner.clone()), None, false, false)
-            .windows(1, vec![main.clone()])
+            .windows(1, vec![main()])
             .finish()
             .unwrap();
         observer.tick(&started).unwrap();
@@ -191,13 +192,13 @@ mod tests {
                 life: Life::Mapped,
                 app_id: Some("mousepad".into()),
                 parent: Parent::Resolved {
-                    window: main.window,
+                    window: main_window,
                 },
             };
             let observation = Observation::native_builder(owner.clone(), id as u64 + 2)
                 .lifecycle(true, Some(scene), true)
                 .transport(Some(owner.clone()), None, false, false)
-                .windows(2, vec![main.clone(), dialog])
+                .windows(2, vec![main(), dialog])
                 .finish()
                 .unwrap();
             let result = observer.tick(&observation);
