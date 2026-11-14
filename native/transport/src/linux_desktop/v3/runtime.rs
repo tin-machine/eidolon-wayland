@@ -105,6 +105,10 @@ pub struct LaunchAdmission {
     sender: mpsc::Sender<Launch>,
 }
 impl LaunchAdmission {
+    pub(crate) fn capture(&self) -> Arc<RunCapture> { self.capture.clone() }
+    pub fn gate_open(&self) -> bool {
+        !self.gate.cancel.is_cancelled() && self.gate.state.load(Ordering::Acquire) == OPEN
+    }
     pub fn new(
         capture: RunCapture,
         sender: mpsc::Sender<Launch>,
