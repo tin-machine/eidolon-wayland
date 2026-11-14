@@ -43,6 +43,11 @@ pub struct TransportSnapshot {
     pub faults: ControllerFaults,
     pub error: Option<&'static str>,
 }
+impl std::fmt::Debug for TransportSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("V3TransportSnapshot(<private>)")
+    }
+}
 impl TransportSnapshot {
     fn preparing(capture: &RunCapture) -> Self {
         Self {
