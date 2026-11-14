@@ -14,9 +14,16 @@ import java.nio.file.LinkOption
 /** worker専用。秘密鍵を扱わず、既存credentials/debug profile/Termux journalは変更しない。 */
 class LinuxProfileStore(context: Context, installation: String) {
     private val repository = LinuxProfileRepository(installation, AtomicFile(File(context.noBackupFilesDir, "linux-profile")))
+    private val e1 = LinuxStorageStore(context, installation)
+    private val configurationFiles = AndroidLinuxStorageFiles(context.noBackupFilesDir, "linux-desktop-v3")
+    private val desktopFiles = AndroidLinuxStorageFiles(context.noBackupFilesDir, "linux-desktop")
     fun load(): ConnectionProfileV2.Value? = repository.load()
     fun save(draft: LinuxConnectionDraft, expectedBinding: String?, confirmed: Boolean): ConnectionProfileV2.Value =
-        repository.save(draft, expectedBinding, confirmed)
+        LinuxStorageIo.serialized {
+            LinuxDesktopSettingsRepository.requireLegacyWritesAllowed(e1.currentState(), configurationFiles.exists(),
+                desktopFiles.read(LinuxDesktopActiveBackendRepository.FILE) != null)
+            repository.save(draft, expectedBinding, confirmed)
+        }
 
     internal class AtomicFile(private val directory: File, name: String = "remote-linux") : LinuxProfileRepository.Storage {
         private val saved = File(directory, "$name.json")

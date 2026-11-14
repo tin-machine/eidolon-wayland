@@ -7,6 +7,9 @@ class LinuxDesktopPins private constructor(private val values: Map<String, Any>)
     fun json(): String = values.entries.joinToString(",", "{", "}") { (key, value) ->
         "\"$key\":" + if (value is String) "\"$value\"" else value.toString()
     }
+    /** Marker digest is the canonical pins object, not the wrapper token or input formatting. */
+    fun canonical(): ByteArray = LinuxStorageJson.canonical(values)
+    fun sha256(): String = LinuxStorageRepository.hash(canonical())
     override fun toString() = "LinuxDesktopPins(<private>)"
     companion object {
         private val hashes = setOf("base_bundle_sha256", "desktop_bundle_sha256", "waypipe_sha256",
@@ -35,20 +38,25 @@ class LinuxDesktopPinsRepository(private val storage: LinuxProfileRepository.Sto
         require(before?.let(::decode)?.token == expectedToken) { "PROFILE_CHANGED" }
         val pins = LinuxDesktopPins.parse(raw)
         // pins.json()の文字集合は固定keys・lower hex・固定backendに限られる。
-        val escaped = pins.json().replace("\"", "\\\"")
-        val bytes = "{\"schema\":1,\"profile_binding\":\"${profile.binding()}\",\"pins\":\"$escaped\"}".toByteArray(Charsets.UTF_8)
+        val bytes = encode(profile, pins)
         storage.publish(before, bytes)
         val saved = checkNotNull(storage.read()) { "PROFILE_READBACK_INVALID" }
         require(saved.contentEquals(bytes)) { "PROFILE_READBACK_INVALID" }
         return decode(saved)
     }
-    private fun decode(bytes: ByteArray): Saved {
-        val fields = ConnectionProfileV2Codec.decodeFields(bytes, 8192)
-        require(fields.keys == setOf("schema", "profile_binding", "pins") && fields["schema"] == 1L) { "DESKTOP_PIN_INVALID" }
-        val binding = fields["profile_binding"] as? String ?: throw IllegalArgumentException("DESKTOP_PIN_INVALID")
-        require(binding.matches(Regex("[0-9a-f]{64}"))) { "DESKTOP_PIN_INVALID" }
-        val pins = LinuxDesktopPins.parse(fields["pins"] as? String ?: throw IllegalArgumentException("DESKTOP_PIN_INVALID"))
-        val token = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-        return Saved(binding, pins, token)
+    companion object {
+        internal fun encode(profile: ConnectionProfileV2.Value, pins: LinuxDesktopPins): ByteArray {
+            val escaped = pins.json().replace("\"", "\\\"")
+            return "{\"schema\":1,\"profile_binding\":\"${profile.binding()}\",\"pins\":\"$escaped\"}".toByteArray(Charsets.UTF_8)
+        }
+        internal fun decode(bytes: ByteArray): Saved {
+            val fields = ConnectionProfileV2Codec.decodeFields(bytes, 8192)
+            require(fields.keys == setOf("schema", "profile_binding", "pins") && fields["schema"] == 1L) { "DESKTOP_PIN_INVALID" }
+            val binding = fields["profile_binding"] as? String ?: throw IllegalArgumentException("DESKTOP_PIN_INVALID")
+            require(binding.matches(Regex("[0-9a-f]{64}"))) { "DESKTOP_PIN_INVALID" }
+            val pins = LinuxDesktopPins.parse(fields["pins"] as? String ?: throw IllegalArgumentException("DESKTOP_PIN_INVALID"))
+            val token = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            return Saved(binding, pins, token)
+        }
     }
 }
