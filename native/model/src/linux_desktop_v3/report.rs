@@ -136,6 +136,33 @@ impl RuntimeReclamation {
     }
 }
 
+/// Failures of the controller and its local resources are not C2 wire reasons.
+/// Keep these separate from the B1 FailureReason golden contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControllerFault {
+    SshIo,
+    CommandTimeout,
+    ChannelIncomplete,
+    ForwardRequest,
+    ForwardRetirement,
+    RouterDrain,
+    JournalReserve,
+    JournalUpdate,
+    JournalClear,
+    PreviousIoPending,
+    LocalAdmissionUnavailable,
+    LocalRetirementTimeout,
+    ScopeMismatch,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControllerFaults {
+    pub first: Option<ControllerFault>,
+    pub cleanup: Option<ControllerFault>,
+}
+
 /// Version-specific report. Existing v2 Snapshot and journal schema are not
 /// reinterpreted. Null presentation/target means no observation, not success.
 #[derive(Clone, Serialize, Deserialize)]
@@ -151,6 +178,9 @@ pub struct V3Report {
     pub runtime_reclamation: RuntimeReclamation,
     pub first_failure: Option<Reason>,
     pub cleanup_error: Option<FailureReason>,
+    /// Local/controller failures; never reinterpret these as C2 receipts.
+    #[serde(default)]
+    pub controller_faults: ControllerFaults,
     pub cleanup_pending: bool,
     pub relaunch_allowed: bool,
 }
@@ -272,6 +302,7 @@ mod tests {
             },
             first_failure: None,
             cleanup_error: None,
+            controller_faults: ControllerFaults::default(),
             cleanup_pending: true,
             relaunch_allowed: false,
         }
@@ -395,6 +426,7 @@ mod tests {
         let parsed = V3Report::parse(&bytes).unwrap();
         assert_eq!(parsed.first_failure, Some(Reason::AppPresentationFailed));
         assert_eq!(parsed.cleanup_error, Some(FailureReason::ReceiptWrite));
+        assert_eq!(parsed.controller_faults, ControllerFaults::default());
         let mut wrong = serde_json::to_value(&r).unwrap();
         wrong["protocol_revision"] = json!("unsupported-v4");
         assert!(V3Report::parse(wrong.to_string().as_bytes()).is_err());
