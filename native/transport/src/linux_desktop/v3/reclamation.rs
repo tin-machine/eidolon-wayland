@@ -100,7 +100,7 @@ pub fn finalize_reclaimed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::linux_desktop::v3::{journal::Journal, owner::test_support::{Temp, binding, complete}};
+    use crate::linux_desktop::v3::{journal::Journal, owner::test_support::{Temp, BOOT, binding, complete}};
 
     fn retired() -> LocalRetirement {
         LocalRetirement {
@@ -115,6 +115,7 @@ mod tests {
         let dir = Temp::new();
         let binding = binding();
         let mut journal = Journal::reserve(&dir.0, &binding).unwrap();
+        journal.prepared(BOOT).unwrap();
         journal.finish(complete()).unwrap();
         let ReclamationHandoff { mut deferred, authority } =
             DeferredReclamation::from_complete(journal, &binding, 7).unwrap();
@@ -133,6 +134,7 @@ mod tests {
         let dir = Temp::new();
         let binding = binding();
         let mut journal = Journal::reserve(&dir.0, &binding).unwrap();
+        journal.prepared(BOOT).unwrap();
         journal.finish(complete()).unwrap();
         let ReclamationHandoff { mut deferred, authority } =
             DeferredReclamation::from_complete(journal, &binding, 7).unwrap();
