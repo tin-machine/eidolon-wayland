@@ -1,3 +1,18 @@
+---
+id: linux-desktop-v3-b1-storage-identity
+title: Linux Desktop v3 B1 Android storage identity contract
+type: contract
+design_status: proposed
+feature: linux-desktop-v3
+component: storage-identity
+phase: B1
+created: "2026-11-10"
+last_reviewed: "2026-11-13"
+baseline_commit: 151639486d41f6117a7e44c2d977af19ee430ee6
+depends_on: [linux-desktop-v3-b1-contract]
+related_sources:
+  - android/app/src/main/java/io/github/tinmachine/eidolon/LinuxStorageIdentity.kt
+---
 # L7a B1: Android identityとv3 storage recordの確定
 
 2026-11-10（日本時間）。調査基準はmain

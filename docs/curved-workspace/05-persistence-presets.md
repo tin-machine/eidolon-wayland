@@ -1,3 +1,17 @@
+---
+id: curved-workspace-persistence
+title: Curved Workspace persistent presets and migration design
+type: detailed-design
+design_status: proposed
+feature: curved-workspace
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [curved-workspace-runtime]
+related_sources:
+  - native/core/src/preferences.rs
+  - native/core/src/workspace.rs
+---
 # 05 — Preset・保存・手動調整・Hybrid
 
 [入口](README.md)。初版は03のlegacy保存だけ。本書はPhase 2/2.5の決定で、初版PRへ前倒し実装しない。

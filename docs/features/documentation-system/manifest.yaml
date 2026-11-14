@@ -1,0 +1,11 @@
+schema: 1
+feature: documentation-system
+entrypoint: README.md
+contracts: []
+tasks:
+  D3:
+    document: docs-knowledge-architecture-20261113
+    requires: []
+    test_plans: []
+source_paths:
+  - scripts/docs.py

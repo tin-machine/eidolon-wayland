@@ -21,7 +21,8 @@ pub enum TransportPhase {
     Started,
     Stopping,
     CleanupPending,
-    Complete,}
+    Complete,
+}
 
 /// Strictly a transport observation; not a presentation or renderer verdict.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,24 +171,24 @@ impl V3Report {
                 "APP_ORIGIN_UNKNOWN",
             )?;
         }
-        if let Some(presentation) = &self.presentation {
-            if presentation.state == PresentationState::Ready {
-                require(
-                    self.transport.phase == TransportPhase::Started
-                        && self.transport.launch_accepted
-                        && !self.cleanup_pending
-                        && presentation.startup_completed
-                        && presentation.main.is_some()
-                        && !presentation.cleanup_pending
-                        && self.sdk_target.as_ref().is_some_and(|t| {
-                            presentation.main == Some(t.target.window)
-                                && t.acknowledged
-                                && t.binding_present
-                                && t.renderer_frame_seen
-                        }),
-                    "CONTRACT_INVALID",
-                )?;
-            }
+        if let Some(presentation) = &self.presentation
+            && presentation.state == PresentationState::Ready
+        {
+            require(
+                self.transport.phase == TransportPhase::Started
+                    && self.transport.launch_accepted
+                    && !self.cleanup_pending
+                    && presentation.startup_completed
+                    && presentation.main.is_some()
+                    && !presentation.cleanup_pending
+                    && self.sdk_target.as_ref().is_some_and(|t| {
+                        presentation.main == Some(t.target.window)
+                            && t.acknowledged
+                            && t.binding_present
+                            && t.renderer_frame_seen
+                    }),
+                "CONTRACT_INVALID",
+            )?;
         }
         if self.relaunch_allowed {
             require(
@@ -414,6 +415,8 @@ mod tests {
         );
         assert!(V3Report::parse(duplicated.as_bytes()).is_err());
     }
+
+
     #[test]
     fn relaunch_after_origin_cleanup_is_distinct_from_runtime_destruction() {
         let mut r = report();
@@ -501,5 +504,4 @@ mod tests {
             "PRESENTATION_STALE"
         );
     }
-
 }

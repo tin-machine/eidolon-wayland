@@ -1,3 +1,15 @@
+---
+id: android-ime-nx09-normal-probe
+title: NX09 normal IME owner probe
+type: runbook
+feature: android-ime
+created: "2026-11-08"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [android-ime-design, android-ime-implementation-record]
+related_sources:
+  - android/app/src/testDebug/java/io/github/tinmachine/eidolon/ImeProductProbeStateTest.kt
+---
 # NX09: 通常 IME の初期 owner 経路を確認する
 
 2026-11-08。既存の `ime-terminal` は先に検証 panel を作ってから ON にする。通常 UI/Ctrl+Space は、先に入力先の owner を取得して raw 入力を止め、後から panel/View が届く。この違いを確認するため、debug 限定の `ImeProductCommandReceiver` を追加する。

@@ -1,3 +1,15 @@
+---
+id: curved-workspace-index
+title: Curved Workspace implementation design index
+type: index
+feature: curved-workspace
+created: "2026-11-11"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [curved-workspace-plan]
+related_sources:
+  - native/core/src/runtime.rs
+---
 # Curved Workspace — 実装用詳細設計 v1
 
 作成: 2026-11-11 / Status: **詳細設計。製品コード未実装、Quest受入れ未実施**。

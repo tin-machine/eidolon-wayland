@@ -38,9 +38,9 @@ impl fmt::Debug for ConnectionConfig {
     }
 }
 
-/// JNI/runtime envelope for an already validated v3 connection and E1 storage
-/// identity. The Android import limit belongs to ConnectionConfig; the actual
-/// runtime JSON boundary is smaller and must remain bounded independently.
+// JNI/runtime envelope for an already validated v3 connection and E1 storage
+// identity. The Android import limit belongs to ConnectionConfig; the actual
+// runtime JSON boundary is smaller and must remain bounded independently.
 contract_record!(RuntimeBinding, RuntimeBindingWire, {
     configuration: ConnectionConfig,
     storage: StorageRecord,

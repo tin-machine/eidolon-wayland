@@ -1,3 +1,15 @@
+---
+id: android-ime-compare-probe
+title: Android IME comparison debug probe runbook
+type: runbook
+feature: android-ime
+created: "2026-11-07"
+last_reviewed: "2026-11-13"
+baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
+depends_on: [android-ime-design]
+related_sources:
+  - scripts/quest-ime-probe
+---
 # Android IME比較probeの操作
 
 2026-11-07。対象は[日本語入力計画](android-ime-wayland-plan-20261107.md)のIME-A1/A2。
