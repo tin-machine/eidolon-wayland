@@ -521,18 +521,21 @@ impl Runtime {
                                 || desktop_finished
                                 || (ssh.owned_connections == 0 && ssh.forward.active == 0);
                             if current.is_v3() {
-                                let origin = current.v3_origin().cloned();
-                                if let Some(origin) = origin {
-                                    if ssh.desktop_v3_transport.as_ref().is_some_and(|proof|
-                                        proof.session == current.session()
-                                        && proof.launch_request == Some(origin.request())
-                                        && proof.started_observed && !proof.terminal_observed
-                                        && proof.error.is_none())
-                                    {
-                                        if let Err(error) = current.v3_transport_started(&origin) {
-                                            current.fail(error);
-                                        }
-                                    }
+                                let start_error = current.v3_origin().cloned()
+                                    .filter(|origin| {
+                                        ssh.desktop_v3_transport.as_ref().is_some_and(|proof| {
+                                            proof.session == current.session()
+                                                && proof.launch_request == Some(origin.request())
+                                                && proof.started_observed
+                                                && !proof.terminal_observed
+                                                && proof.error.is_none()
+                                        })
+                                    })
+                                    .and_then(|origin| {
+                                        current.v3_transport_started(&origin).err()
+                                    });
+                                if let Some(error) = start_error {
+                                    current.fail(error);
                                 }
                                 if close {
                                     // Dropping the permit seals the one-shot I2 Launch gate.

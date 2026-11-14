@@ -90,12 +90,13 @@ impl WindowHistory {
     /// An observed Destroy is not a native/SDK retirement acknowledgment.
     /// Only the owner supplying both proofs may release the tombstone.
     pub fn confirm_retired(&mut self, window: WindowId, native: bool, sdk: bool) -> bool {
-        if !(native && sdk)
-            || !self
+        let confirmed = native
+            && sdk
+            && self
                 .entries
                 .get(&window)
-                .is_some_and(|e| e.retirement_pending)
-        {
+                .is_some_and(|e| e.retirement_pending);
+        if !confirmed {
             return false;
         }
         self.entries.remove(&window);
@@ -125,17 +126,16 @@ impl WindowHistory {
             {
                 return Err("APP_ORIGIN_UNKNOWN");
             }
-            if let Some(old) = self.entries.get(&sample.window) {
-                if old.retirement_pending
+            if self.entries.get(&sample.window).is_some_and(|old| {
+                old.retirement_pending
                     || old.sample.origin != sample.origin
                     || (old.sample.life == Life::Destroyed && sample.life != Life::Destroyed)
                     || (old.role == Some(Role::Main)
                         && (!matches!(sample.parent, Parent::None {})
                             || sample.app_id.as_deref() != Some(self.main_app_id().as_str())))
                     || (old.role == Some(Role::Dialog) && matches!(sample.parent, Parent::None {}))
-                {
-                    return Err("APP_WINDOW_UNSUPPORTED");
-                }
+            }) {
+                return Err("APP_WINDOW_UNSUPPORTED");
             }
         }
         for (id, entry) in &mut self.entries {
