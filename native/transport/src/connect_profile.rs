@@ -47,7 +47,10 @@ pub(crate) enum DesktopConfig {
     // The full immutable capture is intentionally inert until the I2 v3
     // controller is connected. When I2 reads these fields in production,
     // this lint expectation will need to be removed.
-    #[cfg_attr(not(test), expect(dead_code, reason = "I2 v3 controller not integrated yet"))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "I2 v3 controller not integrated yet")
+    )]
     V3 {
         profile: Profile,
         configuration: Box<ConnectionConfig>,
