@@ -76,6 +76,9 @@ pub struct SdkTarget {
 pub struct RemoteCleanup {
     pub process_complete: bool,
     pub pipes_eof: bool,
+    /// Verified remote reboot can replace EOF evidence, never fabricate it.
+    pub boot_changed: bool,
+    pub remote_cleaned: bool,
     pub receipt_written: bool,
     pub ssh_channel_complete: bool,
     pub forward_retired: bool,
@@ -84,7 +87,8 @@ pub struct RemoteCleanup {
 impl RemoteCleanup {
     pub fn complete(&self) -> bool {
         self.process_complete
-            && self.pipes_eof
+            && (self.pipes_eof || self.boot_changed)
+            && self.remote_cleaned
             && self.receipt_written
             && self.ssh_channel_complete
             && self.forward_retired
@@ -132,6 +136,33 @@ impl RuntimeReclamation {
     }
 }
 
+/// Failures of the controller and its local resources are not C2 wire reasons.
+/// Keep these separate from the B1 FailureReason golden contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControllerFault {
+    SshIo,
+    CommandTimeout,
+    ChannelIncomplete,
+    ForwardRequest,
+    ForwardRetirement,
+    RouterDrain,
+    JournalReserve,
+    JournalUpdate,
+    JournalClear,
+    PreviousIoPending,
+    LocalAdmissionUnavailable,
+    LocalRetirementTimeout,
+    ScopeMismatch,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControllerFaults {
+    pub first: Option<ControllerFault>,
+    pub cleanup: Option<ControllerFault>,
+}
+
 /// Version-specific report. Existing v2 Snapshot and journal schema are not
 /// reinterpreted. Null presentation/target means no observation, not success.
 #[derive(Clone, Serialize, Deserialize)]
@@ -147,6 +178,9 @@ pub struct V3Report {
     pub runtime_reclamation: RuntimeReclamation,
     pub first_failure: Option<Reason>,
     pub cleanup_error: Option<FailureReason>,
+    /// Local/controller failures; never reinterpret these as C2 receipts.
+    #[serde(default)]
+    pub controller_faults: ControllerFaults,
     pub cleanup_pending: bool,
     pub relaunch_allowed: bool,
 }
@@ -177,7 +211,7 @@ impl V3Report {
             require(
                 self.transport.phase == TransportPhase::Started
                     && self.transport.launch_accepted
-                    && !self.transport.journal_pending
+                    && self.transport.journal_pending
                     && !self.cleanup_pending
                     && presentation.startup_completed
                     && presentation.main.is_some()
@@ -197,8 +231,7 @@ impl V3Report {
                     && !self.transport.journal_pending
                     && self.transport.phase == TransportPhase::Complete
                     && self.remote_cleanup.complete()
-                    && self.local_retirement.complete()
-                    && self.runtime_reclamation.complete(),
+                    && self.local_retirement.complete(),
                 "RECOVERY_REQUIRED",
             )?;
         }
@@ -245,6 +278,8 @@ mod tests {
             remote_cleanup: RemoteCleanup {
                 process_complete: false,
                 pipes_eof: false,
+                boot_changed: false,
+                remote_cleaned: false,
                 receipt_written: false,
                 ssh_channel_complete: false,
                 forward_retired: false,
@@ -267,6 +302,7 @@ mod tests {
             },
             first_failure: None,
             cleanup_error: None,
+            controller_faults: ControllerFaults::default(),
             cleanup_pending: true,
             relaunch_allowed: false,
         }
@@ -309,8 +345,16 @@ mod tests {
         r.presentation.as_mut().unwrap().cleanup_pending = false;
         assert!(r.validate().is_err(), "cleanup pending cannot be Ready");
         r.cleanup_pending = false;
+        assert!(
+            r.validate().is_ok(),
+            "Ready retains its crash-recovery journal"
+        );
         r.transport.journal_pending = false;
-        assert!(r.validate().is_ok(), "typed evidence can be consistent");
+        assert!(
+            r.validate().is_err(),
+            "Ready cannot outlive its recovery journal"
+        );
+        r.transport.journal_pending = true;
         r.sdk_target.as_mut().unwrap().target.window = WindowId::new(2).unwrap();
         assert!(
             r.validate().is_err(),
@@ -319,6 +363,65 @@ mod tests {
         r.sdk_target.as_mut().unwrap().target.window = WindowId::new(1).unwrap();
         r.sdk_target.as_mut().unwrap().runtime = RuntimeHandle::new(999).unwrap();
         assert!(r.validate().is_err(), "foreign runtime target");
+    }
+
+    #[test]
+    fn native_origin_capture_matches_b1_golden_vector() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
+        ))
+        .unwrap();
+        let raw = |id: &str| {
+            fixture["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|record| record["id"] == id)
+                .unwrap()["raw"]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+                .to_vec()
+        };
+        let context = super::super::Context::parse(&raw("context")).unwrap();
+        let pins = super::super::Pins::parse(&raw("pins")).unwrap();
+        let selection = super::super::Selection::parse(&raw("selection")).unwrap();
+        let expected = origin();
+        let captured = NativeOrigin::capture(
+            expected.runtime(),
+            expected.request(),
+            &context,
+            &selection,
+            &pins,
+        )
+        .unwrap();
+        assert_eq!(captured.record(), expected.record());
+    }
+
+    #[test]
+    fn remote_reboot_is_not_fabricated_pipe_eof() {
+        let mut cleanup = report().remote_cleanup;
+        cleanup.process_complete = true;
+        cleanup.boot_changed = true;
+        cleanup.remote_cleaned = true;
+        cleanup.receipt_written = true;
+        cleanup.ssh_channel_complete = true;
+        cleanup.forward_retired = true;
+        cleanup.router_drained = true;
+        assert!(!cleanup.pipes_eof);
+        assert!(
+            cleanup.complete(),
+            "verified reboot replaces, not fabricates, EOF"
+        );
+        cleanup.boot_changed = false;
+        assert!(!cleanup.complete());
+        cleanup.pipes_eof = true;
+        assert!(cleanup.complete());
+        cleanup.remote_cleaned = false;
+        assert!(
+            !cleanup.complete(),
+            "remote cleanup remains an independent proof"
+        );
     }
 
     #[test]
@@ -338,6 +441,8 @@ mod tests {
         r.remote_cleanup = RemoteCleanup {
             process_complete: true,
             pipes_eof: true,
+            boot_changed: false,
+            remote_cleaned: true,
             receipt_written: true,
             ssh_channel_complete: true,
             forward_retired: true,
@@ -358,11 +463,21 @@ mod tests {
             shutdown_complete: true,
             native_destroy_accepted: true,
         };
-        assert!(r.validate().is_ok());
+        assert!(
+            r.validate().is_ok(),
+            "relaunch does not require nativeDestroy"
+        );
+        r.runtime_reclamation.shutdown_complete = false;
+        r.runtime_reclamation.native_destroy_accepted = false;
+        assert!(
+            r.validate().is_ok(),
+            "origin may relaunch within a live runtime"
+        );
         let bytes = serde_json::to_vec(&r).unwrap();
         let parsed = V3Report::parse(&bytes).unwrap();
         assert_eq!(parsed.first_failure, Some(Reason::AppPresentationFailed));
         assert_eq!(parsed.cleanup_error, Some(FailureReason::ReceiptWrite));
+        assert_eq!(parsed.controller_faults, ControllerFaults::default());
         let mut wrong = serde_json::to_value(&r).unwrap();
         wrong["protocol_revision"] = json!("unsupported-v4");
         assert!(V3Report::parse(wrong.to_string().as_bytes()).is_err());

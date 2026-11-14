@@ -30,6 +30,31 @@ impl NativeOrigin {
         decode(raw, MAX_RECORD_BYTES)
     }
     record_methods!();
+    /// Native-only origin construction from a captured, validated context.
+    /// The request and runtime must come from the native command dispatcher;
+    /// neither is inferred from the remote catalog or a UI payload.
+    pub fn capture(
+        runtime: RuntimeHandle,
+        request: CommandSeq,
+        context: &Context,
+        selection: &Selection,
+        pins: &Pins,
+    ) -> Result<Self> {
+        selection.matches(context, pins)?;
+        let context_record = context.record();
+        let selection_record = selection.record();
+        let raw = canonical_json(&json!({
+            "runtime": runtime,
+            "session": context_record["session"],
+            "request": request,
+            "nonce": context_record["nonce"],
+            "scope": context.scope(),
+            "app_id": selection_record["app_id"],
+        }))?;
+        let origin = Self::parse(&raw)?;
+        origin.matches(context, selection, pins)?;
+        Ok(origin)
+    }
     pub fn runtime(&self) -> RuntimeHandle {
         self.runtime
     }
