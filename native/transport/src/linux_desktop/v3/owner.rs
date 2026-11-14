@@ -281,6 +281,12 @@ impl Owner {
     pub fn command_idle(&self) -> bool {
         !self.closed() && !self.report.terminal_event && self.protocol.in_flight().is_none()
     }
+    /// C2's lease is 15 seconds from command receive, while heartbeat is
+    /// scheduled five seconds from the send start. Conservatively bound long
+    /// local/forward operations to the remaining interval.
+    pub fn lease_margin(&self, needed: Duration) -> bool {
+        Instant::now() + needed <= self.heartbeat + Duration::from_secs(10)
+    }
     pub fn can_launch(&self) -> bool {
         !self.stopping && !self.cancel.is_cancelled() && self.command_idle()
             && self.phase() == Phase::Catalog
