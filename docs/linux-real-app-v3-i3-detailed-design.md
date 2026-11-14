@@ -255,6 +255,7 @@ WindowHistoryは**所有・parent・roleの正本**である。B1 Startupのmain
 - B1 AppId::Editorはmanifestに記録された実Wayland app_id「mousepad」、Demoは既存nonce付きapp_id規則を維持。catalog ID「mousepad-editor-v1」とWayland app_id「mousepad」を混同しない。
 - before集合はLaunch reservation時点で同Displayに存在したWindowId。現在の新専用listenerでは通常空でも、空であると決め打ちしない。
 - Candidate: originが同じ、beforeに無い、正しいapp_id、ExplicitNone、Mappedという**必要条件**だけを満たしてもI2 Startedなしでは未採用。
+- **CandidateのB1投影:** B1 `NativeWindowFact.role`は`Main|Dialog`のみで、I3内部の`Candidate`を表す値は存在しない。正当なparentless root候補をB1へ渡すときは、未採用でも**検証用の`Role::Main`**として投影する。これはI3のadmission commit、slot/SDK Create、入力許可を意味しない。B1 `Startup::advance`が同一tickの複数root・誤app_id・親付きrootを拒否し、Started/Mapped両条件後に初めてmainを返す。未知/不正originを除外して正常候補1枚に偽装することも禁止（I3が別途fail closedする）。
 - I2 StartedとMappedの両方を観測してB1 Startupが同mainの採用を返したらWindowHistory.fixed_mainへ一度だけcommit。
 - 複数root候補が同時存在する場合、Map順やWindowId順で恣意的に選ばず拒否・失敗へ進める。single-main確定後のsecond rootも拒否する。
 - main採用と同tickではSDK Createを前倒ししない。次のtickから初めてcurrent mainのCreate/evidenceを扱う（#16 observerのcontract）。
