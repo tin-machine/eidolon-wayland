@@ -1,6 +1,8 @@
 package io.github.tinmachine.eidolon
 
 import java.security.MessageDigest
+import java.nio.CharBuffer
+import java.nio.charset.CodingErrorAction
 
 /** 静的bundle設定。受理は接続・実行・表示の成功を意味しない。 */
 class LinuxDesktopV3Config private constructor(private val bytes: ByteArray) {
@@ -27,6 +29,12 @@ class LinuxDesktopV3Config private constructor(private val bytes: ByteArray) {
             return map
         }
         private fun hashValue(value: Any?) = (value as? String)?.matches(Regex("[0-9a-f]{64}")) == true
+        /** A pasted Kotlin String must not replace an unpaired surrogate before the strict byte parser. */
+        fun parse(raw: String): LinuxDesktopV3Config = try {
+            val encoded = Charsets.UTF_8.newEncoder().onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT).encode(CharBuffer.wrap(raw))
+            parse(ByteArray(encoded.remaining()).also { encoded.get(it) })
+        } catch (_: Exception) { throw IllegalArgumentException("DESKTOP_V3_CONFIG_INVALID") }
         fun parse(raw: ByteArray): LinuxDesktopV3Config = try {
             val value = fields(LinuxStorageJson.parse(raw, MAX_BYTES), setOf("schema", "kind", "pins", "app_manifest"))
             require(value["schema"] == 1L && value["kind"] == "linux-desktop-v3-connection")

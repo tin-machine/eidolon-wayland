@@ -22,6 +22,12 @@ private fun icon(name: String): String = when(name) {
     else -> "▶"
 }
 
+/** The visible snapshot's immutable identity travels with the click, including across delayed UI dispatch. */
+private fun launch(state: LauncherUi, id: String) {
+    if (state.v3) NativeSessionHost.launchRegistered(state.runtime, state.capture, state.session, state.revision, id)
+    else NativeSessionHost.launchRegistered(state.session, state.revision, id)
+}
+
 @Composable
 fun LauncherStrip() {
     val state=NativeSessionHost.launcherUi.value
@@ -39,7 +45,7 @@ fun LauncherStrip() {
             }}) {Text(when {state.canRecover -> "前回の回収";state.canInspect -> "アプリを確認";state.canConnect -> "Linuxへ接続";else -> "停止・切断"})}
         for(entry in state.entries.filter {it.id!="terminal"}.take(2)) {
             Button(modifier=Modifier.weight(1f),enabled=state.connected && entry.available && !state.busy && !NativeSessionHost.terminalBusy.value,
-                onClick={NativeSessionHost.launchRegistered(state.session,state.revision,entry.id)},
+                onClick={launch(state,entry.id)},
                 colors=ButtonDefaults.buttonColors(containerColor=Color(0xFFD6C6FF),contentColor=Color(0xFF28203D))) {
                 Text("${icon(entry.icon)} ${entry.label}",maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             }
@@ -74,9 +80,14 @@ fun LauncherSettings(modifier: Modifier=Modifier) {
             Button(onClick={NativeSessionHost.launcherExpanded.value=false}) {Text("閉じる")}
         }
         Text(state.message,color=Color.White)
+        if(state.v3) {
+            LinuxDesktopV3Messages.reason(state.firstFailure)?.let { Text("最初の失敗: $it",color=Color(0xFFFFD59E)) }
+            LinuxDesktopV3Messages.reason(state.cleanupFailure)?.let { Text("回収の未完了: $it",color=Color(0xFFFFD59E)) }
+        }
         if(state.linux) {
             Text("接続先: ${NativeSessionHost.connectionTarget.value}",color=Color.White)
-            Text("利用対象は固定GTKデモです。起動後は自動終了しません。",color=Color.White)
+            Text(if(state.v3) "固定GTKデモとMousepadを選べます。一度に起動するアプリは一つです。"
+                else "利用対象は固定GTKデモです。起動後は自動終了しません。",color=Color.White)
             Text("停止・切断、または通信やスリープでleaseが失効すると、未保存の作業も終了します。再接続・再起動は明示操作が必要です。",color=Color(0xFFFFD59E))
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 Button(enabled=state.canConnect,onClick={NativeSessionHost.connect()}) {Text("Linuxへ接続")}
@@ -85,8 +96,8 @@ fun LauncherSettings(modifier: Modifier=Modifier) {
             }
             for(entry in state.entries) {
                 Button(enabled=state.connected && entry.available && !state.busy,onClick={
-                    focus.clearFocus(force=true);NativeSessionHost.launchRegistered(state.session,state.revision,entry.id)
-                }) {Text("GTKデモを起動")}
+                    focus.clearFocus(force=true);launch(state,entry.id)
+                }) {Text("${icon(entry.icon)} ${entry.label}を起動")}
             }
             Button(enabled=state.canStop,onClick={NativeSessionHost.disconnect()}) {Text("停止・切断")}
             Text("アプリのCloseで終了した後も、接続・確認・起動をもう一度選んでください。",color=Color.White)
@@ -123,7 +134,7 @@ fun LauncherSettings(modifier: Modifier=Modifier) {
             for(entry in state.entries) {
                 Column {
                     Button(enabled=state.connected && entry.available && !state.busy && !NativeSessionHost.terminalBusy.value,
-                        onClick={focus.clearFocus(force=true);NativeSessionHost.launchRegistered(state.session,state.revision,entry.id)}) {Text("${icon(entry.icon)} ${entry.label}")}
+                        onClick={focus.clearFocus(force=true);launch(state,entry.id)}) {Text("${icon(entry.icon)} ${entry.label}")}
                     if(!entry.available) Text(LauncherMessages.error(entry.error),color=Color(0xFFFFD59E))
                 }
             }
