@@ -7,9 +7,10 @@ use crate::{
 };
 use eidolon_model::{
     commands::{AppMode, CleanupScenario},
-    ids::{CommandSeq, SessionId},
+    ids::{CommandSeq, RuntimeHandle, SessionId},
     state::Status,
 };
+use crate::linux_desktop::v3 as desktop_v3;
 use russh::{
     client,
     keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate},
@@ -77,6 +78,9 @@ pub struct Snapshot {
     /// I2–I5 typed v3 evidence; absent until a real v3 controller emits it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desktop_v3: Option<eidolon_model::linux_desktop_v3::report::V3Report>,
+    /// I2 transport only; no SDK-visible Ready can be inferred from this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desktop_v3_transport: Option<desktop_v3::runtime::TransportSnapshot>,
     /// Dedicated normal Linux owner; independent from Termux pending_cleanup.
     pub desktop_pending: bool,
     #[cfg(any(test, feature = "debug-fixtures"))]
@@ -143,6 +147,12 @@ struct Shared {
     desktop_work: Option<DesktopWork>,
     desktop_launches: Option<tokio::sync::mpsc::Sender<linux_desktop::Launch>>,
     desktop_launch_queued: bool,
+    desktop_v3_pending: Result<Option<desktop_v3::journal::Pending>, &'static str>,
+    desktop_v3_work: Option<DesktopV3Work>,
+    desktop_v3_launch: Option<Arc<desktop_v3::runtime::LaunchAdmission>>,
+    desktop_v3_selection: Option<desktop_v3::Selection>,
+    desktop_v3_handoff: Option<desktop_v3::reclamation::ReclamationHandoff>,
+    desktop_v3_io_retired: bool,
     #[cfg(any(test, feature = "debug-fixtures"))]
     linux: Option<LinuxWork>,
     forward_busy: bool,
@@ -153,6 +163,11 @@ struct Shared {
 }
 #[derive(Clone, Copy)]
 enum DesktopWork {
+    Inspect(CommandSeq),
+    Recover(CommandSeq),
+}
+#[derive(Clone, Copy)]
+enum DesktopV3Work {
     Inspect(CommandSeq),
     Recover(CommandSeq),
 }
@@ -173,6 +188,15 @@ pub struct CatalogUi {
     pub reply: Option<crate::catalog::Reply>,
     pub error: Option<&'static str>,
     pub desktop: Option<DesktopCatalogUi>,
+    pub desktop_v3: Option<V3CatalogUi>,
+}
+#[derive(Clone, Serialize)]
+pub struct V3CatalogUi {
+    pub namespace: &'static str,
+    pub selection: desktop_v3::Selection,
+    pub label: &'static str,
+    pub mode: &'static str,
+    pub instance_limit: u8,
 }
 #[derive(Clone, Serialize)]
 pub struct DesktopCatalogUi {
@@ -247,7 +271,12 @@ impl Controller {
             .as_deref()
             .map(linux_desktop::pending)
             .unwrap_or(Ok(None));
-        let has_desktop_pending = !matches!(desktop_pending, Ok(None));
+        let desktop_v3_pending = root
+            .as_deref()
+            .map(desktop_v3::journal::pending)
+            .unwrap_or(Ok(None));
+        let has_desktop_pending = !matches!(desktop_pending, Ok(None))
+            || !matches!(desktop_v3_pending, Ok(None));
         let signals = Arc::new(Signals {
             shared: Mutex::new(Shared {
                 report: Snapshot {
@@ -275,6 +304,12 @@ impl Controller {
                 desktop_work: None,
                 desktop_launches: None,
                 desktop_launch_queued: false,
+                desktop_v3_pending,
+                desktop_v3_work: None,
+                desktop_v3_launch: None,
+                desktop_v3_selection: None,
+                desktop_v3_handoff: None,
+                desktop_v3_io_retired: false,
                 #[cfg(any(test, feature = "debug-fixtures"))]
                 linux: None,
                 forward_busy: false,
@@ -378,17 +413,32 @@ impl Controller {
         if self.signals.stop.load(Ordering::Acquire) || self.worker.is_finished() {
             return Status::NotReady;
         }
-        // I2 owns v3 execution. Never run an admitted v3 capture through the
-        // existing v2 SSH actor while this PR defines only shared contracts.
-        if profile
-            .desktop
-            .as_ref()
-            .is_some_and(|config| config.version() == linux_desktop::dispatch::Version::V3)
-        {
-            return Status::NotReady;
-        }
+        // v2 and v3 are selected by a captured configuration; never fall back
+        // to the other decoder on pending, a pin mismatch, or a stale profile.
         if s.busy {
             return Status::Busy;
+        }
+        if s.desktop_v3_handoff.is_some() {
+            // Local retirement for the previous run is still owned by core.
+            return Status::NotReady;
+        }
+        match &s.desktop_v3_pending {
+            Ok(None) => (),
+            Ok(Some(pending)) => {
+                if !matches!(&profile.desktop,
+                    Some(DesktopConfig::V3 { profile, configuration, .. })
+                        if pending.matches(profile, configuration.pins()))
+                {
+                    s.report.state = State::CleanupPending;
+                    s.report.error = Some("DESKTOP_CLEANUP_SCOPE_MISMATCH");
+                    return Status::NotReady;
+                }
+            }
+            Err(error) => {
+                s.report.state = State::CleanupPending;
+                s.report.error = Some(*error);
+                return Status::NotReady;
+            }
         }
         match &s.desktop_pending {
             Ok(None) => (),
@@ -420,7 +470,8 @@ impl Controller {
             credential_requests: s.report.credential_requests,
             journal_ready: s.report.journal_ready,
             pending_cleanup: s.report.pending_cleanup.clone(),
-            desktop_pending: s.report.desktop_pending,
+            desktop_pending: !matches!(s.desktop_pending, Ok(None))
+                || !matches!(s.desktop_v3_pending, Ok(None)),
             ..Default::default()
         };
         let cancel = CancellationToken::new();
@@ -431,6 +482,10 @@ impl Controller {
         s.desktop_work = None;
         s.desktop_launches = None;
         s.desktop_launch_queued = false;
+        s.desktop_v3_work = None;
+        s.desktop_v3_launch = None;
+        s.desktop_v3_selection = None;
+        s.desktop_v3_io_retired = false;
         s.catalog = CatalogUi::default();
         s.connect = Some(PendingConnect {
             profile,
