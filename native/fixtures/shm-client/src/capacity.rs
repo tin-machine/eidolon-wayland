@@ -208,3 +208,93 @@ fn run_inner(
     c.finish(&stop, deadline)?;
     Ok(report)
 }
+
+/// Real xdg parent/unmap/destroy lifecycle. Retiring and admission are
+/// deliberately inspected by the compositor test, never asserted from the
+/// client fixture itself.
+#[derive(Clone, Copy, Debug)]
+pub enum ParentStage {
+    ChainMapped,
+    ParentUnmapped,
+    ParentRemapped,
+    ParentDestroyed,
+}
+pub struct ParentControl {
+    pub steps: SyncSender<ParentStage>,
+    pub replies: Receiver<()>,
+}
+fn parent_step(
+    client: &mut ClientFixture,
+    control: &ParentControl,
+    stage: ParentStage,
+    stop: &AtomicBool,
+    deadline: Instant,
+) -> Result<(), &'static str> {
+    control.steps.try_send(stage).map_err(|_| "STEP_SEND")?;
+    loop {
+        if stop.load(Ordering::Acquire) || Instant::now() >= deadline {
+            return Err("STEP_TIMEOUT");
+        }
+        match control.replies.recv_timeout(Duration::from_millis(20)) {
+            Ok(()) => break,
+            Err(RecvTimeoutError::Timeout) => (),
+            Err(_) => return Err("STEP_CLOSED"),
+        }
+    }
+    client.sync(stop, deadline)
+}
+pub fn run_v3_parent_lifecycle(
+    stream: UnixStream,
+    stop: Arc<AtomicBool>,
+    control: ParentControl,
+) -> Result<(), &'static str> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut client = ClientFixture::new(stream, &stop, deadline)?;
+    client.top.set_app_id("mousepad".into());
+    client.sync(&stop, deadline)?;
+    let child = Window::new(&mut client, "fixture.dialog");
+    child.top.set_parent(Some(&client.top));
+    child.map(&mut client, &stop, deadline)?;
+    let grandchild = Window::new(&mut client, "fixture.nested_dialog");
+    grandchild.top.set_parent(Some(&child.top));
+    grandchild.map(&mut client, &stop, deadline)?;
+    parent_step(
+        &mut client,
+        &control,
+        ParentStage::ChainMapped,
+        &stop,
+        deadline,
+    )?;
+    // The xdg role object and WindowId survive an unmap. Smithay may
+    // implicitly move the grandchild's parent; the owner must not treat
+    // that as an explicit client reparenting authorization.
+    child.surface.attach(None, 0, 0);
+    child.surface.commit();
+    client.sync(&stop, deadline)?;
+    parent_step(
+        &mut client,
+        &control,
+        ParentStage::ParentUnmapped,
+        &stop,
+        deadline,
+    )?;
+    child.map(&mut client, &stop, deadline)?;
+    parent_step(
+        &mut client,
+        &control,
+        ParentStage::ParentRemapped,
+        &stop,
+        deadline,
+    )?;
+    child.destroy();
+    client.sync(&stop, deadline)?;
+    parent_step(
+        &mut client,
+        &control,
+        ParentStage::ParentDestroyed,
+        &stop,
+        deadline,
+    )?;
+    grandchild.destroy();
+    client.finish(&stop, deadline)
+}

@@ -1325,6 +1325,131 @@ mod v3_accept_tests {
         assert!(rejected_mutation, "app_id mutation did not revoke main");
         assert!(main.is_some());
     }
+
+    #[test]
+    fn real_v3_nested_parent_unmap_and_destroy_revoke_descendant_input() {
+        use crate::linux_desktop_v3::WindowHistory;
+        use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
+        use eidolon_shm_fixture::capacity::{ParentControl, ParentStage};
+        use std::{
+            sync::{Arc, atomic::AtomicBool, mpsc},
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let origin = captured_fixture_origin();
+        let mut display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let mut protocol = ProtocolState::new(&display.handle(), origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        protocol
+            .accept_with_origin(&display.handle(), server, &origin)
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let fixture_stop = stop.clone();
+        let (steps_tx, steps_rx) = mpsc::sync_channel(1);
+        let (replies_tx, replies_rx) = mpsc::sync_channel(1);
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let result = eidolon_shm_fixture::capacity::run_v3_parent_lifecycle(
+                client,
+                fixture_stop,
+                ParentControl {
+                    steps: steps_tx,
+                    replies: replies_rx,
+                },
+            );
+            let _ = result_tx.send(result);
+        });
+        let mut history = WindowHistory::new(origin.clone(), []);
+        history.started();
+        let mut adopted = false;
+        let mut mapped_ids = None;
+        let mut stages = Vec::new();
+        let mut history_sealed = false;
+        let mut result = None;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(24) {
+            display.dispatch_clients(&mut protocol).unwrap();
+            protocol.finish_dispatch(&display.handle());
+            let samples = protocol.v3_samples();
+            assert!(samples.iter().all(|s| s.origin.as_ref() == Some(&origin)));
+            if !history_sealed {
+                history.observe(&samples).unwrap();
+                if !adopted {
+                    if let Some(main) = history
+                        .cut()
+                        .unwrap()
+                        .windows
+                        .iter()
+                        .find(|w| w.role == Role::Main && w.life == Life::Mapped)
+                        .map(|w| w.window)
+                    {
+                        history.commit_main(main).unwrap();
+                        adopted = true;
+                    }
+                }
+            }
+            if let Ok(stage) = steps_rx.try_recv() {
+                stages.push(stage);
+                let cut = history.cut().unwrap();
+                match stage {
+                    ParentStage::ChainMapped => {
+                        assert!(adopted);
+                        assert_eq!(cut.admitted.len(), 3);
+                        let ids = samples.iter().map(|s| s.window).collect::<Vec<_>>();
+                        assert_eq!(ids.len(), 3);
+                        mapped_ids = Some(ids);
+                    }
+                    ParentStage::ParentUnmapped => {
+                        assert_eq!(samples.len(), 3);
+                        assert_eq!(cut.admitted.len(), 1);
+                        assert!(samples.iter().any(|s| s.life == Life::Unmapped));
+                        let all = mapped_ids.as_ref().unwrap();
+                        assert!(samples.iter().all(|s| all.contains(&s.window)));
+                    }
+                    ParentStage::ParentRemapped => {
+                        assert_eq!(samples.len(), 3);
+                        assert!(cut.admitted.len() <= 2);
+                        assert!(cut.admitted.contains(&cut.fixed_main.unwrap()));
+                        let all = mapped_ids.as_ref().unwrap();
+                        assert!(samples.iter().all(|s| all.contains(&s.window)));
+                    }
+                    ParentStage::ParentDestroyed => {
+                        assert_eq!(samples.len(), 2);
+                        assert_eq!(history.pending_retirements(), 1);
+                        assert_eq!(cut.admitted.len(), 1);
+                        history_sealed = true;
+                    }
+                }
+                replies_tx.send(()).unwrap();
+            }
+            for window in protocol.windows() {
+                protocol.frame_callbacks(
+                    window.window,
+                    Duration::from_millis(start.elapsed().as_millis() as u64 + 1),
+                    true,
+                    true,
+                    true,
+                );
+            }
+            display.flush_clients().unwrap();
+            if let Ok(done) = result_rx.try_recv() {
+                result = Some(done.unwrap());
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        if result.is_none() {
+            stop.store(true, std::sync::atomic::Ordering::Release);
+        }
+        worker.join().unwrap();
+        assert!(result.is_some(), "real xdg parent fixture timed out");
+        assert_eq!(stages.len(), 4);
+        assert_eq!(history.pending_retirements(), 1);
+    }
     #[test]
     fn real_v3_nine_toplevels_reject_tenth_and_hold_slot_until_retired() {
         use crate::linux_desktop_v3::WindowHistory;

@@ -86,3 +86,7 @@ P1 outstanding: verified SDK registration/Entity/Surface/callback and same-targe
 ### I3 listener-owner correction after checkpoint
 
 The actual `ProtocolState` now binds exactly one `NativeOrigin` from the I2-owned `Session::start_v3` **before** any listener accept. The same-session different-request origin and unverified `accept()` into that bound display are rejected. Separately owned v2/Termux ProtocolState remains untagged. This tightens I3-INV-01/02 and T01/T02 but does not create SDK evidence or complete acceptance.
+
+### Real Smithay parent lifecycle test added
+
+`eidolon_shm_fixture::capacity::run_v3_parent_lifecycle` now drives a parented dialog and nested dialog over the real Unix Wayland connection through `Mapped → parent Unmapped → parent Remapped → parent Destroyed`. The protocol-owner test asserts captured origin, stable WindowIds and descendant admission revocation; native+SDK retirement remains pending because this fixture supplies **no** certified SDK cleanup evidence. Real foreign/self/cyclic reparenting and popup inherited input require additional acceptance work.
