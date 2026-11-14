@@ -1,26 +1,3 @@
----
-id: linux-desktop-v3-i3
-title: Linux Desktop v3 I3 listener origin and window admission detailed design
-type: detailed-design
-design_status: proposed
-feature: linux-desktop-v3
-component: window-admission
-phase: I3
-created: "2026-11-14"
-last_reviewed: "2026-11-14"
-baseline_commit: 6f8f57a67399abb0ef88f9e3658b1e6fbaff0b55
-depends_on: [linux-desktop-v3-b1-presentation]
-related_sources:
-  - native/core/src/compositor/protocol.rs
-  - native/core/src/compositor/snapshot.rs
-  - native/core/src/compositor/input.rs
-  - native/core/src/compositor/pointer.rs
-  - native/core/src/session.rs
-  - native/core/src/window_slots.rs
-  - native/core/src/runtime.rs
-  - native/model/src/linux_desktop_v3/presentation.rs
----
-
 # I3 詳細設計 — verified listener origin / WindowHistory / window admission
 
 **状態:** 実装前の提案設計。I3の製品コード、host acceptance、Quest実測の完了を意味しない。本文の「提案API」は存在を保証しない。既存APIと区別する。  
@@ -43,7 +20,7 @@ related_sources:
 
 PR #28は実v3 transportのInspect、catalog、予約、Stop、deferred finalizationを持つが、core側の製品Launch commandは意図的にNotReadyである。PR #16はI4純粋・橋渡し部品が主で、I3のlistener/WindowHistoryは未実装。**いずれもmainへのマージやCI完了を推定しない。**
 
-本書は提案時点ではD5のmanaged manifestにI3を登録しない。I3は現在未登録タスクであり、設計PRのレビュー・マージ後に別途manifestの登録可否を判断する。Front Matterのproposedを「承認済み」と読まない。
+本書は提案時点ではD5のmanaged manifestにI3を登録しない。I3は現在未登録タスクであり、設計PRのレビュー・マージ後に別途manifestの登録可否を判断する。D5 resolverに未登録の手動参照資料として扱い、実装や設計承認が成立したとみなさない。
 
 ## 1. 保護する不変条件
 
