@@ -70,7 +70,7 @@ impl RecoveryReport {
             error: None,
         }
     }
-    fn from_cleanup(&mut self, cleanup: &Cleanup) {
+    fn apply_cleanup(&mut self, cleanup: &Cleanup) {
         self.remote_complete = true;
         self.process_complete = cleanup.process_complete;
         self.pipes_eof = cleanup.pipes_eof;
@@ -138,7 +138,7 @@ pub async fn recover_remote<H: client::Handler>(
             // A crash after durable Complete but before local retirement does
             // not execute C2 Recover a second time; no fabricated new channel.
             let cleanup = journal.ensure_complete_durable()?;
-            report.from_cleanup(&cleanup);
+            report.apply_cleanup(&cleanup);
             return DeferredReclamation::from_complete(journal, &binding, generation);
         }
         let expected_boot = journal.boot_id().unwrap_or("-").to_owned();
@@ -239,7 +239,7 @@ pub async fn recover_remote<H: client::Handler>(
         };
         journal.finish(cleanup)?;
         let durable = journal.ensure_complete_durable()?;
-        report.from_cleanup(&durable);
+        report.apply_cleanup(&durable);
         DeferredReclamation::from_complete(journal, &binding, generation)
     }
     .await;

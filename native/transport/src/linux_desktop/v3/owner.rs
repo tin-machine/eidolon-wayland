@@ -477,8 +477,7 @@ impl Owner {
                 continue;
             }
             let launch_enabled = self.can_launch() && launches.is_some();
-            if launch_enabled {
-                if let Some(receiver) = launches.as_mut() {
+            if launch_enabled && let Some(receiver) = launches.as_mut() {
                     match receiver.try_recv() {
                         Ok(launch) => return Ok(OwnerTurn::Launch(launch)),
                         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
@@ -487,7 +486,6 @@ impl Owner {
                         }
                         Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
                     }
-                }
             }
             let request_deadline = self.deadline;
             let stop_deadline = self.stop_deadline;

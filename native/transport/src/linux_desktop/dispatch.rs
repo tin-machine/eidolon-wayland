@@ -176,7 +176,7 @@ pub enum RecoveryRequest<'a> {
 pub enum RecoveryReport {
     V2(v2::RecoveryReport),
     /// Includes a move-only journal handoff; not a UI-serializable response.
-    V3(v3::recovery::RemoteRecoveryOutcome),
+    V3(Box<v3::recovery::RemoteRecoveryOutcome>),
 }
 
 /// Explicit capture selects the implementation once. An error in either lane
@@ -200,10 +200,10 @@ pub async fn recover<H: russh::client::Handler>(
             generation,
         } => {
             validate_recovery_selection(request.files, Version::V3)?;
-            Ok(RecoveryReport::V3(
+            Ok(RecoveryReport::V3(Box::new(
                 v3::recovery::recover_remote(client, router, request, previous, generation, cancel)
                     .await,
-            ))
+            )))
         }
     }
 }
