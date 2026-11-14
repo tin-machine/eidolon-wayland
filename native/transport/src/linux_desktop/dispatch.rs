@@ -167,11 +167,16 @@ pub fn validate_recovery_selection(
 
 pub enum RecoveryRequest<'a> {
     V2(v2::Recovery<'a>),
-    V3(v3::recovery::Recovery<'a>),
+    V3 {
+        request: v3::recovery::Recovery<'a>,
+        previous: &'a v3::io_fence::PreviousIoClosed,
+        generation: u64,
+    },
 }
 pub enum RecoveryReport {
     V2(v2::RecoveryReport),
-    V3(v3::recovery::RecoveryReport),
+    /// Includes a move-only journal handoff; not a UI-serializable response.
+    V3(v3::recovery::RemoteRecoveryOutcome),
 }
 
 /// Explicit capture selects the implementation once. An error in either lane
@@ -189,10 +194,10 @@ pub async fn recover<H: russh::client::Handler>(
                 v2::recover(client, router, request, cancel).await,
             ))
         }
-        RecoveryRequest::V3(request) => {
+        RecoveryRequest::V3 { request, previous, generation } => {
             validate_recovery_selection(request.files, Version::V3)?;
             Ok(RecoveryReport::V3(
-                v3::recovery::recover(client, router, request, cancel).await,
+                v3::recovery::recover_remote(client, router, request, previous, generation, cancel).await,
             ))
         }
     }
