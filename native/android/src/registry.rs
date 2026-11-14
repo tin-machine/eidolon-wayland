@@ -206,6 +206,48 @@ mod tests {
         assert_eq!(registry.request_stop(0), Status::InvalidArgument);
     }
     #[test]
+    fn storage_receipt_requires_the_last_live_snapshot_and_actual_destroy_result() {
+        let registry = Registry::default();
+        let id = registry.create(r#"{"schema":1}"#).unwrap();
+        assert_eq!(registry.request_stop(id), Status::Accepted);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let last = loop {
+            let snapshot = registry.snapshot(id);
+            if snapshot["runtime"]["shutdown"]["complete"] == true
+                && snapshot["runtime"]["reclamation"]["workers"] == 0
+            {
+                break snapshot;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(last["code"], 0);
+        assert_eq!(last["handle"], id.to_string());
+        assert_eq!(last["runtime"]["reclamation"]["runtime"], id.to_string());
+        assert!(
+            last["runtime"]["reclamation"]
+                .get("native_destroy_accepted")
+                .is_none()
+        );
+        assert_eq!(registry.destroy(id), Status::Accepted);
+        assert_eq!(registry.destroy(id), Status::Stale);
+        let stale = registry.snapshot(id);
+        assert_eq!(stale["code"], Status::Stale as i32);
+        assert!(stale.get("runtime").is_none());
+        let next = registry.create(r#"{"schema":1}"#).unwrap();
+        assert_ne!(next, id);
+        assert_eq!(
+            registry.snapshot(next)["runtime"]["reclamation"]["runtime"],
+            next.to_string()
+        );
+        assert_eq!(registry.request_stop(next), Status::Accepted);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while registry.destroy(next) != Status::Accepted {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    #[test]
     fn native_result_constants_match_kotlin() {
         let kotlin = include_str!(
             "../../../android/app/src/main/java/io/github/tinmachine/eidolon/NativeBridge.kt"

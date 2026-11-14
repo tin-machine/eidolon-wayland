@@ -308,6 +308,47 @@ mod tests {
             .unwrap()
     }
     #[test]
+    fn either_fixed_catalog_item_uses_the_same_single_launch_gate() {
+        for app_id in ["gtk3-desktop", "mousepad-editor-v1"] {
+            let (admission, _receiver, _cancel, original) = setup();
+            let mut wire = original.record();
+            wire["app_id"] = serde_json::json!(app_id);
+            let selected = Selection::parse(&serde_json::to_vec(&wire).unwrap()).unwrap();
+            let mut stale = wire.clone();
+            stale["revision"] = serde_json::json!("f".repeat(64));
+            let stale = Selection::parse(&serde_json::to_vec(&stale).unwrap()).unwrap();
+            assert!(
+                admission
+                    .reserve(
+                        RuntimeHandle::new(1).unwrap(),
+                        admission.capture.binding.session(),
+                        CommandSeq::new(8).unwrap(),
+                        &stale,
+                    )
+                    .is_err()
+            );
+            assert!(
+                admission.gate_open(),
+                "a stale click must not consume the live catalog"
+            );
+            let first = reserve(&admission, &selected);
+            assert_eq!(first.origin().record()["app_id"], app_id);
+            assert!(
+                admission
+                    .reserve(
+                        RuntimeHandle::new(1).unwrap(),
+                        admission.capture.binding.session(),
+                        CommandSeq::new(9).unwrap(),
+                        &original,
+                    )
+                    .is_err(),
+                "a second catalog item must not create another lease"
+            );
+            drop(first);
+            assert!(!admission.gate_open());
+        }
+    }
+    #[test]
     fn unreserved_seal_issues_capture_bound_no_allocation_but_prevents_later_reserve() {
         use super::super::reclamation::LocalRetirementGate;
         let (admission, _rx, _cancel, selection) = setup();

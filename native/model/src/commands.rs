@@ -1642,6 +1642,24 @@ mod tests {
     }
 
     #[test]
+    fn runtime_config_limit_is_the_final_utf8_document_not_character_count() {
+        let mut exact = serde_json::json!({
+            "schema": 1, "preferences_dir": "/日本語/設定"
+        })
+        .to_string();
+        assert!(exact.chars().count() < exact.len());
+        exact.push_str(&" ".repeat(COMMAND_BYTES - exact.len()));
+        assert_eq!(exact.len(), 16_384);
+        assert!(RuntimeConfig::parse(&exact).is_ok());
+        exact.push(' ');
+        assert!(exact.chars().count() < COMMAND_BYTES);
+        assert_eq!(exact.len(), 16_385);
+        assert!(RuntimeConfig::parse(&exact).is_err());
+        let duplicate = r#"{"schema":1,"schema":1}"#;
+        assert!(RuntimeConfig::parse(duplicate).is_err());
+    }
+
+    #[test]
     fn typed_v3_commands_reject_free_execution_and_cross_version_fields() {
         let launch = serde_json::json!({
             "type":"linux_desktop_v3_launch","schema":1,"request_id":"3","session":"2",

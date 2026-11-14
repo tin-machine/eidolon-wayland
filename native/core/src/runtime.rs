@@ -25,6 +25,8 @@ struct Shared {
     diagnostic_sdk_bindings: Vec<eidolon_model::surface::TargetKey>,
     sdk_evidence: crate::sdk_evidence::Ledger,
     v3_retirement: Option<crate::v3_retirement::Owner>,
+    v3_finalizer_workers: usize,
+    v3_recovery_local_proven: bool,
     last_scene: Option<eidolon_model::ids::SceneEpoch>,
     panels: crate::panels::Controller,
     workspace: crate::workspace::Controller,
@@ -564,7 +566,13 @@ fn advance_v3_reclamation(
     }
     finalizer.tick(proof, transport);
     let mut shared = shared.lock().unwrap_or_else(|e| e.into_inner());
-    shared.snapshot.desktop_v3_finalizer_pending = finalizer.pending();
+    shared.v3_finalizer_workers = usize::from(finalizer.worker_pending());
+    shared.snapshot.desktop_v3_finalizer_pending =
+        finalizer.pending() || finalizer.worker_pending();
+    shared.v3_recovery_local_proven = shared
+        .v3_retirement
+        .as_ref()
+        .is_some_and(|owner| finalizer.permits_recovery(owner));
     if let Some(error) = finalizer.last_error() {
         shared
             .snapshot
@@ -575,6 +583,7 @@ fn advance_v3_reclamation(
         // Reuse begins only after same-capture publication. Keep the diagnostic
         // summary, but never let the completed finalizer clear a later owner.
         shared.v3_retirement = None;
+        shared.v3_recovery_local_proven = false;
         *observer = None;
         *finalizer = Default::default();
     }
@@ -582,6 +591,7 @@ fn advance_v3_reclamation(
 
 /// protocol/model所有threadの土台。UIからのcallは短いlockとenqueueだけ。
 pub struct Runtime {
+    handle: eidolon_model::ids::RuntimeHandle,
     shared: Arc<Mutex<Shared>>,
     stop: Arc<AtomicBool>,
     reset: Arc<AtomicBool>,
@@ -716,6 +726,8 @@ impl Runtime {
             diagnostic_sdk_bindings: vec![],
             sdk_evidence: Default::default(),
             v3_retirement: None,
+            v3_finalizer_workers: 0,
+            v3_recovery_local_proven: false,
             last_scene: None,
             panels: Default::default(),
             workspace: crate::workspace::Controller::load(None),
@@ -2763,6 +2775,32 @@ impl Runtime {
                                 current.fail(error);
                             }
                         shared.refresh_app_report(current);
+                        // The unwind drain owns the same Board as the normal
+                        // loop. Observe actual closed-session/all-generation
+                        // resource facts instead of leaving its last report
+                        // stale or clearing the Board from an empty snapshot.
+                        if !current.virtual_clock() {
+                            let report = current.snapshot();
+                            let windows = report.windows.iter().map(|window| crate::window_slots::Window {
+                                id: window.window, app_id: window.app_id.as_deref(),
+                                life: window.life, admissible: false,
+                            }).collect::<Vec<_>>();
+                            let renderer = gl.snapshot();
+                            let native = renderer.targets.iter().map(|target| target.key).collect::<Vec<_>>();
+                            let panels = if gl.is_finished() && renderer.targets.is_empty() {
+                                vec![]
+                            } else {
+                                shared.panels.snapshot().iter().map(|panel| panel.target).collect::<Vec<_>>()
+                            };
+                            if slots.observe(crate::window_slots::Observation {
+                                session: current.session(), nonce: current.nonce(), windows: &windows,
+                                session_closed: current.closed(), native: &native,
+                                sdk: &shared.sdk_bindings, panels: &panels,
+                            }).is_err() {
+                                shared.fail("SLOT_STATE_INVALID");
+                            }
+                            shared.snapshot.window_slots = slots.report();
+                        }
                     }
                     advance_v3_reclamation(
                         &state, app.as_mut(), &mut v3_observer, &mut v3_finalizer,
@@ -2775,6 +2813,7 @@ impl Runtime {
                     if io.is_finished() && gl.is_finished()
                         && app.as_ref().is_none_or(|current| current.closed())
                         && shared.sdk_bindings.is_empty()
+                        && slots.report().occupied == 0
                         && shared.v3_retirement.is_none()
                         && !v3_finalizer.pending() && !v3_finalizer.worker_pending()
                     {
@@ -2795,12 +2834,18 @@ impl Runtime {
                 state.shutdown.finish(Instant::now());
                 state.snapshot.theme.workers = 0;
                 state.snapshot.theme.loading = false;
+                // Renderer, transport, native Session and every SDK binding
+                // have actually retired above. Release the remaining native
+                // panel-plan metadata too; an empty serialized array alone is
+                // not the ownership proof for configuration persistence.
+                state.panels = Default::default();
                 state.snapshot.panels.clear();
                 state.snapshot.window_groups=Default::default();
                 state.clear_credentials();
                 state.terminal.push_back(Event::Stopped);
             })?;
         Ok(Self {
+            handle: runtime_handle,
             shared,
             stop,
             reset,
@@ -3135,6 +3180,8 @@ impl Runtime {
     }
     pub fn snapshot(&self) -> Snapshot {
         let state = self.lock();
+        let (transport, transport_reclamation) = self.transport.reclamation_snapshot();
+        let render = self.render.snapshot();
         let mut pending = vec![];
         if self.stop.load(Ordering::Acquire) {
             if !self.worker.is_finished() {
@@ -3171,13 +3218,133 @@ impl Runtime {
                 pending.push("sdk");
             }
         }
+        let shutdown = state
+            .shutdown
+            .report(Instant::now(), pending, state.sdk_bindings.len());
+        let panels = state.panels.snapshot();
+        let app_resources_pending = state.snapshot.app.as_ref().is_some_and(|app| {
+            app.state != "stopped"
+                || app.clients != 0
+                || app.objects != 0
+                || app.surfaces != 0
+                || app.pixel_bytes != 0
+                || app.pool_bytes != 0
+                || app.pool_count != 0
+                || app.local.owned_groups != 0
+                || app.local.workers != 0
+        });
+        let auxiliary_resources_pending = state.snapshot.helper.as_ref().is_some_and(|helper| {
+            helper.owned_children != 0
+                || !helper.directory_removed
+                || helper
+                    .waypipe
+                    .as_ref()
+                    .is_some_and(|waypipe| waypipe.owned_groups != 0 || !waypipe.socket_cleaned)
+        }) || state.snapshot.native_deps.as_ref().is_some_and(
+            |dependencies| {
+                dependencies.mapped_regions_after != 0
+                    || !dependencies.owned_fds_closed
+                    || !dependencies.socket_cleaned
+            },
+        ) || state.snapshot.compositor.as_ref().is_some_and(
+            |report| {
+                report.get("error").and_then(serde_json::Value::as_str) == Some("RESOURCE_LEAK")
+            },
+        );
+        let origin_resources_retired = !app_resources_pending
+            && state.app_sdk_bindings() == 0
+            && panels.is_empty()
+            && state.snapshot.window_slots.occupied == 0
+            && render
+                .targets
+                .iter()
+                .all(|target| target.role == eidolon_render::RenderMode::Diagnostic);
+        let native_origin_pending = state.v3_retirement.is_some()
+            || state.snapshot.desktop_v3_finalizer_pending
+            || state.v3_finalizer_workers != 0;
+        let local_recovery_proven = origin_resources_retired
+            && ((state.v3_recovery_local_proven
+                && state
+                    .v3_retirement
+                    .as_ref()
+                    .is_some_and(|owner| owner.is_sealed()))
+                || (state.v3_retirement.is_none()
+                    && (transport_reclamation.no_local_allocation_proven
+                        || transport_reclamation.v2_capture_proven)));
+        let add = |values: &[usize]| {
+            values
+                .iter()
+                .fold(0usize, |sum, value| sum.saturating_add(*value))
+        };
+        let workers = add(&[
+            usize::from(!self.worker.is_finished()),
+            transport.workers,
+            transport.tokio_threads,
+            transport.forward.active,
+            render.workers,
+            state.snapshot.helper_workers,
+            state.snapshot.dependency_workers,
+            state.snapshot.compositor_workers,
+            state.snapshot.theme.workers,
+            state
+                .snapshot
+                .app
+                .as_ref()
+                .map_or(0, |app| app.local.workers),
+            state.v3_finalizer_workers,
+        ]);
+        let pending_operations = add(&[
+            state.commands.len(),
+            render.queued,
+            transport_reclamation.pending_operations,
+            panels.iter().filter(|panel| !panel.applied).count(),
+            usize::from(state.snapshot.desktop_v3_finalizer_pending),
+            state.v3_finalizer_workers,
+        ]);
+        let origin_retired = origin_resources_retired
+            && !native_origin_pending
+            && !transport_reclamation.remote_cleanup_pending
+            && transport.owned_connections == 0
+            && transport.forward.active == 0
+            && transport_reclamation.pending_operations == 0
+            && state.commands.is_empty();
+        let reclamation = crate::diagnostics::RuntimeReclamationSnapshot {
+            runtime: self.handle,
+            origin_retired,
+            recovery_connect_allowed: local_recovery_proven
+                && !self.stop.load(Ordering::Acquire)
+                && transport_reclamation.recovery_connect_allowed,
+            recovery_command_allowed: local_recovery_proven
+                && !self.stop.load(Ordering::Acquire)
+                && transport_reclamation.recovery_command_allowed,
+            connections: transport.owned_connections,
+            workers,
+            native_targets: add(&[
+                render.targets.len(),
+                state.snapshot.desktop_v3_pending_targets,
+            ]),
+            panels: panels.len(),
+            sdk_bindings: state.sdk_bindings.len(),
+            board_windows: state.snapshot.window_slots.occupied,
+            pending_operations,
+            remote_cleanup_pending: transport_reclamation.remote_cleanup_pending,
+            local_cleanup_pending: app_resources_pending
+                || auxiliary_resources_pending
+                || native_origin_pending
+                || (self.stop.load(Ordering::Acquire)
+                    && (render.contexts != 0
+                        || render.latest_images != 0
+                        || render.composition.textures != 0
+                        || render.composition.texture_bytes != 0
+                        || render.composition.decoration_texture_bytes != 0)),
+            shutdown_complete: shutdown.complete,
+        };
         Snapshot {
-            shutdown: state
-                .shutdown
-                .report(Instant::now(), pending, state.sdk_bindings.len()),
+            shutdown,
+            reclamation: Some(reclamation),
             app_sdk_bindings: state.app_sdk_bindings(),
-            transport: self.transport.snapshot(),
-            render: self.render.snapshot(),
+            transport,
+            render,
             commands_pending: state.commands.len(),
             events_pending: state.events.len() + state.terminal.len(),
             ..state.snapshot.clone()
@@ -3627,6 +3794,106 @@ mod tests {
             request_id: CommandSeq::new(request).unwrap(),
             profile_id: "termux-local".into(),
         }
+    }
+    #[test]
+    fn storage_census_keeps_runtime_diagnostic_and_old_scene_owners_until_actual_stop() {
+        use eidolon_model::{ids::RuntimeHandle, surface::TargetKey};
+        let handle = RuntimeHandle::new(73).unwrap();
+        let runtime = Runtime::start_registered(RuntimeConfig::default(), handle).unwrap();
+        wait(&runtime, |r| r.snapshot().state == RuntimeState::Ready);
+        let idle = runtime.snapshot().reclamation.unwrap();
+        assert_eq!(idle.runtime, handle);
+        assert!(idle.origin_retired);
+        assert!(idle.workers > 0);
+        assert!(!idle.shutdown_complete);
+        assert!(!idle.recovery_connect_allowed && !idle.recovery_command_allowed);
+
+        assert_eq!(completed(&runtime, scene(1)), Status::Accepted);
+        let diagnostic = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        let old_app = TargetKey::from_raw(1, 2, 1, 2).unwrap();
+        assert_eq!(
+            runtime.command(register_sdk(diagnostic, true)),
+            Status::Accepted
+        );
+        assert_eq!(
+            runtime.attach_surface(diagnostic, Default::default(), 64, 64),
+            Status::Accepted
+        );
+        wait(&runtime, |r| r.snapshot().render.targets.len() == 1);
+        let diagnostic_only = runtime.snapshot().reclamation.unwrap();
+        assert!(
+            diagnostic_only.origin_retired,
+            "origin retirement excludes the diagnostic"
+        );
+        assert_eq!(diagnostic_only.native_targets, 1);
+        assert_eq!(diagnostic_only.sdk_bindings, 1);
+        assert_eq!(
+            runtime.command(register_sdk(old_app, false)),
+            Status::Accepted
+        );
+        assert!(!runtime.snapshot().reclamation.unwrap().origin_retired);
+        assert_eq!(completed(&runtime, scene(2)), Status::Accepted);
+        let new_scene_key = TargetKey::from_raw(1, 2, 2, 2).unwrap();
+        assert_eq!(runtime.command(release_sdk(new_scene_key)), Status::Stale);
+        assert_eq!(runtime.snapshot().reclamation.unwrap().sdk_bindings, 2);
+
+        assert_eq!(runtime.request_stop(), Status::Accepted);
+        wait(&runtime, |r| r.snapshot().render.workers == 0);
+        let waiting = runtime.snapshot().reclamation.unwrap();
+        assert_eq!(waiting.runtime, handle);
+        assert_eq!(waiting.sdk_bindings, 2);
+        assert!(!waiting.shutdown_complete);
+        assert!(!runtime.can_destroy());
+        assert_eq!(runtime.command(release_sdk(old_app)), Status::Accepted);
+        assert_eq!(runtime.command(release_sdk(diagnostic)), Status::Accepted);
+        wait(&runtime, Runtime::can_destroy);
+        let done = runtime.snapshot().reclamation.unwrap();
+        assert_eq!(done.runtime, handle);
+        assert!(done.origin_retired && done.shutdown_complete);
+        assert!(!done.remote_cleanup_pending && !done.local_cleanup_pending);
+        assert_eq!(
+            [
+                done.connections,
+                done.workers,
+                done.native_targets,
+                done.panels,
+                done.sdk_bindings,
+                done.board_windows,
+                done.pending_operations,
+            ],
+            [0; 7]
+        );
+        // A pure default diagnostic has no positive Runtime owner and cannot
+        // replace the last live snapshot in Android's StopReceipt.
+        assert!(Snapshot::default().reclamation.is_none());
+
+        // A finished worker does not erase its failed resource cleanup. These
+        // retained reports have no live worker left to retry or fabricate proof.
+        {
+            let mut state = runtime.lock();
+            state.snapshot.helper = Some(crate::helper::Report {
+                error: Some("CLEANUP_FAILED"),
+                directory_removed: false,
+                ..Default::default()
+            });
+        }
+        let failed_directory = runtime.snapshot().reclamation.unwrap();
+        assert_eq!(failed_directory.workers, 0);
+        assert!(failed_directory.local_cleanup_pending);
+        {
+            let mut state = runtime.lock();
+            state.snapshot.helper = None;
+            state.snapshot.native_deps = Some(crate::compositor::primitives::Report {
+                state: "fail",
+                socket_cleaned: true,
+                owned_fds_closed: false,
+                error: Some("CLEANUP_FAILED"),
+                ..Default::default()
+            });
+        }
+        let failed_fd = runtime.snapshot().reclamation.unwrap();
+        assert_eq!(failed_fd.workers, 0);
+        assert!(failed_fd.local_cleanup_pending);
     }
     #[test]
     fn diagnostic_sdk_role_cannot_hide_an_app_owner_from_an_old_scene() {

@@ -130,7 +130,7 @@ pub async fn serve<H: client::Handler>(
     mut launches: mpsc::Receiver<Launch>,
     cancel: &CancellationToken,
     publish: impl Fn(&TransportSnapshot),
-    catalog: impl Fn(&Selection),
+    catalog: impl Fn(&[Selection; 2]),
 ) -> RunOutcome {
     let binding = request.capture.binding();
     let generation = request.capture.generation;
@@ -193,11 +193,15 @@ pub async fn serve<H: client::Handler>(
             return Err("DESKTOP_CATALOG_UNAVAILABLE");
         }
         // The catalog is fully checked against B1/E1 source evidence by Owner.
-        // Cache a fixed Selection while no heartbeat command is in flight.
-        let selection = active.selection("mousepad-editor-v1")?;
+        // Both fixed entries share this one live catalog and one-shot gate.
+        // A two-entry launcher does not permit a second concurrent GUI lease.
+        let selections = [
+            active.selection("gtk3-desktop")?,
+            active.selection("mousepad-editor-v1")?,
+        ];
         report.transport.phase = TransportPhase::Catalog;
         publish(&report);
-        catalog(&selection);
+        catalog(&selections);
 
         let mut launch = loop {
             if active.phase() != Phase::Catalog || active.report().terminal_event {
@@ -214,8 +218,9 @@ pub async fn serve<H: client::Handler>(
                 OwnerTurn::Closed => return Err("DESKTOP_HELPER_LOST"),
             }
         };
+        let selection = launch.permit.selection().clone();
         if !Arc::ptr_eq(&launch.permit.capture, &request.capture)
-            || launch.permit.selection() != &selection
+            || !selections.contains(&selection)
             || launch.permit.generation() != generation
             || launch
                 .permit
