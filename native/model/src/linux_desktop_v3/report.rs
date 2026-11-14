@@ -423,8 +423,6 @@ mod tests {
         );
         assert!(V3Report::parse(duplicated.as_bytes()).is_err());
     }
-
-
     #[test]
     fn relaunch_after_origin_cleanup_is_distinct_from_runtime_destruction() {
         let mut r = report();
@@ -525,10 +523,9 @@ mod tests {
             .iter()
             .find(|v| v["id"] == "ready")
             .unwrap();
-        let observation = Observation::parse(
-            &serde_json::to_vec(&case["steps"][0]["observation"]).unwrap(),
-        )
-        .unwrap();
+        let observation =
+            Observation::parse(&serde_json::to_vec(&case["steps"][0]["observation"]).unwrap())
+                .unwrap();
         let mut r = report();
         r.transport.phase = TransportPhase::Started;
         r.transport.launch_accepted = true;
@@ -548,8 +545,14 @@ mod tests {
             binding_present: e.binding_present,
             renderer_frame_seen: e.renderer_frame_seen,
         });
-        assert!(r.transport.journal_pending, "live launch journal still exists");
-        assert!(r.validate_current(&observation, &startup, true, false, true).is_ok());
+        assert!(
+            r.transport.journal_pending,
+            "live launch journal still exists"
+        );
+        assert!(
+            r.validate_current(&observation, &startup, true, false, true)
+                .is_ok()
+        );
         for (runtime_live, stop_intent, admission_open) in [
             (false, false, true),
             (true, true, true),
@@ -561,10 +564,10 @@ mod tests {
                     &startup,
                     runtime_live,
                     stop_intent,
-                    admission_open,
+                    admission_open
                 )
                 .unwrap_err()
-                    .0,
+                .0,
                 "PRESENTATION_STALE"
             );
         }
