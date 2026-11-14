@@ -512,4 +512,63 @@ mod tests {
             "PRESENTATION_STALE"
         );
     }
+
+    #[test]
+    fn ready_requires_current_live_runtime_admission_and_matching_create_command() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
+        ))
+        .unwrap();
+        let case = fixture["presentation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == "ready")
+            .unwrap();
+        let observation = Observation::parse(
+            &serde_json::to_vec(&case["steps"][0]["observation"]).unwrap(),
+        )
+        .unwrap();
+        let mut r = report();
+        r.transport.phase = TransportPhase::Started;
+        r.transport.launch_accepted = true;
+        r.cleanup_pending = false;
+        let startup = Startup::begin(r.origin.clone(), 1000, vec![])
+            .unwrap()
+            .advance(&observation)
+            .unwrap();
+        let e = observation.current_evidence().unwrap();
+        r.presentation = Some(PresentationSummary::from_startup(&startup).unwrap());
+        r.sdk_target = Some(SdkTarget {
+            runtime: e.runtime,
+            target: e.target,
+            create_command: e.create_command,
+            action: SdkAction::Create,
+            acknowledged: e.acknowledged,
+            binding_present: e.binding_present,
+            renderer_frame_seen: e.renderer_frame_seen,
+        });
+        assert!(r.transport.journal_pending, "live launch journal still exists");
+        assert!(r.validate_current(&observation, &startup, true, false, true).is_ok());
+        for (runtime_live, stop_intent, admission_open) in [
+            (false, false, true),
+            (true, true, true),
+            (true, false, false),
+        ] {
+            assert_eq!(
+                r.validate_current(&observation, &startup, runtime_live, stop_intent, admission_open)
+                    .unwrap_err()
+                    .0,
+                "PRESENTATION_STALE"
+            );
+        }
+        r.sdk_target.as_mut().unwrap().create_command = CommandSeq::new(999).unwrap();
+        assert_eq!(
+            r.validate_current(&observation, &startup, true, false, true)
+                .unwrap_err()
+                .0,
+            "PRESENTATION_STALE"
+        );
+    }
+
 }
