@@ -42,6 +42,15 @@ impl V3PresentationObserver {
                 return Err(error);
             }
         };
+        // B1's immutable role history is a second retained ledger. Until
+        // certified native+SDK retirement is wired to B1's GC port, fail
+        // closed on exhaustion instead of growing indefinitely or silently
+        // dropping role identity. This does not change the B1 golden model.
+        if self.startup.role_history_len() > crate::linux_desktop_v3::MAX_RETAINED_WINDOWS {
+            let error = Error("APP_WINDOW_UNSUPPORTED");
+            self.startup = self.startup.fail_observation(&error, true);
+            return Err(error);
+        }
         let presentation = PresentationSummary::from_startup(&self.startup)?;
         let current = observation.current_evidence();
         let sdk_target = current.as_ref().map(|e| SdkTarget {
@@ -152,6 +161,60 @@ mod tests {
         let repeated = observer.tick(&mapped);
         assert!(repeated.is_ok(), "same tick time is monotonic");
         assert_eq!(repeated.unwrap().newly_adopted_main, None);
+    }
+
+    #[test]
+    fn uncertified_dialog_churn_fails_closed_before_b1_role_history_grows_unbounded() {
+        let owner = origin();
+        let scene = SceneEpoch::new(1).unwrap();
+        let main = NativeWindowFact {
+            origin: owner.clone(),
+            window: WindowId::new(1).unwrap(),
+            role: Role::Main,
+            life: Life::Mapped,
+            app_id: Some("mousepad".into()),
+            parent: Parent::None {},
+        };
+        let mut observer = V3PresentationObserver::begin(owner.clone(), 1, vec![]).unwrap();
+        let started = Observation::native_builder(owner.clone(), 2)
+            .lifecycle(true, Some(scene), true)
+            .transport(Some(owner.clone()), None, false, false)
+            .windows(1, vec![main.clone()])
+            .finish()
+            .unwrap();
+        observer.tick(&started).unwrap();
+        for id in 2..=65 {
+            let dialog = NativeWindowFact {
+                origin: owner.clone(),
+                window: WindowId::new(id).unwrap(),
+                role: Role::Dialog,
+                life: Life::Mapped,
+                app_id: Some("mousepad".into()),
+                parent: Parent::Resolved {
+                    window: main.window,
+                },
+            };
+            let observation = Observation::native_builder(owner.clone(), id as u64 + 2)
+                .lifecycle(true, Some(scene), true)
+                .transport(Some(owner.clone()), None, false, false)
+                .windows(2, vec![main.clone(), dialog])
+                .finish()
+                .unwrap();
+            let result = observer.tick(&observation);
+            if id <= 64 {
+                result.unwrap();
+            } else {
+                assert_eq!(result.err().unwrap().0, "APP_WINDOW_UNSUPPORTED");
+            }
+        }
+        assert_eq!(
+            observer.snapshot().unwrap().state,
+            PresentationState::Pending
+        );
+        assert!(
+            observer.startup().role_history_len()
+                <= crate::linux_desktop_v3::MAX_RETAINED_WINDOWS + 1
+        );
     }
 
     #[test]

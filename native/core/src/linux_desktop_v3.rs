@@ -41,7 +41,7 @@ pub struct I3WindowCut {
 // Retired/awaiting-ACK records must remain available for reclamation.
 // Once the bounded owner ledger is full, fail closed rather than dropping
 // unresolved SDK/native receipts or consuming unbounded memory.
-const MAX_RETAINED_WINDOWS: usize = 64;
+pub(crate) const MAX_RETAINED_WINDOWS: usize = 64;
 
 pub struct WindowHistory {
     origin: NativeOrigin,
