@@ -43,6 +43,7 @@ pub struct TransportSnapshot {
     pub start_attempted: bool,
     pub started_observed: bool,
     pub terminal_observed: bool,
+    pub terminal_reason: Option<eidolon_model::linux_desktop_v3::StopReason>,
     pub actor_finished: bool,
     pub io_retired: bool,
     pub remote_cleanup: RemoteCleanup,
@@ -71,6 +72,7 @@ impl TransportSnapshot {
             start_attempted: false,
             started_observed: false,
             terminal_observed: false,
+            terminal_reason: None,
             actor_finished: false,
             io_retired: false,
             remote_cleanup: RemoteCleanup {
@@ -205,6 +207,7 @@ pub async fn serve<H: client::Handler>(
                 OwnerTurn::Launch(value) => break value,
                 OwnerTurn::Events(_events) => {
                     report.terminal_observed |= active.report().terminal_event;
+                    report.terminal_reason = active.report().stop_reason;
                     publish(&report);
                 }
                 OwnerTurn::MailboxClosed => return Err("DESKTOP_COMMANDS_CLOSED"),
@@ -287,6 +290,7 @@ pub async fn serve<H: client::Handler>(
                 report.started_observed = true;
             }
             report.terminal_observed |= remote.terminal_event;
+            report.terminal_reason = remote.stop_reason;
             report.transport.phase = if report.terminal_observed {
                 TransportPhase::Stopping
             } else if report.started_observed {
@@ -327,6 +331,7 @@ pub async fn serve<H: client::Handler>(
     }
     if let Some(active) = &remote {
         report.terminal_observed |= active.terminal_event;
+        report.terminal_reason = active.stop_reason;
     }
     let channel_complete = owner
         .as_ref()

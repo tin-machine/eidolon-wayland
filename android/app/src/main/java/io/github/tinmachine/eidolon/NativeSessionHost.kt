@@ -21,6 +21,8 @@ object NativeSessionHost {
     private val worker = Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "eidolon-host").apply { isDaemon = true } }
     private val ui = Handler(Looper.getMainLooper())
     private val scenes = AtomicLong(0)
+    private val activityScenes = ActivitySceneOwnership()
+    internal val sdkRetirement = SdkRetirementHub()
     private val requests = AtomicLong(0)
     @Volatile private var handle = 0L // 作成・停止はworker、短いenqueueは任意threadから。
     private val xrState = AtomicReference("IDLE")
@@ -479,22 +481,48 @@ object NativeSessionHost {
             }
         } }
     }
-    fun sceneReady(): Long = inputIntents.serial {
+    fun registerActivityOwner(): Long = inputIntents.serial {
+        val old = activityScenes.activeEpoch()
+        val owner = activityScenes.register()
+        inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()
+        xrState.set("IDLE");activityVisible.set(false)
+        if (old > 0 && handle > 0) NativeBridge.nativeCommand(handle, JSONObject().put("schema",1)
+            .put("request_id",requests.incrementAndGet().toString()).put("type","scene_closing")
+            .put("scene",old.toString()).toString())
+        owner
+    }
+    fun ownsActivityScene(owner: Long, scene: Long): Boolean = activityScenes.owns(owner, scene)
+    fun sceneReady(owner: Long): Long = inputIntents.serial {
+        if (!activityScenes.currentOwner(owner)) return@serial 0L
         inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()
         val scene = scenes.incrementAndGet()
+        check(activityScenes.activate(owner, scene))
+        xrState.set("IDLE");activityVisible.set(false)
         send("scene_ready", "scene", scene.toString())
         scene
     }
-    fun currentSceneEpoch(): Long = scenes.get()
-    fun setXrState(value: String, expectedScene: Long? = null): Boolean = inputIntents.serial {
-        if(expectedScene!=null && expectedScene!=scenes.get()) return@serial false
-        if(value!="FOCUSED") {inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()}
-        xrState.set(value);send("set_xr_state","state",value);true
+    fun sceneClosing(owner: Long, scene: Long): Boolean = inputIntents.serial {
+        if (!activityScenes.close(owner, scene)) return@serial false
+        inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()
+        xrState.set("IDLE");activityVisible.set(false)
+        val runtime = handle
+        if (runtime > 0) NativeBridge.nativeCommand(runtime, JSONObject().put("schema",1)
+            .put("request_id",requests.incrementAndGet().toString()).put("type","scene_closing")
+            .put("scene",scene.toString()).toString())
+        true
     }
-    fun setActivityVisible(value: Boolean, expectedScene: Long? = null): Boolean = inputIntents.serial {
-        if(expectedScene!=null && expectedScene!=scenes.get()) return@serial false
+    fun currentSceneEpoch(): Long = activityScenes.activeEpoch()
+    fun setXrState(value: String, expectedScene: Long? = null, owner: Long? = null): Boolean = inputIntents.serial {
+        if (owner != null && (expectedScene == null || !activityScenes.owns(owner, expectedScene))) return@serial false
+        if(expectedScene!=null && expectedScene!=activityScenes.activeEpoch()) return@serial false
+        if(value!="FOCUSED") {inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()}
+        xrState.set(value);send("set_xr_state","state",value,expectedScene);true
+    }
+    fun setActivityVisible(value: Boolean, expectedScene: Long? = null, owner: Long? = null): Boolean = inputIntents.serial {
+        if (owner != null && (expectedScene == null || !activityScenes.owns(owner, expectedScene))) return@serial false
+        if(expectedScene!=null && expectedScene!=activityScenes.activeEpoch()) return@serial false
         if(!value) {inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()}
-        activityVisible.set(value);send("set_activity_state","visible",value);true
+        activityVisible.set(value);send("set_activity_state","visible",value,expectedScene);true
     }
     private fun enqueueConnect(requested:((String,Int)->Unit)?=null): String? {
         if(selectedProfileId==LinuxConnectionProfile.ID && (linuxIdentity==null || linuxProfile==null || linuxPins()==null ||
@@ -1580,12 +1608,13 @@ object NativeSessionHost {
         return code != NativeBridge.INVALID_ARGUMENT
     }
 
-    private fun send(type: String, key: String, value: Any) {
+    private fun send(type: String, key: String, value: Any, expectedScene: Long? = null) {
         safely {
             val current = handle
             if (current != 0L) {
                 val command = JSONObject().put("schema", 1).put("request_id", requests.incrementAndGet().toString())
                     .put("type", type).put(key, value)
+                if(expectedScene!=null) command.put("expected_scene",expectedScene.toString())
                 val code = NativeBridge.nativeCommand(current, command.toString())
                 if (code != NativeBridge.ACCEPTED) Log.w(TAG, "command_rejected type=$type code=$code")
             }
@@ -1605,9 +1634,9 @@ object NativeSessionHost {
             check(SystemClock.elapsedRealtime() < deadline) { "RUNTIME_START_TIMEOUT" }
             Thread.sleep(2)
         }
-        if (scenes.get() > 0) send("scene_ready", "scene", scenes.get().toString())
-        send("set_xr_state", "state", xrState.get())
-        send("set_activity_state", "visible", activityVisible.get())
+        if (currentSceneEpoch() > 0) send("scene_ready", "scene", currentSceneEpoch().toString())
+        send("set_xr_state", "state", xrState.get(),currentSceneEpoch().takeIf {it>0})
+        send("set_activity_state", "visible", activityVisible.get(),currentSceneEpoch().takeIf {it>0})
         tick()
     }
     fun runtimeConfigJson(): String {
@@ -1779,6 +1808,26 @@ object NativeSessionHost {
             ui.post {completed(receipt)}
         }
     }
+    internal fun sdkEvidence(lease: SdkEvidenceBridge.Lease, phase: String): Int {
+        require(phase in setOf("current", "retiring", "retired") && lease.createCommand != null)
+        val target = JSONObject().put("session",lease.session.toString()).put("window",lease.window.toString())
+            .put("scene",lease.scene.toString()).put("generation",lease.generation.toString())
+        // This command is an explicit synchronous ownership port in native;
+        // unlike adapter_applied, ACCEPTED is a durable ledger update.
+        return NativeBridge.nativeCommand(lease.runtime, JSONObject().put("schema",1)
+            .put("type","sdk_binding_evidence").put("request_id",requests.incrementAndGet().toString())
+            .put("target",target).put("create_command",lease.createCommand.toString())
+            .put("adapter",lease.adapter).put("phase",phase).toString())
+    }
+    internal fun registerSdkLease(lease: SdkEvidenceBridge.Lease): Int {
+        require(lease.createCommand != null)
+        val target = JSONObject().put("session",lease.session.toString()).put("window",lease.window.toString())
+            .put("scene",lease.scene.toString()).put("generation",lease.generation.toString())
+        return NativeBridge.nativeCommand(lease.runtime, JSONObject().put("schema",1)
+            .put("type","register_sdk_binding").put("request_id",requests.incrementAndGet().toString())
+            .put("target",target).put("diagnostic",false).put("create_command",lease.createCommand.toString())
+            .put("adapter",lease.adapter).toString())
+    }
     fun sdkBinding(target: JSONObject, runtime: Long, owned: Boolean, diagnostic: Boolean = false): Int {
         val command=JSONObject().put("schema",1).put("type",if(owned) "register_sdk_binding" else "release_sdk_binding")
             .put("request_id",requests.incrementAndGet().toString()).put("target",target)
@@ -1796,6 +1845,7 @@ object NativeSessionHost {
         themeImportToken = null; themeRequests.clear(); themeImportMessage = null
         val started = SystemClock.elapsedRealtime()
         lastStop.set(null)
+        sdkRetirement.evidence.sealRuntime(old)
         check(NativeBridge.nativeRequestStop(old) == NativeBridge.ACCEPTED)
         val accepted = SystemClock.elapsedRealtime() - started
         val deadline = started + 10000

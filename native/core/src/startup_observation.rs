@@ -88,6 +88,21 @@ impl V3PresentationObserver {
         &self.startup
     }
 
+    /// The same native/SDK proof releases I3 history and B1's role cache.
+    /// Keep the fixed main identity until the whole origin is retired.
+    pub(crate) fn retire_confirmed_window(
+        &mut self,
+        proof: &crate::v3_retirement::WindowRetirementProof,
+    ) -> Result<()> {
+        if self.current() != proof.origin() {
+            return Err(Error("APP_ORIGIN_UNKNOWN"));
+        }
+        if self.snapshot()?.main != Some(proof.window()) {
+            self.startup.retire_confirmed_dialog(proof.window())?;
+        }
+        Ok(())
+    }
+
     /// Only the native owner may use this output for Report::validate_current.
     pub fn current(&self) -> &NativeOrigin {
         self.startup.origin()

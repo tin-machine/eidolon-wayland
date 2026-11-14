@@ -37,8 +37,12 @@ class MainActivity : AppSystemActivity() {
     private var launcher: Entity? = null
     private val keyboardPanels = mutableListOf<PanelKeyboardBridge>()
     private val deviceMetrics by lazy { DeviceMetrics(applicationContext,NativeSessionHost::publishDeviceMetrics) }
+    private val activityOwner = NativeSessionHost.registerActivityOwner()
     private var sceneEpoch=0L
-    private fun ownsScene(): Boolean = !isDestroyed && (sceneEpoch==0L || sceneEpoch==NativeSessionHost.currentSceneEpoch())
+    private var resumed=false
+    private var xrScene: com.meta.spatial.runtime.Scene?=null
+    private var observedXr="IDLE"
+    private fun ownsScene(): Boolean = !isDestroyed && NativeSessionHost.ownsActivityScene(activityOwner,sceneEpoch)
     private val nativePanels by lazy { SpatialPanelAdapter() }
     private val keyboard by lazy { PhysicalKeyboard(this) { TerminalImeController.toggle() } }
     private var themePickerToken: String? = null
@@ -65,8 +69,12 @@ class MainActivity : AppSystemActivity() {
 
     override fun onSceneReady() {
         super.onSceneReady()
-        val epoch = NativeSessionHost.sceneReady()
+        val epoch = NativeSessionHost.sceneReady(activityOwner)
+        if (epoch <= 0) return
         sceneEpoch=epoch
+        if(resumed) keyboard.resume()
+        NativeSessionHost.setActivityVisible(resumed,epoch,activityOwner)
+        NativeSessionHost.setXrState(if(xrScene === scene) observedXr else "IDLE",epoch,activityOwner)
         scene.setReferenceSpace(ReferenceSpace.LOCAL_FLOOR)
         scene.setViewOrigin(0f, 0f, 0f, 0f)
         if (panel == null) {
@@ -181,16 +189,18 @@ class MainActivity : AppSystemActivity() {
     override fun onResume() {
         super.onResume()
         deviceMetrics.start()
-        if(ownsScene()) {keyboard.resume();NativeSessionHost.setActivityVisible(true,sceneEpoch.takeIf {it>0})}
+        resumed=true
+        if(ownsScene()) {keyboard.resume();NativeSessionHost.setActivityVisible(true,sceneEpoch,activityOwner)}
         Log.i(TAG, "activity_resumed version=${BuildConfig.VERSION_CODE}")
     }
 
     override fun onPause() {
         deviceMetrics.stop()
+        resumed=false
         val current=ownsScene()
         if(current) TerminalImeController.pause()
         keyboard.pause(resetInput=current)
-        if(current) NativeSessionHost.setActivityVisible(false,sceneEpoch.takeIf {it>0})
+        if(current) NativeSessionHost.setActivityVisible(false,sceneEpoch,activityOwner)
         Log.i(TAG, "activity_paused version=${BuildConfig.VERSION_CODE}")
         super.onPause()
     }
@@ -211,17 +221,21 @@ class MainActivity : AppSystemActivity() {
 
     override fun onSessionStateChanged(state: SessionState) {
         super.onSessionStateChanged(state)
-        if(!ownsScene()) return
-        Log.i(TAG, "xr_state=$state version=${BuildConfig.VERSION_CODE}")
-        if(state != SessionState.FOCUSED) { keyboard.resetShortcutState();TerminalImeController.externalLoss() }
-        NativeSessionHost.setXrState(when (state) {
+        xrScene=runCatching {scene}.getOrNull()
+        observedXr=when (state) {
             SessionState.FOCUSED -> "FOCUSED"
             SessionState.VISIBLE -> "VISIBLE"
             else -> "IDLE"
-        },sceneEpoch.takeIf {it>0})
+        }
+        if(!ownsScene()) return
+        Log.i(TAG, "xr_state=$state version=${BuildConfig.VERSION_CODE}")
+        if(state != SessionState.FOCUSED) { keyboard.resetShortcutState();TerminalImeController.externalLoss() }
+        NativeSessionHost.setXrState(observedXr,sceneEpoch,activityOwner)
     }
 
     override fun onSpatialShutdown() {
+        NativeSessionHost.sceneClosing(activityOwner,sceneEpoch)
+        xrScene=null;observedXr="IDLE"
         TerminalImeController.sceneClosing(this)
         BuildHooks.sceneClosing()
         keyboardPanels.forEach {it.close()};keyboardPanels.clear()

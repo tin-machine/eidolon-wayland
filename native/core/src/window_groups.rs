@@ -365,6 +365,7 @@ pub(crate) mod tests {
                 slot: i,
                 error: None,
                 decoration: None,
+                v3_evidence_required: false,
             });
             render.targets.push(eidolon_render::TargetReport {
                 key: target,

@@ -15,7 +15,7 @@ import org.json.JSONObject
 
 /** One directly owned quad/texture. Mode updates upload pixels without replacing any SDK object. */
 class WindowModeBadge(parent:Entity,layout:WindowControlLayout,width:Double,height:Double,private val sdk:Scene,
-    private val objects:SceneObjectSystem,private val live:()->Boolean):AutoCloseable {
+    private val objects:SceneObjectSystem,private val live:()->Boolean,private val sdkScope:SdkResourceScope?=null):AutoCloseable {
     private var closeRequested=false
     private var disposed=false
     private var mode=WindowMode.PREPARING
@@ -43,7 +43,7 @@ class WindowModeBadge(parent:Entity,layout:WindowControlLayout,width:Double,heig
             val positions=layout.positions(width,height)
             val vertical=if(layout.anchor.startsWith("top")) 1 else -1
             val x=positions.map {it.x}.average();val y=positions.first().y+vertical*(layout.diameter/2+.047)
-            entity=Entity.create(listOf(TransformParent(parent),Transform(Pose()),Scale(Vector3(1f)),Hittable(MeshCollision.NoCollision),Visible(true))).also {entityCreates++}
+            entity=createEntity { Entity.create(listOf(TransformParent(parent),Transform(Pose()),Scale(Vector3(1f)),Hittable(MeshCollision.NoCollision),Visible(true))) }.also {entityCreates++}
             setAbsoluteTransform(checkNotNull(entity),getAbsoluteTransform(parent)*Pose(Vector3(x.toFloat(),y.toFloat(),-.035f)))
             setAbsoluteScale(checkNotNull(entity),Vector3(.42f,.064f,1f))
             obj=SceneObject(sdk,checkNotNull(mesh),"eidolon-window-mode",checkNotNull(entity)).also {objectCreates++}
@@ -79,18 +79,19 @@ class WindowModeBadge(parent:Entity,layout:WindowControlLayout,width:Double,heig
         try {
             entity?.let {objects.removeSceneObject(it)}
             obj?.let {it.setIsVisible(false);it.destroy();objectDestroys++;obj=null}
-            entity?.let {it.destroy();entityDestroys++;entity=null}
+            entity?.let {sdkScope?.destroyEntity(it) ?: it.destroy();entityDestroys++;entity=null}
             mesh?.let {it.destroy();meshDestroys++;mesh=null}
             material?.let {it.destroy();materialDestroys++;material=null}
             texture?.let {it.destroy();textureDestroys++;texture=null}
             synchronized(owners) {slot.used=false;owners.remove(this)}
             disposed=true
         } catch(error:Exception) {
-            failures++
+            sdkScope?.failed();failures++
             // A failed owner stays bounded in the registry; cleanup is never reported as zero via GC.
             throw error
         }
     }
+    private fun createEntity(create:()->Entity):Entity = sdkScope?.createEntity(create) ?: create()
     companion object {
         private const val WIDTH=512
         private const val HEIGHT=64

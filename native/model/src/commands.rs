@@ -323,6 +323,14 @@ pub enum CompositorScenario {
     PoolLimit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SdkEvidencePhase {
+    Current,
+    Retiring,
+    Retired,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
@@ -333,6 +341,18 @@ pub enum Command {
         /// 初期診断panelのSDK所有。省略した既存callerはアプリ資源として回収を待つ。
         #[serde(default)]
         diagnostic: bool,
+        #[serde(default)]
+        create_command: Option<CommandSeq>,
+        #[serde(default)]
+        adapter: Option<u64>,
+    },
+    SdkBindingEvidence {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        create_command: CommandSeq,
+        adapter: u64,
+        phase: SdkEvidencePhase,
     },
     ReleaseSdkBinding {
         schema: u32,
@@ -693,15 +713,24 @@ pub enum Command {
         request_id: CommandSeq,
         scene: SceneEpoch,
     },
+    SceneClosing {
+        schema: u32,
+        request_id: CommandSeq,
+        scene: SceneEpoch,
+    },
     SetXrState {
         schema: u32,
         request_id: CommandSeq,
         state: XrState,
+        #[serde(default)]
+        expected_scene: Option<SceneEpoch>,
     },
     SetActivityState {
         schema: u32,
         request_id: CommandSeq,
         visible: bool,
+        #[serde(default)]
+        expected_scene: Option<SceneEpoch>,
     },
     ResetInput {
         schema: u32,
@@ -716,6 +745,8 @@ impl Command {
         let command: Self = serde_json::from_str(json).map_err(|_| Status::InvalidArgument)?;
         let schema = match command {
             Self::RegisterSdkBinding { schema, .. }
+            | Self::SdkBindingEvidence { schema, .. }
+            | Self::SceneClosing { schema, .. }
             | Self::ReleaseSdkBinding { schema, .. }
             | Self::SetWorkloadObservation { schema, .. }
             | Self::SetTheme { schema, .. }
@@ -835,6 +866,22 @@ impl Command {
             return Err(Status::InvalidArgument);
         }
         match &command {
+            Self::RegisterSdkBinding {
+                diagnostic,
+                create_command,
+                adapter,
+                ..
+            } if create_command.is_some() != adapter.is_some()
+                || (*diagnostic && create_command.is_some())
+                || adapter.is_some_and(|id| id == 0 || id > i64::MAX as u64) =>
+            {
+                return Err(Status::InvalidArgument);
+            }
+            Self::SdkBindingEvidence { adapter, .. }
+                if *adapter == 0 || *adapter > i64::MAX as u64 =>
+            {
+                return Err(Status::InvalidArgument);
+            }
             Self::Ime {
                 target,
                 transaction,
@@ -906,6 +953,8 @@ impl Command {
     pub fn request_id(&self) -> CommandSeq {
         match *self {
             Self::RegisterSdkBinding { request_id, .. }
+            | Self::SdkBindingEvidence { request_id, .. }
+            | Self::SceneClosing { request_id, .. }
             | Self::ReleaseSdkBinding { request_id, .. }
             | Self::SetWorkloadObservation { request_id, .. }
             | Self::SetTheme { request_id, .. }
@@ -985,6 +1034,11 @@ impl Command {
                 | Self::Disconnect { .. }
                 | Self::SurfaceLost { .. }
                 | Self::SceneReady { .. }
+                | Self::SceneClosing { .. }
+                | Self::SdkBindingEvidence {
+                    phase: SdkEvidencePhase::Retiring | SdkEvidencePhase::Retired,
+                    ..
+                }
                 | Self::SetActivityState { visible: false, .. }
                 | Self::SetXrState {
                     state: XrState::Idle | XrState::Visible,
@@ -997,6 +1051,67 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sdk_evidence_requires_complete_native_create_and_adapter_identity() {
+        let registration = serde_json::json!({
+            "schema":1, "type":"register_sdk_binding", "request_id":"9",
+            "target":{"session":"1","window":"2","scene":"3","generation":"4"},
+            "create_command":"4", "adapter":7
+        });
+        assert!(Command::parse(&registration.to_string()).is_ok());
+        for field in ["create_command", "adapter"] {
+            let mut missing = registration.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(Command::parse(&missing.to_string()).is_err());
+        }
+        for adapter in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(u64::MAX),
+        ] {
+            let mut invalid = registration.clone();
+            invalid["adapter"] = adapter;
+            assert!(Command::parse(&invalid.to_string()).is_err());
+        }
+        let mut diagnostic = registration.clone();
+        diagnostic["diagnostic"] = true.into();
+        assert!(Command::parse(&diagnostic.to_string()).is_err());
+        let mut evidence = registration;
+        evidence["type"] = "sdk_binding_evidence".into();
+        for phase in ["current", "retiring", "retired"] {
+            evidence["phase"] = phase.into();
+            let command = Command::parse(&evidence.to_string()).unwrap();
+            assert_eq!(command.needs_input_reset(), phase != "current");
+        }
+        evidence["phase"] = "complete".into();
+        assert!(Command::parse(&evidence.to_string()).is_err());
+    }
+
+    #[test]
+    fn scene_lifecycle_uses_exact_optional_epoch_and_close_resets_input() {
+        let close =
+            serde_json::json!({"schema":1,"type":"scene_closing","request_id":"1","scene":"2"});
+        assert!(
+            Command::parse(&close.to_string())
+                .unwrap()
+                .needs_input_reset()
+        );
+        for kind in ["set_activity_state", "set_xr_state"] {
+            let mut lifecycle =
+                serde_json::json!({"schema":1,"type":kind,"request_id":"2","expected_scene":"2"});
+            if kind == "set_activity_state" {
+                lifecycle["visible"] = true.into();
+            } else {
+                lifecycle["state"] = "FOCUSED".into();
+            }
+            assert!(Command::parse(&lifecycle.to_string()).is_ok());
+            lifecycle["expected_scene"] = 2.into();
+            assert!(Command::parse(&lifecycle.to_string()).is_err());
+            lifecycle.as_object_mut().unwrap().remove("expected_scene");
+            assert!(Command::parse(&lifecycle.to_string()).is_ok());
+        }
+    }
+
     #[test]
     fn sdk_binding_is_an_app_owner_unless_diagnostic_is_explicit() {
         let mut value = serde_json::json!({"schema":1,"type":"register_sdk_binding","request_id":"1",

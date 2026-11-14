@@ -100,6 +100,62 @@ impl WindowHistory {
         self.entries.len()
     }
 
+    pub(crate) fn retirement_windows(&self) -> Vec<WindowId> {
+        self.entries
+            .iter()
+            .filter_map(|(window, entry)| entry.retirement_pending.then_some(*window))
+            .collect()
+    }
+
+    pub(crate) fn retirement_pending(&self, window: WindowId) -> bool {
+        self.entries
+            .get(&window)
+            .is_some_and(|entry| entry.retirement_pending)
+    }
+
+    /// Observe a complete cut from the same protocol owner after admission
+    /// has been sealed. Existing ownership and roles remain fixed; only the
+    /// lifetime of already recorded windows can advance. Unknown windows
+    /// are never adopted here: their native resources remain owned by the
+    /// protocol and must pass the origin-wide local retirement barrier.
+    /// An unavailable/foreign protocol must not be represented by an empty
+    /// slice. Session obtains this cut through v3_owned_samples().
+    pub(crate) fn observe_retirements(
+        &mut self,
+        samples: &[WindowSample],
+    ) -> Result<(), &'static str> {
+        if self.admission_open {
+            return Err("NOT_READY");
+        }
+        let mut seen = BTreeMap::new();
+        for sample in samples {
+            if sample.origin.as_ref() != Some(&self.origin)
+                || seen.insert(sample.window, sample).is_some()
+            {
+                // A mixed or partial census cannot prove disappearances.
+                return Err("APP_ORIGIN_UNKNOWN");
+            }
+        }
+        let mut stale = false;
+        for (window, entry) in &mut self.entries {
+            match seen.get(window) {
+                Some(sample) if entry.retirement_pending => {
+                    // Late map/unmap must not resurrect a destroyed window.
+                    stale |= sample.life != Life::Destroyed;
+                }
+                Some(sample) => {
+                    entry.sample.life = sample.life;
+                    entry.retirement_pending = sample.life == Life::Destroyed;
+                }
+                None => {
+                    entry.sample.life = Life::Destroyed;
+                    entry.retirement_pending = true;
+                }
+            }
+        }
+        if stale { Err("STALE") } else { Ok(()) }
+    }
+
     /// An observed Destroy is not a native/SDK retirement acknowledgment.
     /// Only the owner supplying both proofs may release the tombstone.
     pub fn confirm_retired(&mut self, window: WindowId, native: bool, sdk: bool) -> bool {
@@ -837,6 +893,108 @@ mod tests {
             h.commit_main(WindowId::new(2).unwrap()),
             Err("APP_WINDOW_UNSUPPORTED")
         );
+    }
+
+    #[test]
+    fn sealed_history_records_destroy_without_reopening_admission_or_releasing_slots() {
+        let o = origin();
+        let main = sample(&o, 1, Parent::None {}, Life::Mapped);
+        let dialog = sample(
+            &o,
+            2,
+            Parent::Resolved {
+                window: main.window,
+            },
+            Life::Mapped,
+        );
+        let mut h = WindowHistory::new(o.clone(), []);
+        h.started();
+        h.observe(&[main.clone(), dialog.clone()]).unwrap();
+        h.commit_main(main.window).unwrap();
+        assert_eq!(h.cut().unwrap().admitted.len(), 2);
+        h.seal();
+        h.observe_retirements(std::slice::from_ref(&main)).unwrap();
+        assert_eq!(h.retirement_windows(), vec![dialog.window]);
+        assert!(h.cut().unwrap().admitted.is_empty());
+        assert_eq!(h.reserved_slots.len(), 2);
+        assert!(!h.confirm_retired(dialog.window, true, false));
+        h.observe_retirements(&[]).unwrap();
+        assert_eq!(h.retirement_windows(), vec![main.window, dialog.window]);
+        assert!(!h.is_open());
+        assert!(h.confirm_retired(dialog.window, true, true));
+        assert!(h.confirm_retired(main.window, true, true));
+        assert_eq!(h.retained_entries(), 0);
+        h.started();
+        assert!(!h.is_open());
+        assert!(h.commit_main(WindowId::new(3).unwrap()).is_err());
+    }
+
+    #[test]
+    fn retirement_census_never_adopts_late_windows_or_resurrects_destroyed_ones() {
+        let o = origin();
+        let main = sample(&o, 1, Parent::None {}, Life::Mapped);
+        let mut h = WindowHistory::new(o.clone(), []);
+        h.observe(std::slice::from_ref(&main)).unwrap();
+        h.seal();
+        let late = sample(&o, 2, Parent::None {}, Life::Mapped);
+        h.observe_retirements(std::slice::from_ref(&late)).unwrap();
+        assert_eq!(h.retirement_windows(), vec![main.window]);
+        assert_eq!(h.retained_entries(), 1);
+        assert_eq!(h.observe_retirements(&[main, late]), Err("STALE"));
+        assert_eq!(h.pending_retirements(), 1);
+        assert!(h.cut().unwrap().admitted.is_empty());
+    }
+
+    #[test]
+    fn foreign_or_duplicate_retirement_census_cannot_prove_disappearance() {
+        let o = origin();
+        let main = sample(&o, 1, Parent::None {}, Life::Mapped);
+        let mut h = WindowHistory::new(o.clone(), []);
+        h.observe(std::slice::from_ref(&main)).unwrap();
+        h.seal();
+        let mut foreign = sample(&o, 2, Parent::None {}, Life::Mapped);
+        foreign.origin = None;
+        assert_eq!(h.observe_retirements(&[foreign]), Err("APP_ORIGIN_UNKNOWN"));
+        assert_eq!(h.pending_retirements(), 0);
+        let duplicate = sample(&o, 2, Parent::None {}, Life::Mapped);
+        assert_eq!(
+            h.observe_retirements(&[duplicate.clone(), duplicate]),
+            Err("APP_ORIGIN_UNKNOWN")
+        );
+        assert_eq!(h.pending_retirements(), 0);
+        h.observe_retirements(&[]).unwrap();
+        assert_eq!(h.retirement_windows(), vec![main.window]);
+    }
+
+    #[test]
+    fn invalid_metadata_does_not_prevent_separate_destroy_observation() {
+        let o = origin();
+        let main = sample(&o, 1, Parent::None {}, Life::Mapped);
+        let dialog = sample(
+            &o,
+            2,
+            Parent::Resolved {
+                window: main.window,
+            },
+            Life::Mapped,
+        );
+        let mut h = WindowHistory::new(o.clone(), []);
+        h.started();
+        h.observe(&[main.clone(), dialog.clone()]).unwrap();
+        h.commit_main(main.window).unwrap();
+        let mut invalid_main = main.clone();
+        invalid_main.app_id = Some("different-app".into());
+        assert_eq!(
+            h.observe(std::slice::from_ref(&invalid_main)),
+            Err("APP_WINDOW_UNSUPPORTED")
+        );
+        h.seal();
+        h.observe_retirements(&[invalid_main]).unwrap();
+        assert_eq!(h.retirement_windows(), vec![dialog.window]);
+        assert_eq!(h.entries[&main.window].sample.app_id, main.app_id);
+        assert!(matches!(h.entries[&main.window].role, Some(Role::Main)));
+        h.observe_retirements(&[]).unwrap();
+        assert_eq!(h.pending_retirements(), 2);
     }
 
     #[test]

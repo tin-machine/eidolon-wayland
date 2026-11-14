@@ -152,6 +152,10 @@ struct Shared {
     desktop_v3_pending: Result<Option<desktop_v3::journal::Pending>, &'static str>,
     desktop_v3_work: Option<DesktopV3Work>,
     desktop_v3_launch: Option<Arc<desktop_v3::runtime::LaunchAdmission>>,
+    // Survives an unknown remote cleanup and a new SSH connection. A recovery
+    // bridge needs the original live capture, never a reconstructed report.
+    desktop_v3_capture: Option<Arc<desktop_v3::runtime::RunCapture>>,
+    desktop_v3_no_local_allocation: Option<desktop_v3::runtime::NoLocalAllocation>,
     desktop_v3_selection: Option<desktop_v3::Selection>,
     desktop_v3_handoff: Option<desktop_v3::reclamation::ReclamationHandoff>,
     desktop_v3_io_retired: bool,
@@ -310,6 +314,8 @@ impl Controller {
                 desktop_v3_pending,
                 desktop_v3_work: None,
                 desktop_v3_launch: None,
+                desktop_v3_capture: None,
+                desktop_v3_no_local_allocation: None,
                 desktop_v3_selection: None,
                 desktop_v3_handoff: None,
                 desktop_v3_io_retired: false,
@@ -869,7 +875,7 @@ impl Controller {
 
     pub fn publish_v3_finalized(
         &self,
-        result: desktop_v3::reclamation::FinalizedReclamation,
+        result: &desktop_v3::reclamation::FinalizedReclamation,
     ) -> Status {
         let mut s = self
             .signals
@@ -895,6 +901,8 @@ impl Controller {
         }
         s.desktop_v3_pending = Ok(None);
         s.desktop_v3_finalization_pending = false;
+        s.desktop_v3_capture = None;
+        s.desktop_v3_no_local_allocation = None;
         s.report.desktop_pending = !matches!(s.desktop_pending, Ok(None));
         if let Some(snapshot) = &mut s.report.desktop_v3_transport {
             snapshot.transport.journal_pending = false;
@@ -1796,8 +1804,12 @@ async fn connection(
                         connect.cancel.clone(),
                     ));
                     let capture = admission.capture();
-                    signals.update(|s| s.desktop_v3_launch = Some(admission));
-                    let outcome = desktop_v3::runtime::serve(
+                    signals.update(|s| {
+                        s.desktop_v3_launch = Some(admission.clone());
+                        s.desktop_v3_capture = Some(capture.clone());
+                        s.desktop_v3_no_local_allocation = None;
+                    });
+                    let mut outcome = desktop_v3::runtime::serve(
                         &client,
                         &connect.router,
                         desktop_v3::runtime::Inspection { capture, files },
@@ -1837,10 +1849,15 @@ async fn connection(
                             });
                         },
                     ).await;
+                    let mut no_local_allocation = admission.seal_without_local_allocation();
+                    if let Some(handoff) = outcome.handoff.as_mut() {
+                        handoff.no_local_allocation = no_local_allocation.take();
+                    }
                     let fault = outcome.report.error;
                     signals.update(|s| {
                         s.forward_busy = false;
                         s.desktop_v3_launch = None;
+                        s.desktop_v3_no_local_allocation = no_local_allocation;
                         s.desktop_v3_selection = None;
                         s.catalog.desktop_v3 = None;
                         s.catalog.pending = false;
@@ -1860,7 +1877,13 @@ async fn connection(
                 }
                 DesktopV3Work::Recover(_recover_request) => {
                     let previous = previous_io.ok_or("DESKTOP_PREVIOUS_CONNECTION_UNPROVEN")?;
-                    let outcome = desktop_v3::recovery::recover_remote(
+                    let live_capture = signals
+                        .shared
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .desktop_v3_capture
+                        .clone();
+                    let mut outcome = desktop_v3::recovery::recover_remote(
                         &client,
                         &connect.router,
                         desktop_v3::recovery::Recovery {
@@ -1877,8 +1900,24 @@ async fn connection(
                         &connect.cancel,
                     )
                     .await;
+                    let bridged = if let (Some(handoff), Some(capture)) =
+                        (outcome.handoff.as_mut(), live_capture.as_ref())
+                    {
+                        match handoff.bind_live_recovery(previous, capture) {
+                            Ok(()) => true,
+                            Err(error) => {
+                                outcome.report.error = Some(error);
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    };
                     let fault = outcome.report.error;
                     signals.update(|s| {
+                        if bridged && let Some(handoff) = outcome.handoff.as_mut() {
+                            handoff.no_local_allocation = s.desktop_v3_no_local_allocation.take();
+                        }
                         s.forward_busy = false;
                         s.report.desktop_v3_recovery = Some(outcome.report);
                         s.desktop_v3_handoff = outcome.handoff;

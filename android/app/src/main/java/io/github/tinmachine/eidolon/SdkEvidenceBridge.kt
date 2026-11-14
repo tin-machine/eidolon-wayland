@@ -1,12 +1,9 @@
 package io.github.tinmachine.eidolon
 
 /**
- * I4's SDK ownership ledger. No Entity/Surface/Scene references are stored:
- * all identities are captured at native Create admission, never derived from
- * currentHandle, a reused Entity ID, or an Android JSON metrics ring.
- *
- * The SDK callback producer, native renderer fence and SDK deletion system
- * must supply their actual receipts. Unknown or timed-out work remains pending.
+ * Identity-only SDK ownership ledger. Reserving and sealing share one lock;
+ * callbacks and producers admitted before seal keep their cleanup obligations.
+ * No Activity, Scene, Surface, Entity or diagnostic snapshot is retained here.
  */
 internal class SdkEvidenceBridge {
     data class Lease(
@@ -33,38 +30,43 @@ internal class SdkEvidenceBridge {
         val allRetired: Boolean,
     )
 
+    private data class EntityRecord(
+        var destroyRequested: Boolean = false,
+        var deleteObservedAt: Long? = null,
+    )
+
     private data class Record(
         val lease: Lease,
         var sealed: Boolean = false,
         var registrationResolved: Boolean = false,
         var bindingRegistered: Boolean = false,
         var bindingReleased: Boolean = false,
-        var entityCreated: Boolean = false,
-        var entityDestroyRequested: Boolean = false,
-        var deleteObservedAt: Long? = null,
-        var postDeletePass: Long? = null,
         var rendererDetached: Boolean = false,
         var auxiliaryDisposed: Boolean = false,
+        var lateCleanupAfterPass: Long? = null,
+        var hadEntities: Boolean = false,
+        val entities: MutableMap<Long, EntityRecord> = linkedMapOf(),
         var callbacks: Int = 0,
         var producers: Int = 0,
         var failed: Boolean = false,
     ) {
-        fun complete(): Boolean =
+        // Used before the synchronous native retirement receipt. Requiring
+        // bindingReleased here would make native and SDK wait for each other.
+        fun readyToRelease(): Boolean =
             sealed && registrationResolved && !failed && callbacks == 0 && producers == 0 &&
-                (!bindingRegistered || bindingReleased) &&
-                (!bindingRegistered || rendererDetached) &&
-                (!entityCreated || (entityDestroyRequested &&
-                    deleteObservedAt != null && postDeletePass != null &&
-                    postDeletePass!! > deleteObservedAt!! && auxiliaryDisposed))
+                (!bindingRegistered || rendererDetached) && entities.isEmpty() &&
+                (!hadEntities || auxiliaryDisposed) && lateCleanupAfterPass == null
+        fun complete(): Boolean = readyToRelease() && (!bindingRegistered || bindingReleased)
     }
 
     private val lock = Any()
     private val records = linkedMapOf<Lease, Record>()
+    private val completed = mutableMapOf<Triple<Long, Long, Long>, Int>()
     private val sealedRuntimes = mutableSetOf<Long>()
     private val sealedScenes = mutableSetOf<Pair<Long, Long>>()
     private val scenePass = mutableMapOf<Pair<Long, Long>, Long>()
 
-    /** Reservation is linearized with scene/runtime sealing. */
+    /** Must succeed before native registration or any SDK resource effect. */
     fun reserve(id: Lease): Boolean = synchronized(lock) {
         if (id.runtime in sealedRuntimes || (id.adapter to id.scene) in sealedScenes ||
             records.containsKey(id)) false
@@ -74,10 +76,14 @@ internal class SdkEvidenceBridge {
         }
     }
 
-    /** Producer admission must be counted before asynchronous work can create SDK resources. */
+    fun isOpen(id: Lease): Boolean = synchronized(lock) {
+        records[id]?.let { !it.sealed && !it.failed && !it.bindingReleased } == true
+    }
+
+    /** Count the producer before asking the SDK for a future/factory. */
     fun beginProducer(id: Lease): Boolean = synchronized(lock) {
         val r = records[id] ?: return@synchronized false
-        if (r.sealed) return@synchronized false
+        if (r.sealed || r.failed) return@synchronized false
         r.producers = Math.addExact(r.producers, 1)
         true
     }
@@ -88,10 +94,10 @@ internal class SdkEvidenceBridge {
         r.producers--
     }
 
-    /** Enter+pending increment is atomic with seal. Caller MUST close the ticket. */
+    /** Admission and pending increment are atomic with seal. */
     fun enterCallback(id: Lease): CallbackTicket? = synchronized(lock) {
         val r = records[id] ?: return@synchronized null
-        if (r.sealed) return@synchronized null
+        if (r.sealed || r.failed) return@synchronized null
         r.callbacks = Math.addExact(r.callbacks, 1)
         CallbackTicket(id)
     }
@@ -99,7 +105,7 @@ internal class SdkEvidenceBridge {
     inner class CallbackTicket internal constructor(private val id: Lease) : AutoCloseable {
         private var closed = false
         fun valid(): Boolean = synchronized(lock) {
-            !closed && records[id]?.sealed == false
+            !closed && records[id]?.let { !it.sealed && !it.failed } == true
         }
         override fun close() = synchronized(lock) {
             if (!closed) {
@@ -119,32 +125,51 @@ internal class SdkEvidenceBridge {
         require(!it.bindingRegistered)
         it.registrationResolved = true
     }
-    fun entityCreated(id: Lease) = update(id) { it.entityCreated = true }
+    // Entity zero is reserved for the pure ledger fixture's single Entity.
+    // Production always supplies the SDK's actual ID, scoped by this lease.
+    fun entityCreated(id: Lease, entity: Long = 0) = update(id) {
+        require(!it.entities.containsKey(entity))
+        it.hadEntities = true
+        it.entities[entity] = EntityRecord()
+    }
     fun rendererDetached(id: Lease) = update(id) { it.rendererDetached = true }
-    fun destroyRequested(id: Lease) = update(id) {
-        require(it.entityCreated)
-        it.entityDestroyRequested = true
+    fun destroyRequested(id: Lease, entity: Long = 0) = update(id) {
+        requireNotNull(it.entities[entity]).destroyRequested = true
     }
-    /** Only the captured Scene's delete listener may call this. */
-    fun deleteObserved(id: Lease, scenePassNumber: Long) = synchronized(lock) {
+    fun deletionExpected(id: Lease, entity: Long): Boolean = synchronized(lock) {
+        records[id]?.entities?.get(entity)?.destroyRequested == true
+    }
+    /** Only a delete listener captured from the owning DataModel calls this. */
+    fun deleteObserved(id: Lease, scenePassNumber: Long, entity: Long = 0) = synchronized(lock) {
         val r = requireNotNull(records[id])
-        require(r.entityDestroyRequested && scenePassNumber >= 0)
+        val own = r.entities[entity] ?: return@synchronized // duplicate after collection
+        require(own.destroyRequested && scenePassNumber >= 0)
         require(scenePassNumber <= (scenePass[id.adapter to id.scene] ?: 0L))
-        r.deleteObservedAt = scenePassNumber
+        if (own.deleteObservedAt == null) own.deleteObservedAt = scenePassNumber
     }
-    /** Called by the SDK late-execute bridge; cannot be advanced by a new Scene. */
+    /** A new Scene cannot advance an old Scene's deletion fence. */
     fun sdkCleanupPass(adapter: Long, scene: Long, pass: Long) = synchronized(lock) {
         require(pass >= 0)
         val key = adapter to scene
-        val previous = scenePass[key] ?: -1L
-        require(pass > previous)
+        require(pass > (scenePass[key] ?: -1L))
         scenePass[key] = pass
         for (record in records.values) {
-            if (record.lease.adapter == adapter && record.lease.scene == scene &&
-                record.deleteObservedAt != null && pass > record.deleteObservedAt!!) {
-                record.postDeletePass = pass
+            if (record.lease.adapter == adapter && record.lease.scene == scene) {
+                record.entities.entries.removeAll { (_, entity) ->
+                    entity.deleteObservedAt?.let { pass > it } == true
+                }
+                if (record.lateCleanupAfterPass?.let { pass > it } == true) record.lateCleanupAfterPass = null
             }
         }
+    }
+    /** A late future cannot reuse a cleanup pass that preceded its disposal.
+     * Two boundaries include a complete SDK execute interval even when this
+     * request arrives after another system's work in the current frame.
+     */
+    fun lateObjectCleanupRequested(id: Lease) = synchronized(lock) {
+        val r = requireNotNull(records[id])
+        val after = Math.addExact(scenePass[id.adapter to id.scene] ?: 0L, 1L)
+        r.lateCleanupAfterPass = maxOf(r.lateCleanupAfterPass ?: 0L, after)
     }
     fun auxiliaryDisposed(id: Lease) = update(id) { it.auxiliaryDisposed = true }
     fun nativeBindingReleased(id: Lease) = update(id) {
@@ -152,6 +177,20 @@ internal class SdkEvidenceBridge {
         it.bindingReleased = true
     }
     fun failed(id: Lease) = update(id) { it.failed = true }
+    fun readyToRelease(id: Lease): Boolean = synchronized(lock) { records[id]?.readyToRelease() == true }
+    fun complete(id: Lease): Boolean = synchronized(lock) { records[id]?.complete() == true }
+
+    /** Called only after this exact native retirement receipt was accepted.
+     * Native owns the Create anti-replay barrier; pending obligations never GC.
+     */
+    fun collectCompleted(id: Lease): Boolean = synchronized(lock) {
+        val record = records[id] ?: return@synchronized false
+        if (!record.complete()) return@synchronized false
+        val key = Triple(id.runtime, id.adapter, id.scene)
+        completed[key] = Math.addExact(completed[key] ?: 0, 1)
+        records.remove(id)
+        true
+    }
 
     fun sealScene(adapter: Long, scene: Long) = synchronized(lock) {
         sealedScenes.add(adapter to scene)
@@ -168,22 +207,21 @@ internal class SdkEvidenceBridge {
         block(requireNotNull(records[id]))
     }
 
-    /**
-     * A zero-record sealed scope can be complete, but absence of a scope is
-     * not a receipt. The caller must hold the returned ticket/capture.
-     */
+    /** Empty is valid only for a sealed scope whose every producer reserved. */
     fun runtimeProgress(runtime: Long): Progress = synchronized(lock) {
         val own = records.values.filter { it.lease.runtime == runtime }
-        progress(own, runtime in sealedRuntimes)
+        progress(own, runtime in sealedRuntimes, completed.filterKeys { it.first == runtime }.values.sum())
     }
     fun sceneProgress(adapter: Long, scene: Long): Progress = synchronized(lock) {
         val own = records.values.filter { it.lease.adapter == adapter && it.lease.scene == scene }
-        progress(own, (adapter to scene) in sealedScenes)
+        progress(own, (adapter to scene) in sealedScenes,
+            completed.filterKeys { it.second == adapter && it.third == scene }.values.sum())
     }
-    private fun progress(own: List<Record>, sealed: Boolean): Progress {
-        val completed = own.count { it.complete() }
+    private fun progress(own: List<Record>, sealed: Boolean, collected: Int): Progress {
+        val done = Math.addExact(collected, own.count { it.complete() })
+        val issued = Math.addExact(collected, own.size)
         val failed = own.count { it.failed }
-        return Progress(own.size, completed, own.sumOf { it.callbacks + it.producers },
-            sealed, failed, sealed && failed == 0 && completed == own.size)
+        return Progress(issued, done, own.sumOf { it.callbacks + it.producers },
+            sealed, failed, sealed && failed == 0 && done == issued)
     }
 }

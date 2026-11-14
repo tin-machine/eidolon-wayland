@@ -67,6 +67,9 @@ pub struct RemoteReport {
     pub remote_cleaned: bool,
     pub receipt_written: bool,
     pub terminal_event: bool,
+    /// Present only for a validated Stopped event, never synthesized from a
+    /// channel close, Pending failure, timeout or diagnostic reason string.
+    pub stop_reason: Option<StopReason>,
     pub eof: bool,
     pub exit_status: Option<u32>,
     pub exit_signal: bool,
@@ -86,6 +89,7 @@ impl Default for RemoteReport {
             remote_cleaned: false,
             receipt_written: false,
             terminal_event: false,
+            stop_reason: None,
             eof: false,
             exit_status: None,
             exit_signal: false,
@@ -357,6 +361,7 @@ impl Owner {
                 receipt_written,
             } => {
                 self.report.terminal_event = true;
+                self.report.stop_reason = Some(reason);
                 self.report.process_complete = process_complete;
                 self.report.pipes_eof = pipes_eof;
                 self.report.remote_cleaned = remote_cleaned;

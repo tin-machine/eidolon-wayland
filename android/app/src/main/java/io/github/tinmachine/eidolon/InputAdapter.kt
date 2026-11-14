@@ -16,7 +16,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** SDKから小DTOだけを渡す。描画済み製品target以外は入力を消費しない。 */
-class InputAdapter(target: JSONObject, private val editSource: (Entity,Int)->Unit = { _, _ -> }) : InputListener {
+class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=null, private val editSource: (Entity,Int)->Unit = { _, _ -> }) : InputListener {
     @Volatile private var suppressed=false
     fun setSuppressed(value: Boolean) { if(suppressed!=value) {suppressed=value;capture=null;synchronized(inputLock) {clearLocal()} } }
     private val ui = Handler(Looper.getMainLooper())
@@ -87,7 +87,7 @@ class InputAdapter(target: JSONObject, private val editSource: (Entity,Int)->Uni
     override fun onInput(receiver: SceneObject, hitInfo: HitInfo, sourceOfInput: Entity,
         changed: Int, state: Int, downTime: Long): Boolean {
         if (closed) return false
-        if(suppressed || NativeSessionHost.isLayoutEditing()) {ui.post { if(!closed) editSource(sourceOfInput,state) };return false}
+        if(suppressed || NativeSessionHost.isLayoutEditing()) {post { if(!closed) editSource(sourceOfInput,state) };return false}
         val probe = capture
         val target = targetJson
         if (probe!=null) {
@@ -116,7 +116,7 @@ class InputAdapter(target: JSONObject, private val editSource: (Entity,Int)->Uni
         return consumed
     }
     override fun stopInput(receiver: SceneObject, sourceOfInput: Entity, downTime: Long) {
-        if(suppressed || NativeSessionHost.isLayoutEditing()) {ui.post { if(!closed) editSource(sourceOfInput,0) };return}
+        if(suppressed || NativeSessionHost.isLayoutEditing()) {post { if(!closed) editSource(sourceOfInput,0) };return}
         val probe = capture
         val target = targetJson
         if (probe!=null) {
@@ -146,8 +146,9 @@ class InputAdapter(target: JSONObject, private val editSource: (Entity,Int)->Uni
         val ticket=NativeSessionHost.inputTarget(targetJson) ?: return
         NativeSessionHost.sendPointer(ticket,sourceOfInput.id,uv(receiver,hitInfo),JSONObject().put("type","move"))
     }
+    private fun post(action:()->Unit) {sdkScope?.post(action) ?: ui.post {action()} }
     private fun publish(probe: Capture, value: JSONObject) {
         // 生の物理入力は採取しない。debugの専用source Entityだけを限定採取する。
-        ui.post { if (capture === probe) probe.receive(value.put("delivery_thread", Process.myTid())) }
+        post { if (capture === probe) probe.receive(value.put("delivery_thread", Process.myTid())) }
     }
 }

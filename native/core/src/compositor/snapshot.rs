@@ -892,6 +892,32 @@ impl ProtocolState {
     }
     /// v3-only typed facts. Never reinterpret legacy Option<WindowId>::None
     /// as an explicit root when the xdg role had an unresolved former parent.
+    pub(crate) fn v3_owned_samples(
+        &self,
+        origin: &eidolon_model::linux_desktop_v3::presentation::NativeOrigin,
+    ) -> Result<Vec<crate::linux_desktop_v3::WindowSample>, &'static str> {
+        if self.verified_origin.as_ref() != Some(origin) {
+            return Err("APP_ORIGIN_UNKNOWN");
+        }
+        Ok(self.v3_samples())
+    }
+
+    /// Retires only this logical window's protocol-owned references. The
+    /// renderer has a separate fence; shared wl_surface/SHM resources remain
+    /// obligations of the origin until the Session's final local close.
+    pub(crate) fn v3_window_retired(
+        &self,
+        origin: &eidolon_model::linux_desktop_v3::presentation::NativeOrigin,
+        window: WindowId,
+    ) -> bool {
+        self.verified_origin.as_ref() == Some(origin)
+            && !self.toplevels.values().any(|record| record.id == window)
+            && !self
+                .surface_meta
+                .values()
+                .any(|meta| meta.window == Some(window))
+    }
+
     pub fn v3_samples(&self) -> Vec<crate::linux_desktop_v3::WindowSample> {
         self.toplevels
             .iter()

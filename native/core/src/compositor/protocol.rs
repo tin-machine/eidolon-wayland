@@ -1156,6 +1156,19 @@ mod v3_accept_tests {
     }
 
     fn xdg_lifecycle_case() {
+        xdg_lifecycle(false);
+    }
+
+    #[test]
+    fn sealed_v3_owner_keeps_observing_real_xdg_destroy() {
+        v3_fixture_test_support::run_serially(sealed_xdg_lifecycle_case);
+    }
+
+    fn sealed_xdg_lifecycle_case() {
+        xdg_lifecycle(true);
+    }
+
+    fn xdg_lifecycle(seal_before_destroy: bool) {
         use super::v3_fixture_test_support::FixtureWorker;
         use crate::linux_desktop_v3::WindowHistory;
         use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
@@ -1194,13 +1207,14 @@ mod v3_accept_tests {
         let mut main = None;
         let mut mapped = false;
         let mut destroyed = false;
+        let mut sealed = false;
         let mut completed = None;
         let started = Instant::now();
 
         while started.elapsed() < Duration::from_secs(24) {
             display.dispatch_clients(&mut protocol).unwrap();
             protocol.finish_dispatch(&display.handle());
-            let samples = protocol.v3_samples();
+            let samples = protocol.v3_owned_samples(&origin).unwrap();
             assert!(
                 samples
                     .iter()
@@ -1208,11 +1222,22 @@ mod v3_accept_tests {
             );
 
             if !destroyed {
-                let observed = history.observe(&samples);
+                let observed = if sealed {
+                    history.observe_retirements(&samples)
+                } else {
+                    history.observe(&samples)
+                };
                 if main.is_some() && samples.is_empty() {
                     // The actual xdg_toplevel destroy seals the adopted main;
                     // neither a replacement root nor input is admitted.
-                    assert_eq!(observed, Err("APP_WINDOW_UNSUPPORTED"));
+                    assert_eq!(
+                        observed,
+                        if sealed {
+                            Ok(())
+                        } else {
+                            Err("APP_WINDOW_UNSUPPORTED")
+                        }
+                    );
                     destroyed = true;
                     assert!(!history.is_open());
                 } else {
@@ -1235,6 +1260,12 @@ mod v3_accept_tests {
                             .windows
                             .iter()
                             .any(|window| window.window == id && window.life == Life::Mapped);
+                    }
+                    if seal_before_destroy && mapped && !sealed {
+                        history.seal();
+                        protocol.seal_new_roles();
+                        sealed = true;
+                        assert!(history.cut().unwrap().admitted.is_empty());
                     }
                 }
             }
@@ -1271,14 +1302,18 @@ mod v3_accept_tests {
         if !destroyed {
             display.dispatch_clients(&mut protocol).unwrap();
             protocol.finish_dispatch(&display.handle());
-            assert_eq!(
-                history.observe(&protocol.v3_samples()),
-                Err("APP_WINDOW_UNSUPPORTED")
-            );
+            let samples = protocol.v3_owned_samples(&origin).unwrap();
+            if sealed {
+                history.observe_retirements(&samples).unwrap();
+            } else {
+                assert_eq!(history.observe(&samples), Err("APP_WINDOW_UNSUPPORTED"));
+            }
             destroyed = true;
         }
         assert!(destroyed);
         assert_eq!(history.pending_retirements(), 1);
+        assert_eq!(sealed, seal_before_destroy);
+        assert!(protocol.v3_window_retired(&origin, main.unwrap()));
         // Real Destroy is not evidence of SDK retirement, even when the
         // compositor has removed the window record.
         assert!(!history.confirm_retired(main.unwrap(), true, false));

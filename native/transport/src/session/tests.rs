@@ -6,6 +6,112 @@ use russh::{
 use tokio::net::TcpListener;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finalized_receipt_survives_a_transient_publication_read_failure() {
+    use crate::linux_desktop::v3::{
+        Binding, Context, Pins,
+        journal::{Cleanup, Journal},
+        reclamation::{DeferredReclamation, finalize_reclaimed},
+    };
+    use eidolon_model::linux_desktop_v3::report::LocalRetirement;
+    use std::os::unix::fs::PermissionsExt;
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
+    ))
+    .unwrap();
+    let raw = |id| {
+        fixture["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap()["raw"]
+            .as_str()
+            .unwrap()
+            .as_bytes()
+    };
+    let binding = Binding::from_captured(
+        Context::parse(raw("context")).unwrap(),
+        Pins::parse(raw("pins")).unwrap(),
+    )
+    .unwrap();
+    let root = JournalRoot::new();
+    let mut journal = Journal::reserve(&root.0, &binding).unwrap();
+    journal
+        .prepared("12345678-1234-4234-8234-123456789abc")
+        .unwrap();
+    journal
+        .finish(Cleanup {
+            process_complete: true,
+            pipes_eof: true,
+            remote_cleaned: true,
+            receipt_written: true,
+            channel_complete: true,
+            forward_retired: true,
+            router_drained: true,
+            boot_changed: false,
+        })
+        .unwrap();
+    let mut handoff = DeferredReclamation::from_complete(journal, &binding, 7).unwrap();
+    struct Gate(Context);
+    impl crate::linux_desktop::v3::reclamation::LocalRetirementGate for Gate {
+        fn verify(
+            &self,
+            context: &Context,
+            generation: u64,
+        ) -> Result<LocalRetirement, &'static str> {
+            if context != &self.0 || generation != 7 {
+                return Err("DESKTOP_V3_CLEANUP_SCOPE_MISMATCH");
+            }
+            Ok(LocalRetirement {
+                waypipe_stopped: true,
+                listener_retired: true,
+                windows_retired: true,
+                sdk_bindings_released: true,
+                sdk_entities_disposed: true,
+            })
+        }
+    }
+    let local = handoff
+        .authority
+        .confirm(&Gate(binding.context().clone()))
+        .unwrap();
+    let controller = Controller::start_with_root(Some(root.0.clone())).unwrap();
+    controller.signals.update(|s| {
+        s.report.session = Some(SessionId::new(7).unwrap());
+        s.desktop_v3_io_retired = true;
+        s.desktop_v3_finalization_pending = true;
+    });
+    let receipt = finalize_reclaimed(&mut handoff.deferred, &local).unwrap();
+    let directory = root.0.join("linux-desktop-v3-state");
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(controller.publish_v3_finalized(&receipt), Status::NotReady);
+    assert!(
+        controller
+            .signals
+            .shared
+            .lock()
+            .unwrap()
+            .desktop_v3_finalization_pending
+    );
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(controller.publish_v3_finalized(&receipt), Status::Accepted);
+    assert!(
+        !controller
+            .signals
+            .shared
+            .lock()
+            .unwrap()
+            .desktop_v3_finalization_pending
+    );
+    assert!(
+        crate::linux_desktop::v3::journal::pending(&root.0)
+            .unwrap()
+            .is_none()
+    );
+    stop(&controller).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gtk_mailbox_captures_case_without_upgrading_probe_ready_or_normal_routes() {
     use sha2::{Digest, Sha256};
     let controller = Controller::start().unwrap();

@@ -21,6 +21,7 @@ const RESERVED: u8 = 1;
 const QUEUED: u8 = 2;
 const START_ATTEMPTED: u8 = 3;
 const SEALED: u8 = 4;
+const SEALED_WITHOUT_ALLOCATION: u8 = 5;
 
 /// Private authenticated state, not a UI-generated capability. There is no
 /// Clone/Deserialize implementation for a LaunchPermit or its owner.
@@ -64,7 +65,41 @@ struct Gate {
 }
 impl Gate {
     fn seal(&self) {
-        self.state.store(SEALED, Ordering::Release);
+        // Preserve the distinction between never handing out a local permit
+        // and having possibly allocated resources before a failed Start.
+        let _ = self
+            .state
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
+                Some(if matches!(old, OPEN | SEALED_WITHOUT_ALLOCATION) {
+                    SEALED_WITHOUT_ALLOCATION
+                } else {
+                    SEALED
+                })
+            });
+    }
+}
+
+/// Issued only by the live launch gate's atomic OPEN -> sealed transition.
+/// A journal stage, missing Session or a recovered empty runtime cannot mint it.
+pub struct NoLocalAllocation {
+    capture: Arc<RunCapture>,
+}
+impl super::reclamation::LocalRetirementGate for NoLocalAllocation {
+    fn verify(
+        &self,
+        context: &super::Context,
+        generation: u64,
+    ) -> Result<eidolon_model::linux_desktop_v3::report::LocalRetirement, &'static str> {
+        if context != self.capture.binding.context() || generation != self.capture.generation {
+            return Err("DESKTOP_V3_CLEANUP_SCOPE_MISMATCH");
+        }
+        Ok(eidolon_model::linux_desktop_v3::report::LocalRetirement {
+            waypipe_stopped: true,
+            listener_retired: true,
+            windows_retired: true,
+            sdk_bindings_released: true,
+            sdk_entities_disposed: true,
+        })
     }
 }
 
@@ -226,6 +261,14 @@ impl LaunchAdmission {
     pub fn seal(&self) {
         self.gate.seal();
     }
+    pub(crate) fn seal_without_local_allocation(&self) -> Option<NoLocalAllocation> {
+        self.gate.seal();
+        (self.gate.state.load(Ordering::Acquire) == SEALED_WITHOUT_ALLOCATION).then(|| {
+            NoLocalAllocation {
+                capture: self.capture.clone(),
+            }
+        })
+    }
 }
 
 mod serve;
@@ -263,6 +306,49 @@ mod tests {
                 selection,
             )
             .unwrap()
+    }
+    #[test]
+    fn unreserved_seal_issues_capture_bound_no_allocation_but_prevents_later_reserve() {
+        use super::super::reclamation::LocalRetirementGate;
+        let (admission, _rx, _cancel, selection) = setup();
+        let proof = admission.seal_without_local_allocation().unwrap();
+        assert!(
+            proof
+                .verify(
+                    admission.capture.binding.context(),
+                    admission.capture.generation
+                )
+                .unwrap()
+                .complete()
+        );
+        assert!(
+            proof
+                .verify(
+                    admission.capture.binding.context(),
+                    admission.capture.generation + 1
+                )
+                .is_err()
+        );
+        assert!(
+            admission
+                .reserve(
+                    RuntimeHandle::new(9).unwrap(),
+                    admission.capture.binding.session(),
+                    CommandSeq::new(9).unwrap(),
+                    &selection
+                )
+                .is_err()
+        );
+        assert!(!admission.gate_open());
+    }
+
+    #[test]
+    fn reserved_or_dropped_permit_never_becomes_no_allocation_evidence() {
+        let (admission, _rx, _cancel, selection) = setup();
+        let permit = reserve(&admission, &selection);
+        assert!(admission.seal_without_local_allocation().is_none());
+        drop(permit);
+        assert!(admission.seal_without_local_allocation().is_none());
     }
     #[test]
     fn reservation_precedes_socket_and_dropped_permit_cancels_owner() {

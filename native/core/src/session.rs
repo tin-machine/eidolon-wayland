@@ -8,7 +8,8 @@ use crate::{
 use eidolon_model::{
     commands::AppMode,
     ids::{CommandSeq, SessionId, WindowId},
-    linux_desktop_v3::presentation::NativeOrigin,
+    linux_desktop_v3::{Context, presentation::NativeOrigin},
+    surface::TargetKey,
     window::{LogicalSize, WindowLife},
 };
 use serde::Serialize;
@@ -90,6 +91,10 @@ pub struct Session {
     desktop_started: bool,
     v3_origin: Option<NativeOrigin>,
     v3_history: Option<WindowHistory>,
+    /// Captured before local allocation and retained after partial failure or
+    /// local close. Reports/JSON cannot supply a replacement cleanup owner.
+    v3_capture: Option<(Context, u64)>,
+    v3_local_reclamation_observed: bool,
     /// Current admission AND current SDK target; cleared on every revocation.
     v3_input_allowed: BTreeSet<WindowId>,
 }
@@ -121,41 +126,17 @@ impl Session {
     ) -> Self {
         let origin = permit.origin().clone();
         let nonce = permit.local_nonce().as_str();
+        let mut current =
+            Self::unstarted(session, nonce, AppMode::LinuxDesktop, options.virtual_clock);
+        current.v3_capture = Some((permit.captured_context().clone(), permit.generation()));
+        current.v3_history = Some(WindowHistory::new(origin.clone(), []));
+        current.v3_origin = Some(origin.clone());
         if origin.session() != session {
-            return Self::failed_start(
-                session,
-                nonce,
-                AppMode::LinuxDesktop,
-                options.virtual_clock,
-                "APP_ORIGIN_UNKNOWN",
-            );
+            current.report.startup_failed = true;
+            current.fail("APP_ORIGIN_UNKNOWN");
+            return current;
         }
-        let mut current = Self::start(
-            session,
-            files,
-            executable,
-            nonce,
-            AppMode::LinuxDesktop,
-            options,
-        );
-        // No client can be accepted until the owner's first dispatch, so the
-        // immutable provenance is installed before dispatch is possible.
-        if !current.report.startup_failed {
-            current.v3_history = Some(WindowHistory::new(origin.clone(), []));
-            current.v3_origin = Some(origin.clone());
-            // The native I2 permit determines the *only* origin for this
-            // display before any listener accept, even when two candidates
-            // carry the same numeric SessionId.
-            let binding = current
-                .protocol
-                .as_mut()
-                .ok_or("NOT_READY")
-                .and_then(|protocol| protocol.bind_v3_origin(&origin));
-            if let Err(error) = binding {
-                current.fail(error);
-            }
-        }
-        current
+        Self::prepare(current, files, executable, options, |_| {})
     }
 
     fn start_with_setup(
@@ -167,20 +148,31 @@ impl Session {
         options: Options,
         before_bind: impl FnOnce(&Path),
     ) -> Self {
+        let current = Self::unstarted(session, nonce, mode, options.virtual_clock);
+        Self::prepare(current, files, executable, options, before_bind)
+    }
+
+    fn prepare(
+        mut current: Self,
+        files: &Path,
+        executable: &Path,
+        options: Options,
+        before_bind: impl FnOnce(&Path),
+    ) -> Self {
         let Options {
             virtual_clock,
             keyboard_layout,
             pixels,
         } = options;
-        let mut current = Self::unstarted(session, nonce, mode, virtual_clock);
         let setup = (|| {
             if virtual_clock && !cfg!(debug_assertions) {
                 return Err("NOT_READY");
             }
-            let directory = RuntimeDirectory::create_tracked(files, nonce).map_err(|failure| {
-                current.startup_allocation_absent = failure.allocation_absent;
-                failure.error
-            })?;
+            let directory =
+                RuntimeDirectory::create_tracked(files, current.nonce()).map_err(|failure| {
+                    current.startup_allocation_absent = failure.allocation_absent;
+                    failure.error
+                })?;
             current.startup_allocation_absent = false;
             current.directory = Some(directory);
             let path = &current.directory.as_ref().unwrap().path;
@@ -196,9 +188,14 @@ impl Session {
             current.display = Some(Display::<ProtocolState>::new().map_err(|_| "DISPLAY_CREATE")?);
             let mut protocol = ProtocolState::new_with_budget(
                 &current.display.as_ref().unwrap().handle(),
-                session,
+                current.session(),
                 pixels,
             );
+            // Bind before a worker or first dispatch can accept a client.
+            // The retained capture already exists if any setup step fails.
+            if let Some(origin) = current.v3_origin.as_ref() {
+                protocol.bind_v3_origin(origin)?;
+            }
             if !virtual_clock {
                 protocol.configure_keyboard(keyboard_layout)?;
             }
@@ -258,6 +255,8 @@ impl Session {
             desktop_started: false,
             v3_origin: None,
             v3_history: None,
+            v3_capture: None,
+            v3_local_reclamation_observed: false,
             v3_input_allowed: BTreeSet::new(),
         }
     }
@@ -308,6 +307,84 @@ impl Session {
 
     pub fn v3_origin(&self) -> Option<&NativeOrigin> {
         self.v3_origin.as_ref()
+    }
+
+    pub(crate) fn v3_capture(&self) -> Option<(&Context, u64)> {
+        self.v3_capture
+            .as_ref()
+            .map(|(context, generation)| (context, *generation))
+    }
+
+    pub(crate) fn v3_pending_retirements(&self) -> Vec<WindowId> {
+        self.v3_history
+            .as_ref()
+            .map(WindowHistory::retirement_windows)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn v3_retained_windows(&self) -> usize {
+        self.v3_history
+            .as_ref()
+            .map_or(0, WindowHistory::retained_entries)
+    }
+
+    /// The successful local-close transition mints this fact. A missing
+    /// protocol, empty snapshot or unstarted/default report cannot mint it.
+    pub(crate) fn v3_local_retired(&self) -> bool {
+        self.v3_local_reclamation_observed
+            && self.closed()
+            && self.v3_capture.is_some()
+            && self.listener.is_none()
+            && self.display.is_none()
+            && self.protocol.is_none()
+            && self.directory.is_none()
+            && self.report.directory_cleaned
+            && self.report.local.workers == 0
+            && self.report.local.owned_groups == 0
+            && self.report.clients == 0
+            && self.report.objects == 0
+            && self.report.surfaces == 0
+            && self.report.windows.is_empty()
+            && self.report.pixel_bytes == 0
+            && self.report.pool_bytes == 0
+            && self.report.pool_count == 0
+            && self.report.memfd_fds_after == Some(0)
+            && self.report.memfd_maps_after == Some(0)
+            && self
+                .v3_origin
+                .as_ref()
+                .is_some_and(|origin| origin.session() == self.session())
+    }
+
+    pub(crate) fn v3_window_retired(&self, window: WindowId) -> bool {
+        let Some(origin) = self.v3_origin.as_ref() else {
+            return false;
+        };
+        self.v3_history
+            .as_ref()
+            .is_some_and(|history| history.retirement_pending(window))
+            && (self.v3_local_retired()
+                || self
+                    .protocol
+                    .as_ref()
+                    .is_some_and(|protocol| protocol.v3_window_retired(origin, window)))
+    }
+
+    /// Only the core retirement owner can mint this proof after observing
+    /// every renderer/SDK generation of the window. Local ownership is
+    /// rechecked here before releasing the I3 tombstone and slot reservation.
+    pub(crate) fn v3_confirm_retired(
+        &mut self,
+        proof: &crate::v3_retirement::WindowRetirementProof,
+    ) -> bool {
+        if self.v3_origin.as_ref() != Some(proof.origin())
+            || !self.v3_window_retired(proof.window())
+        {
+            return false;
+        }
+        self.v3_history
+            .as_mut()
+            .is_some_and(|history| history.confirm_retired(proof.window(), true, true))
     }
 
     pub fn v3_transport_started(&mut self, origin: &NativeOrigin) -> Result<(), &'static str> {
@@ -559,7 +636,12 @@ impl Session {
             .pointer(window, pointer, width, height)
     }
     /// normal modeだけが実際のpresented snapshotに応じてclientを進める。
-    pub fn render_tick(&mut self, gl: &eidolon_render::Controller, now: Duration) {
+    pub fn render_tick(
+        &mut self,
+        gl: &eidolon_render::Controller,
+        now: Duration,
+        current_targets: Option<&[TargetKey]>,
+    ) {
         if self.virtual_clock || gl.is_stopping() {
             return;
         }
@@ -618,14 +700,14 @@ impl Session {
             }
         }
         let render = gl.snapshot();
-        let producers = render
-            .targets
+        // V3 may retain old Scene/Surface targets until their independent
+        // retirement fences complete. Only the native current Create tuples
+        // can supply producer dimensions or Wayland presentation evidence.
+        // Submission above deliberately remains available before Create ACK.
+        let current =
+            current_render_targets(&render, session, self.v3_origin.is_some(), current_targets);
+        let producers = current
             .iter()
-            .filter(|t| {
-                t.role == eidolon_render::RenderMode::Windows
-                    && t.key.session == session
-                    && t.frames > 0
-            })
             .filter_map(|t| {
                 // producerは実Surfaceの大きさ。app logical_size/resize configureと混同しない。
                 eidolon_model::window::BufferSizePx::new(t.gpu.width as u32, t.gpu.height as u32)
@@ -636,13 +718,10 @@ impl Session {
         state.observe_producers(&producers);
         for window in &windows {
             let presented = self.report.visible_windows.contains(&window.window)
-                && render.targets.iter().any(|target| {
-                    target.role == eidolon_render::RenderMode::Windows
-                        && target.key.session == session
-                        && target.key.window == window.window
+                && current.iter().any(|target| {
+                    target.key.window == window.window
                         && target.content_frame == window.frame
                         && !target.presentation_paused
-                        && target.frames > 0
                 });
             state.frame_callbacks(
                 window.window,
@@ -907,6 +986,7 @@ impl Session {
         }
         self.report.input = Default::default();
         self.report.startup_cleanup_complete = self.report.startup_failed && self.local.is_none();
+        self.v3_local_reclamation_observed = self.v3_origin.is_some();
         self.report.state = "stopped";
     }
     fn dispatch(&mut self) -> Result<(), &'static str> {
@@ -1008,27 +1088,46 @@ impl Session {
             return;
         };
         self.report.windows = state.windows();
-        if self.v3_origin.is_some() && self.closing {
-            self.report.gui_windows.clear();
-            self.report.remote_gui_verified = false;
-            self.v3_input_allowed.clear();
-        } else if self.v3_origin.is_some() {
+        if self.v3_origin.is_some() {
             let v3_result = self
                 .v3_history
                 .as_mut()
                 .ok_or("NOT_READY")
                 .and_then(|history| {
-                    history
-                        .observe(&state.v3_samples())
-                        .and_then(|()| history.cut())
+                    // This is a complete cut from the retained display
+                    // owner. Missing/foreign protocol state is never an
+                    // empty-window retirement receipt.
+                    let samples = state.v3_owned_samples(history.origin())?;
+                    if self.closing || !history.is_open() {
+                        history.seal();
+                        history.observe_retirements(&samples)?;
+                        return Ok(None);
+                    }
+                    match history.observe(&samples).and_then(|()| history.cut()) {
+                        Ok(cut) => Ok(Some(cut)),
+                        Err(error) => {
+                            history.seal();
+                            // Admission can fail before its disappearance
+                            // reconciliation (metadata/role/capacity). Still
+                            // record owned destroy facts for later cleanup.
+                            let _ = history.observe_retirements(&samples);
+                            Err(error)
+                        }
+                    }
                 });
             match v3_result {
-                Ok(cut) => {
+                Ok(Some(cut)) => {
                     self.report.gui_windows = cut.admitted.into_iter().collect();
                     self.report.remote_gui_verified = !self.report.gui_windows.is_empty();
                 }
+                Ok(None) => {
+                    self.report.gui_windows.clear();
+                    self.report.remote_gui_verified = false;
+                    self.v3_input_allowed.clear();
+                }
                 Err(error) => {
                     self.report.gui_windows.clear();
+                    self.report.remote_gui_verified = false;
                     self.v3_input_allowed.clear();
                     // This function still borrows the compositor state for
                     // stats; record the fatal outcome without re-borrowing self.
@@ -1116,6 +1215,25 @@ impl Drop for Session {
         drop(self.protocol.take());
     }
 }
+
+fn current_render_targets<'a>(
+    render: &'a eidolon_render::Snapshot,
+    session: SessionId,
+    v3: bool,
+    current_targets: Option<&[TargetKey]>,
+) -> Vec<&'a eidolon_render::TargetReport> {
+    render
+        .targets
+        .iter()
+        .filter(|target| {
+            target.role == eidolon_render::RenderMode::Windows
+                && target.key.session == session
+                && target.frames > 0
+                && (!v3 || current_targets.is_some_and(|keys| keys.contains(&target.key)))
+        })
+        .collect()
+}
+
 fn named_memfds() -> Result<(usize, usize), &'static str> {
     fn owned(text: &str) -> bool {
         text.contains("memfd:waypipe")
@@ -1148,6 +1266,217 @@ mod tests {
         },
         thread,
     };
+
+    fn rendered_target(
+        key: TargetKey,
+        content_frame: Option<eidolon_model::ids::FrameSeq>,
+        width: i32,
+    ) -> eidolon_render::TargetReport {
+        eidolon_render::TargetReport {
+            key,
+            frames: 100,
+            presentation_paused: false,
+            player_clock_ms: None,
+            content_frame,
+            role: eidolon_render::RenderMode::Windows,
+            canvas: None,
+            content_size: None,
+            decoration_frames: 0,
+            io_draw: None,
+            frame_timing: Default::default(),
+            gpu: eidolon_render::GpuInfo {
+                width,
+                height: 480,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn v3_render_observation_rejects_old_scene_and_generation_even_for_the_same_frame() {
+        let key = TargetKey::from_raw(7, 11, 3, 5).unwrap();
+        let old_scene = TargetKey::from_raw(7, 11, 2, 4).unwrap();
+        let old_generation = TargetKey::from_raw(7, 11, 3, 4).unwrap();
+        let frame = eidolon_model::ids::FrameSeq::new(1).unwrap();
+        let mut render = eidolon_render::Snapshot {
+            targets: vec![
+                rendered_target(old_scene, Some(frame), 320),
+                rendered_target(old_generation, Some(frame), 480),
+                rendered_target(key, None, 640),
+            ],
+            ..Default::default()
+        };
+        let current_keys = [key];
+        let current = current_render_targets(&render, key.session, true, Some(&current_keys));
+        assert_eq!(
+            current
+                .iter()
+                .map(|target| target.gpu.width)
+                .collect::<Vec<_>>(),
+            vec![640],
+            "a retired producer cannot override the current Surface dimensions"
+        );
+        assert!(
+            !current
+                .iter()
+                .any(|target| target.content_frame == Some(frame)),
+            "a previous target's copy of the same frame cannot release callbacks"
+        );
+        render.targets[2].content_frame = Some(frame);
+        let current = current_render_targets(&render, key.session, true, Some(&current_keys));
+        assert!(
+            current
+                .iter()
+                .any(|target| target.content_frame == Some(frame))
+        );
+    }
+
+    #[test]
+    fn v3_missing_current_create_does_not_fall_back_to_legacy_render_evidence() {
+        let key = TargetKey::from_raw(7, 11, 3, 5).unwrap();
+        let render = eidolon_render::Snapshot {
+            targets: vec![rendered_target(
+                key,
+                Some(eidolon_model::ids::FrameSeq::new(1).unwrap()),
+                640,
+            )],
+            ..Default::default()
+        };
+        assert!(current_render_targets(&render, key.session, true, None).is_empty());
+        assert!(current_render_targets(&render, key.session, true, Some(&[])).is_empty());
+        assert_eq!(
+            current_render_targets(&render, key.session, false, None).len(),
+            1
+        );
+    }
+
+    // Fixture-only native capture. Product construction accepts LaunchPermit
+    // and records the same immutable fields before entering prepare().
+    fn captured_v3_session() -> Session {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
+        ))
+        .unwrap();
+        let raw = |id: &str| {
+            fixture["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|record| record["id"] == id)
+                .unwrap()["raw"]
+                .as_str()
+                .unwrap()
+        };
+        let origin = NativeOrigin::parse(raw("origin").as_bytes()).unwrap();
+        let context = Context::parse(raw("context").as_bytes()).unwrap();
+        let mut session = Session::unstarted(
+            origin.session(),
+            context.nonce().as_str(),
+            AppMode::LinuxDesktop,
+            true,
+        );
+        session.v3_capture = Some((context, 42));
+        session.v3_history = Some(WindowHistory::new(origin.clone(), []));
+        session.v3_origin = Some(origin);
+        session
+    }
+
+    fn record_v3_main(session: &mut Session) -> WindowId {
+        use eidolon_model::linux_desktop_v3::presentation::{Life, Parent};
+        let window = WindowId::new(1).unwrap();
+        let sample = crate::linux_desktop_v3::WindowSample {
+            origin: session.v3_origin.clone(),
+            window,
+            app_id: Some("mousepad".into()),
+            parent: Parent::None {},
+            life: Life::Mapped,
+        };
+        let history = session.v3_history.as_mut().unwrap();
+        history.started();
+        history.observe(&[sample]).unwrap();
+        history.commit_main(window).unwrap();
+        session.report.gui_windows = history.cut().unwrap().admitted.into_iter().collect();
+        session.v3_input_allowed.insert(window);
+        window
+    }
+
+    #[test]
+    fn closing_refresh_collects_destroyed_windows_without_reopening_input() {
+        let mut session = captured_v3_session();
+        let window = record_v3_main(&mut session);
+        let display = Display::<ProtocolState>::new().unwrap();
+        let mut protocol = ProtocolState::new(&display.handle(), session.session());
+        protocol
+            .bind_v3_origin(session.v3_origin().unwrap())
+            .unwrap();
+        session.display = Some(display);
+        session.protocol = Some(protocol);
+        session.closing = true;
+        session.refresh_stats();
+        assert_eq!(session.v3_pending_retirements(), vec![window]);
+        assert!(session.report.gui_windows.is_empty());
+        assert!(session.v3_input_allowed.is_empty());
+        assert!(!session.v3_history.as_ref().unwrap().is_open());
+        assert!(session.v3_window_retired(window));
+        assert!(!session.v3_local_retired());
+        assert_eq!(session.v3_retained_windows(), 1);
+    }
+
+    #[test]
+    fn absent_or_foreign_protocol_is_not_an_empty_retirement_census() {
+        let mut session = captured_v3_session();
+        let window = record_v3_main(&mut session);
+        session.closing = true;
+        session.refresh_stats();
+        assert!(session.v3_pending_retirements().is_empty());
+        assert!(!session.v3_window_retired(window));
+        assert!(!session.v3_local_retired());
+        let display = Display::<ProtocolState>::new().unwrap();
+        session.protocol = Some(ProtocolState::new(&display.handle(), session.session()));
+        session.display = Some(display);
+        session.refresh_stats();
+        assert_eq!(session.report.error, Some("APP_ORIGIN_UNKNOWN"));
+        assert!(session.v3_pending_retirements().is_empty());
+        assert!(!session.v3_local_retired());
+    }
+
+    #[test]
+    fn partial_v3_setup_retains_capture_through_observed_local_close() {
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let files = std::env::temp_dir().join(format!("ew-v3-capture-fail-{}", std::process::id()));
+        fs::create_dir(&files).unwrap();
+        let captured = captured_v3_session();
+        let origin = captured.v3_origin().unwrap().clone();
+        let (context, generation) = captured.v3_capture().unwrap();
+        let context = context.clone();
+        let mut session = Session::prepare(
+            captured,
+            &files,
+            Path::new("/missing-waypipe-v3-setup-test"),
+            Options {
+                virtual_clock: true,
+                keyboard_layout: Default::default(),
+                pixels: Default::default(),
+            },
+            |directory| fs::write(directory.join("w"), b"occupied socket path").unwrap(),
+        );
+        assert_eq!(session.report.error, Some("LOCAL_SOCKET_FAILED"));
+        assert!(session.report.startup_failed && session.is_v3());
+        assert!(session.v3_origin() == Some(&origin));
+        assert!(session.v3_capture() == Some((&context, generation)));
+        assert!(!session.v3_history.as_ref().unwrap().is_open());
+        assert!(!session.v3_local_retired());
+        session.tick(true, false);
+        assert!(!session.v3_local_retired());
+        session.tick(true, true);
+        assert!(session.closed() && session.v3_local_retired());
+        assert!(session.v3_capture() == Some((&context, generation)));
+        assert!(session.v3_origin() == Some(&origin));
+        assert_eq!(session.report.error, Some("LOCAL_SOCKET_FAILED"));
+        drop(session);
+        fs::remove_dir_all(files).unwrap();
+    }
+
     #[test]
     fn synchronous_desktop_start_failure_retires_before_allowing_retry() {
         use eidolon_model::ids::RuntimeHandle;

@@ -10,7 +10,7 @@ import org.json.JSONObject
 internal class WindowGroupMenuController(private val parent:Entity,private val layout:WindowControlLayout,
     private val width:Double,private val height:Double,private val sdk:Scene,private val objects:SceneObjectSystem,
     private val ticket:NativeSessionHost.WindowOperationTicket,permit:WindowGroupMenuPermit,initialEpoch:Long,
-    private val live:()->Boolean) {
+    private val sdkScope:SdkResourceScope?=null,private val live:()->Boolean) {
     private val identity=WindowGroupMenuIdentity(permit.target,permit.controlsRevision,ticket.control.intent)
     private val capture=WindowGroupMenuCapture(identity,permit,initialEpoch,SystemClock.elapsedRealtime())
     private var resetRequest:String?=null
@@ -53,7 +53,7 @@ internal class WindowGroupMenuController(private val parent:Entity,private val l
                 try {
                     view=WindowMenuView(parent,layout,width,height,sdk,objects,
                         {live() && phase==WindowGroupMenuCapture.Phase.MENU && NativeSessionHost.windowOperationCurrent(ticket)},
-                        {NativeSessionHost.windowOperationCurrent(ticket)},false,false,items) {choose(it)}
+                        {NativeSessionHost.windowOperationCurrent(ticket)},false,false,items,sdkScope) {choose(it)}
                     checkNotNull(view).initialize()
                 } catch(_:Exception) {capture.cancel("menu_create_failed");sdkFailures++}
             }

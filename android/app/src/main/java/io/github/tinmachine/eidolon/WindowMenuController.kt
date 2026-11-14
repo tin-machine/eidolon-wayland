@@ -9,7 +9,7 @@ import org.json.JSONObject
 
 /** Survives the controls rebuild caused by a size change; it never borrows the global selected window. */
 class WindowMenuController(private val parent:Entity,private val target:String,private val runtime:Long,val revision:Long,
-    private val layout:WindowControlLayout,private val sdk:Scene,private val objects:SceneObjectSystem,private val live:()->Boolean):AutoCloseable {
+    private val layout:WindowControlLayout,private val sdk:Scene,private val objects:SceneObjectSystem,private val live:()->Boolean,private val sdkScope:SdkResourceScope?=null):AutoCloseable {
     private var owner:NativeSessionHost.WindowOperationTicket?=null
     private var capture:WindowSizeCapture?=null
     private var recenter:WindowRecenterCapture?=null
@@ -66,7 +66,7 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
                         add(WindowMenuItem("larger","大きく",physical.step(true)!=null));add(WindowMenuItem("smaller","小さく",physical.step(false)!=null))
                         if(WindowRecenterPolicy.ENABLED) add(WindowMenuItem("recenter","正面へ"))
                         add(WindowMenuItem("group","窓をまとめる"));add(WindowMenuItem("back","戻る"))
-                    } else null) {choose(it)}
+                    } else null,sdkScope) {choose(it)}
                 checkNotNull(view).initialize()
             } catch(_:Exception) {c.cancel("menu_create_failed")}
         }
@@ -121,7 +121,7 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
         capture?.cancel("group_page");capture=null
         val physical=size(checkNotNull(window(state)).getJSONObject("sizing").getJSONObject("physical_size_m"))
         lastAction="group"
-        groupMenu=WindowGroupMenuController(parent,layout,physical.width.toDouble(),physical.height.toDouble(),sdk,objects,ticket,permit,state.getLong("input_resets")) {!closed && live()}
+        groupMenu=WindowGroupMenuController(parent,layout,physical.width.toDouble(),physical.height.toDouble(),sdk,objects,ticket,permit,state.getLong("input_resets"),sdkScope) {!closed && live()}
         checkNotNull(groupMenu).initialize()
     }
     private fun chooseRecenter(ticket:NativeSessionHost.WindowOperationTicket,before:JSONObject) {
