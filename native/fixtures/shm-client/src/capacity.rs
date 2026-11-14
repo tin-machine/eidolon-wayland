@@ -126,7 +126,14 @@ fn run_inner(
     }
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut c = ClientFixture::new(stream, &stop, deadline)?;
-    c.top.set_app_id(if v3 { "mousepad" } else { "fixture.capacity.root" }.into());
+    c.top.set_app_id(
+        if v3 {
+            "mousepad"
+        } else {
+            "fixture.capacity.root"
+        }
+        .into(),
+    );
     c.sync(&stop, deadline)?;
     let mut windows = Vec::new();
     for n in 1..capacity {

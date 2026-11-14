@@ -194,6 +194,18 @@ pub fn run_with_app_id(
     stop: Arc<AtomicBool>,
     app_id: &str,
 ) -> Result<Report, &'static str> {
+    run_with_app_id_mutation(stream, mode, stop, app_id, None)
+}
+
+/// Test-only: mutate title/app_id *after* mapping the same live toplevel.
+/// The Wayland connection remains the original accepted client.
+pub fn run_with_app_id_mutation(
+    stream: UnixStream,
+    mode: Mode,
+    stop: Arc<AtomicBool>,
+    app_id: &str,
+    change_app_id: Option<&str>,
+) -> Result<Report, &'static str> {
     // 転送protocolのrevision文字列と、APKへclient実装をlinkした証拠を分ける。
     std::hint::black_box("eidolon-local-shm-fixture-code-v1");
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -322,6 +334,13 @@ pub fn run_with_app_id(
                 parent.destroy();
             } else {
                 for frame in 0..if mode == Mode::Pattern { FRAMES } else { 1 } {
+                    if mode == Mode::Pattern && frame == FRAMES / 2 {
+                        if let Some(changed) = change_app_id {
+                            toplevel.set_app_id(changed.to_owned());
+                            toplevel.set_title("Wayland title mutated after map".into());
+                            sync(&connection, &mut queue, &mut state, &stop, deadline)?;
+                        }
+                    }
                     if mode == Mode::Pattern {
                         file.write_all_at(&pattern(frame), 0)
                             .map_err(|_| "MEMFD_WRITE")?;

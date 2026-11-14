@@ -1020,9 +1020,8 @@ mod v3_accept_tests {
                 .err(),
             Some("STALE")
         );
-        assert_eq!(
-            accepted.get_data::<ClientState>().unwrap().origin.as_ref(),
-            Some(&origin)
+        assert!(
+            accepted.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin)
         );
     }
 
@@ -1168,6 +1167,107 @@ mod v3_accept_tests {
         assert!(!history.confirm_retired(main.unwrap(), true, false));
         assert_eq!(history.pending_retirements(), 1);
     }
+
+    #[test]
+    fn actual_wayland_app_id_and_title_mutation_cannot_reassign_origin_or_main() {
+        use crate::linux_desktop_v3::WindowHistory;
+        use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
+        use eidolon_shm_fixture::{FRAMES, Mode};
+        use std::{
+            sync::{Arc, atomic::AtomicBool, mpsc},
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let origin = captured_fixture_origin();
+        let mut display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let mut protocol = ProtocolState::new(&display.handle(), origin.session());
+        let (server, client) = UnixStream::pair().unwrap();
+        protocol
+            .accept_with_origin(&display.handle(), server, &origin)
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let fixture_stop = stop.clone();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let outcome = eidolon_shm_fixture::run_with_app_id_mutation(
+                client,
+                Mode::Pattern,
+                fixture_stop,
+                "mousepad",
+                Some("untrusted.changed.app_id"),
+            );
+            let _ = tx.send(outcome);
+        });
+
+        let mut history = WindowHistory::new(origin.clone(), []);
+        history.started();
+        let mut main = None;
+        let mut rejected_mutation = false;
+        let mut completed = None;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(24) {
+            display.dispatch_clients(&mut protocol).unwrap();
+            protocol.finish_dispatch(&display.handle());
+            let samples = protocol.v3_samples();
+            // Application-controlled title/app_id never create or replace
+            // an origin; the accepted ClientState is the identity authority.
+            assert!(samples.iter().all(|s| s.origin.as_ref() == Some(&origin)));
+            if !rejected_mutation {
+                match history.observe(&samples) {
+                    Ok(()) => {
+                        let cut = history.cut().unwrap();
+                        if main.is_none() {
+                            if let Some(id) = cut
+                                .windows
+                                .iter()
+                                .find(|w| w.role == Role::Main && w.life == Life::Mapped)
+                                .map(|w| w.window)
+                            {
+                                history.commit_main(id).unwrap();
+                                main = Some(id);
+                            }
+                        }
+                    }
+                    Err("APP_WINDOW_UNSUPPORTED") => {
+                        assert!(main.is_some());
+                        assert!(samples.iter().any(|s| {
+                            s.window == main.unwrap()
+                                && s.app_id.as_deref() == Some("untrusted.changed.app_id")
+                        }));
+                        rejected_mutation = true;
+                    }
+                    Err(error) => panic!("unexpected window history error: {error}"),
+                }
+            }
+            for window in protocol.windows() {
+                protocol.frame_callbacks(
+                    window.window,
+                    Duration::from_millis(start.elapsed().as_millis() as u64 + 1),
+                    true,
+                    true,
+                    true,
+                );
+            }
+            display.flush_clients().unwrap();
+            if let Ok(result) = rx.try_recv() {
+                completed = Some(result.unwrap());
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        if completed.is_none() {
+            stop.store(true, std::sync::atomic::Ordering::Release);
+        }
+        worker.join().unwrap();
+        let report = completed.expect("real mutation fixture timed out");
+        assert_eq!(report.frames, FRAMES);
+        assert!(!report.protocol_error);
+        assert!(rejected_mutation, "app_id mutation did not revoke main");
+        assert!(main.is_some());
+    }
     #[test]
     fn real_v3_nine_toplevels_reject_tenth_and_hold_slot_until_retired() {
         use crate::linux_desktop_v3::WindowHistory;
@@ -1300,5 +1400,4 @@ mod v3_accept_tests {
         assert!(report.survivor_updated);
         assert!(report.replacement_mapped);
     }
-
 }
