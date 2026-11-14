@@ -38,6 +38,7 @@ pub struct PreviousIoClosed {
     old_pins: Pins,
     old_sources: SourceHashes,
     current_session: SessionId,
+    current_generation: u64,
 }
 impl PreviousIoClosed {
     pub fn matches(&self, session: SessionId, binding: &Binding, sources: &SourceHashes) -> bool {
@@ -46,6 +47,60 @@ impl PreviousIoClosed {
             && binding.context() == &self.old_context
             && binding.pins() == &self.old_pins
             && sources == &self.old_sources
+    }
+
+    /// A recovery connection may finish the old remote owner on a newer I/O
+    /// generation. Only the retained live capture can identify which local
+    /// generation still owns its windows; the pending file alone cannot.
+    pub(crate) fn bridge_live_capture(
+        &self,
+        capture: &super::runtime::RunCapture,
+        generation: u64,
+    ) -> Result<RecoveryGenerationBridge, &'static str> {
+        if generation != self.current_generation
+            || capture.generation == generation
+            || !self.matches(
+                self.current_session,
+                capture.binding(),
+                &capture.evidence().source_hashes(),
+            )
+        {
+            return Err("DESKTOP_V3_CLEANUP_SCOPE_MISMATCH");
+        }
+        Ok(RecoveryGenerationBridge {
+            context: self.old_context.clone(),
+            pins: self.old_pins.clone(),
+            sources: self.old_sources.clone(),
+            local_generation: capture.generation,
+            recovery_generation: generation,
+        })
+    }
+}
+
+/// Private to the participating I/O fence. Neither a serialized recovery
+/// report nor a cold restart can mint a bridge for the old local resources.
+pub(crate) struct RecoveryGenerationBridge {
+    context: Context,
+    pins: Pins,
+    sources: SourceHashes,
+    local_generation: u64,
+    recovery_generation: u64,
+}
+impl RecoveryGenerationBridge {
+    pub(super) fn matches(
+        &self,
+        context: &Context,
+        pins: &Pins,
+        sources: &SourceHashes,
+        generation: u64,
+    ) -> bool {
+        context == &self.context
+            && pins == &self.pins
+            && sources == &self.sources
+            && generation == self.recovery_generation
+    }
+    pub(super) fn local_generation(&self) -> u64 {
+        self.local_generation
     }
 }
 
@@ -120,7 +175,7 @@ impl IoGenerationFence {
             journal::sync(&directory)?;
         }
         let previous = pending
-            .map(|pending| Self::capture_previous(pending, session))
+            .map(|pending| Self::capture_previous(pending, session, generation))
             .transpose()?;
         Ok(Self {
             _lock: file,
@@ -132,6 +187,7 @@ impl IoGenerationFence {
     fn capture_previous(
         pending: Pending,
         session: SessionId,
+        generation: u64,
     ) -> Result<PreviousIoClosed, &'static str> {
         let old = Binding::from_captured(pending.context().clone(), pending.pins().clone())?;
         if old.session() == session {
@@ -142,6 +198,7 @@ impl IoGenerationFence {
             old_pins: pending.pins().clone(),
             old_sources: pending.sources().clone(),
             current_session: session,
+            current_generation: generation,
         })
     }
     pub fn generation(&self) -> u64 {

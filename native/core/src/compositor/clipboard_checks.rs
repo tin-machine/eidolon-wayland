@@ -98,13 +98,30 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
             stop.store(true, Ordering::Release);
         }
         let client = worker.join().map_err(|_| "CLIENT_PANIC")?;
-        // 切断通知をdispatchし、所有selection/FD/全surfaceを回収してから判定する。
-        for _ in 0..10 {
+        // Smithay releases SHM mappings/FDs and their PoolLease on its drop
+        // thread. A fixed number of dispatches cannot prove that work finished.
+        // Wait for this display's actual reclamation before sampling the report.
+        let cleanup_deadline = Instant::now() + Duration::from_secs(3);
+        let reclaimed = loop {
             display
                 .dispatch_clients(&mut state)
                 .map_err(|_| "DISPATCH")?;
             state.finish_dispatch(&display.handle());
-        }
+            let pools = state.pool_usage();
+            if object_counts(&display) == (0, 0)
+                && state.surface_count() == 0
+                && state.windows().is_empty()
+                && state.pixel_bytes() == 0
+                && pools.pools == 0
+                && pools.bytes == 0
+            {
+                break true;
+            }
+            if Instant::now() >= cleanup_deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        };
         match client {
             Ok(client) => report.client = Some(client),
             Err(error) => report.client_error = Some(error),
@@ -144,7 +161,8 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
         {
             return Err("CLIPBOARD_COUNTERS");
         }
-        if report.clients_after != 0
+        if !reclaimed
+            || report.clients_after != 0
             || report.objects_after != 0
             || report.surfaces_after != 0
             || report.windows_after != 0

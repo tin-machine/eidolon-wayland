@@ -90,6 +90,7 @@ impl Fixture {
                     schema: 1,
                     request_id: request(2),
                     visible: true,
+                    expected_scene: None,
                 }
             ),
             Status::Accepted
@@ -101,6 +102,7 @@ impl Fixture {
                     schema: 1,
                     request_id: request(3),
                     state: XrState::Focused,
+                    expected_scene: None,
                 }
             ),
             Status::Accepted
@@ -115,6 +117,8 @@ impl Fixture {
                     request_id: request(4),
                     target: diagnostic,
                     diagnostic: true,
+                    create_command: None,
+                    adapter: None,
                 }),
                 Status::Accepted
             );

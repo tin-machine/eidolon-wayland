@@ -139,6 +139,8 @@ enum Message {
     },
     Detach(TargetKey),
     Forget(SessionId, WindowId),
+    RetireTarget(TargetKey, Arc<std::sync::atomic::AtomicBool>),
+    RetireWindow(SessionId, WindowId, Arc<std::sync::atomic::AtomicBool>),
 }
 struct Shared {
     queue: VecDeque<Message>,
@@ -150,6 +152,11 @@ struct Shared {
     mode: RenderMode,
     logical: Vec<(SessionId, WindowId)>,
     hidden: Vec<TargetKey>,
+    // A retirement fence closes attach admission before it enters the FIFO.
+    // One high-water mark per logical window is enough; pending fences never
+    // rely on the bounded diagnostic detached ring.
+    retirement_floors: Vec<TargetKey>,
+    owner_reclaimed: bool,
     theme: Option<Arc<eidolon_theme::raster::CompiledTheme>>,
     theme_revision: u64,
     reduced_motion: bool,
@@ -168,6 +175,13 @@ pub struct Controller {
     state: State,
     worker: Worker,
     pixels: eidolon_model::pixels::PixelBudget,
+}
+
+/// Receipt for work on exactly one renderer owner. Neither a snapshot nor a
+/// foreign runtime's empty target list can manufacture this receipt.
+pub struct RetirementFence {
+    owner: std::sync::Weak<(Mutex<Shared>, Condvar)>,
+    completed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 enum Worker {
@@ -261,6 +275,8 @@ impl Controller {
                 mode: RenderMode::Diagnostic,
                 logical: vec![],
                 hidden: vec![],
+                retirement_floors: vec![],
+                owner_reclaimed: false,
                 theme: None,
                 theme_revision: 0,
                 reduced_motion: false,
@@ -302,6 +318,16 @@ impl Controller {
         }
         if state.queue.len() == QUEUE {
             return Status::Busy;
+        }
+        if let Message::Attach { key, role, .. } = &message
+            && (state
+                .retirement_floors
+                .iter()
+                .any(|floor| floor.same_window(*key) && !key.newer_than(*floor))
+                || (*role == RenderMode::Windows
+                    && !state.logical.contains(&(key.session, key.window))))
+        {
+            return Status::Stale;
         }
         state.queue.push_back(message);
         self.state.1.notify_one();
@@ -425,6 +451,88 @@ impl Controller {
     }
     pub fn detach(&self, key: TargetKey) -> Status {
         self.enqueue(Message::Detach(key))
+    }
+    /// Seal one full target tuple, then release it on the GL FIFO. A callback
+    /// racing after this call cannot attach the retired tuple behind the fence.
+    pub fn retire_target(&self, key: TargetKey) -> Result<RetirementFence, Status> {
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.stop && state.queue.len() == QUEUE {
+            return Err(Status::Busy);
+        }
+        if let Some(floor) = state
+            .retirement_floors
+            .iter_mut()
+            .find(|v| v.same_window(key))
+        {
+            if key.newer_than(*floor) {
+                *floor = key;
+            }
+        } else {
+            if state.retirement_floors.len() >= 64 {
+                return Err(Status::Busy);
+            }
+            state.retirement_floors.push(key);
+        }
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if !state.stop {
+            state
+                .queue
+                .push_back(Message::RetireTarget(key, completed.clone()));
+        }
+        drop(state);
+        self.state.1.notify_one();
+        Ok(RetirementFence {
+            owner: Arc::downgrade(&self.state),
+            completed,
+        })
+    }
+    /// Used only after native window destruction. This also fences references
+    /// to the last submitted image, beyond target/ANativeWindow retirement.
+    pub fn retire_window(
+        &self,
+        session: SessionId,
+        window: WindowId,
+    ) -> Result<RetirementFence, Status> {
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.stop && state.queue.len() == QUEUE {
+            return Err(Status::Busy);
+        }
+        state.logical.retain(|key| *key != (session, window));
+        state
+            .latest
+            .retain(|image| image.snapshot.session != session || image.snapshot.window != window);
+        state.snapshot.latest_images = state.latest.len();
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if !state.stop {
+            state
+                .queue
+                .push_back(Message::RetireWindow(session, window, completed.clone()));
+        }
+        drop(state);
+        self.state.1.notify_one();
+        Ok(RetirementFence {
+            owner: Arc::downgrade(&self.state),
+            completed,
+        })
+    }
+    pub fn retirement_complete(&self, fence: &RetirementFence) -> bool {
+        let Some(owner) = fence.owner.upgrade() else {
+            return false;
+        };
+        Arc::ptr_eq(&owner, &self.state)
+            && (fence.completed.load(std::sync::atomic::Ordering::Acquire)
+                || self.owner_reclaimed())
+    }
+    /// Strong Stop evidence: this exact GL job returned after dropping active
+    /// GPU resources, queued platform windows and submitted image references.
+    pub fn owner_reclaimed(&self) -> bool {
+        self.is_finished()
+            && self
+                .state
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .owner_reclaimed
     }
     /// 同じwindowの古い画像をcoalesceし、frameを通常command queueへためない。
     pub fn submit(&self, snapshot: Arc<WindowSnapshot>, probes: Vec<compositor::Probe>) -> Status {
@@ -606,6 +714,7 @@ fn run_owner(owned: &State) -> bool {
     state.latest.clear();
     state.logical.clear();
     state.hidden.clear();
+    state.retirement_floors.clear();
     state.theme = None;
     state.accepted_theme = None;
     state.semantic.clear();
@@ -614,12 +723,27 @@ fn run_owner(owned: &State) -> bool {
     state.snapshot.composition = Default::default();
     state.snapshot.workers = 0;
     state.busy_since = None;
+    state.owner_reclaimed = true;
     result.is_ok() && state.snapshot.error != Some("RENDER_STALLED")
 }
 impl Drop for Controller {
     fn drop(&mut self) {
         self.request_stop();
     }
+}
+
+/// Reset only the current-content proof when EGL context is lost. Cumulative
+/// draw counters remain diagnostic, not proof of a frame on the new context.
+fn invalidate_content_evidence(state: &State, active: &mut [Active]) {
+    for target in active.iter_mut() {
+        target.report.content_frame = None;
+        target.needs_redraw = true;
+    }
+    update(state, |shared| {
+        for target in &mut shared.snapshot.targets {
+            target.content_frame = None;
+        }
+    });
 }
 
 fn update(state: &State, action: impl FnOnce(&mut Shared)) {
@@ -818,6 +942,63 @@ fn owner(state: &State) {
                         update(state, |s| s.snapshot.error = Some(error));
                     }
                 }
+                Message::RetireTarget(key, completed) => {
+                    let mut released = true;
+                    if let Some(index) = active.iter().position(|a| a.report.key == key) {
+                        if let Some(device) = device.as_mut()
+                            && let Err(error) =
+                                busy(state, || device.forget(key.session, key.window))
+                        {
+                            released = false;
+                            update(state, |s| s.snapshot.error = Some(error));
+                        }
+                        busy(state, || drop(active.remove(index)));
+                    }
+                    update(state, |s| ack(s, key));
+                    if released {
+                        completed.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                }
+                Message::RetireWindow(session, window, completed) => {
+                    let mut released = true;
+                    if let Some(device) = device.as_mut()
+                        && let Err(error) = busy(state, || device.forget(session, window))
+                    {
+                        released = false;
+                        update(state, |s| s.snapshot.error = Some(error));
+                    }
+                    let removed: Vec<_> = active
+                        .iter()
+                        .filter(|a| {
+                            a.report.key.session == session && a.report.key.window == window
+                        })
+                        .map(|a| a.report.key)
+                        .collect();
+                    busy(state, || {
+                        active.retain(|a| {
+                            a.report.key.session != session || a.report.key.window != window
+                        })
+                    });
+                    update(state, |s| {
+                        for key in removed {
+                            ack(s, key);
+                        }
+                        s.retirement_floors
+                            .retain(|key| key.session != session || key.window != window);
+                        s.semantic.retain(|(key, _)| *key != (session, window));
+                    });
+                    // Release per-window player caches before publishing the
+                    // full-window fence, not later in the rendering tick.
+                    let retained: Vec<_> = logical
+                        .iter()
+                        .copied()
+                        .filter(|key| *key != (session, window))
+                        .collect();
+                    players.retain(&retained);
+                    if released {
+                        completed.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                }
             }
         }
         players.retain(&logical);
@@ -872,9 +1053,9 @@ fn owner(state: &State) {
             }
             // この要求の失敗では旧themeを維持する。再要求またはcontext再生成時だけ再試行。
             if result == Err("EGL_CONTEXT_LOST") {
-                for target in &mut active {
-                    target.needs_redraw = true;
-                }
+                // The old EGL context must never lend its content frame to a
+                // later I4 presentation observation before a real redraw.
+                invalidate_content_evidence(state, &mut active);
                 theme_context_lost = true;
             } else if current {
                 theme_revision = requested_revision;
@@ -1040,6 +1221,9 @@ fn owner(state: &State) {
             }
             if lost.iter().any(|(_, error)| *error == "EGL_CONTEXT_LOST") {
                 lost.clear();
+                // Publish the invalidation *before* blocking on GPU rebuild:
+                // other threads may snapshot targets while EGL is rebuilding.
+                invalidate_content_evidence(state, &mut active);
                 busy(state, || {
                     if let Some(device) = device.as_mut() {
                         let _ = device.clear();
@@ -1096,6 +1280,80 @@ fn owner(state: &State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retirement_fence_seals_late_attach_and_waits_for_exact_owner_cleanup() {
+        use std::sync::atomic::Ordering;
+        let renderer = Controller::start().unwrap();
+        let foreign = Controller::start().unwrap();
+        let hook = Arc::new(platform::TestControl::default());
+        hook.blocked.store(true, Ordering::Release);
+        let key = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        renderer.set_visible(true);
+        assert_eq!(
+            renderer.attach(
+                key,
+                PlatformWindow {
+                    control: Some(hook.clone())
+                },
+                64,
+                64
+            ),
+            Status::Accepted
+        );
+        wait(|| hook.entered.load(Ordering::Acquire));
+        let fence = renderer.retire_target(key).unwrap();
+        assert!(!renderer.retirement_complete(&fence));
+        assert_eq!(
+            renderer.attach(key, PlatformWindow::default(), 64, 64),
+            Status::Stale
+        );
+        // Stop discards the FIFO. Only completion of this exact owner, after
+        // the blocked GPU operation and all drops, may replace its receipt.
+        renderer.request_stop();
+        assert!(!renderer.retirement_complete(&fence));
+        hook.blocked.store(false, Ordering::Release);
+        wait(|| renderer.owner_reclaimed());
+        assert!(renderer.retirement_complete(&fence));
+        foreign.request_stop();
+        wait(|| foreign.owner_reclaimed());
+        assert!(!foreign.retirement_complete(&fence));
+    }
+
+    #[test]
+    fn window_retirement_fences_the_last_image_and_gpu_references() {
+        let renderer = Controller::start().unwrap();
+        renderer.use_windows();
+        renderer.set_visible(true);
+        let key = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        assert_eq!(
+            renderer.windows(key.session, &[key.window]),
+            Status::Accepted
+        );
+        let (image, probes) = fixtures::make(0, 1, key, 64, 64).unwrap();
+        let weak = Arc::downgrade(&image);
+        assert_eq!(renderer.submit(image, probes), Status::Accepted);
+        assert_eq!(
+            renderer.attach_window(key, PlatformWindow::default(), 64, 64),
+            Status::Accepted
+        );
+        wait(|| {
+            renderer
+                .snapshot()
+                .targets
+                .iter()
+                .any(|t| t.key == key && t.frames > 0)
+        });
+        let fence = renderer.retire_window(key.session, key.window).unwrap();
+        wait(|| renderer.retirement_complete(&fence));
+        assert!(weak.upgrade().is_none());
+        assert_eq!(
+            renderer.attach_window(key, PlatformWindow::default(), 64, 64),
+            Status::Stale
+        );
+        renderer.request_stop();
+        wait(|| renderer.owner_reclaimed());
+    }
+
     #[test]
     fn reused_executor_releases_each_runtime_before_lending_the_same_thread() {
         let executor = Arc::new(executor::Executor::new().unwrap());

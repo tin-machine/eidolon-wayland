@@ -537,7 +537,7 @@ impl Journal {
     /// Only call from the local/SDK finalizer after capability validation.
     /// A failed directory fsync *after* unlink must not make the next attempt
     /// unlink a different pending.json; that would destroy an unrelated owner.
-    pub fn clear(&mut self) -> Result<(), &'static str> {
+    pub(super) fn clear(&mut self) -> Result<(), &'static str> {
         if self.record.stage != Stage::Complete || !self.record.cleanup.complete() {
             return Err("DESKTOP_CLEANUP_PENDING");
         }

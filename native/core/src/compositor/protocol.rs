@@ -6,6 +6,7 @@ use super::{
 use eidolon_model::{
     ids::{ContentSeq, SessionId, SurfaceId, WindowId},
     limits,
+    linux_desktop_v3::presentation::NativeOrigin,
     pixels::{OwnedRgba, PixelBudget},
 };
 use smithay::{
@@ -60,6 +61,8 @@ use std::{
 #[derive(Default)]
 pub struct ClientState {
     compositor: CompositorClientState,
+    /// Set exactly once at native accept. A v2 or Termux client has no v3 origin.
+    pub(crate) origin: Option<NativeOrigin>,
 }
 impl ClientData for ClientState {
     fn initialized(&self, _: ClientId) {}
@@ -149,6 +152,13 @@ pub struct ProtocolState {
     popup_grabs: Vec<ObjectId>,
     popup_focused: Option<WlSurface>,
     session: SessionId,
+    // Captured by Session::start_v3 before the first listener accept. No
+    // second same-session "origin" can be substituted through this port.
+    verified_origin: Option<NativeOrigin>,
+    // An empty display after disconnect is not a fresh listener ownership epoch.
+    accepted_any: bool,
+    // One-way v3 admission fence. Existing clients remain for cleanup.
+    new_roles_open: bool,
     next_window: Option<WindowId>,
     next_surface: Option<SurfaceId>,
     next_content: Option<ContentSeq>,
@@ -244,6 +254,9 @@ impl ProtocolState {
             popup_grabs: vec![],
             popup_focused: None,
             session,
+            verified_origin: None,
+            accepted_any: false,
+            new_roles_open: true,
             next_window: WindowId::new(1).ok(),
             next_surface: SurfaceId::new(1).ok(),
             next_content: ContentSeq::new(1).ok(),
@@ -263,20 +276,79 @@ impl ProtocolState {
     pub fn pixel_bytes(&self) -> usize {
         self.pixel_budget.used_bytes()
     }
+    /// The I2-owned Session installs a unique, immutable native origin before
+    /// accepting its first client. Only the Session/permit path may call it.
+    pub fn bind_v3_origin(&mut self, origin: &NativeOrigin) -> Result<(), &'static str> {
+        if !self.new_roles_open
+            || self.accepted_any
+            || self.verified_origin.is_some()
+            || origin.session() != self.session
+        {
+            return Err("APP_ORIGIN_UNKNOWN");
+        }
+        self.verified_origin = Some(origin.clone());
+        Ok(())
+    }
+
+    /// Close new v3 clients/roles without discarding existing protocol state,
+    /// window history, callbacks or native/SDK retirement evidence.
+    pub fn seal_new_roles(&mut self) {
+        self.new_roles_open = false;
+        self.reset_input();
+    }
+
     pub fn accept(
         &mut self,
         dh: &DisplayHandle,
         stream: std::os::unix::net::UnixStream,
     ) -> Result<Client, &'static str> {
+        if self.verified_origin.is_some() {
+            return Err("APP_ORIGIN_UNKNOWN");
+        }
+        self.accept_captured(dh, stream, None)
+    }
+
+    /// Only the owned v3 Session may call this route with its captured I2
+    /// LaunchPermit origin. Remote app_id/title/PID/UID cannot supply origin.
+    pub fn accept_with_origin(
+        &mut self,
+        dh: &DisplayHandle,
+        stream: std::os::unix::net::UnixStream,
+        origin: &NativeOrigin,
+    ) -> Result<Client, &'static str> {
+        if origin.session() != self.session || self.verified_origin.as_ref() != Some(origin) {
+            return Err("APP_ORIGIN_UNKNOWN");
+        }
+        self.accept_captured(dh, stream, Some(origin.clone()))
+    }
+
+    fn accept_captured(
+        &mut self,
+        dh: &DisplayHandle,
+        stream: std::os::unix::net::UnixStream,
+        origin: Option<NativeOrigin>,
+    ) -> Result<Client, &'static str> {
+        if !self.new_roles_open {
+            return Err("STALE");
+        }
         let mut clients = 0;
         dh.backend_handle().with_all_clients(|_| clients += 1);
         if clients >= limits::CLIENTS {
             self.counters.client_rejections += 1;
             return Err("RESOURCE_LIMIT");
         }
-        dh.clone()
-            .insert_client(stream, Arc::new(ClientState::default()))
-            .map_err(|_| "CLIENT_ACCEPT")
+        let client = dh
+            .clone()
+            .insert_client(
+                stream,
+                Arc::new(ClientState {
+                    compositor: CompositorClientState::default(),
+                    origin,
+                }),
+            )
+            .map_err(|_| "CLIENT_ACCEPT")?;
+        self.accepted_any = true;
+        Ok(client)
     }
     pub fn pool_usage(&self) -> Usage {
         self.pools.usage()
@@ -591,7 +663,7 @@ impl XdgShellHandler for ProtocolState {
         if !self.surface_meta.contains_key(&toplevel.wl_surface().id()) {
             return;
         }
-        if self.toplevels.len() >= limits::TOPLEVELS {
+        if !self.new_roles_open || self.toplevels.len() >= limits::TOPLEVELS {
             // protocol errorは同じfoot serverの既存窓も切る。新しい余剰roleだけ閉じる。
             // 拒否後のin-flight commitもcopyしない。clientが従わなくてもsurface予算は不変。
             self.rejected_toplevels.insert(toplevel.wl_surface().id());
@@ -602,6 +674,14 @@ impl XdgShellHandler for ProtocolState {
         }
     }
     fn new_popup(&mut self, popup: PopupSurface, _: PositionerState) {
+        if !self.new_roles_open {
+            // Keep the object for normal destroy cleanup, but never admit
+            // a late popup as an input/focus route after Stop.
+            self.dismissed_popups.insert(popup.wl_surface().id());
+            popup.send_popup_done();
+            self.popups.push(popup);
+            return;
+        }
         if popup.get_parent_surface().is_none() {
             popup
                 .wl_surface()
@@ -616,6 +696,9 @@ impl XdgShellHandler for ProtocolState {
         }
     }
     fn grab(&mut self, popup: PopupSurface, seat: WlSeat, serial: Serial) {
+        if !self.new_roles_open {
+            return;
+        }
         self.grab_popup(popup, seat, serial);
     }
     fn reposition_request(&mut self, _: PopupSurface, _: PositionerState, _: u32) {}
@@ -880,7 +963,6 @@ impl Dispatch<WlDataDeviceManager, ()> for ProtocolState {
         }
     }
 }
-
 delegate_compositor!(ProtocolState);
 use smithay::reexports::wayland_protocols::xdg::shell::server::{
     xdg_popup::XdgPopup, xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel, xdg_wm_base::XdgWmBase,
@@ -898,3 +980,725 @@ delegate_seat!(ProtocolState);
 delegate_global_dispatch!(ProtocolState: [WlShm: ()] => ShmState);
 delegate_dispatch!(ProtocolState: [WlBuffer: ShmBufferUserData] => ShmState);
 delegate_global_dispatch!(ProtocolState: [WlDataDeviceManager: ()] => DataDeviceState);
+
+#[cfg(test)]
+#[path = "v3_fixture_test_support.rs"]
+mod v3_fixture_test_support;
+
+#[cfg(test)]
+mod v3_accept_tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+
+    fn captured_fixture_origin() -> NativeOrigin {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
+        ))
+        .unwrap();
+        let raw = fixture["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["id"] == "origin")
+            .unwrap()["raw"]
+            .as_str()
+            .unwrap();
+        NativeOrigin::parse(raw.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn actual_wayland_client_accept_captures_only_v3_origin() {
+        let origin = captured_fixture_origin();
+        let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let handle = display.handle();
+        let mut protocol = ProtocolState::new(&handle, origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
+        let (server, _remote) = UnixStream::pair().unwrap();
+        let verified = protocol
+            .accept_with_origin(&handle, server, &origin)
+            .unwrap();
+        assert!(verified.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin));
+
+        // A v3 display must *reject*, not silently downgrade, an unverified
+        // client. v2/Termux use a separately owned protocol/listener.
+        let (server, _unverified_v3) = UnixStream::pair().unwrap();
+        assert_eq!(
+            protocol.accept(&handle, server).err(),
+            Some("APP_ORIGIN_UNKNOWN")
+        );
+        let legacy_display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let legacy_handle = legacy_display.handle();
+        let mut legacy = ProtocolState::new(&legacy_handle, origin.session());
+        let (server, _termux) = UnixStream::pair().unwrap();
+        let unverified = legacy.accept(&legacy_handle, server).unwrap();
+        assert!(
+            unverified
+                .get_data::<ClientState>()
+                .unwrap()
+                .origin
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn legacy_accept_permanently_prevents_late_v3_origin_binding() {
+        let origin = captured_fixture_origin();
+        let mut display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let handle = display.handle();
+        let mut protocol = ProtocolState::new(&handle, origin.session());
+        let (server, peer) = UnixStream::pair().unwrap();
+        let legacy = protocol.accept(&handle, server).unwrap();
+        assert_eq!(protocol.bind_v3_origin(&origin), Err("APP_ORIGIN_UNKNOWN"));
+        assert!(legacy.get_data::<ClientState>().unwrap().origin.is_none());
+
+        handle
+            .backend_handle()
+            .kill_client(legacy.id(), DisconnectReason::ConnectionClosed);
+        drop(peer);
+        display.dispatch_clients(&mut protocol).unwrap();
+        protocol.finish_dispatch(&handle);
+        let mut clients = 0;
+        handle.backend_handle().with_all_clients(|_| clients += 1);
+        assert_eq!(clients, 0);
+        assert_eq!(protocol.bind_v3_origin(&origin), Err("APP_ORIGIN_UNKNOWN"));
+
+        // The failed upgrade never changes the ordinary v2/Termux accept path.
+        let (server, _peer) = UnixStream::pair().unwrap();
+        let next = protocol.accept(&handle, server).unwrap();
+        assert!(next.get_data::<ClientState>().unwrap().origin.is_none());
+    }
+
+    #[test]
+    fn sealed_listener_refuses_new_accept_but_keeps_original_capture() {
+        let origin = captured_fixture_origin();
+        let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let handle = display.handle();
+        let mut protocol = ProtocolState::new(&handle, origin.session());
+        let (server, _unbound) = UnixStream::pair().unwrap();
+        assert_eq!(
+            protocol.accept_with_origin(&handle, server, &origin).err(),
+            Some("APP_ORIGIN_UNKNOWN")
+        );
+        protocol.bind_v3_origin(&origin).unwrap();
+        let (server, _client) = UnixStream::pair().unwrap();
+        let accepted = protocol
+            .accept_with_origin(&handle, server, &origin)
+            .unwrap();
+        protocol.seal_new_roles();
+        protocol.seal_new_roles();
+        let (late_server, _late_client) = UnixStream::pair().unwrap();
+        assert_eq!(
+            protocol
+                .accept_with_origin(&handle, late_server, &origin)
+                .err(),
+            Some("STALE")
+        );
+        assert!(accepted.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin));
+        let mut never_bound = ProtocolState::new(&handle, origin.session());
+        never_bound.seal_new_roles();
+        assert_eq!(
+            never_bound.bind_v3_origin(&origin),
+            Err("APP_ORIGIN_UNKNOWN")
+        );
+    }
+
+    #[test]
+    fn a_second_origin_with_the_same_session_is_not_a_valid_listener_capture() {
+        let origin = captured_fixture_origin();
+        let mut alternate = origin.record();
+        alternate["request"] = serde_json::json!("18");
+        let alternate = NativeOrigin::parse(alternate.to_string().as_bytes()).unwrap();
+        assert!(alternate != origin);
+        assert_eq!(alternate.session(), origin.session());
+
+        let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let handle = display.handle();
+        let mut protocol = ProtocolState::new(&handle, origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
+        assert_eq!(
+            protocol.bind_v3_origin(&alternate),
+            Err("APP_ORIGIN_UNKNOWN")
+        );
+        let (server, _client) = UnixStream::pair().unwrap();
+        assert_eq!(
+            protocol
+                .accept_with_origin(&handle, server, &alternate)
+                .err(),
+            Some("APP_ORIGIN_UNKNOWN")
+        );
+        let (server, _client) = UnixStream::pair().unwrap();
+        let original = protocol
+            .accept_with_origin(&handle, server, &origin)
+            .unwrap();
+        assert!(original.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin));
+    }
+
+    #[test]
+    fn foreign_session_origin_is_not_assigned_at_accept() {
+        let origin = captured_fixture_origin();
+        let session = SessionId::new(origin.session().get() + 1).unwrap();
+        let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let handle = display.handle();
+        let mut protocol = ProtocolState::new(&handle, session);
+        assert_eq!(protocol.bind_v3_origin(&origin), Err("APP_ORIGIN_UNKNOWN"));
+        let (server, _remote) = UnixStream::pair().unwrap();
+        assert!(
+            protocol
+                .accept_with_origin(&handle, server, &origin)
+                .is_err()
+        );
+    }
+    #[test]
+    fn real_xdg_toplevel_propagates_captured_origin_through_map_and_destroy() {
+        v3_fixture_test_support::run_serially(xdg_lifecycle_case);
+    }
+
+    fn xdg_lifecycle_case() {
+        xdg_lifecycle(false);
+    }
+
+    #[test]
+    fn sealed_v3_owner_keeps_observing_real_xdg_destroy() {
+        v3_fixture_test_support::run_serially(sealed_xdg_lifecycle_case);
+    }
+
+    fn sealed_xdg_lifecycle_case() {
+        xdg_lifecycle(true);
+    }
+
+    fn xdg_lifecycle(seal_before_destroy: bool) {
+        use super::v3_fixture_test_support::FixtureWorker;
+        use crate::linux_desktop_v3::WindowHistory;
+        use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
+        use eidolon_shm_fixture::{FRAMES, Mode};
+        use std::{
+            sync::{Arc, atomic::AtomicBool, mpsc},
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let origin = captured_fixture_origin();
+        let mut display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let mut protocol = ProtocolState::new(&display.handle(), origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        protocol
+            .accept_with_origin(&display.handle(), server, &origin)
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::sync_channel(1);
+        let fixture_stop = stop.clone();
+        let interrupt = client.try_clone().unwrap();
+        let worker = FixtureWorker::spawn(interrupt, stop.clone(), move || {
+            let outcome = eidolon_shm_fixture::run_with_app_id(
+                client,
+                Mode::Pattern,
+                fixture_stop,
+                "mousepad",
+            );
+            let _ = tx.send(outcome);
+        });
+
+        let mut history = WindowHistory::new(origin.clone(), []);
+        history.started();
+        let mut main = None;
+        let mut mapped = false;
+        let mut destroyed = false;
+        let mut sealed = false;
+        let mut completed = None;
+        let started = Instant::now();
+
+        while started.elapsed() < Duration::from_secs(24) {
+            display.dispatch_clients(&mut protocol).unwrap();
+            protocol.finish_dispatch(&display.handle());
+            let samples = protocol.v3_owned_samples(&origin).unwrap();
+            assert!(
+                samples
+                    .iter()
+                    .all(|sample| sample.origin.as_ref() == Some(&origin))
+            );
+
+            if !destroyed {
+                let observed = if sealed {
+                    history.observe_retirements(&samples)
+                } else {
+                    history.observe(&samples)
+                };
+                if main.is_some() && samples.is_empty() {
+                    // The actual xdg_toplevel destroy seals the adopted main;
+                    // neither a replacement root nor input is admitted.
+                    assert_eq!(
+                        observed,
+                        if sealed {
+                            Ok(())
+                        } else {
+                            Err("APP_WINDOW_UNSUPPORTED")
+                        }
+                    );
+                    destroyed = true;
+                    assert!(!history.is_open());
+                } else {
+                    observed.unwrap();
+                    let cut = history.cut().unwrap();
+                    if main.is_none()
+                        && let Some(found) = cut
+                            .windows
+                            .iter()
+                            .find(|window| window.role == Role::Main && window.life == Life::Mapped)
+                            .map(|window| window.window)
+                    {
+                        // Stand-in for an I4 B1 adoption result: this
+                        // protocol test does NOT simulate SDK readiness.
+                        history.commit_main(found).unwrap();
+                        main = Some(found);
+                    }
+                    if let Some(id) = main {
+                        mapped |= cut
+                            .windows
+                            .iter()
+                            .any(|window| window.window == id && window.life == Life::Mapped);
+                    }
+                    if seal_before_destroy && mapped && !sealed {
+                        history.seal();
+                        protocol.seal_new_roles();
+                        sealed = true;
+                        assert!(history.cut().unwrap().admitted.is_empty());
+                    }
+                }
+            }
+
+            let tick =
+                Duration::from_nanos((started.elapsed().as_millis() as u64 + 1) * 16_666_667);
+            for window in protocol.windows() {
+                protocol.frame_callbacks(window.window, tick, true, true, true);
+            }
+            display.flush_clients().unwrap();
+            match rx.try_recv() {
+                Ok(result) => {
+                    completed = Some(result);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        let joined = worker.join();
+        v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
+        joined.unwrap();
+        let report = completed
+            .expect("real Wayland lifecycle timed out")
+            .unwrap();
+        assert_eq!(report.frames, FRAMES);
+        assert!(!report.protocol_error);
+        assert!(
+            mapped && main.is_some(),
+            "actual mapped main was never observed"
+        );
+        if !destroyed {
+            display.dispatch_clients(&mut protocol).unwrap();
+            protocol.finish_dispatch(&display.handle());
+            let samples = protocol.v3_owned_samples(&origin).unwrap();
+            if sealed {
+                history.observe_retirements(&samples).unwrap();
+            } else {
+                assert_eq!(history.observe(&samples), Err("APP_WINDOW_UNSUPPORTED"));
+            }
+            destroyed = true;
+        }
+        assert!(destroyed);
+        assert_eq!(history.pending_retirements(), 1);
+        assert_eq!(sealed, seal_before_destroy);
+        assert!(protocol.v3_window_retired(&origin, main.unwrap()));
+        // Real Destroy is not evidence of SDK retirement, even when the
+        // compositor has removed the window record.
+        assert!(!history.confirm_retired(main.unwrap(), true, false));
+        assert_eq!(history.pending_retirements(), 1);
+    }
+
+    #[test]
+    fn actual_wayland_app_id_and_title_mutation_cannot_reassign_origin_or_main() {
+        v3_fixture_test_support::run_serially(metadata_mutation_case);
+    }
+
+    fn metadata_mutation_case() {
+        use super::v3_fixture_test_support::FixtureWorker;
+        use crate::linux_desktop_v3::WindowHistory;
+        use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
+        use eidolon_shm_fixture::{FRAMES, Mode};
+        use std::{
+            sync::{Arc, atomic::AtomicBool, mpsc},
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let origin = captured_fixture_origin();
+        let mut display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let mut protocol = ProtocolState::new(&display.handle(), origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        protocol
+            .accept_with_origin(&display.handle(), server, &origin)
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let fixture_stop = stop.clone();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let interrupt = client.try_clone().unwrap();
+        let worker = FixtureWorker::spawn(interrupt, stop.clone(), move || {
+            let outcome = eidolon_shm_fixture::run_with_app_id_mutation(
+                client,
+                Mode::Pattern,
+                fixture_stop,
+                "mousepad",
+                Some("untrusted.changed.app_id"),
+            );
+            let _ = tx.send(outcome);
+        });
+
+        let mut history = WindowHistory::new(origin.clone(), []);
+        history.started();
+        let mut main = None;
+        let mut rejected_mutation = false;
+        let mut completed = None;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(24) {
+            display.dispatch_clients(&mut protocol).unwrap();
+            protocol.finish_dispatch(&display.handle());
+            let samples = protocol.v3_samples();
+            // Application-controlled title/app_id never create or replace
+            // an origin; the accepted ClientState is the identity authority.
+            assert!(samples.iter().all(|s| s.origin.as_ref() == Some(&origin)));
+            if !rejected_mutation {
+                match history.observe(&samples) {
+                    Ok(()) => {
+                        let cut = history.cut().unwrap();
+                        if main.is_none()
+                            && let Some(id) = cut
+                                .windows
+                                .iter()
+                                .find(|w| w.role == Role::Main && w.life == Life::Mapped)
+                                .map(|w| w.window)
+                        {
+                            history.commit_main(id).unwrap();
+                            main = Some(id);
+                        }
+                    }
+                    Err("APP_WINDOW_UNSUPPORTED") => {
+                        assert!(main.is_some());
+                        assert!(samples.iter().any(|s| {
+                            s.window == main.unwrap()
+                                && s.app_id.as_deref() == Some("untrusted.changed.app_id")
+                        }));
+                        rejected_mutation = true;
+                    }
+                    Err(error) => panic!("unexpected window history error: {error}"),
+                }
+            }
+            for window in protocol.windows() {
+                protocol.frame_callbacks(
+                    window.window,
+                    Duration::from_millis(start.elapsed().as_millis() as u64 + 1),
+                    true,
+                    true,
+                    true,
+                );
+            }
+            display.flush_clients().unwrap();
+            match rx.try_recv() {
+                Ok(result) => {
+                    completed = Some(result);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        let joined = worker.join();
+        v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
+        joined.unwrap();
+        let report = completed.expect("real mutation fixture timed out").unwrap();
+        assert_eq!(report.frames, FRAMES);
+        assert!(!report.protocol_error);
+        assert!(rejected_mutation, "app_id mutation did not revoke main");
+        assert!(main.is_some());
+    }
+
+    #[test]
+    fn real_v3_nested_parent_unmap_and_destroy_revoke_descendant_input() {
+        v3_fixture_test_support::run_serially(nested_parent_case);
+    }
+
+    fn nested_parent_case() {
+        use super::v3_fixture_test_support::FixtureWorker;
+        use crate::linux_desktop_v3::WindowHistory;
+        use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
+        use eidolon_shm_fixture::capacity::{ParentControl, ParentStage};
+        use std::{
+            sync::{Arc, atomic::AtomicBool, mpsc},
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let origin = captured_fixture_origin();
+        let mut display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let mut protocol = ProtocolState::new(&display.handle(), origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        protocol
+            .accept_with_origin(&display.handle(), server, &origin)
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let fixture_stop = stop.clone();
+        let (steps_tx, steps_rx) = mpsc::sync_channel(1);
+        let (replies_tx, replies_rx) = mpsc::sync_channel(1);
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let interrupt = client.try_clone().unwrap();
+        let worker = FixtureWorker::spawn(interrupt, stop.clone(), move || {
+            let result = eidolon_shm_fixture::capacity::run_v3_parent_lifecycle(
+                client,
+                fixture_stop,
+                ParentControl {
+                    steps: steps_tx,
+                    replies: replies_rx,
+                },
+            );
+            let _ = result_tx.send(result);
+        });
+        let mut history = WindowHistory::new(origin.clone(), []);
+        history.started();
+        let mut adopted = false;
+        let mut mapped_ids = None;
+        let mut stages = Vec::new();
+        let mut history_sealed = false;
+        let mut result = None;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(24) {
+            display.dispatch_clients(&mut protocol).unwrap();
+            protocol.finish_dispatch(&display.handle());
+            let samples = protocol.v3_samples();
+            assert!(samples.iter().all(|s| s.origin.as_ref() == Some(&origin)));
+            if !history_sealed {
+                history.observe(&samples).unwrap();
+                if !adopted
+                    && let Some(main) = history
+                        .cut()
+                        .unwrap()
+                        .windows
+                        .iter()
+                        .find(|w| w.role == Role::Main && w.life == Life::Mapped)
+                        .map(|w| w.window)
+                {
+                    history.commit_main(main).unwrap();
+                    adopted = true;
+                }
+            }
+            if let Ok(stage) = steps_rx.try_recv() {
+                stages.push(stage);
+                let cut = history.cut().unwrap();
+                match stage {
+                    ParentStage::ChainMapped => {
+                        assert!(adopted);
+                        assert_eq!(cut.admitted.len(), 3);
+                        let ids = samples.iter().map(|s| s.window).collect::<Vec<_>>();
+                        assert_eq!(ids.len(), 3);
+                        mapped_ids = Some(ids);
+                    }
+                    ParentStage::ParentUnmapped => {
+                        assert_eq!(samples.len(), 3);
+                        assert_eq!(cut.admitted.len(), 1);
+                        assert!(samples.iter().any(|s| s.life == Life::Unmapped));
+                        let all = mapped_ids.as_ref().unwrap();
+                        assert!(samples.iter().all(|s| all.contains(&s.window)));
+                    }
+                    ParentStage::ParentRemapped => {
+                        assert_eq!(samples.len(), 3);
+                        assert!(cut.admitted.len() <= 2);
+                        assert!(cut.admitted.contains(&cut.fixed_main.unwrap()));
+                        let all = mapped_ids.as_ref().unwrap();
+                        assert!(samples.iter().all(|s| all.contains(&s.window)));
+                    }
+                    ParentStage::ParentDestroyed => {
+                        assert_eq!(samples.len(), 2);
+                        assert_eq!(history.pending_retirements(), 1);
+                        assert_eq!(cut.admitted.len(), 1);
+                        history_sealed = true;
+                    }
+                }
+                replies_tx.send(()).unwrap();
+            }
+            for window in protocol.windows() {
+                protocol.frame_callbacks(
+                    window.window,
+                    Duration::from_millis(start.elapsed().as_millis() as u64 + 1),
+                    true,
+                    true,
+                    true,
+                );
+            }
+            display.flush_clients().unwrap();
+            match result_rx.try_recv() {
+                Ok(done) => {
+                    result = Some(done);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        let joined = worker.join();
+        v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
+        joined.unwrap();
+        result.expect("real xdg parent fixture timed out").unwrap();
+        assert_eq!(stages.len(), 4);
+        assert_eq!(history.pending_retirements(), 1);
+    }
+    #[test]
+    fn real_v3_nine_toplevels_reject_tenth_and_hold_slot_until_retired() {
+        v3_fixture_test_support::run_serially(nine_toplevels_case);
+    }
+
+    fn nine_toplevels_case() {
+        use super::v3_fixture_test_support::FixtureWorker;
+        use crate::linux_desktop_v3::WindowHistory;
+        use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
+        use eidolon_shm_fixture::capacity::{Control, Stage};
+        use std::{
+            sync::{Arc, atomic::AtomicBool, mpsc},
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let origin = captured_fixture_origin();
+        let mut display =
+            smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let mut protocol = ProtocolState::new(&display.handle(), origin.session());
+        protocol.bind_v3_origin(&origin).unwrap();
+        let (server, client) = UnixStream::pair().unwrap();
+        protocol
+            .accept_with_origin(&display.handle(), server, &origin)
+            .unwrap();
+        let (steps_tx, steps_rx) = mpsc::sync_channel(1);
+        let (replies_tx, replies_rx) = mpsc::sync_channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let fixture_stop = stop.clone();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let interrupt = client.try_clone().unwrap();
+        let worker = FixtureWorker::spawn(interrupt, stop.clone(), move || {
+            let result = eidolon_shm_fixture::capacity::run_v3(
+                client,
+                9,
+                fixture_stop,
+                Control {
+                    steps: steps_tx,
+                    replies: replies_rx,
+                },
+            );
+            let _ = result_tx.send(result);
+        });
+
+        let mut history = WindowHistory::new(origin.clone(), []);
+        history.started();
+        let mut original_last = None;
+        let mut stages = Vec::new();
+        let mut ended_capacity_stages = false;
+        let mut result = None;
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(26) {
+            display.dispatch_clients(&mut protocol).unwrap();
+            protocol.finish_dispatch(&display.handle());
+            let samples = protocol.v3_samples();
+            assert!(samples.iter().all(|s| s.origin.as_ref() == Some(&origin)));
+            if !ended_capacity_stages {
+                history.observe(&samples).unwrap();
+                if history.fixed_main().is_none() {
+                    let cut = history.cut().unwrap();
+                    if let Some(main) = cut
+                        .windows
+                        .iter()
+                        .find(|w| w.role == Role::Main && w.life == Life::Mapped)
+                        .map(|w| w.window)
+                    {
+                        history.commit_main(main).unwrap();
+                    }
+                }
+            }
+            if let Ok(stage) = steps_rx.try_recv() {
+                stages.push(stage);
+                let cut = history.cut().unwrap();
+                match stage {
+                    Stage::Full => {
+                        assert_eq!(samples.len(), 9);
+                        assert_eq!(cut.admitted.len(), 9);
+                        original_last = samples.iter().map(|s| s.window).max();
+                    }
+                    Stage::RejectedCommit => {
+                        assert_eq!(samples.len(), 9);
+                        assert_eq!(protocol.rejected_toplevel_count(), 1);
+                        assert_eq!(cut.admitted.len(), 9);
+                    }
+                    Stage::RejectedDestroyed | Stage::SurvivorUpdated => {
+                        assert_eq!(cut.admitted.len(), 9);
+                    }
+                    Stage::Vacancy => {
+                        assert_eq!(samples.len(), 8);
+                        assert_eq!(history.pending_retirements(), 1);
+                        assert_eq!(cut.admitted.len(), 8);
+                    }
+                    Stage::Replacement => {
+                        assert_eq!(samples.len(), 9);
+                        assert_eq!(history.pending_retirements(), 1);
+                        assert_eq!(cut.admitted.len(), 8);
+                        let survivor = cut.fixed_main.unwrap();
+                        assert!(cut.admitted.contains(&survivor));
+                        // This is an explicitly test-supplied double receipt,
+                        // NOT evidence from an SDK or a product finalizer.
+                        let old = original_last.unwrap();
+                        assert!(!history.confirm_retired(old, true, false));
+                        assert_eq!(history.cut().unwrap().admitted.len(), 8);
+                        assert!(history.confirm_retired(old, true, true));
+                        assert_eq!(history.cut().unwrap().admitted.len(), 9);
+                        ended_capacity_stages = true;
+                    }
+                }
+                replies_tx.send(()).unwrap();
+            }
+            for window in protocol.windows() {
+                protocol.frame_callbacks(
+                    window.window,
+                    Duration::from_millis(started.elapsed().as_millis() as u64 + 1),
+                    true,
+                    true,
+                    true,
+                );
+            }
+            display.flush_clients().unwrap();
+            match result_rx.try_recv() {
+                Ok(done) => {
+                    result = Some(done);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        let joined = worker.join();
+        v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
+        joined.unwrap();
+        let report = result.expect("real capacity fixture timed out").unwrap();
+        assert_eq!(stages.len(), 6);
+        assert_eq!(report.accepted, 9);
+        assert_eq!(report.closed, 1);
+        assert!(report.rejected_released);
+        assert!(report.survivor_updated);
+        assert!(report.replacement_mapped);
+    }
+}

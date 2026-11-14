@@ -2,7 +2,7 @@
 //! A launch ACK does not imply Started; Started does not imply SDK-visible Ready.
 use super::{
     AppId, Error, FailureReason, MAX_RECORD_BYTES, REVISION, Reason, Result, decode,
-    presentation::{NativeOrigin, PresentationState, Startup},
+    presentation::{NativeOrigin, Observation, PresentationState, Startup},
     require,
 };
 use crate::{
@@ -233,6 +233,54 @@ impl V3Report {
                     && self.remote_cleanup.complete()
                     && self.local_retirement.complete(),
                 "RECOVERY_REQUIRED",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Enforce provenance against the native owner's same-tick Observation and
+    /// the one B1 Startup. validate() alone deliberately cannot prove freshness.
+    /// The three admission flags must be supplied by the live native owner.
+    pub fn validate_current(
+        &self,
+        observation: &Observation,
+        startup: &Startup,
+        runtime_live: bool,
+        stop_intent: bool,
+        admission_open: bool,
+    ) -> Result<()> {
+        self.validate()?;
+        require(
+            observation.origin() == &self.origin && startup.origin() == &self.origin,
+            "APP_ORIGIN_UNKNOWN",
+        )?;
+        let expected_presentation = PresentationSummary::from_startup(startup)?;
+        require(
+            self.presentation.as_ref() == Some(&expected_presentation),
+            "PRESENTATION_STALE",
+        )?;
+        let expected_target = observation.current_evidence().map(|e| SdkTarget {
+            runtime: e.runtime,
+            target: e.target,
+            create_command: e.create_command,
+            action: SdkAction::Create,
+            acknowledged: e.acknowledged,
+            binding_present: e.binding_present,
+            renderer_frame_seen: e.renderer_frame_seen,
+        });
+        // A mismatched current Create cannot disappear into a null Report.
+        require(
+            !observation.has_current_create() || expected_target.is_some(),
+            "PRESENTATION_STALE",
+        )?;
+        // Even a structurally valid Report with a former generation is stale.
+        require(self.sdk_target == expected_target, "PRESENTATION_STALE")?;
+        // A retained Ready snapshot cannot outlive the native owner or
+        // bypass the current I3 admission/lifecycle cut.
+        if expected_presentation.state == PresentationState::Ready {
+            require(
+                runtime_live && !stop_intent && admission_open,
+                "PRESENTATION_STALE",
             )?;
         }
         Ok(())
@@ -486,5 +534,163 @@ mod tests {
             REVISION, REVISION
         );
         assert!(V3Report::parse(duplicated.as_bytes()).is_err());
+    }
+    #[test]
+    fn relaunch_after_origin_cleanup_is_distinct_from_runtime_destruction() {
+        let mut r = report();
+        r.transport.phase = TransportPhase::Complete;
+        r.transport.journal_pending = false;
+        r.cleanup_pending = false;
+        r.remote_cleanup = RemoteCleanup {
+            process_complete: true,
+            pipes_eof: true,
+            boot_changed: false,
+            remote_cleaned: true,
+            receipt_written: true,
+            ssh_channel_complete: true,
+            forward_retired: true,
+            router_drained: true,
+        };
+        r.local_retirement = LocalRetirement {
+            waypipe_stopped: true,
+            listener_retired: true,
+            windows_retired: true,
+            sdk_bindings_released: true,
+            sdk_entities_disposed: true,
+        };
+        // Runtime is intentionally still live for the next origin lease.
+        assert!(!r.runtime_reclamation.complete());
+        r.relaunch_allowed = true;
+        assert!(r.validate().is_ok());
+        let startup = Startup::begin(r.origin.clone(), 1000, vec![]).unwrap();
+        r.presentation = Some(PresentationSummary::from_startup(&startup).unwrap());
+        let observed = Observation::native_builder(r.origin.clone(), 1000)
+            .finish()
+            .unwrap();
+        assert!(
+            r.validate_current(&observed, &startup, true, false, true)
+                .is_ok()
+        );
+        assert!(
+            r.validate_current(&observed, &startup, false, false, true)
+                .is_ok()
+        );
+        assert!(
+            r.validate_current(&observed, &startup, true, true, true)
+                .is_ok()
+        );
+        assert!(
+            r.validate_current(&observed, &startup, true, false, false)
+                .is_ok()
+        );
+        r.local_retirement.sdk_entities_disposed = false;
+        assert!(
+            r.validate().is_err(),
+            "incomplete local retirement forbids next launch"
+        );
+    }
+
+    #[test]
+    fn current_validator_rejects_self_consistent_but_stale_report() {
+        let mut r = report();
+        r.cleanup_pending = false;
+        let startup = Startup::begin(r.origin.clone(), 1000, vec![]).unwrap();
+        r.presentation = Some(PresentationSummary::from_startup(&startup).unwrap());
+        let observed = Observation::native_builder(r.origin.clone(), 1000)
+            .finish()
+            .unwrap();
+        assert!(
+            r.validate_current(&observed, &startup, true, false, true)
+                .is_ok()
+        );
+        let id = TargetKey::from_raw(r.origin.session().get(), 1, 1, 2).unwrap();
+        r.sdk_target = Some(SdkTarget {
+            runtime: r.origin.runtime(),
+            target: id,
+            create_command: CommandSeq::new(4).unwrap(),
+            action: SdkAction::Create,
+            acknowledged: false,
+            binding_present: false,
+            renderer_frame_seen: false,
+        });
+        assert!(
+            r.validate().is_ok(),
+            "structural validation is not freshness validation"
+        );
+        assert_eq!(
+            r.validate_current(&observed, &startup, true, false, true)
+                .unwrap_err()
+                .0,
+            "PRESENTATION_STALE"
+        );
+    }
+
+    #[test]
+    fn ready_requires_current_live_runtime_admission_and_matching_create_command() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
+        ))
+        .unwrap();
+        let case = fixture["presentation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == "ready")
+            .unwrap();
+        let observation =
+            Observation::parse(&serde_json::to_vec(&case["steps"][0]["observation"]).unwrap())
+                .unwrap();
+        let mut r = report();
+        r.transport.phase = TransportPhase::Started;
+        r.transport.launch_accepted = true;
+        r.cleanup_pending = false;
+        let startup = Startup::begin(r.origin.clone(), 1000, vec![])
+            .unwrap()
+            .advance(&observation)
+            .unwrap();
+        let e = observation.current_evidence().unwrap();
+        r.presentation = Some(PresentationSummary::from_startup(&startup).unwrap());
+        r.sdk_target = Some(SdkTarget {
+            runtime: e.runtime,
+            target: e.target,
+            create_command: e.create_command,
+            action: SdkAction::Create,
+            acknowledged: e.acknowledged,
+            binding_present: e.binding_present,
+            renderer_frame_seen: e.renderer_frame_seen,
+        });
+        assert!(
+            r.transport.journal_pending,
+            "live launch journal still exists"
+        );
+        assert!(
+            r.validate_current(&observation, &startup, true, false, true)
+                .is_ok()
+        );
+        for (runtime_live, stop_intent, admission_open) in [
+            (false, false, true),
+            (true, true, true),
+            (true, false, false),
+        ] {
+            assert_eq!(
+                r.validate_current(
+                    &observation,
+                    &startup,
+                    runtime_live,
+                    stop_intent,
+                    admission_open
+                )
+                .unwrap_err()
+                .0,
+                "PRESENTATION_STALE"
+            );
+        }
+        r.sdk_target.as_mut().unwrap().create_command = CommandSeq::new(999).unwrap();
+        assert_eq!(
+            r.validate_current(&observation, &startup, true, false, true)
+                .unwrap_err()
+                .0,
+            "PRESENTATION_STALE"
+        );
     }
 }

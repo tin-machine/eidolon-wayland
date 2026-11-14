@@ -336,6 +336,7 @@ mod tests {
             applied: true,
             error: None,
             decoration: None,
+            v3_evidence_required: false,
         }
     }
     #[test]

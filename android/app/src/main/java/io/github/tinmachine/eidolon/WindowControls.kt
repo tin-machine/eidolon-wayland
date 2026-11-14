@@ -16,7 +16,7 @@ import org.json.JSONObject
 class WindowControls(private val parent: Entity, private val target: String, private val runtime: Long,
     private val sdk: Scene, private val objects: SceneObjectSystem, private val live: ()->Boolean,
     private val layout: WindowControlLayout, private val width: Double, private val height: Double,
-    private val revision: Long,private val move:WindowMoveController,private val menu:(NativeSessionHost.WindowControlTicket)->Boolean) : AutoCloseable {
+    private val revision: Long,private val move:WindowMoveController,private val sdkScope:SdkResourceScope?=null,private val menu:(NativeSessionHost.WindowControlTicket)->Boolean) : AutoCloseable {
     private val ui=Handler(Looper.getMainLooper())
     private var closed=false
     private var enabled=true
@@ -40,7 +40,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
                 val d=position.diameter.toFloat()
                 val bodyPose=getAbsoluteTransform(parent)
                 fun create(mesh: String,collision: MeshCollision,z: Float,scale: Vector3): Entity {
-                    val entity=Entity.create(listOf(Mesh(Uri.parse(mesh),collision),TransformParent(parent),Transform(Pose()),Scale(Vector3(1f))))
+                    val entity=createEntity { Entity.create(listOf(Mesh(Uri.parse(mesh),collision),TransformParent(parent),Transform(Pose()),Scale(Vector3(1f)))) }
                     entityCreates++
                     try {
                         // SDK helpers account for scaleHierarchyApplied; the physical dimensions do not depend on its setting.
@@ -59,15 +59,14 @@ class WindowControls(private val parent: Entity, private val target: String, pri
                     icon=create(when(position.action) {"menu"->WindowControlMeshes.MENU_ICON;"move"->WindowControlMeshes.MOVE_ICON;"focus"->WindowControlMeshes.FOCUS_ICON;else->WindowControlMeshes.CLOSE_ICON},
                         MeshCollision.NoCollision,-.018f-d*.14f,Vector3(d,d,d*.25f))
                     val button=Button(position.action,root,checkNotNull(face),checkNotNull(icon),d);buttons.add(button);adopted=true
-                    (objects.getSceneObject(root) ?: objects.replaceOrReuseSceneObjectFuture(root)).whenComplete {obj,error -> ui.post {
-                        if(!closed && live() && buttons.contains(button)) {
-                            if(error==null && obj!=null) {
-                                runCatching {obj.addInputListener(listener(button))}.onSuccess {
-                                    button.obj=obj;button.listener=it;listenerAdds++
-                                }.onFailure {failures++;setEnabled(false)}
-                            } else {failures++;setEnabled(false)}
-                        }
-                    } }
+                    observe(root, { !closed && live() && buttons.contains(button) }) { obj,error ->
+                        if(error==null && obj!=null) {
+                            val input=listener(button)
+                            runCatching {obj.addInputListener(sdkScope?.listener(input) ?: input)}.onSuccess {
+                                button.obj=obj;button.listener=it;listenerAdds++
+                            }.onFailure {failures++;sdkScope?.failed();setEnabled(false)}
+                        } else {failures++;sdkScope?.failed();setEnabled(false)}
+                    }
                 } catch(error: Exception) {
                     if(!adopted) for(entity in listOfNotNull(icon,face,root)) runCatching {destroyEntity(entity)}
                     throw error
@@ -81,7 +80,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
             if(closed || !enabled || menuOnly && button.action!="menu" || !live() || changed and PRIMARY==0) return false
             val source=sourceOfInput.id;val at=point(hitInfo)
             if(button.action!="move" && NativeSessionHost.windowMoveSourceOwned(source)) return true
-            ui.post {
+            post {
                 if(closed || !enabled || menuOnly && button.action!="menu" || !live()) return@post
                 if(button.action=="move") {
                     if(state and PRIMARY!=0) {if(move.begin(sourceOfInput,downTime)) pressed(button,true)}
@@ -109,22 +108,22 @@ class WindowControls(private val parent: Entity, private val target: String, pri
             return true // Consume only our separate control sphere; no Wayland pointer/key event.
         }
         override fun onDragMove(receiver: SceneObject,hitInfo: HitInfo,sourceOfInput: Entity,state: Int) {
-            val p=point(hitInfo);ui.post {if(!closed) button.press.move(sourceOfInput.id,p,layout.diameter*.3)}
+            val p=point(hitInfo);post {if(!closed) button.press.move(sourceOfInput.id,p,layout.diameter*.3)}
         }
         override fun onHoverStop(receiver: SceneObject,sourceOfInput: Entity) {
-            if(button.action=="move") ui.post {move.pointerLost(sourceOfInput.id)} else cancel(button,sourceOfInput.id)
+            if(button.action=="move") post {move.pointerLost(sourceOfInput.id)} else cancel(button,sourceOfInput.id)
         }
         override fun stopInput(receiver: SceneObject,sourceOfInput: Entity,downTime: Long) {
-            if(button.action=="move") ui.post {move.pointerLost(sourceOfInput.id,downTime)} else cancel(button,sourceOfInput.id)
+            if(button.action=="move") post {move.pointerLost(sourceOfInput.id,downTime)} else cancel(button,sourceOfInput.id)
         }
         override fun onPointerEvent(receiver: SceneObject,hitInfo: HitInfo,type: Int,sourceOfInput: Entity,scrollInfo: Vector2,semanticType: Int) {
             if(button.action=="move") {
-                if(type==PointerEventType.Cancel.id) ui.post {move.cancelSource(sourceOfInput.id,"pointer_cancel")}
-                else if(type==PointerEventType.Unhover.id) ui.post {move.pointerLost(sourceOfInput.id)}
+                if(type==PointerEventType.Cancel.id) post {move.cancelSource(sourceOfInput.id,"pointer_cancel")}
+                else if(type==PointerEventType.Unhover.id) post {move.pointerLost(sourceOfInput.id)}
             } else if(type==PointerEventType.Cancel.id || type==PointerEventType.Unhover.id) cancel(button,sourceOfInput.id)
         }
     }
-    private fun cancel(button: Button,source: Long) {ui.post {if(!closed) {
+    private fun cancel(button: Button,source: Long) {post {if(!closed) {
         button.press.cancel(source);button.tickets.remove(source);button.sources.remove(source);pressed(button,false)
     }}}
     private fun pressed(button: Button,pressed: Boolean) {
@@ -185,12 +184,21 @@ class WindowControls(private val parent: Entity, private val target: String, pri
         closed=true
         buttons.forEach {button ->
             cancelSources(button)
-            runCatching {button.listener?.let {token -> checkNotNull(button.obj).removeInputListener(token);listenerRemoves++}}.onFailure {failures++}
-            for(entity in listOf(button.icon,button.face,button.entity)) runCatching {destroyEntity(entity)}.onFailure {failures++}
+            runCatching {button.listener?.let {token -> checkNotNull(button.obj).removeInputListener(token);listenerRemoves++}}.onFailure {failures++;sdkScope?.failed()}
+            for(entity in listOf(button.icon,button.face,button.entity)) runCatching {destroyEntity(entity)}.onFailure {failures++;sdkScope?.failed()}
         }
         buttons.clear()
     }
-    private fun destroyEntity(entity: Entity) {entity.destroy();entityDestroys++}
+    private fun destroyEntity(entity: Entity) {sdkScope?.destroyEntity(entity) ?: entity.destroy();entityDestroys++}
+    private fun createEntity(create:()->Entity):Entity = sdkScope?.createEntity(create) ?: create()
+    private fun post(action:()->Unit) { sdkScope?.post(action) ?: ui.post { action() } }
+    private fun observe(entity:Entity, valid:()->Boolean, received:(SceneObject?,Throwable?)->Unit) {
+        val scope=sdkScope
+        if(scope!=null) scope.sceneObject({objects.getSceneObject(entity) ?: objects.replaceOrReuseSceneObjectFuture(entity)},valid,received)
+        else (objects.getSceneObject(entity) ?: objects.replaceOrReuseSceneObjectFuture(entity)).whenComplete {obj,error ->
+            ui.post {if(valid()) received(obj,error)}
+        }
+    }
     companion object {
         private var entityCreates=0L
         private var entityDestroys=0L

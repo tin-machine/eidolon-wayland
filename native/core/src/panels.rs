@@ -17,6 +17,8 @@ pub struct PanelCommand {
     pub slot: usize,
     pub error: Option<&'static str>,
     pub decoration: Option<DecorationLayout>,
+    /// Requires the exact v3 Create lease and observed SDK retirement receipts.
+    pub v3_evidence_required: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -61,6 +63,11 @@ impl Controller {
     }
     pub fn snapshot(&self) -> Vec<PanelCommand> {
         self.commands.clone()
+    }
+    pub fn require_v3_evidence(&mut self, target: TargetKey) {
+        if let Some(command) = self.commands.iter_mut().find(|c| c.target == target) {
+            command.v3_evidence_required = true;
+        }
     }
     /// 同じwindowの旧Entityはdestroy ackまで残し、新世代を先行作成しない。
     pub fn reconcile(
@@ -193,6 +200,7 @@ impl Controller {
                 slot,
                 error: None,
                 decoration: layout(session, window),
+                v3_evidence_required: false,
             });
         }
         Ok(())
@@ -253,11 +261,64 @@ impl Controller {
         }
         Status::Accepted
     }
+
+    /// The native retirement owner has already joined the exact renderer fence
+    /// and SDK receipt. An earlier operation failure must not retain a reclaimed
+    /// target forever. Ordinary SDK ACKs cannot use this completion path.
+    pub(crate) fn complete_retired(&mut self, seq: CommandSeq, target: TargetKey) -> Status {
+        let Some(index) = self.commands.iter().position(|command| {
+            command.command_seq == seq
+                && command.target == target
+                && command.action == Action::Destroy
+                && command.v3_evidence_required
+        }) else {
+            return Status::Stale;
+        };
+        self.commands.remove(index);
+        Status::Accepted
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_retirement_receipt_closes_failed_destroy_but_never_live_create() {
+        let mut panels = Controller::default();
+        panels
+            .reconcile(Some(SceneEpoch::new(1).unwrap()), &mapped(), true)
+            .unwrap();
+        let create = panels.snapshot()[0].clone();
+        panels.require_v3_evidence(create.target);
+        assert_eq!(
+            panels.complete_retired(create.command_seq, create.target),
+            Status::Stale
+        );
+        panels.retire(create.target).unwrap();
+        let destroy = panels.snapshot()[0].clone();
+        assert_eq!(
+            panels.acknowledge(destroy.command_seq, destroy.target, Action::Destroy, false),
+            Status::Accepted
+        );
+        assert_eq!(
+            panels.acknowledge(destroy.command_seq, destroy.target, Action::Destroy, true),
+            Status::Failed
+        );
+        assert_eq!(
+            panels.complete_retired(create.command_seq, create.target),
+            Status::Stale
+        );
+        assert_eq!(
+            panels.complete_retired(destroy.command_seq, destroy.target),
+            Status::Accepted
+        );
+        assert!(
+            !panels
+                .snapshot()
+                .iter()
+                .any(|command| command.target == create.target)
+        );
+    }
     #[test]
     fn disabling_decoration_can_recover_from_sdk_creation_failure_without_automatic_retry() {
         use eidolon_model::window::LogicalSize;

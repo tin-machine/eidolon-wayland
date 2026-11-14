@@ -3,6 +3,7 @@ use super::ProtocolState;
 use eidolon_model::{
     ids::{ContentSeq, FrameSeq, SurfaceId, WindowId},
     limits,
+    linux_desktop_v3::presentation::{Life as V3Life, Parent as V3Parent},
     pixels::OwnedRgba,
     window::{
         BufferSizePx, BufferTransform, FrameClock, GeometryError, LogicalPoint, LogicalRect,
@@ -46,6 +47,10 @@ pub(super) struct SurfaceMeta {
 pub(super) struct WindowRecord {
     pub surface: ToplevelSurface,
     pub id: WindowId,
+    /// Immutable provenance copied from ClientState during xdg role creation.
+    pub origin: Option<eidolon_model::linux_desktop_v3::presentation::NativeOrigin>,
+    /// Saved before Smithay resets role parent or reparents a child on unmap.
+    pub pre_unmap_parent: Option<ObjectId>,
     pub life: WindowLife,
     initial: ToplevelState,
     frame: Option<FrameSeq>,
@@ -218,11 +223,18 @@ impl ProtocolState {
         self.next_window = id.checked_next();
         let initial = surface.current_state();
         surface.with_pending_state(|state| state.size = Some((1024, 768).into()));
+        let origin = surface.wl_surface().client().and_then(|client| {
+            client
+                .get_data::<super::ClientState>()
+                .and_then(|data| data.origin.clone())
+        });
         self.toplevels.insert(
             surface.wl_surface().id(),
             WindowRecord {
                 surface,
                 id,
+                origin,
+                pre_unmap_parent: None,
                 life: WindowLife::AwaitingInitialCommit,
                 initial,
                 frame: None,
@@ -383,6 +395,7 @@ impl ProtocolState {
         window.snapshot = None;
         window.resize.unmap();
         let old_parent = window.surface.parent();
+        window.pre_unmap_parent = old_parent.as_ref().map(|parent| parent.id());
         with_states(surface, |states| {
             let mut attrs = states
                 .data_map
@@ -401,7 +414,14 @@ impl ProtocolState {
             .surface
             .with_pending_state(|state| state.size = Some((1024, 768).into()));
         self.counters.unmaps += 1;
-        for child in self.toplevels.values() {
+        for child in self.toplevels.values_mut() {
+            if child
+                .surface
+                .parent()
+                .is_some_and(|parent| parent.id() == surface.id())
+            {
+                child.pre_unmap_parent = Some(surface.id());
+            }
             with_states(child.surface.wl_surface(), |states| {
                 let mut attrs = states
                     .data_map
@@ -870,6 +890,94 @@ impl ProtocolState {
         windows.sort_by_key(|window| window.window);
         windows
     }
+    /// v3-only typed facts. Never reinterpret legacy Option<WindowId>::None
+    /// as an explicit root when the xdg role had an unresolved former parent.
+    pub(crate) fn v3_owned_samples(
+        &self,
+        origin: &eidolon_model::linux_desktop_v3::presentation::NativeOrigin,
+    ) -> Result<Vec<crate::linux_desktop_v3::WindowSample>, &'static str> {
+        if self.verified_origin.as_ref() != Some(origin) {
+            return Err("APP_ORIGIN_UNKNOWN");
+        }
+        Ok(self.v3_samples())
+    }
+
+    /// Retires only this logical window's protocol-owned references. The
+    /// renderer has a separate fence; shared wl_surface/SHM resources remain
+    /// obligations of the origin until the Session's final local close.
+    pub(crate) fn v3_window_retired(
+        &self,
+        origin: &eidolon_model::linux_desktop_v3::presentation::NativeOrigin,
+        window: WindowId,
+    ) -> bool {
+        self.verified_origin.as_ref() == Some(origin)
+            && !self.toplevels.values().any(|record| record.id == window)
+            && !self
+                .surface_meta
+                .values()
+                .any(|meta| meta.window == Some(window))
+    }
+
+    pub fn v3_samples(&self) -> Vec<crate::linux_desktop_v3::WindowSample> {
+        self.toplevels
+            .iter()
+            .map(|(object, record)| {
+                let actual_parent = record.surface.parent().map(|parent| parent.id());
+                // Smithay can implicitly reparent a child when its parent is
+                // unmapped. That is not a client-authorized set_parent event:
+                // the new snapshot parent must not silently replace the
+                // previously captured xdg parent in I3's identity proof.
+                // Until the protocol owner can certify a new explicit parent,
+                // keep the role unresolved rather than promote it to a root
+                // or to a different dialog chain.
+                let parent = if record.pre_unmap_parent.is_some()
+                    && record.pre_unmap_parent != actual_parent
+                {
+                    V3Parent::Unresolved {}
+                } else {
+                    let raw_parent = actual_parent.or_else(|| record.pre_unmap_parent.clone());
+                    match raw_parent {
+                        Some(parent) if parent == *object => V3Parent::Invalid {},
+                        Some(parent) => match self.toplevels.get(&parent) {
+                            Some(ancestor)
+                                if ancestor.origin == record.origin
+                                    && ancestor.origin.is_some() =>
+                            {
+                                V3Parent::Resolved {
+                                    window: ancestor.id,
+                                }
+                            }
+                            Some(_) => V3Parent::Invalid {},
+                            None => V3Parent::Unresolved {},
+                        },
+                        None => V3Parent::None {},
+                    }
+                };
+                let app_id = with_states(record.surface.wl_surface(), |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .app_id
+                        .clone()
+                });
+                crate::linux_desktop_v3::WindowSample {
+                    origin: record.origin.clone(),
+                    window: record.id,
+                    app_id,
+                    parent,
+                    life: if record.life == WindowLife::Mapped {
+                        V3Life::Mapped
+                    } else {
+                        V3Life::Unmapped
+                    },
+                }
+            })
+            .collect()
+    }
+
     pub fn close_window(&mut self, window: WindowId) -> Result<(), &'static str> {
         let record = self
             .toplevels

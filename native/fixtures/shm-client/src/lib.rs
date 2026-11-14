@@ -183,6 +183,29 @@ fn sync(
 }
 
 pub fn run(stream: UnixStream, mode: Mode, stop: Arc<AtomicBool>) -> Result<Report, &'static str> {
+    run_with_app_id(stream, mode, stop, "eidolon.shm.fixture")
+}
+
+/// Host-only real xdg_toplevel lifecycle probe. The production fixture retains
+/// its original app_id; this override is supplied by native-controlled tests.
+pub fn run_with_app_id(
+    stream: UnixStream,
+    mode: Mode,
+    stop: Arc<AtomicBool>,
+    app_id: &str,
+) -> Result<Report, &'static str> {
+    run_with_app_id_mutation(stream, mode, stop, app_id, None)
+}
+
+/// Test-only: mutate title/app_id *after* mapping the same live toplevel.
+/// The Wayland connection remains the original accepted client.
+pub fn run_with_app_id_mutation(
+    stream: UnixStream,
+    mode: Mode,
+    stop: Arc<AtomicBool>,
+    app_id: &str,
+    change_app_id: Option<&str>,
+) -> Result<Report, &'static str> {
     // 転送protocolのrevision文字列と、APKへclient実装をlinkした証拠を分ける。
     std::hint::black_box("eidolon-local-shm-fixture-code-v1");
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -201,7 +224,7 @@ pub fn run(stream: UnixStream, mode: Mode, stop: Arc<AtomicBool>) -> Result<Repo
     let xdg = shell.get_xdg_surface(&surface, &qh, ());
     let toplevel = xdg.get_toplevel(&qh, ());
     toplevel.set_title("再現用SHM fixture".repeat(100));
-    toplevel.set_app_id("eidolon.shm.fixture".into());
+    toplevel.set_app_id(app_id.into());
     surface.commit();
     pump(&connection, &mut queue, &mut state, &stop, deadline, |s| {
         s.configured
@@ -311,6 +334,14 @@ pub fn run(stream: UnixStream, mode: Mode, stop: Arc<AtomicBool>) -> Result<Repo
                 parent.destroy();
             } else {
                 for frame in 0..if mode == Mode::Pattern { FRAMES } else { 1 } {
+                    if mode == Mode::Pattern
+                        && frame == FRAMES / 2
+                        && let Some(changed) = change_app_id
+                    {
+                        toplevel.set_app_id(changed.to_owned());
+                        toplevel.set_title("Wayland title mutated after map".into());
+                        sync(&connection, &mut queue, &mut state, &stop, deadline)?;
+                    }
                     if mode == Mode::Pattern {
                         file.write_all_at(&pattern(frame), 0)
                             .map_err(|_| "MEMFD_WRITE")?;

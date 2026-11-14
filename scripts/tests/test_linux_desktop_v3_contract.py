@@ -210,6 +210,22 @@ class PresentationGoldenTests(unittest.TestCase):
     def test_origin_matches_captured_context_and_selection(self):
         P.NativeOrigin.parse(source("origin")).matches(C.Context.parse(source("context")), C.Selection.parse(source("selection")), C.Pins.parse(source("pins")))
 
+    def test_post_ready_stop_preserves_first_failure_without_startup_cancel(self):
+        case = next(v for v in FIXTURE["presentation"] if v["id"] == "ready")
+        owner = P.NativeOrigin.parse(source("origin"))
+        state = P.Startup.begin(owner, case["t0_ms"], tuple(case["before"]))
+        for step in case["steps"]:
+            state = state.advance(P.Observation.parse(encoded(step["observation"])))
+        self.assertEqual(state.summary()["state"], "ready")
+        previous = state.summary()["first_failure"]
+        stopped = copy.deepcopy(case["steps"][-1]["observation"])
+        stopped["now_ms"] += 1
+        stopped["cancelled"] = True
+        result = state.advance(P.Observation.parse(encoded(stopped)))
+        self.assertEqual(result.summary()["state"], "stopping")
+        self.assertEqual(result.summary()["first_failure"], previous)
+        self.assertTrue(result.summary()["startup_completed"])
+
     def test_fixed_sequences_and_rejected_evidence(self):
         ids = set()
         for case in FIXTURE["presentation"]:

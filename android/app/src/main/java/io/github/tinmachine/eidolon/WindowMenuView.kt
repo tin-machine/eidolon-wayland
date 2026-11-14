@@ -23,7 +23,7 @@ data class WindowMenuItem(val action:String,val label:String,val enabled:Boolean
 /** A single owned menu: bounded small hit spheres and one non-hit, explicitly owned label quad. */
 class WindowMenuView(private val parent:Entity,private val layout:WindowControlLayout,private val width:Double,private val height:Double,
     private val sdk:Scene,private val objects:SceneObjectSystem,private val live:()->Boolean,private val ownsInput:()->Boolean,
-    private val larger:Boolean,private val smaller:Boolean,items:List<WindowMenuItem>?=null,private val action:(String)->Unit):AutoCloseable {
+    private val larger:Boolean,private val smaller:Boolean,items:List<WindowMenuItem>?=null,private val sdkScope:SdkResourceScope?=null,private val action:(String)->Unit):AutoCloseable {
     private class Button(val name:String,val root:Entity,val face:Entity,val icon:Entity,val enabled:Boolean) {
         var obj:SceneObject?=null;var listener:Long?=null
         val press=WindowControlPress();val sources=linkedMapOf<Long,Pair<Entity,Int>>()
@@ -55,6 +55,9 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
     private var initialized=false
     /** Caller must retain this owner before the first native allocation. Failure is cleaned through that same reference. */
     fun initialize() {
+        sdkScope?.produce { initializeOwned() } ?: initializeOwned()
+    }
+    private fun initializeOwned() {
         check(!initialized && !closing && !disposed);initialized=true
         try {
             val first=layout.positions(width,height).first();val side=if(layout.anchor.endsWith("right")) 1 else -1
@@ -71,7 +74,7 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
                 canvas.drawText(row.label,155f,baseline,paint)
                 val py=y+(.5-(index+.5)/rows.size)*menuHeight
                 fun entity(uri:String,collision:MeshCollision,scale:Vector3,z:Float=-.058f):Entity {
-                    val e=Entity.create(listOf(Mesh(Uri.parse(uri),collision),TransformParent(parent),Transform(Pose()),Scale(Vector3(1f))));entityCreates++;unadopted.add(e)
+                    val e=createEntity { Entity.create(listOf(Mesh(Uri.parse(uri),collision),TransformParent(parent),Transform(Pose()),Scale(Vector3(1f)))) };entityCreates++;unadopted.add(e)
                     setAbsoluteTransform(e,pose*Pose(Vector3((x-.15).toFloat(),py.toFloat(),z)));setAbsoluteScale(e,scale)
                     return e
                 }
@@ -81,12 +84,14 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
                     face=entity(when(row.action) {"larger"->WindowControlMeshes.FOCUS;"smaller"->WindowControlMeshes.CLOSE;else->WindowControlMeshes.MOVE},MeshCollision.NoCollision,Vector3(.069f,.069f,.018f),-.059f)
                     icon=entity(when(row.action) {"larger"->WindowControlMeshes.SIZE_UP_ICON;"smaller"->WindowControlMeshes.SIZE_DOWN_ICON;"recenter"->WindowControlMeshes.FOCUS_ICON;else->WindowControlMeshes.MENU_BACK_ICON},MeshCollision.NoCollision,Vector3(.08f,.08f,.02f),-.070f)
                     val b=Button(row.action,root,face,icon,row.enabled);buttons.add(b);unadopted.removeAll(b.owned)
-                    (objects.getSceneObject(root) ?: objects.replaceOrReuseSceneObjectFuture(root)).whenComplete {value,error -> ui.post {
-                        if(!closing && live() && buttons.contains(b)) {
-                            if(error!=null || value==null) {failures++;return@post}
-                            runCatching {val token=value.addInputListener(listener(b));b.obj=value;b.listener=token;listenerAdds++}.onFailure {failures++}
+                    observe(root, { !closing && live() && buttons.contains(b) }) { value,error ->
+                        if(error!=null || value==null) {failures++;sdkScope?.failed()}
+                        else {
+                            val input=listener(b)
+                            runCatching {val token=value.addInputListener(sdkScope?.listener(input) ?: input);b.obj=value;b.listener=token;listenerAdds++}
+                                .onFailure {failures++;sdkScope?.failed()}
                         }
-                    } }
+                    }
                 } catch(failure:Exception) {throw failure}
             }
             texture=SceneTexture(WIDTH,HEIGHT,1,SamplerConfig(),Color.valueOf(Color.TRANSPARENT)).also {textureCreates++}
@@ -95,7 +100,7 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
             mesh=SceneMesh.meshWithMaterials(floatArrayOf(-.5f,.5f,0f,.5f,.5f,0f,.5f,-.5f,0f,-.5f,-.5f,0f),
                 floatArrayOf(0f,0f,-1f,0f,0f,-1f,0f,0f,-1f,0f,0f,-1f),floatArrayOf(0f,0f,1f,0f,1f,1f,0f,1f),IntArray(4){Color.WHITE},
                 intArrayOf(0,1,2,0,2,3),intArrayOf(0,6),arrayOf(checkNotNull(material)),true).also {meshCreates++}
-            label=Entity.create(listOf(TransformParent(parent),Transform(Pose()),Scale(Vector3(1f)),Hittable(MeshCollision.NoCollision),Visible(true))).also {entityCreates++}
+            label=createEntity { Entity.create(listOf(TransformParent(parent),Transform(Pose()),Scale(Vector3(1f)),Hittable(MeshCollision.NoCollision),Visible(true))) }.also {entityCreates++}
             setAbsoluteTransform(checkNotNull(label),pose*Pose(Vector3(x.toFloat(),y.toFloat(),-.055f)));setAbsoluteScale(checkNotNull(label),Vector3(.42f,menuHeight.toFloat(),1f))
             obj=SceneObject(sdk,checkNotNull(mesh),"eidolon-window-menu",checkNotNull(label)).also {objectCreates++}
             val actual=getAbsoluteTransform(checkNotNull(label));checkNotNull(obj).apply {setPosition(actual.t);setRotationQuat(actual.q);setScale(getAbsoluteScale(checkNotNull(label)));setIsVisible(true)}
@@ -116,7 +121,7 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
         override fun onInput(receiver:SceneObject,hitInfo:HitInfo,sourceOfInput:Entity,changed:Int,buttonState:Int,downTime:Long):Boolean {
             if(closing || !live() || !button.enabled || failures>0 || changed and PRIMARY==0) return false
             val source=sourceOfInput.id;val point=listOf(hitInfo.point.x.toDouble(),hitInfo.point.y.toDouble(),hitInfo.point.z.toDouble())
-            ui.post {
+            post {
                 if(closing || !live() || !button.enabled || failures>0) return@post
                 if(buttonState and PRIMARY!=0) {
                     if(starts.accept(source,downTime) && button.press.down(source,downTime,button.name,point)) button.sources[source]=sourceOfInput to buttonState
@@ -128,10 +133,10 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
                 }
             };return true
         }
-        override fun onDragMove(receiver:SceneObject,hitInfo:HitInfo,sourceOfInput:Entity,buttonState:Int) {ui.post {button.press.move(sourceOfInput.id,listOf(hitInfo.point.x.toDouble(),hitInfo.point.y.toDouble(),hitInfo.point.z.toDouble()),.024)}}
-        override fun onHoverStop(receiver:SceneObject,sourceOfInput:Entity) {ui.post {button.press.cancel(sourceOfInput.id)}}
-        override fun stopInput(receiver:SceneObject,sourceOfInput:Entity,downTime:Long) {ui.post {button.press.cancel(sourceOfInput.id)}}
-        override fun onPointerEvent(receiver:SceneObject,hitInfo:HitInfo,type:Int,sourceOfInput:Entity,scrollInfo:Vector2,semanticType:Int) {if(type==PointerEventType.Cancel.id || type==PointerEventType.Unhover.id) ui.post {button.press.cancel(sourceOfInput.id)}}
+        override fun onDragMove(receiver:SceneObject,hitInfo:HitInfo,sourceOfInput:Entity,buttonState:Int) {post {button.press.move(sourceOfInput.id,listOf(hitInfo.point.x.toDouble(),hitInfo.point.y.toDouble(),hitInfo.point.z.toDouble()),.024)}}
+        override fun onHoverStop(receiver:SceneObject,sourceOfInput:Entity) {post {button.press.cancel(sourceOfInput.id)}}
+        override fun stopInput(receiver:SceneObject,sourceOfInput:Entity,downTime:Long) {post {button.press.cancel(sourceOfInput.id)}}
+        override fun onPointerEvent(receiver:SceneObject,hitInfo:HitInfo,type:Int,sourceOfInput:Entity,scrollInfo:Vector2,semanticType:Int) {if(type==PointerEventType.Cancel.id || type==PointerEventType.Unhover.id) post {button.press.cancel(sourceOfInput.id)}}
     }
     fun metadata()=JSONObject().put("closing",closing).put("disposed",disposed).put("buttons",buttons.size).put("listeners_ready",buttons.count {it.listener!=null})
         .put("label_ready",obj?.handle?.let {it!=0L}==true).put("failures",failures).put("label_non_hit",true)
@@ -147,14 +152,24 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
                 b.root.setComponent(Hittable(MeshCollision.NoCollision))
             }
             if(buttons.isNotEmpty() && ownsInput()) sdk.resolveInput()
-            while(buttons.isNotEmpty()) {val b=buttons.last();while(b.owned.isNotEmpty()) {b.owned.first().destroy();entityDestroys++;b.owned.removeAt(0)};buttons.removeAt(buttons.lastIndex)}
-            while(unadopted.isNotEmpty()) {unadopted.first().destroy();entityDestroys++;unadopted.removeAt(0)}
+            while(buttons.isNotEmpty()) {val b=buttons.last();while(b.owned.isNotEmpty()) {destroyEntity(b.owned.first());entityDestroys++;b.owned.removeAt(0)};buttons.removeAt(buttons.lastIndex)}
+            while(unadopted.isNotEmpty()) {destroyEntity(unadopted.first());entityDestroys++;unadopted.removeAt(0)}
             label?.let {objects.removeSceneObject(it)}
             obj?.let {it.setIsVisible(false);it.destroy();objectDestroys++;obj=null}
-            label?.let {it.destroy();entityDestroys++;label=null}
+            label?.let {destroyEntity(it);entityDestroys++;label=null}
             mesh?.let {it.destroy();meshDestroys++;mesh=null};material?.let {it.destroy();materialDestroys++;material=null};texture?.let {it.destroy();textureDestroys++;texture=null}
             bitmap=null;pixels=null;disposed=true;owners.remove(this)
-        } catch(failure:Exception) {failures++;throw failure}
+        } catch(failure:Exception) {sdkScope?.failed();failures++;throw failure}
+    }
+    private fun destroyEntity(entity:Entity) {sdkScope?.destroyEntity(entity) ?: entity.destroy()}
+    private fun createEntity(create:()->Entity):Entity = sdkScope?.createEntity(create) ?: create()
+    private fun post(action:()->Unit) {sdkScope?.post(action) ?: ui.post {action()} }
+    private fun observe(entity:Entity,valid:()->Boolean,received:(SceneObject?,Throwable?)->Unit) {
+        val scope=sdkScope
+        if(scope!=null) scope.sceneObject({objects.getSceneObject(entity) ?: objects.replaceOrReuseSceneObjectFuture(entity)},valid,received)
+        else (objects.getSceneObject(entity) ?: objects.replaceOrReuseSceneObjectFuture(entity)).whenComplete {obj,error ->
+            ui.post {if(valid()) received(obj,error)}
+        }
     }
     companion object {
         private const val WIDTH=512;private const val HEIGHT=256
