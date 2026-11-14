@@ -185,7 +185,12 @@ mod tests {
         assert!(authority.confirm(&incomplete).is_err());
         assert!(super::super::journal::pending(&dir.0).unwrap().is_some());
         let local = authority.confirm(&retired()).unwrap();
-        assert_eq!(finalize_reclaimed(&mut deferred, &local).unwrap().generation(), 7);
+        assert_eq!(
+            finalize_reclaimed(&mut deferred, &local)
+                .unwrap()
+                .generation(),
+            7
+        );
         assert!(super::super::journal::pending(&dir.0).unwrap().is_none());
     }
 

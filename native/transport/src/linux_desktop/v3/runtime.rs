@@ -317,7 +317,11 @@ mod tests {
         let (admission, _rx, cancel, selection) = setup();
         let permit = reserve(&admission, &selection);
         admission.seal();
-        assert!(admission.enqueue(permit, Path::new("/tmp/eidolon-v3-test.sock")).is_err());
+        assert!(
+            admission
+                .enqueue(permit, Path::new("/tmp/eidolon-v3-test.sock"))
+                .is_err()
+        );
         assert!(cancel.is_cancelled());
     }
 
