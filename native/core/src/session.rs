@@ -2,16 +2,19 @@
 use crate::{
     compositor::protocol::{Counters, ProtocolState, WindowReport},
     helper::RuntimeDirectory,
+    linux_desktop_v3::{I3WindowCut, WindowHistory},
     waypipe::{ClientReport, LocalClient},
 };
 use eidolon_model::{
     commands::AppMode,
     ids::{CommandSeq, SessionId, WindowId},
+    linux_desktop_v3::presentation::NativeOrigin,
     window::{LogicalSize, WindowLife},
 };
 use serde::Serialize;
 use smithay::reexports::wayland_server::Display;
 use std::{
+    collections::BTreeSet,
     fs,
     os::unix::net::UnixListener,
     path::{Path, PathBuf},
@@ -85,6 +88,10 @@ pub struct Session {
     workload: crate::workload::Tracker,
     desktop_request: Option<CommandSeq>,
     desktop_started: bool,
+    v3_origin: Option<NativeOrigin>,
+    v3_history: Option<WindowHistory>,
+    /// Current admission AND current SDK target; cleared on every revocation.
+    v3_input_allowed: BTreeSet<WindowId>,
 }
 pub struct Options {
     pub virtual_clock: bool,
@@ -102,6 +109,34 @@ impl Session {
     ) -> Self {
         Self::start_with_setup(session, files, executable, nonce, mode, options, |_| {})
     }
+    /// The origin was minted by I2 LaunchPermit. This path owns the same
+    /// listener, directory, display, worker and partial-failure cleanup as v2.
+    /// Never use this constructor for an unverified remote-supplied origin.
+    pub fn start_v3(
+        session: SessionId,
+        files: &Path,
+        executable: &Path,
+        permit: &eidolon_transport::linux_desktop::v3::runtime::LaunchPermit,
+        options: Options,
+    ) -> Self {
+        let origin = permit.origin().clone();
+        let nonce = permit.local_nonce().as_str();
+        if origin.session() != session {
+            return Self::failed_start(session, nonce, AppMode::LinuxDesktop,
+                options.virtual_clock, "APP_ORIGIN_UNKNOWN");
+        }
+        let mut current = Self::start(
+            session, files, executable, nonce, AppMode::LinuxDesktop, options
+        );
+        // No client can be accepted until the owner's first dispatch, so the
+        // immutable provenance is installed before dispatch is possible.
+        if !current.report.startup_failed {
+            current.v3_history = Some(WindowHistory::new(origin.clone(), []));
+            current.v3_origin = Some(origin);
+        }
+        current
+    }
+
     fn start_with_setup(
         session: SessionId,
         files: &Path,
@@ -200,6 +235,9 @@ impl Session {
             workload: Default::default(),
             desktop_request: None,
             desktop_started: false,
+            v3_origin: None,
+            v3_history: None,
+            v3_input_allowed: BTreeSet::new(),
         }
     }
     pub fn snapshot(&self) -> Report {
@@ -236,9 +274,54 @@ impl Session {
         self.virtual_clock
     }
     fn owns_window(&self, window: WindowId) -> bool {
+        if self.v3_origin.is_some() {
+            return self.v3_input_allowed.contains(&window);
+        }
         self.mode() != AppMode::LinuxDesktop
             || (self.desktop_started && self.report.gui_windows.contains(&window))
     }
+
+    pub fn is_v3(&self) -> bool {
+        self.v3_origin.is_some()
+    }
+
+    pub fn v3_origin(&self) -> Option<&NativeOrigin> {
+        self.v3_origin.as_ref()
+    }
+
+    pub fn v3_transport_started(&mut self, origin: &NativeOrigin) -> Result<(), &'static str> {
+        if self.closing || self.v3_origin.as_ref() != Some(origin) {
+            return Err("APP_ORIGIN_UNKNOWN");
+        }
+        self.v3_history.as_mut().ok_or("NOT_READY")?.started();
+        Ok(())
+    }
+
+    pub fn v3_cut(&mut self) -> Result<I3WindowCut, &'static str> {
+        self.v3_history.as_mut().ok_or("NOT_READY")?.cut()
+    }
+
+    pub fn v3_commit_main(&mut self, main: WindowId) -> Result<(), &'static str> {
+        self.v3_history.as_mut().ok_or("NOT_READY")?.commit_main(main)
+    }
+
+    /// Caller may only supply I4 current-target evidence. This method is the
+    /// last barrier for all input methods including popup and IME.
+    pub fn set_v3_input_allowed(&mut self, allowed: BTreeSet<WindowId>) {
+        if self.v3_origin.is_none() {
+            return;
+        }
+        let next = if self.closing || self.v3_history.as_ref().is_none_or(|h| !h.is_open()) {
+            BTreeSet::new()
+        } else {
+            allowed
+        };
+        if self.v3_input_allowed != next {
+            self.v3_input_allowed = next;
+            self.reset_input();
+        }
+    }
+
     /// Native reservation と request を先に捕捉し、後の transport ACK と照合する。
     pub fn reserve_desktop(&mut self, request: CommandSeq) -> Result<(), &'static str> {
         if self.mode() != AppMode::LinuxDesktop
@@ -667,6 +750,10 @@ impl Session {
         let admitted_before = self.report.gui_windows.clone();
         self.closing |= close;
         if self.closing {
+            if let Some(history) = self.v3_history.as_mut() {
+                history.seal();
+                self.v3_input_allowed.clear();
+            }
             self.reset_input();
             self.report.state = "closing";
             self.report.ready = false;
@@ -781,7 +868,11 @@ impl Session {
                 };
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        match state.accept(&display.handle(), stream) {
+                        let accepted = match self.v3_origin.as_ref() {
+                            Some(origin) => state.accept_with_origin(&display.handle(), stream, origin),
+                            None => state.accept(&display.handle(), stream),
+                        };
+                        match accepted {
                             Ok(_) => self.report.accepted += 1,
                             Err("RESOURCE_LIMIT") => (), // 新接続だけdrop。既存clientのSessionを失敗させない。
                             Err(error) => return Err(error),
@@ -863,7 +954,30 @@ impl Session {
             return;
         };
         self.report.windows = state.windows();
-        if self.report.mode == Some(AppMode::LinuxDesktop) {
+        if self.v3_origin.is_some() && self.closing {
+            self.report.gui_windows.clear();
+            self.report.remote_gui_verified = false;
+            self.v3_input_allowed.clear();
+        } else if self.v3_origin.is_some() {
+            let v3_result = self.v3_history.as_mut().ok_or("NOT_READY")
+                .and_then(|history| history.observe(&state.v3_samples())
+                    .and_then(|()| history.cut()));
+            match v3_result {
+                Ok(cut) => {
+                    self.report.gui_windows = cut.admitted.into_iter().collect();
+                    self.report.remote_gui_verified = !self.report.gui_windows.is_empty();
+                }
+                Err(error) => {
+                    self.report.gui_windows.clear();
+                    self.v3_input_allowed.clear();
+                    // This function still borrows the compositor state for
+                    // stats; record the fatal outcome without re-borrowing self.
+                    self.report.error.get_or_insert(error);
+                    self.report.state = "fail";
+                    self.closing = true;
+                }
+            }
+        } else if self.report.mode == Some(AppMode::LinuxDesktop) {
             self.report.gui_windows =
                 if self.desktop_started && !self.closing && self.report.error.is_none() {
                     let windows = self

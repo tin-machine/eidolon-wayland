@@ -6,6 +6,7 @@ use super::{
 use eidolon_model::{
     ids::{ContentSeq, SessionId, SurfaceId, WindowId},
     limits,
+    linux_desktop_v3::presentation::NativeOrigin,
     pixels::{OwnedRgba, PixelBudget},
 };
 use smithay::{
@@ -60,6 +61,8 @@ use std::{
 #[derive(Default)]
 pub struct ClientState {
     compositor: CompositorClientState,
+    /// Set exactly once at native accept. A v2 or Termux client has no v3 origin.
+    pub(crate) origin: Option<NativeOrigin>,
 }
 impl ClientData for ClientState {
     fn initialized(&self, _: ClientId) {}
@@ -268,6 +271,29 @@ impl ProtocolState {
         dh: &DisplayHandle,
         stream: std::os::unix::net::UnixStream,
     ) -> Result<Client, &'static str> {
+        self.accept_captured(dh, stream, None)
+    }
+
+    /// Only the owned v3 Session may call this route with its captured I2
+    /// LaunchPermit origin. Remote app_id/title/PID/UID cannot supply origin.
+    pub fn accept_with_origin(
+        &mut self,
+        dh: &DisplayHandle,
+        stream: std::os::unix::net::UnixStream,
+        origin: &NativeOrigin,
+    ) -> Result<Client, &'static str> {
+        if origin.session() != self.session {
+            return Err("APP_ORIGIN_UNKNOWN");
+        }
+        self.accept_captured(dh, stream, Some(origin.clone()))
+    }
+
+    fn accept_captured(
+        &mut self,
+        dh: &DisplayHandle,
+        stream: std::os::unix::net::UnixStream,
+        origin: Option<NativeOrigin>,
+    ) -> Result<Client, &'static str> {
         let mut clients = 0;
         dh.backend_handle().with_all_clients(|_| clients += 1);
         if clients >= limits::CLIENTS {
@@ -275,7 +301,13 @@ impl ProtocolState {
             return Err("RESOURCE_LIMIT");
         }
         dh.clone()
-            .insert_client(stream, Arc::new(ClientState::default()))
+            .insert_client(
+                stream,
+                Arc::new(ClientState {
+                    compositor: CompositorClientState::default(),
+                    origin,
+                }),
+            )
             .map_err(|_| "CLIENT_ACCEPT")
     }
     pub fn pool_usage(&self) -> Usage {
@@ -898,3 +930,47 @@ delegate_seat!(ProtocolState);
 delegate_global_dispatch!(ProtocolState: [WlShm: ()] => ShmState);
 delegate_dispatch!(ProtocolState: [WlBuffer: ShmBufferUserData] => ShmState);
 delegate_global_dispatch!(ProtocolState: [WlDataDeviceManager: ()] => DataDeviceState);
+
+#[cfg(test)]
+mod v3_accept_tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+
+    fn captured_fixture_origin() -> NativeOrigin {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
+        )).unwrap();
+        let raw = fixture["records"].as_array().unwrap().iter()
+            .find(|record| record["id"] == "origin").unwrap()["raw"]
+            .as_str().unwrap();
+        NativeOrigin::parse(raw.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn actual_wayland_client_accept_captures_only_v3_origin() {
+        let origin = captured_fixture_origin();
+        let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let handle = display.handle();
+        let mut protocol = ProtocolState::new(&handle, origin.session());
+        let (server, _remote) = UnixStream::pair().unwrap();
+        let verified = protocol.accept_with_origin(&handle, server, &origin).unwrap();
+        assert!(verified.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin));
+
+        // Same Linux uid and protocol handler do not grant the other client
+        // the verified origin. v2/Termux accepts remain untagged.
+        let (server, _termux) = UnixStream::pair().unwrap();
+        let unverified = protocol.accept(&handle, server).unwrap();
+        assert!(unverified.get_data::<ClientState>().unwrap().origin.is_none());
+    }
+
+    #[test]
+    fn foreign_session_origin_is_not_assigned_at_accept() {
+        let origin = captured_fixture_origin();
+        let session = SessionId::new(origin.session().get() + 1).unwrap();
+        let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let handle = display.handle();
+        let mut protocol = ProtocolState::new(&handle, session);
+        let (server, _remote) = UnixStream::pair().unwrap();
+        assert!(protocol.accept_with_origin(&handle, server, &origin).is_err());
+    }
+}

@@ -658,6 +658,23 @@ impl Startup {
     pub fn origin(&self) -> &NativeOrigin {
         &self.origin
     }
+
+    /// Called exclusively after the native/SDK retirement proof for a
+    /// destroyed dialog WindowId. The compositor's WindowId allocator never
+    /// reuses an ID within one Session. This releases the B1 role cache
+    /// without weakening remap or main-identity invariants.
+    /// B1 golden vectors retain their existing semantics and role histories.
+    pub fn retire_confirmed_dialog(&mut self, window: WindowId) -> Result<()> {
+        require(self.main != Some(window) && !self.before.contains(&window),
+            "APP_WINDOW_UNSUPPORTED")?;
+        self.roles.remove(&window);
+        Ok(())
+    }
+
+    pub fn role_history_len(&self) -> usize {
+        self.roles.len()
+    }
+
     pub fn fail_observation(&self, error: &Error, cleanup_pending: bool) -> Self {
         let mut stopped = self.clone();
         stopped.cleanup_pending |= cleanup_pending;

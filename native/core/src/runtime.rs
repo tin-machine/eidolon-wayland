@@ -318,6 +318,10 @@ impl Runtime {
                 let mut app: Option<crate::session::Session> = None;
                 let mut app_linux = false;
                 let mut desktop_launch: Option<DesktopLaunch> = None;
+                // I2's move-only permit stays owned until local Waypipe is
+                // ready; no second reserve or Start retry is permitted.
+                let mut v3_pending: Option<eidolon_transport::linux_desktop::v3::runtime::LaunchPermit> = None;
+                let mut v3_observer: Option<crate::startup_observation::V3PresentationObserver> = None;
                 let mut slots = crate::window_slots::Controller::new(runtime_handle);
                 let mut groups = WindowGroups::new(runtime_handle);
                 let mut slot_refused = Vec::new();
@@ -496,8 +500,12 @@ impl Runtime {
                         if let Some(current) = app.as_mut() {
                             let desktop = current.mode() == eidolon_model::commands::AppMode::LinuxDesktop;
                             let desktop_finished = desktop && ssh.desktop.as_ref().is_some_and(|report| report.session == Some(current.session()) && report.nonce == current.nonce() && report.finished);
-                            let desktop_terminating = desktop && ssh.desktop.as_ref().is_some_and(|report| report.session == Some(current.session()) && report.nonce == current.nonce()
+                            let desktop_terminating = desktop && !current.is_v3() && ssh.desktop.as_ref().is_some_and(|report| report.session == Some(current.session()) && report.nonce == current.nonce()
                                 && (report.finished || report.state == "stopping" || report.remote.terminal_event || report.remote.channel_closed));
+                            let v3_terminating = current.is_v3() && ssh.desktop_v3_transport.as_ref().is_some_and(|transport|
+                                transport.session == current.session()
+                                && (transport.terminal_observed || transport.error.is_some()
+                                    || transport.transport.phase == eidolon_model::linux_desktop_v3::report::TransportPhase::CleanupPending));
                             let close = stopping.load(Ordering::Acquire)
                                 || ssh.session != Some(current.session())
                                 || matches!(
@@ -506,20 +514,127 @@ impl Runtime {
                                         | eidolon_transport::session::State::Disconnected
                                         | eidolon_transport::session::State::Stopped
                                 )
-                                || (desktop && (desktop_terminating || matches!(ssh.state, eidolon_transport::session::State::Disconnecting | eidolon_transport::session::State::CleanupPending)))
+                                || (desktop && (desktop_terminating || v3_terminating
+                                    || matches!(ssh.state, eidolon_transport::session::State::Disconnecting | eidolon_transport::session::State::CleanupPending)))
                                 || current.snapshot().error.is_some();
                             let remote_gone = io.is_finished()
                                 || desktop_finished
                                 || (ssh.owned_connections == 0 && ssh.forward.active == 0);
+                            if current.is_v3() {
+                                let origin = current.v3_origin().cloned();
+                                if let Some(origin) = origin {
+                                    if ssh.desktop_v3_transport.as_ref().is_some_and(|proof|
+                                        proof.session == current.session()
+                                        && proof.launch_request == Some(origin.request())
+                                        && proof.started_observed && !proof.terminal_observed
+                                        && proof.error.is_none())
+                                    {
+                                        if let Err(error) = current.v3_transport_started(&origin) {
+                                            current.fail(error);
+                                        }
+                                    }
+                                }
+                                if close {
+                                    // Dropping the permit seals the one-shot I2 Launch gate.
+                                    v3_pending.take();
+                                    current.set_v3_input_allowed(Default::default());
+                                }
+                            }
                             if !app_linux && let Some(forward) = ssh.app_forward.as_ref() {
                                 current.forwarding(forward);
                             }
-                            if desktop && let Some(forward) = ssh.desktop.as_ref() {
+                            if desktop && !current.is_v3() && let Some(forward) = ssh.desktop.as_ref() {
                                 current.desktop_forwarding(forward);
                             }
                             #[cfg(any(test, feature = "debug-fixtures"))]
                             if app_linux && !desktop && let Some(forward)=ssh.linux_forward.as_ref() {current.linux_forwarding(forward);}
                             current.tick(close, remote_gone);
+                            if current.is_v3() && v3_pending.is_none() {
+                                // One owner tick: consume the I2 transport cut,
+                                // current Wayland history, scene, and native
+                                // panel Create identity. No ACK, SDK Entity, or
+                                // content frame is manufactured from snapshots.
+                                if let Some(observer) = v3_observer.as_mut() {
+                                    let cut = current.v3_cut();
+                                    match cut {
+                                        Err(error) => {
+                                            current.set_v3_input_allowed(Default::default());
+                                            current.fail(error);
+                                        }
+                                        Ok(cut) => {
+                                            let origin = cut.origin.clone();
+                                            let started = ssh.desktop_v3_transport.as_ref().is_some_and(|proof|
+                                                proof.session == origin.session()
+                                                && proof.launch_request == Some(origin.request())
+                                                && proof.started_observed && !proof.terminal_observed
+                                                && proof.error.is_none());
+                                            let (visible, scene, xr, create, panel) = {
+                                                let shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                                                let scene = shared.snapshot.scene;
+                                                let candidate = cut.fixed_main.or_else(|| cut.windows
+                                                    .iter()
+                                                    .find(|w| w.role == eidolon_model::linux_desktop_v3::presentation::Role::Main)
+                                                    .map(|w| w.window));
+                                                let panel = shared.panels.snapshot().into_iter().find(|panel|
+                                                    panel.action == eidolon_model::commands::PanelAction::Create
+                                                    && candidate == Some(panel.target.window)
+                                                    && panel.target.session == origin.session()
+                                                    && Some(panel.target.scene) == scene
+                                                );
+                                                let create = panel.as_ref().map(|p|
+                                                    eidolon_model::linux_desktop_v3::presentation::NativeCreateIdentity {
+                                                        runtime: runtime_handle,
+                                                        target: p.target,
+                                                        command_seq: p.command_seq,
+                                                    });
+                                                let panel_fact = panel.as_ref().and_then(|p|
+                                                    create.clone().map(|create|
+                                                        eidolon_model::linux_desktop_v3::presentation::NativePanelFact {
+                                                            create,
+                                                            applied: p.applied,
+                                                            error: p.error.is_some(),
+                                                        }));
+                                                (
+                                                    shared.snapshot.activity_visible,
+                                                    scene,
+                                                    shared.snapshot.xr_state == XrState::Focused,
+                                                    create,
+                                                    panel_fact,
+                                                )
+                                            };
+                                            let built = eidolon_model::linux_desktop_v3::presentation::Observation::native_builder(
+                                                origin.clone(), clock.elapsed().as_millis() as u64
+                                            )
+                                                .lifecycle(visible, scene, xr)
+                                                .transport(started.then_some(origin), None, close, close)
+                                                .windows(cut.global_window_count, cut.windows)
+                                                .current_create(create)
+                                                .panel(panel)
+                                                .finish();
+                                            match built.and_then(|observation| observer.tick(&observation)) {
+                                                Ok(result) => {
+                                                    if let Some(main) = result.newly_adopted_main {
+                                                        // No panel Create in adoption tick:
+                                                        // admission is visible to the next
+                                                        // reconcile after the subsequent dispatch.
+                                                        if let Err(error) = current.v3_commit_main(main) {
+                                                            current.fail(error);
+                                                        }
+                                                    }
+                                                    // Exact SDK ACK / entity binding / current
+                                                    // target frame are not yet sourced from
+                                                    // SpatialPanelAdapter. Deny all v3 input.
+                                                    current.set_v3_input_allowed(Default::default());
+                                                }
+                                                Err(error) => {
+                                                    current.set_v3_input_allowed(Default::default());
+                                                    current.fail(error.0);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             if let Some((session, request, nonce, before)) = opening_window.as_ref() {
                                 use eidolon_model::window_launch::{Candidate, Outcome, Report, correlate};
                                 let now = current.snapshot();
@@ -581,7 +696,21 @@ impl Runtime {
                             current.render_tick(&gl, clock.elapsed());
                             let report = current.snapshot();
                             if !close && report.ready && !report.forward_sent {
-                                let code = if desktop {
+                                let code = if current.is_v3() {
+                                    if let Some(permit) = v3_pending.take() {
+                                        if permit.origin().session() != current.session()
+                                            || permit.local_nonce().as_str() != current.nonce()
+                                        {
+                                            Status::Stale
+                                        } else if let Some(socket) = current.socket() {
+                                            io.start_linux_desktop_v3(permit, &socket)
+                                        } else {
+                                            Status::NotReady
+                                        }
+                                    } else {
+                                        Status::Stale
+                                    }
+                                } else if desktop {
                                     if let Some(launch) = desktop_launch.take() {
                                         let code = if launch.session != current.session() || launch.nonce != current.nonce() {
                                             Status::Stale
@@ -1070,7 +1199,75 @@ impl Runtime {
                                 // origin-bound window admission before a Launch can proceed.
                                 // I2's transport API is intentionally inaccessible to
                                 // a bare untrusted/unsynchronized Command::Launch.
-                                Command::LinuxDesktopV3Launch { .. } => Status::NotReady,
+                                Command::LinuxDesktopV3Launch { session, request_id, selection, .. } => {
+                                    if native_busy || v3_pending.is_some() || v3_observer.is_some()
+                                        || opening_window.is_some() || desktop_launch.is_some()
+                                        || helper.is_some() || dependencies.is_some() || compositor.is_some()
+                                    {
+                                        Status::Busy
+                                    } else if desktop_v3_binding.is_none() {
+                                        Status::NotReady
+                                    } else if let Some(paths) = config.paths.as_ref() {
+                                        match io.reserve_linux_desktop_v3_launch(
+                                            runtime_handle, *session, *request_id, selection
+                                        ) {
+                                            Err(status) => status,
+                                            Ok(permit) => {
+                                                let nonce = permit.local_nonce().as_str().to_owned();
+                                                let origin = permit.origin().clone();
+                                                let created = crate::session::Session::start_v3(
+                                                    *session,
+                                                    std::path::Path::new(&paths.files_dir),
+                                                    &std::path::Path::new(&paths.native_library_dir).join("libwaypipe_bin.so"),
+                                                    &permit,
+                                                    crate::session::Options {
+                                                        virtual_clock: false,
+                                                        keyboard_layout: state.workspace.keyboard_layout(),
+                                                        pixels: gl.pixel_budget(),
+                                                    },
+                                                );
+                                                let error = created.snapshot().error;
+                                                // Keep the partially prepared native owner even
+                                                // if binding/listener/Waypipe setup failed.
+                                                app = Some(created);
+                                                if let Some(error) = error {
+                                                    io.abort_linux_desktop_v3_launch(permit);
+                                                    if let Some(current) = app.as_mut() {
+                                                        current.fail(error);
+                                                    }
+                                                    Status::NotReady
+                                                } else if slots.begin(*session, &nonce).is_err() {
+                                                    io.abort_linux_desktop_v3_launch(permit);
+                                                    if let Some(current) = app.as_mut() {
+                                                        current.fail("SLOT_STATE_INVALID");
+                                                    }
+                                                    Status::NotReady
+                                                } else {
+                                                    match crate::startup_observation::V3PresentationObserver::begin(
+                                                        origin, clock.elapsed().as_millis() as u64, vec![]
+                                                    ) {
+                                                        Ok(observer) => {
+                                                            v3_observer = Some(observer);
+                                                            v3_pending = Some(permit);
+                                                            app_linux = false;
+                                                            gl.use_windows();
+                                                            Status::Accepted
+                                                        }
+                                                        Err(_) => {
+                                                            io.abort_linux_desktop_v3_launch(permit);
+                                                            if let Some(current) = app.as_mut() {
+                                                                current.fail("CONTRACT_INVALID");
+                                                            }
+                                                            Status::NotReady
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        Status::NotReady
+                                    }
+                                },
                                 Command::LinuxDesktopInspect { session, request_id, .. } => {
                                     if native_busy || helper.is_some() || dependencies.is_some() || compositor.is_some() { Status::Busy }
                                     else { io.inspect_linux_desktop(*session, *request_id) }

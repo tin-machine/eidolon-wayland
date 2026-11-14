@@ -3,6 +3,7 @@ pub mod diagnostics;
 pub mod helper;
 pub mod panels;
 pub mod preferences;
+pub mod linux_desktop_v3;
 pub mod runtime;
 pub mod session;
 pub mod shutdown;
