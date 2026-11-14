@@ -172,7 +172,8 @@ class WindowControls(private val parent: Entity, private val target: String, pri
     }
     private fun cancelSources(button: Button) {
         for((source,state) in button.sources.values.toList()) runCatching {sdk.onNoIntersectionInput(source,state,0)}
-        if(button.sources.isNotEmpty()) runCatching {sdk.resolveInput()}
+            .onFailure {failures++;sdkScope?.failed()}
+        if(button.sources.isNotEmpty()) runCatching {sdk.resolveInput()}.onFailure {failures++;sdkScope?.failed()}
         button.sources.clear();button.tickets.clear();button.press.clear()
     }
     fun metadata(): JSONObject=JSONObject().put("revision",revision).put("enabled",enabled).put("visible",visible).put("menu_only",menuOnly).put("requests_submitted",submitted).put("rejected",rejected)
