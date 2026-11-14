@@ -240,6 +240,14 @@ impl V3Report {
         )?;
         // Even a structurally valid Report with a former generation is stale.
         require(self.sdk_target == expected_target, "PRESENTATION_STALE")?;
+        // A retained Ready snapshot cannot outlive the native owner or
+        // bypass the current I3 admission/lifecycle cut.
+        if expected_presentation.state == PresentationState::Ready {
+            require(
+                runtime_live && !stop_intent && admission_open,
+                "PRESENTATION_STALE",
+            )?;
+        }
         if self.relaunch_allowed {
             require(
                 runtime_live && !stop_intent && admission_open,
