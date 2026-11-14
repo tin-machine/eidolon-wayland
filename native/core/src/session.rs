@@ -801,10 +801,10 @@ impl Session {
                 history.seal();
                 self.v3_input_allowed.clear();
             }
-            if self.v3_origin.is_some() {
-                if let Some(protocol) = self.protocol.as_mut() {
-                    protocol.seal_new_roles();
-                }
+            if self.v3_origin.is_some()
+                && let Some(protocol) = self.protocol.as_mut()
+            {
+                protocol.seal_new_roles();
             }
             self.reset_input();
             self.report.state = "closing";

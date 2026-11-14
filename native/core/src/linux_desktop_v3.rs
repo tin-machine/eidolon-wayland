@@ -47,6 +47,9 @@ pub struct WindowHistory {
     origin: NativeOrigin,
     before: BTreeSet<WindowId>,
     entries: BTreeMap<WindowId, Entry>,
+    // Only actually admitted windows own slots. Keep their reservations across
+    // unmap/revocation/destroy until confirm_retired receives both proofs.
+    reserved_slots: BTreeSet<WindowId>,
     // The compositor's per-session WindowId allocator (snapshot.rs::register_toplevel)
     // uses checked_next() and never reuses an ID. Preserve the highest
     // *confirmed retired* ID without retaining an unbounded tombstone set.
@@ -62,6 +65,7 @@ impl WindowHistory {
             origin,
             before: before.into_iter().collect(),
             entries: BTreeMap::new(),
+            reserved_slots: BTreeSet::new(),
             retired_floor: 0,
             fixed_main: None,
             started: false,
@@ -111,6 +115,7 @@ impl WindowHistory {
         // A retired ID can never be admitted again within this session.
         // Importantly, raising the floor must not revoke *other live IDs*.
         self.entries.remove(&window);
+        self.reserved_slots.remove(&window);
         self.retired_floor = self.retired_floor.max(window.get());
         true
     }
@@ -252,6 +257,16 @@ impl WindowHistory {
     /// Candidate facts for the one B1 Startup reducer; not a second admission
     /// state machine. Call only after this tick's Wayland dispatch and I2 cut.
     pub fn cut(&mut self) -> Result<I3WindowCut, &'static str> {
+        // confirm_retired may remove the main's tombstone after observe has
+        // sealed this owner. Never index a missing main or elect a replacement.
+        if self.fixed_main.is_some_and(|main| {
+            self.entries
+                .get(&main)
+                .is_none_or(|e| e.sample.life == Life::Destroyed)
+        }) {
+            self.seal();
+            return Err("APP_WINDOW_UNSUPPORTED");
+        }
         let active = self
             .entries
             .values()
@@ -326,26 +341,30 @@ impl WindowHistory {
                 parent: e.sample.parent,
             });
         }
-        // A destroyed dialog's slot is still owned until *both* native and
-        // SDK retirement are certified. Preserve slots for unmapped live
-        // windows as well. Otherwise a new dialog can steal a retiring
-        // panel's slot before its renderer/SDK generation is reaped.
-        let held_slots = self
-            .entries
-            .values()
-            .filter(|e| e.retirement_pending || e.sample.life == Life::Unmapped)
-            .count();
-        let free_slots = 9usize.saturating_sub(held_slots);
-        let admitted = if self.started && self.fixed_main.is_some() && self.admission_open {
-            windows
+        // A slot belongs to the WindowId that actually acquired it. Counting
+        // every pending/unmapped history entry would let an unadmitted dialog
+        // consume a second slot on destroy and evict a still-live main.
+        let mut admitted = BTreeSet::new();
+        if self.started && self.fixed_main.is_some() && self.admission_open {
+            let mapped: BTreeSet<_> = windows
                 .iter()
                 .filter(|w| w.life == Life::Mapped)
-                .take(free_slots)
                 .map(|w| w.window)
-                .collect()
-        } else {
-            BTreeSet::new()
-        };
+                .collect();
+            // Main need not have the numerically smallest WindowId.
+            if let Some(main) = self.fixed_main
+                && mapped.contains(&main)
+                && self.reserved_slots.len() < 9
+            {
+                self.reserved_slots.insert(main);
+            }
+            for window in mapped {
+                if self.reserved_slots.contains(&window) || self.reserved_slots.len() < 9 {
+                    self.reserved_slots.insert(window);
+                    admitted.insert(window);
+                }
+            }
+        }
         Ok(I3WindowCut {
             origin: self.origin.clone(),
             global_window_count: active as u32,
@@ -749,6 +768,75 @@ mod tests {
         assert_eq!(released_cut.admitted.len(), 9);
         assert!(released_cut.admitted.contains(&new_dialog.window));
         assert!(!h.confirm_retired(retired.window, true, true));
+    }
+
+    #[test]
+    fn unadmitted_dialog_retirements_cannot_evict_live_main_or_release_owned_slots() {
+        let o = origin();
+        let mut h = WindowHistory::new(o.clone(), []);
+        let main = sample(&o, 50, Parent::None {}, Life::Mapped);
+        let parent = Parent::Resolved {
+            window: main.window,
+        };
+        let mut nine = vec![main.clone()];
+        for id in 1..=8 {
+            nine.push(sample(&o, id, parent, Life::Mapped));
+        }
+        h.started();
+        h.observe(&nine).unwrap();
+        h.commit_main(main.window).unwrap();
+        assert_eq!(h.cut().unwrap().admitted.len(), 9);
+        h.observe(std::slice::from_ref(&main)).unwrap();
+        assert_eq!(h.pending_retirements(), 8);
+        assert_eq!(h.cut().unwrap().admitted, BTreeSet::from([main.window]));
+
+        // None of these new dialogs acquired a slot. Their pending records
+        // must not steal the live main's reservation as the ledger grows.
+        for id in 51..=60 {
+            h.observe(&[main.clone(), sample(&o, id, parent, Life::Mapped)])
+                .unwrap();
+            assert_eq!(h.cut().unwrap().admitted, BTreeSet::from([main.window]));
+            h.observe(std::slice::from_ref(&main)).unwrap();
+            assert_eq!(h.cut().unwrap().admitted, BTreeSet::from([main.window]));
+            assert_eq!(h.reserved_slots.len(), 9);
+        }
+        assert_eq!(h.pending_retirements(), 18);
+        let waiting = sample(&o, 70, parent, Life::Mapped);
+        h.observe(&[main.clone(), waiting.clone()]).unwrap();
+        assert!(!h.cut().unwrap().admitted.contains(&waiting.window));
+        // Fixture-only retirement receipts: an unadmitted window never
+        // owned a slot and cannot release another window's reservation.
+        assert!(h.confirm_retired(WindowId::new(51).unwrap(), true, true));
+        assert_eq!(h.reserved_slots.len(), 9);
+        assert!(!h.cut().unwrap().admitted.contains(&waiting.window));
+        assert!(!h.confirm_retired(WindowId::new(1).unwrap(), true, false));
+        assert!(h.confirm_retired(WindowId::new(1).unwrap(), true, true));
+        assert_eq!(
+            h.cut().unwrap().admitted,
+            BTreeSet::from([main.window, waiting.window])
+        );
+        assert_eq!(h.reserved_slots.len(), 9);
+    }
+
+    #[test]
+    fn confirmed_main_retirement_cannot_panic_or_elect_a_replacement() {
+        let o = origin();
+        let mut h = WindowHistory::new(o.clone(), []);
+        let main = sample(&o, 1, Parent::None {}, Life::Mapped);
+        h.started();
+        h.observe(std::slice::from_ref(&main)).unwrap();
+        h.commit_main(main.window).unwrap();
+        assert_eq!(h.cut().unwrap().admitted.len(), 1);
+        assert_eq!(h.observe(&[]), Err("APP_WINDOW_UNSUPPORTED"));
+        assert_eq!(h.cut().err(), Some("APP_WINDOW_UNSUPPORTED"));
+        assert!(h.confirm_retired(main.window, true, true));
+        assert_eq!(h.cut().err(), Some("APP_WINDOW_UNSUPPORTED"));
+        assert!(h.reserved_slots.is_empty());
+        assert!(!h.is_open());
+        assert_eq!(
+            h.commit_main(WindowId::new(2).unwrap()),
+            Err("APP_WINDOW_UNSUPPORTED")
+        );
     }
 
     #[test]

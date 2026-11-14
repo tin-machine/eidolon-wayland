@@ -976,6 +976,10 @@ delegate_dispatch!(ProtocolState: [WlBuffer: ShmBufferUserData] => ShmState);
 delegate_global_dispatch!(ProtocolState: [WlDataDeviceManager: ()] => DataDeviceState);
 
 #[cfg(test)]
+#[path = "v3_fixture_test_support.rs"]
+mod v3_fixture_test_support;
+
+#[cfg(test)]
 mod v3_accept_tests {
     use super::*;
     use std::os::unix::net::UnixStream;
@@ -1102,6 +1106,11 @@ mod v3_accept_tests {
     }
     #[test]
     fn real_xdg_toplevel_propagates_captured_origin_through_map_and_destroy() {
+        v3_fixture_test_support::run_serially(xdg_lifecycle_case);
+    }
+
+    fn xdg_lifecycle_case() {
+        use super::v3_fixture_test_support::FixtureWorker;
         use crate::linux_desktop_v3::WindowHistory;
         use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
         use eidolon_shm_fixture::{FRAMES, Mode};
@@ -1111,7 +1120,6 @@ mod v3_accept_tests {
             time::{Duration, Instant},
         };
 
-        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
         let origin = captured_fixture_origin();
         let mut display =
             smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
@@ -1124,7 +1132,8 @@ mod v3_accept_tests {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::sync_channel(1);
         let fixture_stop = stop.clone();
-        let worker = thread::spawn(move || {
+        let interrupt = client.try_clone().unwrap();
+        let worker = FixtureWorker::spawn(interrupt, stop.clone(), move || {
             let outcome = eidolon_shm_fixture::run_with_app_id(
                 client,
                 Mode::Pattern,
@@ -1139,7 +1148,7 @@ mod v3_accept_tests {
         let mut main = None;
         let mut mapped = false;
         let mut destroyed = false;
-        let mut completed = false;
+        let mut completed = None;
         let started = Instant::now();
 
         while started.elapsed() < Duration::from_secs(24) {
@@ -1192,10 +1201,7 @@ mod v3_accept_tests {
             display.flush_clients().unwrap();
             match rx.try_recv() {
                 Ok(result) => {
-                    let report = result.unwrap();
-                    assert_eq!(report.frames, FRAMES);
-                    assert!(!report.protocol_error);
-                    completed = true;
+                    completed = Some(result);
                     break;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
@@ -1204,11 +1210,11 @@ mod v3_accept_tests {
             thread::sleep(Duration::from_millis(2));
         }
 
-        if !completed {
-            stop.store(true, std::sync::atomic::Ordering::Release);
-        }
         worker.join().unwrap();
-        assert!(completed, "real Wayland lifecycle timed out");
+        v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
+        let report = completed.expect("real Wayland lifecycle timed out").unwrap();
+        assert_eq!(report.frames, FRAMES);
+        assert!(!report.protocol_error);
         assert!(
             mapped && main.is_some(),
             "actual mapped main was never observed"
@@ -1232,6 +1238,11 @@ mod v3_accept_tests {
 
     #[test]
     fn actual_wayland_app_id_and_title_mutation_cannot_reassign_origin_or_main() {
+        v3_fixture_test_support::run_serially(metadata_mutation_case);
+    }
+
+    fn metadata_mutation_case() {
+        use super::v3_fixture_test_support::FixtureWorker;
         use crate::linux_desktop_v3::WindowHistory;
         use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
         use eidolon_shm_fixture::{FRAMES, Mode};
@@ -1241,7 +1252,6 @@ mod v3_accept_tests {
             time::{Duration, Instant},
         };
 
-        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
         let origin = captured_fixture_origin();
         let mut display =
             smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
@@ -1254,7 +1264,8 @@ mod v3_accept_tests {
         let stop = Arc::new(AtomicBool::new(false));
         let fixture_stop = stop.clone();
         let (tx, rx) = mpsc::sync_channel(1);
-        let worker = thread::spawn(move || {
+        let interrupt = client.try_clone().unwrap();
+        let worker = FixtureWorker::spawn(interrupt, stop.clone(), move || {
             let outcome = eidolon_shm_fixture::run_with_app_id_mutation(
                 client,
                 Mode::Pattern,
@@ -1282,16 +1293,15 @@ mod v3_accept_tests {
                 match history.observe(&samples) {
                     Ok(()) => {
                         let cut = history.cut().unwrap();
-                        if main.is_none() {
-                            if let Some(id) = cut
+                        if main.is_none()
+                            && let Some(id) = cut
                                 .windows
                                 .iter()
                                 .find(|w| w.role == Role::Main && w.life == Life::Mapped)
                                 .map(|w| w.window)
-                            {
-                                history.commit_main(id).unwrap();
-                                main = Some(id);
-                            }
+                        {
+                            history.commit_main(id).unwrap();
+                            main = Some(id);
                         }
                     }
                     Err("APP_WINDOW_UNSUPPORTED") => {
@@ -1316,16 +1326,14 @@ mod v3_accept_tests {
             }
             display.flush_clients().unwrap();
             if let Ok(result) = rx.try_recv() {
-                completed = Some(result.unwrap());
+                completed = Some(result);
                 break;
             }
             thread::sleep(Duration::from_millis(2));
         }
-        if completed.is_none() {
-            stop.store(true, std::sync::atomic::Ordering::Release);
-        }
         worker.join().unwrap();
-        let report = completed.expect("real mutation fixture timed out");
+        v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
+        let report = completed.expect("real mutation fixture timed out").unwrap();
         assert_eq!(report.frames, FRAMES);
         assert!(!report.protocol_error);
         assert!(rejected_mutation, "app_id mutation did not revoke main");
@@ -1334,6 +1342,11 @@ mod v3_accept_tests {
 
     #[test]
     fn real_v3_nested_parent_unmap_and_destroy_revoke_descendant_input() {
+        v3_fixture_test_support::run_serially(nested_parent_case);
+    }
+
+    fn nested_parent_case() {
+        use super::v3_fixture_test_support::FixtureWorker;
         use crate::linux_desktop_v3::WindowHistory;
         use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
         use eidolon_shm_fixture::capacity::{ParentControl, ParentStage};
@@ -1343,7 +1356,6 @@ mod v3_accept_tests {
             time::{Duration, Instant},
         };
 
-        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
         let origin = captured_fixture_origin();
         let mut display =
             smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
@@ -1358,7 +1370,8 @@ mod v3_accept_tests {
         let (steps_tx, steps_rx) = mpsc::sync_channel(1);
         let (replies_tx, replies_rx) = mpsc::sync_channel(1);
         let (result_tx, result_rx) = mpsc::sync_channel(1);
-        let worker = thread::spawn(move || {
+        let interrupt = client.try_clone().unwrap();
+        let worker = FixtureWorker::spawn(interrupt, stop.clone(), move || {
             let result = eidolon_shm_fixture::capacity::run_v3_parent_lifecycle(
                 client,
                 fixture_stop,
@@ -1384,18 +1397,17 @@ mod v3_accept_tests {
             assert!(samples.iter().all(|s| s.origin.as_ref() == Some(&origin)));
             if !history_sealed {
                 history.observe(&samples).unwrap();
-                if !adopted {
-                    if let Some(main) = history
+                if !adopted
+                    && let Some(main) = history
                         .cut()
                         .unwrap()
                         .windows
                         .iter()
                         .find(|w| w.role == Role::Main && w.life == Life::Mapped)
                         .map(|w| w.window)
-                    {
-                        history.commit_main(main).unwrap();
-                        adopted = true;
-                    }
+                {
+                    history.commit_main(main).unwrap();
+                    adopted = true;
                 }
             }
             if let Ok(stage) = steps_rx.try_recv() {
@@ -1443,21 +1455,24 @@ mod v3_accept_tests {
             }
             display.flush_clients().unwrap();
             if let Ok(done) = result_rx.try_recv() {
-                result = Some(done.unwrap());
+                result = Some(done);
                 break;
             }
             thread::sleep(Duration::from_millis(2));
         }
-        if result.is_none() {
-            stop.store(true, std::sync::atomic::Ordering::Release);
-        }
         worker.join().unwrap();
-        assert!(result.is_some(), "real xdg parent fixture timed out");
+        v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
+        result.expect("real xdg parent fixture timed out").unwrap();
         assert_eq!(stages.len(), 4);
         assert_eq!(history.pending_retirements(), 1);
     }
     #[test]
     fn real_v3_nine_toplevels_reject_tenth_and_hold_slot_until_retired() {
+        v3_fixture_test_support::run_serially(nine_toplevels_case);
+    }
+
+    fn nine_toplevels_case() {
+        use super::v3_fixture_test_support::FixtureWorker;
         use crate::linux_desktop_v3::WindowHistory;
         use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
         use eidolon_shm_fixture::capacity::{Control, Stage};
@@ -1467,7 +1482,6 @@ mod v3_accept_tests {
             time::{Duration, Instant},
         };
 
-        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
         let origin = captured_fixture_origin();
         let mut display =
             smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
@@ -1482,7 +1496,8 @@ mod v3_accept_tests {
         let stop = Arc::new(AtomicBool::new(false));
         let fixture_stop = stop.clone();
         let (result_tx, result_rx) = mpsc::sync_channel(1);
-        let worker = thread::spawn(move || {
+        let interrupt = client.try_clone().unwrap();
+        let worker = FixtureWorker::spawn(interrupt, stop.clone(), move || {
             let result = eidolon_shm_fixture::capacity::run_v3(
                 client,
                 9,
@@ -1572,16 +1587,14 @@ mod v3_accept_tests {
             }
             display.flush_clients().unwrap();
             if let Ok(done) = result_rx.try_recv() {
-                result = Some(done.unwrap());
+                result = Some(done);
                 break;
             }
             thread::sleep(Duration::from_millis(2));
         }
-        if result.is_none() {
-            stop.store(true, std::sync::atomic::Ordering::Release);
-        }
         worker.join().unwrap();
-        let report = result.expect("real capacity fixture timed out");
+        v3_fixture_test_support::drain_fixture(&mut display, &mut protocol);
+        let report = result.expect("real capacity fixture timed out").unwrap();
         assert_eq!(stages.len(), 6);
         assert_eq!(report.accepted, 9);
         assert_eq!(report.closed, 1);
