@@ -2,6 +2,9 @@ package io.github.tinmachine.eidolon
 
 import org.junit.Assert.*
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class SdkEvidenceBridgeTest {
     private fun id(gen: Long = 1, adapter: Long = 11) =
@@ -173,5 +176,113 @@ class SdkEvidenceBridgeTest {
         assertFalse("A new Scene cannot finish the old late result",ledger.readyToRelease(lease))
         ledger.sdkCleanupPass(11,4,4)
         assertTrue(ledger.readyToRelease(lease))
+    }
+
+    @Test fun diagnosticLegacyAndV3GenerationsAllBelongToTheRuntimeTicket() {
+        val hub = SdkRetirementHub(); val ledger = hub.evidence
+        val diagnostic = SdkEvidenceBridge.Lease(7, 1, 1, 4, 1, null, 11)
+        val oldDiagnostic = diagnostic.copy(scene = 3, generation = 8)
+        val legacy = SdkEvidenceBridge.Lease(7, 2, 5, 4, 9, null, 11)
+        val v3 = id()
+        val leases = listOf(diagnostic, oldDiagnostic, legacy, v3)
+        for ((index, lease) in leases.withIndex()) {
+            assertTrue(ledger.reserve(lease)); ledger.registered(lease)
+            ledger.entityCreated(lease, 101L + index)
+        }
+        val ticket = hub.retireRuntime(7, 3, "captured-settings")
+        assertEquals(4, hub.progress(ticket).issued)
+        assertFalse(ledger.reserve(diagnostic.copy(generation = 2)))
+        ledger.sdkCleanupPass(11, 4, 1); ledger.sdkCleanupPass(11, 3, 1)
+        for ((index, lease) in leases.withIndex()) {
+            ledger.rendererDetached(lease); ledger.auxiliaryDisposed(lease)
+            ledger.destroyRequested(lease, 101L + index)
+            ledger.deleteObserved(lease, 1, 101L + index)
+        }
+        ledger.sdkCleanupPass(11, 4, 2)
+        for (lease in listOf(diagnostic, legacy, v3)) {
+            assertTrue(ledger.readyToRelease(lease)); assertFalse(ledger.complete(lease))
+            ledger.nativeBindingReleased(lease); assertTrue(ledger.collectCompleted(lease))
+        }
+        assertEquals(3, hub.progress(ticket).complete)
+        assertFalse("Current Scene completion must not hide the old diagnostic generation", hub.progress(ticket).allRetired)
+        ledger.sdkCleanupPass(11, 4, 3)
+        assertFalse(ledger.readyToRelease(oldDiagnostic))
+        ledger.sdkCleanupPass(11, 3, 2)
+        assertTrue(ledger.readyToRelease(oldDiagnostic))
+        assertFalse("Native release must actually be accepted too", hub.progress(ticket).allRetired)
+        ledger.nativeBindingReleased(oldDiagnostic); assertTrue(ledger.collectCompleted(oldDiagnostic))
+        assertEquals(4, hub.progress(ticket).complete)
+        assertTrue(hub.progress(ticket).allRetired)
+    }
+
+    @Test fun completedLegacyGenerationCannotRebindItsOldCallbacksToAnotherAllocation() {
+        val ledger = SdkEvidenceBridge()
+        val legacy = SdkEvidenceBridge.Lease(7, 1, 1, 4, 8, null, 11)
+        assertTrue(ledger.reserve(legacy)); ledger.registered(legacy)
+        ledger.sealLease(legacy); ledger.rendererDetached(legacy); ledger.nativeBindingReleased(legacy)
+        assertTrue(ledger.collectCompleted(legacy))
+        assertFalse(ledger.reserve(legacy))
+        assertFalse(ledger.reserve(legacy.copy(generation = 7)))
+        assertFalse("Changing the optional Create receipt does not create a new native target",
+            ledger.reserve(legacy.copy(createCommand = 99)))
+        assertNull(ledger.enterCallback(legacy)); assertFalse(ledger.beginProducer(legacy))
+        assertTrue(ledger.reserve(legacy.copy(generation = 9)))
+        assertNull("The prior scope cannot acquire the next generation", ledger.enterCallback(legacy))
+    }
+
+    @Test fun rejectedRegistrationCanRetryOnlyIfItHadNoSdkOrNativeEffects() {
+        val ledger = SdkEvidenceBridge()
+        val legacy = SdkEvidenceBridge.Lease(7, 1, 1, 4, 1, null, 11)
+        assertTrue(ledger.reserve(legacy)); ledger.registrationRejected(legacy); ledger.sealLease(legacy)
+        assertTrue(ledger.collectCompleted(legacy)); assertTrue(ledger.reserve(legacy))
+        ledger.entityCreated(legacy, 44)
+        assertThrows(IllegalArgumentException::class.java) { ledger.registrationRejected(legacy) }
+        ledger.sealRuntime(7)
+        assertFalse(ledger.runtimeProgress(7).allRetired)
+    }
+
+    @Test fun newRuntimeAndForgedTicketCannotReplaceTheOldRuntimeCapture() {
+        val hub = SdkRetirementHub(); val ledger = hub.evidence
+        val old = SdkEvidenceBridge.Lease(7, 1, 1, 4, 1, null, 11)
+        ledger.reserve(old); ledger.registered(old)
+        val original = hub.retireRuntime(7, 9, "old-save")
+        val next = hub.retireRuntime(8, 10, "new-save")
+        assertTrue(hub.progress(next).allRetired)
+        assertFalse("A sealed empty new Runtime cannot prove the old owner disappeared", hub.progress(original).allRetired)
+        for (forged in listOf(original.copy(), original.copy(runtime = 8), original.copy(admissionEpoch = 10),
+            original.copy(captureToken = "new-save"))) {
+            assertThrows(IllegalArgumentException::class.java) { hub.progress(forged) }
+        }
+        assertFalse(hub.progress(original).allRetired)
+    }
+
+    @Test fun independentCallbackAndFutureCompletionProgressWhileSaveWorkerObservesPending() {
+        val hub = SdkRetirementHub(); val ledger = hub.evidence
+        val legacy = SdkEvidenceBridge.Lease(7, 1, 1, 4, 1, null, 11)
+        ledger.reserve(legacy); ledger.registered(legacy)
+        val callback = checkNotNull(ledger.enterCallback(legacy))
+        assertTrue(ledger.beginProducer(legacy))
+        val ticket = hub.retireRuntime(7, 11, "save")
+        ledger.rendererDetached(legacy)
+        val pool = Executors.newFixedThreadPool(2)
+        val workerObserved = CountDownLatch(1); val drained = CountDownLatch(1)
+        try {
+            val worker = pool.submit<Boolean> {
+                assertEquals(2, hub.progress(ticket).pendingCallbacks)
+                assertFalse(callback.valid())
+                workerObserved.countDown()
+                check(drained.await(5, TimeUnit.SECONDS))
+                hub.progress(ticket).allRetired
+            }
+            val uiCallback = pool.submit {
+                check(workerObserved.await(5, TimeUnit.SECONDS))
+                callback.close(); ledger.producerFinished(legacy)
+                assertTrue(ledger.readyToRelease(legacy))
+                ledger.nativeBindingReleased(legacy); assertTrue(ledger.collectCompleted(legacy))
+                drained.countDown()
+            }
+            uiCallback.get(5, TimeUnit.SECONDS)
+            assertTrue(worker.get(5, TimeUnit.SECONDS))
+        } finally { pool.shutdownNow(); check(pool.awaitTermination(5, TimeUnit.SECONDS)) }
     }
 }

@@ -4,6 +4,27 @@ use eidolon_model::{
 };
 use serde::Serialize;
 
+/// Whole-Runtime ownership, distinct from an application's origin retirement.
+/// Only a live Runtime constructs this census. Android must retain its last
+/// accepted snapshot and separately observe nativeDestroy's actual result.
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeReclamationSnapshot {
+    pub runtime: eidolon_model::ids::RuntimeHandle,
+    pub origin_retired: bool,
+    pub recovery_connect_allowed: bool,
+    pub recovery_command_allowed: bool,
+    pub connections: usize,
+    pub workers: usize,
+    pub native_targets: usize,
+    pub panels: usize,
+    pub sdk_bindings: usize,
+    pub board_windows: usize,
+    pub pending_operations: usize,
+    pub remote_cleanup_pending: bool,
+    pub local_cleanup_pending: bool,
+    pub shutdown_complete: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
     pub schema: u32,
@@ -19,6 +40,7 @@ pub struct Snapshot {
     pub input_resets: u64,
     pub error: Option<&'static str>,
     pub shutdown: crate::shutdown::Report,
+    pub reclamation: Option<RuntimeReclamationSnapshot>,
     /// 初期診断panelを除くSDK所有数。停止時はshutdown.sdk_bindingsの全所有を待つ。
     pub app_sdk_bindings: usize,
     pub helper: Option<crate::helper::Report>,
@@ -59,6 +81,7 @@ impl Default for Snapshot {
             input_resets: 0,
             error: None,
             shutdown: Default::default(),
+            reclamation: None,
             app_sdk_bindings: 0,
             helper: None,
             helper_workers: 0,

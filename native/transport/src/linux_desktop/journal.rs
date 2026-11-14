@@ -90,6 +90,19 @@ impl Pending {
             && self.0.sources == sources(expected)
             && self.0.protocol_revision == REVISION
     }
+
+    /// Match the original live owner, including the nonce and authenticated
+    /// UID. A different pending run of the same profile is not this owner.
+    pub(crate) fn matches_binding(&self, binding: &Binding) -> bool {
+        self.0.session == binding.session
+            && self.0.profile_binding == binding.profile_binding
+            && self.0.profile_revision == binding.profile_revision
+            && self.0.nonce == binding.nonce
+            && self.0.uid == binding.uid
+            && self.0.pins == pins(&binding.pins)
+            && self.0.sources == sources(&binding.pins)
+            && self.0.protocol_revision == REVISION
+    }
 }
 
 /// Read without changing, clearing or adopting a pending owner. A malformed or

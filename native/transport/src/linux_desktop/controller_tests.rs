@@ -552,6 +552,9 @@ async fn controller_unknown_survives_restart_blocks_switch_and_requires_explicit
     let session = fixture.connect(&controller, &root.0, 1, false).await;
     fixture.inspect(&controller, session, 2).await;
     fixture.lose_helper(&controller).await;
+    let (_, live) = controller.reclamation_snapshot();
+    assert!(live.v2_capture_proven && live.recovery_connect_allowed);
+    assert!(!live.recovery_command_allowed);
     let path = root.0.join("linux-desktop-state/pending.json");
     let retained = std::fs::read(&path).unwrap();
     assert_eq!(
@@ -581,11 +584,18 @@ async fn controller_unknown_survives_restart_blocks_switch_and_requires_explicit
     drop(controller);
     let controller = Controller::start_with_root(Some(root.0.clone())).unwrap();
     assert!(controller.snapshot().desktop_pending);
+    let (_, cold) = controller.reclamation_snapshot();
+    assert!(cold.remote_cleanup_pending);
+    assert!(!cold.v2_capture_proven);
+    assert!(!cold.recovery_connect_allowed && !cold.recovery_command_allowed);
     assert_eq!(
         controller.connect(legacy(&fixture), seq(5)),
         Status::NotReady
     );
     let next = fixture.connect(&controller, &root.0, 6, true).await;
+    // Existing v2 remote recovery remains callable after restart. It cannot
+    // supply the lost old Runtime's local evidence to the storage barrier.
+    assert!(!controller.reclamation_snapshot().1.recovery_command_allowed);
     assert!(next > session);
     assert_eq!(fixture.evidence.helpers.load(Ordering::Acquire), 1);
     assert_eq!(fixture.evidence.recoveries.load(Ordering::Acquire), 0);
@@ -615,6 +625,47 @@ async fn controller_unknown_survives_restart_blocks_switch_and_requires_explicit
     fixture.inspect(&controller, next, 9).await;
     assert_eq!(controller.disconnect(next), Status::Accepted);
     wait(&controller, |r| r.state == State::Disconnected).await;
+    stop(&controller).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_v2_recovery_admission_keeps_original_capture_until_cleanup() {
+    let root = Temp::new();
+    let fixture = Fixture::new().await;
+    let controller = Controller::start_with_root(Some(root.0.clone())).unwrap();
+    let original = fixture.connect(&controller, &root.0, 1, false).await;
+    fixture.inspect(&controller, original, 2).await;
+    assert!(!controller.reclamation_snapshot().1.recovery_connect_allowed);
+    fixture.lose_helper(&controller).await;
+    let (_, retired_io) = controller.reclamation_snapshot();
+    assert!(retired_io.v2_capture_proven && retired_io.remote_cleanup_pending);
+    assert!(retired_io.recovery_connect_allowed);
+    let recovery_session = fixture.connect(&controller, &root.0, 3, true).await;
+    assert_ne!(recovery_session, original);
+    let (_, connected) = controller.reclamation_snapshot();
+    assert!(connected.v2_capture_proven && connected.recovery_command_allowed);
+    assert!(!connected.recovery_connect_allowed);
+    assert_eq!(
+        controller.recover_linux_desktop(recovery_session, seq(4)),
+        Status::Accepted
+    );
+    assert!(!controller.reclamation_snapshot().1.recovery_command_allowed);
+    wait(&controller, |snapshot| {
+        snapshot.state == State::ProbeReady && !snapshot.desktop_pending
+    })
+    .await;
+    let (report, recovered) = controller.reclamation_snapshot();
+    assert_eq!(
+        report.desktop_recovery.unwrap().origin_session,
+        Some(original)
+    );
+    assert!(!recovered.remote_cleanup_pending && !recovered.v2_capture_proven);
+    assert!(!recovered.recovery_connect_allowed && !recovered.recovery_command_allowed);
+    assert_eq!(controller.disconnect(recovery_session), Status::Accepted);
+    wait(&controller, |snapshot| {
+        snapshot.state == State::Disconnected
+    })
+    .await;
     stop(&controller).await;
 }
 

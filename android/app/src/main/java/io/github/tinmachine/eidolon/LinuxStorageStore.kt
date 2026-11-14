@@ -2,7 +2,7 @@ package io.github.tinmachine.eidolon
 
 import android.content.Context
 
-/** Real noBackup store. Intentionally not instantiated by NativeSessionHost until E2. */
+/** Real E1 noBackup store. I5 composes this repository contract with settings activation. */
 class LinuxStorageStore(context: Context, currentDefaultInstallation: String) {
     private val repository = LinuxStorageRepository(currentDefaultInstallation,
         AndroidLinuxStorageFiles(context.noBackupFilesDir),

@@ -93,6 +93,17 @@ pub struct Snapshot {
     pub pending_cleanup: Vec<journal::Pending>,
     pub cleanup_audits: Vec<CleanupAudit>,
 }
+/// An owner-side cut of work and retained recovery authority. This is not a
+/// journal proof and cannot be deserialized or supplied by an Android caller.
+#[derive(Clone, Debug)]
+pub struct ReclamationState {
+    pub pending_operations: usize,
+    pub remote_cleanup_pending: bool,
+    pub recovery_connect_allowed: bool,
+    pub recovery_command_allowed: bool,
+    pub no_local_allocation_proven: bool,
+    pub v2_capture_proven: bool,
+}
 #[derive(Clone, Debug, Serialize)]
 pub struct CleanupAudit {
     pub nonce: String,
@@ -146,6 +157,11 @@ struct Shared {
     app: Option<(PathBuf, String, AppMode)>,
     desktop_profile: Option<DesktopConfig>,
     desktop_pending: Result<Option<linux_desktop::Pending>, &'static str>,
+    // Only the authenticated in-process actor may mint this capture. A cold
+    // journal can still use v2's existing recovery, but is not local evidence
+    // for a settings-save barrier in a new Runtime.
+    desktop_v2_capture: Option<linux_desktop::Binding>,
+    desktop_v2_io_retired: bool,
     desktop_work: Option<DesktopWork>,
     desktop_launches: Option<tokio::sync::mpsc::Sender<linux_desktop::Launch>>,
     desktop_launch_queued: bool,
@@ -156,7 +172,7 @@ struct Shared {
     // bridge needs the original live capture, never a reconstructed report.
     desktop_v3_capture: Option<Arc<desktop_v3::runtime::RunCapture>>,
     desktop_v3_no_local_allocation: Option<desktop_v3::runtime::NoLocalAllocation>,
-    desktop_v3_selection: Option<desktop_v3::Selection>,
+    desktop_v3_selections: Option<[desktop_v3::Selection; 2]>,
     desktop_v3_handoff: Option<desktop_v3::reclamation::ReclamationHandoff>,
     desktop_v3_io_retired: bool,
     desktop_v3_finalization_pending: bool,
@@ -195,15 +211,8 @@ pub struct CatalogUi {
     pub reply: Option<crate::catalog::Reply>,
     pub error: Option<&'static str>,
     pub desktop: Option<DesktopCatalogUi>,
-    pub desktop_v3: Option<V3CatalogUi>,
-}
-#[derive(Clone, Serialize)]
-pub struct V3CatalogUi {
-    pub namespace: &'static str,
-    pub selection: desktop_v3::Selection,
-    pub label: &'static str,
-    pub mode: &'static str,
-    pub instance_limit: u8,
+    /// Exact B1 descriptor, published only after the authenticated Inspect.
+    pub desktop_v3: Option<serde_json::Value>,
 }
 #[derive(Clone, Serialize)]
 pub struct DesktopCatalogUi {
@@ -308,6 +317,8 @@ impl Controller {
                 app: None,
                 desktop_profile: None,
                 desktop_pending,
+                desktop_v2_capture: None,
+                desktop_v2_io_retired: false,
                 desktop_work: None,
                 desktop_launches: None,
                 desktop_launch_queued: false,
@@ -316,7 +327,7 @@ impl Controller {
                 desktop_v3_launch: None,
                 desktop_v3_capture: None,
                 desktop_v3_no_local_allocation: None,
-                desktop_v3_selection: None,
+                desktop_v3_selections: None,
                 desktop_v3_handoff: None,
                 desktop_v3_io_retired: false,
                 desktop_v3_finalization_pending: false,
@@ -517,9 +528,10 @@ impl Controller {
         s.desktop_work = None;
         s.desktop_launches = None;
         s.desktop_launch_queued = false;
+        s.desktop_v2_io_retired = false;
         s.desktop_v3_work = None;
         s.desktop_v3_launch = None;
-        s.desktop_v3_selection = None;
+        s.desktop_v3_selections = None;
         s.desktop_v3_io_retired = false;
         s.catalog = CatalogUi::default();
         s.connect = Some(PendingConnect {
@@ -648,6 +660,12 @@ impl Controller {
         Status::Accepted
     }
     pub fn snapshot(&self) -> Snapshot {
+        self.reclamation_snapshot().0
+    }
+    /// Snapshot and recovery admission are observed under the same owner lock.
+    /// NoLocalAllocation comes from the original live gate, never from an
+    /// empty Session or a complete record found after process restart.
+    pub fn reclamation_snapshot(&self) -> (Snapshot, ReclamationState) {
         let shared = self
             .signals
             .shared
@@ -658,7 +676,111 @@ impl Controller {
             report.forward = router.report();
         }
         report.tokio_threads = self.signals.tokio_workers.load(Ordering::Acquire);
-        report
+        let pending_operations = [
+            shared.connect.is_some(),
+            shared.busy,
+            shared.forward.is_some(),
+            shared.app.is_some(),
+            shared.desktop_work.is_some(),
+            shared.desktop_launch_queued,
+            shared.desktop_v3_work.is_some(),
+            shared.desktop_v3_launch.is_some(),
+            shared.desktop_v3_handoff.is_some(),
+            shared.desktop_v3_finalization_pending,
+            shared.forward_busy,
+            shared.credential.is_some(),
+            report.credential_request.is_some(),
+            shared.catalog.pending,
+        ]
+        .into_iter()
+        .filter(|pending| *pending)
+        .count()
+            + shared
+                .terminal_requests
+                .as_ref()
+                .map_or(0, |queue| queue.max_capacity() - queue.capacity())
+            + shared
+                .catalog_requests
+                .as_ref()
+                .map_or(0, |queue| queue.max_capacity() - queue.capacity());
+        let remote_cleanup_pending = !report.journal_ready
+            || report.desktop_pending
+            || !report.pending_cleanup.is_empty()
+            || !matches!(shared.desktop_pending, Ok(None))
+            || !matches!(shared.desktop_v3_pending, Ok(None))
+            || shared.desktop_v3_handoff.is_some()
+            || shared.desktop_v3_finalization_pending
+            || report
+                .desktop_v3_transport
+                .as_ref()
+                .is_some_and(|run| run.transport.journal_pending || run.cleanup_pending);
+        let captured_pending = matches!(
+            (&shared.desktop_v3_pending, &shared.desktop_v3_capture),
+            (Ok(Some(pending)), Some(capture))
+                if pending.context() == capture.binding().context()
+                    && pending.pins() == capture.binding().pins()
+                    && pending.sources() == &capture.evidence().source_hashes()
+        ) && shared.desktop_v3_handoff.is_none()
+            && !shared.desktop_v3_finalization_pending;
+        let live = !self.signals.stop.load(Ordering::Acquire) && !self.worker.is_finished();
+        let v2_capture_proven = matches!(
+            (&shared.desktop_pending, &shared.desktop_v2_capture, &shared.desktop_profile),
+            (Ok(Some(pending)), Some(capture), Some(DesktopConfig::V2 { profile, pins, .. }))
+                if pending.matches_binding(capture)
+                    && pending.matches(profile, pins)
+                    && capture.matches_profile(profile, capture.session())
+        );
+        let recovery_connect_allowed = live
+            && ((captured_pending && shared.desktop_v3_io_retired)
+                || (v2_capture_proven && shared.desktop_v2_io_retired))
+            && !shared.busy
+            && shared.connect.is_none()
+            && shared.desktop_work.is_none()
+            && shared.desktop_launches.is_none()
+            && shared.desktop_v3_launch.is_none()
+            && report.owned_connections == 0
+            && report.tokio_threads == 0
+            && report.forward.active == 0;
+        let recovery_command_allowed = live
+            && ((captured_pending
+                && matches!(shared.desktop_profile, Some(DesktopConfig::V3 { .. })))
+                || (v2_capture_proven
+                    && report.desktop.is_none()
+                    && report.pending_cleanup.is_empty()))
+            && report.state == State::CleanupPending
+            && report.owned_connections == 1
+            && shared
+                .cancel
+                .as_ref()
+                .is_some_and(|cancel| !cancel.is_cancelled())
+            && !shared.forward_busy
+            && shared.desktop_work.is_none()
+            && shared.desktop_launches.is_none()
+            && shared.desktop_v3_work.is_none()
+            && shared.desktop_v3_launch.is_none();
+        let no_local_allocation_proven = shared
+            .desktop_v3_no_local_allocation
+            .as_ref()
+            .zip(shared.desktop_v3_capture.as_ref())
+            .is_some_and(|(proof, capture)| {
+                desktop_v3::reclamation::LocalRetirementGate::verify(
+                    proof,
+                    capture.binding().context(),
+                    capture.generation,
+                )
+                .is_ok_and(|local| local.complete())
+            });
+        (
+            report,
+            ReclamationState {
+                pending_operations,
+                remote_cleanup_pending,
+                recovery_connect_allowed,
+                recovery_command_allowed,
+                no_local_allocation_proven,
+                v2_capture_proven,
+            },
+        )
     }
     pub fn forward_probe(&self, session: SessionId, files: &Path, nonce: &str) -> Status {
         self.queue_probe(session, files, nonce, None)
@@ -774,7 +896,9 @@ impl Controller {
         }
         if s.report.state != State::DesktopReady
             || s.cancel.as_ref().is_none_or(|c| c.is_cancelled())
-            || s.desktop_v3_selection.as_ref() != Some(selection)
+            || s.desktop_v3_selections
+                .as_ref()
+                .is_none_or(|selections| !selections.contains(selection))
             || s.report.desktop_v3_transport.as_ref().is_none_or(|r| {
                 r.transport.phase
                     != eidolon_model::linux_desktop_v3::report::TransportPhase::Catalog
@@ -814,7 +938,7 @@ impl Controller {
         match admission.enqueue(permit, local_socket) {
             Ok(()) => {
                 s.catalog.desktop_v3 = None;
-                s.desktop_v3_selection = None;
+                s.desktop_v3_selections = None;
                 Status::Accepted
             }
             Err("DESKTOP_COMMANDS_FULL") => Status::Busy,
@@ -921,7 +1045,7 @@ impl Controller {
         if s.report.session != Some(session) {
             return Status::Stale;
         }
-        if s.desktop_profile.is_none()
+        if !matches!(s.desktop_profile, Some(DesktopConfig::V2 { .. }))
             || s.report.state != State::ProbeReady
             || s.report.desktop_pending
             || !s.report.pending_cleanup.is_empty()
@@ -980,7 +1104,7 @@ impl Controller {
         if s.desktop_launch_queued {
             return Err(Status::Busy);
         }
-        if s.desktop_profile.is_none()
+        if !matches!(s.desktop_profile, Some(DesktopConfig::V2 { .. }))
             || s.report.state != State::DesktopReady
             || s.cancel.as_ref().is_none_or(|c| c.is_cancelled())
             || s.desktop_launches.is_none()
@@ -1050,7 +1174,7 @@ impl Controller {
         if s.report.session != Some(session) {
             return Status::Stale;
         }
-        if s.desktop_profile.is_none()
+        if !matches!(s.desktop_profile, Some(DesktopConfig::V2 { .. }))
             || s.report.state != State::CleanupPending
             || !s.report.desktop_pending
             || s.report.owned_connections != 1
@@ -1467,9 +1591,13 @@ fn owner(
         // The fence outlives the entire SSH runtime, including worker tasks.
         drop(v3_io_fence);
         let was_v3 = matches!(connect.profile.desktop, Some(DesktopConfig::V3 { .. }));
+        let was_v2 = matches!(connect.profile.desktop, Some(DesktopConfig::V2 { .. }));
         let desktop_pending = root.map(linux_desktop::pending).unwrap_or(Ok(None));
         let desktop_v3_pending = root.map(desktop_v3::journal::pending).unwrap_or(Ok(None));
         signals.update(|s| {
+            if was_v2 {
+                s.desktop_v2_io_retired = true;
+            }
             if was_v3 {
                 s.desktop_v3_io_retired = true;
                 if let Some(report) = &mut s.report.desktop_v3_transport {
@@ -1488,7 +1616,7 @@ fn owner(
             s.desktop_launch_queued = false;
             s.desktop_v3_work = None;
             s.desktop_v3_launch = None;
-            s.desktop_v3_selection = None;
+            s.desktop_v3_selections = None;
             s.catalog = CatalogUi::default();
             s.desktop_pending =
                 if !was_v3 && s.report.desktop_pending && matches!(desktop_pending, Ok(None)) {
@@ -1804,6 +1932,10 @@ async fn connection(
                         connect.cancel.clone(),
                     ));
                     let capture = admission.capture();
+                    let catalog_descriptor = eidolon_model::linux_desktop_v3::catalog_descriptor(
+                        capture.binding().context(),
+                        capture.binding().pins(),
+                    );
                     signals.update(|s| {
                         s.desktop_v3_launch = Some(admission.clone());
                         s.desktop_v3_capture = Some(capture.clone());
@@ -1825,25 +1957,21 @@ async fn connection(
                                     | eidolon_model::linux_desktop_v3::report::TransportPhase::Complete)
                                 {
                                     s.catalog.desktop_v3 = None;
-                                    s.desktop_v3_selection = None;
+                                    s.desktop_v3_selections = None;
                                     s.catalog.pending = false;
                                     s.report.state = State::CleanupPending;
                                 }
                             });
                         },
-                        |selection| {
+                        |selections| {
                             signals.update(|s| {
                                 if s.report.session == Some(connect.session)
                                     && s.catalog.request_id == Some(inspect_request)
                                     && !connect.cancel.is_cancelled()
                                 {
                                     s.catalog.pending = false;
-                                    s.catalog.desktop_v3 = Some(V3CatalogUi {
-                                        namespace: "linux-desktop",
-                                        selection: selection.clone(),
-                                        label: "Mousepad", mode: "gui", instance_limit: 1,
-                                    });
-                                    s.desktop_v3_selection = Some(selection.clone());
+                                    s.catalog.desktop_v3 = Some(catalog_descriptor.clone());
+                                    s.desktop_v3_selections = Some(selections.clone());
                                     s.report.state = State::DesktopReady;
                                 }
                             });
@@ -1858,7 +1986,7 @@ async fn connection(
                         s.forward_busy = false;
                         s.desktop_v3_launch = None;
                         s.desktop_v3_no_local_allocation = no_local_allocation;
-                        s.desktop_v3_selection = None;
+                        s.desktop_v3_selections = None;
                         s.catalog.desktop_v3 = None;
                         s.catalog.pending = false;
                         s.report.desktop_v3_transport = Some(outcome.report);
@@ -1960,7 +2088,10 @@ async fn connection(
                         pins.clone(),
                     )?;
                     let (sender, requests) = tokio::sync::mpsc::channel(1);
-                    signals.update(|s| s.desktop_launches = Some(sender));
+                    signals.update(|s| {
+                        s.desktop_v2_capture = Some(captured.clone());
+                        s.desktop_launches = Some(sender);
+                    });
                     let report = linux_desktop::serve(
                         &client,
                         &connect.router,

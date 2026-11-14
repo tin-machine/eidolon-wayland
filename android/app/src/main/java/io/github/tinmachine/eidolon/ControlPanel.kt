@@ -58,7 +58,8 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
             Text(device.networkSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall,maxLines=2,
                 overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             Text("接続先: ${NativeSessionHost.connectionTarget.value} · ${NativeSessionHost.connectionSummary.value}",color=Color.White,style=MaterialTheme.typography.bodySmall,maxLines=2)
-            if(linux) Text("固定GTKデモ · 切断・lease失効で未保存の作業も終了します",color=Color(0xFFFFD59E),style=MaterialTheme.typography.bodySmall)
+            if(linux) Text(if(launcher.v3) "固定GTKデモ / Mousepad · 切断・lease失効で未保存の作業も終了します"
+                else "固定GTKデモ · 切断・lease失効で未保存の作業も終了します",color=Color(0xFFFFD59E),style=MaterialTheme.typography.bodySmall)
         }
         if(NativeSessionHost.launcherExpanded.value) LauncherSettings(Modifier.weight(1f))
         else Button(onClick={details=!details}) {Text(if(details) "設定と詳細を閉じる" else "設定と詳細")}

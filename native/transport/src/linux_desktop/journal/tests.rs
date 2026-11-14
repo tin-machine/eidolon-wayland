@@ -32,6 +32,27 @@ fn reservation_is_durable_exclusive_and_separate_from_probe_and_termux() {
 }
 
 #[test]
+fn pending_matches_only_the_original_live_binding() {
+    let root = Temp::new();
+    let original = binding();
+    drop(Journal::reserve(&root.0, &original).unwrap());
+    let pending = pending(&root.0).unwrap().unwrap();
+    assert!(pending.matches_binding(&original));
+    for field in 0..6 {
+        let mut changed = original.clone();
+        match field {
+            0 => changed.session = SessionId::new(2).unwrap(),
+            1 => changed.nonce = "8899aabbccddeeff".into(),
+            2 => changed.uid += 1,
+            3 => changed.profile_revision = "3".into(),
+            4 => changed.profile_binding = "f".repeat(64),
+            _ => changed.pins.desktop_binary_sha256 = "f".repeat(64),
+        }
+        assert!(!pending.matches_binding(&changed));
+    }
+}
+
+#[test]
 fn prepare_is_durable_before_forward_or_start_and_cannot_be_replayed() {
     let dir = Temp::new();
     let binding = binding();

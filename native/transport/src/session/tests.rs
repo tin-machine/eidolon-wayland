@@ -6,6 +6,90 @@ use russh::{
 use tokio::net::TcpListener;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_journal_and_live_capture_have_distinct_recovery_admission() {
+    use crate::linux_desktop::v3::{
+        Binding, Context, ExpectedEvidence, Manifest, Pins,
+        journal::Journal,
+        runtime::{LaunchAdmission, RunCapture},
+        sources,
+    };
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
+    ))
+    .unwrap();
+    let raw = |id| {
+        fixture["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["id"] == id)
+            .unwrap()["raw"]
+            .as_str()
+            .unwrap()
+            .as_bytes()
+    };
+    let binding = Binding::from_captured(
+        Context::parse(raw("context")).unwrap(),
+        Pins::parse(raw("pins")).unwrap(),
+    )
+    .unwrap();
+    let evidence = ExpectedEvidence::capture(
+        binding.pins(),
+        &Manifest::parse(raw("manifest")).unwrap(),
+        &sources::current_hashes(),
+    )
+    .unwrap();
+    let root = JournalRoot::new();
+    let journal = Journal::reserve(&root.0, &binding).unwrap();
+    drop(journal);
+    let controller = Controller::start_with_root(Some(root.0.clone())).unwrap();
+    wait(&controller, |snapshot| snapshot.journal_ready).await;
+    let (_, cold) = controller.reclamation_snapshot();
+    assert!(cold.remote_cleanup_pending);
+    assert!(!cold.no_local_allocation_proven);
+    assert!(!cold.recovery_connect_allowed && !cold.recovery_command_allowed);
+
+    // This gate is held in-process before any local allocation. An on-disk
+    // Complete or a new Runtime's empty counters cannot construct its proof.
+    let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+    let admission = LaunchAdmission::new(
+        RunCapture::new(binding, evidence, request(7), 7).unwrap(),
+        sender,
+        CancellationToken::new(),
+    );
+    controller.signals.update(|shared| {
+        shared.desktop_v3_capture = Some(admission.capture());
+        shared.desktop_v3_no_local_allocation = admission.seal_without_local_allocation();
+    });
+    let (_, before_io_retirement) = controller.reclamation_snapshot();
+    assert!(before_io_retirement.no_local_allocation_proven);
+    assert!(!before_io_retirement.recovery_connect_allowed);
+    controller
+        .signals
+        .update(|shared| shared.desktop_v3_io_retired = true);
+    let (_, live) = controller.reclamation_snapshot();
+    assert!(live.recovery_connect_allowed);
+    assert!(
+        !live.recovery_command_allowed,
+        "a new authenticated connection is still needed"
+    );
+    controller.request_stop();
+    assert!(!controller.reclamation_snapshot().1.recovery_connect_allowed);
+    stop(&controller).await;
+    let (stopped, retained) = controller.reclamation_snapshot();
+    assert_eq!(stopped.workers, 0);
+    assert!(
+        retained.remote_cleanup_pending,
+        "stopping a Controller cannot clear a journal"
+    );
+    assert!(
+        crate::linux_desktop::v3::journal::pending(&root.0)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn finalized_receipt_survives_a_transient_publication_read_failure() {
     use crate::linux_desktop::v3::{
         Binding, Context, Pins,
@@ -85,6 +169,7 @@ async fn finalized_receipt_survives_a_transient_publication_read_failure() {
     let directory = root.0.join("linux-desktop-v3-state");
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(controller.publish_v3_finalized(&receipt), Status::NotReady);
+    assert!(controller.reclamation_snapshot().1.remote_cleanup_pending);
     assert!(
         controller
             .signals
@@ -109,6 +194,8 @@ async fn finalized_receipt_survives_a_transient_publication_read_failure() {
             .is_none()
     );
     stop(&controller).await;
+    assert!(!controller.reclamation_snapshot().1.remote_cleanup_pending);
+    assert_eq!(controller.reclamation_snapshot().1.pending_operations, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

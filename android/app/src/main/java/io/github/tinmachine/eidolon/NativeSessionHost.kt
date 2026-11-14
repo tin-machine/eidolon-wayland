@@ -49,7 +49,8 @@ object NativeSessionHost {
     private var credentials: CredentialStore? = null
     private val probeRecovery = ProbeRuntimeRecovery()
     private val debugSdkLease = DebugSdkRuntimeLease()
-    private val productWorker = DebugSdkProductExecutor(debugSdkLease, worker)
+    private val runtimeAdmission = RuntimeAdmission()
+    private val productWorker = DebugSdkProductExecutor(debugSdkLease, worker, runtimeAdmission)
     private var debugSdkCapture: ProbeCredentialCapture? = null
     @Volatile private var debugSdkFailure: String? = null
     @Volatile private var debugSdkMode = "pattern"
@@ -62,10 +63,21 @@ object NativeSessionHost {
     private var linuxIdentity: CredentialStore.Identity? = null
     private var linuxProfileStore: LinuxProfileStore? = null
     private var linuxPinsStore: LinuxDesktopPinsStore? = null
+    private var linuxSettingsStore: LinuxDesktopSettingsStore? = null
+    private var linuxSettings: LinuxDesktopSettingsRepository.Snapshot? = null
+    private var runtimeSettingsCapture: String? = null
+    private var everAllocatedRuntime = false
+    private var settingsRequest: LinuxDesktopSettingsRepository.SaveRequest? = null
+    private var settingsCompletedEpoch = -1L
+    private var settingsProgressStamp: String? = null
+    private var lastSaveSnapshot: JSONObject? = null
     private var linuxProfile: ConnectionProfileV2.Value? = null
     private var linuxSavedPins: LinuxDesktopPinsRepository.Saved? = null
     private var linuxCredentialCapture: LinuxCredentialCapture? = null
     private var linuxCatalog: LinuxDesktopCatalog? = null
+    private var linuxV3Catalog: LinuxDesktopV3Catalog? = null
+    private val linuxV3LaunchAdmission = LinuxDesktopV3LaunchAdmission()
+    private var linuxV3FirstFailure: String? = null
     private data class LinuxAction(val kind: String, val session: String, val request: String,
         val deadline: Long = SystemClock.elapsedRealtime()+30000)
     private var linuxAction: LinuxAction? = null
@@ -75,6 +87,7 @@ object NativeSessionHost {
     val canSelectLinuxRecovery = mutableStateOf(false)
     private var lastConnectRequest: String? = null // connectとcancelをworker上の順序で束縛する。
     private var connectPending = false
+    private val settingsOriginStop = RuntimeOriginStop()
     private var cancelledThrough = 0L
     private data class PendingDisconnect(val connectRequest: String?, val session: String?, var request: String? = null)
     private var pendingDisconnect: PendingDisconnect? = null
@@ -161,7 +174,7 @@ object NativeSessionHost {
             .put("expected_revision",if(path==launcherState.path && !launcherState.builtin) launcherState.revision else JSONObject.NULL),path)
     } } }
     private fun requestCatalog(operation: JSONObject, path: String? = null) {
-        if(handle==0L || catalogPending!=null || selectedProfileId!="termux-local") return
+        if(!runtimeAdmission.open() || handle==0L || catalogPending!=null || selectedProfileId!="termux-local") return
         val runtime=snapshot().getJSONObject("runtime")
         val app=runtime.optJSONObject("app")
         val session=runtime.getJSONObject("transport").optString("session")
@@ -177,6 +190,7 @@ object NativeSessionHost {
         } else launcherUpdate(launcherState.copy(message="操作を開始できません（$code）"))
     }
     private fun pumpCatalog(runtime: JSONObject) {
+        if(!runtimeAdmission.open()) return // Preserve the saving/recovery UI and do not queue automatic catalog work.
         if(selectedProfileId==LinuxConnectionProfile.ID) { pumpLinuxCatalog(runtime); return }
         val transport=runtime.getJSONObject("transport")
         val app=runtime.optJSONObject("app")
@@ -210,8 +224,13 @@ object NativeSessionHost {
                 else if(error!=null) LauncherMessages.error(error) else if(pending.kind=="save") "登録しました" else "アプリを選んで起動できます"))
     }
     fun launchRegistered(session: String, revision: String, id: String, requested: ((String, Int) -> Unit)? = null) {
-        if(launcherUi.value.linux) launchLinuxDesktop(session,revision,id,requested)
+        if(linuxV3Active() && launcherUi.value.linux) requested?.invoke("",NativeBridge.STALE)
+        else if(launcherUi.value.linux) launchLinuxDesktop(session,revision,id,requested)
         else launchCatalogTerminal(session,JSONObject().put("kind","registered").put("revision",revision).put("id",id),requested)
+    }
+    /** Normal v3 click carries the exact rendered selection context; no caller-supplied nonce or storage. */
+    fun launchRegistered(runtime:Long,capture:String,session:String,revision:String,id:String) {
+        launchLinuxDesktopV3(runtime,capture,session,revision,id)
     }
     fun launchFile(form: LauncherForm, requested: ((String, Int) -> Unit)? = null) {
         if(form.valid()) launchCatalogTerminal(launcherUi.value.session,JSONObject().put("kind","temporary").put("definition",form.definition()), requested)
@@ -251,11 +270,200 @@ object NativeSessionHost {
     val connectionUi=mutableStateOf(ConnectionUi())
     data class LinuxConnectionUi(val publicKey:String="",val displayName:String="Linux desktop",val host:String="",val port:String="22",
         val username:String="",val hostKey:String="",val savedBinding:String="",val pinsJson:String="",val pinsToken:String="",
-        val pinsReady:Boolean=false,val canSave:Boolean=false,val message:String="設定を読み込み中") {
+        val pinsReady:Boolean=false,val canSave:Boolean=false,val message:String="設定を読み込み中",
+        val backend:LinuxDesktopBackend=LinuxDesktopBackend.V2,val v3Json:String="",val settingsCapture:String="",
+        val canResume:Boolean=false,val savePhase:String="idle",val firstFailure:String?=null,val cleanupFailure:String?=null,
+        val settingsStatus:String="UNCONFIGURED") {
         override fun toString() = "LinuxConnectionUi(<private>)"
     }
     val linuxConnectionUi=mutableStateOf(LinuxConnectionUi())
     private var connectionEditable=false
+
+    private val settingsSave: RuntimeSaveCoordinator by lazy { RuntimeSaveCoordinator(runtimeAdmission, sdkRetirement,
+        object : RuntimeSaveCoordinator.Port {
+            override fun now() = SystemClock.elapsedRealtime()
+            override fun currentRuntime() = handle
+            override fun observe(runtime:Long):NativeReclamation {
+                val value=JSONObject(NativeBridge.nativeSnapshot(runtime))
+                val result=NativeReclamation.decode(runtime,value)
+                lastSaveSnapshot=value
+                return result
+            }
+            override fun stopOrigin(runtime:Long):Boolean {
+                if(handle!=runtime) return false
+                val state=JSONObject(NativeBridge.nativeSnapshot(runtime)).getJSONObject("runtime")
+                val session=state.getJSONObject("transport").optString("session").takeIf {it.toLongOrNull()?.let {n->n>0}==true}
+                linuxAction=null;linuxCatalog=null;linuxV3Catalog=null
+                linuxCredentialCapture?.close();linuxCredentialCapture=null
+                // Connect's command_complete may precede SessionId allocation. Keep cancelling the
+                // original request, and distinguish queue acceptance from the actual completion.
+                lastConnectRequest?.let {cancelledThrough=maxOf(cancelledThrough,it.toLong())}
+                return settingsOriginStop.step(runtime,lastConnectRequest,session,{requests.incrementAndGet().toString()}) {target,request ->
+                    NativeBridge.nativeCommand(runtime,JSONObject().put("schema",1).put("request_id",request)
+                        .put("type",target.type).put(target.field,target.value).toString())
+                }
+            }
+            override fun connectForRecovery(runtime:Long):Boolean {
+                if(handle!=runtime || settingsSave.operation?.runtime!=runtime) return false
+                return enqueueConnect(recoveryOwner=true)!=null
+            }
+            override fun recoverOrigin(runtime:Long):Boolean {
+                if(handle!=runtime || settingsSave.operation?.runtime!=runtime) return false
+                val transport=JSONObject(NativeBridge.nativeSnapshot(runtime)).getJSONObject("runtime").getJSONObject("transport")
+                val session=transport.getString("session")
+                val request=requests.incrementAndGet().toString()
+                val type=if(linuxV3Active()) "linux_desktop_v3_recover" else "linux_desktop_recover"
+                val code=NativeBridge.nativeCommand(runtime,JSONObject().put("schema",1).put("type",type)
+                    .put("request_id",request).put("session",session).toString())
+                if(code==NativeBridge.ACCEPTED) linuxAction=LinuxAction("recover",session,request)
+                return code==NativeBridge.ACCEPTED
+            }
+            override fun requestRuntimeStop(runtime:Long):Int {
+                if(handle!=runtime) return NativeBridge.STALE
+                invalidateRuntimeInput()
+                return NativeBridge.nativeRequestStop(runtime)
+            }
+            override fun destroyRuntime(runtime:Long):Int {
+                val code=NativeBridge.nativeDestroy(runtime)
+                if(code==NativeBridge.ACCEPTED) lastStop.set(JSONObject().put("handle",runtime.toString())
+                    .put("native_destroy_accepted",true).put("snapshot",checkNotNull(lastSaveSnapshot)).toString())
+                return code
+            }
+            override fun runtimeDestroyed(runtime:Long) {
+                check(handle==runtime)
+                handle=0L
+                clearRetiredRuntime(runtime)
+            }
+        }) }
+
+    private fun linuxV3Active() = linuxSettings?.backend==LinuxDesktopBackend.V3 && linuxSettings?.ready==true
+    private fun linuxConfigured():Boolean = linuxIdentity!=null && linuxProfile?.let {
+        LinuxConnectionProfile.endpointSupport(it)==LinuxConnectionProfile.EndpointSupport.IPV4
+    }==true && (if(linuxV3Active()) linuxSettings?.v3Configuration?.forProfile(linuxProfile,linuxSettings?.storageRecord)!=null
+        else linuxPins()!=null && linuxSettings?.ready==true)
+    private fun reloadLinuxSettings():LinuxDesktopSettingsRepository.Snapshot {
+        val value=checkNotNull(linuxSettingsStore).load()
+        linuxSettings=value;linuxProfile=value.profile;linuxSavedPins=value.v2Pins
+        return value
+    }
+    private fun invalidateRuntimeInput() {
+        resetInput();invalidateImeConnection();pendingInputFocus=null
+        keyboardFocus=null;inputTargets=emptyMap();groupInputGate.set(WindowGroupInputGate.unavailable())
+        windowOperation.set(null);windowOperationCompletions.clear()
+        clearTerminalOpen();terminalAdding=null
+    }
+    private fun settingsCanSave() = runtimeAdmission.open() && !debugSdkLease.blocksProduct() &&
+        probeRecovery.canStartNormal() && linuxSettings?.status !in setOf(LinuxDesktopSettingsRepository.Status.BLOCKED,
+            LinuxDesktopSettingsRepository.Status.SAVE_PENDING)
+
+    fun saveLinuxV3Configuration(draft:LinuxConnectionDraft,raw:String,expectedCaptureToken:String,confirmed:Boolean) {
+        productWorker.execute {
+            try {
+                check(settingsCanSave()) {"SAVE_ADMISSION_CLOSED"}
+                val request=checkNotNull(linuxSettingsStore).prepare(expectedCaptureToken,draft,LinuxDesktopBackend.V3,raw,confirmed)
+                beginLinuxSettingsSave(request)
+            } catch(_:Exception) { refreshLinuxConnection("保存要求を受け付けられません。設定の版・上限・確認欄と現在の保存状態を確認してください。") }
+        }
+    }
+    fun switchLinuxBackendV2(expectedCaptureToken:String,confirmed:Boolean) { productWorker.execute {
+        try {
+            check(settingsCanSave()) {"SAVE_ADMISSION_CLOSED"}
+            val saved=checkNotNull(linuxSettingsStore).load()
+            require(saved.captureToken==expectedCaptureToken) {"SETTINGS_STALE"}
+            val pins=checkNotNull(saved.v2Pins?.forProfile(saved.profile)) {"DESKTOP_PINS_REQUIRED"}
+            beginLinuxSettingsSave(checkNotNull(linuxSettingsStore).prepare(expectedCaptureToken,null,LinuxDesktopBackend.V2,pins.json(),confirmed))
+        } catch(_:Exception) {refreshLinuxConnection("v2へ切り替えられません。現在の接続先に対応するv2転送情報を確認してください。")}
+    } }
+    private fun beginLinuxSettingsSave(request:LinuxDesktopSettingsRepository.SaveRequest) {
+        check(settingsCanSave()) {"SAVE_ADMISSION_CLOSED"}
+        // Byte accounting only. These fixed-width values are never published or passed to native;
+        // E1 remains the only storage ID generator. Actual saved IDs have these exact ASCII widths.
+        val preflight=if(request.backend==LinuxDesktopBackend.V3) {
+            val sizeOnly=LinuxStorageRecord.from(StorageCapture.from(checkNotNull(identity).installation,request.nextProfile),
+                StorageInstallationId("0".repeat(32)),ProfileStorageId("0".repeat(32)))
+            LinuxRuntimeConfiguration.build(baseRuntimeConfig(),request.nextProfile,
+                configuration=checkNotNull(request.intent.configuration),storage=sizeOnly)
+        } else LinuxRuntimeConfiguration.build(baseRuntimeConfig(),request.nextProfile,v2Pins=checkNotNull(request.intent.pins))
+        LinuxRuntimeConfiguration.bounded(BuildHooks.runtimeConfiguration(preflight))
+        if(handle==0L) {
+            check(!everAllocatedRuntime) {"SAVE_OWNER_UNKNOWN"}
+            // First allocation only. No Linux profile/connection is admitted into this owner.
+            handle=NativeBridge.nativeCreate(LinuxRuntimeConfiguration.bounded(baseRuntimeConfig().toString()))
+            everAllocatedRuntime=handle>0L
+            finishRuntimeStart()
+        }
+        check(handle>0L) {"SAVE_OWNER_UNKNOWN"}
+        settingsRequest=request
+        settingsProgressStamp=null
+        settingsOriginStop.reset()
+        settingsSave.begin(handle,request.captureToken) {barrier ->
+            val saved=checkNotNull(linuxSettingsStore).save(request,barrier)
+            acceptSavedSettings(saved)
+        }
+        clearTerminalOpen();terminalAdding=null;catalogPending=null
+        themeImportToken=null;themeRequests.clear();themeImportMessage=null
+        invalidateRuntimeInput()
+        refreshLinuxConnection("設定を保存するため、現在のアプリとウィンドウの回収を開始しました。")
+    }
+    private fun acceptSavedSettings(saved:LinuxDesktopSettingsRepository.Snapshot) {
+        require(saved.ready) {"SETTINGS_READBACK_INVALID"}
+        val reread=checkNotNull(linuxSettingsStore).load()
+        require(reread.ready && reread.captureToken==saved.captureToken && reread.intentToken==saved.intentToken) {"SETTINGS_READBACK_INVALID"}
+        // Includes profile, paths, storage, escaping and debug additions. Still inside the closed epoch.
+        runtimeConfigFor(reread)
+        linuxSettings=reread;linuxProfile=reread.profile;linuxSavedPins=reread.v2Pins
+    }
+    fun resumeLinuxSettings(expectedCaptureToken:String) {
+        val requestedOwner=runtimeAdmission.activeOwner()
+        worker.execute {
+        try {
+            val operation=settingsSave.operation ?: error("SAVE_OWNER_UNKNOWN")
+            check(settingsSave.active && operation.owner===requestedOwner && runtimeAdmission.owns(operation.owner)) {"SAVE_OWNER_UNKNOWN"}
+            require(checkNotNull(linuxSettingsStore).load().captureToken==expectedCaptureToken) {"SETTINGS_STALE"}
+            if(operation.canResumePublication) {
+                val request=checkNotNull(settingsRequest)
+                val current=checkNotNull(linuxSettingsStore).load()
+                require(current.captureToken==expectedCaptureToken) {"SETTINGS_STALE"}
+                if(current.intentToken==request.intentToken) {
+                    check(settingsSave.resumePublication(request.captureToken,expectedCaptureToken) {barrier ->
+                        acceptSavedSettings(checkNotNull(linuxSettingsStore).resume(expectedCaptureToken,barrier))
+                    })
+                } else {
+                    // Only an unchanged pre-intent capture may retry the original request.
+                    require(current.captureToken==request.expectedSnapshotToken && current.intentToken==request.expectedIntentToken) {"SETTINGS_STALE"}
+                    check(settingsSave.resumePublication(request.captureToken,request.captureToken) {barrier ->
+                        acceptSavedSettings(checkNotNull(linuxSettingsStore).save(request,barrier))
+                    })
+                }
+            } else check(settingsSave.continueReclamation()) {"SAVE_RECOVERY_UNAVAILABLE"}
+            pumpSettingsSave()
+        } catch(_:Exception) {refreshLinuxConnection("元の保存要求と回収証拠を確認できません。設定とjournalを保持しています。利用可能な回収操作を確認してください。")}
+    } }
+    private fun pumpSettingsSave() {
+        settingsSave.poll()
+        val op=settingsSave.operation ?: return
+        if(op.phase==RuntimeSaveCoordinator.Phase.COMMITTED && settingsCompletedEpoch!=op.owner.epoch) {
+            settingsCompletedEpoch=op.owner.epoch
+            reloadLinuxSettings()
+            refreshLinuxConnection("設定全体の保存と再読を確認しました。明示的に接続し、アプリを確認してください。")
+            if(handle==0L) startRuntime()
+            return
+        }
+        val stamp="${op.owner.epoch}:${op.phase}:${op.firstFailure}:${op.cleanupFailure}:${op.canRecover}"
+        if(stamp!=settingsProgressStamp) {
+            settingsProgressStamp=stamp
+            if(op.phase==RuntimeSaveCoordinator.Phase.SAVE_PENDING) reloadLinuxSettings()
+            refreshLinuxConnection(when(op.phase) {
+                RuntimeSaveCoordinator.Phase.ORIGIN_STOPPING -> "アプリ・転送・全世代ウィンドウを回収しています。"
+                RuntimeSaveCoordinator.Phase.RECOVERING -> "元の接続先と保存要求を保持して、前回の処理を回収しています。"
+                RuntimeSaveCoordinator.Phase.RECOVERY_REQUIRED -> if(op.canRecover) "回収が未完了です。「前回の回収」で元の処理を回復してから保存を続けます。"
+                    else "旧所有者の回収を確認できません。設定とjournalを保持しています。現在利用できるRecoverはありません。"
+                RuntimeSaveCoordinator.Phase.RUNTIME_STOPPING -> "接続・診断パネルを含むRuntime全体の停止を確認しています。"
+                RuntimeSaveCoordinator.Phase.SAVE_PENDING -> "保存は未完了です。元の設定と保存要求を確認し、利用可能な再開操作を選んでください。"
+                else -> "設定の状態を確認してください。"
+            })
+        }
+    }
 
     private fun refreshConnection(message:String) {
         val profile=profiles.optJSONObject(0)?.let {ConnectionProfile.parse(it.getString("username"),it.getString("host_key"))}
@@ -264,7 +472,7 @@ object NativeSessionHost {
         ui.post {connectionUi.value=ConnectionUi(publicKey,profile?.username ?: "",profile?.hostKey ?: "",profile?.token ?: "",editable,message)}
     }
     private fun canChangeConnection(runtime:JSONObject):Boolean = ConnectionAdmission.canChange(runtime,
-        debugSdkLease.blocksProduct() || connectPending || pendingDisconnect!=null || terminalOpen!=null || linuxAction!=null)
+        !runtimeAdmission.open() || debugSdkLease.blocksProduct() || connectPending || pendingDisconnect!=null || terminalOpen!=null || linuxAction!=null)
     fun saveConnection(username:String,hostKey:String,expected:String,confirmed:Boolean) {
         productWorker.execute {
             try {
@@ -283,18 +491,40 @@ object NativeSessionHost {
 
     private fun linuxPins(): LinuxDesktopPins? = linuxSavedPins?.forProfile(linuxProfile)
     private fun canSelectRecovery(runtime:JSONObject):Boolean {
-        return selectedProfileId!=LinuxConnectionProfile.ID && linuxProfile!=null && linuxPins()!=null &&
+        return runtimeAdmission.open() && selectedProfileId!=LinuxConnectionProfile.ID && linuxConfigured() &&
             ConnectionAdmission.canSelectRecovery(runtime,
                 debugSdkLease.blocksProduct() || connectPending || pendingDisconnect!=null || terminalOpen!=null)
     }
     private fun refreshLinuxConnection(message:String) {
         val profile=linuxProfile
+        val settings=linuxSettings
+        val saving=settingsSave.operation?.takeIf {settingsSave.active}
+        val request=settingsRequest
+        val resumableFiles=settings?.captureToken!=null && request!=null &&
+            ((settings.intentToken==request.intentToken && (settings.canResume || settings.ready)) ||
+                (settings.captureToken==request.expectedSnapshotToken && settings.intentToken==request.expectedIntentToken &&
+                    settings.status !in setOf(LinuxDesktopSettingsRepository.Status.BLOCKED,LinuxDesktopSettingsRepository.Status.SAVE_PENDING)))
+        val canResume=saving?.let {it.canResumePublication && resumableFiles ||
+            it.canRetryReclamation && handle==it.runtime ||
+            it.phase==RuntimeSaveCoordinator.Phase.RECOVERY_REQUIRED && (it.canRecover || it.observation?.originRetired==true)}==true
         val value=LinuxConnectionUi(linuxIdentity?.publicKey ?: "",profile?.displayName ?: "Linux desktop",profile?.host ?: "",
             profile?.port?.toString() ?: "22",profile?.username ?: "",profile?.hostKey ?: "",profile?.binding() ?: "",
-            linuxSavedPins?.pins?.json() ?: "",linuxSavedPins?.token ?: "",linuxPins()!=null,connectionEditable,message)
+            linuxSavedPins?.pins?.json() ?: "",linuxSavedPins?.token ?: "",linuxPins()!=null,settingsCanSave(),message,
+            backend=settings?.backend ?: LinuxDesktopBackend.V2,v3Json=settings?.v3Configuration?.configuration?.json() ?: "",
+            settingsCapture=settings?.captureToken ?: "",canResume=canResume,savePhase=saving?.phase?.name?.lowercase() ?: "idle",
+            firstFailure=saving?.firstFailure,cleanupFailure=saving?.cleanupFailure,settingsStatus=settings?.status?.name ?: "UNCONFIGURED")
         val target=if(selectedProfileId==LinuxConnectionProfile.ID) profile?.let {"${it.displayName} · ${it.host}:${it.port}"} ?: "別のLinux（未設定）" else "このQuestのTermux"
         val selected=selectedProfileId
         ui.post {linuxConnectionUi.value=value;selectedConnection.value=selected;connectionTarget.value=target}
+        if(!runtimeAdmission.open()) {
+            val displayPhase=if(saving?.phase in setOf(RuntimeSaveCoordinator.Phase.ORIGIN_STOPPING,RuntimeSaveCoordinator.Phase.RUNTIME_STOPPING)) "stopping"
+                else if(saving!=null || settings?.status==LinuxDesktopSettingsRepository.Status.SAVE_PENDING) "save_pending" else "configuration_mismatch"
+            launcherUpdate(launcherState.copy(linux=selected==LinuxConnectionProfile.ID,connected=false,busy=true,entries=emptyList(),
+                canConnect=false,canInspect=false,canStop=false,canRecover=saving?.canRecover==true,message=message,
+                v3=settings?.backend==LinuxDesktopBackend.V3 || settingsRequest?.backend==LinuxDesktopBackend.V3,
+                phase=displayPhase,firstFailure=saving?.firstFailure,cleanupFailure=saving?.cleanupFailure))
+            ui.post {terminalBusy.value=true;connectionSummary.value=message}
+        }
     }
     fun selectConnection(profileId:String) { productWorker.execute { safely {
         if(profileId !in setOf("termux-local",LinuxConnectionProfile.ID) || profileId==selectedProfileId) return@safely
@@ -310,38 +540,61 @@ object NativeSessionHost {
     } } }
     fun saveLinuxConnection(draft:LinuxConnectionDraft,expectedBinding:String,confirmed:Boolean) { productWorker.execute {
         try {
+            val settings=checkNotNull(linuxSettingsStore).load()
+            require(settings.profile?.binding()==expectedBinding.ifEmpty {null}) {"PROFILE_CHANGED"}
+            if(!settings.legacyAllowed) {
+                beginLinuxSettingsSave(checkNotNull(linuxSettingsStore).prepareProfile(checkNotNull(settings.captureToken),draft,confirmed))
+                return@execute
+            }
             check(handle!=0L && canChangeConnection(snapshot().getJSONObject("runtime"))) {"CONNECTION_BUSY"}
             require(linuxProfile?.binding()==expectedBinding.ifEmpty {null}) {"PROFILE_CHANGED"}
             LinuxConnectionProfile.propose(draft,checkNotNull(identity).installation,linuxProfile)
             require(confirmed) {"PIN_CONFIRMATION_REQUIRED"}
             stopRuntime()
             linuxProfile=checkNotNull(linuxProfileStore).save(draft,expectedBinding.ifEmpty {null},confirmed)
+            reloadLinuxSettings()
             linuxCatalog=null
             refreshLinuxConnection("接続先を保存しました。転送用ファイルの確認情報も、この接続先に対して確認・保存してください。")
         } catch(_:Exception) {
             // publish後のreadback失敗も古いbindingに戻さず、保存済み状態を読み直す。
-            linuxProfile=null;runCatching {linuxProfile=checkNotNull(linuxProfileStore).load()}
+            runCatching {reloadLinuxSettings()}
             refreshLinuxConnection("保存できませんでした。終了状態と接続先・ホスト鍵を確認し、設定を開き直してください。")
-        } finally {safely {if(handle==0L) startRuntime()}}
+        } finally {safely {if(handle==0L && runtimeAdmission.open()) startRuntime()}}
     } }
     fun saveLinuxPins(raw:String,expectedBinding:String,expectedToken:String,confirmed:Boolean) { productWorker.execute {
         try {
+            val settings=checkNotNull(linuxSettingsStore).load()
+            require(settings.profile?.binding()==expectedBinding && (settings.v2Pins?.token ?: "")==expectedToken) {"PROFILE_CHANGED"}
+            if(!settings.legacyAllowed) {
+                beginLinuxSettingsSave(checkNotNull(linuxSettingsStore).prepare(checkNotNull(settings.captureToken),null,LinuxDesktopBackend.V2,raw,confirmed))
+                return@execute
+            }
             check(handle!=0L && canChangeConnection(snapshot().getJSONObject("runtime"))) {"CONNECTION_BUSY"}
             val profile=checkNotNull(linuxProfile)
             require(profile.binding()==expectedBinding) {"PROFILE_CHANGED"}
             LinuxDesktopPins.parse(raw);require(confirmed) {"PIN_CONFIRMATION_REQUIRED"}
             stopRuntime()
             linuxSavedPins=checkNotNull(linuxPinsStore).save(profile,raw,expectedToken.ifEmpty {null},confirmed)
+            reloadLinuxSettings()
             linuxCatalog=null
             refreshLinuxConnection("転送用ファイルの確認情報を保存しました。明示的に接続して、利用できるアプリを確認できます。")
         } catch(_:Exception) {
-            linuxSavedPins=null;runCatching {linuxSavedPins=checkNotNull(linuxPinsStore).load()}
+            runCatching {reloadLinuxSettings()}
             refreshLinuxConnection("保存できませんでした。接続先と、固定builderから取得した確認情報を確認してください。")
-        } finally {safely {if(handle==0L) startRuntime()}}
+        } finally {safely {if(handle==0L && runtimeAdmission.open()) startRuntime()}}
     } }
     fun inspectLinuxDesktop(requested:((String,Int)->Unit)?=null) { linuxDesktopAction("inspect",requested) }
-    fun recoverLinuxDesktop() { linuxDesktopAction("recover") }
+    fun recoverLinuxDesktop() {
+        val requestedOwner=runtimeAdmission.activeOwner()
+        if(!runtimeAdmission.open()) worker.execute {
+            if(requestedOwner!=null && runtimeAdmission.owns(requestedOwner) && settingsSave.operation?.owner===requestedOwner && settingsSave.active) {
+                if(!settingsSave.continueReclamation()) refreshLinuxConnection("元の回収証拠が不足しているためRecoverを開始できません。設定とjournalを保持しています。")
+                else pumpSettingsSave()
+            }
+        } else linuxDesktopAction("recover")
+    }
     private fun linuxDesktopAction(kind:String,requested:((String,Int)->Unit)?=null) { productWorker.execute { safely {
+        if(linuxV3Active()) { linuxDesktopV3Action(kind,requested);return@safely }
         if(handle==0L || selectedProfileId!=LinuxConnectionProfile.ID || linuxAction!=null || pendingDisconnect!=null) {
             requested?.invoke("",NativeBridge.NOT_READY);return@safely
         }
@@ -383,6 +636,7 @@ object NativeSessionHost {
         requested?.invoke(request,code)
     } } }
     private fun pumpLinuxCatalog(runtime:JSONObject) {
+        if(linuxV3Active()) {pumpLinuxV3Catalog(runtime);return}
         val transport=runtime.getJSONObject("transport");val phase=transport.optString("state")
         val session=transport.optString("session").takeIf {transport.optString("profile_id")==LinuxConnectionProfile.ID} ?: ""
         val owned=transport.optInt("owned_connections");val pending=transport.optBoolean("desktop_pending")
@@ -445,6 +699,128 @@ object NativeSessionHost {
         if(value!=launcherState) launcherUpdate(value)
     }
 
+    private fun linuxDesktopV3Action(kind:String,requested:((String,Int)->Unit)?) {
+        if(handle==0L || !runtimeAdmission.open() || selectedProfileId!=LinuxConnectionProfile.ID ||
+            linuxAction!=null || pendingDisconnect!=null || connectPending ||
+            checkNotNull(linuxSettingsStore).load().captureToken!=runtimeSettingsCapture) {
+            requested?.invoke("",NativeBridge.NOT_READY);return
+        }
+        val snapshot=snapshot();val runtime=snapshot.getJSONObject("runtime");val transport=runtime.getJSONObject("transport")
+        if(transport.optString("profile_id")!=LinuxConnectionProfile.ID || transport.optInt("owned_connections")!=1) {
+            requested?.invoke("",NativeBridge.NOT_READY);return
+        }
+        val permitted=when(kind) {
+            "inspect" -> transport.optString("state")=="ProbeReady" && !transport.optBoolean("desktop_pending")
+            "recover" -> NativeReclamation.decode(handle,snapshot).recoveryCommandAllowed
+            else -> false
+        }
+        if(!permitted) {requested?.invoke("",NativeBridge.NOT_READY);return}
+        val session=transport.getString("session");val request=requests.incrementAndGet().toString()
+        val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","linux_desktop_v3_$kind")
+            .put("request_id",request).put("session",session).toString())
+        if(code==NativeBridge.ACCEPTED) {
+            linuxAction=LinuxAction(kind,session,request);linuxV3Catalog=null;linuxMessage=null
+            if(kind=="inspect") linuxV3FirstFailure=null
+        } else linuxMessage="操作を開始できません。接続と前回の回収状態を確認してください。"
+        requested?.invoke(request,code)
+    }
+    private fun launchLinuxDesktopV3(expectedRuntime:Long,capture:String,session:String,revision:String,id:String) { productWorker.execute { safely {
+        val catalog=linuxV3Catalog
+        if(handle!=expectedRuntime || !linuxV3Active() || selectedProfileId!=LinuxConnectionProfile.ID ||
+            linuxAction!=null || pendingDisconnect!=null || connectPending || catalog==null ||
+            runtimeSettingsCapture!=capture || checkNotNull(linuxSettingsStore).load().captureToken!=capture) {
+            linuxMessage="接続先とアプリ一覧が変わっています。確認し直してください。";return@safely
+        }
+        val runtime=snapshot().getJSONObject("runtime");val transport=runtime.getJSONObject("transport")
+        if(transport.optString("session")!=session || transport.optString("profile_id")!=LinuxConnectionProfile.ID ||
+            transport.optString("state")!="DesktopReady" || (runtime.optJSONObject("app")?.optString("state") ?: "stopped")!="stopped" ||
+            !linuxV3LaunchAdmission.tryClaim(catalog,handle,session,capture,revision,id)) {
+            linuxMessage=LinuxDesktopV3Messages.reason(linuxV3LaunchAdmission.failure) ?: "前のアプリの回収と現在の一覧を確認してください。"
+            return@safely
+        }
+        releasePanelTextFocus()
+        val request=requests.incrementAndGet().toString()
+        val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","linux_desktop_v3_launch")
+            .put("request_id",request).put("session",session).put("selection",catalog.selection(id)).toString())
+        // This inspected catalog is consumed even on enqueue uncertainty or timeout.
+        if(code==NativeBridge.ACCEPTED) {linuxAction=LinuxAction("launch",session,request);linuxMessage=null}
+        else linuxMessage="起動の受付を確認できません。前回の回収後にアプリ一覧を確認し直してください。"
+    } } }
+    private fun pumpLinuxV3Catalog(runtime:JSONObject) {
+        val transport=runtime.getJSONObject("transport");val phase=transport.optString("state")
+        val session=transport.optString("session").takeIf {transport.optString("profile_id")==LinuxConnectionProfile.ID} ?: ""
+        val capture=runtimeSettingsCapture ?: ""
+        val pending=transport.optBoolean("desktop_pending")
+        val app=runtime.optJSONObject("app")?.takeIf {it.optString("mode")=="linux_desktop" && it.optString("session")==session}
+        val appActive=app!=null && app.optString("state")!="stopped"
+        val previous=linuxV3Catalog
+        linuxV3Catalog=null
+        var catalogError:String?=null
+        var catalogRequest:String?=null
+        if(phase=="DesktopReady") {
+            try {
+                val envelope=LinuxStorageJson.parse(NativeBridge.nativeCatalogUi(handle).toByteArray(Charsets.UTF_8)) as Map<*, *>
+                require(envelope["code"]==0L)
+                val content=envelope["catalog"] as Map<*, *>
+                require(content["session"]==session)
+                catalogRequest=content["request_id"] as? String
+                catalogError=content["error"] as? String
+                if(content["pending"]==false && catalogError==null && content["desktop_v3"]!=null) {
+                    val decoded=LinuxDesktopV3Catalog.decode(handle,session,capture,LinuxStorageJson.canonical(content["desktop_v3"]))
+                    linuxV3Catalog=if(previous?.accepts(handle,session,capture,decoded.revision,LinuxDesktopV3Catalog.DEMO_ID)==true) previous else decoded
+                }
+            } catch(_:Exception) {catalogError="DESKTOP_CATALOG_INVALID"}
+        }
+        val view=LinuxDesktopV3Status.observe(handle,session,runtime,linuxV3FirstFailure)
+        linuxV3FirstFailure=view.firstFailure
+        linuxAction?.let {action ->
+            val completed=when(action.kind) {
+                "inspect" -> linuxV3Catalog!=null
+                "launch" -> view.ready
+                "recover" -> !pending && phase=="ProbeReady"
+                else -> false
+            }
+            if(completed) {linuxAction=null;linuxMessage=null}
+            else if(action.session!=session || phase in setOf("Disconnected","Failed") ||
+                action.kind=="inspect" && catalogRequest==action.request && catalogError!=null || SystemClock.elapsedRealtime()>action.deadline) {
+                linuxAction=null
+                linuxMessage="操作は未完了です。現在の状態と前回の回収を確認してください。"
+            }
+        }
+        val native=runtime.optJSONObject("reclamation")
+        val busy=!runtimeAdmission.open() || connectPending || pendingDisconnect!=null || linuxAction!=null
+        val configured=linuxConfigured()
+        val canConnect=!busy && configured && (if(pending) native?.opt("recovery_connect_allowed")==true
+            else ConnectionAdmission.canConnectLinux(runtime,false))
+        val canInspect=!busy && transport.optInt("owned_connections")==1 && phase=="ProbeReady" && !pending
+        val canRecover=if(settingsSave.active) settingsSave.operation?.canRecover==true
+            else !busy && native?.opt("recovery_command_allowed")==true
+        val selection=linuxV3Catalog
+        val available=!busy && !appActive && selection?.let(linuxV3LaunchAdmission::canClaim)==true
+        val shownPhase=if(settingsSave.active) when(settingsSave.operation?.phase) {
+            RuntimeSaveCoordinator.Phase.ORIGIN_STOPPING,RuntimeSaveCoordinator.Phase.RUNTIME_STOPPING -> "stopping"
+            else -> "pending"
+        } else view.phase
+        val message=linuxMessage ?: when {
+            settingsSave.active -> linuxConnectionUi.value.message
+            linuxAction?.kind=="inspect" -> "接続先の固定GTKデモとMousepadを確認しています"
+            linuxAction?.kind=="recover" -> "元の処理と全世代ウィンドウの回収を確認しています"
+            view.phase!="catalog_waiting" -> view.message
+            selection!=null -> "確認済み: GTKデモ・Mousepad · 同時に起動できるアプリは一つです"
+            !configured -> "v3接続設定の版・保存状態を確認してください"
+            else -> view.message
+        }
+        val value=LauncherUi(session=session,connected=selection!=null,busy=busy,revision=selection?.revision ?: "",
+            builtin=true,total=selection?.entries?.size ?: 0,path=launcherState.path,
+            entries=selection?.entries?.map {it.copy(available=available)} ?: emptyList(),message=message,linux=true,
+            canConnect=canConnect,canInspect=canInspect,canRecover=canRecover,
+            canStop=runtimeAdmission.open() && pendingDisconnect==null && (transport.optInt("owned_connections")>0 || connectPending || appActive),
+            running=view.ready,runtime=handle,capture=capture,v3=true,phase=shownPhase,
+            firstFailure=view.firstFailure ?: settingsSave.operation?.takeIf {settingsSave.active}?.firstFailure,
+            cleanupFailure=view.cleanupFailure ?: settingsSave.operation?.takeIf {settingsSave.active}?.cleanupFailure)
+        if(value!=launcherState) launcherUpdate(value)
+    }
+
     init { worker.scheduleAtFixedRate({ safely { tick() } }, 0, 16, TimeUnit.MILLISECONDS) }
 
     fun initialize(context: Context) {
@@ -456,6 +832,7 @@ object NativeSessionHost {
             if (store == null) store = DiagnosticsStore(application)
             if (preferencesDir == null) preferencesDir = application.noBackupFilesDir.absolutePath
             if (paths == null) paths = JSONObject().put("native_library_dir", application.applicationInfo.nativeLibraryDir).put("files_dir", application.filesDir.absolutePath)
+            if(settingsSave.active) {refreshLinuxConnection("元の保存要求と回収処理を継続しています。");return@safely}
             if (handle == 0L && NativeBridge.status.ready) {
                 if (credentials == null) credentials = CredentialStore(application)
                 identity = checkNotNull(credentials).ensureIdentity()
@@ -468,7 +845,8 @@ object NativeSessionHost {
                     linuxIdentity=checkNotNull(linuxCredentials).ensureIdentity()
                     if(linuxProfileStore==null) linuxProfileStore=LinuxProfileStore(application,checkNotNull(identity).installation)
                     if(linuxPinsStore==null) linuxPinsStore=LinuxDesktopPinsStore(application)
-                    linuxProfile=checkNotNull(linuxProfileStore).load();linuxSavedPins=checkNotNull(linuxPinsStore).load()
+                    if(linuxSettingsStore==null) linuxSettingsStore=LinuxDesktopSettingsStore(application,checkNotNull(identity).installation)
+                    reloadLinuxSettings()
                 }.isSuccess
                 selectedProfileId=application.getSharedPreferences("connections",Context.MODE_PRIVATE).getString("selected","termux-local") ?: "termux-local"
                 require(selectedProfileId in setOf("termux-local",LinuxConnectionProfile.ID)) {"PROFILE_SELECTION_INVALID"}
@@ -524,19 +902,23 @@ object NativeSessionHost {
         if(!value) {inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()}
         activityVisible.set(value);send("set_activity_state","visible",value,expectedScene);true
     }
-    private fun enqueueConnect(requested:((String,Int)->Unit)?=null): String? {
-        if(selectedProfileId==LinuxConnectionProfile.ID && (linuxIdentity==null || linuxProfile==null || linuxPins()==null ||
-                LinuxConnectionProfile.endpointSupport(checkNotNull(linuxProfile))!=LinuxConnectionProfile.EndpointSupport.IPV4)) {
+    private fun enqueueConnect(requested:((String,Int)->Unit)?=null,recoveryOwner:Boolean=false): String? {
+        if(!runtimeAdmission.open() && !(recoveryOwner && settingsSave.active && settingsSave.operation?.runtime==handle)) {
+            requested?.invoke("",NativeBridge.NOT_READY);return null
+        }
+        val profileId=if(recoveryOwner) LinuxConnectionProfile.ID else selectedProfileId
+        if(profileId==LinuxConnectionProfile.ID && (!linuxConfigured() ||
+                checkNotNull(linuxSettingsStore).load().captureToken!=runtimeSettingsCapture)) {
             linuxMessage="IPv4接続先・ホスト鍵・転送用ファイルを設定で確認してください。";requested?.invoke("",NativeBridge.NOT_READY);return null
         }
         val request = requests.incrementAndGet().toString()
-        val command = JSONObject().put("schema", 1).put("type", "connect").put("request_id", request).put("profile_id", selectedProfileId)
+        val command = JSONObject().put("schema", 1).put("type", "connect").put("request_id", request).put("profile_id", profileId)
         val code=NativeBridge.nativeCommand(handle,command.toString())
         requested?.invoke(request,code)
         if (code != NativeBridge.ACCEPTED) return null
         linuxCredentialCapture?.close()
-        linuxCredentialCapture=if(selectedProfileId==LinuxConnectionProfile.ID) LinuxCredentialCapture(handle,request,checkNotNull(linuxProfile)) else null
-        linuxCatalog=null;linuxMessage=null
+        linuxCredentialCapture=if(profileId==LinuxConnectionProfile.ID) LinuxCredentialCapture(handle,request,checkNotNull(linuxProfile)) else null
+        linuxCatalog=null;linuxV3Catalog=null;linuxMessage=null
         lastConnectRequest = request
         connectPending = true
         return request
@@ -634,7 +1016,7 @@ object NativeSessionHost {
     /** SDK button down owns one immutable target; reset also releases any Linux-held key. */
     fun beginWindowControl(target: JSONObject, runtime: Long, revision: Long,forMenu:Boolean=false): WindowControlTicket? = inputIntents.serial {
         check(Looper.myLooper()==Looper.getMainLooper())
-        if(runtime!=handle || revision<0 || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || debugSdkLease.blocksProduct()) return@serial null
+        if(!runtimeAdmission.open() || runtime!=handle || revision<0 || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || debugSdkLease.blocksProduct()) return@serial null
         val permit=if(forMenu) runCatching {
             val state=JSONObject(NativeBridge.nativeSnapshot(runtime)).getJSONObject("runtime")
             WindowGroupMenuWire.capture(runtime,target,state)?.takeIf {it.controlsRevision==revision}
@@ -843,7 +1225,7 @@ object NativeSessionHost {
     internal fun forgetWindowGroupGeometry(request:String) {groupGeometryCompletions.remove(request)}
     internal fun windowGroupGeometryPending()=groupGeometryCompletions.size
     fun inputTarget(target: String): InputTarget? {
-        if (debugSdkLease.blocksProduct() || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || movingTarget(target)) return null
+        if (!runtimeAdmission.open() || debugSdkLease.blocksProduct() || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || movingTarget(target)) return null
         val key=JSONObject(target)
         if(!windowGroupInputAllowed(handle,key)) return null
         return inputTargets[targetIdentity(key)]?.takeIf { it.runtime==handle }
@@ -876,7 +1258,7 @@ object NativeSessionHost {
     fun setBackground(mode: String) { if(mode in setOf("passthrough","virtual")) productWorker.execute { send("set_background","background",mode) } }
     fun setKeyboardLayout(layout: String) { if(layout in setOf("us","jis")) productWorker.execute { resetInput();send("set_keyboard_layout","layout",layout) } }
     private fun themeCommand(command: JSONObject, done: (String) -> Unit = {}) {
-        if (handle == 0L || themeRequests.size >= 8) { done("NOT_READY"); return }
+        if (!runtimeAdmission.open() || handle == 0L || themeRequests.size >= 8) { done("NOT_READY"); return }
         if(command.optString("type") in setOf("set_theme","begin_theme_import","apply_theme_import")) resetInput()
         val request = requests.incrementAndGet().toString()
         command.put("schema", 1).put("request_id", request)
@@ -913,10 +1295,12 @@ object NativeSessionHost {
     } } }
     fun readTheme(context: Context, uri: android.net.Uri, token: String) {
         val ticket = debugSdkLease.metadata().generation
-        if (!debugSdkLease.permitsProduct(ticket)) return
-        ThemeImporter.read(context, uri, token, { themeImportToken == token }) { file, error ->
+        val admissionTicket=runtimeAdmission.ticket() ?: return
+        val runtime=handle
+        if (runtime==0L || !debugSdkLease.permitsProduct(ticket)) return
+        ThemeImporter.read(context, uri, token, { themeImportToken == token && handle==runtime && runtimeAdmission.permits(admissionTicket) }) { file, error ->
             worker.execute { safely {
-                if (!debugSdkLease.permitsProduct(ticket)) { file?.delete(); return@safely }
+                if (!runtimeAdmission.permits(admissionTicket) || handle!=runtime || !debugSdkLease.permitsProduct(ticket)) { file?.delete(); return@safely }
                 if (themeImportToken != token || handle == 0L) { file?.delete(); return@safely }
                 if (file == null) {
                     themeImportToken = null; themeImportMessage = error
@@ -933,7 +1317,7 @@ object NativeSessionHost {
         }
     }
     fun submitPose(target: JSONObject, pose: JSONObject, runtime: Long): String? {
-        if(runtime!=handle || poseCompletions.size>=16 || !PanelPoseCodec.valid(pose)) return null
+        if(!runtimeAdmission.open() || runtime!=handle || poseCompletions.size>=16 || !PanelPoseCodec.valid(pose)) return null
         val request=requests.incrementAndGet().toString();poseCompletions[request]="pending"
         val code=NativeBridge.nativeCommand(runtime,JSONObject().put("schema",1).put("type","set_pose").put("request_id",request).put("target",target).put("pose",pose).toString())
         if(code!=NativeBridge.ACCEPTED) {poseCompletions.remove(request);return null}
@@ -1386,7 +1770,7 @@ object NativeSessionHost {
     fun debugCloseImeEditor(restoreRaw:Boolean=false) {if(BuildConfig.DEBUG) imeOwner?.let {closeImeOwner(it,restoreRaw)}}
     fun imeRawReturnStatus():ImeRawReturnMetadata?=imeRawReturn?.metadata()
     fun debugImeRawReturnStatus(): ImeRawReturnMetadata? = if (BuildConfig.DEBUG) imeRawReturn?.metadata() else null
-    fun imeReady(): Boolean = !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && !BuildHooks.imeProbeActive() && keyboardFocus?.let {
+    fun imeReady(): Boolean = runtimeAdmission.open() && !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && !BuildHooks.imeProbeActive() && keyboardFocus?.let {
         it.runtime == handle && !movingTarget(it.target) && windowGroupInputAllowed(it.runtime,JSONObject(it.target)) && !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get() == "FOCUSED"
     } == true
     fun debugImeReady():Boolean=BuildConfig.DEBUG && imeReady()
@@ -1592,7 +1976,7 @@ object NativeSessionHost {
         sendPhysicalKeyLocked(event)
     }
     private fun sendPhysicalKeyLocked(event: KeyEvent): Boolean {
-        if (debugSdkLease.blocksProduct()) return false
+        if (!runtimeAdmission.open() || debugSdkLease.blocksProduct()) return false
         if (imeRawBlocked.get()) return false // Android IME owns physical ingress until reset/disable ACKs.
         if(BuildHooks.imeProbeActive()) {BuildHooks.imeProbePhysicalKey();return false}
         val focus = keyboardFocus ?: return false
@@ -1621,10 +2005,24 @@ object NativeSessionHost {
         }
     }
     private fun startRuntime() {
+        if(!runtimeAdmission.open()) return
         if (!probeRecovery.canStartNormal()) {
             ui.post { summary.value = "検証runtimeの停止を確認できません。検証を停止してください" }; return
         }
+        val loaded=linuxSettingsStore?.load()
+        if(loaded!=null) {
+            if(loaded.status in setOf(LinuxDesktopSettingsRepository.Status.BLOCKED,LinuxDesktopSettingsRepository.Status.SAVE_PENDING)) {
+                linuxSettings=loaded
+                // A disk intent can resume bytes, but cannot recreate old SDK/Controller authority.
+                runtimeAdmission.retainUnknownOwner()
+                refreshLinuxConnection("保存した設定の組が不一致です。旧所有者の回収証拠がないため接続と保存再開を停止しています。")
+                return
+            }
+            linuxSettings=loaded;linuxProfile=loaded.profile;linuxSavedPins=loaded.v2Pins
+        }
         handle = NativeBridge.nativeCreate(runtimeConfigJson())
+        everAllocatedRuntime=everAllocatedRuntime || handle>0L
+        runtimeSettingsCapture=loaded?.captureToken
         finishRuntimeStart()
     }
     private fun finishRuntimeStart() {
@@ -1639,15 +2037,25 @@ object NativeSessionHost {
         send("set_activity_state", "visible", activityVisible.get(),currentSceneEpoch().takeIf {it>0})
         tick()
     }
-    fun runtimeConfigJson(): String {
-        val config=JSONObject().put("schema",1).put("paths",checkNotNull(paths)).put("installation",checkNotNull(identity).installation)
+    private fun baseRuntimeConfig():JSONObject = JSONObject().put("schema",1).put("paths",checkNotNull(paths)).put("installation",checkNotNull(identity).installation)
             .put("profiles",profiles).put("preferences_dir",checkNotNull(preferencesDir))
-        linuxPins()?.let {pins ->
-            config.put("linux_profile_v2",ConnectionProfileV2Codec.encode(checkNotNull(linuxProfile)).toString(Charsets.UTF_8))
-                .put("linux_desktop_pins",pins.json())
+    private fun runtimeConfigFor(settings:LinuxDesktopSettingsRepository.Snapshot?):String {
+        val base=baseRuntimeConfig()
+        val json=if(settings?.ready==true) {
+            val profile=checkNotNull(settings.profile)
+            when(settings.backend) {
+                LinuxDesktopBackend.V3 -> LinuxRuntimeConfiguration.build(base,profile,
+                    configuration=checkNotNull(settings.v3Configuration).forProfile(profile,settings.storageRecord),storage=settings.storageRecord)
+                LinuxDesktopBackend.V2 -> LinuxRuntimeConfiguration.build(base,profile,v2Pins=checkNotNull(settings.v2Pins).forProfile(profile))
+                null -> error("SETTINGS_INCONSISTENT")
+            }
+        } else {
+            require(settings==null || settings.status==LinuxDesktopSettingsRepository.Status.UNCONFIGURED) {"SETTINGS_INCONSISTENT"}
+            LinuxRuntimeConfiguration.build(base)
         }
-        return BuildHooks.runtimeConfiguration(config.toString())
+        return LinuxRuntimeConfiguration.bounded(BuildHooks.runtimeConfiguration(json))
     }
+    fun runtimeConfigJson(): String = runtimeConfigFor(linuxSettings)
     /** withStoppedRuntimeの同じworkerから同期呼出し。通常Host/設定への切替は行わない。 */
     fun provideDebugProbeCredential(runtime: Long, capture: ProbeCredentialCapture, event: JSONObject): Int {
         check(BuildConfig.DEBUG && handle == 0L && runtime == capture.runtime) { "PROBE_OWNER_INVALID" }
@@ -1707,10 +2115,11 @@ object NativeSessionHost {
     } catch (_: Exception) { false }
     fun debugBeginSdkProbe(owner: Any, prepare: (String) -> DebugSdkProbeConfig, completed: (DebugSdkProbeReceipt) -> Unit) {
         if (!BuildConfig.DEBUG) { completed(DebugSdkProbeReceipt(0,null,DebugSdkRuntimeLease.Phase.IDLE,"PROBE_DISABLED")); return }
+        val admissionTicket=runtimeAdmission.ticket()
         worker.execute {
             var request: String? = null
             var error: String? = null
-            if (!probeRecovery.permits(owner) || !debugSdkLease.claim(owner, handle)) {
+            if (admissionTicket==null || !runtimeAdmission.permits(admissionTicket) || !probeRecovery.permits(owner) || !debugSdkLease.claim(owner, handle)) {
                 ui.post { completed(DebugSdkProbeReceipt(0,null,DebugSdkRuntimeLease.Phase.IDLE,"PROBE_BUSY")) }; return@execute
             }
             probeRecovery.retain(owner)
@@ -1835,6 +2244,7 @@ object NativeSessionHost {
         return NativeBridge.nativeCommand(runtime,command.toString())
     }
     private fun stopRuntime() {
+        check(!settingsSave.active) { "SAVE_ADMISSION_CLOSED" }
         if (handle == 0L) return
         invalidateImeConnection()
         keyboardFocus = null
@@ -1867,6 +2277,13 @@ object NativeSessionHost {
             Thread.sleep(2)
         }
         handle = 0
+        clearRetiredRuntime(old)
+        Log.i(TAG, "runtime_stopped handle=$old duration_ms=${SystemClock.elapsedRealtime() - started}")
+    }
+    private fun clearRetiredRuntime(old:Long) {
+        themeImportToken=null;themeRequests.clear();themeImportMessage=null
+        linuxV3LaunchAdmission.forgetDestroyedRuntime(old)
+        linuxV3Catalog=null;runtimeSettingsCapture=null
         val endedIme = imeConnection
         ui.post { if (imeConnection === endedIme) { endedIme?.close(); imeConnection = null; imeOwner = null; imeAndroidReleased = null; imeRawReturn = null; imeInputMessage = null; imeRawBlocked.set(false) } }
         catalogPending=null;launcherUpdate(LauncherUi(path=launcherState.path))
@@ -1874,7 +2291,6 @@ object NativeSessionHost {
         poseCompletions.clear();groupGeometryCompletions.clear();selectedWindow=null;lastFocusedWindow=null;editing.set(false);ui.post { layoutEditing.value=false }
         clearTerminalOpen(); terminalAdding = null; terminalError = null
         lastConnectRequest = null; pendingDisconnect = null; connectPending = false
-        Log.i(TAG, "runtime_stopped handle=$old duration_ms=${SystemClock.elapsedRealtime() - started}")
     }
     /** 診断の排他的実行。固定caseの実装自体はdebug sourceSetだけに置く。 */
     fun withStoppedRuntime(action: (DiagnosticsStore) -> Unit, completed: () -> Unit) =
@@ -1885,7 +2301,9 @@ object NativeSessionHost {
         exclusiveRuntime(owner, action, completed, canRestart)
     }
     private fun exclusiveRuntime(owner: Any?, action: (DiagnosticsStore) -> Unit, completed: () -> Unit, canRestart: () -> Boolean) {
+        val admissionTicket=runtimeAdmission.ticket()
         worker.execute {
+            if(admissionTicket==null || !runtimeAdmission.permits(admissionTicket)) {ui.post(completed);return@execute}
             if (!probeRecovery.permits(owner)) { ui.post(completed); return@execute }
             try {
                 stopRuntime()
@@ -1903,7 +2321,7 @@ object NativeSessionHost {
     private fun snapshot(): JSONObject = JSONObject(NativeBridge.nativeSnapshot(handle))
     private fun publish() { if (handle != 0L) store?.publishRuntime(snapshot()) }
     private fun tick() {
-        if (handle == 0L) return
+        if (handle == 0L) {pumpSettingsSave();return}
         val events = JSONObject(NativeBridge.nativePoll(handle, 64))
         check(events.getInt("code") == NativeBridge.ACCEPTED)
         val values = events.getJSONArray("events")
@@ -1911,6 +2329,7 @@ object NativeSessionHost {
         for (index in 0 until values.length()) {
             val event = values.getJSONObject(index)
             if (event.optString("type") == "command_complete") {
+                settingsOriginStop.complete(handle,event.getString("request_id"),event.getString("code"))
                 imeCompletions.add(ImeSessionCompletion(event.getString("request_id"), imeDeliveryCode(event.getString("code"))))
                 inputIntents.serial {
                     debugInputActive?.takeIf {it.runtime==handle}?.resize?.token?.takeIf {it.request.toString()==event.getString("request_id")}
@@ -2238,15 +2657,15 @@ object NativeSessionHost {
         val ssh = phase + (if (pending > 0 && transport.getString("state")!="Ready") " · 未確認の回収 ${pending}件" else "") +
             (if(transport.optBoolean("desktop_pending") && transport.getString("state") in setOf("Idle","Disconnected","Failed","CleanupPending")) " · 前回のLinuxアプリの終了が未確認" else "") +
             ((if(selectedProfileId==LinuxConnectionProfile.ID) linuxMessage ?: connectionError ?: error?.let {"アプリまたは画面の処理を完了できませんでした"} else error ?: connectionError)?.let {" · $it"} ?: "")
-        if (ssh != sshState) { sshState = ssh; ui.post { connectionSummary.value = ssh } }
-        val busy=terminalOpen!=null || terminalAdding!=null || connectPending || pendingDisconnect!=null || linuxAction!=null
+        if (runtimeAdmission.open() && ssh != sshState) { sshState = ssh; ui.post { connectionSummary.value = ssh } }
+        val busy=!runtimeAdmission.open() || terminalOpen!=null || terminalAdding!=null || connectPending || pendingDisconnect!=null || linuxAction!=null
         ui.post {terminalBusy.value=busy}
         val next = snapshot.getJSONObject("runtime").getString("state")
         val editable=canChangeConnection(snapshot.getJSONObject("runtime"))
         val recoverySelection=canSelectRecovery(snapshot.getJSONObject("runtime"))
         if(canSelectLinuxRecovery.value!=recoverySelection) ui.post {canSelectLinuxRecovery.value=recoverySelection}
         if(editable!=connectionEditable) {connectionEditable=editable;ui.post {
-            connectionUi.value=connectionUi.value.copy(canSave=editable);linuxConnectionUi.value=linuxConnectionUi.value.copy(canSave=editable)
+            connectionUi.value=connectionUi.value.copy(canSave=editable);linuxConnectionUi.value=linuxConnectionUi.value.copy(canSave=settingsCanSave())
         }}
         val now = SystemClock.elapsedRealtime()
         if (next != state) {
@@ -2255,6 +2674,7 @@ object NativeSessionHost {
             ui.post { summary.value = next }
         }
         if (now - lastWrite >= 1000) { store?.publishRuntime(snapshot); lastWrite = now }
+        pumpSettingsSave()
     }
     private fun safely(action: () -> Unit) {
         try { action() }
