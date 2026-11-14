@@ -423,6 +423,7 @@ mod tests {
         );
         assert!(V3Report::parse(duplicated.as_bytes()).is_err());
     }
+
     #[test]
     fn relaunch_after_origin_cleanup_is_distinct_from_runtime_destruction() {
         let mut r = report();
