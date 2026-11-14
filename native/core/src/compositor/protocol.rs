@@ -1053,18 +1053,17 @@ mod v3_accept_tests {
                 } else {
                     observed.unwrap();
                     let cut = history.cut().unwrap();
-                    if main.is_none() {
-                        if let Some(found) = cut
+                    if main.is_none()
+                        && let Some(found) = cut
                             .windows
                             .iter()
                             .find(|window| window.role == Role::Main && window.life == Life::Mapped)
                             .map(|window| window.window)
-                        {
-                            // Stand-in for an I4 B1 adoption result: this
-                            // protocol test does NOT simulate SDK readiness.
-                            history.commit_main(found).unwrap();
-                            main = Some(found);
-                        }
+                    {
+                        // Stand-in for an I4 B1 adoption result: this
+                        // protocol test does NOT simulate SDK readiness.
+                        history.commit_main(found).unwrap();
+                        main = Some(found);
                     }
                     if let Some(id) = main {
                         mapped |= cut

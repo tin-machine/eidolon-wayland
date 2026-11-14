@@ -479,15 +479,15 @@ mod tests {
             Life::Mapped,
         );
         h.started();
-        h.observe(&[main.clone()]).unwrap();
+        h.observe(std::slice::from_ref(&main)).unwrap();
         h.commit_main(main.window).unwrap();
         h.observe(&[main.clone(), dialog.clone()]).unwrap();
-        h.observe(&[main.clone()]).unwrap();
+        h.observe(std::slice::from_ref(&main)).unwrap();
         assert!(!h.confirm_retired(dialog.window, true, false));
         assert_eq!(h.pending_retirements(), 1);
         assert!(h.confirm_retired(dialog.window, true, true));
         for _ in 0..10 {
-            h.observe(&[main.clone()]).unwrap();
+            h.observe(std::slice::from_ref(&main)).unwrap();
             assert_eq!(h.cut().unwrap().admitted.len(), 1);
         }
         assert_eq!(h.observe(&[main, dialog]), Err("APP_ORIGIN_UNKNOWN"));
@@ -509,7 +509,7 @@ mod tests {
         h.started();
         h.observe(&[older_dialog.clone(), main.clone()]).unwrap();
         h.commit_main(main.window).unwrap();
-        h.observe(&[main.clone()]).unwrap();
+        h.observe(std::slice::from_ref(&main)).unwrap();
         assert!(h.confirm_retired(older_dialog.window, true, true));
         let newer_dialog = sample(
             &o,
@@ -520,7 +520,7 @@ mod tests {
             Life::Mapped,
         );
         h.observe(&[newer_dialog.clone(), main.clone()]).unwrap();
-        h.observe(&[main.clone()]).unwrap();
+        h.observe(std::slice::from_ref(&main)).unwrap();
         assert!(h.confirm_retired(newer_dialog.window, true, true));
         h.observe(&[main]).unwrap();
         assert_eq!(h.cut().unwrap().admitted.len(), 1);
@@ -541,10 +541,10 @@ mod tests {
             Life::Mapped,
         );
         h.started();
-        h.observe(&[main.clone()]).unwrap();
+        h.observe(std::slice::from_ref(&main)).unwrap();
         h.commit_main(main.window).unwrap();
         h.observe(&[main.clone(), dialog.clone()]).unwrap();
-        h.observe(&[main.clone()]).unwrap();
+        h.observe(std::slice::from_ref(&main)).unwrap();
         assert!(!h.confirm_retired(dialog.window, false, true));
         assert!(!h.confirm_retired(dialog.window, true, false));
         assert_eq!(h.pending_retirements(), 1);
@@ -587,7 +587,7 @@ mod tests {
         let mut h = WindowHistory::new(o.clone(), []);
         let main = sample(&o, 1, Parent::None {}, Life::Mapped);
         h.started();
-        h.observe(&[main.clone()]).unwrap();
+        h.observe(std::slice::from_ref(&main)).unwrap();
         h.commit_main(main.window).unwrap();
         for id in 2..=64 {
             let dialog = sample(
@@ -599,7 +599,7 @@ mod tests {
                 Life::Mapped,
             );
             h.observe(&[main.clone(), dialog]).unwrap();
-            h.observe(&[main.clone()]).unwrap();
+            h.observe(std::slice::from_ref(&main)).unwrap();
         }
         assert_eq!(h.pending_retirements(), 63);
         assert_eq!(h.retained_entries(), MAX_RETAINED_WINDOWS);
