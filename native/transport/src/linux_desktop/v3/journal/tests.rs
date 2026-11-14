@@ -231,6 +231,7 @@ fn complete_is_durable_but_not_local_retirement_and_clear_preserves_new_owner() 
     let dir = Temp::new();
     let mut journal = Journal::reserve(&dir.0, &binding()).unwrap();
     assert!(journal.ensure_complete_durable().is_err());
+    journal.prepared(BOOT).unwrap();
     journal.finish(complete()).unwrap();
     assert_eq!(journal.stage(), Stage::Complete);
     assert!(journal.ensure_complete_durable().is_ok());
