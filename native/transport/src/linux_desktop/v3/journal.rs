@@ -190,6 +190,8 @@ pub struct Journal {
     device: u64,
     inode: u64,
     record: Record,
+    /// unlink succeeded but parent sync may have failed; retry sync, never unlink another inode.
+    clear_unlinked: bool,
 }
 fn check_directory(path: &Path, private: bool) -> Result<(), &'static str> {
     let m = std::fs::symlink_metadata(path).map_err(|_| "DESKTOP_V3_JOURNAL_INVALID")?;
@@ -415,6 +417,7 @@ impl Journal {
             device: m.dev(),
             inode: m.ino(),
             record,
+            clear_unlinked: false,
         })
     }
     fn unchanged(&self) -> Result<(), &'static str> {
@@ -469,6 +472,21 @@ impl Journal {
         next.stage = stage;
         self.persist(next)
     }
+    pub fn stage(&self) -> Stage { self.record.stage }
+    pub fn cleanup(&self) -> Cleanup { self.record.cleanup.clone() }
+    /// Reconfirm the bytes and inode, then sync both pending.json and its
+    /// directory. A prior finish() fsync error does not grant durable Complete.
+    pub fn ensure_complete_durable(&self) -> Result<Cleanup, &'static str> {
+        if self.record.stage != Stage::Complete || !self.record.cleanup.complete() {
+            return Err("DESKTOP_CLEANUP_PENDING");
+        }
+        self.unchanged()?;
+        let (file, data) = read(&self.path)?;
+        if data != self.bytes { return Err("DESKTOP_V3_JOURNAL_OWNER_CHANGED"); }
+        file.sync_all().map_err(|_| "DESKTOP_V3_JOURNAL_SYNC_FAILED")?;
+        sync(&self.directory)?;
+        Ok(self.record.cleanup.clone())
+    }
     pub fn boot_id(&self) -> Option<&str> {
         self.record.boot_id.as_deref()
     }
@@ -500,12 +518,23 @@ impl Journal {
         next.cleanup = cleanup;
         self.persist(next)
     }
+    /// Only call from the local/SDK finalizer after capability validation.
+    /// A failed directory fsync *after* unlink must not make the next attempt
+    /// unlink a different pending.json; that would destroy an unrelated owner.
     pub fn clear(&mut self) -> Result<(), &'static str> {
         if self.record.stage != Stage::Complete || !self.record.cleanup.complete() {
             return Err("DESKTOP_CLEANUP_PENDING");
         }
-        self.unchanged()?;
-        std::fs::remove_file(&self.path).map_err(|_| "DESKTOP_V3_JOURNAL_CLEAR_FAILED")?;
+        if !self.clear_unlinked {
+            self.unchanged()?;
+            std::fs::remove_file(&self.path)
+                .map_err(|_| "DESKTOP_V3_JOURNAL_CLEAR_FAILED")?;
+            self.clear_unlinked = true;
+        }
+        match std::fs::symlink_metadata(&self.path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            _ => return Err("DESKTOP_V3_JOURNAL_OWNER_CHANGED"),
+        }
         sync(&self.directory)
     }
 }
