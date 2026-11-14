@@ -312,9 +312,7 @@ impl ProtocolState {
         stream: std::os::unix::net::UnixStream,
         origin: &NativeOrigin,
     ) -> Result<Client, &'static str> {
-        if origin.session() != self.session
-            || self.verified_origin.as_ref() != Some(origin)
-        {
+        if origin.session() != self.session || self.verified_origin.as_ref() != Some(origin) {
             return Err("APP_ORIGIN_UNKNOWN");
         }
         self.accept_captured(dh, stream, Some(origin.clone()))
@@ -1014,7 +1012,10 @@ mod v3_accept_tests {
         // A v3 display must *reject*, not silently downgrade, an unverified
         // client. v2/Termux use a separately owned protocol/listener.
         let (server, _unverified_v3) = UnixStream::pair().unwrap();
-        assert_eq!(protocol.accept(&handle, server).err(), Some("APP_ORIGIN_UNKNOWN"));
+        assert_eq!(
+            protocol.accept(&handle, server).err(),
+            Some("APP_ORIGIN_UNKNOWN")
+        );
         let legacy_display =
             smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
         let legacy_handle = legacy_display.handle();
@@ -1050,9 +1051,7 @@ mod v3_accept_tests {
                 .err(),
             Some("STALE")
         );
-        assert!(
-            accepted.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin)
-        );
+        assert!(accepted.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin));
     }
 
     #[test]
@@ -1068,14 +1067,21 @@ mod v3_accept_tests {
         let handle = display.handle();
         let mut protocol = ProtocolState::new(&handle, origin.session());
         protocol.bind_v3_origin(&origin).unwrap();
-        assert_eq!(protocol.bind_v3_origin(&alternate), Err("APP_ORIGIN_UNKNOWN"));
+        assert_eq!(
+            protocol.bind_v3_origin(&alternate),
+            Err("APP_ORIGIN_UNKNOWN")
+        );
         let (server, _client) = UnixStream::pair().unwrap();
         assert_eq!(
-            protocol.accept_with_origin(&handle, server, &alternate).err(),
+            protocol
+                .accept_with_origin(&handle, server, &alternate)
+                .err(),
             Some("APP_ORIGIN_UNKNOWN")
         );
         let (server, _client) = UnixStream::pair().unwrap();
-        let original = protocol.accept_with_origin(&handle, server, &origin).unwrap();
+        let original = protocol
+            .accept_with_origin(&handle, server, &origin)
+            .unwrap();
         assert!(original.get_data::<ClientState>().unwrap().origin.as_ref() == Some(&origin));
     }
 
