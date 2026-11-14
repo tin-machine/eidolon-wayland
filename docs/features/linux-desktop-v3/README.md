@@ -20,6 +20,14 @@
 
 ## Use with the deterministic resolver
 
+### I5 implementation design (manual discovery)
+
+The [I5 detailed design](../../linux-real-app-v3-i5-detailed-design.md) compares main
+`eca71addc58009b4576644da162d56670eebfaf5` with the storage/barrier/launcher requirements.
+PR #16 is merged at this implementation baseline; the D5 observations above retain their original date and meaning.
+I5 remains unregistered. Read its explicit source dependencies and separate I2/I4 resolver contexts.
+The document does not establish product acceptance or Quest evidence.
+
 ```sh
 python3 scripts/docs.py validate
 python3 scripts/docs.py context --feature linux-desktop-v3 --task I2
