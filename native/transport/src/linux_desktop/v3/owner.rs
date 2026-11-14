@@ -9,7 +9,9 @@ use tokio::time::{Duration, Instant, sleep_until, timeout};
 use tokio_util::sync::CancellationToken;
 
 const PREPARE_TIMEOUT: Duration = Duration::from_secs(10);
-const ACK_TIMEOUT: Duration = Duration::from_secs(5);
+const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
+const START_TIMEOUT: Duration = Duration::from_secs(12);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(8);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -219,14 +221,20 @@ impl Owner {
             return Err("STALE");
         }
         let bytes = self.protocol.command(action, selection)?;
-        self.deadline = Some(
-            Instant::now()
-                + if action == Action::Stop {
-                    STOP_TIMEOUT
-                } else {
-                    ACK_TIMEOUT
-                },
-        );
+        // The ACK deadline includes enqueue time, not just time after send.
+        // C2 Start can perform a five-second settings probe and a three-second
+        // private-bus wait before acknowledging the command.
+        let sent_at = Instant::now();
+        let operation_timeout = match action {
+            Action::Inspect => INSPECT_TIMEOUT,
+            Action::Start => START_TIMEOUT,
+            Action::Heartbeat => HEARTBEAT_TIMEOUT,
+            Action::Stop => STOP_TIMEOUT,
+        };
+        self.deadline = Some(sent_at + operation_timeout);
+        // The C2 lease renews when the command arrives, not when its ACK is
+        // observed. A late Start ACK must not postpone the next heartbeat.
+        self.heartbeat = sent_at + HEARTBEAT_INTERVAL;
         let result = timeout(
             Duration::from_secs(2),
             self.channel.as_ref().ok_or("STALE")?.data_bytes(bytes),
@@ -328,11 +336,13 @@ impl Owner {
         }
         // No total-runtime timer. The normal session stays alive as long as its
         // renewable lease and each individual request/ACK remain healthy.
-        self.deadline = self
-            .report
-            .terminal_event
-            .then(|| Instant::now() + CLOSE_TIMEOUT);
-        self.heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
+        if self.report.terminal_event {
+            self.deadline.get_or_insert_with(|| Instant::now() + CLOSE_TIMEOUT);
+        } else {
+            // An ACK retires the in-flight request. Preserve the heartbeat
+            // deadline established when the request was sent.
+            self.deadline = None;
+        }
     }
     fn data(&mut self, bytes: &[u8]) -> Result<Vec<Event>, &'static str> {
         if self.report.eof {
@@ -387,7 +397,7 @@ impl Owner {
                         return Err(self.fail("DESKTOP_V3_PROTOCOL_INVALID"));
                     }
                     self.report.eof = true;
-                    self.deadline = Some(Instant::now() + CLOSE_TIMEOUT);
+                    self.deadline.get_or_insert_with(|| Instant::now() + CLOSE_TIMEOUT);
                 }
                 Some(ChannelMsg::ExitStatus { exit_status }) => {
                     if self.report.exit_status.replace(exit_status).is_some() {
