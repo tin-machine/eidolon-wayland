@@ -297,8 +297,13 @@ def worker(mode, home, *, simulated=False):
             self.running = False
             return dict(complete=True, process_complete=True, pipes_eof=True)
     owner_module = types.SimpleNamespace(identity=lambda pid: dict(pid=pid, start=1)) if simulated else OWNER
+    # Issue #27: only the slow-renewal success test needs enough scheduling
+    # headroom. All expiry and late-command rejection tests keep the strict
+    # 0.4-second fixture; the production lease remains 15 seconds.
+    lease_seconds = 3.0 if mode == 'slow_renew' else .4
     SESSION.serve(bundle, DESKTOP.Context(*CONTEXT), DESKTOP, owner_module, current_boot=BOOT_A,
-                  lease_seconds=.4, cleanup_seconds=.5, instance_factory=LoopFixture if simulated else FixtureInstance)
+                  lease_seconds=lease_seconds, cleanup_seconds=.5,
+                  instance_factory=LoopFixture if simulated else FixtureInstance)
 
 
 class DesktopSessionHarness(unittest.TestCase):
@@ -330,6 +335,7 @@ class DesktopSessionHarness(unittest.TestCase):
         prepared = self.event()
         self.assertEqual(prepared['event']['type'], 'prepared')
         self.assertEqual(prepared['event']['payload']['boot_id'], BOOT_A)
+        return prepared
     def launch(self, mode='plain'):
         self.prepare_helper(mode)
         self.send('inspect')
@@ -394,16 +400,21 @@ class DesktopSessionLoopTest(DesktopSessionHarness):
         self.child.stdin.close()
         self.finished('input_eof')
     def test_inspect_and_valid_start_renew_lease_during_slow_setup(self):
-        self.prepare_helper()
-        time.sleep(.25)
+        # With a 3s test-only lease, each 1.7s pause has 1.3s scheduling
+        # headroom. Two pauses exceed the initial lease, so inspect must renew
+        # it; three exceed the inspect renewal, so start must renew it too.
+        # The 0.4s fixture remains in place for strict lease-expiry tests.
+        prepared = self.prepare_helper('slow_renew')
+        self.assertEqual(prepared['event']['payload']['lease_ms'], 3000)
+        time.sleep(1.7)
         self.send('inspect')
         catalog = self.event()
         self.assertEqual(catalog['event']['type'], 'catalog')
-        time.sleep(.25)
+        time.sleep(1.7)
         self.send('start', selection=dict(scope=self.context.scope, revision=catalog['event']['payload']['revision'],
                                           app_id=DESKTOP.APP_ID))
         self.assertEqual(self.event()['event']['type'], 'started')
-        time.sleep(.25)
+        time.sleep(1.7)
         self.send('stop')
         self.finished('stop')
     def test_malformed_command_is_terminal_and_does_not_renew_lease(self):
