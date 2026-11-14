@@ -523,10 +523,7 @@ mod tests {
         .unwrap();
         assert_eq!(h.cut().unwrap().admitted, BTreeSet::from([main.window]));
         assert_eq!(
-            h.observe(&[
-                main,
-                sample(&o, 2, Parent::None {}, Life::Mapped)
-            ]),
+            h.observe(&[main, sample(&o, 2, Parent::None {}, Life::Mapped)]),
             Err("APP_WINDOW_UNSUPPORTED")
         );
     }
@@ -549,11 +546,8 @@ mod tests {
         h.commit_main(main.window).unwrap();
         h.observe(&[main.clone(), dialog.clone()]).unwrap();
         assert_eq!(h.cut().unwrap().admitted.len(), 2);
-        h.observe(&[
-            sample(&o, 11, Parent::None {}, Life::Unmapped),
-            dialog,
-        ])
-        .unwrap();
+        h.observe(&[sample(&o, 11, Parent::None {}, Life::Unmapped), dialog])
+            .unwrap();
         assert!(h.cut().unwrap().admitted.is_empty());
     }
 

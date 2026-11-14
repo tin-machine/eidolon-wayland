@@ -747,6 +747,16 @@ impl Session {
         }
     }
     pub fn fail(&mut self, error: &'static str) {
+        if self.v3_origin.is_some() {
+            if let Some(protocol) = self.protocol.as_mut() {
+                protocol.seal_new_roles();
+            }
+            if let Some(history) = self.v3_history.as_mut() {
+                history.seal();
+            }
+            self.v3_input_allowed.clear();
+            self.reset_input();
+        }
         if self.report.error.is_none() {
             self.report.error = Some(error);
         }
@@ -779,6 +789,11 @@ impl Session {
             if let Some(history) = self.v3_history.as_mut() {
                 history.seal();
                 self.v3_input_allowed.clear();
+            }
+            if self.v3_origin.is_some() {
+                if let Some(protocol) = self.protocol.as_mut() {
+                    protocol.seal_new_roles();
+                }
             }
             self.reset_input();
             self.report.state = "closing";

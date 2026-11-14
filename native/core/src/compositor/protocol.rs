@@ -152,6 +152,8 @@ pub struct ProtocolState {
     popup_grabs: Vec<ObjectId>,
     popup_focused: Option<WlSurface>,
     session: SessionId,
+    // One-way v3 admission fence. Existing clients remain for cleanup.
+    new_roles_open: bool,
     next_window: Option<WindowId>,
     next_surface: Option<SurfaceId>,
     next_content: Option<ContentSeq>,
@@ -247,6 +249,7 @@ impl ProtocolState {
             popup_grabs: vec![],
             popup_focused: None,
             session,
+            new_roles_open: true,
             next_window: WindowId::new(1).ok(),
             next_surface: SurfaceId::new(1).ok(),
             next_content: ContentSeq::new(1).ok(),
@@ -266,6 +269,13 @@ impl ProtocolState {
     pub fn pixel_bytes(&self) -> usize {
         self.pixel_budget.used_bytes()
     }
+    /// Close new v3 clients/roles without discarding existing protocol state,
+    /// window history, callbacks or native/SDK retirement evidence.
+    pub fn seal_new_roles(&mut self) {
+        self.new_roles_open = false;
+        self.reset_input();
+    }
+
     pub fn accept(
         &mut self,
         dh: &DisplayHandle,
@@ -294,6 +304,9 @@ impl ProtocolState {
         stream: std::os::unix::net::UnixStream,
         origin: Option<NativeOrigin>,
     ) -> Result<Client, &'static str> {
+        if !self.new_roles_open {
+            return Err("STALE");
+        }
         let mut clients = 0;
         dh.backend_handle().with_all_clients(|_| clients += 1);
         if clients >= limits::CLIENTS {
@@ -623,7 +636,7 @@ impl XdgShellHandler for ProtocolState {
         if !self.surface_meta.contains_key(&toplevel.wl_surface().id()) {
             return;
         }
-        if self.toplevels.len() >= limits::TOPLEVELS {
+        if !self.new_roles_open || self.toplevels.len() >= limits::TOPLEVELS {
             // protocol errorは同じfoot serverの既存窓も切る。新しい余剰roleだけ閉じる。
             // 拒否後のin-flight commitもcopyしない。clientが従わなくてもsurface予算は不変。
             self.rejected_toplevels.insert(toplevel.wl_surface().id());
@@ -634,6 +647,14 @@ impl XdgShellHandler for ProtocolState {
         }
     }
     fn new_popup(&mut self, popup: PopupSurface, _: PositionerState) {
+        if !self.new_roles_open {
+            // Keep the object for normal destroy cleanup, but never admit
+            // a late popup as an input/focus route after Stop.
+            self.dismissed_popups.insert(popup.wl_surface().id());
+            popup.send_popup_done();
+            self.popups.push(popup);
+            return;
+        }
         if popup.get_parent_surface().is_none() {
             popup
                 .wl_surface()
@@ -648,6 +669,9 @@ impl XdgShellHandler for ProtocolState {
         }
     }
     fn grab(&mut self, popup: PopupSurface, seat: WlSeat, serial: Serial) {
+        if !self.new_roles_open {
+            return;
+        }
         self.grab_popup(popup, seat, serial);
     }
     fn reposition_request(&mut self, _: PopupSurface, _: PositionerState, _: u32) {}
@@ -974,6 +998,31 @@ mod v3_accept_tests {
                 .unwrap()
                 .origin
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn sealed_listener_refuses_new_accept_but_keeps_original_capture() {
+        let origin = captured_fixture_origin();
+        let display = smithay::reexports::wayland_server::Display::<ProtocolState>::new().unwrap();
+        let handle = display.handle();
+        let mut protocol = ProtocolState::new(&handle, origin.session());
+        let (server, _client) = UnixStream::pair().unwrap();
+        let accepted = protocol
+            .accept_with_origin(&handle, server, &origin)
+            .unwrap();
+        protocol.seal_new_roles();
+        protocol.seal_new_roles();
+        let (late_server, _late_client) = UnixStream::pair().unwrap();
+        assert_eq!(
+            protocol
+                .accept_with_origin(&handle, late_server, &origin)
+                .err(),
+            Some("STALE")
+        );
+        assert_eq!(
+            accepted.get_data::<ClientState>().unwrap().origin.as_ref(),
+            Some(&origin)
         );
     }
 

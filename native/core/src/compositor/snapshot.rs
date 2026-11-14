@@ -909,22 +909,22 @@ impl ProtocolState {
                 {
                     V3Parent::Unresolved {}
                 } else {
-                    let raw_parent =
-                        actual_parent.or_else(|| record.pre_unmap_parent.clone());
+                    let raw_parent = actual_parent.or_else(|| record.pre_unmap_parent.clone());
                     match raw_parent {
-                    Some(parent) if parent == *object => V3Parent::Invalid {},
-                    Some(parent) => match self.toplevels.get(&parent) {
-                        Some(ancestor)
-                            if ancestor.origin == record.origin && ancestor.origin.is_some() =>
-                        {
-                            V3Parent::Resolved {
-                                window: ancestor.id,
+                        Some(parent) if parent == *object => V3Parent::Invalid {},
+                        Some(parent) => match self.toplevels.get(&parent) {
+                            Some(ancestor)
+                                if ancestor.origin == record.origin
+                                    && ancestor.origin.is_some() =>
+                            {
+                                V3Parent::Resolved {
+                                    window: ancestor.id,
+                                }
                             }
-                        }
-                        Some(_) => V3Parent::Invalid {},
-                        None => V3Parent::Unresolved {},
-                    },
-                    None => V3Parent::None {},
+                            Some(_) => V3Parent::Invalid {},
+                            None => V3Parent::Unresolved {},
+                        },
+                        None => V3Parent::None {},
                     }
                 };
                 let app_id = with_states(record.surface.wl_surface(), |states| {
