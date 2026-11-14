@@ -24,6 +24,10 @@ pub struct RuntimeConfig {
     pub linux_profile_v2: Option<String>,
     #[serde(default)]
     pub linux_desktop_pins: Option<String>,
+    /// Strict v3 runtime envelope: B1 ConnectionConfig + E1 StorageRecord.
+    /// Selection is local; a malformed v3 value must never fall back to v2.
+    #[serde(default)]
+    pub linux_desktop_v3: Option<String>,
     /// Debug専用保存profile。nested JSONも重複keyを失わずProfile::parseへ渡す。
     #[serde(default)]
     pub debug_probe_profile_v2: Option<String>,
@@ -43,6 +47,7 @@ impl Default for RuntimeConfig {
             profiles: Vec::new(),
             linux_profile_v2: None,
             linux_desktop_pins: None,
+            linux_desktop_v3: None,
             debug_probe_profile_v2: None,
             debug_linux_shm_pins: None,
             debug_linux_gtk_pins: None,
@@ -102,7 +107,10 @@ impl RuntimeConfig {
         {
             return Err(Status::InvalidArgument);
         }
-        if self.linux_profile_v2.is_some() != self.linux_desktop_pins.is_some()
+        let selected_v2 = self.linux_desktop_pins.is_some();
+        let selected_v3 = self.linux_desktop_v3.is_some();
+        if (selected_v2 && selected_v3)
+            || self.linux_profile_v2.is_some() != (selected_v2 || selected_v3)
             || self
                 .linux_desktop_pins
                 .as_ref()
@@ -122,6 +130,14 @@ impl RuntimeConfig {
                 || profile.backend() != crate::connection_profile::Backend::LinuxSsh
             {
                 return Err(Status::InvalidArgument);
+            }
+            if let Some(raw) = &self.linux_desktop_v3 {
+                let binding =
+                    crate::linux_desktop_v3::configuration::RuntimeBinding::parse(raw.as_bytes())
+                        .map_err(|_| Status::InvalidArgument)?;
+                binding
+                    .matches_profile(&profile)
+                    .map_err(|_| Status::InvalidArgument)?;
             }
         }
         if [
@@ -432,6 +448,22 @@ pub enum Command {
         request_id: CommandSeq,
         session: crate::ids::SessionId,
     },
+    LinuxDesktopV3Inspect {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+    },
+    LinuxDesktopV3Launch {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        selection: crate::linux_desktop_v3::Selection,
+    },
+    LinuxDesktopV3Recover {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+    },
     LaunchTerminal {
         schema: u32,
         request_id: CommandSeq,
@@ -703,6 +735,9 @@ impl Command {
             | Self::LinuxDesktopInspect { schema, .. }
             | Self::LinuxDesktopLaunch { schema, .. }
             | Self::LinuxDesktopRecover { schema, .. }
+            | Self::LinuxDesktopV3Inspect { schema, .. }
+            | Self::LinuxDesktopV3Launch { schema, .. }
+            | Self::LinuxDesktopV3Recover { schema, .. }
             | Self::LaunchTerminal { schema, .. }
             | Self::ShowWindow { schema, .. }
             | Self::CloseWindow { schema, .. }
@@ -816,6 +851,9 @@ impl Command {
             Self::LinuxDesktopLaunch { selection, .. } if !selection.valid() => {
                 return Err(Status::InvalidArgument);
             }
+            // The B1 Selection decoder already rejects unknown IDs, malformed
+            // hashes, unknown fields, and positional arrays. A live context
+            // check happens on I2's inspected catalog, not in the wire parser.
             Self::LaunchTerminal { target, .. } if !target.valid() => {
                 return Err(Status::InvalidArgument);
             }
@@ -887,6 +925,9 @@ impl Command {
             | Self::LinuxDesktopInspect { request_id, .. }
             | Self::LinuxDesktopLaunch { request_id, .. }
             | Self::LinuxDesktopRecover { request_id, .. }
+            | Self::LinuxDesktopV3Inspect { request_id, .. }
+            | Self::LinuxDesktopV3Launch { request_id, .. }
+            | Self::LinuxDesktopV3Recover { request_id, .. }
             | Self::LaunchTerminal { request_id, .. }
             | Self::ShowWindow { request_id, .. }
             | Self::CloseWindow { request_id, .. }
@@ -1396,5 +1437,142 @@ mod tests {
         assert!(RuntimeConfig::parse(r#"{"schema":1}"#).is_ok());
         assert!(RuntimeConfig::parse(r#"{"schema":2}"#).is_err());
         assert!(RuntimeConfig::parse(r#"{"schema":1,"shell":"bad"}"#).is_err());
+    }
+    #[test]
+    fn v3_runtime_envelope_reuses_b1_i1_and_e1_without_v2_fallback() {
+        use crate::linux_desktop_v3::{
+            StorageCapture, StorageRecord,
+            configuration::{ConnectionConfig, RuntimeBinding},
+        };
+        let host_key =
+            include_str!("../../../android/app/src/test/resources/connection-profiles-v2.tsv")
+                .lines()
+                .find(|line| line.starts_with("linux-"))
+                .unwrap()
+                .split('\t')
+                .nth(7)
+                .unwrap();
+        let profile_json = serde_json::json!({
+            "schema":2,"installation":"1".repeat(32),"profile_id":"remote-linux",
+            "revision":"1","display_name":"日本語\\\" desk","backend":"linux_ssh",
+            "host":"192.0.2.1","port":22,"username":"fixture","host_key":host_key
+        });
+        let profile =
+            crate::connection_profile::Profile::parse(&profile_json.to_string(), &"1".repeat(32))
+                .unwrap();
+        let fixed: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../scripts/tests/fixtures/linux-desktop-v3-configuration.json"
+        ))
+        .unwrap();
+        let config =
+            ConnectionConfig::parse(fixed["valid"][0]["raw"].as_str().unwrap().as_bytes()).unwrap();
+        let capture = StorageCapture::from_profile(&profile).unwrap();
+        let mut storage_wire = capture.record();
+        storage_wire["schema"] = serde_json::json!(1);
+        storage_wire["installation_id"] = serde_json::json!("a".repeat(32));
+        storage_wire["profile_storage_id"] = serde_json::json!("b".repeat(32));
+        let storage = StorageRecord::parse(storage_wire.to_string().as_bytes()).unwrap();
+        let envelope = serde_json::json!({
+            "configuration":config.record(), "storage":storage.record()
+        });
+        let binding = RuntimeBinding::parse(envelope.to_string().as_bytes()).unwrap();
+        binding.matches_profile(&profile).unwrap();
+        assert!(binding.configuration().pins() == config.pins());
+        assert_eq!(format!("{binding:?}"), "RuntimeBinding(<private>)");
+        let mut runtime = RuntimeConfig {
+            installation: Some("1".repeat(32)),
+            linux_profile_v2: Some(profile_json.to_string()),
+            linux_desktop_v3: Some(envelope.to_string()),
+            ..Default::default()
+        };
+        assert!(runtime.validate().is_ok());
+        let outer = serde_json::json!({
+            "schema":1,"installation":"1".repeat(32),
+            "linux_profile_v2":profile_json.to_string(),
+            "linux_desktop_v3":envelope.to_string()
+        });
+        assert!(RuntimeConfig::parse(&outer.to_string()).is_ok());
+        runtime.linux_desktop_pins = Some("{}".into());
+        assert!(runtime.validate().is_err(), "both runtime versions");
+        runtime.linux_desktop_pins = None;
+        runtime.linux_profile_v2 = None;
+        assert!(runtime.validate().is_err(), "v3 without a captured profile");
+        runtime.linux_profile_v2 = Some(profile_json.to_string());
+        let mut wrong_storage = envelope.clone();
+        wrong_storage["storage"]["profile_binding"] = serde_json::json!("f".repeat(64));
+        runtime.linux_desktop_v3 = Some(wrong_storage.to_string());
+        assert!(runtime.validate().is_err(), "storage binding mismatch");
+        let mut wrong_manifest = envelope.clone();
+        wrong_manifest["configuration"]["app_manifest"]["executable"] =
+            serde_json::json!("/bin/sh");
+        runtime.linux_desktop_v3 = Some(wrong_manifest.to_string());
+        assert!(
+            runtime.validate().is_err(),
+            "manifest not a free executable"
+        );
+        let dup = format!(
+            r#"{{"configuration":{},"configuration":{},"storage":{}}}"#,
+            envelope["configuration"], envelope["configuration"], envelope["storage"]
+        );
+        runtime.linux_desktop_v3 = Some(dup);
+        assert!(runtime.validate().is_err(), "nested duplicate JSON key");
+        let unescaped = format!("{}{}", envelope, " ".repeat(16 * 1024));
+        runtime.linux_desktop_v3 = Some(unescaped);
+        assert!(runtime.validate().is_err(), "bounded runtime envelope");
+        assert!(
+            ConnectionConfig::parse(fixed["valid"][2]["raw"].as_str().unwrap().as_bytes()).is_ok(),
+            "import raw remains valid independently of JNI limit"
+        );
+        assert!(RuntimeConfig::parse(&"x".repeat(COMMAND_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn typed_v3_commands_reject_free_execution_and_cross_version_fields() {
+        let launch = serde_json::json!({
+            "type":"linux_desktop_v3_launch","schema":1,"request_id":"3","session":"2",
+            "selection":{"scope":"a".repeat(64),"revision":"b".repeat(64),
+                "app_id":"mousepad-editor-v1"}
+        });
+        assert!(matches!(
+            Command::parse(&launch.to_string()),
+            Ok(Command::LinuxDesktopV3Launch { .. })
+        ));
+        for key in [
+            "argv",
+            "executable",
+            "source_hash",
+            "storage_id",
+            "ready",
+            "nonce",
+            "origin",
+        ] {
+            let mut other = launch.clone();
+            other[key] = serde_json::json!("injected");
+            assert!(Command::parse(&other.to_string()).is_err(), "{key}");
+        }
+        for (key, value) in [
+            ("scope", serde_json::json!("bad")),
+            ("revision", serde_json::json!("z".repeat(64))),
+            ("app_id", serde_json::json!("mousepad")),
+            ("app_id", serde_json::json!("GTK3-desktop")),
+        ] {
+            let mut other = launch.clone();
+            other["selection"][key] = value;
+            assert!(Command::parse(&other.to_string()).is_err(), "{key}");
+        }
+        for kind in ["linux_desktop_v3_inspect", "linux_desktop_v3_recover"] {
+            let command = serde_json::json!({
+                "type":kind,"schema":1,"request_id":"1","session":"2"
+            });
+            assert!(Command::parse(&command.to_string()).is_ok(), "{kind}");
+            let mut invalid = command.clone();
+            invalid["selection"] = launch["selection"].clone();
+            assert!(Command::parse(&invalid.to_string()).is_err(), "{kind}");
+        }
+        let duplicated =
+            launch
+                .to_string()
+                .replacen(r#""schema":1"#, r#""schema":1,"schema":1"#, 1);
+        assert!(Command::parse(&duplicated).is_err());
     }
 }

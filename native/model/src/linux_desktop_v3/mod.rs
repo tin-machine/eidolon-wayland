@@ -482,6 +482,11 @@ pub fn validate_catalog(raw: &[u8], context: &Context, pins: &Pins) -> Result<Va
 }
 
 contract_record!(Selection, SelectionWire, { scope: Hash, revision: Hash, app_id: AppId });
+impl fmt::Debug for Selection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("V3Selection(<private>)")
+    }
+}
 impl Selection {
     fn validate(&self) -> Result<()> {
         Ok(())
@@ -682,6 +687,7 @@ impl Bootstrap {
 
 pub mod configuration;
 pub mod presentation;
+pub mod report;
 
 #[cfg(test)]
 mod tests;

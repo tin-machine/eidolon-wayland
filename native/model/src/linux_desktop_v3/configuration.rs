@@ -38,6 +38,43 @@ impl fmt::Debug for ConnectionConfig {
     }
 }
 
+// JNI/runtime envelope for an already validated v3 connection and E1 storage
+// identity. The Android import limit belongs to ConnectionConfig; the actual
+// runtime JSON boundary is smaller and must remain bounded independently.
+contract_record!(RuntimeBinding, RuntimeBindingWire, {
+    configuration: ConnectionConfig,
+    storage: StorageRecord,
+});
+impl RuntimeBinding {
+    pub fn parse(raw: &[u8]) -> Result<Self> {
+        decode(raw, crate::limits::COMMAND_BYTES)
+    }
+    fn validate(&self) -> Result<()> {
+        require(
+            self.configuration.canonical().len() <= MAX_CONFIG_BYTES
+                && self.storage.canonical().len() <= MAX_RECORD_BYTES,
+            "CONTRACT_INVALID",
+        )
+    }
+    /// The captured local profile, not any remote bytes, determines storage identity.
+    pub fn matches_profile(&self, profile: &crate::connection_profile::Profile) -> Result<()> {
+        let capture = StorageCapture::from_profile(profile)?;
+        self.storage.matches_capture(&capture)
+    }
+    pub fn configuration(&self) -> &ConnectionConfig {
+        &self.configuration
+    }
+    pub fn storage(&self) -> &StorageRecord {
+        &self.storage
+    }
+    record_methods!();
+}
+impl fmt::Debug for RuntimeBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RuntimeBinding(<private>)")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

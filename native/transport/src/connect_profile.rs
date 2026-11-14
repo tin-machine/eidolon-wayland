@@ -1,6 +1,9 @@
 //! 接続開始時のimmutable owner。保存用v2の受理と実行可能backendを分離する。
 use crate::{host_key, journal, linux_desktop};
-use eidolon_model::connection_profile::{Backend, Profile};
+use eidolon_model::{
+    connection_profile::{Backend, Profile},
+    linux_desktop_v3::{StorageRecord, configuration::ConnectionConfig},
+};
 use russh::keys::PublicKey;
 use std::{
     net::{Ipv4Addr, SocketAddr},
@@ -35,10 +38,33 @@ pub struct ConnectSpec {
 /// Captured once at Connect. Neither profile saves nor later UI requests can
 /// change the authenticated endpoint, identity, bundle or journal destination.
 #[derive(Clone)]
-pub(crate) struct DesktopConfig {
-    pub profile: Profile,
-    pub pins: linux_desktop::Pins,
-    pub files: PathBuf,
+pub(crate) enum DesktopConfig {
+    V2 {
+        profile: Profile,
+        pins: linux_desktop::Pins,
+        files: PathBuf,
+    },
+    // The full immutable capture is intentionally inert until the I2 v3
+    // controller is connected. When I2 reads these fields in production,
+    // this lint expectation will need to be removed.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "I2 v3 controller not integrated yet")
+    )]
+    V3 {
+        profile: Profile,
+        configuration: Box<ConnectionConfig>,
+        storage: StorageRecord,
+        files: PathBuf,
+    },
+}
+impl DesktopConfig {
+    pub(crate) fn version(&self) -> linux_desktop::dispatch::Version {
+        match self {
+            Self::V2 { .. } => linux_desktop::dispatch::Version::V2,
+            Self::V3 { .. } => linux_desktop::dispatch::Version::V3,
+        }
+    }
 }
 impl std::fmt::Debug for ConnectSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -92,9 +118,38 @@ impl ConnectSpec {
             return Err(PrepareError::InvalidProfile);
         }
         let mut spec = Self::from_v2(&profile)?;
-        spec.desktop = Some(DesktopConfig {
+        spec.desktop = Some(DesktopConfig::V2 {
             profile,
             pins,
+            files,
+        });
+        Ok(spec)
+    }
+
+    /// Pure capture for I2. A v3 request is never interpreted as a v2
+    /// controller request until the dedicated v3 actor is implemented.
+    pub fn linux_desktop_v3(
+        profile: Profile,
+        configuration: ConnectionConfig,
+        storage: StorageRecord,
+        files: PathBuf,
+    ) -> Result<Self, PrepareError> {
+        if profile.backend() != Backend::LinuxSsh
+            || profile.profile_id() != "remote-linux"
+            || !files.is_absolute()
+        {
+            return Err(PrepareError::InvalidProfile);
+        }
+        let capture = eidolon_model::linux_desktop_v3::StorageCapture::from_profile(&profile)
+            .map_err(|_| PrepareError::InvalidProfile)?;
+        storage
+            .matches_capture(&capture)
+            .map_err(|_| PrepareError::InvalidProfile)?;
+        let mut spec = Self::from_v2(&profile)?;
+        spec.desktop = Some(DesktopConfig::V3 {
+            profile,
+            configuration: Box::new(configuration),
+            storage,
             files,
         });
         Ok(spec)
@@ -145,6 +200,77 @@ mod tests {
         old.profile_id = "remote-not-v1".into();
         assert!(matches!(
             ConnectSpec::legacy(old),
+            Err(PrepareError::InvalidProfile)
+        ));
+    }
+    #[test]
+    fn v3_is_a_distinct_local_capture_and_storage_must_match() {
+        use eidolon_model::linux_desktop_v3::{StorageCapture, configuration::ConnectionConfig};
+        let host_key =
+            include_str!("../../../android/app/src/test/resources/connection-profiles-v2.tsv")
+                .lines()
+                .find(|line| line.starts_with("linux-"))
+                .unwrap()
+                .split('\t')
+                .nth(7)
+                .unwrap();
+        let profile_json = serde_json::json!({
+            "schema":2,"installation":"1".repeat(32),"profile_id":"remote-linux",
+            "revision":"1","display_name":"v3","backend":"linux_ssh",
+            "host":"192.0.2.1","port":22,"username":"fixture","host_key":host_key
+        })
+        .to_string();
+        let profile = Profile::parse(&profile_json, &"1".repeat(32)).unwrap();
+        let f: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../scripts/tests/fixtures/linux-desktop-v3-configuration.json"
+        ))
+        .unwrap();
+        let config =
+            ConnectionConfig::parse(f["valid"][0]["raw"].as_str().unwrap().as_bytes()).unwrap();
+        let mut storage = StorageCapture::from_profile(&profile).unwrap().record();
+        storage["schema"] = serde_json::json!(1);
+        storage["installation_id"] = serde_json::json!("a".repeat(32));
+        storage["profile_storage_id"] = serde_json::json!("b".repeat(32));
+        let record = StorageRecord::parse(storage.to_string().as_bytes()).unwrap();
+        let spec = ConnectSpec::linux_desktop_v3(
+            profile.clone(),
+            config.clone(),
+            record.clone(),
+            PathBuf::from("/tmp/eidolon"),
+        )
+        .unwrap();
+        assert!(matches!(
+            spec.desktop.as_ref(),
+            Some(DesktopConfig::V3 { .. })
+        ));
+        let captured = spec.desktop.as_ref().unwrap();
+        assert_eq!(captured.version(), linux_desktop::dispatch::Version::V3);
+        if let DesktopConfig::V3 {
+            profile: p,
+            configuration: c,
+            storage: st,
+            files,
+        } = captured
+        {
+            assert!(p == &profile && c.as_ref() == &config && st == &record);
+            assert_eq!(files, &PathBuf::from("/tmp/eidolon"));
+        } else {
+            panic!("local v3 selection must be immutable");
+        }
+        let mut stale = storage;
+        stale["profile_binding"] = serde_json::json!("f".repeat(64));
+        let stale = StorageRecord::parse(stale.to_string().as_bytes()).unwrap();
+        assert!(matches!(
+            ConnectSpec::linux_desktop_v3(
+                profile.clone(),
+                config.clone(),
+                stale,
+                PathBuf::from("/tmp/eidolon")
+            ),
+            Err(PrepareError::InvalidProfile)
+        ));
+        assert!(matches!(
+            ConnectSpec::linux_desktop_v3(profile, config, record, PathBuf::from("relative")),
             Err(PrepareError::InvalidProfile)
         ));
     }
