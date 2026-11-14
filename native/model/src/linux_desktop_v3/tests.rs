@@ -377,7 +377,7 @@ fn native_observation_builder_rejects_foreign_evidence_and_unfresh_frames() {
     };
     use presentation::{
         Life, NativeAckFact, NativeCreateIdentity, NativeFrameFact, NativePanelFact, NativeSdkFact,
-        NativeWindowFact, PresentationState, Role,
+        NativeWindowFact, Role,
     };
     let f = fixture();
     let owner = NativeOrigin::parse(&raw(&f, "origin")).unwrap();
@@ -459,21 +459,19 @@ fn native_observation_builder_rejects_foreign_evidence_and_unfresh_frames() {
             }))
             .finish()
     };
-    assert_eq!(
-        make(good_target, false, true, false, true, 1100)
+    assert!(
+        !make(good_target, false, true, false, true, 1100)
             .unwrap()
             .current_evidence()
             .unwrap()
-            .renderer_frame_seen,
-        false
+            .renderer_frame_seen
     );
-    assert_eq!(
-        make(good_target, true, false, false, true, 1100)
+    assert!(
+        !make(good_target, true, false, false, true, 1100)
             .unwrap()
             .current_evidence()
             .unwrap()
-            .renderer_frame_seen,
-        false
+            .renderer_frame_seen
     );
     let no_ack = startup
         .advance(&make(good_target, true, true, false, false, 1100).unwrap())

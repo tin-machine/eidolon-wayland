@@ -9,11 +9,14 @@ use tokio::time::{Duration, Instant, sleep_until, timeout};
 use tokio_util::sync::CancellationToken;
 
 const PREPARE_TIMEOUT: Duration = Duration::from_secs(10);
-const ACK_TIMEOUT: Duration = Duration::from_secs(5);
+const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
+const START_TIMEOUT: Duration = Duration::from_secs(12);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(8);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_STDERR: u64 = 65536;
+const STOP_BUDGET: Duration = Duration::from_secs(33);
 const BOOTSTRAP: &str = include_str!("bootstrap.py");
 
 /// Construct a reviewable fixed command from B1's typed 14/15 vector. This pure
@@ -93,6 +96,15 @@ impl Default for RemoteReport {
     }
 }
 
+/// A mailbox is sampled only while awaiting channel input. Pending SSH writes
+/// are never abandoned by an outer select! simply to receive a Launch.
+pub enum OwnerTurn<T> {
+    Events(Vec<Event>),
+    Launch(T),
+    MailboxClosed,
+    Closed,
+}
+
 pub struct Owner {
     channel: Option<Channel<client::Msg>>,
     protocol: Protocol,
@@ -100,6 +112,7 @@ pub struct Owner {
     deadline: Option<Instant>,
     heartbeat: Instant,
     stopping: bool,
+    stop_deadline: Option<Instant>,
     frames: FrameDecoder,
     boot_id: Option<String>,
     remote_socket: Option<String>,
@@ -159,6 +172,7 @@ impl Owner {
             deadline: Some(Instant::now() + PREPARE_TIMEOUT),
             heartbeat: Instant::now() + HEARTBEAT_INTERVAL,
             stopping: false,
+            stop_deadline: None,
             frames: FrameDecoder::default(),
             boot_id: None,
             remote_socket: None,
@@ -219,14 +233,20 @@ impl Owner {
             return Err("STALE");
         }
         let bytes = self.protocol.command(action, selection)?;
-        self.deadline = Some(
-            Instant::now()
-                + if action == Action::Stop {
-                    STOP_TIMEOUT
-                } else {
-                    ACK_TIMEOUT
-                },
-        );
+        // The ACK deadline includes enqueue time, not just time after send.
+        // C2 Start can perform a five-second settings probe and a three-second
+        // private-bus wait before acknowledging the command.
+        let sent_at = Instant::now();
+        let operation_timeout = match action {
+            Action::Inspect => INSPECT_TIMEOUT,
+            Action::Start => START_TIMEOUT,
+            Action::Heartbeat => HEARTBEAT_TIMEOUT,
+            Action::Stop => STOP_TIMEOUT,
+        };
+        self.deadline = Some(sent_at + operation_timeout);
+        // The C2 lease renews when the command arrives, not when its ACK is
+        // observed. A late Start ACK must not postpone the next heartbeat.
+        self.heartbeat = sent_at + HEARTBEAT_INTERVAL;
         let result = timeout(
             Duration::from_secs(2),
             self.channel.as_ref().ok_or("STALE")?.data_bytes(bytes),
@@ -254,8 +274,51 @@ impl Owner {
     }
     /// Stop is queued behind the single outstanding request, with its original
     /// ACK deadline intact. A terminal event can retire that request instead.
-    pub async fn stop(&mut self) -> Result<(), &'static str> {
+    pub fn begin_stop(&mut self, observed_at: Instant) {
         self.stopping = true;
+        self.stop_deadline.get_or_insert(observed_at + STOP_BUDGET);
+    }
+    pub fn command_idle(&self) -> bool {
+        !self.closed() && !self.report.terminal_event && self.protocol.in_flight().is_none()
+    }
+    /// C2's lease is 15 seconds from command receive, while heartbeat is
+    /// scheduled five seconds from the send start. Conservatively bound long
+    /// local/forward operations to the remaining interval.
+    pub fn lease_margin(&self, needed: Duration) -> bool {
+        Instant::now() + needed <= self.heartbeat + Duration::from_secs(10)
+    }
+    pub fn can_launch(&self) -> bool {
+        !self.stopping
+            && !self.cancel.is_cancelled()
+            && self.command_idle()
+            && self.phase() == Phase::Catalog
+    }
+    /// Renew the C2 lease on both sides of a potentially slow forward setup.
+    /// A terminal event in the same frame as the ACK invalidates the barrier.
+    pub async fn renew_catalog(&mut self) -> Result<(), &'static str> {
+        while !self.command_idle() {
+            if self.stopping || self.cancel.is_cancelled() || self.report.terminal_event {
+                return Err("CANCELLED");
+            }
+            self.next().await?;
+        }
+        if !self.can_launch() {
+            return Err("STALE");
+        }
+        self.control(Action::Heartbeat, None).await?;
+        while !self.command_idle() {
+            self.next().await?;
+            if self.stopping || self.cancel.is_cancelled() || self.report.terminal_event {
+                return Err("CANCELLED");
+            }
+        }
+        if !self.can_launch() {
+            return Err("STALE");
+        }
+        Ok(())
+    }
+    pub async fn stop(&mut self) -> Result<(), &'static str> {
+        self.begin_stop(Instant::now());
         if self.protocol.in_flight().is_none()
             && matches!(
                 self.phase(),
@@ -328,11 +391,13 @@ impl Owner {
         }
         // No total-runtime timer. The normal session stays alive as long as its
         // renewable lease and each individual request/ACK remain healthy.
-        self.deadline = self
-            .report
-            .terminal_event
-            .then(|| Instant::now() + CLOSE_TIMEOUT);
-        self.heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
+        if self.report.terminal_event {
+            self.deadline = Some(Instant::now() + CLOSE_TIMEOUT);
+        } else {
+            // An ACK retires the in-flight request. Preserve the heartbeat
+            // deadline established when the request was sent.
+            self.deadline = None;
+        }
     }
     fn data(&mut self, bytes: &[u8]) -> Result<Vec<Event>, &'static str> {
         if self.report.eof {
@@ -351,28 +416,110 @@ impl Owner {
         }
         Ok(events)
     }
-    /// One bounded channel/timer turn. The actor owns ordering with its mailbox;
-    /// no total-runtime timer is introduced, and Start is never auto-retried.
+    /// Never race an entire next() call against recv(): control() mutates the
+    /// protocol before waiting for a bounded SSH send. Only channel.wait() and
+    /// the cancel-safe mailbox receive compete in select!.
     pub async fn next(&mut self) -> Result<Vec<Event>, &'static str> {
+        match self.next_input::<()>(None).await? {
+            OwnerTurn::Events(events) => Ok(events),
+            OwnerTurn::Closed => Ok(Vec::new()),
+            OwnerTurn::Launch(()) | OwnerTurn::MailboxClosed => unreachable!("no mailbox"),
+        }
+    }
+
+    pub async fn next_launch<T>(
+        &mut self,
+        launches: &mut tokio::sync::mpsc::Receiver<T>,
+    ) -> Result<OwnerTurn<T>, &'static str> {
+        self.next_input(Some(launches)).await
+    }
+
+    async fn next_input<T>(
+        &mut self,
+        mut launches: Option<&mut tokio::sync::mpsc::Receiver<T>>,
+    ) -> Result<OwnerTurn<T>, &'static str> {
+        enum Input<T> {
+            Cancel,
+            Deadline,
+            Heartbeat,
+            Launch(Option<T>),
+            Channel(Option<ChannelMsg>),
+        }
         if self.closed() || self.phase() == Phase::Failed {
             return Err("STALE");
         }
         loop {
+            if self.cancel.is_cancelled() && !self.stopping {
+                self.begin_stop(Instant::now());
+            }
+            let now = Instant::now();
+            if self.stop_deadline.is_some_and(|deadline| now >= deadline) {
+                return Err(self.fail("DESKTOP_HELPER_TIMEOUT"));
+            }
+            if self.deadline.is_some_and(|deadline| now >= deadline) {
+                return Err(self.fail("DESKTOP_HELPER_TIMEOUT"));
+            }
             if self.stopping && self.protocol.in_flight().is_none() {
                 self.stop().await?;
+                // stop() is a bounded send. Processing resumes only after it
+                // resolves; a pending ACK keeps the original deadline intact.
             }
-            let deadline = self.deadline.unwrap_or(self.heartbeat);
-            let message = tokio::select! {biased;
-                _=self.cancel.cancelled(),if !self.stopping=>{self.stop().await?;continue;},
-                _=sleep_until(deadline),if self.deadline.is_some()=>return Err(self.fail("DESKTOP_HELPER_TIMEOUT")),
-                message=self.channel.as_mut().ok_or("STALE")?.wait()=>message,
-                _=sleep_until(self.heartbeat),if !self.stopping && !self.report.eof && !self.report.terminal_event && self.protocol.in_flight().is_none() && matches!(self.phase(),Phase::Prepared|Phase::Catalog|Phase::Started)=>{
-                    self.control(Action::Heartbeat,None).await?;continue;
-                },
+            let heartbeat_eligible = !self.stopping
+                && !self.report.eof
+                && !self.report.terminal_event
+                && self.protocol.in_flight().is_none()
+                && matches!(
+                    self.phase(),
+                    Phase::Prepared | Phase::Catalog | Phase::Started
+                );
+            if heartbeat_eligible && Instant::now() >= self.heartbeat {
+                self.control(Action::Heartbeat, None).await?;
+                continue;
+            }
+            let launch_enabled = self.can_launch() && launches.is_some();
+            if launch_enabled && let Some(receiver) = launches.as_mut() {
+                match receiver.try_recv() {
+                    Ok(launch) => return Ok(OwnerTurn::Launch(launch)),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        self.begin_stop(Instant::now());
+                        return Ok(OwnerTurn::MailboxClosed);
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                }
+            }
+            let request_deadline = self.deadline;
+            let stop_deadline = self.stop_deadline;
+            let next_input = {
+                let channel = self.channel.as_mut().ok_or("STALE")?;
+                tokio::select! { biased;
+                    _ = self.cancel.cancelled(), if !self.stopping => Input::Cancel,
+                    _ = sleep_until(request_deadline.unwrap_or(now + STOP_BUDGET)), if request_deadline.is_some() => Input::Deadline,
+                    _ = sleep_until(stop_deadline.unwrap_or(now + STOP_BUDGET)), if stop_deadline.is_some() => Input::Deadline,
+                    _ = sleep_until(self.heartbeat), if heartbeat_eligible => Input::Heartbeat,
+                    message = channel.wait() => Input::Channel(message),
+                    launch = async { launches.as_mut().expect("mailbox gated").recv().await }, if launch_enabled => Input::Launch(launch),
+                }
             };
-            match message {
-                Some(ChannelMsg::Data { data }) => return self.data(&data),
-                Some(ChannelMsg::ExtendedData { data, ext: 1 }) => {
+            match next_input {
+                Input::Cancel => {
+                    self.begin_stop(Instant::now());
+                }
+                Input::Deadline => return Err(self.fail("DESKTOP_HELPER_TIMEOUT")),
+                Input::Heartbeat => {}
+                Input::Launch(Some(launch)) => {
+                    if !self.can_launch() {
+                        return Err("STALE");
+                    }
+                    return Ok(OwnerTurn::Launch(launch));
+                }
+                Input::Launch(None) => {
+                    self.begin_stop(Instant::now());
+                    return Ok(OwnerTurn::MailboxClosed);
+                }
+                Input::Channel(Some(ChannelMsg::Data { data })) => {
+                    return self.data(&data).map(OwnerTurn::Events);
+                }
+                Input::Channel(Some(ChannelMsg::ExtendedData { data, ext: 1 })) => {
                     if self.report.eof {
                         return Err(self.fail("DESKTOP_V3_PROTOCOL_INVALID"));
                     }
@@ -382,34 +529,34 @@ impl Owner {
                         return Err(self.fail("DESKTOP_OUTPUT_LIMIT"));
                     }
                 }
-                Some(ChannelMsg::Eof) => {
+                Input::Channel(Some(ChannelMsg::Eof)) => {
                     if self.report.eof || self.frames.finish().is_err() {
                         return Err(self.fail("DESKTOP_V3_PROTOCOL_INVALID"));
                     }
                     self.report.eof = true;
                     self.deadline = Some(Instant::now() + CLOSE_TIMEOUT);
                 }
-                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                Input::Channel(Some(ChannelMsg::ExitStatus { exit_status })) => {
                     if self.report.exit_status.replace(exit_status).is_some() {
                         return Err(self.fail("DESKTOP_V3_PROTOCOL_INVALID"));
                     }
                     self.deadline = Some(Instant::now() + CLOSE_TIMEOUT);
                 }
-                Some(ChannelMsg::ExitSignal { .. }) => {
+                Input::Channel(Some(ChannelMsg::ExitSignal { .. })) => {
                     self.report.exit_signal = true;
                     self.deadline = Some(Instant::now() + CLOSE_TIMEOUT);
                 }
-                None | Some(ChannelMsg::Close) => {
+                Input::Channel(None | Some(ChannelMsg::Close)) => {
                     self.report.channel_closed = true;
                     if !self.channel_complete() || !self.report.terminal_event {
                         return Err(self.fail("DESKTOP_HELPER_LOST"));
                     }
-                    return Ok(Vec::new());
+                    return Ok(OwnerTurn::Closed);
                 }
-                Some(ChannelMsg::Failure | ChannelMsg::ExtendedData { .. }) => {
+                Input::Channel(Some(ChannelMsg::Failure | ChannelMsg::ExtendedData { .. })) => {
                     return Err(self.fail("DESKTOP_V3_PROTOCOL_INVALID"));
                 }
-                _ => (),
+                Input::Channel(Some(_)) => {}
             }
         }
     }

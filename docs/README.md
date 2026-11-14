@@ -11,7 +11,7 @@ Eidolon Wayland aims to operate Linux GUI applications as independently controll
 | Project overview and actual high-level state | [Repository README](../README.md) |
 | Cross-cutting architecture (historical baselines may be embedded) | [Architecture](architecture.md) |
 | Initial Phase 0–6 implementation contract | [D6 feature index](features/initial-phases/README.md), [Design README](design/README.md), [contracts](design/contracts.md), [tasks.json](design/tasks.json) |
-| Linux Desktop v3 (D5 registered graph; designs proposed) | [Feature index](features/linux-desktop-v3/README.md), [integration plan](linux-real-app-v3-integration-plan-20261111.md), [I2](linux-real-app-v3-i2-detailed-design.md), [I4](linux-real-app-v3-i4-detailed-design.md) |
+| Linux Desktop v3 (D5 registered graph; designs proposed) | [Feature index](features/linux-desktop-v3/README.md), [integration plan](linux-real-app-v3-integration-plan-20261111.md), [I2](linux-real-app-v3-i2-detailed-design.md), [I3 proposal (unregistered)](linux-real-app-v3-i3-detailed-design.md), [I4](linux-real-app-v3-i4-detailed-design.md) |
 | Curved Workspace detailed design | [D6 CW00–CW25 index](features/curved-workspace/README.md), [original detailed design](curved-workspace/README.md) |
 | Spatial Anchor / SA0 proposal | [D6 SA0 feature index](features/spatial-anchor/README.md), [original design](spatial-anchor-linux-design-20261111.md) |
 | Android IME / Japanese input | [D6 feature index](features/android-ime/README.md), [IME design](android-ime-wayland-plan-20261107.md) |\n| User operations | [Usage](usage.md) |

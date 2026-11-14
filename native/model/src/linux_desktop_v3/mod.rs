@@ -297,6 +297,10 @@ impl Context {
         )
     }
     record_methods!();
+    /// Typed, validated nonce from the native Context capture; never from UI.
+    pub fn nonce(&self) -> &Nonce {
+        &self.nonce
+    }
     pub fn scope(&self) -> String {
         self.sha256()
     }

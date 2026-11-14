@@ -77,6 +77,7 @@ async fn output_frame_incomplete_or_event_after_terminal_never_closes_cleanly() 
         deadline: Some(Instant::now() + PREPARE_TIMEOUT),
         heartbeat: Instant::now() + HEARTBEAT_INTERVAL,
         stopping: false,
+        stop_deadline: None,
         frames: FrameDecoder::default(),
         boot_id: None,
         remote_socket: None,

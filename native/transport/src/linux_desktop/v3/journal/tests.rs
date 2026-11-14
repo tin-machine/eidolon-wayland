@@ -224,3 +224,32 @@ fn recovery_dispatch_selects_captured_journal_and_rejects_cross_version() {
     );
     assert!(validate_recovery_selection(&dir.0, Version::V2).is_ok());
 }
+
+#[test]
+fn complete_is_durable_but_not_local_retirement_and_clear_preserves_new_owner() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = Temp::new();
+    let mut journal = Journal::reserve(&dir.0, &binding()).unwrap();
+    assert!(journal.ensure_complete_durable().is_err());
+    journal.prepared(BOOT).unwrap();
+    journal.finish(complete()).unwrap();
+    assert_eq!(journal.stage(), Stage::Complete);
+    assert!(journal.ensure_complete_durable().is_ok());
+    assert!(
+        pending(&dir.0).unwrap().is_some(),
+        "remote Complete is still pending local retirement"
+    );
+    journal.clear().unwrap();
+    let new_pending = dir.0.join(DIRECTORY).join("pending.json");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&new_pending)
+        .unwrap();
+    assert_eq!(journal.clear(), Err("DESKTOP_V3_JOURNAL_OWNER_CHANGED"));
+    assert!(
+        new_pending.exists(),
+        "retry must never unlink another generation"
+    );
+}

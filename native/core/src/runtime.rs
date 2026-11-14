@@ -231,6 +231,22 @@ impl Runtime {
             .map(eidolon_transport::linux_desktop::Pins::parse)
             .transpose()
             .map_err(|_| invalid())?;
+        // Parse the B1/E1 v3 envelope once at Runtime creation. A malformed
+        // capture never silently selects the older v2 transport.
+        let desktop_v3_binding = config
+            .linux_desktop_v3
+            .as_deref()
+            .map(|raw| {
+                let binding =
+                    eidolon_model::linux_desktop_v3::configuration::RuntimeBinding::parse(
+                        raw.as_bytes(),
+                    )
+                    .map_err(|_| invalid())?;
+                let profile = desktop_profile.as_ref().ok_or_else(invalid)?;
+                binding.matches_profile(profile).map_err(|_| invalid())?;
+                Ok::<_, std::io::Error>(binding)
+            })
+            .transpose()?;
         let normal_linux = desktop_profile.is_some();
         #[cfg(any(test, feature = "debug-fixtures"))]
         let linux_pins = config
@@ -1040,11 +1056,21 @@ impl Runtime {
                                     }
                                 }
 
-                                // PR-01 defines the typed v3 wire only. The dedicated I2
-                                // controller must be installed before accepting requests.
-                                Command::LinuxDesktopV3Inspect { .. }
-                                | Command::LinuxDesktopV3Launch { .. }
-                                | Command::LinuxDesktopV3Recover { .. } => Status::NotReady,
+                                Command::LinuxDesktopV3Inspect { session, request_id, .. } => {
+                                    if native_busy || helper.is_some() || dependencies.is_some() || compositor.is_some() {
+                                        Status::Busy
+                                    } else { io.inspect_linux_desktop_v3(*session, *request_id) }
+                                }
+                                Command::LinuxDesktopV3Recover { session, request_id, .. } => {
+                                    if native_busy || helper.is_some() || dependencies.is_some() || compositor.is_some() {
+                                        Status::Busy
+                                    } else { io.recover_linux_desktop_v3(*session, *request_id) }
+                                }
+                                // I3 must reserve and own the local Waypipe/listener and
+                                // origin-bound window admission before a Launch can proceed.
+                                // I2's transport API is intentionally inaccessible to
+                                // a bare untrusted/unsynchronized Command::Launch.
+                                Command::LinuxDesktopV3Launch { .. } => Status::NotReady,
                                 Command::LinuxDesktopInspect { session, request_id, .. } => {
                                     if native_busy || helper.is_some() || dependencies.is_some() || compositor.is_some() { Status::Busy }
                                     else { io.inspect_linux_desktop(*session, *request_id) }
@@ -1803,7 +1829,15 @@ impl Runtime {
                                     if native_busy {
                                         Status::Busy
                                     } else if profile_id == "remote-linux" {
-                                        if let (Some(profile), Some(pins), Some(paths)) = (desktop_profile.as_ref(), desktop_pins.as_ref(), config.paths.as_ref()) {
+                                        if let (Some(profile), Some(binding), Some(paths)) = (
+                                            desktop_profile.as_ref(), desktop_v3_binding.as_ref(), config.paths.as_ref()
+                                        ) {
+                                            io.connect_linux_desktop_v3(
+                                                profile.clone(), binding.configuration().clone(),
+                                                binding.storage().clone(),
+                                                std::path::Path::new(&paths.files_dir), *request_id,
+                                            )
+                                        } else if let (Some(profile), Some(pins), Some(paths)) = (desktop_profile.as_ref(), desktop_pins.as_ref(), config.paths.as_ref()) {
                                             io.connect_linux(profile.clone(), pins.clone(), std::path::Path::new(&paths.files_dir), *request_id)
                                         } else { Status::NotReady }
                                     } else if let Some(profile) = profiles.get(profile_id) {

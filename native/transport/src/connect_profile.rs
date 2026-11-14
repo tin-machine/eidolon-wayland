@@ -44,13 +44,7 @@ pub(crate) enum DesktopConfig {
         pins: linux_desktop::Pins,
         files: PathBuf,
     },
-    // The full immutable capture is intentionally inert until the I2 v3
-    // controller is connected. When I2 reads these fields in production,
-    // this lint expectation will need to be removed.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "I2 v3 controller not integrated yet")
-    )]
+    // The full immutable v3 capture is consumed only by the I2 controller.
     V3 {
         profile: Profile,
         configuration: Box<ConnectionConfig>,
@@ -59,6 +53,7 @@ pub(crate) enum DesktopConfig {
     },
 }
 impl DesktopConfig {
+    #[cfg(test)]
     pub(crate) fn version(&self) -> linux_desktop::dispatch::Version {
         match self {
             Self::V2 { .. } => linux_desktop::dispatch::Version::V2,
