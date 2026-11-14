@@ -26,6 +26,7 @@ The [I5 detailed design](../../linux-real-app-v3-i5-detailed-design.md) compares
 `eca71addc58009b4576644da162d56670eebfaf5` with the storage/barrier/launcher requirements.
 PR #16 is merged at this implementation baseline; the D5 observations above retain their original date and meaning.
 I5 remains unregistered. Read its explicit source dependencies and separate I2/I4 resolver contexts.
+See the [I5 implementation verification and handoff](../../linux-desktop-v3-i5-validation-20261114.md) for local V09/V10 coverage, environment limits, and the separate I6/I7/H acceptance boundary.
 The document does not establish product acceptance or Quest evidence.
 
 ```sh
@@ -39,7 +40,7 @@ python3 scripts/docs.py drift --feature linux-desktop-v3 --task I4
 
 `context` returns a **bounded, dependency-ordered list of paths and metadata**, not the documents' full text. Read the returned files selectively. `clean` means no related source changes since the pinned baseline, **not** implemented/accepted/Quest-tested. `unknown` remains unknown on missing commits, incomplete history, or unsupported source mappings; never upgrade it to `clean`.
 
-Each task includes the [B1 contract](../../linux-real-app-b1-contract-20261110.md) and [overall integration plan](../../linux-real-app-v3-integration-plan-20261111.md). The explicitly registered tasks are `B1`, `B2`, `C1`, `C2`, `E1`, `I1`, `I2`, and `I4`; **I3/I5 are not registered** because there is no current merged task-specific design to classify safely under this scope.
+Each task includes the [B1 contract](../../linux-real-app-b1-contract-20261110.md) and [overall integration plan](../../linux-real-app-v3-integration-plan-20261111.md). The explicitly registered tasks are `B1`, `B2`, `C1`, `C2`, `E1`, `I1`, `I2`, and `I4`; **I3/I5 are not registered in this manifest**. Use their manual design links and verify current implementation and PR status separately; registration is not an acceptance result.
 
 ### Registered document map
 

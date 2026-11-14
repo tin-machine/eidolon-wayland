@@ -49,9 +49,10 @@ debug exclusive/probe 開始を閉じる。SDK callback、native release、crede
 | 型 | 内容 / 所有 |
 | --- | --- |
 | `RuntimeAdmission` | 単調 epoch、open/closed、保存 owner identity。通常 queued command は旧 epoch なら破棄 |
-| `RuntimeSaveCoordinator.Capture` | repository の exact capture token、old runtime、epoch、保存要求または resume 要求。作成後 immutable |
+| `RuntimeSaveCoordinator.Operation` / `RuntimeAdmission.Owner` | exact request capture token、old runtime、epoch は immutable。Operation が phase、期限、同意図の publish callback、receipt を保持し、Owner の object identity も照合 |
 | `NativeReclamation` | 同 runtime の native snapshot から strict decode する所有数・origin/recovery flags |
 | `StopReceipt` | 最後の生存 native snapshot、実際の `nativeDestroy` Accepted、同 ticket の SDK 結果。公開 JSON から生成しない |
+| `RuntimeOriginStop` | 元 Connect request または session、取消 command request と実 command_complete。queue Accepted / STALE を回収証拠にしない |
 | `LinuxDesktopBackend` | `V2` / `V3`。曖昧な optional field の組合せで判定しない |
 | `LinuxDesktopSettingsRepository.SaveRequest` | strict parse 済み設定、next profile、版、全 expected bytes digest、元 capture token |
 | `LinuxDesktopSettingsRepository.Snapshot` | `UNCONFIGURED / LEGACY_V2 / READY_V2 / READY_V3 / SAVE_PENDING / BLOCKED`、capture、profile/record/config/pins、固定 reason、canResume |
@@ -67,11 +68,17 @@ JSON に渡された `reclaimed=true` や UI の ready を authority にしな�
 | idle | worker で repository capture と strict parse。確認済み要求を保持 | epoch を進め admission を閉じ origin_stopping |
 | origin_stopping | 対象 session の既存 Disconnect/Stop。core/SDK/I2 の origin retirement を drain | `origin_retired` なら runtime_stopping。remote pending/期限切れなら recovery_required |
 | recovery_required | 元 Capture と旧 Controller を保持。設定 publish は一切しない | 利用可能な `recovery_connect_allowed` / `recovery_command_allowed` のときだけ明示 Recover |
-| recovering | 必要なら旧 profile で Connect、credential capture を保持、同旧 run の V3 Recover | 同 capture finalizer/journal clear まで poll。未完了なら pending を保持 |
+| recovering | 必要なら旧 profile で Connect、credential capture を保持、元の有効版の typed v2/v3 Recover | 同 capture finalizer/journal clear 後に回復用接続も Disconnect。未完了なら pending を保持 |
 | runtime_stopping | connection/coordinator/diagnostic も含め nativeRequestStop、SDK ticket seal | shutdown complete と全 ownership/callback drain を待つ |
 | reclaimed | **最後の生存 snapshot** を捕捉し nativeDestroy を実行、Accepted を Host が記録 | 同 runtime/epoch/token の StopReceipt を生成。BUSY/STALE/失敗は保存不可 |
 | publishing | `withReclaimed` callback 内で保存だけを実施 | 全 file の readback 一致なら committed。不一致/例外なら save_pending または blocked |
 | committed | repository 全体一致を再確認。保持した gate を終了 | admission を開き新 Runtime を作る。自動 Connect/Launch はしない |
+
+表の `reclaimed` / `publishing` は同期処理中の段階で、外部から操作できる enum phase ではない。
+実装の enum は `IDLE / ORIGIN_STOPPING / RECOVERY_REQUIRED / RECOVERING / RUNTIME_STOPPING / SAVE_PENDING / COMMITTED`。
+Connect の command_complete Accepted は session 割当完了を意味しない。Host はその後も元 Connect request を保持し、
+session 未割当でも CancelConnect を送る。取消の実完了を待ち、STALE なら観測した同 session の Disconnect へ移る。
+この実完了も origin proof の代わりにはせず、次段階への移行は census の `origin_retired` に限る。
 
 通常の保存に旧 `stopRuntime()` 全体をそのまま使わない。第一段階の Disconnect は transport Controller を
 終了させず、元の RunCapture/PreviousIoClosed を使う既存 live Recover を残す。新 Runtime への run authority
@@ -81,6 +88,10 @@ journal、Scene 終了までに delete/後続 pass が得られなかった leas
 保存待機は scheduled tick の短い一歩で進める。SDK は独立した MainLooper poll と captured Scene の
 lateExecute/delete listener で進行する。worker は SDK completion を同期 await せず、UI は worker を待たない。
 timeout は失敗理由を記録する期限であり、資源を回収済みにする規則ではない。
+
+保存開始で旧 terminal/catalog の自動継続と theme import token を無効化する。theme callback は元 runtime と
+admission epoch を再照合し、失効した file を破棄する。debug probe/exclusive も enqueue 時 epoch を照合する。
+通常 catalog pump と SSH summary は gate 閉鎖中に保存表示を上書きしない。SDK release / ACK / callback drain は継続する。
 
 初回未割当は process 内の `neverAllocated` と区別する。その場合だけ接続を許さない最小 Runtime を作り、
 実 Stop/Destroy を得て保存する。過去に割当済みで receipt がない `handle == 0` を初回に変換しない。
@@ -221,16 +232,17 @@ available は Inspect、ready は I4、Matched は保存、acceptance は I6/I7/
 
 | file | 変更 |
 | --- | --- |
-| 新 `LinuxDesktopSettingsRepository.kt` / `LinuxDesktopSettingsStore.kt` | strict saved config/marker/intent、capture、save/resume、版 selection、E1 adapter |
-| `LinuxStorageStore.kt` / `LinuxProfileStore.kt` | E1 接続、legacy writer の登録証跡 guard |
-| 新 `RuntimeAdmission.kt` / `RuntimeSaveCoordinator.kt` | epoch、二段階回収、StopReceipt、固定 failure、barrier |
+| 新 `LinuxDesktopV3ConfigRepository.kt` / `LinuxDesktopSettingsRepository.kt` / `LinuxDesktopSettingsStore.kt` | strict saved config/marker/intent、capture、save/resume、版 selection、既存 E1 repository 接続 |
+| `LinuxProfileStore.kt` / `LinuxDesktopPinsStore.kt` | legacy writer の登録証跡 guard |
+| 新 `RuntimeAdmission.kt` / `RuntimeSaveCoordinator.kt` / `RuntimeOriginStop.kt` | epoch、二段階回収、StopReceipt、取消実完了、固定 failure、barrier |
 | `NativeSessionHost.kt` | 上記 owner の通常 wiring、設定 UI/save/resume/recovery、最終 config、catalog/status |
-| `SdkEvidenceBridge.kt` / `SdkRetirementHub.kt` | sealed runtime/ticket の全 binding evidence と completion 検査 |
-| `SpatialPanelAdapter.kt` / `SdkResourceScope.kt` | diagnostic/legacy も captured scope、実 delete/pass/callback drain、release Accepted |
+| `SdkEvidenceBridge.kt`、既存 `SdkRetirementHub.kt` の利用 | 全 binding evidence、完了済み generation の再登録拒否、runtime/epoch/token ticket の再利用 |
+| `SpatialPanelAdapter.kt`、既存 `SdkResourceScope.kt` の利用 | diagnostic/legacy も captured scope、実 delete/pass/callback drain、release Accepted |
 | 新 `LinuxDesktopV3Catalog.kt` / `LinuxDesktopV3Status.kt` / Runtime config assembly | strict fixed catalog、状態/reason reducer、byte 上限 |
 | `ConnectionSettings.kt` / `ApplicationLauncher.kt` / `LauncherState.kt` | 版を明示、設定一括保存、再開、capture 付き click、I4 状態 |
 | `native/core/src/diagnostics.rs` / `runtime.rs` | typed 全 Runtime reclamation report |
 | `native/transport/src/session.rs` / `linux_desktop/v3/runtime/*` | fixed 二項目 Selection と catalog、recovery 可否の実 private authority |
+| `native/transport/src/linux_desktop/journal.rs` | v2 live Recover の元 Binding 比較だけを追加。record schema・保存方式・固定 remote source は変更しない |
 | JVM/native test suites | 下記 V09/V10 と回帰。既存 CI entrypoint から実行 |
 | docs entrypoint と本書 | manual I5 discovery、検証記録へのリンク。歴史的状態を一括変更しない |
 
@@ -253,5 +265,8 @@ available は Inspect、ready は I4、Matched は保存、acceptance は I6/I7/
 
 各段階で対象 unit を実行し、最終的に Host、Android JUnit/lint/APK、docs validate、check-design を実行する。
 実行環境の不足は未実施として記録し、既存 suite の skip/limit 緩和で通さない。
+
+実装後の実行範囲、ローカル環境制約、V09/V10 suite 対応と I6/I7/H への引き継ぎは
+[I5 検証記録](linux-desktop-v3-i5-validation-20261114.md) を参照する。
 CI は新 PR の **最終 HEAD** と checkout SHA/run/job を記録する。過去 #16 の結果は比較基準だけである。
 V09/V10 の合成 fixture は判断器の検証であり、Quest 実 disposal/保存の受け入れ証拠ではない。
