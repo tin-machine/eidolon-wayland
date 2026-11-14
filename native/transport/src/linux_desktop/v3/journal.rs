@@ -147,6 +147,9 @@ impl Record {
 #[derive(Clone)]
 pub struct Pending(Record);
 impl Pending {
+    pub(crate) fn context(&self) -> &Context { &self.0.context }
+    pub(crate) fn pins(&self) -> &Pins { &self.0.pins }
+    pub(crate) fn sources(&self) -> &SourceHashes { &self.0.sources }
     pub fn matches(&self, profile: &Profile, pins: &Pins) -> bool {
         let Ok(binding) = Binding::from_captured(self.0.context.clone(), self.0.pins.clone())
         else {
@@ -193,7 +196,7 @@ pub struct Journal {
     /// unlink succeeded but parent sync may have failed; retry sync, never unlink another inode.
     clear_unlinked: bool,
 }
-fn check_directory(path: &Path, private: bool) -> Result<(), &'static str> {
+pub(super) fn check_directory(path: &Path, private: bool) -> Result<(), &'static str> {
     let m = std::fs::symlink_metadata(path).map_err(|_| "DESKTOP_V3_JOURNAL_INVALID")?;
     if !path.is_absolute()
         || !m.is_dir()
@@ -207,7 +210,7 @@ fn check_directory(path: &Path, private: bool) -> Result<(), &'static str> {
     }
     Ok(())
 }
-fn sync(path: &Path) -> Result<(), &'static str> {
+pub(super) fn sync(path: &Path) -> Result<(), &'static str> {
     OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
