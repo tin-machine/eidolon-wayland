@@ -38,6 +38,11 @@ pub struct I3WindowCut {
     pub admission_open: bool,
 }
 
+// Retired/awaiting-ACK records must remain available for reclamation.
+// Once the bounded owner ledger is full, fail closed rather than dropping
+// unresolved SDK/native receipts or consuming unbounded memory.
+const MAX_RETAINED_WINDOWS: usize = 64;
+
 pub struct WindowHistory {
     origin: NativeOrigin,
     before: BTreeSet<WindowId>,
@@ -147,6 +152,14 @@ impl WindowHistory {
             }) {
                 return Err("APP_WINDOW_UNSUPPORTED");
             }
+        }
+        let newly_observed = samples
+            .iter()
+            .filter(|sample| !self.entries.contains_key(&sample.window))
+            .count();
+        if newly_observed > MAX_RETAINED_WINDOWS.saturating_sub(self.entries.len()) {
+            self.seal();
+            return Err("APP_WINDOW_UNSUPPORTED");
         }
         for (id, entry) in &mut self.entries {
             if !seen.contains(id) && entry.sample.life != Life::Destroyed {
@@ -566,6 +579,44 @@ mod tests {
             .observe(&[sample(&o, 1, Parent::None {}, Life::Mapped)])
             .unwrap();
         assert_eq!(fresh.retained_entries(), 1);
+    }
+
+    #[test]
+    fn missing_acks_fail_closed_at_retirement_ledger_capacity() {
+        let o = origin();
+        let mut h = WindowHistory::new(o.clone(), []);
+        let main = sample(&o, 1, Parent::None {}, Life::Mapped);
+        h.started();
+        h.observe(&[main.clone()]).unwrap();
+        h.commit_main(main.window).unwrap();
+        for id in 2..=64 {
+            let dialog = sample(
+                &o,
+                id,
+                Parent::Resolved {
+                    window: main.window,
+                },
+                Life::Mapped,
+            );
+            h.observe(&[main.clone(), dialog]).unwrap();
+            h.observe(&[main.clone()]).unwrap();
+        }
+        assert_eq!(h.pending_retirements(), 63);
+        assert_eq!(h.retained_entries(), MAX_RETAINED_WINDOWS);
+        let overflow = sample(
+            &o,
+            65,
+            Parent::Resolved {
+                window: main.window,
+            },
+            Life::Mapped,
+        );
+        assert_eq!(
+            h.observe(&[main, overflow]),
+            Err("APP_WINDOW_UNSUPPORTED")
+        );
+        assert!(!h.is_open());
+        assert_eq!(h.retained_entries(), MAX_RETAINED_WINDOWS);
     }
 
     #[test]

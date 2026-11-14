@@ -327,7 +327,16 @@ impl Session {
         let next = if self.closing || self.v3_history.as_ref().is_none_or(|h| !h.is_open()) {
             BTreeSet::new()
         } else {
-            allowed
+            // Even a future caller supplying SDK evidence must not promote a
+            // candidate, an unmapped dialog or a now-retired WindowId. The
+            // compositor's admitted cut is the mandatory final intersection.
+            let admitted = self
+                .v3_history
+                .as_mut()
+                .and_then(|history| history.cut().ok())
+                .map(|cut| cut.admitted)
+                .unwrap_or_default();
+            allowed.intersection(&admitted).copied().collect()
         };
         if self.v3_input_allowed != next {
             self.v3_input_allowed = next;
@@ -384,14 +393,18 @@ impl Session {
         if self.closing {
             return None;
         }
-        self.protocol.as_ref()?.ime_snapshot(input_epoch)
+        let snapshot = self.protocol.as_ref()?.ime_snapshot(input_epoch)?;
+        if !self.owns_window(snapshot.target.window) {
+            return None;
+        }
+        Some(snapshot)
     }
     pub fn ime(
         &mut self,
         input_epoch: u64,
         transaction: &eidolon_model::ime::ImeTransaction,
     ) -> Result<(), &'static str> {
-        if self.closing {
+        if self.closing || !self.owns_window(transaction.target.window) {
             return Err("STALE");
         }
         self.protocol
