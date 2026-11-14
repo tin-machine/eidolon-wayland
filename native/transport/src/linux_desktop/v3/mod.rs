@@ -17,6 +17,7 @@ pub use receipt::Receipt;
 pub mod journal;
 pub mod owner;
 pub mod runtime;
+pub mod reclamation;
 pub mod recovery;
 pub mod sources;
 
