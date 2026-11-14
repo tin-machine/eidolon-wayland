@@ -5,7 +5,7 @@
 開始時と push 前に GitHub の main を再取得し、
 `eca71addc58009b4576644da162d56670eebfaf5`、PR #16 merged を確認した。
 I5 の変更は `feat/linux-desktop-v3-i5-storage-launcher` にまとめた。
-本記録の製品コード・テストの検証対象は `93a216f6979f1c5920b5bd917a463f011c41e5b3` までの source である。
+初回ローカル検証の製品コード・テスト対象は `93a216f6979f1c5920b5bd917a463f011c41e5b3` までの source である。
 HTTPS push の認証情報がないため、接続済み GitHub API で責務別 commit を公開し、各 source tree がローカル検証済み tree と同一であることを照合した。
 後続の文書 commit を含む **PR 最終 HEAD の Actions run / job / conclusion は PR 本文へ記録する**。
 旧 #16 の CI は今回の変更の検証へ流用しない。
@@ -47,6 +47,16 @@ JUnit の直接実行では Gradle と同じ `test` / `testDebug` と resource r
 実ファイル保存テストは既存の C/JNI POSIX fixture による lstat/no-follow/CAS/fsync/rename/readback を使う。
 `RuntimeSettingsIntegrationTest` はこの実 I/O と実 SDK ledger / save actor を結合し、native Port のみ明示的な fixture を使う。
 これらは Android instrumentation、Meta SDK 実機 disposal、Quest の描画・入力を実行した証拠ではない。
+
+### 公開後レビューの SDK 取消補修
+
+初回公開 HEAD `a5b09921868c2b2d54f26f70189b4b8b40147e12` の CI 待機中に、既存
+`WindowControls.cancelSources()` の `onNoIntersectionInput` / `resolveInput` が例外を捨てる経路を確認した。
+両方を既存の failure count と同 SDK scope の sticky failure へ伝搬するよう補修した。
+これにより `closeControls()` が disposal failure を保持し、auxiliaryDisposed / readyToRelease を成功にできない。
+単一 file を実 Android / Meta SDK jar と release classes に対して再 compile し PASS。
+既存 ledger / save actor の失敗テストに加え、最終 HEAD の CI を再実行する。
+SDK 取消例外そのものの Quest 上の注入・観測は未実施であり、初回公開 HEAD の CI を最終 HEAD の代用にはしない。
 
 ### Host / native
 
