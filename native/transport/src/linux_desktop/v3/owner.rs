@@ -288,7 +288,9 @@ impl Owner {
         Instant::now() + needed <= self.heartbeat + Duration::from_secs(10)
     }
     pub fn can_launch(&self) -> bool {
-        !self.stopping && !self.cancel.is_cancelled() && self.command_idle()
+        !self.stopping
+            && !self.cancel.is_cancelled()
+            && self.command_idle()
             && self.phase() == Phase::Catalog
     }
     /// Renew the C2 lease on both sides of a potentially slow forward setup.
@@ -310,7 +312,9 @@ impl Owner {
                 return Err("CANCELLED");
             }
         }
-        if !self.can_launch() { return Err("STALE"); }
+        if !self.can_launch() {
+            return Err("STALE");
+        }
         Ok(())
     }
     pub async fn stop(&mut self) -> Result<(), &'static str> {
@@ -461,9 +465,13 @@ impl Owner {
                 // resolves; a pending ACK keeps the original deadline intact.
             }
             let heartbeat_eligible = !self.stopping
-                && !self.report.eof && !self.report.terminal_event
+                && !self.report.eof
+                && !self.report.terminal_event
                 && self.protocol.in_flight().is_none()
-                && matches!(self.phase(), Phase::Prepared | Phase::Catalog | Phase::Started);
+                && matches!(
+                    self.phase(),
+                    Phase::Prepared | Phase::Catalog | Phase::Started
+                );
             if heartbeat_eligible && Instant::now() >= self.heartbeat {
                 self.control(Action::Heartbeat, None).await?;
                 continue;
@@ -495,11 +503,15 @@ impl Owner {
                 }
             };
             match next_input {
-                Input::Cancel => { self.begin_stop(Instant::now()); }
+                Input::Cancel => {
+                    self.begin_stop(Instant::now());
+                }
                 Input::Deadline => return Err(self.fail("DESKTOP_HELPER_TIMEOUT")),
-                Input::Heartbeat => {},
+                Input::Heartbeat => {}
                 Input::Launch(Some(launch)) => {
-                    if !self.can_launch() { return Err("STALE"); }
+                    if !self.can_launch() {
+                        return Err("STALE");
+                    }
                     return Ok(OwnerTurn::Launch(launch));
                 }
                 Input::Launch(None) => {
@@ -510,8 +522,11 @@ impl Owner {
                     return self.data(&data).map(OwnerTurn::Events);
                 }
                 Input::Channel(Some(ChannelMsg::ExtendedData { data, ext: 1 })) => {
-                    if self.report.eof { return Err(self.fail("DESKTOP_V3_PROTOCOL_INVALID")); }
-                    self.report.stderr_bytes = self.report.stderr_bytes.saturating_add(data.len() as u64);
+                    if self.report.eof {
+                        return Err(self.fail("DESKTOP_V3_PROTOCOL_INVALID"));
+                    }
+                    self.report.stderr_bytes =
+                        self.report.stderr_bytes.saturating_add(data.len() as u64);
                     if self.report.stderr_bytes > MAX_STDERR {
                         return Err(self.fail("DESKTOP_OUTPUT_LIMIT"));
                     }
@@ -543,7 +558,7 @@ impl Owner {
                 Input::Channel(Some(ChannelMsg::Failure | ChannelMsg::ExtendedData { .. })) => {
                     return Err(self.fail("DESKTOP_V3_PROTOCOL_INVALID"));
                 }
-                Input::Channel(Some(_)) => {},
+                Input::Channel(Some(_)) => {}
             }
         }
     }

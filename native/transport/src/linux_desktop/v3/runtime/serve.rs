@@ -2,11 +2,15 @@
 //! remote half of the lifecycle; local/SDK retirement happens on a separate
 //! thread after this SSH actor and its I/O generation are gone.
 use super::{Launch, RunCapture};
-use crate::{forward, linux_desktop::v3::{
-    self, Phase, Selection, owner::{self, OwnerTurn},
-    journal::{Cleanup, Journal, Stage},
-    reclamation::{DeferredReclamation, ReclamationHandoff},
-}};
+use crate::{
+    forward,
+    linux_desktop::v3::{
+        self, Phase, Selection,
+        journal::{Cleanup, Journal, Stage},
+        owner::{self, OwnerTurn},
+        reclamation::{DeferredReclamation, ReclamationHandoff},
+    },
+};
 use eidolon_model::{
     ids::{CommandSeq, SessionId},
     linux_desktop_v3::report::{
@@ -20,7 +24,10 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use tokio::{sync::mpsc, time::{Duration, timeout}};
+use tokio::{
+    sync::mpsc,
+    time::{Duration, timeout},
+};
 use tokio_util::sync::CancellationToken;
 
 /// This is transport-only. It never asserts B1 Startup::Ready or invents an
@@ -67,9 +74,14 @@ impl TransportSnapshot {
             actor_finished: false,
             io_retired: false,
             remote_cleanup: RemoteCleanup {
-                process_complete: false, pipes_eof: false, boot_changed: false,
-                remote_cleaned: false, receipt_written: false,
-                ssh_channel_complete: false, forward_retired: false, router_drained: false,
+                process_complete: false,
+                pipes_eof: false,
+                boot_changed: false,
+                remote_cleaned: false,
+                receipt_written: false,
+                ssh_channel_complete: false,
+                forward_retired: false,
+                router_drained: false,
             },
             cleanup_pending: false,
             faults: ControllerFaults::default(),
@@ -80,10 +92,16 @@ impl TransportSnapshot {
         self.error.get_or_insert(error);
         self.faults.first.get_or_insert(match error {
             "CANCELLED" => ControllerFault::CommandTimeout,
-            "DESKTOP_FORWARD_REJECTED" | "DESKTOP_FORWARD_TIMEOUT" => ControllerFault::ForwardRequest,
+            "DESKTOP_FORWARD_REJECTED" | "DESKTOP_FORWARD_TIMEOUT" => {
+                ControllerFault::ForwardRequest
+            }
             "DESKTOP_LOCAL_SOCKET_INVALID" => ControllerFault::LocalAdmissionUnavailable,
-            "DESKTOP_V3_JOURNAL_CREATE_FAILED" | "DESKTOP_V3_JOURNAL_BUSY" => ControllerFault::JournalReserve,
-            "DESKTOP_V3_JOURNAL_PUBLISH_FAILED" | "DESKTOP_V3_JOURNAL_SYNC_FAILED" => ControllerFault::JournalUpdate,
+            "DESKTOP_V3_JOURNAL_CREATE_FAILED" | "DESKTOP_V3_JOURNAL_BUSY" => {
+                ControllerFault::JournalReserve
+            }
+            "DESKTOP_V3_JOURNAL_PUBLISH_FAILED" | "DESKTOP_V3_JOURNAL_SYNC_FAILED" => {
+                ControllerFault::JournalUpdate
+            }
             "DESKTOP_V3_EVIDENCE_STALE" | "DESKTOP_CATALOG_STALE" => ControllerFault::ScopeMismatch,
             "DESKTOP_HELPER_TIMEOUT" | "SSH_IO_TIMEOUT" => ControllerFault::CommandTimeout,
             _ => ControllerFault::SshIo,
@@ -126,34 +144,52 @@ pub async fn serve<H: client::Handler>(
         if !router.belongs_to(binding.session()) || router.report().active != 0 {
             return Err("DESKTOP_ROUTER_SCOPE");
         }
-        if cancel.is_cancelled() { return Err("CANCELLED"); }
+        if cancel.is_cancelled() {
+            return Err("CANCELLED");
+        }
         // A partial journal reserve, including an fsync failure, remains
         // potentially pending. Mark uncertainty BEFORE trying the operation.
-        owner = Some(owner::Owner::open(
-            client, binding, request.capture.evidence(), cancel.clone(), || {
-                report.transport.journal_pending = true;
-                journal = Some(Journal::reserve(request.files, binding)?);
-                report.journal_stage = Some(Stage::Reserved);
-                publish(&report);
-                Ok(())
-            },
-        ).await?);
+        owner = Some(
+            owner::Owner::open(
+                client,
+                binding,
+                request.capture.evidence(),
+                cancel.clone(),
+                || {
+                    report.transport.journal_pending = true;
+                    journal = Some(Journal::reserve(request.files, binding)?);
+                    report.journal_stage = Some(Stage::Reserved);
+                    publish(&report);
+                    Ok(())
+                },
+            )
+            .await?,
+        );
         let active = owner.as_mut().expect("opened owner");
         while active.phase() == Phase::AwaitingPrepared {
             active.next().await?;
-            if active.report().terminal_event { return Err("DESKTOP_HELPER_LOST"); }
+            if active.report().terminal_event {
+                return Err("DESKTOP_HELPER_LOST");
+            }
         }
-        if active.phase() != Phase::Prepared { return Err("DESKTOP_CATALOG_UNAVAILABLE"); }
-        journal.as_mut().unwrap().prepared(
-            active.boot_id().ok_or("DESKTOP_V3_PROTOCOL_INVALID")?
-        )?;
+        if active.phase() != Phase::Prepared {
+            return Err("DESKTOP_CATALOG_UNAVAILABLE");
+        }
+        journal
+            .as_mut()
+            .unwrap()
+            .prepared(active.boot_id().ok_or("DESKTOP_V3_PROTOCOL_INVALID")?)?;
         report.journal_stage = Some(Stage::Prepared);
         active.inspect().await?;
         while active.phase() == Phase::Prepared {
             active.next().await?;
-            if active.report().terminal_event { return Err("DESKTOP_CATALOG_UNAVAILABLE"); }
+            if active.report().terminal_event {
+                return Err("DESKTOP_CATALOG_UNAVAILABLE");
+            }
         }
-        if active.phase() != Phase::Catalog { return Err("DESKTOP_CATALOG_UNAVAILABLE"); }
+        if active.phase() != Phase::Catalog {
+            return Err("DESKTOP_CATALOG_UNAVAILABLE");
+        }
         // The catalog is fully checked against B1/E1 source evidence by Owner.
         // Cache a fixed Selection while no heartbeat command is in flight.
         let selection = active.selection("mousepad-editor-v1")?;
@@ -178,7 +214,11 @@ pub async fn serve<H: client::Handler>(
         if !Arc::ptr_eq(&launch.permit.capture, &request.capture)
             || launch.permit.selection() != &selection
             || launch.permit.generation() != generation
-            || launch.permit.origin().matches(binding.context(), &selection, binding.pins()).is_err()
+            || launch
+                .permit
+                .origin()
+                .matches(binding.context(), &selection, binding.pins())
+                .is_err()
         {
             return Err("DESKTOP_CATALOG_STALE");
         }
@@ -189,33 +229,45 @@ pub async fn serve<H: client::Handler>(
         // In-flight heartbeat ACKs must finish before any forward. Each
         // barrier can receive terminal and heartbeat in the same SSH packet.
         active.renew_catalog().await?;
-        if !active.lease_margin(Duration::from_secs(8)) { return Err("DESKTOP_HELPER_TIMEOUT"); }
+        if !active.lease_margin(Duration::from_secs(8)) {
+            return Err("DESKTOP_HELPER_TIMEOUT");
+        }
         let socket = &launch.local_socket;
         if !socket.is_absolute() || socket.as_os_str().len() > 103 {
             return Err("DESKTOP_LOCAL_SOCKET_INVALID");
         }
-        let meta = std::fs::symlink_metadata(socket)
-            .map_err(|_| "DESKTOP_LOCAL_SOCKET_INVALID")?;
+        let meta = std::fs::symlink_metadata(socket).map_err(|_| "DESKTOP_LOCAL_SOCKET_INVALID")?;
         if !meta.file_type().is_socket() || meta.uid() != unsafe { libc::getuid() } {
             return Err("DESKTOP_LOCAL_SOCKET_INVALID");
         }
-        if cancel.is_cancelled() { return Err("CANCELLED"); }
-        let path = active.remote_socket()
-            .ok_or("DESKTOP_V3_PROTOCOL_INVALID")?.to_owned();
+        if cancel.is_cancelled() {
+            return Err("CANCELLED");
+        }
+        let path = active
+            .remote_socket()
+            .ok_or("DESKTOP_V3_PROTOCOL_INVALID")?
+            .to_owned();
         lease = Some(router.arm(binding.session(), path.clone(), socket.clone())?);
         remote_path = Some(path.clone());
         journal.as_mut().unwrap().advance(Stage::ForwardRequested)?;
         report.journal_stage = Some(Stage::ForwardRequested);
         forward_requested = true;
-        if !active.lease_margin(Duration::from_secs(8)) { return Err("DESKTOP_HELPER_TIMEOUT"); }
+        if !active.lease_margin(Duration::from_secs(8)) {
+            return Err("DESKTOP_HELPER_TIMEOUT");
+        }
         timeout(Duration::from_secs(5), client.streamlocal_forward(path))
-            .await.map_err(|_| "DESKTOP_FORWARD_TIMEOUT")?
+            .await
+            .map_err(|_| "DESKTOP_FORWARD_TIMEOUT")?
             .map_err(|_| "DESKTOP_FORWARD_REJECTED")?;
         report.transport.phase = TransportPhase::Forwarded;
         publish(&report);
-        if cancel.is_cancelled() { return Err("CANCELLED"); }
+        if cancel.is_cancelled() {
+            return Err("CANCELLED");
+        }
         active.renew_catalog().await?;
-        if !active.lease_margin(Duration::from_secs(3)) { return Err("DESKTOP_HELPER_TIMEOUT"); }
+        if !active.lease_margin(Duration::from_secs(3)) {
+            return Err("DESKTOP_HELPER_TIMEOUT");
+        }
         // Crash-consistency ordering: durable StartRequested BEFORE the one
         // possible Start enqueue. Ambiguous Start is never retransmitted.
         journal.as_mut().unwrap().advance(Stage::StartRequested)?;
@@ -224,7 +276,9 @@ pub async fn serve<H: client::Handler>(
         launch.start_attempted()?;
         active.start(&selection).await?;
         loop {
-            if active.closed() { break; }
+            if active.closed() {
+                break;
+            }
             let _events = active.next().await?;
             let remote = active.report();
             if remote.started && !report.started_observed {
@@ -242,11 +296,16 @@ pub async fn serve<H: client::Handler>(
             };
             publish(&report);
         }
-        if !active.terminal_remote_clean() { return Err("DESKTOP_CLEANUP_PENDING"); }
+        if !active.terminal_remote_clean() {
+            return Err("DESKTOP_CLEANUP_PENDING");
+        }
         Ok(())
-    }.await;
+    }
+    .await;
 
-    if let Err(error) = result { report.fault(error); }
+    if let Err(error) = result {
+        report.fault(error);
+    }
     report.transport.phase = TransportPhase::Stopping;
     publish(&report);
     let mut remote_verified = false;
@@ -255,9 +314,12 @@ pub async fn serve<H: client::Handler>(
         if !active.closed() {
             let _ = timeout(Duration::from_secs(33), async {
                 active.stop().await?;
-                while !active.closed() { active.next().await?; }
+                while !active.closed() {
+                    active.next().await?;
+                }
                 Ok::<(), &'static str>(())
-            }).await;
+            })
+            .await;
         }
         active.close().await;
         remote_verified = active.terminal_remote_clean();
@@ -266,13 +328,26 @@ pub async fn serve<H: client::Handler>(
     if let Some(active) = &remote {
         report.terminal_observed |= active.terminal_event;
     }
-    let channel_complete = owner.as_ref().is_some_and(|active| active.channel_complete());
+    let channel_complete = owner
+        .as_ref()
+        .is_some_and(|active| active.channel_complete());
     let forward_retired = if let Some(path) = remote_path {
-        matches!(timeout(Duration::from_secs(3), client.cancel_streamlocal_forward(path)).await, Ok(Ok(())))
-    } else { !forward_requested };
+        matches!(
+            timeout(
+                Duration::from_secs(3),
+                client.cancel_streamlocal_forward(path)
+            )
+            .await,
+            Ok(Ok(()))
+        )
+    } else {
+        !forward_requested
+    };
     let joined = if let Some(lease) = lease {
         timeout(Duration::from_secs(3), lease.close()).await.is_ok()
-    } else { true };
+    } else {
+        true
+    };
     let router_drained = joined && router.report().active == 0;
     let cleanup = Cleanup {
         process_complete: remote_verified && remote.as_ref().is_some_and(|r| r.process_complete),

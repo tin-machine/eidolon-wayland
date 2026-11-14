@@ -345,9 +345,15 @@ mod tests {
         r.presentation.as_mut().unwrap().cleanup_pending = false;
         assert!(r.validate().is_err(), "cleanup pending cannot be Ready");
         r.cleanup_pending = false;
-        assert!(r.validate().is_ok(), "Ready retains its crash-recovery journal");
+        assert!(
+            r.validate().is_ok(),
+            "Ready retains its crash-recovery journal"
+        );
         r.transport.journal_pending = false;
-        assert!(r.validate().is_err(), "Ready cannot outlive its recovery journal");
+        assert!(
+            r.validate().is_err(),
+            "Ready cannot outlive its recovery journal"
+        );
         r.transport.journal_pending = true;
         r.sdk_target.as_mut().unwrap().target.window = WindowId::new(2).unwrap();
         assert!(
@@ -403,13 +409,19 @@ mod tests {
         cleanup.forward_retired = true;
         cleanup.router_drained = true;
         assert!(!cleanup.pipes_eof);
-        assert!(cleanup.complete(), "verified reboot replaces, not fabricates, EOF");
+        assert!(
+            cleanup.complete(),
+            "verified reboot replaces, not fabricates, EOF"
+        );
         cleanup.boot_changed = false;
         assert!(!cleanup.complete());
         cleanup.pipes_eof = true;
         assert!(cleanup.complete());
         cleanup.remote_cleaned = false;
-        assert!(!cleanup.complete(), "remote cleanup remains an independent proof");
+        assert!(
+            !cleanup.complete(),
+            "remote cleanup remains an independent proof"
+        );
     }
 
     #[test]
@@ -451,10 +463,16 @@ mod tests {
             shutdown_complete: true,
             native_destroy_accepted: true,
         };
-        assert!(r.validate().is_ok(), "relaunch does not require nativeDestroy");
+        assert!(
+            r.validate().is_ok(),
+            "relaunch does not require nativeDestroy"
+        );
         r.runtime_reclamation.shutdown_complete = false;
         r.runtime_reclamation.native_destroy_accepted = false;
-        assert!(r.validate().is_ok(), "origin may relaunch within a live runtime");
+        assert!(
+            r.validate().is_ok(),
+            "origin may relaunch within a live runtime"
+        );
         let bytes = serde_json::to_vec(&r).unwrap();
         let parsed = V3Report::parse(&bytes).unwrap();
         assert_eq!(parsed.first_failure, Some(Reason::AppPresentationFailed));

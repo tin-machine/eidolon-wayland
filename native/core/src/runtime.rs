@@ -233,14 +233,20 @@ impl Runtime {
             .map_err(|_| invalid())?;
         // Parse the B1/E1 v3 envelope once at Runtime creation. A malformed
         // capture never silently selects the older v2 transport.
-        let desktop_v3_binding = config.linux_desktop_v3.as_deref()
+        let desktop_v3_binding = config
+            .linux_desktop_v3
+            .as_deref()
             .map(|raw| {
-                let binding = eidolon_model::linux_desktop_v3::configuration::RuntimeBinding::parse(raw.as_bytes())
+                let binding =
+                    eidolon_model::linux_desktop_v3::configuration::RuntimeBinding::parse(
+                        raw.as_bytes(),
+                    )
                     .map_err(|_| invalid())?;
                 let profile = desktop_profile.as_ref().ok_or_else(invalid)?;
                 binding.matches_profile(profile).map_err(|_| invalid())?;
                 Ok::<_, std::io::Error>(binding)
-            }).transpose()?;
+            })
+            .transpose()?;
         let normal_linux = desktop_profile.is_some();
         #[cfg(any(test, feature = "debug-fixtures"))]
         let linux_pins = config

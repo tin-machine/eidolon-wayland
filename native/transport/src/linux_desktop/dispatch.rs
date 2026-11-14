@@ -194,10 +194,15 @@ pub async fn recover<H: russh::client::Handler>(
                 v2::recover(client, router, request, cancel).await,
             ))
         }
-        RecoveryRequest::V3 { request, previous, generation } => {
+        RecoveryRequest::V3 {
+            request,
+            previous,
+            generation,
+        } => {
             validate_recovery_selection(request.files, Version::V3)?;
             Ok(RecoveryReport::V3(
-                v3::recovery::recover_remote(client, router, request, previous, generation, cancel).await,
+                v3::recovery::recover_remote(client, router, request, previous, generation, cancel)
+                    .await,
             ))
         }
     }

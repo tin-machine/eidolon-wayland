@@ -147,9 +147,15 @@ impl Record {
 #[derive(Clone)]
 pub struct Pending(Record);
 impl Pending {
-    pub(crate) fn context(&self) -> &Context { &self.0.context }
-    pub(crate) fn pins(&self) -> &Pins { &self.0.pins }
-    pub(crate) fn sources(&self) -> &SourceHashes { &self.0.sources }
+    pub(crate) fn context(&self) -> &Context {
+        &self.0.context
+    }
+    pub(crate) fn pins(&self) -> &Pins {
+        &self.0.pins
+    }
+    pub(crate) fn sources(&self) -> &SourceHashes {
+        &self.0.sources
+    }
     pub fn matches(&self, profile: &Profile, pins: &Pins) -> bool {
         let Ok(binding) = Binding::from_captured(self.0.context.clone(), self.0.pins.clone())
         else {
@@ -475,8 +481,12 @@ impl Journal {
         next.stage = stage;
         self.persist(next)
     }
-    pub fn stage(&self) -> Stage { self.record.stage }
-    pub fn cleanup(&self) -> Cleanup { self.record.cleanup.clone() }
+    pub fn stage(&self) -> Stage {
+        self.record.stage
+    }
+    pub fn cleanup(&self) -> Cleanup {
+        self.record.cleanup.clone()
+    }
     /// Reconfirm the bytes and inode, then sync both pending.json and its
     /// directory. A prior finish() fsync error does not grant durable Complete.
     pub fn ensure_complete_durable(&self) -> Result<Cleanup, &'static str> {
@@ -485,8 +495,11 @@ impl Journal {
         }
         self.unchanged()?;
         let (file, data) = read(&self.path)?;
-        if data != self.bytes { return Err("DESKTOP_V3_JOURNAL_OWNER_CHANGED"); }
-        file.sync_all().map_err(|_| "DESKTOP_V3_JOURNAL_SYNC_FAILED")?;
+        if data != self.bytes {
+            return Err("DESKTOP_V3_JOURNAL_OWNER_CHANGED");
+        }
+        file.sync_all()
+            .map_err(|_| "DESKTOP_V3_JOURNAL_SYNC_FAILED")?;
         sync(&self.directory)?;
         Ok(self.record.cleanup.clone())
     }
@@ -530,8 +543,7 @@ impl Journal {
         }
         if !self.clear_unlinked {
             self.unchanged()?;
-            std::fs::remove_file(&self.path)
-                .map_err(|_| "DESKTOP_V3_JOURNAL_CLEAR_FAILED")?;
+            std::fs::remove_file(&self.path).map_err(|_| "DESKTOP_V3_JOURNAL_CLEAR_FAILED")?;
             self.clear_unlinked = true;
         }
         match std::fs::symlink_metadata(&self.path) {

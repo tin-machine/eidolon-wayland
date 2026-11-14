@@ -235,11 +235,21 @@ fn complete_is_durable_but_not_local_retirement_and_clear_preserves_new_owner() 
     journal.finish(complete()).unwrap();
     assert_eq!(journal.stage(), Stage::Complete);
     assert!(journal.ensure_complete_durable().is_ok());
-    assert!(pending(&dir.0).unwrap().is_some(), "remote Complete is still pending local retirement");
+    assert!(
+        pending(&dir.0).unwrap().is_some(),
+        "remote Complete is still pending local retirement"
+    );
     journal.clear().unwrap();
     let new_pending = dir.0.join(DIRECTORY).join("pending.json");
-    std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600)
-        .open(&new_pending).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&new_pending)
+        .unwrap();
     assert_eq!(journal.clear(), Err("DESKTOP_V3_JOURNAL_OWNER_CHANGED"));
-    assert!(new_pending.exists(), "retry must never unlink another generation");
+    assert!(
+        new_pending.exists(),
+        "retry must never unlink another generation"
+    );
 }

@@ -1,7 +1,11 @@
 //! Two-phase v3 retirement: an SSH actor can finish its remote side without
 //! waiting on local Wayland and Spatial SDK owners. Complete journal does NOT
 //! mean the window, renderer target or SDK Entity has been retired.
-use super::{Binding, Context, Pins, journal::{Journal, Cleanup}, sources::SourceHashes};
+use super::{
+    Binding, Context, Pins,
+    journal::{Cleanup, Journal},
+    sources::SourceHashes,
+};
 use eidolon_model::linux_desktop_v3::report::LocalRetirement;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -41,14 +45,18 @@ pub struct FinalizedReclamation {
     generation: u64,
 }
 impl FinalizedReclamation {
-    pub fn generation(&self) -> u64 { self.generation }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 impl DeferredReclamation {
     /// May be called after a new recovery or a live session, but only after
     /// Journal::finish(Complete) is durably revalidated. No clear occurs here.
     pub(crate) fn from_complete(
-        journal: Journal, binding: &Binding, generation: u64,
+        journal: Journal,
+        binding: &Binding,
+        generation: u64,
     ) -> Result<ReclamationHandoff, &'static str> {
         if generation == 0 {
             return Err("DESKTOP_V3_JOURNAL_INVALID");
@@ -60,8 +68,16 @@ impl DeferredReclamation {
             sources: journal.source_hashes().clone(),
         };
         Ok(ReclamationHandoff {
-            authority: ReclamationAuthority { key: key.clone(), generation },
-            deferred: Self { journal, key, generation, cleared: false },
+            authority: ReclamationAuthority {
+                key: key.clone(),
+                generation,
+            },
+            deferred: Self {
+                journal,
+                key,
+                generation,
+                cleared: false,
+            },
         })
     }
 }
@@ -75,7 +91,10 @@ impl ReclamationAuthority {
         if !observed.complete() {
             return Err("DESKTOP_LOCAL_RETIREMENT_PENDING");
         }
-        Ok(LocalReclaimed { key: self.key, generation: self.generation })
+        Ok(LocalReclaimed {
+            key: self.key,
+            generation: self.generation,
+        })
     }
 }
 
@@ -94,18 +113,25 @@ pub fn finalize_reclaimed(
     }
     deferred.journal.clear()?;
     deferred.cleared = true;
-    Ok(FinalizedReclamation { generation: deferred.generation })
+    Ok(FinalizedReclamation {
+        generation: deferred.generation,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::linux_desktop::v3::{journal::Journal, owner::test_support::{Temp, BOOT, binding, complete}};
+    use crate::linux_desktop::v3::{
+        journal::Journal,
+        owner::test_support::{BOOT, Temp, binding, complete},
+    };
 
     fn retired() -> LocalRetirement {
         LocalRetirement {
-            waypipe_stopped: true, listener_retired: true,
-            windows_retired: true, sdk_bindings_released: true,
+            waypipe_stopped: true,
+            listener_retired: true,
+            windows_retired: true,
+            sdk_bindings_released: true,
             sdk_entities_disposed: true,
         }
     }
@@ -117,8 +143,10 @@ mod tests {
         let mut journal = Journal::reserve(&dir.0, &binding).unwrap();
         journal.prepared(BOOT).unwrap();
         journal.finish(complete()).unwrap();
-        let ReclamationHandoff { mut deferred, authority } =
-            DeferredReclamation::from_complete(journal, &binding, 7).unwrap();
+        let ReclamationHandoff {
+            mut deferred,
+            authority,
+        } = DeferredReclamation::from_complete(journal, &binding, 7).unwrap();
         assert!(super::super::journal::pending(&dir.0).unwrap().is_some());
         let mut not_ready = retired();
         not_ready.sdk_entities_disposed = false;
@@ -136,13 +164,23 @@ mod tests {
         let mut journal = Journal::reserve(&dir.0, &binding).unwrap();
         journal.prepared(BOOT).unwrap();
         journal.finish(complete()).unwrap();
-        let ReclamationHandoff { mut deferred, authority } =
-            DeferredReclamation::from_complete(journal, &binding, 7).unwrap();
+        let ReclamationHandoff {
+            mut deferred,
+            authority,
+        } = DeferredReclamation::from_complete(journal, &binding, 7).unwrap();
         let local = authority.confirm(&retired()).unwrap();
-        let wrong = LocalReclaimed { key: local.key.clone(), generation: 8 };
+        let wrong = LocalReclaimed {
+            key: local.key.clone(),
+            generation: 8,
+        };
         assert!(finalize_reclaimed(&mut deferred, &wrong).is_err());
         assert!(super::super::journal::pending(&dir.0).unwrap().is_some());
-        assert_eq!(finalize_reclaimed(&mut deferred, &local).unwrap().generation(), 7);
+        assert_eq!(
+            finalize_reclaimed(&mut deferred, &local)
+                .unwrap()
+                .generation(),
+            7
+        );
         assert!(super::super::journal::pending(&dir.0).unwrap().is_none());
         assert!(finalize_reclaimed(&mut deferred, &local).is_err());
     }

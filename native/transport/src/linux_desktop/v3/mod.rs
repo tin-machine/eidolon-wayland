@@ -14,12 +14,12 @@ pub mod protocol;
 pub use protocol::{Action, Event, FrameDecoder, Phase, Protocol};
 pub mod receipt;
 pub use receipt::Receipt;
+pub mod io_fence;
 pub mod journal;
 pub mod owner;
-pub mod runtime;
 pub mod reclamation;
-pub mod io_fence;
 pub mod recovery;
+pub mod runtime;
 pub mod sources;
 
 pub type Result<T> = std::result::Result<T, &'static str>;

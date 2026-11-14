@@ -1,4 +1,5 @@
 //! SSHはI/O ownerが作るTokio runtime上だけで実行する。再接続前に旧runtimeを回収する。
+use crate::linux_desktop::v3 as desktop_v3;
 use crate::{
     connect_profile::{ConnectSpec, DesktopConfig},
     exec, forward, forward_app, forward_probe,
@@ -10,7 +11,6 @@ use eidolon_model::{
     ids::{CommandSeq, RuntimeHandle, SessionId},
     state::Status,
 };
-use crate::linux_desktop::v3 as desktop_v3;
 use russh::{
     client,
     keys::{PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate},
@@ -278,8 +278,8 @@ impl Controller {
             .as_deref()
             .map(desktop_v3::journal::pending)
             .unwrap_or(Ok(None));
-        let has_desktop_pending = !matches!(desktop_pending, Ok(None))
-            || !matches!(desktop_v3_pending, Ok(None));
+        let has_desktop_pending =
+            !matches!(desktop_pending, Ok(None)) || !matches!(desktop_v3_pending, Ok(None));
         let signals = Arc::new(Signals {
             shared: Mutex::new(Shared {
                 report: Snapshot {
@@ -422,7 +422,10 @@ impl Controller {
             return Status::InvalidArgument;
         }
         let spec = match ConnectSpec::linux_desktop_v3(
-            profile, configuration, storage, files.to_owned(),
+            profile,
+            configuration,
+            storage,
+            files.to_owned(),
         ) {
             Ok(value) => value,
             Err(_) => return Status::InvalidArgument,
@@ -714,8 +717,14 @@ impl Controller {
     /// Begin Inspect on the authenticated v3 connection. Transport Catalog is
     /// not product Ready; core must still prepare and own the local display.
     pub fn inspect_linux_desktop_v3(&self, session: SessionId, request: CommandSeq) -> Status {
-        let mut s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if s.report.session != Some(session) { return Status::Stale; }
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Status::Stale;
+        }
         if !matches!(s.desktop_profile, Some(DesktopConfig::V3 { .. }))
             || s.report.state != State::ProbeReady
             || s.report.desktop_pending
@@ -724,11 +733,15 @@ impl Controller {
         {
             return Status::NotReady;
         }
-        if s.forward_busy || s.desktop_v3_work.is_some() { return Status::Busy; }
+        if s.forward_busy || s.desktop_v3_work.is_some() {
+            return Status::Busy;
+        }
         s.forward_busy = true;
         s.desktop_v3_work = Some(DesktopV3Work::Inspect(request));
         s.catalog = CatalogUi {
-            session: Some(session), request_id: Some(request), pending: true,
+            session: Some(session),
+            request_id: Some(request),
+            pending: true,
             ..Default::default()
         };
         self.signals.notify.notify_one();
@@ -744,21 +757,32 @@ impl Controller {
         request: CommandSeq,
         selection: &desktop_v3::Selection,
     ) -> Result<desktop_v3::runtime::LaunchPermit, Status> {
-        let s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if s.report.session != Some(session) { return Err(Status::Stale); }
+        let s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Err(Status::Stale);
+        }
         if s.report.state != State::DesktopReady
             || s.cancel.as_ref().is_none_or(|c| c.is_cancelled())
             || s.desktop_v3_selection.as_ref() != Some(selection)
             || s.report.desktop_v3_transport.as_ref().is_none_or(|r| {
-                r.transport.phase != eidolon_model::linux_desktop_v3::report::TransportPhase::Catalog
-                    || r.terminal_observed || !r.transport.journal_pending
+                r.transport.phase
+                    != eidolon_model::linux_desktop_v3::report::TransportPhase::Catalog
+                    || r.terminal_observed
+                    || !r.transport.journal_pending
             })
         {
             return Err(Status::NotReady);
         }
         let admission = s.desktop_v3_launch.as_ref().ok_or(Status::NotReady)?;
-        if !admission.gate_open() { return Err(Status::Busy); }
-        admission.reserve(runtime, session, request, selection)
+        if !admission.gate_open() {
+            return Err(Status::Busy);
+        }
+        admission
+            .reserve(runtime, session, request, selection)
             .map_err(|_| Status::Stale)
     }
 
@@ -767,13 +791,19 @@ impl Controller {
         permit: desktop_v3::runtime::LaunchPermit,
         local_socket: &Path,
     ) -> Status {
-        let mut s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if s.report.state != State::DesktopReady
             || s.cancel.as_ref().is_none_or(|c| c.is_cancelled())
         {
             return Status::NotReady;
         }
-        let Some(admission) = &s.desktop_v3_launch else { return Status::NotReady; };
+        let Some(admission) = &s.desktop_v3_launch else {
+            return Status::NotReady;
+        };
         match admission.enqueue(permit, local_socket) {
             Ok(()) => {
                 s.catalog.desktop_v3 = None;
@@ -786,16 +816,19 @@ impl Controller {
         }
     }
 
-    pub fn abort_linux_desktop_v3_launch(
-        &self,
-        permit: desktop_v3::runtime::LaunchPermit,
-    ) {
+    pub fn abort_linux_desktop_v3_launch(&self, permit: desktop_v3::runtime::LaunchPermit) {
         drop(permit); // closes the launch gate and cancels the helper
     }
 
     pub fn recover_linux_desktop_v3(&self, session: SessionId, request: CommandSeq) -> Status {
-        let mut s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if s.report.session != Some(session) { return Status::Stale; }
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Status::Stale;
+        }
         if !matches!(s.desktop_profile, Some(DesktopConfig::V3 { .. }))
             || s.report.state != State::CleanupPending
             || !matches!(s.desktop_v3_pending, Ok(Some(_)))
@@ -818,20 +851,36 @@ impl Controller {
     /// has actually been destroyed; callbacks on that runtime must not wait
     /// for local/SDK retirement or they can deadlock shutdown.
     pub fn take_v3_reclamation(&self) -> Option<desktop_v3::reclamation::ReclamationHandoff> {
-        let mut s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if s.busy || !s.desktop_v3_io_retired { return None; }
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.busy || !s.desktop_v3_io_retired {
+            return None;
+        }
         let handoff = s.desktop_v3_handoff.take();
-        if handoff.is_some() { s.desktop_v3_finalization_pending = true; }
+        if handoff.is_some() {
+            s.desktop_v3_finalization_pending = true;
+        }
         handoff
     }
 
     pub fn publish_v3_finalized(
-        &self, result: desktop_v3::reclamation::FinalizedReclamation,
+        &self,
+        result: desktop_v3::reclamation::FinalizedReclamation,
     ) -> Status {
-        let mut s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if !s.desktop_v3_finalization_pending || s.busy
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !s.desktop_v3_finalization_pending
+            || s.busy
             || !s.desktop_v3_io_retired
-            || s.report.session.is_none_or(|id| id.get() as u64 != result.generation())
+            || s.report
+                .session
+                .is_none_or(|id| id.get() as u64 != result.generation())
         {
             return Status::Stale;
         }
@@ -1355,7 +1404,9 @@ fn owner(
         let mut v3_io_fence = match &connect.profile.desktop {
             Some(DesktopConfig::V3 { files, .. }) => {
                 match desktop_v3::io_fence::IoGenerationFence::acquire(
-                    files, connect.session, connect.session.get() as u64,
+                    files,
+                    connect.session,
+                    connect.session.get() as u64,
                 ) {
                     Ok(fence) => Some(fence),
                     Err(error) => {
@@ -1391,8 +1442,13 @@ fn owner(
             .build();
         let result = match runtime {
             Ok(runtime) => {
-                let result =
-                    runtime.block_on(connection(signals, &connect, deadlines, &mut journal, previous_io.as_ref()));
+                let result = runtime.block_on(connection(
+                    signals,
+                    &connect,
+                    deadlines,
+                    &mut journal,
+                    previous_io.as_ref(),
+                ));
                 // UI/coreではなくownerでdrop。未完SSH task/FD/秘密keyとTokio workerを回収。
                 drop(runtime);
                 result
@@ -1425,15 +1481,19 @@ fn owner(
             s.desktop_v3_launch = None;
             s.desktop_v3_selection = None;
             s.catalog = CatalogUi::default();
-            s.desktop_pending = if !was_v3 && s.report.desktop_pending && matches!(desktop_pending, Ok(None)) {
-                // A file disappearing without the actor/recovery's proof must
-                // not turn Unknown into Clean at connection retirement.
-                Err("DESKTOP_JOURNAL_OWNER_CHANGED")
-            } else {
-                desktop_pending
-            };
+            s.desktop_pending =
+                if !was_v3 && s.report.desktop_pending && matches!(desktop_pending, Ok(None)) {
+                    // A file disappearing without the actor/recovery's proof must
+                    // not turn Unknown into Clean at connection retirement.
+                    Err("DESKTOP_JOURNAL_OWNER_CHANGED")
+                } else {
+                    desktop_pending
+                };
             s.desktop_v3_pending = if was_v3
-                && s.report.desktop_v3_transport.as_ref().is_some_and(|r| r.transport.journal_pending)
+                && s.report
+                    .desktop_v3_transport
+                    .as_ref()
+                    .is_some_and(|r| r.transport.journal_pending)
                 && matches!(desktop_v3_pending, Ok(None))
             {
                 Err("DESKTOP_V3_JOURNAL_OWNER_CHANGED")
@@ -1698,27 +1758,41 @@ async fn connection(
             .take();
         if let Some(work) = desktop_v3_work {
             let (profile, configuration, storage, files) = match connect.profile.desktop.as_ref() {
-                Some(DesktopConfig::V3 { profile, configuration, storage, files }) =>
-                    (profile, configuration, storage, files),
+                Some(DesktopConfig::V3 {
+                    profile,
+                    configuration,
+                    storage,
+                    files,
+                }) => (profile, configuration, storage, files),
                 _ => return Err("DESKTOP_VERSION_SELECTION"),
             };
             match work {
                 DesktopV3Work::Inspect(inspect_request) => {
                     let nonce = format!("{:016x}", rand::random::<u64>());
                     let binding = desktop_v3::Binding::capture(
-                        profile, connect.session, uid, &nonce,
-                        configuration.pins().clone(), storage,
+                        profile,
+                        connect.session,
+                        uid,
+                        &nonce,
+                        configuration.pins().clone(),
+                        storage,
                     )?;
                     let evidence = desktop_v3::ExpectedEvidence::capture(
-                        configuration.pins(), configuration.manifest(),
+                        configuration.pins(),
+                        configuration.manifest(),
                         &desktop_v3::sources::current_hashes(),
                     )?;
                     let capture = desktop_v3::runtime::RunCapture::new(
-                        binding, evidence, inspect_request, connect.session.get() as u64,
+                        binding,
+                        evidence,
+                        inspect_request,
+                        connect.session.get() as u64,
                     )?;
                     let (sender, launches) = tokio::sync::mpsc::channel(1);
                     let admission = Arc::new(desktop_v3::runtime::LaunchAdmission::new(
-                        capture, sender, connect.cancel.clone(),
+                        capture,
+                        sender,
+                        connect.cancel.clone(),
                     ));
                     let capture = admission.capture();
                     signals.update(|s| s.desktop_v3_launch = Some(admission));
@@ -1775,20 +1849,33 @@ async fn connection(
                         s.report.desktop_pending = true;
                         s.report.error = fault;
                     });
-                    return if connect.cancel.is_cancelled() { Err("CANCELLED") }
-                        else if let Some(error) = fault { Err(error) } else { Ok(()) };
+                    return if connect.cancel.is_cancelled() {
+                        Err("CANCELLED")
+                    } else if let Some(error) = fault {
+                        Err(error)
+                    } else {
+                        Ok(())
+                    };
                 }
                 DesktopV3Work::Recover(_recover_request) => {
                     let previous = previous_io.ok_or("DESKTOP_PREVIOUS_CONNECTION_UNPROVEN")?;
                     let outcome = desktop_v3::recovery::recover_remote(
-                        &client, &connect.router,
+                        &client,
+                        &connect.router,
                         desktop_v3::recovery::Recovery {
-                            profile, session: connect.session, uid, files,
-                            pins: configuration.pins(), storage,
+                            profile,
+                            session: connect.session,
+                            uid,
+                            files,
+                            pins: configuration.pins(),
+                            storage,
                             previous_connection_closed: false,
                         },
-                        previous, connect.session.get() as u64, &connect.cancel,
-                    ).await;
+                        previous,
+                        connect.session.get() as u64,
+                        &connect.cancel,
+                    )
+                    .await;
                     let fault = outcome.report.error;
                     signals.update(|s| {
                         s.forward_busy = false;
@@ -1798,8 +1885,13 @@ async fn connection(
                         s.report.desktop_pending = true;
                         s.report.error = fault;
                     });
-                    return if connect.cancel.is_cancelled() { Err("CANCELLED") }
-                        else if let Some(error) = fault { Err(error) } else { Ok(()) };
+                    return if connect.cancel.is_cancelled() {
+                        Err("CANCELLED")
+                    } else if let Some(error) = fault {
+                        Err(error)
+                    } else {
+                        Ok(())
+                    };
                 }
             }
         }

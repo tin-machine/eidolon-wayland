@@ -5,8 +5,9 @@ use super::{
     Pins, Receipt,
     io_fence::PreviousIoClosed,
     journal::{Cleanup, Journal, Stage},
-    owner, sources,
+    owner,
     reclamation::{DeferredReclamation, ReclamationHandoff},
+    sources,
 };
 use crate::forward;
 use eidolon_model::linux_desktop_v3::{Bootstrap, StorageRecord};
@@ -53,11 +54,20 @@ pub struct RecoveryReport {
 impl RecoveryReport {
     fn initial(session: SessionId) -> Self {
         Self {
-            session, origin_session: None, queried: false, pending: true,
-            remote_complete: false, boot_identity_known: false,
-            boot_changed: false, process_complete: false, pipes_eof: false,
-            remote_cleaned: false, receipt_written: false,
-            channel_complete: false, router_drained: false, error: None,
+            session,
+            origin_session: None,
+            queried: false,
+            pending: true,
+            remote_complete: false,
+            boot_identity_known: false,
+            boot_changed: false,
+            process_complete: false,
+            pipes_eof: false,
+            remote_cleaned: false,
+            receipt_written: false,
+            channel_complete: false,
+            router_drained: false,
+            error: None,
         }
     }
     fn from_cleanup(&mut self, cleanup: &Cleanup) {
@@ -112,7 +122,9 @@ pub async fn recover_remote<H: client::Handler>(
         }
         super::journal::check_v2_barrier(request.files)?;
         sources::require_complete()?;
-        if cancel.is_cancelled() { return Err("CANCELLED"); }
+        if cancel.is_cancelled() {
+            return Err("CANCELLED");
+        }
         let Some((mut journal, binding)) = Journal::matching(&request)? else {
             // A missing file is NOT cleanup proof for a known previous owner.
             return Err("DESKTOP_V3_JOURNAL_OWNER_CHANGED");
@@ -132,17 +144,24 @@ pub async fn recover_remote<H: client::Handler>(
         let expected_boot = journal.boot_id().unwrap_or("-").to_owned();
         report.boot_identity_known = expected_boot != "-";
         let bootstrap = Bootstrap::recover(
-            binding.context().clone(), binding.pins().clone(), &expected_boot,
-        ).map_err(|e| e.0)?;
+            binding.context().clone(),
+            binding.pins().clone(),
+            &expected_boot,
+        )
+        .map_err(|e| e.0)?;
         let command = owner::command(&binding, &bootstrap)?;
         let mut channel = tokio::select! { biased;
             _ = cancel.cancelled() => return Err("CANCELLED"),
             result = timeout(Duration::from_secs(5), client.channel_open_session()) => result,
-        }.map_err(|_| "DESKTOP_V3_RECOVERY_TIMEOUT")?
-            .map_err(|_| "SSH_IO_FAILED")?;
+        }
+        .map_err(|_| "DESKTOP_V3_RECOVERY_TIMEOUT")?
+        .map_err(|_| "SSH_IO_FAILED")?;
         let exchange = async {
             report.queried = true;
-            channel.exec(true, command).await.map_err(|_| "SSH_IO_FAILED")?;
+            channel
+                .exec(true, command)
+                .await
+                .map_err(|_| "SSH_IO_FAILED")?;
             let (mut raw, mut stderr, mut eof, mut status, mut signal) =
                 (Vec::new(), 0usize, false, None, false);
             loop {
@@ -160,7 +179,9 @@ pub async fn recover_remote<H: client::Handler>(
                         }
                     }
                     Some(ChannelMsg::Eof) => {
-                        if eof { return Err("DESKTOP_V3_RECOVERY_INVALID"); }
+                        if eof {
+                            return Err("DESKTOP_V3_RECOVERY_INVALID");
+                        }
                         eof = true;
                     }
                     Some(ChannelMsg::ExitStatus { .. }) if status.is_some() => {
@@ -179,7 +200,11 @@ pub async fn recover_remote<H: client::Handler>(
                 return Err("DESKTOP_V3_RECOVERY_CHANNEL");
             }
             let receipt = Receipt::parse(
-                &raw, &binding, journal.source_hashes(), &expected_boot, status.unwrap(),
+                &raw,
+                &binding,
+                journal.source_hashes(),
+                &expected_boot,
+                status.unwrap(),
             )?;
             report.channel_complete = true;
             Ok(receipt)
@@ -196,8 +221,12 @@ pub async fn recover_remote<H: client::Handler>(
             journal.recovered_boot(boot)?;
             report.boot_identity_known = true;
         }
-        if !receipt.complete() { return Err("DESKTOP_CLEANUP_PENDING"); }
-        if cancel.is_cancelled() { return Err("CANCELLED"); }
+        if !receipt.complete() {
+            return Err("DESKTOP_CLEANUP_PENDING");
+        }
+        if cancel.is_cancelled() {
+            return Err("CANCELLED");
+        }
         let cleanup = Cleanup {
             process_complete: receipt.process_complete(),
             pipes_eof: receipt.pipes_eof(),
@@ -212,10 +241,14 @@ pub async fn recover_remote<H: client::Handler>(
         let durable = journal.ensure_complete_durable()?;
         report.from_cleanup(&durable);
         DeferredReclamation::from_complete(journal, &binding, generation)
-    }.await;
+    }
+    .await;
     let handoff = match result {
         Ok(handoff) => Some(handoff),
-        Err(error) => { report.error = Some(error); None }
+        Err(error) => {
+            report.error = Some(error);
+            None
+        }
     };
     RemoteRecoveryOutcome { report, handoff }
 }
