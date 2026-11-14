@@ -62,6 +62,11 @@ internal class SdkEvidenceBridge {
     private val lock = Any()
     private val records = linkedMapOf<Lease, Record>()
     private val completed = mutableMapOf<Triple<Long, Long, Long>, Int>()
+    private data class TargetOwner(val runtime: Long, val adapter: Long, val scene: Long, val session: Long, val window: Long)
+    // v3 also has native Create anti-replay. Legacy/diagnostic binding registration does not,
+    // so remember one watermark per target owner rather than retaining every retired generation.
+    private val retiredGeneration = mutableMapOf<TargetOwner, Long>()
+    private fun Lease.targetOwner() = TargetOwner(runtime, adapter, scene, session, window)
     private val sealedRuntimes = mutableSetOf<Long>()
     private val sealedScenes = mutableSetOf<Pair<Long, Long>>()
     private val scenePass = mutableMapOf<Pair<Long, Long>, Long>()
@@ -69,7 +74,7 @@ internal class SdkEvidenceBridge {
     /** Must succeed before native registration or any SDK resource effect. */
     fun reserve(id: Lease): Boolean = synchronized(lock) {
         if (id.runtime in sealedRuntimes || (id.adapter to id.scene) in sealedScenes ||
-            records.containsKey(id)) false
+            records.containsKey(id) || id.generation <= (retiredGeneration[id.targetOwner()] ?: 0L)) false
         else {
             records[id] = Record(id)
             true
@@ -122,7 +127,7 @@ internal class SdkEvidenceBridge {
         it.bindingRegistered = true
     }
     fun registrationRejected(id: Lease) = update(id) {
-        require(!it.bindingRegistered)
+        require(!it.bindingRegistered && !it.hadEntities && it.callbacks == 0 && it.producers == 0)
         it.registrationResolved = true
     }
     // Entity zero is reserved for the pure ledger fixture's single Entity.
@@ -188,6 +193,10 @@ internal class SdkEvidenceBridge {
         if (!record.complete()) return@synchronized false
         val key = Triple(id.runtime, id.adapter, id.scene)
         completed[key] = Math.addExact(completed[key] ?: 0, 1)
+        if (record.bindingRegistered) {
+            val owner = id.targetOwner()
+            retiredGeneration[owner] = maxOf(retiredGeneration[owner] ?: 0L, id.generation)
+        }
         records.remove(id)
         true
     }
