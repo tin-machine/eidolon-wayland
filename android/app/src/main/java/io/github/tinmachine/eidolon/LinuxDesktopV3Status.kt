@@ -107,7 +107,8 @@ object LinuxDesktopV3Messages {
         "forward_request" -> "アプリの転送経路を用意できませんでした"
         "journal_reserve", "journal_update", "journal_clear" -> "回収記録の保存処理が未完了です"
         "local_retirement_timeout" -> "端末内のウィンドウ・描画資源の回収が未完了です"
-        else -> "処理の完了を確認できませんでした。接続先と回収状態を確認してください"
+        else -> if(code.startsWith("SAVE_")) settingsReason(code)
+            else "処理の完了を確認できませんでした。接続先と回収状態を確認してください"
     }
 
     fun settingsReason(code: String?): String? = when (code) {
@@ -122,6 +123,17 @@ object LinuxDesktopV3Messages {
         "RUNTIME_CONFIG_INVALID" -> "接続設定を実行時の形式へ変換できませんでした"
         "RUNTIME_RECLAMATION_PENDING", "SDK_RETIREMENT_PENDING", "LOCAL_OWNER_UNKNOWN" ->
             "前のRuntimeの回収を証明できないため、設定は保存していません"
+        "SAVE_ADMISSION_CLOSED" -> "別の保存・回収処理を実行しています。完了または明示再開を確認してください"
+        "SAVE_OWNER_UNKNOWN", "SAVE_CAPTURE_STALE" -> "元のRuntimeと保存要求の対応を確認できないため、設定を保存できません"
+        "SAVE_REMOTE_PENDING" -> "接続先のアプリの終了が未確認です。元の接続先での回収が必要です"
+        "SAVE_ORIGIN_PENDING" -> "前のアプリのウィンドウ・描画資源の回収が未完了です"
+        "SAVE_RECOVERY_PENDING" -> "回収操作の完了を確認できませんでした。元の設定と回収記録を保持しています"
+        "SAVE_OBSERVATION_FAILED" -> "元のRuntimeの状態を取得できず、回収を確認できませんでした"
+        "SAVE_STOP_REJECTED" -> "元のRuntimeへの停止要求が受理されませんでした"
+        "SAVE_SDK_DISPOSAL_FAILED" -> "SDKの表示資源を破棄できず、設定を保存できませんでした"
+        "SAVE_DESTROY_REJECTED" -> "元のRuntimeの破棄が受理されず、設定を保存できませんでした"
+        "SAVE_RUNTIME_PENDING", "SAVE_RECLAMATION_INCOMPLETE" -> "接続・ウィンドウを含むRuntime全体の回収が未完了です"
+        "SAVE_PUBLICATION_FAILED" -> "設定の保存・読み戻しが未完了です。元の保存要求を明示的に再開してください"
         else -> "設定保存は未完了です。元の設定と回収記録を保持しています"
     }
 }

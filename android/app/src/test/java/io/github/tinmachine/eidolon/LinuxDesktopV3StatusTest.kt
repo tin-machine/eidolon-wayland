@@ -101,4 +101,16 @@ class LinuxDesktopV3StatusTest {
         val terminal = ready().also { report(it).put("terminal_observed", true) }
         assertEquals("stopping", view(terminal).phase)
     }
+
+    @Test fun saveFailureMessagesDistinguishRemoteSdkDestroyAndPublicationWithoutRawData() {
+        assertEquals("接続先のアプリの終了が未確認です。元の接続先での回収が必要です",
+            LinuxDesktopV3Messages.reason("SAVE_REMOTE_PENDING"))
+        assertEquals("SDKの表示資源を破棄できず、設定を保存できませんでした",
+            LinuxDesktopV3Messages.reason("SAVE_SDK_DISPOSAL_FAILED"))
+        assertEquals("元のRuntimeの破棄が受理されず、設定を保存できませんでした",
+            LinuxDesktopV3Messages.reason("SAVE_DESTROY_REJECTED"))
+        assertEquals("設定の保存・読み戻しが未完了です。元の保存要求を明示的に再開してください",
+            LinuxDesktopV3Messages.reason("SAVE_PUBLICATION_FAILED"))
+        assertFalse(LinuxDesktopV3Messages.reason("SAVE_private_capture_value")!!.contains("private_capture_value"))
+    }
 }
