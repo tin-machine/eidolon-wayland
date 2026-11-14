@@ -36,3 +36,9 @@ Status: **Draft / NOT merge-ready**. This report distinguishes inspection, sourc
 6. Prove a clean recovery/Stop yields a unique I2 finalizer receipt and durable journal clearing. Reboot/recover with an intentionally unresolved old generation: no Ready or relaunch until old ownership is resolved. Verify v2/Termux smoke separately.
 
 Expected evidence: exact tuples and monotonic sequence stamps for each ACK/frame; current B1 state transitions; per-generation `pending/confirmed` retirement counts and journal stage; no fabricated zero-count success. Quest physical acceptance remains **NOT RUN**.
+
+## Additional source changes after this record
+
+- Real UnixStream + Smithay xdg_toplevel lifecycle test added: `native/core/src/compositor/protocol.rs::v3_accept_tests::real_xdg_toplevel_propagates_captured_origin_through_map_and_destroy`, using the native-controlled fixture `eidolon_shm_fixture::run_with_app_id`. Tests actual map/destroy and pending native+SDK retirement tombstone; SDK evidence itself is **not** mocked as success. This covers a part of I3-T01/T04/T08/T09 and does **not** cover all dialog-parent transitions or SDK integration.
+- B1 `Startup.roles` still lacks a certified retirement callback. `V3PresentationObserver::tick` now fails closed at 65 distinct retained roles, keeping memory bounded and preserving the pure B1 model/golden contract. No successful production GC claim is made. The threshold is temporary protective admission limiting, not a substitute for native + SDK retirement callbacks.
+- Rust 1.95 rustfmt corrections applied from the CI Host job of run [#43567443395](https://github.com/tin-machine/eidolon-wayland/actions/runs/43567443395). The job stopped before compile/testing, so these changes and the additional host cases remain **not verified by build**.

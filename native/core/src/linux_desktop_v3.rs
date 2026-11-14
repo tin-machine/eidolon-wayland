@@ -611,10 +611,7 @@ mod tests {
             },
             Life::Mapped,
         );
-        assert_eq!(
-            h.observe(&[main, overflow]),
-            Err("APP_WINDOW_UNSUPPORTED")
-        );
+        assert_eq!(h.observe(&[main, overflow]), Err("APP_WINDOW_UNSUPPORTED"));
         assert!(!h.is_open());
         assert_eq!(h.retained_entries(), MAX_RETAINED_WINDOWS);
     }

@@ -997,11 +997,7 @@ mod v3_accept_tests {
         use eidolon_model::linux_desktop_v3::presentation::{Life, Role};
         use eidolon_shm_fixture::{FRAMES, Mode};
         use std::{
-            sync::{
-                Arc,
-                atomic::AtomicBool,
-                mpsc,
-            },
+            sync::{Arc, atomic::AtomicBool, mpsc},
             thread,
             time::{Duration, Instant},
         };
@@ -1040,7 +1036,11 @@ mod v3_accept_tests {
             display.dispatch_clients(&mut protocol).unwrap();
             protocol.finish_dispatch(&display.handle());
             let samples = protocol.v3_samples();
-            assert!(samples.iter().all(|sample| sample.origin.as_ref() == Some(&origin)));
+            assert!(
+                samples
+                    .iter()
+                    .all(|sample| sample.origin.as_ref() == Some(&origin))
+            );
 
             if !destroyed {
                 let observed = history.observe(&samples);
@@ -1075,9 +1075,8 @@ mod v3_accept_tests {
                 }
             }
 
-            let tick = Duration::from_nanos(
-                (started.elapsed().as_millis() as u64 + 1) * 16_666_667,
-            );
+            let tick =
+                Duration::from_nanos((started.elapsed().as_millis() as u64 + 1) * 16_666_667);
             for window in protocol.windows() {
                 protocol.frame_callbacks(window.window, tick, true, true, true);
             }
@@ -1101,11 +1100,17 @@ mod v3_accept_tests {
         }
         worker.join().unwrap();
         assert!(completed, "real Wayland lifecycle timed out");
-        assert!(mapped && main.is_some(), "actual mapped main was never observed");
+        assert!(
+            mapped && main.is_some(),
+            "actual mapped main was never observed"
+        );
         if !destroyed {
             display.dispatch_clients(&mut protocol).unwrap();
             protocol.finish_dispatch(&display.handle());
-            assert_eq!(history.observe(&protocol.v3_samples()), Err("APP_WINDOW_UNSUPPORTED"));
+            assert_eq!(
+                history.observe(&protocol.v3_samples()),
+                Err("APP_WINDOW_UNSUPPORTED")
+            );
             destroyed = true;
         }
         assert!(destroyed);
@@ -1115,5 +1120,4 @@ mod v3_accept_tests {
         assert!(!history.confirm_retired(main.unwrap(), true, false));
         assert_eq!(history.pending_retirements(), 1);
     }
-
 }
