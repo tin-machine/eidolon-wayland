@@ -77,7 +77,9 @@ impl NativeOrigin {
             "APP_ORIGIN_UNKNOWN",
         )
     }
-    fn main_app_id(&self) -> String {
+    /// B1's canonical fixed main-window app_id for this validated origin.
+    /// Demo identity is bound to the captured nonce, never a remote UI hint.
+    pub fn main_app_id(&self) -> String {
         match self.app_id {
             AppId::Editor => "mousepad".into(),
             AppId::Demo => format!(

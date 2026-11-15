@@ -342,7 +342,14 @@ def export_bundle(build_id, app_home):
     return config.record(), inputs
 
 
-def prepare_sshd(fixture, app_home):
+def prepare_sshd(fixture, app_home, *, n02_remote_streamlocal=False):
+    """Only the N02 container opts into OpenSSH's remote-StreamLocal workaround.
+
+    OpenSSH bug #3686: some sshd builds reject a remote Unix listener when
+    AllowTcpForwarding=no, even if AllowStreamLocalForwarding=yes. Limit the
+    workaround to a disposable network-none container and explicitly deny
+    remote TCP listener requests via PermitListen none. N01 is unchanged.
+    """
     for name in ("host-key", "client-key"):
         command(["/usr/bin/ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", fixture / name])
     uid = ACCOUNTS["app"][0]
@@ -359,9 +366,15 @@ def prepare_sshd(fixture, app_home):
             "AuthorizedKeysFile .ssh/authorized_keys", "UsePAM no", "PasswordAuthentication no",
             "KbdInteractiveAuthentication no", "PubkeyAuthentication yes", "StrictModes yes",
             "PermitRootLogin no", "AllowUsers eidolon-app", "PermitUserEnvironment no",
-            "AllowAgentForwarding no", "X11Forwarding no", "PermitTTY no", "AllowTcpForwarding no",
-            "AllowStreamLocalForwarding yes", "StreamLocalBindUnlink no", "StreamLocalBindMask 0177",
+            "AllowAgentForwarding no", "X11Forwarding no", "PermitTTY no",
+            "AllowTcpForwarding remote" if n02_remote_streamlocal else "AllowTcpForwarding no",
+            "AllowStreamLocalForwarding remote" if n02_remote_streamlocal else "AllowStreamLocalForwarding yes",
+            "StreamLocalBindUnlink no", "StreamLocalBindMask 0177",
             "LogLevel ERROR", "MaxStartups 4", "MaxSessions 4"]
+    if n02_remote_streamlocal:
+        # Deny *all remote TCP listeners* while retaining the OpenSSH
+        # streamlocal workaround. This is a fresh --network none container.
+        rows.append("PermitListen none")
     exclusive(fixture / "sshd_config", ("\n".join(rows) + "\n").encode())
     Path("/run/sshd").mkdir(mode=0o755, exist_ok=True)
     command(["/usr/sbin/sshd", "-t", "-f", fixture / "sshd_config"])

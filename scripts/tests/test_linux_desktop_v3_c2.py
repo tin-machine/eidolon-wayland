@@ -37,6 +37,56 @@ def binding(uid=None):
 
 
 class PureC2Tests(unittest.TestCase):
+    def test_demo_launch_uses_pinned_gtk_binary_contract_not_interaction_fixture(self):
+        # This constructs the real product argv, but replaces only process
+        # spawning. The fixture is not an app and supplies no success oracle.
+        import stat
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import eidolon_linux_desktop_session_v3 as session
+
+        class ForwardedSocket:
+            def __init__(self, uid, mode):
+                self.uid = uid
+                self.mode = mode
+
+            def lstat(self):
+                return SimpleNamespace(st_mode=self.mode, st_uid=self.uid)
+
+            def __str__(self):
+                return "/run/eidolon/forwarded"
+
+        paths = SimpleNamespace(
+            home=Path("/home/test"),
+            wayland_socket=ForwardedSocket(os.getuid(), stat.S_IFSOCK | 0o600),
+            runtime=Path("/run/eidolon"))
+        verified = SimpleNamespace(directory=Path("/home/test/v3-bundle"))
+        owner, profile, drain = object(), object(), object()
+        env = {"GDK_BACKEND": "wayland"}
+        context = binding().context
+        nonce = context.record()["nonce"]
+        returned = object()
+        with patch.object(session.core, "spawn_tracked", return_value=returned) as spawn:
+            actual = session._start_demo(owner, profile, drain, env, paths, verified, context)
+        self.assertIs(actual, returned)
+        spawn.assert_called_once_with(owner, profile, drain, [
+            str(paths.home / ".local/lib/eidolon-linux/waypipe"),
+            *core.FIXED_WAYPIPE_ARGS, "--socket", str(paths.wayland_socket),
+            "--display", str(paths.runtime / "w"), "server", "--",
+            str(verified.directory / "eidolon-gtk3-desktop"),
+            "--run-id", nonce * 2], env)
+        self.assertNotIn("--case", spawn.call_args.args[3])
+        self.assertEqual(len(nonce * 2), 32)
+
+        # The launch path still refuses non-socket/foreign-owner endpoints.
+        for mode, uid in ((stat.S_IFREG | 0o600, os.getuid()),
+                          (stat.S_IFSOCK | 0o600, os.getuid() + 1)):
+            paths.wayland_socket = ForwardedSocket(uid, mode)
+            with patch.object(session.core, "spawn_tracked") as forbidden:
+                with self.assertRaisesRegex(core.HelperError, "APP_STATE_INVALID"):
+                    session._start_demo(owner, profile, drain, env, paths, verified, context)
+                forbidden.assert_not_called()
+
     def test_receipt_shapes_are_exact_b2_contract(self):
         item = binding()
         complete = core.receipt(item, SOURCES, "-", ORIGIN, CURRENT, "receipt", "complete",

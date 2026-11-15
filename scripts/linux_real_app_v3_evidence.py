@@ -1,8 +1,8 @@
 """I6 evidence contracts, independent of the producer and product authority.
 
 This checks envelopes, provenance, ownership joins, bounded traces and artifact
-integrity. N01 has an independent protocol/ownership oracle; the other product/
-file/pixel oracles remain unavailable, so N01 alone cannot pass V11. No
+integrity. N01 and N02 have independent typed Host oracles; the remaining
+product/file/pixel case oracles are unavailable, so these alone cannot pass V11. No
 function here opens a product admission or reclamation barrier.
 """
 from __future__ import annotations
@@ -415,7 +415,8 @@ def _summary(status, reason, *, report=None, missing=None, failures=None, cleanu
 def invalid_result(reason="I6_REPORT_INVALID"):
     allowed = {"I6_REPORT_INVALID", "I6_MANIFEST_INVALID", "I6_SOURCE_MISMATCH", "I6_ARTIFACT_INVALID",
                "I6_OWNER_MISMATCH", "I6_TRACE_INVALID", "I6_SOURCE_UNAVAILABLE",
-               "I6_N01_RECEIPT_INVALID", "I6_N01_ENVIRONMENT_INVALID"}
+               "I6_N01_RECEIPT_INVALID", "I6_N01_ENVIRONMENT_INVALID",
+               "I6_N02_RECEIPT_INVALID"}
     return _summary("invalid", reason if reason in allowed else "I6_REPORT_INVALID")
 
 
@@ -448,7 +449,7 @@ def validate_acceptance(raw, artifact_root, expected_source, expected_manifest=N
 
     Missing evidence is incomplete; malformed/mixed evidence is invalid. Always
     inspect the entire report before applying cancel/failure/incomplete priority.
-    N01 alone cannot return Host PASS; every remaining variant stays required.
+    N01/N02 alone cannot return Host PASS; every remaining variant stays required.
     """
     try:
         return _validate(raw, artifact_root, expected_source, expected_manifest)
@@ -675,7 +676,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                     and before is not None and artifact["source_sha256"] == before["tree_sha256"], "I6_SOURCE_MISMATCH")
             require(contract.integer(artifact["size"], 0, MAX_TRACE_BYTES) and contract.hexadecimal(artifact["sha256"], 64)
                     and artifact["evidence_class"] in required[key]["evidence_classes"]
-                    and artifact["kind"] in {"trace", "opaque", "n01_receipt"})
+                    and artifact["kind"] in {"trace", "opaque", "n01_receipt", "n02_receipt"})
             _, owners, targets = cases[key]
             _reference({"artifact": path, "owner_id": artifact["owner_id"], "target_id": artifact["target_id"], "event_seq": None}, owners, targets)
             artifacts[path] = artifact
@@ -705,6 +706,30 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                 failures.extend({"case_id": key[0], "variant": key[1],
                                  "reason": "I6_ASSERTION_FAILED", "assertion_id": item}
                                 for item in result["failures"])
+                continue
+            if artifact["kind"] == "n02_receipt":
+                from linux_real_app_v3_n02_oracle import verify_receipt as verify_n02
+                require(key[0] == "N02" and artifact["evidence_class"] == "R"
+                        and artifact["owner_id"] is not None
+                        and artifact["target_id"] is None
+                        and len(targets) == 1, "I6_OWNER_MISMATCH")
+                require(not any((artifacts[p]["case_id"], artifacts[p]["variant"]) == key
+                                for p in receipts), "I6_N02_RECEIPT_INVALID")
+                result = verify_n02(
+                    parse(data), expected_run_id=report["run_id"],
+                    expected_source_sha256=before["tree_sha256"],
+                    expected_owner=owners[artifact["owner_id"]],
+                    expected_target=next(iter(targets.values())),
+                    expected_source=before,
+                )
+                # The current Host-only receipt proves product retirement,
+                # NOT deletion of the disposable Docker/container environment.
+                # A producer may not upgrade that independent boundary by
+                # editing the enclosing case; a future exterior disposal
+                # witness needs its own separately reviewed contract.
+                require(cases[key][0]["cleanup"]["environment_disposal"] == "not_yet",
+                        "I6_N02_RECEIPT_INVALID")
+                receipts[path] = result
                 continue
             require(path in cases[key][0]["trace"]["artifacts"], "I6_TRACE_INVALID")
             trace = parse(data, MAX_TRACE_BYTES)
@@ -754,23 +779,42 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                 continue
             require((artifact["case_id"], artifact["variant"]) == key, "I6_OWNER_MISMATCH")
             if ref["event_seq"] is None:
-                require(artifact["owner_id"] == ref["owner_id"] and artifact["target_id"] == ref["target_id"], "I6_OWNER_MISMATCH")
                 receipt = receipts.get(ref["artifact"])
-                if artifact["kind"] == "n01_receipt":
+                # A N02 typed receipt is owner-scoped but proves one exact
+                # native target. Target-resource refs may use only that derived
+                # TargetKey identity, never a producer-selected alias.
+                if artifact["kind"] == "n02_receipt":
+                    require(artifact["owner_id"] == ref["owner_id"]
+                            and artifact["target_id"] is None
+                            and (ref["target_id"] is None
+                                 or ref["target_id"] in cases[key][2]), "I6_OWNER_MISMATCH")
+                    if receipt is not None and ref["target_id"] is not None:
+                        require(ref["target_id"] == receipt["target_id"], "I6_OWNER_MISMATCH")
+                else:
+                    require(artifact["owner_id"] == ref["owner_id"]
+                            and artifact["target_id"] == ref["target_id"], "I6_OWNER_MISMATCH")
+                if artifact["kind"] in {"n01_receipt", "n02_receipt"}:
                     if receipt is None or receipt["status"] != "pass":
                         case_missing(key, "typed_receipt/" + ref["artifact"])
                     elif "assertion_id" in expected_fields:
                         assertion = expected_fields["assertion_id"]
-                        require(assertion in receipt["verified_assertions"], "I6_N01_RECEIPT_INVALID")
+                        require(assertion in receipt["verified_assertions"],
+                                "I6_N02_RECEIPT_INVALID" if artifact["kind"] == "n02_receipt"
+                                else "I6_N01_RECEIPT_INVALID")
                         verified_assertions.add((key, assertion))
                     else:
                         resource = expected_fields["resource"]
+                        if artifact["kind"] == "n02_receipt":
+                            require((ref["target_id"] == receipt["target_id"])
+                                    if resource in TARGET_RESOURCES else ref["target_id"] is None,
+                                    "I6_OWNER_MISMATCH")
                         state = receipt["census"].get(resource)
                         event = ("allocation_sealed" if state == "not_created" else
                                  COMPLETE_EVENTS.get(resource, "resource_complete")
                                  if state == "complete" else None)
                         require(event is not None and expected_fields["event"] == event,
-                                "I6_N01_RECEIPT_INVALID")
+                                "I6_N02_RECEIPT_INVALID" if artifact["kind"] == "n02_receipt"
+                                else "I6_N01_RECEIPT_INVALID")
                 else:
                     case_missing(key, "typed_receipt/" + ref["artifact"])
             elif ref["artifact"] in events:
@@ -810,7 +854,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
             os.close(check_fd)
     finally:
         os.close(root_fd)
-    # N01 can verify only its own fixed assertions. There is deliberately no
+    # N01/N02 verify only their own fixed assertions. There is deliberately no
     # success path for the remaining unimplemented product/file/pixel oracles.
     if cancelled:
         status, reason = "cancelled", "I6_OPERATOR_CANCELLED"

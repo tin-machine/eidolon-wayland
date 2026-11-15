@@ -6,10 +6,7 @@
 //! is called only after V3PresentationObserver::tick() returns that decision.
 use eidolon_model::{
     ids::WindowId,
-    linux_desktop_v3::{
-        AppId,
-        presentation::{Life, NativeOrigin, NativeWindowFact, Parent, Role},
-    },
+    linux_desktop_v3::presentation::{Life, NativeOrigin, NativeWindowFact, Parent, Role},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -263,15 +260,9 @@ impl WindowHistory {
     }
 
     fn main_app_id(&self) -> String {
-        // The B1 manifest binds Editor to Mousepad and Demo to the verified
-        // nonce-derived fixture ID. Never use a remote supplied app identifier.
-        match self.origin.app_id() {
-            AppId::Editor => "mousepad".into(),
-            AppId::Demo => {
-                // Demo is intentionally not a product v3 launch.
-                String::new()
-            }
-        }
+        // B1 is the single authority for the verified origin's fixed main ID.
+        // Do not reinterpret remote app_id, title, PID or source-level labels.
+        self.origin.main_app_id()
     }
 
     fn chain_to_main(&self, id: WindowId, main: WindowId) -> bool {
@@ -467,6 +458,69 @@ mod tests {
             .unwrap();
         NativeOrigin::parse(raw.as_bytes()).unwrap()
     }
+    #[test]
+    fn demo_main_admission_is_b1_origin_scoped_and_fails_closed_for_spoofs() {
+        // This is a synthetic origin from a reviewed golden fixture, not a
+        // remote app_id. Production mints NativeOrigin only at its launch gate.
+        let mut record = origin().record();
+        record["app_id"] = serde_json::json!("gtk3-desktop");
+        let demo = NativeOrigin::parse(&serde_json::to_vec(&record).unwrap()).unwrap();
+        let nonce = record["nonce"].as_str().unwrap();
+        let expected = format!("io.github.tinmachine.eidolon.linuxdesktop.r{nonce}{nonce}");
+        assert_eq!(demo.main_app_id(), expected);
+
+        let main = WindowSample {
+            app_id: Some(expected.clone()),
+            ..sample(&demo, 501, Parent::None {}, Life::Mapped)
+        };
+        let mut history = WindowHistory::new(demo.clone(), []);
+        history.started();
+        history.observe(std::slice::from_ref(&main)).unwrap();
+        let cut = history.cut().unwrap();
+        assert_eq!(cut.windows.len(), 1);
+        assert!(cut.windows[0].role == Role::Main);
+        assert!(cut.admitted.is_empty());
+        history.commit_main(main.window).unwrap();
+        assert!(history.cut().unwrap().admitted.contains(&main.window));
+
+        // A role cannot be re-bound to a stale/forged app_id after adoption.
+        let mut forged = main.clone();
+        forged.app_id = Some("mousepad".into());
+        assert_eq!(
+            history.observe(std::slice::from_ref(&forged)),
+            Err("APP_WINDOW_UNSUPPORTED")
+        );
+        // Before adoption, unsupported roots never become candidates.
+        for fake in [
+            "mousepad",
+            "",
+            "io.github.tinmachine.eidolon.linuxdesktop.rstale",
+        ] {
+            let mut unknown = WindowHistory::new(demo.clone(), []);
+            unknown.started();
+            forged.app_id = Some(fake.into());
+            unknown.observe(std::slice::from_ref(&forged)).unwrap();
+            assert!(unknown.cut().unwrap().windows.is_empty());
+            assert_eq!(
+                unknown.commit_main(main.window),
+                Err("APP_WINDOW_UNSUPPORTED")
+            );
+        }
+        // Pre-Launch windows and foreign B1 origins cannot gain the main role.
+        let mut before = WindowHistory::new(demo.clone(), [main.window]);
+        before.started();
+        before.observe(std::slice::from_ref(&main)).unwrap();
+        assert!(before.cut().unwrap().windows.is_empty());
+
+        let mut other_origin = main.clone();
+        other_origin.origin = Some(origin()); // reviewed Editor origin
+        let mut guarded = WindowHistory::new(demo, []);
+        assert_eq!(
+            guarded.observe(std::slice::from_ref(&other_origin)),
+            Err("APP_ORIGIN_UNKNOWN")
+        );
+    }
+
     fn sample(origin: &NativeOrigin, id: i64, parent: Parent, life: Life) -> WindowSample {
         WindowSample {
             origin: Some(origin.clone()),

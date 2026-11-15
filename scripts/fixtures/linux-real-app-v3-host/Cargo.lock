@@ -707,6 +707,7 @@ dependencies = [
  "eidolon-android",
  "eidolon-core",
  "eidolon-model",
+ "eidolon-render",
  "eidolon-transport",
  "libc",
  "serde",
