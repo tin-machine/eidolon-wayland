@@ -50,6 +50,31 @@ fn digest(bytes: &[u8]) -> String {
         .map(|b| format!("{b:02x}"))
         .collect()
 }
+
+/// Export only the observed resource census. The product Snapshot also carries
+/// unrelated UI controls with floating point values; those are not renderer
+/// evidence and are outside the frozen strict JSON domain.
+fn renderer_census(snapshot: &eidolon_render::Snapshot) -> Value {
+    json!({
+        "workers": snapshot.workers,
+        "owner_tid": snapshot.owner_tid,
+        "queued": snapshot.queued,
+        "contexts": snapshot.contexts,
+        "targets": snapshot.targets.iter().map(|target| target.key).collect::<Vec<_>>(),
+        "latest_images": snapshot.latest_images,
+        "attaches": snapshot.attaches,
+        "detaches": snapshot.detaches,
+        "paused": snapshot.paused,
+        "error": snapshot.error,
+        "composition": {
+            "textures": snapshot.composition.textures,
+            "texture_bytes": snapshot.composition.texture_bytes,
+            "decoration_texture_bytes": snapshot.composition.decoration_texture_bytes,
+            "gl_error": snapshot.composition.gl_error,
+            "error": snapshot.composition.error,
+        },
+    })
+}
 fn rois() -> Vec<HostReadbackRoi> {
     vec![
         HostReadbackRoi {
@@ -630,8 +655,8 @@ fn run() -> Result<Value> {
         "status":"pass","identity":serde_json::from_str::<Value>(env!("EIDOLON_I6_RENDERER_BUILD_IDENTITY")).map_err(|_| "FIXTURE_BUILD_IDENTITY")?,
         "fixture":{"shm":"eidolon-shm-fixture-pattern-v1","theme_manifest_sha256":digest(THEME_MANIFEST),
             "theme_style_sha256":digest(THEME_STYLE),"theme_svg_sha256":digest(THEME_SVG)},
-        "before_target":no_target,"readbacks":readbacks,"negative_cases":negatives,
-        "client":client,"retired":retired,"final_renderer":final_render,
+        "before_target":renderer_census(&no_target),"readbacks":readbacks,"negative_cases":negatives,
+        "client":client,"retired":renderer_census(&retired),"final_renderer":renderer_census(&final_render),
         "owner_reclaimed":fixture.renderer.owner_reclaimed(),
         "coverage":{"normal_launch":"not_run","sdk":"not_run","b1_ready":"not_run",
             "current_input_gate":"not_run","n02_gtk3_desktop":"not_run","n02_mousepad_editor":"not_run",
@@ -651,4 +676,57 @@ fn main() {
     };
     println!("{}", result);
     std::process::exit(status);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+
+    #[test]
+    fn exported_census_bytes_roundtrip_through_frozen_strict_parser_and_writer() {
+        let snapshot = eidolon_render::Snapshot::default();
+        // Reproduce the source of the old problem, without changing the product
+        // snapshot or weakening the parser to admit unrelated float metadata.
+        let full = serde_json::to_value(&snapshot).unwrap();
+        assert!(full["window_controls"]["diameter_m"].is_f64());
+        let census = renderer_census(&snapshot);
+        assert!(census.get("window_controls").is_none());
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let script = r#"
+import pathlib, sys, tempfile
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]).resolve() / 'scripts'))
+from linux_real_app_v3_evidence import parse, read_report, write_report
+value = parse(sys.stdin.buffer.read())
+with tempfile.TemporaryDirectory(prefix='eidolon-renderer-census-') as directory:
+    path = pathlib.Path(directory) / 'census.json'
+    write_report(path, value)
+    assert parse(read_report(path)) == value
+assert value['contexts'] == 0 and value['targets'] == []
+assert 'window_controls' not in value
+"#;
+        let mut child = Command::new("python3")
+            .args(["-c", script])
+            .arg(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&serde_json::to_vec(&census).unwrap())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "strict census roundtrip failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

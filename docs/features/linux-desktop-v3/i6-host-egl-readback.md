@@ -116,6 +116,11 @@ PR head と GitHub が checkout した synthetic merge commit を別 field に�
 古い binary／artifact の source は現在の head の結果へ読み替えない。
 remote C1/C2 の固定 15-source inventory、source pinning、frozen v2、product deadline／lease は変更しない。
 
+census は実 Snapshot から資源数、対象 key、error 等の検証に必要な項目だけを抽出する。
+UI 設定の小数値を含む診断 snapshot 全体を strict JSON artifact に流さず、
+実際の出力 bytes を既存 parser／writer に往復させる回帰テストを専用 CI でも実行する。
+frozen parser の型制約は緩和しない。
+
 ## 6. 検証記録と環境制約
 
 開発中の専用 scratch 環境で、固定 Rust 1.95.0 と既存 `build-native-deps` を使用した。
@@ -133,6 +138,7 @@ system package／HOME を置換せず、必要な toolchain と GLES linker/runt
 | Registry feature | 4 件成功。create／stop／destroy の反復を含む |
 | N01／strict validator／CLI | 関連 216 件成功。PR #34 の 3 修正を維持 |
 | 新独立 validator／CI | 25 件成功。source、receipt 相関、pixel/ROI digest、厳密な型、欠落、範囲外、CI export の拒否を含む |
+| census の strict JSON 往復 | 1 件成功。実 producer の出力 bytes と既存 parser／writer の整合を検証 |
 | 実 SHM fixture | app／装飾 exact pixel、FrameSeq 1→2→3、idle/装飾時は 1 を維持、target/window retirement と owner 全停止を確認 |
 
 これらの開発時 dirty-tree 実験は、clean source に束縛した最終 CI artifact と区別する。

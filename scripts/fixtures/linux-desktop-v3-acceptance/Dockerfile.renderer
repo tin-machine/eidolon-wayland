@@ -30,6 +30,9 @@ RUN export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe EGL_PLATFORM=surfacel
     && cargo +1.95.0 test --locked -p eidolon-render \
     && cargo +1.95.0 test --locked -p eidolon-render --features host-acceptance \
     && cargo +1.95.0 test --locked -p eidolon-core --features host-acceptance --lib host_readback \
+    && cargo +1.95.0 test --locked \
+      --manifest-path scripts/fixtures/linux-real-app-v3-renderer/Cargo.toml \
+      --target-dir /src/target \
     && cargo +1.95.0 build --locked \
       --manifest-path scripts/fixtures/linux-real-app-v3-renderer/Cargo.toml \
       --target-dir /src/target
