@@ -38,12 +38,17 @@ fi
 command -v docker >/dev/null
 i6_work=$(mktemp -d "${TMPDIR:-/tmp}/eidolon-i6-n01.XXXXXXXX")
 i6_image="eidolon-i6-n01:$(basename "$i6_work" | tr '[:upper:]' '[:lower:]')"
+i6_build_image="${i6_image}-build"
+i6_prepare_container=''
 i6_container=''
 cleanup() {
   if [[ -n $i6_container ]]; then
     docker rm --force "$i6_container" >/dev/null 2>&1 || true
   fi
-  docker image rm "$i6_image" >/dev/null 2>&1 || true
+  if [[ -n $i6_prepare_container ]]; then
+    docker rm --force "$i6_prepare_container" >/dev/null 2>&1 || true
+  fi
+  docker image rm "$i6_image" "$i6_build_image" >/dev/null 2>&1 || true
   rm -rf -- "$i6_work"
 }
 trap cleanup EXIT
@@ -55,9 +60,41 @@ trap 'exit 143' TERM
 git clone --quiet --no-local --no-hardlinks "$i6_source_root" "$i6_work/source"
 git -C "$i6_work/source" checkout --quiet --detach "$i6_source_head"
 git -C "$i6_work/source" remote remove origin
-timeout --signal=TERM --kill-after=30s 2700s docker build \
+timeout --signal=TERM --kill-after=30s 1800s docker build \
   --file "$i6_work/source/scripts/fixtures/linux-desktop-v3-acceptance/Dockerfile.n01" \
-  --tag "$i6_image" --iidfile "$i6_work/image.id" "$i6_work/source"
+  --tag "$i6_build_image" "$i6_work/source"
+
+# The unchanged Mousepad builder requires an actual disposable Docker runtime,
+# not BuildKit's build sandbox. Only this preparation container has outbound
+# networking; it contains no product accounts, credentials, or host mounts.
+i6_entrypoint=$(docker image inspect --format '{{json .Config.Entrypoint}}' "$i6_build_image")
+i6_prepare_container=$(docker create --network bridge --pids-limit 256 --memory 6g \
+  --cpus 4 --entrypoint /bin/bash "$i6_build_image" \
+  /src/scripts/fixtures/linux-desktop-v3-acceptance/prepare-n01-image)
+if [[ ! $i6_prepare_container =~ ^[0-9a-f]{64}$ ]]; then
+  echo 'N01 preparation did not return a container ID' >&2
+  exit 2
+fi
+set +e
+timeout --signal=TERM --kill-after=10s 600s docker start --attach "$i6_prepare_container"
+i6_prepare_attach_exit=$?
+set -e
+i6_prepare_running=$(docker inspect --format '{{.State.Running}}' "$i6_prepare_container")
+i6_prepare_exit=$(docker inspect --format '{{.State.ExitCode}}' "$i6_prepare_container")
+if [[ $i6_prepare_attach_exit != 0 || $i6_prepare_running != false || $i6_prepare_exit != 0 ]]; then
+  echo 'N01 package preparation failed; no product run or prepared image was accepted' >&2
+  exit 1
+fi
+# Restore the original default invocation: preparation must never become the
+# test image's ENTRYPOINT or leave its script as a CMD argument to the runner.
+timeout --signal=TERM --kill-after=10s 120s docker commit \
+  --change "ENTRYPOINT $i6_entrypoint" --change 'CMD []' \
+  "$i6_prepare_container" "$i6_image" >/dev/null
+if [[ $(docker image inspect --format '{{json .Config.Entrypoint}}' "$i6_image") != "$i6_entrypoint" ]]; then
+  echo 'N01 prepared image did not retain the original entrypoint' >&2
+  exit 2
+fi
+docker image inspect --format '{{.Id}}' "$i6_image" > "$i6_work/image.id"
 
 # The test has loopback networking only. No host PID/network namespace, home,
 # desktop/ADB socket, or Docker socket is made available to the container.

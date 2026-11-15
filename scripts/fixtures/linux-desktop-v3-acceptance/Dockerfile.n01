@@ -61,23 +61,17 @@ RUN python3 scripts/build-native-deps --target host \
       --manifest-path scripts/fixtures/linux-real-app-v3-host/Cargo.toml \
       --target-dir /src/target
 
-RUN python3 scripts/ci/prepare-linux-real-app-fixture --stage build \
-      --work-directory /home/eidolon-build/mousepad-a0 --isolated-container
-
 USER root
-RUN dpkg --install /home/eidolon-build/mousepad-a0/mousepad-a0.deb \
-    && ldconfig \
-    && glib-compile-schemas --strict /usr/share/glib-2.0/schemas \
-    && runuser -u eidolon-build -- python3 scripts/ci/prepare-linux-real-app-fixture \
-      --stage inventory --work-directory /home/eidolon-build/mousepad-a0 \
-      --isolated-container \
-    && install -d -m 0755 /opt/i6 \
+ENV PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+RUN install -d -m 0755 /opt/i6 \
     && install -m 0555 /src/target/debug/eidolon-i6-n01-host /opt/i6/eidolon-i6-host \
-    && install -m 0444 /home/eidolon-build/mousepad-a0/reviewed-package.json \
-      /opt/i6/reviewed-package.json \
     && chown -R root:root /src \
     && chmod -R a+rX,go-w /src
 
+# BuildKit RUN does not provide the runtime Docker marker required by the
+# unchanged Mousepad provisioning guard. The wrapper completes that package
+# in a fresh Docker container, then commits the stopped prepared image.
 # There are no host mounts or persistent test identities. The supervisor owns
 # provisioning/sshd only; product Registry and C2 run as distinct nonroot users.
 ENTRYPOINT ["python3", "/src/scripts/linux_real_app_v3_n01.py", "--disposable-container", "--source-root", "/src", "--fixture-root", "/run/eidolon-i6", "--reviewed-package", "/opt/i6/reviewed-package.json", "--runner", "/opt/i6/eidolon-i6-host", "--artifact-root", "/artifacts"]
+CMD []

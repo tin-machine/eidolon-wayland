@@ -42,16 +42,25 @@ args = sys.argv[1:]
 with open(os.environ["N01_TEST_LOG"], "a") as output:
     output.write(json.dumps(["docker", *args]) + "\n")
 if args[0] == "build":
-    pathlib.Path(args[args.index("--iidfile") + 1]).write_text("sha256:" + "b" * 64 + "\n")
-elif args[0] == "create":
-    print("a" * 64)
-elif args[0] == "start":
-    raise SystemExit(int(os.environ.get("N01_TEST_RUNTIME_EXIT", "0")))
-elif args[0] == "inspect":
-    if args[2] == "{{.State.Running}}":
-        print(os.environ.get("N01_TEST_RUNNING", "false"))
+    pass
+elif args[:2] == ["image", "inspect"]:
+    if args[3] == "{{.Id}}":
+        print("sha256:" + "b" * 64)
+    elif os.environ.get("N01_TEST_BAD_ENTRYPOINT") == "1" and not args[-1].endswith("-build"):
+        print('["/bin/bash"]')
     else:
-        print(os.environ.get("N01_TEST_RUNTIME_EXIT", "0"))
+        print('["python3","/src/scripts/linux_real_app_v3_n01.py"]')
+elif args[0] == "create":
+    print(("d" if args[args.index("--network") + 1] == "bridge" else "a") * 64)
+elif args[0] == "start":
+    key = "N01_TEST_PREPARE_EXIT" if args[-1] == "d" * 64 else "N01_TEST_RUNTIME_EXIT"
+    raise SystemExit(int(os.environ.get(key, "0")))
+elif args[0] == "inspect":
+    prepare = args[-1] == "d" * 64
+    if args[2] == "{{.State.Running}}":
+        print(os.environ.get("N01_TEST_PREPARE_RUNNING" if prepare else "N01_TEST_RUNNING", "false"))
+    else:
+        print(os.environ.get("N01_TEST_PREPARE_EXIT" if prepare else "N01_TEST_RUNTIME_EXIT", "0"))
 elif args[0] == "cp":
     shutil.copytree(os.environ["N01_TEST_RECEIPTS"], args[-1], dirs_exist_ok=True, symlinks=True)
 '''
@@ -60,7 +69,8 @@ FAKE_TIMEOUT = r'''#!/usr/bin/env python3
 import os, sys
 args = sys.argv[1:]
 start = args.index("docker")
-if args[start + 1] == "start" and os.environ.get("N01_TEST_WATCHDOG") == "1":
+if (args[start + 1] == "start" and args[-1] == "a" * 64
+        and os.environ.get("N01_TEST_WATCHDOG") == "1"):
     raise SystemExit(124)
 os.execvp("docker", args[start:])
 '''
@@ -128,15 +138,50 @@ class DockerLifecycleTests(unittest.TestCase):
         self.assertEqual(envelope["source_commit"], "c" * 40)
         self.assertEqual(envelope["image_id"], "sha256:" + "b" * 64)
         self.assertIs(envelope["formal_i6_passed"], False)
-        create = next(row for row in self.calls("docker") if row[1] == "create")
+        creates = [row for row in self.calls("docker") if row[1] == "create"]
+        self.assertEqual(len(creates), 2)
+        prepare, create = creates
+        self.assertEqual(prepare[prepare.index("--network") + 1], "bridge")
+        self.assertEqual(prepare[prepare.index("--entrypoint") + 1], "/bin/bash")
+        self.assertEqual(prepare[-1], "/src/scripts/fixtures/linux-desktop-v3-acceptance/prepare-n01-image")
         self.assertEqual(create[create.index("--network") + 1], "none")
         self.assertEqual(create[create.index("--pids-limit") + 1], "256")
         self.assertEqual(create[create.index("--memory") + 1], "6g")
-        self.assertFalse(set(create) & {"--privileged", "--pid", "--mount", "--volume", "-v"})
+        for invocation in creates:
+            self.assertFalse(set(invocation) & {"--privileged", "--pid", "--mount", "--volume", "-v", "--env", "-e"})
+        commit = next(row for row in self.calls("docker") if row[1] == "commit")
+        self.assertIn('ENTRYPOINT ["python3","/src/scripts/linux_real_app_v3_n01.py"]', commit)
+        self.assertIn("CMD []", commit)
+        removed = {row[3] for row in self.calls("docker") if row[1:3] == ["rm", "--force"]}
+        self.assertEqual(removed, {"a" * 64, "d" * 64})
         clones = [row for row in self.calls("git") if row[1] == "clone"]
         self.assertEqual(len(clones), 1)
         self.assertIn("--no-local", clones[0])
         self.assertIn("--no-hardlinks", clones[0])
+        self.assert_cleaned()
+
+    def test_failed_preparation_never_commits_or_runs_product(self):
+        self.env["N01_TEST_PREPARE_EXIT"] = "2"
+        result = self.execute()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len([row for row in self.calls("docker") if row[1] == "create"]), 1)
+        self.assertFalse(any(row[1] in {"commit", "cp"} for row in self.calls("docker")))
+        self.assertEqual(list(self.out.iterdir()), [])
+        self.assert_cleaned()
+
+    def test_running_preparation_is_not_committed_even_with_zero_exit(self):
+        self.env["N01_TEST_PREPARE_RUNNING"] = "true"
+        result = self.execute()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(row[1] == "commit" for row in self.calls("docker")))
+        self.assert_cleaned()
+
+    def test_prepared_image_must_restore_runtime_entrypoint(self):
+        self.env["N01_TEST_BAD_ENTRYPOINT"] = "1"
+        result = self.execute()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len([row for row in self.calls("docker") if row[1] == "create"]), 1)
+        self.assertFalse(any(row[1] == "cp" for row in self.calls("docker")))
         self.assert_cleaned()
 
     def test_product_exit_failure_is_not_overridden_by_pass_receipt(self):

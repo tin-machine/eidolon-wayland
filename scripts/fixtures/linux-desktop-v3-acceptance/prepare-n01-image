@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Root package installation only in an explicitly created disposable container.
+set -euo pipefail
+umask 022
+if [[ $# != 0 ]]; then
+  exit 2
+fi
+
+check_disposable() {
+  python3 - <<'PY'
+import sys
+sys.path.insert(0, "/src/scripts")
+from linux_real_app_v3_n01 import disposable_preflight
+disposable_preflight(True)
+PY
+}
+
+build_account() {
+  runuser -u eidolon-build -- env -i \
+    HOME=/home/eidolon-build USER=eidolon-build LOGNAME=eidolon-build \
+    PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 "$@"
+}
+
+check_disposable
+# The original guard observes the actual runtime /.dockerenv and nonroot UID.
+# Neither the Docker marker nor GitHub Actions environment flags are fabricated.
+build_account python3 /src/scripts/ci/prepare-linux-real-app-fixture \
+  --stage build --work-directory /home/eidolon-build/mousepad-a0 --isolated-container
+dpkg --install /home/eidolon-build/mousepad-a0/mousepad-a0.deb
+ldconfig
+glib-compile-schemas --strict /usr/share/glib-2.0/schemas
+build_account python3 /src/scripts/ci/prepare-linux-real-app-fixture \
+  --stage inventory --work-directory /home/eidolon-build/mousepad-a0 --isolated-container
+install -m 0444 /home/eidolon-build/mousepad-a0/reviewed-package.json /opt/i6/reviewed-package.json
+# Product identities and their real passwd HOMEs must still be absent. They
+# are created only inside the later network-isolated N01 runtime container.
+check_disposable

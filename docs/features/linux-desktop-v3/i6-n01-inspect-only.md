@@ -41,7 +41,8 @@ Host fixture の `admission_epoch: "1"` はこの実行の ordinal であり、A
 | [N01 oracle](../../../scripts/linux_real_app_v3_n01_oracle.py) | Python B1契約を用いたcatalog／wire／owner／capture／回収順序の独立照合 |
 | [既存validator](../../../scripts/linux_real_app_v3_evidence.py) | `n01_receipt` typed artifactを検証。ほかのrequired行を保持 |
 | [Docker wrapper](../../../scripts/ci/check-linux-desktop-v3-n01) | clean commitのcloneからimageをbuild。container実行・限定artifact採取・外側の再照合・破棄の試行 |
-| [Dockerfile](../../../scripts/fixtures/linux-desktop-v3-acceptance/Dockerfile.n01) | Ubuntu 24.04、Rust 1.95.0、既存の固定native／Waypipe／Mousepad builderを利用 |
+| [Dockerfile](../../../scripts/fixtures/linux-desktop-v3-acceptance/Dockerfile.n01) | Ubuntu 24.04、Rust 1.95.0、既存の固定native／Waypipe builderとrunner build／test |
+| [image準備](../../../scripts/fixtures/linux-desktop-v3-acceptance/prepare-n01-image) | 別の実Docker containerで未改変の固定Mousepad builder／install／inventoryを実行 |
 
 source inventoryの15ファイルとcompiled source tableを実bytesで照合する。
 remote bundleは既存のbuilderが実passwd HOME配下へ生成し、`--print-config --build-id` を前後に実行する。
@@ -53,7 +54,13 @@ remote bundleは既存のbuilderが実passwd HOME配下へ生成し、`--print-c
 HOMEは `/home/eidolon-driver` と `/home/eidolon-app`、mode 0700、祖先はroot所有・書込不可である。
 環境変数HOMEの差替えや単一UIDのnamespaceを、C1の成立証拠として扱わない。
 
-実行containerは `--network none`、loopback sshd、PID上限256、メモリ6GiB、CPU4。
+BuildKitのbuild stepでは既存Mousepad builderのdisposable環境guardを満たさなかったため、
+package準備は `--network bridge` の別のfresh Docker containerで実行する。
+非rootの `eidolon-build` が固定sourceを取得・buildし、rootがpackageをinstall、非rootがinventoryを採取する。
+既存guardは変更せず、Docker markerやGitHub環境を偽装しない。準備前後にdriver/app accountとHOMEの不在を確認し、
+準備containerの停止とexit 0を確認してからimageをcommitする。元のENTRYPOINTを復元して照合する。
+
+N01の実行containerは完成imageから新規作成し、`--network none`、loopback sshd、PID上限256、メモリ6GiB、CPU4。
 host PID／network namespace、通常HOME、desktop socket、ADB、Docker socketを共有しない。
 rootはprovisioning／sshd／独立観測を担当し、Registry runnerとC2は異なる非root accountで動かす。
 SSH host keyとclient keyを実行ごとに生成し、通常profileへ実host keyをpinする。TOFUやForceCommandは使わない。
