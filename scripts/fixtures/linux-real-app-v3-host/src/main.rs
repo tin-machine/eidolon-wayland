@@ -188,6 +188,29 @@ fn census_snapshot(snapshot: &Value) -> Result<Value> {
             "error",
         ],
     )?;
+    // N01 has no app; N02 retains the stopped Session's diagnostic record.
+    // Project every live-resource field without copying UI float geometry.
+    if runtime["app"].is_object() {
+        value["app"] = snapshot_fields(
+            &runtime["app"],
+            &[
+                "state",
+                "ready",
+                "clients",
+                "objects",
+                "surfaces",
+                "pixel_bytes",
+                "pool_bytes",
+                "pool_count",
+                "windows",
+                "local",
+                "directory_cleaned",
+                "memfd_fds_after",
+                "memfd_maps_after",
+                "error",
+            ],
+        )?;
+    }
     value["render"] = snapshot_fields(
         &runtime["render"],
         &[
@@ -196,6 +219,8 @@ fn census_snapshot(snapshot: &Value) -> Result<Value> {
             "contexts",
             "latest_images",
             "queued",
+            "owner_tid",
+            "composition",
             "error",
         ],
     )?;
