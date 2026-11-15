@@ -35,6 +35,20 @@ if [[ ! $i6_source_head =~ ^[0-9a-f]{40}$ ]]; then
   echo 'N02 source commit is invalid' >&2
   exit 2
 fi
+# Detect Python syntax errors before the expensive pinned image / fixture
+# build; ast.parse is read-only and leaves the clean Git source unchanged.
+python3 - <<'PY'
+import ast
+from pathlib import Path
+for relative in (
+    "scripts/linux_real_app_v3_n01.py",
+    "scripts/linux_real_app_v3_n02.py",
+    "scripts/linux_real_app_v3_n02_oracle.py",
+    "scripts/linux_real_app_v3_n02_ci.py",
+):
+    path = Path(relative)
+    ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+PY
 command -v docker >/dev/null
 i6_work=$(mktemp -d "${TMPDIR:-/tmp}/eidolon-i6-n02.XXXXXXXX")
 i6_image="eidolon-i6-n02:$(basename "$i6_work" | tr '[:upper:]' '[:lower:]')"
