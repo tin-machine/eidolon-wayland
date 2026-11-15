@@ -213,9 +213,18 @@ impl Driver {
         selection: Value,
     ) -> Result<()> {
         self.n02_wait_command("32", 15)?;
+        // The Accepted completion is *only* dispatch admission. Local app
+        // creation and the v3 transport origin become observable later.
+        // Do not mistake a queued first Launch for its live owner, nor race
+        // the product worker before attempting the second Busy probe.
+        self.wait(45, |s| {
+            s["runtime"]["reclamation"]["origin_retired"] == false
+                && s["runtime"]["transport"]["desktop_v3_transport"]["launch_request"] == "32"
+                && s["runtime"]["app"].is_object()
+        })?;
         let snapshot = self.pump()?;
         let runtime = &snapshot["runtime"];
-        if runtime["reclamation"]["origin_retired"] == true
+        if runtime["reclamation"]["origin_retired"] != false
             || runtime["transport"]["desktop_v3_transport"]["launch_request"] != "32"
             || !runtime["app"].is_object()
         {
