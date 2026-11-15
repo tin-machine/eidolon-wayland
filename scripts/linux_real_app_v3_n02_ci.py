@@ -161,7 +161,7 @@ def export_and_validate(incoming, output, image_file, head, attached, runtime, r
                 or checked["exit_code"] != 2
                 or checked["host_v3_acceptance_passed"] is not False
                 or checked["verified_case_oracles"] != [expected_case]
-                or checked["unverified_assertions"] <= 0):
+                or not any(item.startswith("N03/") for item in checked["missing"])):
             return False
         matched = [case for case in acceptance["cases"]
                    if (case["case_id"], case["variant"]) == ("N02", variant)]
