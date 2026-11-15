@@ -38,7 +38,7 @@ impl Driver {
         Ok(())
     }
 
-    fn n02_wait_command(&mut self, request: &str, seconds: u64) -> Result<Value> {
+    pub(super) fn n02_wait_command(&mut self, request: &str, seconds: u64) -> Result<Value> {
         let deadline = Instant::now() + Duration::from_secs(seconds);
         loop {
             let snapshot = self.pump()?;
