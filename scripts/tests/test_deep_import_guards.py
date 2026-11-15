@@ -167,6 +167,130 @@ class ImportGuardTests(unittest.TestCase):
         self.assertEqual(self.call(graph, expression="safe_finish")["target"], "safe.py::finish@1")
         self.assertEqual(graph["summary"]["cross_module_call_candidates"], 1)
 
+    def test_private_receiver_assignment_forms_block_import_candidates(self):
+        operations = [
+            '__core.finish = lambda: "replacement"',
+            "del __core.finish",
+            "__core.finish += replacement",
+            "__core.finish: object = replacement",
+            "__core.finish, other = replacement, None",
+            "__core.finish = other = replacement",
+            "for __core.finish in replacements:\n        pass",
+            "with manager() as __core.finish:\n        pass",
+        ]
+        for operation in operations:
+            with self.subTest(operation=operation):
+                entry = ("import service as _C__core\nclass C:\n    " + operation
+                         + "\ndef run(): return _C__core.finish()\n")
+                graph = self.analyze(entry, "def finish(): return 'original'\n")
+                call = self.call(graph)
+                self.assert_unresolved(call)
+                evidence = call["import_evidence"]
+                self.assertEqual(evidence["reason"], "possible_alias_rebinding_or_dynamic_namespace")
+                self.assertEqual(evidence["bound_name"], "_C__core")
+                self.assertEqual(evidence["import_location"]["line"], 1)
+                self.assertEqual(evidence["source"]["revision"], "fixture-revision")
+                self.assertEqual(evidence["module_source"]["path"], "service.py")
+                self.assertNotIn("target", evidence)
+                self.assertNotIn("target_location", evidence)
+                self.assertEqual(graph["summary"].get("cross_module_call_candidates", 0), 0)
+
+    def test_private_receiver_mutations_in_nested_scopes_block_without_global(self):
+        bodies = [
+            "class C:\n    def mutate(self):\n        {operation}\n",
+            "class C[T]:\n    {operation}\n",
+            "class C[T]:\n    def mutate(self):\n        {operation}\n",
+            "class C:\n    def outer(self):\n        def mutate():\n            {operation}\n",
+            "class Outer:\n    class C:\n        {operation}\n",
+            "def outer():\n    class C:\n        {operation}\n",
+        ]
+        for body in bodies:
+            for operation in ("__core.finish = replacement", "del __core.finish"):
+                with self.subTest(body=body, operation=operation):
+                    graph = self.analyze("import service as _C__core\n"
+                                         + body.format(operation=operation)
+                                         + "def run(): return _C__core.finish()\n",
+                                         "def finish(): return 1\n")
+                    self.assert_unresolved(self.call(graph))
+
+    def test_private_receiver_class_spellings_use_compiler_normalization(self):
+        classes = [("C", "_C__core"), ("_C", "_C__core"), ("__C", "_C__core"),
+                   ("C__", "_C____core"), ("___", "__core"), ("型", "_型__core")]
+        for class_name, alias in classes:
+            with self.subTest(class_name=class_name):
+                entry = (f"import service as {alias}\nclass {class_name}:\n"
+                         f"    __core.finish = replacement\ndef run(): return {alias}.finish()\n")
+                # Inspect the original fixture's compiled class body, not the
+                # resolver's normalization probe, and never execute either.
+                code = compile(entry, "entry.py", "exec", dont_inherit=True)
+                body = next(c for c in code.co_consts
+                            if isinstance(c, types.CodeType) and c.co_name == class_name)
+                self.assertIn(alias, body.co_names)
+                self.assert_unresolved(self.call(self.analyze(entry, "def finish(): return 1\n")))
+
+    def test_private_receiver_reads_alone_keep_import_candidate(self):
+        for body in ("class C:\n    saved = __core.finish\n",
+                     "class C:\n    def read(self): return __core.finish\n"):
+            with self.subTest(body=body):
+                graph = self.analyze("import service as _C__core\n" + body
+                                     + "def run(): return _C__core.finish()\n",
+                                     "def finish(): return 1\n")
+                self.assertEqual(self.call(graph)["target"], "service.py::finish@1")
+
+    def test_private_receiver_guard_preserves_unrelated_names_and_modules(self):
+        entry = ("import service as _C__core\nimport safe as live\n"
+                 "from safe import finish as _D__core\nclass C:\n"
+                 "    __core.finish = replacement\n"
+                 "def run():\n    _C__core.finish()\n    live.finish()\n    _D__core()\n")
+        extra = {"safe.py": "def finish(): return 2\n"}
+        service = "raise RuntimeError('must not execute')\ndef finish(): return 1\n"
+        graph = self.analyze(entry, service, extra)
+        self.assertEqual(graph, self.analyze(entry, service, extra))
+        self.assert_unresolved(self.call(graph, expression="_C__core.finish"))
+        for expression in ("live.finish", "_D__core"):
+            self.assertEqual(self.call(graph, expression=expression)["target"], "safe.py::finish@1")
+        self.assertEqual(graph["summary"]["cross_module_call_candidates"], 2)
+
+    def test_private_receiver_context_union_is_only_a_conservative_blocker(self):
+        # No AST-to-compiler-scope dispatch claim: a write using this spelling
+        # blocks each possible class spelling, even for an unrelated class.
+        graph = self.analyze("import service as _C__core\nimport safe as _D__core\n"
+                             "class C:\n    __core.finish = replacement\nclass D: pass\n"
+                             "def run():\n    _C__core.finish()\n    _D__core.finish()\n",
+                             "def finish(): return 1\n", {"safe.py": "def finish(): return 2\n"})
+        for expression in ("_C__core.finish", "_D__core.finish"):
+            self.assert_unresolved(self.call(graph, expression=expression))
+
+    def test_attribute_mutation_guard_retains_plain_dunder_and_explicit_names(self):
+        for alias in ("core", "_core", "__core__", "_C__core", "__core"):
+            for operation in (f"{alias}.finish = replacement", f"del {alias}.finish"):
+                with self.subTest(alias=alias, operation=operation):
+                    graph = self.analyze(f"import service as {alias}\n{operation}\n"
+                                         f"def run(): return {alias}.finish()\n",
+                                         "def finish(): return 1\n")
+                    self.assert_unresolved(self.call(graph))
+
+    def test_private_receiver_compiler_reads_normalized_name_without_global(self):
+        import dis
+        import symtable
+
+        for operation, opcode in (("__core.finish = replacement", "STORE_ATTR"),
+                                  ("del __core.finish", "DELETE_ATTR")):
+            with self.subTest(operation=operation):
+                entry = "import service as _C__core\nclass C:\n    " + operation + "\n"
+                table = symtable.symtable(entry, "entry.py", "exec").get_children()[0]
+                symbol = table.lookup("_C__core")
+                self.assertTrue(symbol.is_referenced())
+                self.assertFalse(symbol.is_declared_global())
+                code = compile(entry, "entry.py", "exec", dont_inherit=True)
+                body = next(c for c in code.co_consts if isinstance(c, types.CodeType))
+                instructions = list(dis.get_instructions(body))
+                self.assertTrue(any(i.opname == "LOAD_NAME" and i.argval == "_C__core"
+                                    for i in instructions))
+                self.assertTrue(any(i.opname == opcode and i.argval == "finish"
+                                    for i in instructions))
+
+
 
 if __name__ == "__main__":
     unittest.main()

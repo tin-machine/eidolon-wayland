@@ -72,3 +72,19 @@ Unknown Complexity: run_settings_probeの環境準備と監視、recovery_receip
 旧resolverの実CLIで作った固定Git fixtureのartifactは、sourceを変えず修正版CLIでverifyするとexit 2（stale）になった。新しいresolverファイルは既存generator hash / source-only loaderの保護下にあり、profile/Python版を跨ぐ互換は追加しない。動的exportのunknownは予算を絞ったsliceにも残し、操作位置を改変してpayload checksumを再計算したartifactもverifyで拒否した。
 
 製品source、CFG/DFG、Contract Graph、CI workflowには変更を加えていない。最新headのCI結果はPR本文へ別途記録し、従来の未測定な全repository計測・効果比較・3版全件検証の完了をこの修正から推論しない。
+
+## 74bae04 レビュー：private receiver経由の属性変更（2026-11-15）
+
+対象は `74bae04c24b72edb4eaf9b1b7649da7c5cd50835`。ユーザーによるCPython 3.12.10 / 3.14.4の既存108 tests成功と、追加P2の再現報告を受けた修正であり、マージは保留する。
+
+`__core.finish = ...` / `del __core.finish` はreceiver変数を再束縛せずに参照するため、`global` 宣言を必要としない。前回の `is_declared_global()` guardだけでは、class Cにおけるreceiver `_C__core` の属性変更を捕捉できなかった。
+
+`_attribute_mutation_receivers()` は直接のNameをreceiverとするAttribute Store/Delを収集する。private形式のreceiverがあれば、同じsource内の各class名について、解析済み識別子だけを含む小さなclass構文をCPython symtableへ渡し、compilerが正規化した名前を得る。変換前の名前と全classで得た名前の和集合を、alias候補の**抑制専用**に使用する。classの先頭underscore、全underscore名、Unicode名も独自の文字列manglerでは処理しない。対象sourceのimport/executeは行わない。
+
+これはAST nodeから実際のcompiler scopeへの対応付けではない。入れ子・local・generic classや未実行scopeの取りこぼしを避けるため、同じprivate綴りがある別classのaliasも過大に抑制し得る。抑制結果から新たなcallee候補を作らず、通常のreceiver読み取りだけでは抑制しない。一般的なheap/alias解析、別名経由のmonkey patch、動的receiverや長い属性chainの解決は追加していない。
+
+回帰は既存guardファイルへ8 tests追加（guard合計16、Deep定義数108→116）。代入・削除・拡張代入・型付き代入・unpacking・chained assignment・for/with target、method/nested function/local/nested/generic class、class名の各境界、読み取りのみの正常系、別moduleの無関係な名前の候補維持を検査する。独立に元fixtureのcode objectをcompile-onlyで検査し、LOAD_NAME `_C__core` とSTORE_ATTR/DELETE_ATTR `finish`、明示global宣言がないことを確認する。
+
+今回のローカル検証はCPython **3.13.5**。元resolverに追加テストを適用すると16 tests中、subtestを含む27 failureを再現し、修正後は**16 tests PASS / failure 0 / error 0 / skip 0**。解析器と既存testは固定headのGit blob SHAを照合したコピーを使い、公開するresolver/testも検証済みbytesと照合する。完全なcloneではなく、全Deep suite・実source CLI統合・3.12/3.14再実行の成功数ではない。ユーザー報告の108件成功も旧headの結果として区別する。新headのCI結果は確認後にPR本文へ記録し、未完了の成功を先取りしない。
+
+この追加修正はresolver、guard test、評価記録の3ファイルのみ。generatorの登録対象を増やさず既存resolverのsource hashが変わるため、旧artifactをそのまま再利用する契約は追加しない。製品コード、CFG/DFG、Contract Graph、CI workflowは変更しない。

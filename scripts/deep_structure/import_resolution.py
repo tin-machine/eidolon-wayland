@@ -76,6 +76,29 @@ def _dynamic_namespace_sites(tree):
         key=lambda site: (site["location"]["line"], site["location"]["column"], site["name"]))
 
 
+def _attribute_mutation_receivers(tree):
+    """Possible receiver spellings for suppression, never a scope resolution.
+
+    A private receiver is read, not rebound: ``__core.finish = ...`` needs no
+    global declaration. Keep its raw spelling and ask CPython for its spelling
+    under every class name in this module. This deliberately over-approximates
+    nested/local/unevaluated contexts rather than mapping AST scopes by guess.
+    The tiny probes contain only parsed identifiers; no target code is executed.
+    """
+    receivers = {node.value.id for node in ast.walk(tree)
+                 if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del))
+                 and isinstance(node.value, ast.Name)}
+    private = sorted(name for name in receivers
+                     if name.startswith("__") and not name.endswith("__"))
+    if private:
+        classes = sorted({node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)})
+        for class_name in classes:
+            probe = f"class {class_name}:\n    " + ", ".join(private) + "\n"
+            table = symtable.symtable(probe, "<import-mutation-guard>", "exec")
+            receivers.update(table.get_children()[0].get_identifiers())
+    return receivers
+
+
 def _rebindings(tree, names, declared_globals):
     """Over-approximate writes: false negatives preferred to invented edges.
 
@@ -85,7 +108,7 @@ def _rebindings(tree, names, declared_globals):
     # symtable already normalizes class-private globals (e.g. __core becomes
     # _C__core). AST spelling alone cannot detect their writes. As with the
     # same-module resolver, even a read-only global declaration blocks a name.
-    rebound = names & declared_globals
+    rebound = names & (declared_globals | _attribute_mutation_receivers(tree))
     if _dynamic_namespace_sites(tree):
         rebound.update(names)
     direct_import_ids = {id(node) for node in tree.body
@@ -98,9 +121,6 @@ def _rebindings(tree, names, declared_globals):
         if isinstance(node, ast.ImportFrom) and any(
                 alias.name == "*" for alias in node.names):
             rebound.update(names)
-        if (isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del))
-                and isinstance(node.value, ast.Name) and node.value.id in names):
-            rebound.add(node.value.id)
     return rebound
 
 
