@@ -1,8 +1,8 @@
 # Eidolon Wayland — I5完了後のソース構造解析・リファクタリング評価計画
 
 **状態:** 評価を開始し、S0/S2 の限定試行と探索比較を実施（2026-11-15）。S1 の自動 parser、S4 の独立 reviewer 比較、製品 refactor は未完了。判断は `scoped_only`。本書は既存の製品契約、I2〜I5の実装計画、host/Quest受入れ条件を変更しない。
-**作成日:** 2026-11-14  
-**対象:** Eidolon WaylandのRust / Kotlin / JNI / Python helperと、Linux Desktop v3を中心とする所有権・起動・表示・停止の境界。  
+**作成日:** 2026-11-14
+**対象:** Eidolon WaylandのRust / Kotlin / JNI / Python helperと、Linux Desktop v3を中心とする所有権・起動・表示・停止の境界。
 **着手時期:** 原則として **I5がmainに統合され、I2〜I5の変更境界が一度安定した後**。I5のCI成功だけで実機受入れ完了とはみなさない。
 
 ## 実施記録と現在の入口（2026-11-15）
