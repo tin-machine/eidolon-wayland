@@ -1,0 +1,128 @@
+# Python Deep：repository import候補の拡張評価（2026-11-15）
+
+## main更新後のCI統合fixture修正（2026-11-15）
+
+head `6705ecce180d3642f794815e5e26fe9d564b5026` の検証run
+[43711479939](https://github.com/tin-machine/eidolon-wayland/actions/runs/43711479939) は、
+hostとAndroidのPython suiteで同じ2つの実source統合テストに失敗した。
+main `4bf08e6df9cc3a2eb3cedb8856be52d9fe1dcfca` に入ったC2変更により、
+`cleanup_owner` の定義位置が482行から484行へ移り、固定symbol IDと辺の検索条件が古くなっていた。
+AndroidのAPK buildは成功し、後続の拒否検査で実行したPython suiteがこの2件で失敗している。
+
+fixtureはコピーした実sourceを独立にAST解析し、top-level定義が一意であることを確認して
+`path::name@line` を組み立てる。call/importの位置も同じsourceから一意に選び、
+選択したcallerとcalleeの候補辺が1本であること、およびimport/call/callee位置の一致を検査する。
+CLI側fixtureは3 sourceの先頭へコメントと空行を追加し、caller/callee双方の位置が移っても
+repository-deep → verify → targeted-deepの検査が成立することを確認する。
+これは位置検査の省略や複数辺の任意選択ではなく、固定行番号への依存を取り除く変更である。
+
+修正前のPR headとmainを統合したローカルcheckoutでCIと同じ2件の失敗を再現した。
+修正後はPR単体とmain統合状態のそれぞれで、CPython **3.12.10 / 3.14.4** の
+Deep **122件すべてPASS、skip 0**。前回Unicode class名のCLI再現ケースも両版でexit 0を確認した。
+このローカル確認はhost/Android build全体の成功証拠ではない。修正push後のCI結果はPR本文へ記録する。
+変更対象は統合fixtureとこの評価記録で、解析器・製品source・CI gateの変更は含まない。
+
+## 固定条件・過去記録との区別
+
+基準main: 97dfdbbc13e00227b8285d09b0e880cdc6b6b130（PR #35 merge）。PR #30の手動Contract Graphとは独立。
+GitHubの再帰Git Tree APIで基準mainに976のblobと193の拡張子pyのpathを確認した。これはCLIのtracked/source/analyzed/parse_failed/unsupported集計ではなく、shebangにも未対応である。PR headに対する完全なDeep artifactの件数、digestと全tracked snapshotは、その版のclean checkoutで生成して初めて確定できる。
+[初回評価](source-structure-deep-evaluation-20261115.md)に記録された旧source 0a0454fとそのdigest・結果は書き換えない。
+
+## 解決するsubsetと保守的な境界
+
+Git管理sourceを既存規則で自動発見し、AST parse成功したPythonに対してのみ候補を作る。module-level直下、無条件importの各aliasを対象とする。import module、import module as alias、from module import function [as alias]、packageの解析成功したinit chainがあるrelative importを扱う。途中のinitが除外・parse_failed・symlinkであれば未解決とする。
+module候補はimporterと同一ディレクトリを仮のimport rootにした単一のpy、またはinit付きpackageとする。別tracked directoryに同名basenameがあればabsolute importを曖昧として拒否し、relativeはpackage init chainを要する。除外・parse失敗・欠落moduleも未解決に留める。
+import先は単一かつ無修飾のtop-level defと、既存のmodule candidateチェックで結べる場合だけcallee候補にする。decorator、reexport、class method、namespace package、star、conditional、try、local import、dotted importでaliasがないものは推測しない。
+callerの関数root bindingは既存CPython symtableの一意なfunction scopeがglobalと判定した場合のみ使う。引数、型パラメータ、closure、comprehensionの呼出は昇格しない。名前のStore/Del、dynamic namespace操作を保守的に拒否する。これはfalse-negativeを許容する検出でありruntime immutabilityの証明ではない。
+単一attributeのmodule.function呼出とdirectなimported function呼出のみ対象とする。長いattribute chain、receiver dispatch、monkey patch、動的load、実deploymentのsys.pathは解決しない。
+既存same-module candidateとrepository_import candidateを区別し、import元locationとsource fingerprint、alias、対象moduleとcallee定義位置、探索規則、未解決理由を証拠として保持する。いずれもresolvedではなくcandidateである。
+生成物のprofile/generator IDと新resolverのsource-only loader保護を更新し、verifyでは全source、generator、profile、parser、payload一致を再計算する。CFG/DFG意味論は変更せず、PDGと方向付きprogram sliceは未実装のまま。
+
+## source読解比較の3問
+
+基準mainにおける、通常のrgとsource読み合わせの起点は以下。graph側は新たなfixtureとCIで確認する対象であり、両者を比較したelapsed time・token・見落とし率は未測定。既知sourceを同じreviewerが辿る有利さがありblind comparisonでもない。
+
+| 質問 | 従来のrgとsource入口 | graph / sliceで検証するsource候補 | 未解決と追加読解 |
+| --- | --- | --- | --- |
+| Stop cleanupの呼出元 | scripts/linux/eidolon_linux_desktop_session_v3.py:16、:99、:105、:144 / eidolon_linux_desktop_v3.py:482 | session_v3.py の _cleanup → desktop_v3.py の cleanup_owner | owner.finishのreceiver型、single-owner、完了→EOF→profile releaseと例外 |
+| process identityの境界 | session_v3.py:14、:286 / eidolon_linux_process_owner.py:32 | session_v3.py の serve → process_owner.py の identity | 本番PYTHONPATHとdynamic binding、generation一致、実プロセスの証拠 |
+| profile owner確認の境界 | eidolon_linux_persistent_profile.py:318、process_owner.py:32、:45 | _read_ownerと既知sourceを再読解 | read前後identity、TOCTOU、FD owner、error経路 |
+
+比較結果にはgraphによる到達source、余分な候補、unknown、追読箇所、生成・保守コストを分けて記録する。未使用の質問・別reviewerのblind比較は今後の課題。数値の推測補完は禁止する。
+
+## refactor候補と維持する契約
+
+Accidental Complexityの仮説: launch_mousepadと_start_demoのsocket検査、固定Waypipe prefixの重複。固定argv/adapter allowlistは必要。
+Essential Complexity: cleanup_ownerのsingle-ownerと完了/EOF/profile release順序、_read_ownerのread前後identity。
+Unknown Complexity: run_settings_probeの環境準備と監視、recovery_receipt / ProcessOwner.finish / session serveの例外・所有境界。
+関数長や辺数で分割を勧めない。Resource ownership、generation isolation、fail-closed、B1 golden、v2/v3/Termux、Stop/Recover/Journal finalization、JNI/SDK lifecycleを変更しない。製品source/runtimeのrefactorなし。
+
+## 次の独立実装単位
+
+優先1: try/finallyのcompletion reason（normal/return/raise/break/continue）とfinallyによる上書きを、例外handler/with抑制と区別してfixtureで支持。PDGより先。
+優先2: 未知質問・別reviewerでの探索効果と生成コスト比較。
+優先3: Rust/Kotlinのcompiler/Tree-sitter/LSP adapterの比較。async/trait/macro/Drop、coroutine、JNI/SDK callbackを構文だけで確定しない。
+優先4: 支持済みCFG/DFGに基づくPDGと方向付きslice。related_testsはlexical candidateのまま。heap/alias、include_str!、build active sourceも未対応。
+
+## CIで得られた予備観測（2026-11-15）
+
+初回PR head f774b930でGitHub Actions のhost検査を実施した（system Python 3.12）。
+新規import候補fixtureの13件中、実Linux source3ファイルを一時Git repositoryにコピーして実行し、_cleanup → cleanup_owner（call line105、import line16、callee line482）とserve → identity（call line286、import line14、callee line32）を確認する回帰はPASSだった。ほか11件PASS、parse_failed境界1件はERRORだった。
+**host suite全体は1138件中 failure 1 / errors 32 / skipped 10で失敗**した。主因は既にparse_failedと記録したsourceを新resolverが再度AST.parseしてSyntaxErrorを起こした回帰であり、後のhead 1305ae6bで再解析対象の選択を修正した。検証済みheadの結果を未検証の新headの成功と混同しない。
+
+この予備比較で実際に得られた新しい発見は「もともと手動で辿っていた2本の依存を、import位置とsource provenanceがあるcandidate edgeとして再現できた」という点まで。未知の依存の発見、時間/トークン短縮、誤った候補の実コード全件率は測っていない。今後の新しいheadの全テストと完全なrepository-deep計測は別の検証証拠とする。
+
+## a973e8e レビューへの修正（2026-11-15）
+
+対象は PR #36 head `a973e8ee8def30fe99392525f91f540961df6c13`。開始時mainは上記 `97dfdbb` のまま、既存PRの履歴を維持して修正する。以下は以前の成功記録を置換するものではない。
+
+### 修正した4点
+
+1. CLI統合テストはcalleeだけでなく `e["from"] == target` でcallerも照合し、該当辺が1本であることを検査する。2-hop近傍に含まれる別callerの144行を、選択した `_cleanup` の105行と取り違えない。
+2. `__finish` のようなprivate属性の綴りは、class内でcompilerが参照する名前と同一とは限らない。独自manglerやclass推測を導入せず、二重underscoreで始まり二重underscoreで終わらない属性callを `private_attribute_mangling_not_modeled` へ落とす。この版ではclass外の同じ綴りも保守的に未解決とする。通常名、single underscore、`__finish__`、明示的な `_C__finish`、module-level `from service import __finish as done` は従来の候補条件を維持する。
+3. 全compiler scopeの `is_declared_global()` が返す正規化済み名をalias再束縛検査にも使う。class body、method、nested function、generic classの `global __core` は `_C__core` のcandidateを抑制する。同一module候補と同様、宣言だけでも保守的に抑制し、AST名だけから再束縛を判断しない。
+4. callerとexporterで同じ直接呼出のnamespace guardを共有する。`exec` / `eval` / `globals` / `locals` / `vars` / `setattr` / `delattr` がimport先にあれば、そのmoduleのexport候補を抑制する。module経由とfrom-importの双方に `target_module_dynamic_namespace_unsupported` と、`target_module_boundaries` の操作名・位置・source fingerprintを残す。
+
+仕様根拠: [Python private name mangling](https://docs.python.org/3.14/reference/expressions.html#private-name-mangling)、[compiler symbol tables](https://docs.python.org/3.14/library/symtable.html)。attribute名はsymtableの変数binding一覧だけでは判定できない。動的namespace guardは既知の直接呼出を構文上検出するsubsetであり、alias経由の動的実行や任意callの効果を解決したものではない。nested・未評価scope内も保守的に拒否するため、候補の取りこぼしはあり得る。
+
+### 回帰と証拠の範囲
+
+新規 `test_deep_import_guards.py` は8 tests。元resolverに対してprivate属性・正規化global・dynamic exporterの負例で計27 failure（subtestを含む）を再現し、修正後は8 tests PASS（CPython **3.13.5**, final/0）。さらに既存import fixtureのうち実製品sourceコピーを必要としない16 tests、新規のbounded slice / provenance / payload改変拒否1 test、既存stale-pyc 1 testがPASS。ローカル実施は合計**26 tests**であり、Deep suite全件の成功を意味しない。
+
+ローカルはGitHubへ直接cloneできないため、固定headから取得した解析器・fixtureのbytesをGit blob SHAで照合した検証用コピーを使用した。利用可能なPythonは3.13.5のみ。実製品source3ファイルを読む2つのintegration test、残る既存Deep tests、3.12/3.14の再実行、docs/design/CI scope検査はこのローカル結果に含めず、最新headのCI結果と区別する。追加後のDeep tests定義数は99から**108**（+9）となるが、定義数を成功数に読み替えない。
+
+旧resolverの実CLIで作った固定Git fixtureのartifactは、sourceを変えず修正版CLIでverifyするとexit 2（stale）になった。新しいresolverファイルは既存generator hash / source-only loaderの保護下にあり、profile/Python版を跨ぐ互換は追加しない。動的exportのunknownは予算を絞ったsliceにも残し、操作位置を改変してpayload checksumを再計算したartifactもverifyで拒否した。
+
+製品source、CFG/DFG、Contract Graph、CI workflowには変更を加えていない。最新headのCI結果はPR本文へ別途記録し、従来の未測定な全repository計測・効果比較・3版全件検証の完了をこの修正から推論しない。
+
+## 74bae04 レビュー：private receiver経由の属性変更（2026-11-15）
+
+対象は `74bae04c24b72edb4eaf9b1b7649da7c5cd50835`。ユーザーによるCPython 3.12.10 / 3.14.4の既存108 tests成功と、追加P2の再現報告を受けた修正であり、マージは保留する。
+
+`__core.finish = ...` / `del __core.finish` はreceiver変数を再束縛せずに参照するため、`global` 宣言を必要としない。前回の `is_declared_global()` guardだけでは、class Cにおけるreceiver `_C__core` の属性変更を捕捉できなかった。
+
+`_attribute_mutation_receivers()` は直接のNameをreceiverとするAttribute Store/Delを収集する。private形式のreceiverがあれば、同じsource内の各class名について、解析済み識別子だけを含む小さなclass構文をCPython symtableへ渡し、compilerが正規化した名前を得る。変換前の名前と全classで得た名前の和集合を、alias候補の**抑制専用**に使用する。classの先頭underscore、全underscore名、Unicode名も独自の文字列manglerでは処理しない。対象sourceのimport/executeは行わない。
+
+これはAST nodeから実際のcompiler scopeへの対応付けではない。入れ子・local・generic classや未実行scopeの取りこぼしを避けるため、同じprivate綴りがある別classのaliasも過大に抑制し得る。抑制結果から新たなcallee候補を作らず、通常のreceiver読み取りだけでは抑制しない。一般的なheap/alias解析、別名経由のmonkey patch、動的receiverや長い属性chainの解決は追加していない。
+
+回帰は既存guardファイルへ8 tests追加（guard合計16、Deep定義数108→116）。代入・削除・拡張代入・型付き代入・unpacking・chained assignment・for/with target、method/nested function/local/nested/generic class、class名の各境界、読み取りのみの正常系、別moduleの無関係な名前の候補維持を検査する。独立に元fixtureのcode objectをcompile-onlyで検査し、LOAD_NAME `_C__core` とSTORE_ATTR/DELETE_ATTR `finish`、明示global宣言がないことを確認する。
+
+今回のローカル検証はCPython **3.13.5**。元resolverに追加テストを適用すると16 tests中、subtestを含む27 failureを再現し、修正後は**16 tests PASS / failure 0 / error 0 / skip 0**。解析器と既存testは固定headのGit blob SHAを照合したコピーを使い、公開するresolver/testも検証済みbytesと照合する。完全なcloneではなく、全Deep suite・実source CLI統合・3.12/3.14再実行の成功数ではない。ユーザー報告の108件成功も旧headの結果として区別する。新headのCI結果は確認後にPR本文へ記録し、未完了の成功を先取りしない。
+
+この追加修正はresolver、guard test、評価記録の3ファイルのみ。generatorの登録対象を増やさず既存resolverのsource hashが変わるため、旧artifactをそのまま再利用する契約は追加しない。製品コード、CFG/DFG、Contract Graph、CI workflowは変更しない。
+
+## 230be36 レビュー：Unicode正規化と検査用コード生成（2026-11-15）
+
+対象は `230be362c231d01eab479829a1764d8e3145f220`。ユーザーがCPython 3.12.10 / 3.14.4で既存116 tests成功と、`class 𝐢𝐟:` のprivate属性変更によるrepository全体のSyntaxError停止を報告した。これらは旧headの証拠であり、新修正版の成功記録へ読み替えない。作業開始時のmainは `4bf08e6df9cc3a2eb3cedb8856be52d9fe1dcfca` へ進んでいたが、PRの既存headへ修正を積み、mainや並行開発は変更しない。
+
+原因は、NFKC正規化済みのAST識別子をsource textへ戻したことだった。`𝐢𝐟` は有効なsource上の名前でもAST名は `if` であり、生成した `class if:` は構文エラーになる。修正では文字列probeを廃止し、ClassDefとreceiver読み取り専用lambdaからなる新しいASTを直接compileする。生成code objectは実行しない。lambdaの `co_names` だけを採取し、classの `__module__` / `__qualname__` や版固有のmetadataを誤って抑制対象へ追加しない。元ASTも変更しない。仕様根拠は[識別子の正規化](https://docs.python.org/3.14/reference/lexical_analysis.html#names)と[ASTの直接compile](https://docs.python.org/3.14/library/ast.html)。
+
+functionのlocal/free/globalは既存symtable判定のまま。private receiverの全class候補を抑制専用に使う保守的な境界は維持し、独自mangler・runtime dispatch解決・製品コードの実行は追加しない。
+
+既存guardへ6 tests追加（guard16→22、Deep定義数116→122）。小文字keyword/soft keywordへ正規化するUnicode名のStore/Del、nested/local/generic class、Unicode receiver、read-only正常系、独立module候補とprovenance保持、入力AST不変・余計なcompiler metadataの除外を検査する。独立oracleとして元のUnicode sourceをcompile-onlyで検査する。True/False/Noneに正規化する名前は既存AST validatorの拒否対象なので、この正常系matrixへ混ぜない。
+
+CPython **3.13.5**（final/0）で、Git blob SHA照合済みの解析器・CLI・既存fixtureの検証用コピーを使用。追加後22 testsを旧resolverで実行すると **failure 1 / errors 78**（subtestを含む）を再現し、修正後は **22 PASS / failure 0 / error 0 / skip 0**。新しい一時Git fixtureで実CLIのrepository-deep→verify→targeted-deepが成功し、3 Python filesすべてanalyzed、変更対象はunresolved、安全な別moduleへのcandidateは維持された。同じ入力のartifact bytes一致、最小node/edge予算のsliceでunknownとsource fingerprintが残ること、source改変の拒否も検査した。
+
+別途、旧resolverで生成した通常名fixtureのartifactを、同じsource・同じPythonで修正版CLIに渡すとexit 2（stale）で拒否した。generator hash/source-only loaderの保護対象は変わらない。ローカルの完全なrepository clone、全Deep suite、3.12/3.14の修正版再実行、全repositoryの計測は未実施。新headのCIはPR本文で別途記録する。
+
+今回の変更はresolver、guard test、評価記録の3ファイルのみ。CFG/DFG/PDGの範囲、Contract Graph、B1、製品runtime、CI workflowは変更せず、マージは保留する。
