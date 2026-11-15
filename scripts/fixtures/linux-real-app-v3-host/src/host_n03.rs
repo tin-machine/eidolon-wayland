@@ -75,7 +75,7 @@ impl Driver {
             .ok_or("I6_N03_CATALOG_INVALID")?.capture_id.clone();
         self.observe("n03_catalog", json!({
             "session":session,"inspect_request":inspect_request.to_string(),
-            "selection":selection,"capture_id":capture,
+            "selection":selection,"capture_id":capture,"registry":self.catalog,
         }))?;
         Ok((session, selection))
     }
