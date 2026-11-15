@@ -340,6 +340,117 @@ def verify(native, env, source, variant):
             "environment_disposal":"not_yet"}
 
 
+
+# A native Host acceptance case has exactly one admitted main target. These
+# identifiers only label observations: they cannot mint a B1 NativeOrigin or
+# substitute SDK/renderer/remote lifecycle evidence.
+RECEIPT_REVISION = "eidolon-i6-n02-receipt-v1"
+RECEIPT_FIELDS = {
+    "schema", "kind", "run_id", "case_id", "variant", "source_sha256",
+    "owner", "target", "native", "environment",
+}
+
+
+def case_owner_target(native):
+    """Project owner/target identities without granting a product verdict.
+
+    A caller may record these projections, but only verify_receipt() is allowed
+    to promote them to independently verified acceptance evidence.
+    """
+    require(type(native) is dict and type(native.get("trace")) is dict)
+    trace = native["trace"]["events"]
+    require(type(trace) is list and len(trace) <= evidence.MAX_TRACE_EVENTS)
+    captures = [e["capture"] for e in trace if e["capture"] is not None]
+    require(captures and all(c == captures[0] for c in captures), "I6_OWNER_MISMATCH")
+    capture = captures[0]
+    require(type(capture) is dict)
+    observations = native["observations"]
+    require(type(observations) is list and len(observations) <= 128)
+    connects = [o["data"]["request_id"] for o in observations
+                if o["kind"] == "command_accepted"
+                and o["data"]["command"] == "connect"]
+    require(len(connects) == 1 and b1.decimal(connects[0]), "I6_OWNER_MISMATCH")
+    sdk = native["sdk_observations"]
+    require(type(sdk) is list and sdk and type(sdk[0]) is dict)
+    adapter = sdk[0]["adapter"]
+    readback = native["readback"]
+    require(type(readback) is dict)
+    key, create = readback["target"], readback["create"]
+    require(type(key) is dict and set(key) == {"session", "window", "scene", "generation"}
+            and all(b1.decimal(n) for n in key.values())
+            and b1.decimal(create) and b1.decimal(adapter), "I6_OWNER_MISMATCH")
+    owner_id = native["owner_id"]
+    require(evidence.identity(owner_id) and evidence.identity(native["run_id"])
+            and b1.decimal(native["runtime"]), "I6_OWNER_MISMATCH")
+    owner = {
+        "owner_id": owner_id,
+        "runtime": native["runtime"],
+        "admission_epoch": "1",  # Host fixture ordinal, not an Android epoch
+        "connect_request": connects[0],
+        "launch_request": "32",
+        "session": capture["session"],
+        "capture_sha256": capture["capture_id"],
+        "context_sha256": capture["context_digest"],
+        "io_generation": capture["io_generation"],
+        "nonce": capture["nonce"],
+        "scope": capture["scope"],
+        "native_origin": "32",  # NativeOrigin.request() issued by Registry
+    }
+    target_id = evidence.sha(evidence.canonical({
+        "owner_id": owner_id, "target": key, "create_seq": create,
+        "adapter_id": adapter,
+    }))[:32]
+    target = {
+        "target_id": target_id, "owner_id": owner_id,
+        "session": key["session"], "window": key["window"],
+        "scene": key["scene"], "generation": key["generation"],
+        "create_seq": create, "adapter_id": adapter,
+    }
+    evidence._owner(owner)
+    evidence._target(target, {owner_id: owner})
+    return owner, target
+
+
+def verify_receipt(receipt, *, expected_run_id, expected_source_sha256,
+                   expected_owner, expected_target, expected_source):
+    """One immutable typed receipt; recompute the N02 oracle from raw R/S/T.
+
+    No producer status, assertion list or census string can grant acceptance.
+    Same-run owner/target IDs are independently derived from native facts.
+    """
+    exact(receipt, RECEIPT_FIELDS)
+    require(type(receipt["schema"]) is int and receipt["schema"] == 1
+            and receipt["kind"] == RECEIPT_REVISION
+            and receipt["case_id"] == "N02" and receipt["variant"] in CASES)
+    require(receipt["run_id"] == expected_run_id
+            and evidence.identity(expected_run_id), "I6_OWNER_MISMATCH")
+    require(receipt["source_sha256"] == expected_source_sha256, "I6_SOURCE_MISMATCH")
+    require(expected_source is not None, "I6_SOURCE_MISMATCH")
+    evidence._source(expected_source)
+    require(expected_source["tree_sha256"] == expected_source_sha256
+            and expected_source["build_features"] == [], "I6_SOURCE_MISMATCH")
+    native, environment = receipt["native"], receipt["environment"]
+    require(native["run_id"] == expected_run_id
+            and environment["run_id"] == expected_run_id, "I6_OWNER_MISMATCH")
+    owner, target = case_owner_target(native)
+    same(receipt["owner"], owner, "I6_OWNER_MISMATCH")
+    same(receipt["target"], target, "I6_OWNER_MISMATCH")
+    same(expected_owner, owner, "I6_OWNER_MISMATCH")
+    same(expected_target, target, "I6_OWNER_MISMATCH")
+    outcome = verify(native, environment, expected_source, receipt["variant"])
+    require(outcome["status"] == "pass"
+            and outcome["verified_assertions"] == list(ASSERTIONS)
+            and outcome["host_v3_acceptance_passed"] is False
+            and outcome["environment_disposal"] == "not_yet")
+    # The N02 oracle checks remote process/pipe EOF, locked profile, complete
+    # local/Wayland/SHM and GPU retirements, SDK same-lease fence, finalizer,
+    # live Registry stop and external process census before marking PASS.
+    # Every resource is therefore complete (none are falsely "not_created").
+    return {"status": "pass", "verified_assertions": list(ASSERTIONS),
+            "census": {resource: "complete" for resource in evidence.RESOURCES},
+            "target_id": target["target_id"]}
+
+
 def invalid():
     return {"status":"invalid","reason":"I6_N02_RECEIPT_INVALID","verified_assertions":[],
             "evidence_classes":[],"host_v3_acceptance_passed":False,
