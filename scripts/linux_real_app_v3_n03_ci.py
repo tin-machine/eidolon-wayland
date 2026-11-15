@@ -144,6 +144,9 @@ def export_and_validate(incoming, output, image_file, head, attached, runtime, r
         raise ValueError("N03 source head invalid")
     if not (attached.isdecimal() and runtime.isdecimal() and running in {"true", "false"}):
         raise ValueError("N03 container disposition invalid")
+    pr_head = os.environ.get("CI_PR_HEAD") or None
+    if pr_head is not None and not re.fullmatch(r"[0-9a-f]{40}", pr_head):
+        raise ValueError("N03 PR head SHA invalid")
     receipts = {}
     for name in NAMES:
         try:
@@ -156,7 +159,7 @@ def export_and_validate(incoming, output, image_file, head, attached, runtime, r
         (output / name).chmod(0o600)
     with (output / "container.json").open("x", encoding="utf-8") as stream:
         json.dump({
-            "schema":1,"source_commit":head,"image_id":image_id,
+            "schema":1,"source_commit":head,"pr_head_sha":pr_head,"image_id":image_id,
             "attach_exit":int(attached),"container_exit":int(runtime),
             "external_rescue":running == "true","network":"none",
             "host_mounts":False,"formal_i6_passed":False,
