@@ -154,6 +154,15 @@ def run():
         self.assertEqual(call["resolution"], "unresolved")
         self.assertEqual(call["import_evidence"]["reason"], "namespace_or_missing_package_init")
 
+    def test_relative_import_cannot_escape_root_even_with_init_present(self):
+        self.write("__init__.py", "")
+        self.write("service.py", "def finish(x): return x\n")
+        self.write("pkg/entry.py", "from ..service import finish\ndef run(): return finish(1)\n")
+        self.commit()
+        call = self.fn(self.graph(), "pkg/entry.py", "run")["calls"][0]
+        self.assertEqual(call["resolution"], "unresolved")
+        self.assertEqual(call["import_evidence"]["reason"], "relative_import_beyond_repository_root")
+
     def test_dynamic_receiver_and_reexport_are_unresolved(self):
         self.write("pkg/entry.py", """import service as core
 from service import not_exported as other

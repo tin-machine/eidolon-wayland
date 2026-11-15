@@ -29,6 +29,8 @@ def _module_path(importer, name, level, paths, analyzed):
     rule = "same_directory_hypothetical_import_root_not_sys_path_proof"
     if level:
         rule = "relative_import_verified_init_chain_not_runtime_dispatch"
+        if level > len(parent.parts):
+            return None, "relative_import_beyond_repository_root", [], rule
         for index in range(level):
             if str(parent / "__init__.py") not in paths:
                 return None, "namespace_or_missing_package_init", [], rule
