@@ -39,13 +39,17 @@ impl Driver {
     }
 
     fn n02_wait_command(&mut self, request: &str, seconds: u64) -> Result<Value> {
-        self.wait(seconds, |snapshot| {
-            snapshot["runtime"]["state"] == "Ready"
-                && self_dummy_true(snapshot)
-        })
-        .and_then(|_| {
-            self.wait(seconds, |_| self.completed.get(request) == Some(&json!("ACCEPTED")))
-        })
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            let snapshot = self.pump()?;
+            if self.completed.get(request) == Some(&json!("ACCEPTED")) {
+                return Ok(snapshot);
+            }
+            if Instant::now() >= deadline {
+                return Err("I6_OUTER_TIMEOUT");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn n02_catalog(&mut self, session: &str, variant: &str) -> Result<Value> {
@@ -72,7 +76,7 @@ impl Driver {
             .map_err(|_| "I6_CATALOG_MISSING")?,
         )
         .map_err(|_| "I6_CATALOG_MISSING")?;
-        self.catalog = catalog;
+        self.catalog = catalog.clone();
         self.observe("n02_same_actor_catalog", json!({
             "session":session,
             "inspect_request":"31",
@@ -187,9 +191,9 @@ impl Driver {
                    "target":target,"input_epoch":epoch}),
             "focus_window",
         )?;
+        self.n02_wait_command("1001", 10)?;
         let snapshot = self.wait(10, |s| {
-            self.completed.get("1001") == Some(&json!("ACCEPTED"))
-                && s["runtime"]["app"]["input"]["focus_window"] == target["window"]
+            s["runtime"]["app"]["input"]["focus_window"] == target["window"]
                 && s["runtime"]["app"]["input"]["focus_token"].is_string()
         })?;
         let token = snapshot["runtime"]["app"]["input"]["focus_token"].clone();
@@ -205,7 +209,7 @@ impl Driver {
                 "key":{"action":action,"device":1,"scan_code":42,"key_code":59,
                        "repeat":0,"meta":0,"time_ms":time_ms},
             }), "key")?;
-            self.wait(10, |_| self.completed.get(request) == Some(&json!("ACCEPTED")))?;
+            self.n02_wait_command(request, 10)?;
         }
         let after = self.wait(5, |s| {
             s["runtime"]["app"]["input"]["delivered"].as_u64().is_some_and(|n| n >= before + 2)
