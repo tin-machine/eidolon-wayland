@@ -264,6 +264,7 @@ def _trace(native, owner, environment):
         _number(item("finalizer_published")["data"]["status"], 0, 5)
         if item("finalizer_published")["data"]["status"] != 0:
             failures.append("journal_finalized")
+    remote = None
     if "remote_cleanup_observed" in by_kind:
         data = item("remote_cleanup_observed")["data"]
         remote = data["remote"]
@@ -275,7 +276,7 @@ def _trace(native, owner, environment):
         for field in ("channel_complete", "forward_retired", "router_drained", "start_attempted"):
             _require(type(data[field]) is bool)
         _require(remote["exit_status"] is None or contract.integer(remote["exit_status"], 0, (1 << 32) - 1))
-        if (remote["phase"] != "stopped" or remote["reason"] is not None
+        if (remote["phase"] != "stopped" or remote["reason"] != "stop"
                 or remote["stop_reason"] != "stop" or remote["exit_status"] != 0
                 or remote["started"] or remote["exit_signal"] or data["start_attempted"]
                 or not all(remote[k] for k in ("process_complete", "pipes_eof", "remote_cleaned", "receipt_written",
@@ -298,6 +299,21 @@ def _trace(native, owner, environment):
                                    "inspect_request": capture["inspect_request"], "generation": capture["io_generation"]})
     _require(capture_hash == capture["capture_id"], "I6_OWNER_MISMATCH")
     protocol_events = by_kind.get("protocol_event", [])
+    stopped = [e for e in protocol_events if e["data"]["record"]["event"]["type"] == "stopped"]
+    _require(len(stopped) <= 1, "I6_TRACE_INVALID")
+    if stopped:
+        frame = wire.parse_event(evidence.canonical(stopped[0]["data"]["record"]),
+                                 wire.Binding(context, pins), None)
+        reason = frame["event"]["payload"]["reason"]
+        if remote is not None:
+            _require(remote["stop_reason"] == reason and remote["reason"] == reason
+                     and remote["phase"] in {"stopped", "failed"}, "I6_TRACE_INVALID")
+        # Recovery may repair uncertain cleanup, but it cannot turn expiry or
+        # another terminal cause into the requested Inspect-only Stop.
+        if reason != "stop":
+            failures.append("helper_ssh_reaped")
+    elif remote is not None and remote["stop_reason"] is not None:
+        missing.append("receipt/stopped_protocol")
     # Failure cleanup can recover the same capture before a catalog exists.
     # Inspect every present recovery record independently of catalog admission.
     if "recovery_receipt" in by_kind:

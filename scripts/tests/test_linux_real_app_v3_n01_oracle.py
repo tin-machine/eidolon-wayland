@@ -62,7 +62,7 @@ def specimen():
     remote = {"phase": "stopped", "started": False, "stdout_bytes": 1234, "stderr_bytes": 0,
               "process_complete": True, "pipes_eof": True, "remote_cleaned": True, "receipt_written": True,
               "terminal_event": True, "stop_reason": "stop", "eof": True, "exit_status": 0,
-              "exit_signal": False, "channel_closed": True, "protocol_valid": True, "reason": None}
+              "exit_signal": False, "channel_closed": True, "protocol_valid": True, "reason": "stop"}
     trace("remote_cleanup_observed", {"remote": remote, "channel_complete": True, "forward_retired": True,
                                        "router_drained": True, "start_attempted": False})
     trace("journal_complete", {"stage": "complete"})
@@ -423,6 +423,49 @@ class N01OracleTests(unittest.TestCase):
         self.receipt["native"]["destroy_status"] = 2
         self.observation("registry_destroy_return")["data"]["status"] = 2
         self.assertEqual(self.verify()["status"], "fail")
+
+    def test_stop_report_reason_and_phase_must_match_the_validated_terminal_event(self):
+        for field, value in (("reason", None), ("reason", "unknown"), ("reason", "tool_inspection"),
+                             ("reason", "lease_expired"), ("stop_reason", None),
+                             ("stop_reason", "input_eof"), ("phase", "pending"), ("phase", "catalog")):
+            with self.subTest(field=field, value=value):
+                self.receipt, self.source = specimen()
+                self.trace("remote_cleanup_observed")["data"]["remote"][field] = value
+                with self.assertRaisesRegex(evidence.EvidenceError, "I6_TRACE_INVALID"):
+                    self.verify()
+        self.receipt, self.source = specimen()
+        self.trace("remote_cleanup_observed")["data"]["remote"].update(phase="failed", protocol_valid=False)
+        self.assertEqual(self.verify()["status"], "fail")
+
+    def test_other_terminal_causes_cannot_be_relabelled_or_recovered_as_requested_stop(self):
+        for cause in ("lease_expired", "input_eof"):
+            for recovered in (False, True):
+                with self.subTest(cause=cause, recovered=recovered):
+                    self.receipt, self.source = recovery_specimen() if recovered else specimen()
+                    stopped = next(e for e in self.receipt["native"]["trace"]["events"]
+                                   if e["kind"] == "protocol_event" and e["data"]["record"]["event"]["type"] == "stopped")
+                    stopped["data"]["record"]["event"]["payload"]["reason"] = cause
+                    with self.assertRaisesRegex(evidence.EvidenceError, "I6_TRACE_INVALID"):
+                        self.verify()
+                    self.trace("remote_cleanup_observed")["data"]["remote"].update(reason=cause, stop_reason=cause)
+                    result = self.verify()
+                    self.assertEqual(result["status"], "fail")
+                    self.assertIn("helper_ssh_reaped", result["failures"])
+                    self.assertEqual(result["verified_assertions"], [])
+
+    def test_pending_terminal_and_uncertain_cleanup_are_not_normal_stop(self):
+        stopped = next(e for e in self.receipt["native"]["trace"]["events"]
+                       if e["kind"] == "protocol_event" and e["data"]["record"]["event"]["type"] == "stopped")
+        stopped["data"]["record"]["event"] = {"type": "pending", "payload": {
+            "reason": "directory_cleanup", "public_reason": "APP_STATE_RECOVERY_REQUIRED",
+            "process_complete": True, "pipes_eof": True}}
+        self.trace("remote_cleanup_observed")["data"]["remote"].update(
+            phase="failed", reason="directory_cleanup", stop_reason=None, remote_cleaned=False,
+            receipt_written=False, protocol_valid=False, exit_status=1)
+        result = self.verify()
+        self.assertEqual(result["status"], "fail")
+        self.assertIn("helper_ssh_reaped", result["failures"])
+        self.assertEqual(result["verified_assertions"], [])
 
     def test_independent_process_and_filesystem_census_rejects_leaks(self):
         final = self.receipt["environment"]["final"]
