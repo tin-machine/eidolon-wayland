@@ -40,6 +40,7 @@ class _GeneratorFinder(importlib.abc.MetaPathFinder):
         self.sources = {
             "deep_structure": directory / "__init__.py",
             "deep_structure.python_analysis": directory / "python_analysis.py",
+            "deep_structure.import_resolution": directory / "import_resolution.py",
             "deep_structure.repository": directory / "repository.py",
         }
 

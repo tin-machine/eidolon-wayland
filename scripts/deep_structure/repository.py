@@ -21,6 +21,7 @@ import sys
 import tempfile
 
 from .python_analysis import analyze_python
+from .import_resolution import resolve_imports
 
 
 class DeepError(ValueError):
@@ -84,7 +85,7 @@ def profile(excludes=()):
     require(len(excludes) <= 64, "too many exclusion patterns")
     require(all(isinstance(p, str) and 0 < len(p) <= 256 for p in excludes),
             "invalid exclusion pattern")
-    return {"id": "python-local-v1", "selection": "all committed Git paths; suffix or shebang",
+    return {"id": "python-local-v2-import-candidates", "selection": "all committed Git paths; suffix or shebang",
             "excludes": sorted(set(excludes)), "exclude_syntax": "Python fnmatchcase; * includes /",
             "roles": "path heuristics, not deployment or test coverage evidence",
             "languages": LANGUAGES, "generated_parts": sorted(GENERATED_PARTS),
@@ -96,8 +97,10 @@ def profile(excludes=()):
 def _generator():
     directory = Path(__file__).resolve().parent
     files = [directory.parent / "deep_structure.py", directory / "__init__.py",
-             directory / "python_analysis.py", directory / "repository.py"]
-    names = ["__main__", "deep_structure", "deep_structure.python_analysis", "deep_structure.repository"]
+             directory / "python_analysis.py", directory / "repository.py",
+             directory / "import_resolution.py"]
+    names = ["__main__", "deep_structure", "deep_structure.python_analysis", "deep_structure.repository",
+             "deep_structure.import_resolution"]
     hashes = {}
     for path, name in zip(files, names):
         current = digest(path.read_bytes())
@@ -106,7 +109,7 @@ def _generator():
         if loaded is not None:
             require(loaded == current, "generator changed while loading: " + path.name)
         hashes[str(path.relative_to(directory.parent))] = current
-    return {"id": "eidolon-python-deep-v1",
+    return {"id": "eidolon-python-deep-v2-import-candidates",
             "files": hashes,
             "python": {"implementation": sys.implementation.name,
                        "version": list(sys.version_info)},
@@ -303,7 +306,9 @@ def build(repo, excludes=()):
                                   "git_blob": row["git_blob"], "sha256": row["sha256"]}
             functions.append(function)
     functions.sort(key=lambda f: f["id"])
+    import_summary = resolve_imports(files, modules, functions, sources, initial["revision"])
     counts = summary(files, functions)
+    counts["import_candidate_summary"] = import_summary
     callers = defaultdict(set)
     for function in functions:
         for call in function["calls"]:
@@ -331,6 +336,7 @@ def build(repo, excludes=()):
               "tests_execution": "not_run_by_this_tool", "contract_graph": "not_read_or_modified",
               "limits": ["candidate call graph is not runtime dispatch", "normal-flow CFG excludes implicit exceptions",
                          "DFG covers local Name bindings, not heap, alias or interprocedural effects",
+                          "repository import candidates are not runtime import or dispatch proof",
                          "Rust/Kotlin/JNI/SDK/async ownership semantics are unsupported", "PDG is not implemented"]}
     final, _ = capture(root, policy)
     require(final == initial, "source snapshot changed during extraction")
@@ -402,7 +408,10 @@ def bounded_slice(artifact, symbol, hops=1, max_nodes=80, max_edges=160, max_byt
             if call.get("target") in functions:
                 edges.append({"from": f["id"], "to": call["target"], "kind": "call_candidate",
                               "location": call["location"], "source": f["source"],
-                              "resolution": call["resolution"]})
+                              "resolution": call["resolution"],
+                               "candidate_kind": call.get("candidate_kind", "unknown"),
+                               **({"import_evidence": call["import_evidence"]}
+                                  if "import_evidence" in call else {})})
     for node in selected["cfg"]["nodes"]:
         nodes[node["id"]] = {**node, "source": selected["source"], "kind": "cfg_" + node["kind"]}
         edges.append({"from": start, "to": node["id"], "kind": "contains_statement"})

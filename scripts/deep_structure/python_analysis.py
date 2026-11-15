@@ -192,11 +192,19 @@ def _call_sites(nodes, candidates, global_names):
             continue
         expression = _callee(node.func)
         name = node.func.id if isinstance(node.func, ast.Name) else None
+        root = node.func
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        root_name = root.id if isinstance(root, ast.Name) else None
         nested_scope = id(node) in nested_calls
         target = candidates.get(name) if name in global_names and not nested_scope else None
         item = {
             "location": _location(node), "expression": expression,
             "callee_name": name, "resolution": "candidate" if target else "unresolved",
+            "import_root": root_name,
+            "import_root_binding": ("compiler_global"
+                                    if root_name in global_names and not nested_scope
+                                    else "unresolved"),
             "reason": ("unique_module_definition_with_compiler_global_binding_not_runtime_dispatch"
                        if target else "nested_expression_scope_unresolved" if nested_scope
                        else "dynamic_external_or_non_global_binding"),

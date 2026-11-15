@@ -312,3 +312,15 @@ Repository Deep で調査対象を発見できること、Targeted Deep の出�
 - homecluster-runbook: [campaign 評価と適用限界](https://github.com/tin-machine/homecluster-runbook/blob/4254b272a187df97f6c9bc346ff4c3aaa324b6aa/docs/operation/pi-local-structural-graph-campaign-evaluation-20261003.md)。同実装の lexical control region や conservative finally dispatch を完全な PDG / CFG として移植しない。
 
 この文書は手動で発見する開発ツールの説明であり、D5 / D6 の feature manifest や I6 の acceptance gate を変更しない。
+
+
+## 次段階：repository内 import candidate（PR #35以降）
+
+[限定subsetと実コード比較の評価記録](source-structure-deep-import-evaluation-20261115.md)を参照する。
+新しい解析はsource rootを実環境のsys.pathと同一視しない。単一の同階層moduleとinit chainがあるrelative packageに限定し、同名moduleの曖昧さ、nested/conditional/try/star import、reexport、再束縛・shadowing、dynamic receiverは未解決として残す。
+modulesのimport_bindingsにはalias単位のimport site、source provenance、module探索規則、候補と理由を保存し、functionsのcallsにはimport_evidenceとcandidate_kindを保存する。same_module_functionとrepository_importは区別できる。どちらもruntime dispatchの証明ではない。
+Targeted Deepでは新しいcall edgeにimportの証拠を添付し、選択関数のunknown・未解決call・省略数を維持する。新resolverのハッシュはgeneratorとsource-only loaderのidentityに含まれる。旧profileのartifactはverifyで拒否する。
+
+実コードでの到達例は、session_v3.py の _cleanup から core.cleanup_owner（desktop_v3.py）、serveからprocess_identity（process_owner.py）。ただしowner.finishのreceiverとcleanup例外順序、実bundle上のsys.pathは別途source/契約/実行証拠が必要。
+
+次の大きな課題は、例外・cleanup CFGのcompletion reason、Rust/Kotlin adapter、PDGと方向付きprogram slice、実用効果の独立比較である。Deep生成の常時required CI化は行わない。
