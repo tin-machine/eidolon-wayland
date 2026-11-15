@@ -9,6 +9,7 @@ import ast
 from collections import Counter, defaultdict
 from pathlib import PurePosixPath
 import symtable
+from types import CodeType
 
 from .python_analysis import _bound_names, _location, _module_candidates, _symbol_tables
 
@@ -93,9 +94,24 @@ def _attribute_mutation_receivers(tree):
     if private:
         classes = sorted({node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)})
         for class_name in classes:
-            probe = f"class {class_name}:\n    " + ", ".join(private) + "\n"
-            table = symtable.symtable(probe, "<import-mutation-guard>", "exec")
-            receivers.update(table.get_children()[0].get_identifiers())
+            # Parsed identifiers are NFKC-normalized: a valid Unicode class
+            # spelling can become a keyword such as "if". Never serialize that
+            # name back to source text. Compile a fresh AST without executing it.
+            # A lambda isolates receiver loads from synthetic class attributes
+            # (__module__, __qualname__, and version-specific compiler metadata).
+            probe = ast.Module(body=[ast.ClassDef(
+                name=class_name, bases=[], keywords=[], decorator_list=[], type_params=[],
+                body=[ast.Expr(value=ast.Lambda(
+                    args=ast.arguments(posonlyargs=[], args=[], vararg=None,
+                                       kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[]),
+                    body=ast.Tuple(elts=[ast.Name(id=name, ctx=ast.Load()) for name in private],
+                                   ctx=ast.Load())))],
+            )], type_ignores=[])
+            code = compile(ast.fix_missing_locations(probe), "<import-mutation-guard>",
+                           "exec", dont_inherit=True, optimize=0)
+            class_code, = (value for value in code.co_consts if isinstance(value, CodeType))
+            receiver_code, = (value for value in class_code.co_consts if isinstance(value, CodeType))
+            receivers.update(receiver_code.co_names)
     return receivers
 
 

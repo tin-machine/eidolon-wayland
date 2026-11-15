@@ -88,3 +88,19 @@ Unknown Complexity: run_settings_probeの環境準備と監視、recovery_receip
 今回のローカル検証はCPython **3.13.5**。元resolverに追加テストを適用すると16 tests中、subtestを含む27 failureを再現し、修正後は**16 tests PASS / failure 0 / error 0 / skip 0**。解析器と既存testは固定headのGit blob SHAを照合したコピーを使い、公開するresolver/testも検証済みbytesと照合する。完全なcloneではなく、全Deep suite・実source CLI統合・3.12/3.14再実行の成功数ではない。ユーザー報告の108件成功も旧headの結果として区別する。新headのCI結果は確認後にPR本文へ記録し、未完了の成功を先取りしない。
 
 この追加修正はresolver、guard test、評価記録の3ファイルのみ。generatorの登録対象を増やさず既存resolverのsource hashが変わるため、旧artifactをそのまま再利用する契約は追加しない。製品コード、CFG/DFG、Contract Graph、CI workflowは変更しない。
+
+## 230be36 レビュー：Unicode正規化と検査用コード生成（2026-11-15）
+
+対象は `230be362c231d01eab479829a1764d8e3145f220`。ユーザーがCPython 3.12.10 / 3.14.4で既存116 tests成功と、`class 𝐢𝐟:` のprivate属性変更によるrepository全体のSyntaxError停止を報告した。これらは旧headの証拠であり、新修正版の成功記録へ読み替えない。作業開始時のmainは `4bf08e6df9cc3a2eb3cedb8856be52d9fe1dcfca` へ進んでいたが、PRの既存headへ修正を積み、mainや並行開発は変更しない。
+
+原因は、NFKC正規化済みのAST識別子をsource textへ戻したことだった。`𝐢𝐟` は有効なsource上の名前でもAST名は `if` であり、生成した `class if:` は構文エラーになる。修正では文字列probeを廃止し、ClassDefとreceiver読み取り専用lambdaからなる新しいASTを直接compileする。生成code objectは実行しない。lambdaの `co_names` だけを採取し、classの `__module__` / `__qualname__` や版固有のmetadataを誤って抑制対象へ追加しない。元ASTも変更しない。仕様根拠は[識別子の正規化](https://docs.python.org/3.14/reference/lexical_analysis.html#names)と[ASTの直接compile](https://docs.python.org/3.14/library/ast.html)。
+
+functionのlocal/free/globalは既存symtable判定のまま。private receiverの全class候補を抑制専用に使う保守的な境界は維持し、独自mangler・runtime dispatch解決・製品コードの実行は追加しない。
+
+既存guardへ6 tests追加（guard16→22、Deep定義数116→122）。小文字keyword/soft keywordへ正規化するUnicode名のStore/Del、nested/local/generic class、Unicode receiver、read-only正常系、独立module候補とprovenance保持、入力AST不変・余計なcompiler metadataの除外を検査する。独立oracleとして元のUnicode sourceをcompile-onlyで検査する。True/False/Noneに正規化する名前は既存AST validatorの拒否対象なので、この正常系matrixへ混ぜない。
+
+CPython **3.13.5**（final/0）で、Git blob SHA照合済みの解析器・CLI・既存fixtureの検証用コピーを使用。追加後22 testsを旧resolverで実行すると **failure 1 / errors 78**（subtestを含む）を再現し、修正後は **22 PASS / failure 0 / error 0 / skip 0**。新しい一時Git fixtureで実CLIのrepository-deep→verify→targeted-deepが成功し、3 Python filesすべてanalyzed、変更対象はunresolved、安全な別moduleへのcandidateは維持された。同じ入力のartifact bytes一致、最小node/edge予算のsliceでunknownとsource fingerprintが残ること、source改変の拒否も検査した。
+
+別途、旧resolverで生成した通常名fixtureのartifactを、同じsource・同じPythonで修正版CLIに渡すとexit 2（stale）で拒否した。generator hash/source-only loaderの保護対象は変わらない。ローカルの完全なrepository clone、全Deep suite、3.12/3.14の修正版再実行、全repositoryの計測は未実施。新headのCIはPR本文で別途記録する。
+
+今回の変更はresolver、guard test、評価記録の3ファイルのみ。CFG/DFG/PDGの範囲、Contract Graph、B1、製品runtime、CI workflowは変更せず、マージは保留する。

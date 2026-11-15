@@ -291,6 +291,140 @@ class ImportGuardTests(unittest.TestCase):
                                     for i in instructions))
 
 
+    def test_unicode_keyword_class_names_keep_mutation_guard_without_text_roundtrip(self):
+        import ast
+        import keyword
+
+        # Generate valid source spellings whose normalized AST names are keywords.
+        # Constants True/False/None are not accepted by the existing AST validator.
+        words = sorted({name for name in keyword.kwlist + keyword.softkwlist if name.islower()})
+        for word in words:
+            spelling = "".join(chr(ord("𝐚") + ord(c) - ord("a"))
+                               if "a" <= c <= "z" else c for c in word)
+            for operation in ("__core.finish = replacement", "del __core.finish"):
+                with self.subTest(word=word, operation=operation):
+                    alias = f"_{word}__core"
+                    entry = (f"import service as {alias}\nclass {spelling}:\n"
+                             f"    {operation}\ndef run(): return {alias}.finish()\n")
+                    self.assertEqual(ast.parse(entry).body[1].name, word)
+                    # This oracle compiles the *original* source, not the probe.
+                    original = compile(entry, "entry.py", "exec", dont_inherit=True)
+                    class_code = next(c for c in original.co_consts if isinstance(c, types.CodeType))
+                    self.assertIn(alias, class_code.co_names)
+                    call = self.call(self.analyze(entry, "def finish(): return 1\n"))
+                    self.assert_unresolved(call)
+                    self.assertEqual(call["import_evidence"]["reason"],
+                                     "possible_alias_rebinding_or_dynamic_namespace")
+                    self.assertNotIn("target", call["import_evidence"])
+
+    def test_unicode_keyword_mutation_guard_in_nested_and_generic_classes(self):
+        bodies = [
+            "class 𝐢𝐟:\n    def mutate(self):\n        {operation}\n",
+            "class 𝐢𝐟[T]:\n    {operation}\n",
+            "class 𝐢𝐟[T]:\n    def mutate(self):\n        {operation}\n",
+            "class Outer:\n    class 𝐢𝐟:\n        {operation}\n",
+            "def outer():\n    class 𝐢𝐟:\n        {operation}\n",
+            "class 𝐢𝐟:\n    def outer(self):\n        def mutate():\n            {operation}\n",
+        ]
+        for body in bodies:
+            for operation in ("__core.finish = replacement", "del __core.finish"):
+                with self.subTest(body=body, operation=operation):
+                    entry = ("import service as _if__core\n" + body.format(operation=operation)
+                             + "def run(): return _if__core.finish()\n")
+                    self.assert_unresolved(self.call(self.analyze(entry, "def finish(): return 1\n")))
+
+    def test_unicode_probe_collects_only_receiver_names_not_class_scaffolding(self):
+        import ast
+        from deep_structure.import_resolution import _attribute_mutation_receivers
+
+        tree = ast.parse("class 𝐢𝐟:\n    __𝐜𝐨𝐫𝐞.finish = replacement\n"
+                         "    del __peer.finish\n    ordinary.finish = replacement\n")
+        original = ast.dump(tree, include_attributes=True)
+        expected = {"__core", "__peer", "_if__core", "_if__peer", "ordinary"}
+        self.assertEqual(_attribute_mutation_receivers(tree), expected)
+        self.assertEqual(_attribute_mutation_receivers(tree), expected)
+        self.assertEqual(ast.dump(tree, include_attributes=True), original)
+        # __module__/__qualname__/version-specific class machinery must not
+        # enter the suppression set when extracting names from compiler output.
+
+    def test_unicode_keyword_read_only_class_keeps_candidate(self):
+        for body in ("class 𝐢𝐟:\n    saved = __core.finish\n",
+                     "class 𝐢𝐟[T]:\n    def read(self): return __core.finish\n"):
+            with self.subTest(body=body):
+                entry = "import service as _if__core\n" + body + "def run(): return _if__core.finish()\n"
+                graph = self.analyze(entry, "def finish(): return 1\n")
+                self.assertEqual(self.call(graph)["target"], "service.py::finish@1")
+
+    def test_unicode_keyword_mutation_keeps_other_modules_and_provenance(self):
+        entry = ("import service as _if__core\nimport safe as live\n"
+                 "class 𝐢𝐟:\n    del __core.finish\n"
+                 "def run():\n    _if__core.finish()\n    live.finish()\n")
+        service = "raise RuntimeError('must not execute')\ndef finish(): return 1\n"
+        extra = {"safe.py": "def finish(): return 2\n"}
+        graph = self.analyze(entry, service, extra)
+        self.assertEqual(graph, self.analyze(entry, service, extra))
+        call = self.call(graph, expression="_if__core.finish")
+        self.assert_unresolved(call)
+        evidence = call["import_evidence"]
+        self.assertEqual(evidence["source"]["path"], "entry.py")
+        self.assertEqual(evidence["source"]["sha256"], hashlib.sha256(entry.encode()).hexdigest())
+        self.assertEqual(evidence["source"]["revision"], "fixture-revision")
+        self.assertEqual(evidence["import_location"]["line"], 1)
+        self.assertEqual(evidence["module_source"]["path"], "service.py")
+        self.assertEqual(self.call(graph, expression="live.finish")["target"], "safe.py::finish@1")
+        self.assertEqual(graph["summary"]["cross_module_call_candidates"], 1)
+
+    def test_unicode_keyword_repository_cli_verify_and_bounded_slice(self):
+        import json
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for args in (("init", "-q"), ("config", "user.name", "Deep test"),
+                         ("config", "user.email", "test@example.invalid")):
+                subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+            (root / "entry.py").write_text(
+                "import service as _if__core\nimport safe as live\nclass 𝐢𝐟:\n"
+                "    __core.finish = None\ndef run():\n    _if__core.finish()\n    live.finish()\n",
+                encoding="utf-8")
+            (root / "service.py").write_text(
+                "raise RuntimeError('must not execute')\ndef finish(): return 1\n", encoding="utf-8")
+            (root / "safe.py").write_text("def finish(): return 2\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"],
+                           check=True, capture_output=True)
+
+            def run(*args):
+                process = subprocess.run([sys.executable, "-B", str(REPO / "scripts/deep_structure.py"),
+                                          *args, "--repo", str(root)],
+                                         capture_output=True, text=True, timeout=90)
+                self.assertEqual(process.returncode, 0, process.stderr)
+                return json.loads(process.stdout)
+
+            artifact = Path(run("repository-deep")["artifact"])
+            payload = artifact.read_bytes()
+            graph = json.loads(payload)
+            self.assertTrue(all(row["analysis_status"] == "analyzed" for row in graph["files"]))
+            function = next(f for f in graph["functions"] if f["id"] == "entry.py::run@5")
+            self.assert_unresolved(function["calls"][0])
+            self.assertEqual(function["calls"][1]["target"], "safe.py::finish@1")
+            self.assertEqual(run("verify", "--artifact", str(artifact))["status"], "fresh")
+            run("repository-deep")
+            self.assertEqual(artifact.read_bytes(), payload)
+            sliced = run("targeted-deep", "--artifact", str(artifact), "--symbol", function["id"],
+                         "--hops", "0", "--max-nodes", "1", "--max-edges", "0")
+            view = json.loads(Path(sliced["artifact"]).read_text())
+            self.assert_unresolved(view["call_sites"][0])
+            self.assertEqual(view["call_sites"][0]["import_evidence"]["source"]["sha256"],
+                             hashlib.sha256((root / "entry.py").read_bytes()).hexdigest())
+            self.assertTrue(view["unknowns"])
+            (root / "entry.py").write_text("# source changed\n", encoding="utf-8")
+            stale = subprocess.run([sys.executable, "-B", str(REPO / "scripts/deep_structure.py"),
+                                    "verify", "--repo", str(root), "--artifact", str(artifact)],
+                                   capture_output=True, text=True, timeout=90)
+            self.assertEqual(stale.returncode, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
