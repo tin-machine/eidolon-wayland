@@ -119,6 +119,9 @@ scripts/ci/check-linux-desktop-v3-n01 --artifact-root /absolute/private/empty/n0
 - `n01-native.json`: 失敗解析用のoptionalなnative観測。必須receiptやassertionの代替にはしない。
 
 環境不足や実行失敗時はN01成功receiptを生成しない。出力された固定reason、`fixture_stage`、未実施行を確認する。
+runnerがreceiptを返せない場合も、`diagnostics` に終了code／signal、経過時間、固定stage、限定したpanic／loader分類を残す。
+解析対象のstderrは末尾2,048 bytesだけで、本文・panic message・thread名・profile／鍵は保存しない。
+これらの診断はproduct receiptやoracleの代わりにはしない。
 不正なtyped receiptも保存し、独立validatorが `invalid / exit 3` を決定する。環境不足へ読み替えない。
 同一の実行sourceをcheckoutし、取得したartifactをprivateに保持したまま既存CLIで再照合できる。
 

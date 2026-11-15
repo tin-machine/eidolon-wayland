@@ -37,6 +37,13 @@ FIXTURE_REASONS = frozenset({
     "I6_SOURCE_MISMATCH", "I6_WATCHDOG", "I6_DRIVER_DIED", "I6_EVIDENCE_MISSING",
     "I6_ASSERTION_FAILED", "I6_CLEANUP_FAILED", "I6_OPERATOR_CANCELLED",
 })
+RUNNER_STAGES = ("descriptor", "configuration", "registry_create", "exercise", "retire", "shutdown", "receipt")
+RUNNER_REASONS = frozenset({
+    "I6_ARGUMENT_INVALID", "I6_NONROOT_REQUIRED", "I6_INPUT_INVALID", "I6_REGISTRY_CREATE_FAILED",
+    "I6_RUNTIME_STALE", "I6_TRACE_OVERFLOW", "I6_CREDENTIAL_FAILED", "I6_OUTER_TIMEOUT",
+    "I6_COMMAND_REJECTED", "I6_CATALOG_MISSING", "I6_FINALIZER_MISSING", "I6_DESTROY_REJECTED",
+    "I6_RECEIPT_INVALID",
+})
 
 
 class FixtureError(ValueError):
@@ -108,6 +115,50 @@ def fresh_directory(path, *, uid=0, gid=0):
     return path
 
 
+def runner_diagnostics(returncode, elapsed_ms, stderr_tail):
+    """Discard stderr text; retain only bounded, allowlisted diagnostic facts."""
+    tail = bytes(stderr_tail[-2048:])
+    lines = tail.splitlines()
+    stages = {("I6_RUNNER_STAGE " + stage).encode(): stage for stage in RUNNER_STAGES}
+    reasons = {reason.encode(): reason for reason in RUNNER_REASONS}
+    observed_stages = [stages[line] for line in lines if line in stages]
+    observed_reasons = [reasons[line] for line in lines if line in reasons]
+    panic, io_safety, location, soname = False, False, None, None
+    for line in lines:
+        header = re.fullmatch(rb"thread '[^'\r\n]{1,128}'(?: \([0-9]{1,10}\))? panicked at (.*)", line)
+        if header:
+            panic = True
+            source = re.fullmatch(
+                rb"(?:/src/)?((?:native/(?:android|core|model|render|theme|transport)/src|"
+                rb"scripts/fixtures/linux-real-app-v3-host/src)/[a-z0-9_/-]{1,180}\.rs):"
+                rb"([1-9][0-9]{0,6}):([1-9][0-9]{0,6}):", header[1])
+            if source:
+                relative = source[1].decode("ascii")
+                path = ROOT / relative
+                # A matching prefix alone cannot authorize a private filename.
+                # Only an existing source file, without symlink traversal, is retained.
+                try:
+                    if path.is_file() and path.resolve(strict=True) == path:
+                        location = ":".join(part.decode("ascii") for part in source.groups())
+                except OSError:
+                    pass
+        io_safety |= line.startswith(b"fatal runtime error: IO Safety violation:")
+        loader = re.search(rb": error while loading shared libraries: (lib[A-Za-z0-9_+-]{1,64}\.so"
+                           rb"(?:\.[0-9]{1,4}){0,4}): cannot open shared object file: No such file or directory$", line)
+        if loader:
+            soname = loader[1].decode("ascii")
+    classification = ("io_safety_abort" if io_safety else "rust_panic" if panic else "loader_missing" if soname
+                      else "fixed_reason" if observed_reasons else "empty" if not tail
+                      else "stage_only" if all(line in stages for line in lines) else "unknown")
+    return {"returncode": returncode, "elapsed_ms": elapsed_ms,
+            "exit_kind": "not_started" if returncode is None else "signal" if returncode < 0
+                         else "success" if returncode == 0 else "nonzero",
+            "signal_number": -returncode if returncode is not None and returncode < 0 else None,
+            "stderr_tail_bytes": len(tail), "stages": observed_stages,
+            "reason": observed_reasons[-1] if observed_reasons else None, "classification": classification,
+            "panic_location": location, "missing_soname": soname}
+
+
 def run_capture(argv, *, uid=None, home="/", seconds=30, pass_fds=(), input_bytes=None, diagnostic=None):
     """Bound retained bytes and time, with a live pidfd for the owned child.
 
@@ -119,7 +170,18 @@ def run_capture(argv, *, uid=None, home="/", seconds=30, pass_fds=(), input_byte
                    env=clean_environment(home), pass_fds=pass_fds, start_new_session=True)
     if uid is not None:
         options.update(user=uid, group=uid, extra_groups=[])
-    child = subprocess.Popen([str(a) for a in argv], **options)
+    started = time.monotonic()
+    stderr = bytearray()
+
+    def record(returncode):
+        if diagnostic is not None:
+            diagnostic.update(runner_diagnostics(returncode, int((time.monotonic() - started) * 1000), stderr))
+
+    try:
+        child = subprocess.Popen([str(a) for a in argv], **options)
+    except OSError:
+        record(None)
+        raise
     try:
         pidfd = os.pidfd_open(child.pid)
     except OSError:
@@ -131,6 +193,7 @@ def run_capture(argv, *, uid=None, home="/", seconds=30, pass_fds=(), input_byte
         child.stderr.close()
         if child.stdin is not None:
             child.stdin.close()
+        record(child.returncode)
         raise FixtureError("I6_ENVIRONMENT_UNAVAILABLE") from None
     selector = selectors.DefaultSelector()
     stdout = bytearray()
@@ -157,8 +220,8 @@ def run_capture(argv, *, uid=None, home="/", seconds=30, pass_fds=(), input_byte
                 if key.data == "stdout":
                     stdout.extend(data)
                 elif diagnostic is not None:
-                    diagnostic.extend(data)
-                    del diagnostic[:-2048]
+                    stderr.extend(data)
+                    del stderr[:-2048]
         return child.wait(timeout=1), bytes(stdout)
     finally:
         if child.poll() is None:
@@ -172,6 +235,7 @@ def run_capture(argv, *, uid=None, home="/", seconds=30, pass_fds=(), input_byte
         os.close(pidfd)
         child.stdout.close()
         child.stderr.close()
+        record(child.returncode)
 
 
 def command(argv, **kwargs):
@@ -530,7 +594,8 @@ def run_fixture(args, artifacts, source, progress):
         descriptor_path, output_path = driver / "descriptor.json", driver / "native.json"
         exclusive(descriptor_path, evidence.canonical(descriptor), uid=driver_uid, gid=driver_uid)
         credential = os.open(fixture / "client-key", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        diagnostic = bytearray()
+        diagnostic = {}
+        progress["diagnostics"] = diagnostic
         progress["stage"] = "registry_runner"
         try:
             code, _ = run_capture([args.runner, "--descriptor", descriptor_path, "--credential-fd", str(credential),
@@ -540,9 +605,7 @@ def run_fixture(args, artifacts, source, progress):
             os.close(credential)
         if code != 0:
             progress["first_reason"] = "I6_DRIVER_DIED"
-            reasons = [line.decode("ascii") for line in diagnostic.splitlines()
-                       if re.fullmatch(rb"I6_[A-Z0-9_]{1,64}", line)]
-            progress["runner_reason"] = reasons[-1] if reasons else None
+            progress["runner_reason"] = diagnostic["reason"]
         native = evidence.parse(read_owned(output_path, driver_uid))
         # Save the fixed, typed native observations before any postcondition can
         # fail. This diagnostic is opaque unless the full independent receipt
@@ -552,7 +615,7 @@ def run_fixture(args, artifacts, source, progress):
         if native.get("error") is not None:
             progress["first_reason"] = "I6_ASSERTION_FAILED"
             reason = native["error"]
-            progress["runner_reason"] = reason if type(reason) is str and re.fullmatch(r"I6_[A-Z0-9_]{1,64}", reason) else None
+            progress["runner_reason"] = reason if type(reason) is str and reason in RUNNER_REASONS else None
         if native.get("cleanup_error") is not None:
             progress["cleanup_reason"] = "I6_CLEANUP_FAILED"
         owner_id = native["owner_id"]
@@ -598,7 +661,7 @@ def execute(args):
     source = None
     oracle = None
     progress = {"stage": "source_snapshot", "run_id": None, "first_reason": None, "cleanup_reason": None,
-                "runner_reason": None, "native_saved": False}
+                "runner_reason": None, "native_saved": False, "diagnostics": None}
     fixture_failure = None
     try:
         source = evidence.source_snapshot(ROOT)
@@ -637,7 +700,7 @@ def execute(args):
         "required_families": 28, "required_variants": 87, "required_assertions": 533,
         "oracle": oracle, "acceptance_exit_code": result["exit_code"],
         "fixture_failure": fixture_failure, "runner_reason": progress["runner_reason"],
-        "fixture_stage": progress["stage"],
+        "fixture_stage": progress["stage"], "diagnostics": progress["diagnostics"],
         "environment_disposal": "not_yet"}
     evidence.write_report(artifacts / "n01-validation.json", n01_result)
     print(json.dumps({k: v for k, v in n01_result.items() if k not in {"oracle", "source"}}, sort_keys=True))

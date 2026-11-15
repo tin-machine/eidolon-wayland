@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 import tempfile
 import unittest
@@ -126,10 +127,111 @@ class N01SupervisorTests(unittest.TestCase):
             n01.read_owned(pipe, os.getuid())
 
     def test_child_output_is_bounded_and_nonzero_status_is_preserved(self):
-        status, output = n01.run_capture([sys.executable, "-c", "print('bounded'); raise SystemExit(7)"])
+        diagnostics = {}
+        status, output = n01.run_capture([sys.executable, "-c", "print('bounded'); raise SystemExit(7)"],
+                                         diagnostic=diagnostics)
         self.assertEqual((status, output), (7, b"bounded\n"))
+        self.assertEqual((diagnostics["returncode"], diagnostics["exit_kind"], diagnostics["classification"]),
+                         (7, "nonzero", "empty"))
+        self.assertIsInstance(diagnostics["elapsed_ms"], int)
+        self.assertGreaterEqual(diagnostics["elapsed_ms"], 0)
         with self.assertRaisesRegex(n01.FixtureError, "I6_EVIDENCE_MISSING"):
             n01.run_capture([sys.executable, "-c", "import sys; sys.stdout.write('x' * 1100000)"])
+
+    def test_signaled_child_and_watchdog_keep_only_sanitized_exit_observations(self):
+        diagnostics = {}
+        status, output = n01.run_capture([sys.executable, "-c",
+            "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"], diagnostic=diagnostics)
+        self.assertEqual((status, output), (-signal.SIGTERM, b""))
+        self.assertEqual(diagnostics["exit_kind"], "signal")
+        self.assertEqual(diagnostics["signal_number"], signal.SIGTERM)
+        self.assertEqual(diagnostics["stderr_tail_bytes"], 0)
+        diagnostics = {}
+        with self.assertRaisesRegex(n01.FixtureError, "I6_WATCHDOG"):
+            n01.run_capture([sys.executable, "-c", "import time; time.sleep(30)"],
+                            seconds=0.1, diagnostic=diagnostics)
+        self.assertEqual(diagnostics["exit_kind"], "signal")
+        self.assertEqual(diagnostics["signal_number"], signal.SIGTERM)
+
+    def test_stderr_tail_is_bounded_and_unknown_markers_and_private_payloads_are_discarded(self):
+        raw = ("private-prefix" * 400 + "\nI6_RUNNER_STAGE descriptor\nI6_RUNNER_STAGE registry_create\n"
+               "I6_RUNNER_STAGE private-profile\nI6_PRIVATE_SECRET\nI6_INPUT_INVALID\n"
+               "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key /home/eidolon-app/Documents/profile.json\n")
+        diagnostics = {}
+        code, _ = n01.run_capture([sys.executable, "-c", "import sys; sys.stderr.write(" + repr(raw) +
+                                  "); raise SystemExit(1)"], diagnostic=diagnostics)
+        self.assertEqual(code, 1)
+        self.assertEqual(diagnostics["stderr_tail_bytes"], 2048)
+        self.assertEqual(diagnostics["stages"], ["descriptor", "registry_create"])
+        self.assertEqual(diagnostics["reason"], "I6_INPUT_INVALID")
+        self.assertEqual(diagnostics["classification"], "fixed_reason")
+        serialized = json.dumps(diagnostics)
+        for private in ("private", "OPENSSH", "/home/", "Documents", "I6_PRIVATE_SECRET"):
+            self.assertNotIn(private, serialized)
+        unknown = n01.runner_diagnostics(1, 12, b"I6_PRIVATE_SECRET\nI6_RUNNER_STAGE private-profile\n\xff\x00")
+        self.assertEqual(unknown["classification"], "unknown")
+        self.assertEqual(unknown["stages"], [])
+        self.assertIsNone(unknown["reason"])
+        self.assertNotIn("PRIVATE", json.dumps(unknown))
+
+    def test_panic_diagnostic_allows_existing_source_location_and_never_panic_message(self):
+        raw = (b"thread 'private-thread' (123) panicked at /src/native/core/src/runtime.rs:123:9:\n"
+               b"profile=/home/private/Documents/settings.json password=private-password\n")
+        diagnostic = n01.runner_diagnostics(101, 42, raw)
+        self.assertEqual(diagnostic["classification"], "rust_panic")
+        self.assertEqual(diagnostic["panic_location"], "native/core/src/runtime.rs:123:9")
+        self.assertNotIn("private", json.dumps(diagnostic))
+        for location in (b"/home/private/secret.rs:1:2:", b"/src/native/core/src/private_secret.rs:1:2:",
+                         b"/src/native/core/src/../private.rs:1:2:",
+                         b"/src/native/core/src/runtime.rs:1:2: private-message"):
+            with self.subTest(location=location):
+                diagnostic = n01.runner_diagnostics(101, 42, b"thread 'main' panicked at " + location)
+                self.assertEqual(diagnostic["classification"], "rust_panic")
+                self.assertIsNone(diagnostic["panic_location"])
+                self.assertNotIn("private", json.dumps(diagnostic))
+
+    def test_loader_soname_and_io_safety_classification_reject_private_paths_and_free_text(self):
+        prefix = b"/home/private/executable: error while loading shared libraries: "
+        suffix = b": cannot open shared object file: No such file or directory"
+        diagnostic = n01.runner_diagnostics(127, 2, prefix + b"libEGL.so.1" + suffix)
+        self.assertEqual(diagnostic["classification"], "loader_missing")
+        self.assertEqual(diagnostic["missing_soname"], "libEGL.so.1")
+        self.assertNotIn("private", json.dumps(diagnostic))
+        for soname in (b"/home/private/libEGL.so.1", b"libEGL.so.private-key", b"libEGL.so.1 private-key"):
+            diagnostic = n01.runner_diagnostics(127, 2, prefix + soname + suffix)
+            self.assertEqual(diagnostic["classification"], "unknown")
+            self.assertIsNone(diagnostic["missing_soname"])
+            self.assertNotIn("private", json.dumps(diagnostic))
+        diagnostic = n01.runner_diagnostics(-signal.SIGABRT, 3,
+            b"fatal runtime error: IO Safety violation: owned file descriptor already closed, aborting\nprivate-key")
+        self.assertEqual(diagnostic["classification"], "io_safety_abort")
+        self.assertEqual(diagnostic["signal_number"], signal.SIGABRT)
+        self.assertNotIn("private", json.dumps(diagnostic))
+
+    def test_runner_diagnostics_survive_missing_native_receipt_without_entering_acceptance_report(self):
+        args = n01.argparse.Namespace(artifact_root=self.root / "artifacts")
+        source = {"commit": "a" * 40, "tree_sha256": "b" * 64, "dirty": False,
+                  "build_features": [], "pr_head": None}
+        diagnostic = n01.runner_diagnostics(-signal.SIGABRT, 12,
+            b"I6_RUNNER_STAGE registry_create\nfatal runtime error: IO Safety violation: private-key")
+
+        def failed_fixture(_args, _artifacts, _source, progress):
+            progress.update(run_id="c" * 32, first_reason="I6_DRIVER_DIED", diagnostics=diagnostic)
+            raise FileNotFoundError("/home/private/native.json")
+
+        with mock.patch.object(n01.evidence, "source_snapshot", return_value=source), \
+             mock.patch.object(n01, "run_fixture", side_effect=failed_fixture), \
+             mock.patch("builtins.print") as output:
+            self.assertEqual(n01.execute(args), 1)
+        report = json.loads((args.artifact_root / "acceptance.json").read_bytes())
+        result = json.loads((args.artifact_root / "n01-validation.json").read_bytes())
+        self.assertEqual(result["diagnostics"], diagnostic)
+        self.assertEqual(result["reason"], "I6_ASSERTION_FAILED")
+        self.assertFalse(result["n01_inspect_only_passed"])
+        self.assertNotIn("diagnostics", report)
+        self.assertEqual(report["artifacts"], [])
+        self.assertNotIn("private", json.dumps(result))
+        self.assertNotIn("private", str(output.call_args))
 
     def test_external_watchdog_returns_non_success_and_reaps_its_live_child(self):
         with self.assertRaisesRegex(n01.FixtureError, "I6_WATCHDOG"):

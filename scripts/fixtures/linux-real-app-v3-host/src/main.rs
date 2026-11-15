@@ -506,6 +506,7 @@ fn run() -> Result<bool> {
     if unsafe { libc::geteuid() } == 0 {
         return Err("I6_NONROOT_REQUIRED");
     }
+    eprintln!("I6_RUNNER_STAGE descriptor");
     let descriptor = parse_descriptor(&read_private(
         &descriptor.ok_or("I6_ARGUMENT_INVALID")?,
         65536,
@@ -520,15 +521,23 @@ fn run() -> Result<bool> {
         .read_to_end(&mut key)
         .map_err(|_| "I6_CREDENTIAL_FAILED")?;
     eidolon_transport::credentials::decode(&key).map_err(|_| "I6_CREDENTIAL_FAILED")?;
+    eprintln!("I6_RUNNER_STAGE configuration");
     let config = runtime_config(&descriptor)?;
+    eprintln!("I6_RUNNER_STAGE registry_create");
     let mut driver = Driver::new(&config, key)?;
+    eprintln!("I6_RUNNER_STAGE exercise");
     let first = driver.exercise().err();
     let retirement = if first.is_some() {
+        eprintln!("I6_RUNNER_STAGE retire");
         driver.retire_after_failure().err()
     } else {
         None
     };
-    let cleanup = retirement.or_else(|| driver.shutdown().err());
+    let cleanup = retirement.or_else(|| {
+        eprintln!("I6_RUNNER_STAGE shutdown");
+        driver.shutdown().err()
+    });
+    eprintln!("I6_RUNNER_STAGE receipt");
     write_receipt(
         &output.ok_or("I6_ARGUMENT_INVALID")?,
         &driver.receipt(&descriptor.run_id, first, cleanup),
