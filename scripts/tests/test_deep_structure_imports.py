@@ -257,6 +257,43 @@ def finish(x): return entry.run(x)
                 self.assertEqual(call["import_evidence"]["reason"],
                                  "possible_alias_rebinding_or_dynamic_namespace")
 
+    def test_real_source_cli_repository_verify_and_targeted_deep(self):
+        import json
+
+        for path in (
+            "scripts/linux/eidolon_linux_desktop_session_v3.py",
+            "scripts/linux/eidolon_linux_desktop_v3.py",
+            "scripts/linux/eidolon_linux_process_owner.py",
+        ):
+            self.write(path, (REPO / path).read_text())
+        self.commit()
+        command = [sys.executable, "-B", str(REPO / "scripts/deep_structure.py")]
+
+        def run(*args):
+            result = subprocess.run([*command, *args, "--repo", str(self.root)],
+                                    capture_output=True, text=True, timeout=90)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+        first = run("repository-deep")
+        artifact = Path(first["artifact"])
+        self.assertTrue(artifact.exists())
+        self.assertEqual(run("verify", "--artifact", str(artifact))["status"], "fresh")
+        target = "scripts/linux/eidolon_linux_desktop_session_v3.py::_cleanup@99"
+        slice_result = run("targeted-deep", "--artifact", str(artifact),
+                           "--symbol", target, "--hops", "2",
+                           "--max-nodes", "160", "--max-edges", "300",
+                           "--max-bytes", "262144")
+        graph = json.loads(Path(slice_result["artifact"]).read_text())
+        self.assertEqual(graph["symbol"], target)
+        expected = "scripts/linux/eidolon_linux_desktop_v3.py::cleanup_owner@482"
+        edges = [e for e in graph["edges"] if e["to"] == expected
+                 and e.get("candidate_kind") == "repository_import"]
+        self.assertTrue(edges)
+        self.assertEqual(edges[0]["import_evidence"]["import_location"]["line"], 16)
+        self.assertEqual(edges[0]["location"]["line"], 105)
+        self.assertTrue(graph["unknowns"])
+
     def test_real_linux_sources_follow_two_cross_module_calls_without_execution(self):
         for path in (
             "scripts/linux/eidolon_linux_desktop_session_v3.py",
