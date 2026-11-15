@@ -410,9 +410,6 @@ impl HostSdkAdapter {
             let create = self.leases[i].create;
             let entity = self.leases[i].entity.as_mut().ok_or(Status::NotReady)?;
             entity.seal();
-            if !entity.dispose() {
-                return Ok(false);
-            }
             if self.leases[i].phase != Phase::Retiring {
                 let request = self.next()?;
                 let code = self.issue(registry, json!({
@@ -427,6 +424,16 @@ impl HostSdkAdapter {
                 }
                 self.leases[i].phase = Phase::Retiring;
                 self.observe("sdk_retiring", json!({"target":target,"create_seq":create}))?;
+            }
+            // Native Retiring closes the real target first. Only then may
+            // callback disposal precede the same lease's Retired receipt.
+            if !self.leases[i]
+                .entity
+                .as_mut()
+                .ok_or(Status::NotReady)?
+                .dispose()
+            {
+                return Ok(false);
             }
             let request = self.next()?;
             let code = self.issue(registry, json!({
