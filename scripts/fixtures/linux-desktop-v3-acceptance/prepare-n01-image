@@ -26,7 +26,28 @@ check_disposable
 # Neither the Docker marker nor GitHub Actions environment flags are fabricated.
 build_account python3 /src/scripts/ci/prepare-linux-real-app-fixture \
   --stage build --work-directory /home/eidolon-build/mousepad-a0 --isolated-container
-dpkg --install /home/eidolon-build/mousepad-a0/mousepad-a0.deb
+# Minimal Ubuntu images may exclude documentation during unpack. Observe the
+# actual filters and retain this package's original evidence payload only;
+# never reconstruct evidence or change the system-wide dpkg configuration.
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+filters = []
+for path in [Path("/etc/dpkg/dpkg.cfg"), *sorted(Path("/etc/dpkg/dpkg.cfg.d").glob("*"))]:
+    if path.is_file():
+        filters.extend(line.strip() for line in path.read_text().splitlines()
+                       if line.strip().startswith(("path-exclude=", "path-include=")))
+print(json.dumps({"n01_dpkg_path_filters": filters}, sort_keys=True))
+PY
+dpkg --path-include=/usr/share/doc/mousepad \
+  '--path-include=/usr/share/doc/mousepad/*' \
+  --install /home/eidolon-build/mousepad-a0/mousepad-a0.deb
+for i6_document in eidolon-build-evidence.json eidolon-config.h eidolon-mousepad-Makefile; do
+  dpkg-deb --fsys-tarfile /home/eidolon-build/mousepad-a0/mousepad-a0.deb \
+    | tar --extract --to-stdout --file - "./usr/share/doc/mousepad/$i6_document" \
+    | cmp - "/usr/share/doc/mousepad/$i6_document"
+done
 ldconfig
 glib-compile-schemas --strict /usr/share/glib-2.0/schemas
 build_account python3 /src/scripts/ci/prepare-linux-real-app-fixture \

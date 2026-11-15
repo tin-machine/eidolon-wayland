@@ -59,6 +59,10 @@ package準備は `--network bridge` の別のfresh Docker containerで実行す�
 非rootの `eidolon-build` が固定sourceを取得・buildし、rootがpackageをinstall、非rootがinventoryを採取する。
 既存guardは変更せず、Docker markerやGitHub環境を偽装しない。準備前後にdriver/app accountとHOMEの不在を確認し、
 準備containerの停止とexit 0を確認してからimageをcommitする。元のENTRYPOINTを復元して照合する。
+最小Ubuntu imageでは、package installが成功してもdoc配下のbuild evidenceが欠落することをCIで観測した。
+準備時は実dpkgのpath filterを記録し、当該packageのinstallに限って元のMousepad doc payloadを保持する。
+build evidence JSON／config.h／generated Makefileは、実debのpayloadとinstall後のbytesを直接照合する。
+欠落した証拠を再生成したり、inspectorの条件を緩めたりはしない。
 
 N01の実行containerは完成imageから新規作成し、`--network none`、loopback sshd、PID上限256、メモリ6GiB、CPU4。
 host PID／network namespace、通常HOME、desktop socket、ADB、Docker socketを共有しない。
