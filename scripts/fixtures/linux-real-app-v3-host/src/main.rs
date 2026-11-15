@@ -188,7 +188,14 @@ fn census_snapshot(snapshot: &Value) -> Result<Value> {
     )?;
     value["render"] = snapshot_fields(
         &runtime["render"],
-        &["workers", "targets", "contexts", "latest_images", "queued", "error"],
+        &[
+            "workers",
+            "targets",
+            "contexts",
+            "latest_images",
+            "queued",
+            "error",
+        ],
     )?;
     value["transport"] = snapshot_fields(
         &runtime["transport"],
@@ -203,8 +210,7 @@ fn census_snapshot(snapshot: &Value) -> Result<Value> {
             "error",
         ],
     )?;
-    value["transport"]["forward"] =
-        snapshot_fields(&runtime["transport"]["forward"], &["active"])?;
+    value["transport"]["forward"] = snapshot_fields(&runtime["transport"]["forward"], &["active"])?;
     census["runtime"] = value;
     Ok(census)
 }
@@ -431,7 +437,10 @@ impl Driver {
         })?;
         self.observe("runtime_shutdown_complete",json!({"shutdown":snapshot["runtime"]["shutdown"],"reclamation":snapshot["runtime"]["reclamation"]}))?;
         let snapshot = self.pump()?;
-        self.observe("last_live_census", json!({"snapshot":census_snapshot(&snapshot)?}))?;
+        self.observe(
+            "last_live_census",
+            json!({"snapshot":census_snapshot(&snapshot)?}),
+        )?;
         let status = self.registry.destroy(self.handle);
         self.destroy_status = Some(status as i32);
         self.append_observation(
@@ -651,7 +660,10 @@ mod tests {
         assert!(census["runtime"].get("workspace").is_none());
         assert!(census["runtime"]["render"].get("window_controls").is_none());
         assert_eq!(census["runtime"]["transport"]["owned_connections"], 2);
-        assert_eq!(census["runtime"]["reclamation"], raw["runtime"]["reclamation"]);
+        assert_eq!(
+            census["runtime"]["reclamation"],
+            raw["runtime"]["reclamation"]
+        );
         assert_eq!(census["runtime"]["shutdown"], raw["runtime"]["shutdown"]);
         // An unexpected retained panel cannot become an empty successful census.
         raw["runtime"]["panels"] = json!([{"position_m":[0.0,1.0,2.0]}]);
