@@ -161,7 +161,7 @@ def _start_demo(owner, profile, drain, env, paths, verified_bundle, context):
     command = [str(waypipe), *core.FIXED_WAYPIPE_ARGS, "--socket", str(paths.wayland_socket),
                "--display", str(paths.runtime / "w"), "server", "--",
                str(verified_bundle.directory / "eidolon-gtk3-desktop"),
-               "--case", "input", "--run-id", context.record()["nonce"] * 2]
+               "--run-id", context.record()["nonce"] * 2]
     return core.spawn_tracked(owner, profile, drain, command, env)
 
 
