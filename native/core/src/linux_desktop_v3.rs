@@ -6,9 +6,7 @@
 //! is called only after V3PresentationObserver::tick() returns that decision.
 use eidolon_model::{
     ids::WindowId,
-    linux_desktop_v3::{
-        presentation::{Life, NativeOrigin, NativeWindowFact, Parent, Role},
-    },
+    linux_desktop_v3::presentation::{Life, NativeOrigin, NativeWindowFact, Parent, Role},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -493,7 +491,11 @@ mod tests {
             Err("APP_WINDOW_UNSUPPORTED")
         );
         // Before adoption, unsupported roots never become candidates.
-        for fake in ["mousepad", "", "io.github.tinmachine.eidolon.linuxdesktop.rstale"] {
+        for fake in [
+            "mousepad",
+            "",
+            "io.github.tinmachine.eidolon.linuxdesktop.rstale",
+        ] {
             let mut unknown = WindowHistory::new(demo.clone(), []);
             unknown.started();
             forged.app_id = Some(fake.into());
