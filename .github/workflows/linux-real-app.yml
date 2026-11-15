@@ -240,3 +240,30 @@ jobs:
             ${{ runner.temp }}/i6-renderer/renderer-container.json
           if-no-files-found: warn
           retention-days: 3
+
+  v3_n02:
+    needs: scope
+    if: ${{ needs.scope.outputs.mousepad == 'true' }}
+    name: N02 real Registry Launch / synthetic SDK / GTK and Mousepad (partial I6)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Explicit source-bound N02 Host unit tests and actual disposable N02 smoke
+        run: bash scripts/ci/check-linux-desktop-v3-n02 --artifact-root "$RUNNER_TEMP/i6-n02"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ always() }}
+        with:
+          name: linux-desktop-v3-n02-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/i6-n02/n02-validation.json
+            ${{ runner.temp }}/i6-n02/n02-gtk3_desktop-native.json
+            ${{ runner.temp }}/i6-n02/n02-gtk3_desktop-environment.json
+            ${{ runner.temp }}/i6-n02/n02-mousepad_editor-native.json
+            ${{ runner.temp }}/i6-n02/n02-mousepad_editor-environment.json
+            ${{ runner.temp }}/i6-n02/container.json
+          if-no-files-found: warn
+          retention-days: 3
