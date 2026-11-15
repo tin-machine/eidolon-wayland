@@ -1,0 +1,41 @@
+{
+  "revision": "0e0df43a2ce4734a00a36f830cc24a80e277bec5",
+  "questions": [
+    {
+      "id": "late-future-rejected-post",
+      "question": "seal後のSceneObject futureが完了し、UI postが拒否された場合に保存可能と判断できるか",
+      "node": "sdk.seal",
+      "hops": 1,
+      "rg": "sceneObject|producerFinished|ui.post",
+      "required_sources": [
+        "SdkResourceScope.kt",
+        "SdkEvidenceBridge.kt"
+      ]
+    },
+    {
+      "id": "ime-save-order",
+      "question": "設定保存の完了はproduct IME panelのEntity破棄完了も意味するか",
+      "node": "save.stop",
+      "hops": 2,
+      "rg": "clearRetiredRuntime|sdk_cleanup_pending|invalidateImeConnection",
+      "required_sources": [
+        "NativeSessionHost.kt",
+        "TerminalImeController.kt",
+        "RuntimeSaveCoordinator.kt"
+      ]
+    },
+    {
+      "id": "activity-ui",
+      "question": "通常設定保存でActivityのlauncher panelも破棄されるか",
+      "node": "sdk.seal",
+      "hops": 1,
+      "rg": "launcherPanel|onSpatialShutdown|retireRuntime",
+      "required_sources": [
+        "MainActivity.kt",
+        "SdkRetirementHub.kt",
+        "SpatialPanelAdapter.kt"
+      ]
+    }
+  ],
+  "limits": "新規の比較問題だが同じreviewerは既に境界sourceを読んでおり、blind評価ではない。索引のsemantic edgesは変更しない。"
+}
