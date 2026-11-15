@@ -29,6 +29,16 @@ I5 remains unregistered. Read its explicit source dependencies and separate I2/I
 See the [I5 implementation verification and handoff](../../linux-desktop-v3-i5-validation-20261114.md) for local V09/V10 coverage, environment limits, and the separate I6/I7/H acceptance boundary.
 The document does not establish product acceptance or Quest evidence.
 
+### I6 Host acceptance design (manual discovery)
+
+The [I6 detailed design — normal v3 Host acceptance (I3-T20/V11)](../../linux-real-app-v3-i6-detailed-design.md)
+is **proposed**, based on main `0e0df43a2ce4734a00a36f830cc24a80e277bec5` (2026-11-15 JST, after PR #31).
+It defines the real SSH/C2/Waypipe/Mousepad execution path, Host EGL/readback and synthetic SDK boundary,
+28 required case families, ownership/cleanup evidence, the independent validator, CI and I7/H handoff.
+I6 is not registered in this manifest. Use this manual link and the separate I2/I4 contexts;
+do not infer successful resolver lookup, implementation, Host acceptance, Android storage or Quest verification.
+The D5 observations above and the dated I5 verification record retain their original meaning.
+
 ```sh
 python3 scripts/docs.py validate
 python3 scripts/docs.py context --feature linux-desktop-v3 --task I2
