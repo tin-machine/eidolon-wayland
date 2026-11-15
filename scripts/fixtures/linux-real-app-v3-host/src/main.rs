@@ -338,8 +338,10 @@ impl Driver {
                     json!({"request_id":request.clone(),"status":event["code"]}),
                 )?;
                 if event["code"] != "ACCEPTED"
-                    && self.n03_expected.get(&request).is_none_or(|status|
-                        event["code"].as_str() != Some(status.as_str()))
+                    && self
+                        .n03_expected
+                        .get(&request)
+                        .is_none_or(|status| event["code"].as_str() != Some(status.as_str()))
                 {
                     return Err("I6_COMMAND_REJECTED");
                 }
