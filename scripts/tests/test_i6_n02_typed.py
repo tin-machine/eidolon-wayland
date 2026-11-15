@@ -4,7 +4,6 @@ Only the actual disposable N02 CI job runs unmocked R/S/T oracle. These unit
 tests isolate outer manifest/receipt joins against spoofed producer metadata.
 """
 import copy
-import os
 from pathlib import Path
 import sys
 import tempfile
@@ -116,8 +115,9 @@ class TypedN02Tests(unittest.TestCase):
             root = Path(directory)
             report = self.candidate(root)
             mutations = {
-                "different_owner": lambda r: r["cases"][1]["owners"][0].update(
-                    runtime="99"),
+                "different_owner": lambda r: next(c for c in r["cases"]
+                    if (c["case_id"],c["variant"]) == ("N02","gtk3_desktop")
+                    )["owners"][0].update(runtime="99"),
                 "wrong_target": lambda r: next(c for c in r["cases"]
                     if (c["case_id"],c["variant"]) == ("N02","gtk3_desktop")
                     )["targets"][0].update(adapter_id="9"),
