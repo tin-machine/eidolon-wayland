@@ -478,7 +478,7 @@ mod tests {
         history.observe(std::slice::from_ref(&main)).unwrap();
         let cut = history.cut().unwrap();
         assert_eq!(cut.windows.len(), 1);
-        assert_eq!(cut.windows[0].role, Role::Main);
+        assert!(cut.windows[0].role == Role::Main);
         assert!(cut.admitted.is_empty());
         history.commit_main(main.window).unwrap();
         assert!(history.cut().unwrap().admitted.contains(&main.window));
