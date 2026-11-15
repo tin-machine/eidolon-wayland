@@ -132,13 +132,53 @@ impl Driver {
             "linux_desktop_v3_launch",
         )?;
         self.n02_sdk = Some(HostSdkAdapter::new(self.handle).map_err(|_| "I6_N02_SDK_FAILED")?);
-        self.wait(45, |s| {
-            let state = &s["runtime"]["transport"]["desktop_v3_transport"];
-            state["session"] == session
-                && state["launch_request"] == "32"
-                && state["started_observed"] == true
-                && state["transport"]["phase"] == "started"
-        })?;
+        // Inspect actual launch transitions rather than timing out on a
+        // misleading queue Accepted. This is bounded read-only R evidence,
+        // not a setter or a replacement for Started.
+        let deadline = Instant::now() + Duration::from_secs(45);
+        let mut prior = String::new();
+        loop {
+            let s = self.pump()?;
+            let remote = &s["runtime"]["transport"]["desktop_v3_transport"];
+            let app = &s["runtime"]["app"];
+            let progress = json!({
+                "transport_phase": remote["transport"]["phase"],
+                "journal_stage": remote["journal_stage"],
+                "launch_request": remote["launch_request"],
+                "start_attempted": remote["start_attempted"],
+                "started_observed": remote["started_observed"],
+                "transport_error": remote["error"],
+                "transport_faults": remote["faults"],
+                "app_state": app["state"], "app_ready": app["ready"],
+                "app_error": app["error"], "forward_sent": app["forward_sent"],
+                "local_ready": app["local"]["ready"],
+                "local_workers": app["local"]["workers"],
+                "local_error": app["local"]["error"],
+                "accepted": app["accepted"],
+            });
+            let current = progress.to_string();
+            if current != prior {
+                self.append_observation("n02_launch_progress", progress)?;
+                prior = current;
+            }
+            if remote["session"] == session
+                && remote["launch_request"] == "32"
+                && remote["started_observed"] == true
+                && remote["transport"]["phase"] == "started"
+            {
+                break;
+            }
+            if s["runtime"]["state"] != "Ready"
+                || remote["error"].is_string()
+                || app["error"].is_string()
+            {
+                return Err("I6_N02_LAUNCH_FAILED");
+            }
+            if Instant::now() >= deadline {
+                return Err("I6_OUTER_TIMEOUT");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
         self.observe(
             "n02_transport_started",
             json!({"request_id":"32","session":session}),
