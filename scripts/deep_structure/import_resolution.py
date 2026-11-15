@@ -164,12 +164,19 @@ def resolve_imports(files, modules, functions, sources, revision):
                 binding.pop("target", None)
                 binding.pop("target_location", None)
             if binding["bound_name"] in rebound:
-                binding.update(resolution="unresolved", reason="possible_alias_rebinding_or_dynamic_namespace")
-                binding.pop("target", None)
-                binding.pop("target_location", None)
+                if binding["resolution"] == "unresolved":
+                    binding["additional_boundaries"] = ["possible_alias_rebinding_or_dynamic_namespace"]
+                else:
+                    binding.update(resolution="unresolved", reason="possible_alias_rebinding_or_dynamic_namespace")
+                    binding.pop("target", None)
+                    binding.pop("target_location", None)
             totals[binding["resolution"]] += 1
+        # Only module-body imports are lookup bindings. Nested import records
+        # remain evidence and can invalidate aliases via _rebindings, but must
+        # not erase the module-level binding's reason/provenance.
         index = {name: bs[0] for name, bs in
-                 ((name, [b for b in bindings if b["bound_name"] == name]) for name in counts)
+                 ((name, [b for b in bindings if b["bound_name"] == name
+                          and b["scope"] == "module_unconditional"]) for name in counts)
                  if len(bs) == 1}
         for function in functions_by_path[path]:
             for call in function["calls"]:
