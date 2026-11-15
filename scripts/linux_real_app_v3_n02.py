@@ -77,7 +77,7 @@ def prepare_and_run(args, artifacts, source, report):
     binary_hash = evidence.sha(fixture.read_owned(args.runner,0,limit=128*1024*1024,private=False))
     sshd = None
     try:
-        sshd, pidfd, host_key, ssh = fixture.prepare_sshd(fixture_root, app_home)
+        sshd, pidfd, host_key, ssh = fixture.prepare_sshd(\n            fixture_root, app_home, n02_remote_streamlocal=True)
         for row in report["cases"]:
             variant = row["variant"]
             name = variant.replace("_", "-")
