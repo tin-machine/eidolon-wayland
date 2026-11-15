@@ -679,4 +679,3 @@ def verify_receipt(receipt, *, expected_run_id, expected_source_sha256, expected
             or final["profile_lock_held"] or final["journal_lock_held"]):
         failures.append("product_census_complete")
     return _result("fail" if failures else "incomplete" if missing else "pass", missing=missing, failures=failures)
-
