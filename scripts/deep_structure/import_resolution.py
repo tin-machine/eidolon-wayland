@@ -32,7 +32,7 @@ def _module_path(importer, name, level, paths, analyzed):
         if level > len(parent.parts):
             return None, "relative_import_beyond_repository_root", [], rule
         for index in range(level):
-            if str(parent / "__init__.py") not in paths:
+            if str(parent / "__init__.py") not in analyzed:
                 return None, "namespace_or_missing_package_init", [], rule
             if index < level - 1:
                 parent = parent.parent
@@ -48,7 +48,7 @@ def _module_path(importer, name, level, paths, analyzed):
             return None, "ambiguous_repository_module_basename", competing, rule
     for part in parts[:-1]:
         parent = parent / part
-        if str(parent / "__init__.py") not in paths:
+        if str(parent / "__init__.py") not in analyzed:
             return None, "namespace_or_missing_package_init", [], rule
     candidates = sorted({str(parent / (parts[-1] + ".py")),
                          str(parent / parts[-1] / "__init__.py")} & paths)

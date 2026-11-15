@@ -154,6 +154,20 @@ def run():
         self.assertEqual(call["resolution"], "unresolved")
         self.assertEqual(call["import_evidence"]["reason"], "namespace_or_missing_package_init")
 
+    def test_relative_package_init_excluded_or_invalid_is_not_proof(self):
+        self.write("pkg/entry.py", "from .service import finish\ndef run(): return finish(1)\n")
+        self.commit()
+        graph = deep.build(self.root, ("pkg/__init__.py",))
+        call = self.fn(graph, "pkg/entry.py", "run")["calls"][0]
+        self.assertEqual(call["resolution"], "unresolved")
+        self.assertEqual(call["import_evidence"]["reason"], "namespace_or_missing_package_init")
+        self.write("pkg/__init__.py", "def broken(:\n")
+        self.commit()
+        graph = self.graph()
+        call = self.fn(graph, "pkg/entry.py", "run")["calls"][0]
+        self.assertEqual(call["resolution"], "unresolved")
+        self.assertEqual(call["import_evidence"]["reason"], "namespace_or_missing_package_init")
+
     def test_same_named_packages_in_different_roots_are_unresolved(self):
         self.write("pkg/tool/__init__.py", "def finish(): return 1\n")
         self.write("other/tool/__init__.py", "def finish(): return 2\n")
