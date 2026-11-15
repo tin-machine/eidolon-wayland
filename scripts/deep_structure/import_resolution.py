@@ -89,7 +89,8 @@ def resolve_imports(files, modules, functions, sources, revision):
     """Annotate import records and call sites with bounded, reproducible evidence."""
     file_rows = {row["path"]: row for row in files}
     paths = {path for path, row in file_rows.items() if path.endswith(".py")}
-    analyzed = {module["path"] for module in modules}
+    analyzed = {module["path"] for module in modules
+                if file_rows[module["path"]]["analysis_status"] == "analyzed"}
     trees, exports = {}, {}
     for path in sorted(analyzed):
         tree = ast.parse(sources[path], filename=path, type_comments=True)
