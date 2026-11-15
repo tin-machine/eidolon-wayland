@@ -24,9 +24,13 @@ impl Driver {
     fn n03_prepare_scene(&mut self) -> Result<()> {
         self.wait(15, |s| s["runtime"]["state"] == "Ready")?;
         self.observe("runtime_ready", json!({}))?;
+        let scene = json!({"schema":1,"type":"scene_ready","request_id":"20","scene":"1"});
+        let status = self.registry.command(self.handle, &scene.to_string());
+        self.observe("n03_setup_command", json!({"command":"scene_ready",
+            "request_id":"20","status":status as i32}))?;
+        if status != Status::Accepted { return Err("I6_N03_COMMAND_FAILED"); }
+        self.wait(10, |s| s["runtime"]["scene"] == "1")?;
         for (name, value) in [
-            ("scene_ready", json!({"schema":1,"type":"scene_ready",
-                                  "request_id":"20","scene":"1"})),
             ("set_activity_state", json!({"schema":1,"type":"set_activity_state",
                                   "request_id":"21","expected_scene":"1","visible":true})),
             ("set_xr_state", json!({"schema":1,"type":"set_xr_state",
@@ -75,7 +79,7 @@ impl Driver {
             .ok_or("I6_N03_CATALOG_INVALID")?.capture_id.clone();
         self.observe("n03_catalog", json!({
             "session":session,"inspect_request":inspect_request.to_string(),
-            "selection":selection,"capture_id":capture,"registry":self.catalog,
+            "selection":selection.clone(),"capture_id":capture,"registry":self.catalog.clone(),
         }))?;
         Ok((session, selection))
     }
@@ -89,9 +93,9 @@ impl Driver {
             _ => return Err("I6_N03_COMMAND_FAILED"),
         };
         let value = json!({"schema":1,"type":"linux_desktop_v3_launch",
-                          "request_id":request,"session":session,"selection":selection});
+                          "request_id":request,"session":session,"selection":selection.clone()});
         self.observe("n03_launch_submitted", json!({
-            "variant":variant,"request_id":request,"session":session,"selection":selection,
+            "variant":variant,"request_id":request,"session":session,"selection":selection.clone(),
         }))?;
         // Only this exact request ID can have a non-Accepted completion.
         // Other rejected completions remain fatal in Driver::pump().
@@ -159,7 +163,7 @@ impl Driver {
             return Err("I6_N03_FIRST_NOT_LIVE");
         }
         self.observe("n03_first_live", json!({
-            "request_id":"32","completion":self.completed.get("32"),
+            "request_id":"32","completion":self.completed.get("32").cloned(),
             "launch_request":runtime["transport"]["desktop_v3_transport"]["launch_request"],
             "origin_retired":runtime["reclamation"]["origin_retired"],
             "app_state":runtime["app"]["state"],
@@ -198,7 +202,7 @@ impl Driver {
                 self.retire_after_failure()?;
                 self.observe("n03_old_capture_retired", json!({
                     "old_session":session,
-                    "old_selection":current,
+                    "old_selection":current.clone(),
                 }))?;
                 let (new_session, new_selection) = self.n03_inspect(40, 41)?;
                 if new_session == session || new_selection == current {
