@@ -154,7 +154,14 @@ def prepare_and_run(args, artifacts, source, report):
                        environment_disposal="not_yet")
             environment_name = "n02-" + variant + "-environment.json"
             evidence.write_report(artifacts / environment_name, environment)
-            if outcome["status"] != "pass":
+            if outcome["status"] == "pass":
+                # One fixed-I6 report per actual native run_id. The second
+                # variant is a new SSH Session/capture, never the same owner.
+                # This call independently reopens the typed receipt before
+                # exporting any partial formal acceptance result.
+                import linux_real_app_v3_n02_typed as typed
+                typed.write_checked(source, native, environment, variant, artifacts)
+            else:
                 # Same C2 account/lease must not be used by the next run until
                 # this runtime's actual retirement has been proven.
                 break
