@@ -7,7 +7,6 @@
 use eidolon_model::{
     ids::WindowId,
     linux_desktop_v3::{
-        AppId,
         presentation::{Life, NativeOrigin, NativeWindowFact, Parent, Role},
     },
 };
