@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run explicit synthetic A0 checks and preserve incomplete/failed outcomes."""
+"""Run A0 feasibility or independently validate I6 Host acceptance evidence."""
 from linux_real_app_check import main
 
 if __name__ == "__main__":

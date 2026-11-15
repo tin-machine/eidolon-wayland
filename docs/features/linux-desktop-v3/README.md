@@ -39,6 +39,11 @@ I6 is not registered in this manifest. Use this manual link and the separate I2/
 do not infer successful resolver lookup, implementation, Host acceptance, Android storage or Quest verification.
 The D5 observations above and the dated I5 verification record retain their original meaning.
 
+The [I6 evidence validation implementation](i6-evidence-validation.md) records the first implementation unit:
+a fixed 28-family / 87-variant manifest, strict schema/owner/artifact validation and stage-specific CLI outcomes.
+Product oracles, real SSH/Registry execution and Host EGL remain separate follow-up work.
+The document includes the N01 Inspect-only handoff; contract-test success is not I6/V11 success.
+
 ```sh
 python3 scripts/docs.py validate
 python3 scripts/docs.py context --feature linux-desktop-v3 --task I2

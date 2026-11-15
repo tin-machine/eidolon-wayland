@@ -1,4 +1,4 @@
-"""Explicit, synthetic-only A0 checks; never claims v3 or Quest acceptance.
+"""Explicit A0 feasibility and independent I6 Host evidence checks.
 
 Inspection does not call this module. A positive settings probe is necessary but
 not sufficient: the actual Mousepad/Waypipe checks and any pending GUI oracle
@@ -384,17 +384,32 @@ def main(argv=None):
     parser.add_argument("--stage", required=True, choices=("feasibility", "acceptance"))
     parser.add_argument("--artifact-root", required=True, type=Path)
     parser.add_argument("--reviewed-package", type=Path)
+    parser.add_argument("--acceptance-report", type=Path,
+                        help="read-only I6 report revalidation against the current checkout")
     args = parser.parse_args(argv)
+    if args.acceptance_report is not None and args.stage != "acceptance":
+        parser.error("--acceptance-report requires --stage acceptance")
     os.umask(0o077)
+    if args.stage == "acceptance":
+        import linux_real_app_v3_acceptance as acceptance
+        try:
+            result = (acceptance.validate_saved_acceptance(args.acceptance_report, args.artifact_root)
+                      if args.acceptance_report is not None else acceptance.run_acceptance(args.artifact_root))
+        except KeyboardInterrupt:
+            result = acceptance.cancelled_result()
+        except (OSError, ValueError) as error:
+            result = acceptance.invalid_result()
+            # Preserve the established fresh-root CLI refusal contract. This
+            # does not describe a parsed acceptance report or certify evidence.
+            artifact_reasons = {"APP_CHECK_ARTIFACT_INVALID", "APP_CHECK_ARTIFACT_NOT_EMPTY"}
+            if (args.acceptance_report is None and isinstance(error, (BuildError, inspect.InspectionError))
+                    and str(error) in artifact_reasons):
+                result.update(exit_code=2, status="incomplete", reason=str(error))
+        print(inspect.canonical_json(result).decode("utf-8"))
+        return result["exit_code"]
     try:
-        if args.stage == "acceptance":
-            artifact = private_artifact_root(args.artifact_root)
-            result = {"schema": 1, "stage": "acceptance", "status": "not_implemented", "reason": "APP_V3_NOT_IMPLEMENTED",
-                      "available": False, "production_acceptance_passed": False, "quest_verified": False}
-            write_json(artifact / "acceptance.json", result)
-        else:
-            descriptor = inspect._read_operator_descriptor(args.reviewed_package) if args.reviewed_package else None
-            result = run_feasibility(args.artifact_root, descriptor)
+        descriptor = inspect._read_operator_descriptor(args.reviewed_package) if args.reviewed_package else None
+        result = run_feasibility(args.artifact_root, descriptor)
     except (OSError, ValueError) as error:
         token = str(error)
         result = {"schema": 1, "stage": args.stage, "status": "failed", "available": False,

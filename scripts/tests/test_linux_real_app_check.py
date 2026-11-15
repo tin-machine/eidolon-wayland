@@ -24,6 +24,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import linux_real_app_check as check
+import linux_real_app_v3_acceptance as acceptance
 import linux_real_app_wayland as wayland
 
 
@@ -72,6 +73,9 @@ class TemporaryCheck(unittest.TestCase):
     @contextlib.contextmanager
     def no_processes(self):
         with mock.patch.object(subprocess, "Popen", side_effect=AssertionError("no process may run")) as spawn, \
+             mock.patch.object(acceptance.evidence, "source_snapshot", return_value={
+                 "commit": "a" * 40, "tree_sha256": "b" * 64, "dirty": False,
+                 "build_features": [], "pr_head": None}), \
              mock.patch.object(check, "run_bounded", side_effect=AssertionError("no command may run")) as command, \
              mock.patch.object(check, "build_settings", side_effect=AssertionError("no build may run")) as build, \
              mock.patch.object(check, "build_gui_observer", side_effect=AssertionError("no observer build may run")) as observer, \
@@ -83,7 +87,7 @@ class TemporaryCheck(unittest.TestCase):
 
 
 class GateCommandTests(TemporaryCheck):
-    def test_acceptance_is_not_implemented_exit_two_even_with_a_descriptor(self):
+    def test_acceptance_retains_required_profile_incomplete_even_with_a_descriptor(self):
         artifact = self.base / "acceptance"
         with self.no_processes(), \
              mock.patch.object(check.inspect, "inspect_host", side_effect=AssertionError("no inspection")), \
@@ -91,14 +95,21 @@ class GateCommandTests(TemporaryCheck):
             status, result = self.command("--stage", "acceptance", "--artifact-root", str(artifact),
                                           "--reviewed-package", str(self.base / "absent-descriptor.json"))
         self.assertEqual(status, 2)
-        self.assertEqual(result, {"schema": 1, "stage": "acceptance", "status": "not_implemented",
-                                 "reason": "APP_V3_NOT_IMPLEMENTED", "available": False,
-                                 "production_acceptance_passed": False, "quest_verified": False})
+        self.assertEqual(result["stage"], "acceptance")
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIs(result["host_v3_acceptance_passed"], False)
+        self.assertIs(result["evidence_contract_valid"], True)
         receipt = artifact / "acceptance.json"
-        self.assertEqual(json.loads(receipt.read_bytes()), result)
+        raw = json.loads(receipt.read_bytes())
+        self.assertEqual(raw["profile"], "i6-host-v1")
+        self.assertEqual(len({case["case_id"] for case in raw["cases"]}), 28)
+        self.assertTrue(all(case["status"] == "not_run" for case in raw["cases"]))
+        validation = artifact / "acceptance-validation.json"
+        self.assertEqual(json.loads(validation.read_bytes()), result)
         self.assertEqual(artifact.stat().st_mode & 0o777, 0o700)
         self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
-        self.assertEqual(list(artifact.iterdir()), [receipt])
+        self.assertEqual(validation.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(set(artifact.iterdir()), {receipt, validation})
 
     def test_missing_package_writes_failure_without_building_or_spawning(self):
         observed = self.missing_package()
