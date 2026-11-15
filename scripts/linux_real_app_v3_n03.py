@@ -145,7 +145,22 @@ def prepare_and_run(args, artifacts, source, report):
             try:
                 measured = evidence.parse(evidence.read_report(artifacts / native_name))
                 outcome = verify(measured,environment,source,variant)
-            except (ValueError,TypeError,KeyError,RecursionError):
+            except (ValueError,TypeError,KeyError,RecursionError) as exc:
+                # Only bounded code locations, never raw context/credentials.
+                # The rejection stays fatal; diagnostics cannot grant a pass.
+                import traceback
+                frames = traceback.extract_tb(exc.__traceback__)
+                site = [f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
+                        for frame in frames
+                        if Path(frame.filename).name in {
+                            "linux_real_app_v3_n03_oracle.py",
+                            "linux_real_app_v3_n01_oracle.py",
+                            "linux_real_app_v3_n02_oracle.py",
+                            "linux_desktop_v3_contract.py",
+                            "linux_real_app_v3_evidence.py",
+                        }]
+                print(f"N03 oracle denied {variant} at {site[-1] if site else 'unknown'}",
+                      file=sys.stderr)
                 outcome = invalid()
             if returncode != 0 or diagnostic.get("reason") == "I6_DRIVER_DIED":
                 outcome = invalid()
