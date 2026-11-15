@@ -264,6 +264,12 @@ jobs:
             ${{ runner.temp }}/i6-n02/n02-gtk3_desktop-environment.json
             ${{ runner.temp }}/i6-n02/n02-mousepad_editor-native.json
             ${{ runner.temp }}/i6-n02/n02-mousepad_editor-environment.json
+            ${{ runner.temp }}/i6-n02/n02-gtk3_desktop-receipt.json
+            ${{ runner.temp }}/i6-n02/acceptance-gtk3_desktop.json
+            ${{ runner.temp }}/i6-n02/acceptance-gtk3_desktop-validation.json
+            ${{ runner.temp }}/i6-n02/n02-mousepad_editor-receipt.json
+            ${{ runner.temp }}/i6-n02/acceptance-mousepad_editor.json
+            ${{ runner.temp }}/i6-n02/acceptance-mousepad_editor-validation.json
             ${{ runner.temp }}/i6-n02/container.json
           if-no-files-found: warn
           retention-days: 3
