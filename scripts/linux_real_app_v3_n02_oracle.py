@@ -9,7 +9,7 @@ from __future__ import annotations
 import linux_desktop_v3_contract as b1
 import linux_desktop_v3_wire as wire
 import linux_real_app_v3_evidence as evidence
-from linux_real_app_v3_n01_oracle import _live_census
+from linux_real_app_v3_n01_oracle import _counts, _reclamation, _shutdown, _number
 
 CASES = {"gtk3_desktop": b1.DEMO, "mousepad_editor": b1.EDITOR}
 ASSERTIONS = (
@@ -214,9 +214,58 @@ def ready_and_input(native, target, create, cap):
     return input_proof
 
 
+def live_census_n02(snapshot, runtime):
+    """N02 has an actual stopped Session. N01's app=None shortcut is invalid."""
+    exact(snapshot, {"schema", "code", "handle", "runtime", "registry"})
+    require(snapshot["schema"] == 1 and snapshot["code"] == 0 and snapshot["handle"] == runtime,
+            "I6_OWNER_MISMATCH")
+    s = snapshot["runtime"]
+    require(s["state"] == "Stopped" and _counts(snapshot["registry"], 1, 0)
+            and _reclamation(s["reclamation"], runtime, True) and _shutdown(s["shutdown"]))
+    require(s["app_sdk_bindings"] == 0 and s["commands_pending"] == 0
+            and s["desktop_v3_pending_targets"] == 0
+            and s["desktop_v3_finalizer_pending"] is False
+            and s["desktop_v3_cleanup_error"] is None and s["panels"] == []
+            and s["error"] is None)
+    for key in ("helper_workers", "dependency_workers", "compositor_workers"):
+        _number(s[key])
+        require(s[key] == 0)
+    app = s["app"]
+    # A retained diagnostic Report must NOT be mistaken for a live app
+    # nor erased to mimic the N01 NoLocalAllocation case.
+    require(type(app) is dict and app["state"] == "stopped"
+            and app["ready"] is False and app["directory_cleaned"] is True
+            and app["windows"] == [] and app["error"] is None)
+    for key in ("clients", "objects", "surfaces", "pixel_bytes", "pool_bytes", "pool_count"):
+        _number(app[key])
+        require(app[key] == 0)
+    for key in ("memfd_fds_after", "memfd_maps_after"):
+        _number(app[key])
+        require(app[key] == 0)
+    local = app["local"]
+    require(local["workers"] == 0 and local["owned_groups"] == 0
+            and local["waited"] is True and local["error"] is None)
+    render = s["render"]
+    for key in ("workers", "contexts", "latest_images", "queued"):
+        _number(render[key])
+        require(render[key] == 0)
+    require(render["targets"] == [] and render["error"] is None)
+    for key in ("textures", "texture_bytes", "decoration_texture_bytes", "gl_error"):
+        _number(render["composition"][key])
+        require(render["composition"][key] == 0)
+    require(render["composition"]["error"] is None)
+    transport = s["transport"]
+    for key in ("workers", "tokio_threads", "owned_connections"):
+        _number(transport[key])
+        require(transport[key] == 0)
+    require(transport["forward"]["active"] == 0 and transport["desktop_pending"] is False
+            and transport["pending_cleanup"] == [] and transport["error"] is None)
+    return True
+
+
 def cleanup(native, env, events):
     require(native["sdk_retired"] is True)
-    require(_live_census(native["last_snapshot"], native["runtime"]))
+    require(live_census_n02(native["last_snapshot"], native["runtime"]))
     require(native["destroy_status"] == 0
             and native["registry_counts"] == {"runtimes":0, "workers":0})
     final = env["final"]
