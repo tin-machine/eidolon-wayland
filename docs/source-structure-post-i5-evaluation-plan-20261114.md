@@ -9,6 +9,7 @@
 
 source 基準は I5 統合後の `0e0df43a2ce4734a00a36f830cc24a80e277bec5`。
 PR #30 を計画と継続する試行の共通 PR として更新する。一般的な自動 call graph ではなく、まず人が確認した契約を索引にした。
+PR head `769315f` のローカル実行と source 再レビューも、回収・保存レビュー末尾へ記録した。新規の製品不具合は確認せず、IME の既知課題、SDK の案内が分断される点、adapter/JNI 結合の未検証範囲を整理している。
 
 - [回収・設定保存の source / 不変条件 / テスト](source-structure-retirement-review-20261115.md)
 - [Host/JNI・SDK 境界と初回の探索比較](source-structure-boundary-review-20261115.md)

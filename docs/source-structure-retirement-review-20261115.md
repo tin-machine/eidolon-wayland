@@ -8,6 +8,7 @@
 続報: [Host/JNI・SDK 境界レビューと探索比較](source-structure-boundary-review-20261115.md)。
 初版を固定した比較、offline JVM / SDK double 検査、監視対象の不足を記録している。
 さらに[監視範囲・所有境界・追加3問](source-structure-watch-ownership-20261115.md)で、変更検知の補強と IME の未決契約を整理した。
+本書末尾には、PR head `769315f` で実際に索引を再構築して source へ戻ったローカル再レビューを追記している。
 
 ## 判断
 
@@ -141,3 +142,64 @@ fixture によるツールの回帰検査と、明示実行する repository rev
 1. この試行を使い、上記3問の source-only / slice 比較と、Host/JNI・SDK 登録漏れの確認を先に行う。
 2. 索引の維持費に見合うことを確認できたら、起動の Inspect→Permit→listener→remoteStart、表示の target→SDK→renderer へ広げる。
 3. Host settings 境界の抽出から小さな変更を選び、保存したローカル案と対応テストを比較する。
+
+## ローカル実行からの再レビュー（2026-11-15）
+
+PR #30 の head `769315f3c39692a47c53c7d31401f2820de11b0b` を remote と照合し、clean な checkout で実行した。
+source のレビュー基準は引き続き `0e0df43a2ce4734a00a36f830cc24a80e277bec5`。
+以下は初版17テスト・22辺の記録とは別の、新しい実行結果である。
+対象は回収・保存・SDK の登録済み範囲で、repository 全体の自動解析ではない。
+
+### レビュー結果と優先度
+
+**今回追加で確認できた、製品の確定不具合はない。既知の IME 終了条件の不足は未解決であり、最優先の動作変更候補を維持する。**
+`ok` や CI 成功だけから実装全体を承認せず、抽出した関係の source と対応テストを読み直した。
+
+1. **既知の実装課題: IME UI の終了は保存成功の証拠に含まれない。**
+   [Coordinator.finishRuntimeStop](../android/app/src/main/java/io/github/tinmachine/eidolon/RuntimeSaveCoordinator.kt) は実 Destroy 成功後、Host の `runtimeDestroyed` を経て `publish` を呼ぶ。
+   [Host.clearRetiredRuntime](../android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt) は UI queue へ IME owner の clear を post するが、UI 終了の ACK は coordinator へ返らない。
+   [TerminalImeController.finish](../android/app/src/main/java/io/github/tinmachine/eidolon/TerminalImeController.kt) の bridge/Entity 回収が遅延・失敗しても、その成功を待つ publication 条件はない。
+   今回再実行した接続モデル3件もこの順序を確認した。実機の残存 UI を新たに再現したという意味ではない。
+   [IME 終了契約案](source-structure-ime-retirement-contract-20261115.md)の ticket と Destroy 後の待機を先に具体化し、Host 分割に混ぜない。
+2. **索引の改善候補: SDK の一連の寿命を一つの入口から辿れない。**
+   [registry](../scripts/structure/retirement.json) の追加6辺は、allocation、future producer、delete/pass、native release の別々のまとまりに登録されている。
+   2 hop の `window.create` は3辺、`scope.future` と `window.destroy` は各1辺で、生成から削除・release へ連続した案内にはならなかった。
+   `save.receipt` から SDK の生成・破棄実装へは、別の入口指定または `rg` と source read が必要だった。
+   `bounded_slice` の `complete=true` は選択済みの登録辺に省略がないという判定であり、寿命全体の網羅性ではない。
+   接続を機械的に追加するのではなく、adapter の tick/dispose → scope → hub progress の source/test を確認して、次の登録候補とする。
+3. **未検証の境界: ledger のテストは adapter/JNI 全経路の実行ではない。**
+   `accepted-native-release` の実装は [SpatialPanelAdapter.destroy](../android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt) で readyToRelease → native の実 Accepted → nativeReleased の順になっている。
+   参照先 `SdkEvidenceBridgeTest.everyChildAndProducerMustFinishBeforeSynchronousNativeRelease` が実行するのは ledger model。
+   SDK double probe は scope/fence を実行するが adapter 本体を実行しない。登録済みの `test_scope` の注意は妥当である。
+   以後の結合ケースには、native release が Busy/STALE を返したとき binding を保持し続けることを含める。
+
+### Source へ戻って照合した条件
+
+| 抽出入口 | 確認した条件 | 今回の判断の限界 |
+| --- | --- | --- |
+| `save.receipt` | typed census の同 runtime・全残数0・sealed SDK・callback drain・実 Destroy Accepted を結合し、barrier 前後で同 owner/capture を要求 | IME UI を含むという追加条件は未実装 |
+| `save.resume` | Host は同 durable intent または不変の pre-intent capture を照合し、元 receipt を持つ coordinator に token alias を渡す | 実 Host/JNI の failure 注入は今回未実施 |
+| `proof.finalize` | transport は Tokio runtime を drop した後に I/O 退役を公開し、handoff と同 capture の local proof を結合して journal clear、結果公開へ進む | Rust/実 SSH の再実行は今回していない。source と既存テストの所在を照合 |
+| `window.create` / `scope.future` | reserve/native registration が allocation に先行し、callback/producer を副作用前に加算。seal 後の late result は回収し、post/dispose failure は成功へ変換しない | 実 SDK の全 factory/caller の網羅性は未証明 |
+| `window.destroy` | dispose・renderer detach・delete/pass の成立後、同 native release Accepted だけで ledger を完了させる | adapter の終端配線は source 照合。実機受入ではない |
+
+### 実行結果
+
+| 検査 | 結果 |
+| --- | --- |
+| `android-product` build 2回 / byte 比較 / verify | PASS。55 node / 28辺、issues 0 |
+| `host-model` build 2回 / byte 比較 / verify | PASS。44 node / 16辺、adapter の12辺を除外表示、issues 0 |
+| source watch | 399ファイル、変更0。381ファイルは意味的な登録ファイル外で、監視のみ |
+| 主要6入口の2 hop slice（上限32,000 bytes） | 全て `complete=true`、`omitted_edges=[]`。辺数は receipt 5 / resume 4 / finalize 4 / create 3 / future 1 / destroy 1 |
+| 索引の unit test | 26件 PASS |
+| 実 scope/fence + SDK/Android doubles | 11ケース PASS |
+| 実 coordinator + IME connection / Host・UI doubles | 3件 PASS。現行の不足を再現する試験で、提案の受入成功ではない |
+
+同一入力で生成した Android artifact digest は `ca779645cae2c94d42d436a88555ade25bfea9d59592965b50210e6189f23bcc`、
+host は `0320e0ce979e014b189cf317b13a1632879eec2c11a145202d321173d3401fc9`。
+この digest は実行した head に固有であり、文書だけの commit 後も再構築が必要になる。
+生成 JSON、実行ログ、probe の source/jar hash はローカルの作業記録へ保持した。
+実 JNI/Android IMM/Meta SDK/Quest の実行、環境の追加導入、製品 source の変更は行っていない。
+
+次は IME の終了 authority と状態機械の検証を進め、その証拠を得てから SDK の接続関係を補う。
+現時点の継続判断は `scoped_only`。保存したローカル案の採用・廃棄と、大規模な責務分割は未決定である。
