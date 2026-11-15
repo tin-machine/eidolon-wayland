@@ -189,6 +189,31 @@ class SettingsBackendIntegration(unittest.TestCase):
         for name, expected in manifest['files'].items():
             self.assertEqual(hashlib.sha256((self.bundle / name).read_bytes()).hexdigest(), expected)
 
+    def test_c2_synthetic_probe_environment_passes_and_unsafe_home_still_terminates(self):
+        from test_i6_n01_settings_probe import capture_probe_environment
+
+        self.seed()
+        before = self.keyfile.read_bytes()
+        original = dict(self.environment)
+        observed = capture_probe_environment(self.environment, self.bundle)
+        self.assertEqual(observed['command'], [str(self.probe), '--check'])
+        probe_environment = observed['environment']
+        probe_home = Path(probe_environment['HOME'])
+        with patch.object(self, 'environment', dict(probe_environment)):
+            self.run_probe()
+            # The old split between persistent HOME and synthetic config must
+            # still fail closed; the backend's safety contract is unchanged.
+            self.environment['HOME'] = original['HOME']
+            self.run_probe(expected=78)
+            self.environment['HOME'] = str(probe_home)
+            probe_home.chmod(0o755)
+            self.run_probe(expected=78)
+            probe_home.chmod(0o700)
+            probe_home.rename(probe_home.with_name('saved-home'))
+            self.run_probe(expected=78)
+        self.assertEqual(self.environment, original)
+        self.assertEqual(self.keyfile.read_bytes(), before)
+
     def test_mutations_notifications_atomic_refusal_reset_and_restart_persistence(self):
         self.seed()
         self.run_probe('--exercise')
