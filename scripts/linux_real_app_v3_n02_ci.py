@@ -5,6 +5,7 @@ partial I6 checkpoint. All 87 manifest variants remain required for formal I6.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,46 @@ def read_json(path):
         return raw,evidence.parse(raw)
     finally:
         os.close(fd)
+
+
+def reject_mutations(native, environment, source, variant):
+    """Reopen real producer facts and demand every mutation fail independently.
+
+    These are supplemental negative probes, not executions of formal N03/F12.
+    """
+    changes = (
+        ("source", lambda n, e: n.update(source_sha256="f" * 64)),
+        ("wrong_variant", lambda n, e: n.update(variant="another")),
+        ("wrong_runtime", lambda n, e: n["readback"].update(runtime="90000")),
+        ("wrong_create", lambda n, e: n["readback"].update(create="9999")),
+        ("diagnostic", lambda n, e: n["readback"].update(layers=[])),
+        ("old_frame", lambda n, e: n["readback"].update(content_frame="1",
+             min_content_frame="99999")),
+        ("wrong_adapter", lambda n, e: n["sdk_observations"][0].update(adapter="922")),
+        ("not_current", lambda n, e: n["ready"]["sdk_target"].update(binding_present=False)),
+        ("old_focus", lambda n, e: n["input"].update(focus_token="99999")),
+        ("old_epoch", lambda n, e: n["input"].update(epoch=999999)),
+        ("no_delivery", lambda n, e: n["input"].update(delivered_after=0)),
+        ("unretired_sdk", lambda n, e: n.update(sdk_retired=False)),
+        ("texture_leak", lambda n, e: n["last_snapshot"]["runtime"]["render"]["composition"].update(texture_bytes=1)),
+        ("gl_error", lambda n, e: n["last_snapshot"]["runtime"]["render"]["composition"].update(gl_error=1282)),
+        ("queued", lambda n, e: n["last_snapshot"]["runtime"]["render"].update(queued=1)),
+        ("origin_pending", lambda n, e: n["last_snapshot"]["runtime"]["reclamation"].update(origin_retired=False)),
+        ("destroy_failed", lambda n, e: n.update(destroy_status=1)),
+        ("leaked_child", lambda n, e: e["final"].update(app_process_count=1)),
+        ("trace_overflow", lambda n, e: n["trace"].update(overflow=True)),
+        ("lost_start", lambda n, e: n.update(start_count=0)),
+        ("lost_finalizer", lambda n, e: n["trace"]["events"][-1].update(kind="not_finalized")),
+    )
+    for label, mutate in changes:
+        n, e = copy.deepcopy(native), copy.deepcopy(environment)
+        mutate(n, e)
+        try:
+            result = verify(n, e, source, variant)
+        except (ValueError, KeyError, TypeError, RecursionError):
+            continue
+        if result.get("status") == "pass":
+            raise ValueError("N02 independent oracle accepted mutation " + label)
 
 
 def export_and_validate(incoming, output, image_file, head, attached, runtime, running, source_root):
@@ -93,6 +134,7 @@ def export_and_validate(incoming, output, image_file, head, attached, runtime, r
             return False
         if actual["status"] != "pass" or actual["verified_assertions"] != list(ASSERTIONS):
             return False
+        reject_mutations(native, environment, source, variant)
         if row.get("status") != "pass" or row.get("reason") != "I6_OK":
             return False
         if row.get("verified_assertions") != actual["verified_assertions"]:
