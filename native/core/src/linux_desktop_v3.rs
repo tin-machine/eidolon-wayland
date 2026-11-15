@@ -262,15 +262,9 @@ impl WindowHistory {
     }
 
     fn main_app_id(&self) -> String {
-        // The B1 manifest binds Editor to Mousepad and Demo to the verified
-        // nonce-derived fixture ID. Never use a remote supplied app identifier.
-        match self.origin.app_id() {
-            AppId::Editor => "mousepad".into(),
-            AppId::Demo => {
-                // Demo is intentionally not a product v3 launch.
-                String::new()
-            }
-        }
+        // B1 is the single authority for the verified origin's fixed main ID.
+        // Do not reinterpret remote app_id, title, PID or source-level labels.
+        self.origin.main_app_id()
     }
 
     fn chain_to_main(&self, id: WindowId, main: WindowId) -> bool {
