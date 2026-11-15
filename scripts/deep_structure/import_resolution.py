@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from pathlib import PurePosixPath
 import symtable
 
-from .python_analysis import _bound_names, _module_candidates, _symbol_tables
+from .python_analysis import _bound_names, _location, _module_candidates, _symbol_tables
 
 
 def _source(row, revision):
@@ -61,13 +61,33 @@ def _module_path(importer, name, level, paths, analyzed):
     return candidates[0], "repository_source_candidate_not_runtime_dispatch", candidates, rule
 
 
-def _rebindings(tree, names):
+def _dynamic_namespace_sites(tree):
+    """Known direct namespace operations; not a complete dynamic-effect analysis.
+
+    Scan nested/unevaluated scopes too, matching the conservative caller guard.
+    Sharing this guard avoids treating an opaque exporter as a stable namespace.
+    """
+    return sorted(({
+        "kind": "dynamic_namespace_not_modeled", "name": node.func.id,
+        "location": _location(node),
+    } for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id in {"exec", "eval", "globals", "locals", "vars", "setattr", "delattr"}),
+        key=lambda site: (site["location"]["line"], site["location"]["column"], site["name"]))
+
+
+def _rebindings(tree, names, declared_globals):
     """Over-approximate writes: false negatives preferred to invented edges.
 
     Function locals with the same spelling can also block a binding. Function
     call scope is checked separately using the compiler, not this AST scan.
     """
-    rebound = set()
+    # symtable already normalizes class-private globals (e.g. __core becomes
+    # _C__core). AST spelling alone cannot detect their writes. As with the
+    # same-module resolver, even a read-only global declaration blocks a name.
+    rebound = names & declared_globals
+    if _dynamic_namespace_sites(tree):
+        rebound.update(names)
     direct_import_ids = {id(node) for node in tree.body
                          if isinstance(node, (ast.Import, ast.ImportFrom))}
     for node in ast.walk(tree):
@@ -81,10 +101,6 @@ def _rebindings(tree, names):
         if (isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del))
                 and isinstance(node.value, ast.Name) and node.value.id in names):
             rebound.add(node.value.id)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {
-                "exec", "eval", "globals", "locals", "vars", "setattr", "delattr"}:
-            # Dynamic namespace mutation cannot be ruled out by static analysis.
-            rebound.update(names)
     return rebound
 
 
@@ -94,14 +110,18 @@ def resolve_imports(files, modules, functions, sources, revision):
     paths = {path for path, row in file_rows.items() if path.endswith(".py")}
     analyzed = {module["path"] for module in modules
                 if file_rows[module["path"]]["analysis_status"] == "analyzed"}
-    trees, exports = {}, {}
+    trees, exports, declared_globals, export_blockers = {}, {}, {}, {}
     for path in sorted(analyzed):
         tree = ast.parse(sources[path], filename=path, type_comments=True)
         trees[path] = tree
         table = symtable.symtable(sources[path], path, "exec")
         globals_ = {sym.get_name() for scope in _symbol_tables(table)
                     for sym in scope.get_symbols() if sym.is_declared_global()}
-        exports[path] = _module_candidates(tree, path, globals_)
+        declared_globals[path] = globals_
+        export_blockers[path] = [{**site, "source": _source(file_rows[path], revision)}
+                                 for site in _dynamic_namespace_sites(tree)]
+        exports[path] = ({} if export_blockers[path]
+                         else _module_candidates(tree, path, globals_))
     module_by_path = {module["path"]: module for module in modules}
     functions_by_path = defaultdict(list)
     for function in functions:
@@ -143,7 +163,10 @@ def resolve_imports(files, modules, functions, sources, revision):
                     if target:
                         binding["module_path"] = target
                         binding["module_source"] = _source(file_rows[target], revision)
-                        if isinstance(node, ast.Import):
+                        if export_blockers[target]:
+                            binding["reason"] = "target_module_dynamic_namespace_unsupported"
+                            binding["target_module_boundaries"] = export_blockers[target]
+                        elif isinstance(node, ast.Import):
                             binding["resolution"] = "module_candidate"
                         else:
                             target_id = exports[target].get(name)
@@ -157,7 +180,7 @@ def resolve_imports(files, modules, functions, sources, revision):
                                 binding["reason"] = "imported_name_not_unique_undecorated_function"
                 bindings.append(binding)
         counts = Counter(b["bound_name"] for b in bindings if b["scope"] == "module_unconditional")
-        rebound = _rebindings(tree, set(counts))
+        rebound = _rebindings(tree, set(counts), declared_globals[path])
         for binding in bindings:
             if binding["scope"] == "module_unconditional" and counts[binding["bound_name"]] != 1:
                 binding.update(resolution="unresolved", reason="multiple_import_bindings_for_name")
@@ -190,7 +213,7 @@ def resolve_imports(files, modules, functions, sources, revision):
                 evidence = {k: binding[k] for k in ("source", "import_location", "scope", "bound_name",
                            "imported_name", "imported_module", "level", "resolution", "reason")}
                 for key in ("module_path", "module_source", "module_candidates", "import_root_rule",
-                            "target", "target_location", "additional_boundaries"):
+                            "target", "target_location", "additional_boundaries", "target_module_boundaries"):
                     if key in binding:
                         evidence[key] = binding[key]
                 call["import_evidence"] = evidence
@@ -205,6 +228,14 @@ def resolve_imports(files, modules, functions, sources, revision):
                         call["import_evidence"]["call_boundary"] = "dynamic_receiver_or_chained_attribute"
                         continue
                     callee = expression[len(prefix):]
+                    if callee.startswith("__") and not callee.endswith("__"):
+                        # Attribute names are absent from symtable's identifier
+                        # bindings. Do not guess class context or implement a
+                        # second compiler mangler; refuse this spelling even
+                        # outside classes. Dunder/single-underscore names remain
+                        # eligible under the ordinary candidate checks.
+                        call["import_evidence"]["call_boundary"] = "private_attribute_mangling_not_modeled"
+                        continue
                     target = exports[binding["module_path"]].get(callee)
                     if target:
                         target_fn = next((f for f in functions_by_path[binding["module_path"]]

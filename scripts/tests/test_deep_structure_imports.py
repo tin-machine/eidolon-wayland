@@ -257,6 +257,32 @@ def finish(x): return entry.run(x)
                 self.assertEqual(call["import_evidence"]["reason"],
                                  "possible_alias_rebinding_or_dynamic_namespace")
 
+    def test_dynamic_export_boundary_survives_bounded_slice_and_verify(self):
+        self.write("pkg/service.py", "def finish(x): return x\nexec('finish = None')\n")
+        self.commit()
+        graph = deep.verify(self.root, self.graph())
+        result = deep.bounded_slice(graph, "pkg/entry.py::run", max_nodes=1, max_edges=0)
+        self.assertEqual(result["unresolved_call_sites"], 3)
+        self.assertTrue(result["unknowns"])
+        self.assertGreater(result["omitted_edges"], 0)
+        self.assertFalse(result["complete"])
+        for call in result["call_sites"]:
+            self.assertEqual(call["resolution"], "unresolved")
+            self.assertNotIn("target", call)
+            evidence = call["import_evidence"]
+            self.assertEqual(evidence["reason"], "target_module_dynamic_namespace_unsupported")
+            site = evidence["target_module_boundaries"][0]
+            self.assertEqual(site["location"]["line"], 2)
+            self.assertEqual(site["source"], evidence["module_source"])
+            self.assertEqual(site["source"]["revision"], graph["snapshot"]["revision"])
+        changed = copy.deepcopy(graph)
+        module = next(m for m in changed["modules"] if m["path"] == "pkg/entry.py")
+        module["import_bindings"][0]["target_module_boundaries"][0]["location"]["line"] = 999
+        changed["artifact_sha256"] = deep.digest(deep.encoded({
+            k: v for k, v in changed.items() if k != "artifact_sha256"}))
+        with self.assertRaises(deep.DeepError):
+            deep.verify(self.root, changed)
+
     def test_real_source_cli_repository_verify_and_targeted_deep(self):
         import json
 
@@ -287,9 +313,9 @@ def finish(x): return entry.run(x)
         graph = json.loads(Path(slice_result["artifact"]).read_text())
         self.assertEqual(graph["symbol"], target)
         expected = "scripts/linux/eidolon_linux_desktop_v3.py::cleanup_owner@482"
-        edges = [e for e in graph["edges"] if e["to"] == expected
+        edges = [e for e in graph["edges"] if e["from"] == target and e["to"] == expected
                  and e.get("candidate_kind") == "repository_import"]
-        self.assertTrue(edges)
+        self.assertEqual(len(edges), 1, edges)
         self.assertEqual(edges[0]["import_evidence"]["import_location"]["line"], 16)
         self.assertEqual(edges[0]["location"]["line"], 105)
         self.assertTrue(graph["unknowns"])

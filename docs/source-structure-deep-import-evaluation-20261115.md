@@ -49,3 +49,26 @@ Unknown Complexity: run_settings_probeの環境準備と監視、recovery_receip
 **host suite全体は1138件中 failure 1 / errors 32 / skipped 10で失敗**した。主因は既にparse_failedと記録したsourceを新resolverが再度AST.parseしてSyntaxErrorを起こした回帰であり、後のhead 1305ae6bで再解析対象の選択を修正した。検証済みheadの結果を未検証の新headの成功と混同しない。
 
 この予備比較で実際に得られた新しい発見は「もともと手動で辿っていた2本の依存を、import位置とsource provenanceがあるcandidate edgeとして再現できた」という点まで。未知の依存の発見、時間/トークン短縮、誤った候補の実コード全件率は測っていない。今後の新しいheadの全テストと完全なrepository-deep計測は別の検証証拠とする。
+
+## a973e8e レビューへの修正（2026-11-15）
+
+対象は PR #36 head `a973e8ee8def30fe99392525f91f540961df6c13`。開始時mainは上記 `97dfdbb` のまま、既存PRの履歴を維持して修正する。以下は以前の成功記録を置換するものではない。
+
+### 修正した4点
+
+1. CLI統合テストはcalleeだけでなく `e["from"] == target` でcallerも照合し、該当辺が1本であることを検査する。2-hop近傍に含まれる別callerの144行を、選択した `_cleanup` の105行と取り違えない。
+2. `__finish` のようなprivate属性の綴りは、class内でcompilerが参照する名前と同一とは限らない。独自manglerやclass推測を導入せず、二重underscoreで始まり二重underscoreで終わらない属性callを `private_attribute_mangling_not_modeled` へ落とす。この版ではclass外の同じ綴りも保守的に未解決とする。通常名、single underscore、`__finish__`、明示的な `_C__finish`、module-level `from service import __finish as done` は従来の候補条件を維持する。
+3. 全compiler scopeの `is_declared_global()` が返す正規化済み名をalias再束縛検査にも使う。class body、method、nested function、generic classの `global __core` は `_C__core` のcandidateを抑制する。同一module候補と同様、宣言だけでも保守的に抑制し、AST名だけから再束縛を判断しない。
+4. callerとexporterで同じ直接呼出のnamespace guardを共有する。`exec` / `eval` / `globals` / `locals` / `vars` / `setattr` / `delattr` がimport先にあれば、そのmoduleのexport候補を抑制する。module経由とfrom-importの双方に `target_module_dynamic_namespace_unsupported` と、`target_module_boundaries` の操作名・位置・source fingerprintを残す。
+
+仕様根拠: [Python private name mangling](https://docs.python.org/3.14/reference/expressions.html#private-name-mangling)、[compiler symbol tables](https://docs.python.org/3.14/library/symtable.html)。attribute名はsymtableの変数binding一覧だけでは判定できない。動的namespace guardは既知の直接呼出を構文上検出するsubsetであり、alias経由の動的実行や任意callの効果を解決したものではない。nested・未評価scope内も保守的に拒否するため、候補の取りこぼしはあり得る。
+
+### 回帰と証拠の範囲
+
+新規 `test_deep_import_guards.py` は8 tests。元resolverに対してprivate属性・正規化global・dynamic exporterの負例で計27 failure（subtestを含む）を再現し、修正後は8 tests PASS（CPython **3.13.5**, final/0）。さらに既存import fixtureのうち実製品sourceコピーを必要としない16 tests、新規のbounded slice / provenance / payload改変拒否1 test、既存stale-pyc 1 testがPASS。ローカル実施は合計**26 tests**であり、Deep suite全件の成功を意味しない。
+
+ローカルはGitHubへ直接cloneできないため、固定headから取得した解析器・fixtureのbytesをGit blob SHAで照合した検証用コピーを使用した。利用可能なPythonは3.13.5のみ。実製品source3ファイルを読む2つのintegration test、残る既存Deep tests、3.12/3.14の再実行、docs/design/CI scope検査はこのローカル結果に含めず、最新headのCI結果と区別する。追加後のDeep tests定義数は99から**108**（+9）となるが、定義数を成功数に読み替えない。
+
+旧resolverの実CLIで作った固定Git fixtureのartifactは、sourceを変えず修正版CLIでverifyするとexit 2（stale）になった。新しいresolverファイルは既存generator hash / source-only loaderの保護下にあり、profile/Python版を跨ぐ互換は追加しない。動的exportのunknownは予算を絞ったsliceにも残し、操作位置を改変してpayload checksumを再計算したartifactもverifyで拒否した。
+
+製品source、CFG/DFG、Contract Graph、CI workflowには変更を加えていない。最新headのCI結果はPR本文へ別途記録し、従来の未測定な全repository計測・効果比較・3版全件検証の完了をこの修正から推論しない。
