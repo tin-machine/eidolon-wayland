@@ -10,6 +10,10 @@
 この単位のunit test成功やPR mergeを、I6 Host acceptanceの成功へ読み替えない。
 I6は引き続きmanual discoveryとし、resolver manifestの登録taskには追加しない。
 
+後続の [第3実装単位: 実 Host EGL／bounded readback／renderer retirement](i6-host-egl-readback.md)
+は別の renderer T artifact を検証する。正式 I6 の固定 required 集合や N02 の状態へ
+成功を加算せず、この第1単位の履歴を維持する。
+
 後続の [第2実装単位 N01: 実SSH／Inspect-only](i6-n01-inspect-only.md) では、
 通常Registry runner、disposable環境、読み取り専用trace、N01専用oracleを接続する。
 この文書の第1単位時点の未実施記録は維持し、N01の実施結果と正式I6全体の未完了を区別する。

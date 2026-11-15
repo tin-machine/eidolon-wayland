@@ -56,6 +56,20 @@ pub struct Target {
     control: Option<std::sync::Arc<TestControl>>,
 }
 impl Target {
+    #[cfg(feature = "host-acceptance")]
+    pub fn frame_readback(
+        &mut self,
+        _: &mut Device,
+        _: u64,
+        _: &eidolon_model::window::WindowSnapshot,
+        _: &[super::compositor::Probe],
+        _: Option<&crate::decoration::Composition<'_>>,
+        _: &[crate::HostReadbackRoi],
+    ) -> Result<Vec<crate::HostReadbackPixels>, &'static str> {
+        // Unit-test bookkeeping may exercise rejection paths, but must never
+        // manufacture the real backend's success receipt.
+        Err("HOST_READBACK_REQUIRES_REAL_EGL")
+    }
     pub fn new(
         _device: &mut Device,
         _window: PlatformWindow,

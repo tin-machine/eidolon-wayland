@@ -21,6 +21,40 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 type Error = &'static str;
+#[cfg(feature = "host-acceptance")]
+type PaintResult = Vec<crate::host_readback::HostReadbackPixels>;
+#[cfg(not(feature = "host-acceptance"))]
+type PaintResult = ();
+
+/// GPU-side renderer.wait is insufficient for a CPU retirement receipt. The
+/// acceptance backend waits for an actual GLES3 fence, with a finite timeout.
+#[cfg(feature = "host-acceptance")]
+fn bounded_gpu_finish(gl: &smithay::backend::renderer::gles::ffi::Gles2) -> Result<(), Error> {
+    use smithay::backend::renderer::gles::ffi;
+    if !gl.FenceSync.is_loaded() || !gl.ClientWaitSync.is_loaded() || !gl.DeleteSync.is_loaded() {
+        return Err("HOST_EGL_FENCE_UNAVAILABLE");
+    }
+    // SAFETY: Called only while this renderer's GLES3 context is current on its
+    // owner thread. The sync is deleted exactly once on every non-null path.
+    unsafe {
+        super::check_gl_error(gl.GetError())?;
+        let sync = gl.FenceSync(ffi::SYNC_GPU_COMMANDS_COMPLETE, 0);
+        if sync.is_null() {
+            super::check_gl_error(gl.GetError())?;
+            return Err("GPU_FENCE_FAILED");
+        }
+        let result = gl.ClientWaitSync(sync, ffi::SYNC_FLUSH_COMMANDS_BIT, 100_000_000);
+        let error = gl.GetError();
+        gl.DeleteSync(sync);
+        super::check_gl_error(error)?;
+        super::check_gl_error(gl.GetError())?;
+        match result {
+            ffi::ALREADY_SIGNALED | ffi::CONDITION_SATISFIED => Ok(()),
+            ffi::TIMEOUT_EXPIRED => Err("GPU_FENCE_TIMEOUT"),
+            _ => Err("GPU_FENCE_FAILED"),
+        }
+    }
+}
 fn gpu_error<E: Into<smithay::backend::SwapBuffersError>>(error: E) -> Error {
     match error.into() {
         smithay::backend::SwapBuffersError::ContextLost(_) => "EGL_CONTEXT_LOST",
@@ -136,6 +170,18 @@ impl Compositor {
     }
     pub fn report(&self) -> Report {
         self.report.clone()
+    }
+    #[cfg(feature = "host-acceptance")]
+    pub fn finish_gpu_work(&mut self) -> Result<(), Error> {
+        // Dropped GlesTexture references enqueue their GL deletions. Drain them
+        // before inserting the fence, including work left by a prior clear.
+        self.renderer.cleanup_texture_cache().map_err(gpu_error)?;
+        // with_context makes the context current without a surface. Besides
+        // waiting for deletion/draw commands, this releases any current pbuffer
+        // so a following eglDestroySurface is not merely deferred.
+        self.renderer
+            .with_context(bounded_gpu_finish)
+            .map_err(gpu_error)?
     }
     pub fn forget(&mut self, session: SessionId, window: WindowId) -> Result<(), Error> {
         self.cache
@@ -324,6 +370,40 @@ impl Compositor {
         probes: &[Probe],
         decoration: Option<&Composition<'_>>,
     ) -> Result<(), Error> {
+        self.paint_decorated_inner(
+            surface,
+            snapshot,
+            probes,
+            decoration,
+            #[cfg(feature = "host-acceptance")]
+            &[],
+        )
+        .map(|_| ())
+    }
+
+    #[cfg(all(feature = "host-acceptance", not(test)))]
+    pub(crate) fn paint_decorated_readback(
+        &mut self,
+        surface: &mut EGLSurface,
+        snapshot: &WindowSnapshot,
+        probes: &[Probe],
+        decoration: Option<&Composition<'_>>,
+        rois: &[crate::host_readback::HostReadbackRoi],
+    ) -> Result<PaintResult, Error> {
+        if rois.is_empty() {
+            return Err("INVALID_ARGUMENT");
+        }
+        self.paint_decorated_inner(surface, snapshot, probes, decoration, rois)
+    }
+
+    fn paint_decorated_inner(
+        &mut self,
+        surface: &mut EGLSurface,
+        snapshot: &WindowSnapshot,
+        probes: &[Probe],
+        decoration: Option<&Composition<'_>>,
+        #[cfg(feature = "host-acceptance")] rois: &[crate::host_readback::HostReadbackRoi],
+    ) -> Result<PaintResult, Error> {
         let size = surface.get_size().ok_or("SURFACE_LOST")?;
         let layout = decoration
             .map(|d| d.viewport(snapshot.logical_size, [size.w, size.h]))
@@ -558,6 +638,14 @@ impl Compositor {
             self.decoration_pass(surface, &front, false, final_probes)?;
             self.report.decoration_presents += 1;
         }
+        // Capture after BOTH passes. No byte escapes until the real fence and
+        // swap below succeed. The snapshot used here is the one actually drawn.
+        #[cfg(feature = "host-acceptance")]
+        let readback = if rois.is_empty() {
+            Vec::new()
+        } else {
+            self.readback_frame(surface, rois)?
+        };
         self.report.stage = "bind_for_swap";
         // SAFETY: surface/contextとも同じGL ownerで保持し、別threadではcurrentにしない。
         unsafe {
@@ -582,7 +670,126 @@ impl Compositor {
             .max_swap_us
             .max(started.elapsed().as_micros().min(u64::MAX as u128) as u64);
         self.report.stage = "presented";
+        #[cfg(feature = "host-acceptance")]
+        {
+            if !rois.is_empty() {
+                let error = self
+                    .renderer
+                    .with_context(|gl| unsafe { gl.GetError() })
+                    .map_err(gpu_error)?;
+                super::check_gl_error(error)?;
+            }
+            Ok(readback)
+        }
+        #[cfg(not(feature = "host-acceptance"))]
         Ok(())
+    }
+
+    #[cfg(feature = "host-acceptance")]
+    fn readback_frame(
+        &mut self,
+        surface: &mut EGLSurface,
+        rois: &[crate::host_readback::HostReadbackRoi],
+    ) -> Result<Vec<crate::host_readback::HostReadbackPixels>, Error> {
+        use crate::host_readback::HostReadbackPixels;
+        use smithay::backend::renderer::gles::ffi;
+        let size = surface.get_size().ok_or("SURFACE_LOST")?;
+        if rois.is_empty() || rois.len() > 8 {
+            return Err("INVALID_ARGUMENT");
+        }
+        let mut total = 0usize;
+        for (index, roi) in rois.iter().enumerate() {
+            if roi.width == 0
+                || roi.height == 0
+                || roi
+                    .x
+                    .checked_add(roi.width)
+                    .is_none_or(|n| n > size.w as u32)
+                || roi
+                    .y
+                    .checked_add(roi.height)
+                    .is_none_or(|n| n > size.h as u32)
+                || rois[..index].iter().any(|old| old.id == roi.id)
+            {
+                return Err("INVALID_ARGUMENT");
+            }
+            total = (roi.width as usize)
+                .checked_mul(roi.height as usize)
+                .and_then(|n| n.checked_mul(4))
+                .and_then(|n| n.checked_add(total))
+                .filter(|n| *n <= 1024 * 1024)
+                .ok_or("READBACK_BUDGET")?;
+        }
+        let mut target = self.renderer.bind(surface).map_err(gpu_error)?;
+        // This pass has no draws or clears; it binds the actual finished pbuffer
+        // without renderer.with_context switching to a surfaceless framebuffer.
+        let mut frame = self
+            .renderer
+            .render(&mut target, size, Transform::Flipped180)
+            .map_err(gpu_error)?;
+        let pixels = frame
+            .with_context(|gl| -> Result<Vec<HostReadbackPixels>, Error> {
+                // SAFETY: all rectangles and byte counts are checked above. Preserve
+                // GL pack state so this read-only observation cannot affect later GL.
+                unsafe {
+                    super::check_gl_error(gl.GetError())?;
+                    let parameters = [
+                        ffi::PACK_ALIGNMENT,
+                        ffi::PACK_ROW_LENGTH,
+                        ffi::PACK_SKIP_PIXELS,
+                        ffi::PACK_SKIP_ROWS,
+                    ];
+                    let mut prior = [0i32; 4];
+                    for (attribute, value) in parameters.into_iter().zip(prior.iter_mut()) {
+                        gl.GetIntegerv(attribute, value);
+                    }
+                    let mut pack_buffer = 0i32;
+                    gl.GetIntegerv(ffi::PIXEL_PACK_BUFFER_BINDING, &mut pack_buffer);
+                    super::check_gl_error(gl.GetError())?;
+                    gl.BindBuffer(ffi::PIXEL_PACK_BUFFER, 0);
+                    for (attribute, value) in parameters.into_iter().zip([4, 0, 0, 0]) {
+                        gl.PixelStorei(attribute, value);
+                    }
+                    let result = (|| {
+                        super::check_gl_error(gl.GetError())?;
+                        let mut pixels = Vec::with_capacity(rois.len());
+                        for roi in rois {
+                            let stride = roi.width as usize * 4;
+                            let mut rgba = vec![0u8; stride * roi.height as usize];
+                            gl.ReadPixels(
+                                roi.x as i32,
+                                size.h - (roi.y + roi.height) as i32,
+                                roi.width as i32,
+                                roi.height as i32,
+                                ffi::RGBA,
+                                ffi::UNSIGNED_BYTE,
+                                rgba.as_mut_ptr().cast(),
+                            );
+                            super::check_gl_error(gl.GetError())?;
+                            // Public ROI rows use the same top-left origin as geometry.
+                            for y in 0..roi.height as usize / 2 {
+                                let opposite = roi.height as usize - 1 - y;
+                                let (upper, lower) = rgba.split_at_mut(opposite * stride);
+                                upper[y * stride..(y + 1) * stride]
+                                    .swap_with_slice(&mut lower[..stride]);
+                            }
+                            pixels.push(HostReadbackPixels { roi: *roi, rgba });
+                        }
+                        Ok(pixels)
+                    })();
+                    for (attribute, value) in parameters.into_iter().zip(prior) {
+                        gl.PixelStorei(attribute, value);
+                    }
+                    gl.BindBuffer(ffi::PIXEL_PACK_BUFFER, pack_buffer as u32);
+                    super::check_gl_error(gl.GetError())?;
+                    result
+                }
+            })
+            .map_err(gpu_error)??;
+        let _sync = frame.finish().map_err(gpu_error)?;
+        drop(target);
+        self.finish_gpu_work()?;
+        Ok(pixels)
     }
     pub fn gpu_strings(&mut self) -> Result<[String; 3], Error> {
         self.renderer

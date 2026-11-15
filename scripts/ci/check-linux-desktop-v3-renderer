@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# An actual network-isolated Mesa run is mandatory. Missing EGL never skips.
+set -euo pipefail
+umask 077
+if [[ $# != 2 || $1 != --artifact-root ]]; then
+  echo 'usage: check-linux-desktop-v3-renderer --artifact-root ABSOLUTE_EMPTY_DIRECTORY' >&2
+  exit 2
+fi
+i6_renderer_output=$2
+i6_renderer_source=$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel)
+python3 - "$i6_renderer_output" "$i6_renderer_source" <<'PY'
+import os
+from pathlib import Path
+import stat
+import sys
+path, source = map(Path, sys.argv[1:])
+if (not path.is_absolute() or path.parent.resolve() != path.parent or
+        path == source or source in path.parents or path.is_symlink()):
+    raise SystemExit("Renderer artifact root must be external, absolute and private")
+if not path.exists():
+    path.mkdir(mode=0o700)
+info = path.lstat()
+if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+        info.st_mode & 0o077 or any(path.iterdir())):
+    raise SystemExit("Renderer artifact root must be owned, private and empty")
+PY
+if [[ -n $(git -C "$i6_renderer_source" status --porcelain=v1 --untracked-files=all) ]]; then
+  echo 'Renderer evidence requires a clean committed checkout' >&2
+  exit 2
+fi
+i6_renderer_head=$(git -C "$i6_renderer_source" rev-parse HEAD)
+if [[ ! $i6_renderer_head =~ ^[0-9a-f]{40}$ ]]; then
+  exit 2
+fi
+command -v docker >/dev/null
+i6_renderer_work=$(mktemp -d "${TMPDIR:-/tmp}/eidolon-i6-renderer.XXXXXXXX")
+i6_renderer_image="eidolon-i6-renderer:$(basename "$i6_renderer_work" | tr '[:upper:]' '[:lower:]')"
+i6_renderer_container=''
+cleanup() {
+  if [[ -n $i6_renderer_container ]]; then
+    docker rm --force "$i6_renderer_container" >/dev/null 2>&1 || true
+  fi
+  docker image rm "$i6_renderer_image" >/dev/null 2>&1 || true
+  rm -rf -- "$i6_renderer_work"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+git clone --quiet --no-local --no-hardlinks "$i6_renderer_source" "$i6_renderer_work/source"
+git -C "$i6_renderer_work/source" checkout --quiet --detach "$i6_renderer_head"
+git -C "$i6_renderer_work/source" remote remove origin
+timeout --signal=TERM --kill-after=30s 1800s docker build \
+  --file "$i6_renderer_work/source/scripts/fixtures/linux-desktop-v3-acceptance/Dockerfile.renderer" \
+  --tag "$i6_renderer_image" "$i6_renderer_work/source"
+docker image inspect --format '{{.Id}}' "$i6_renderer_image" > "$i6_renderer_work/image.id"
+# No existing HOME, desktop, ADB, Docker socket, or host namespace is mounted.
+i6_renderer_container=$(docker create --network none --pids-limit 128 --memory 3g \
+  --cpus 4 --cap-drop ALL --security-opt no-new-privileges "$i6_renderer_image")
+if [[ ! $i6_renderer_container =~ ^[0-9a-f]{64}$ ]]; then
+  exit 2
+fi
+set +e
+timeout --signal=TERM --kill-after=10s 120s docker start --attach "$i6_renderer_container"
+i6_renderer_attach=$?
+set -e
+i6_renderer_running=$(docker inspect --format '{{.State.Running}}' "$i6_renderer_container")
+if [[ $i6_renderer_running == true ]]; then
+  # External rescue cannot establish product retirement or renderer success.
+  docker stop --time 5 "$i6_renderer_container" >/dev/null || true
+fi
+i6_renderer_exit=$(docker inspect --format '{{.State.ExitCode}}' "$i6_renderer_container")
+mkdir -m 0700 "$i6_renderer_work/export"
+docker cp "$i6_renderer_container:/artifacts/." "$i6_renderer_work/export" >/dev/null 2>&1 || true
+python3 "$i6_renderer_source/scripts/linux_real_app_v3_renderer_ci.py" \
+  "$i6_renderer_work/export" "$i6_renderer_output" "$i6_renderer_work/image.id" \
+  "$i6_renderer_head" "$i6_renderer_attach" "$i6_renderer_exit" "$i6_renderer_running" \
+  "$i6_renderer_source" "${CI_PR_HEAD:-}"
