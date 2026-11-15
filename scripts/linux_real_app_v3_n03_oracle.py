@@ -60,7 +60,10 @@ def observations(native):
         exact(row, {"sequence", "kind", "transport_sequence", "data"})
         require(row["sequence"] == str(i) and type(row["kind"]) is str
                 and 0 < len(row["kind"]) <= 64 and type(row["data"]) is dict)
-        require(b1.decimal(row["transport_sequence"]))
+        # Pre-connection observations carry watermark "0"; canonical B1
+        # decimal identities deliberately exclude zero.
+        require(row["transport_sequence"] == "0"
+                or b1.decimal(row["transport_sequence"]))
         tick = int(row["transport_sequence"])
         require(watermark <= tick <= len(native["trace"]["events"]), "I6_TRACE_INVALID")
         watermark = tick
