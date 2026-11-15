@@ -65,7 +65,8 @@ def reject_mutations(native, environment, source, variant):
         ("leaked_child", lambda n, e: e["final"].update(app_process_count=1)),
         ("trace_overflow", lambda n, e: n["trace"].update(overflow=True)),
         ("lost_start", lambda n, e: n.update(start_count=0)),
-        ("lost_finalizer", lambda n, e: n["trace"]["events"][-1].update(kind="not_finalized")),
+        ("lost_finalizer", lambda n, e: next(item for item in n["trace"]["events"]
+            if item["kind"] == "finalizer_published")["data"].update(status=1)),
     )
     for label, mutate in changes:
         n, e = copy.deepcopy(native), copy.deepcopy(environment)
