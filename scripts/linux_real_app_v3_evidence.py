@@ -416,7 +416,7 @@ def invalid_result(reason="I6_REPORT_INVALID"):
     allowed = {"I6_REPORT_INVALID", "I6_MANIFEST_INVALID", "I6_SOURCE_MISMATCH", "I6_ARTIFACT_INVALID",
                "I6_OWNER_MISMATCH", "I6_TRACE_INVALID", "I6_SOURCE_UNAVAILABLE",
                "I6_N01_RECEIPT_INVALID", "I6_N01_ENVIRONMENT_INVALID",
-               "I6_N02_RECEIPT_INVALID"}
+               "I6_N02_RECEIPT_INVALID", "I6_N03_RECEIPT_INVALID"}
     return _summary("invalid", reason if reason in allowed else "I6_REPORT_INVALID")
 
 
