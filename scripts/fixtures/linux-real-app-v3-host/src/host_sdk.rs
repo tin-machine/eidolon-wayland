@@ -45,7 +45,12 @@ struct SyntheticEntity {
 }
 impl SyntheticEntity {
     fn new() -> Self {
-        Self { sealed: false, callback_producers: 1, callbacks_inflight: 0, disposed: false }
+        Self {
+            sealed: false,
+            callback_producers: 1,
+            callbacks_inflight: 0,
+            disposed: false,
+        }
     }
     fn callback_start(&mut self) -> bool {
         if self.sealed || self.disposed || self.callback_producers == 0 {
@@ -102,7 +107,13 @@ impl HostSdkAdapter {
         let adapter = NEXT_ADAPTER
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| Status::Failed)?;
-        Ok(Self { runtime, adapter, next_request: 100, leases: Vec::new(), observations: Vec::new() })
+        Ok(Self {
+            runtime,
+            adapter,
+            next_request: 100,
+            leases: Vec::new(),
+            observations: Vec::new(),
+        })
     }
 
     fn next(&mut self) -> Result<u64, Status> {
@@ -131,7 +142,9 @@ impl HostSdkAdapter {
     fn reserve_native_plan(&mut self, registry: &Registry) -> Result<(), Status> {
         let snapshot = registry.guarded(self.runtime, Runtime::snapshot)?;
         for plan in snapshot.panels {
-            if plan.action != PanelAction::Create || plan.applied || plan.error.is_some()
+            if plan.action != PanelAction::Create
+                || plan.applied
+                || plan.error.is_some()
                 || !plan.v3_evidence_required
             {
                 continue;
@@ -154,9 +167,12 @@ impl HostSdkAdapter {
                 readback: None,
                 ack_request: None,
             });
-            self.observe("native_create_reserved", json!({
-                "target": plan.target, "create_seq": plan.command_seq,
-            }))?;
+            self.observe(
+                "native_create_reserved",
+                json!({
+                    "target": plan.target, "create_seq": plan.command_seq,
+                }),
+            )?;
         }
         Ok(())
     }
@@ -164,7 +180,9 @@ impl HostSdkAdapter {
     /// Advance only one bounded step; caller must continue ordinary pump/poll.
     /// Returns actual readback after the native Create has been applied.
     pub fn tick_create(
-        &mut self, registry: &Registry, completed: &std::collections::BTreeMap<String, Value>,
+        &mut self,
+        registry: &Registry,
+        completed: &std::collections::BTreeMap<String, Value>,
     ) -> Result<Option<Value>, Status> {
         self.reserve_native_plan(registry)?;
         for i in 0..self.leases.len() {
@@ -183,20 +201,36 @@ impl HostSdkAdapter {
                     }
                     self.leases[i].phase = Phase::Registered;
                     self.leases[i].entity = Some(SyntheticEntity::new());
-                    self.observe("registered", json!({"target":target,"create_seq":create,"status":0}))?;
+                    self.observe(
+                        "registered",
+                        json!({"target":target,"create_seq":create,"status":0}),
+                    )?;
                 }
                 Phase::Registered => {
                     let snapshot = registry.guarded(self.runtime, Runtime::snapshot)?;
-                    let plan = snapshot.panels.iter().find(|plan| {
-                        plan.target == target && plan.command_seq == create
-                            && plan.action == PanelAction::Create && plan.error.is_none()
-                    }).ok_or(Status::Stale)?;
-                    let size = plan.decoration.as_ref().map(|layout| layout.canvas)
+                    let plan = snapshot
+                        .panels
+                        .iter()
+                        .find(|plan| {
+                            plan.target == target
+                                && plan.command_seq == create
+                                && plan.action == PanelAction::Create
+                                && plan.error.is_none()
+                        })
+                        .ok_or(Status::Stale)?;
+                    let size = plan
+                        .decoration
+                        .as_ref()
+                        .map(|layout| layout.canvas)
                         .or_else(|| snapshot.app.as_ref().and_then(|app| app.last_size))
                         .ok_or(Status::NotReady)?;
                     let status = registry.guarded(self.runtime, |runtime| {
-                        runtime.attach_window_surface(target, PlatformWindow::default(),
-                            size.width as i32, size.height as i32)
+                        runtime.attach_window_surface(
+                            target,
+                            PlatformWindow::default(),
+                            size.width as i32,
+                            size.height as i32,
+                        )
                     })?;
                     if status == Status::NotReady {
                         continue;
@@ -222,27 +256,46 @@ impl HostSdkAdapter {
                         return Err(status);
                     }
                     self.leases[i].phase = Phase::Current;
-                    self.observe("sdk_current", json!({"target":target,"create_seq":create,"status":0}))?;
+                    self.observe(
+                        "sdk_current",
+                        json!({"target":target,"create_seq":create,"status":0}),
+                    )?;
                 }
                 Phase::Current => {
                     let snapshot = registry.guarded(self.runtime, Runtime::snapshot)?;
-                    let report = match snapshot.render.targets.iter().find(|r| r.key == target
-                        && r.role == RenderMode::Windows && !r.presentation_paused
-                        && r.content_frame.is_some() && r.frames > 0) {
+                    let report = match snapshot.render.targets.iter().find(|r| {
+                        r.key == target
+                            && r.role == RenderMode::Windows
+                            && !r.presentation_paused
+                            && r.content_frame.is_some()
+                            && r.frames > 0
+                    }) {
                         Some(report) => report,
                         None => continue,
                     };
-                    let Some(min_content_frame) = report.content_frame else { continue };
-                    if report.gpu.width < 4 || report.gpu.height < 4 { return Err(Status::InvalidArgument); }
+                    let Some(min_content_frame) = report.content_frame else {
+                        continue;
+                    };
+                    if report.gpu.width < 4 || report.gpu.height < 4 {
+                        return Err(Status::InvalidArgument);
+                    }
                     let request_seq = NonZeroU64::new(self.next()?).ok_or(Status::Failed)?;
                     let roi = HostReadbackRoi {
-                        id: 1, x: (report.gpu.width / 2 - 2) as u32,
-                        y: (report.gpu.height / 2 - 2) as u32, width: 4, height: 4,
+                        id: 1,
+                        x: (report.gpu.width / 2 - 2) as u32,
+                        y: (report.gpu.height / 2 - 2) as u32,
+                        width: 4,
+                        height: 4,
                     };
                     let request = HostReadbackRequest {
-                        target, min_content_frame, request_seq, rois: vec![roi],
+                        target,
+                        min_content_frame,
+                        request_seq,
+                        rois: vec![roi],
                     };
-                    match registry.guarded(self.runtime, |runtime| runtime.request_host_readback(request))? {
+                    match registry.guarded(self.runtime, |runtime| {
+                        runtime.request_host_readback(request)
+                    })? {
                         Ok(ticket) => {
                             self.leases[i].ticket = Some(ticket);
                             self.leases[i].phase = Phase::ReadbackPending;
@@ -253,46 +306,66 @@ impl HostSdkAdapter {
                 }
                 Phase::ReadbackPending => {
                     let ticket = self.leases[i].ticket.as_ref().ok_or(Status::Failed)?;
-                    let result = registry.guarded(self.runtime, |runtime| runtime.poll_host_readback(ticket))?;
+                    let result = registry
+                        .guarded(self.runtime, |runtime| runtime.poll_host_readback(ticket))?;
                     match result {
-                        Ok(HostReadbackPoll::Pending) | Err(Status::NotReady | Status::Busy) => continue,
+                        Ok(HostReadbackPoll::Pending) | Err(Status::NotReady | Status::Busy) => {
+                            continue;
+                        }
                         Err(status) => return Err(status),
                         Ok(HostReadbackPoll::Complete(readback)) => {
                             // No diagnostic or decoration-only frame can satisfy
                             // real-content evidence. Pixel hashes are not semantic goldens.
                             let r = &readback.renderer;
-                            if r.layers.is_empty() || r.rois.is_empty()
+                            if r.layers.is_empty()
+                                || r.rois.is_empty()
                                 || r.rois.iter().any(|roi| roi.rgba.len() != 4 * 4 * 4)
                                 || r.pixel_sha256.len() != r.rois.len()
-                                || r.backend.renderer.is_empty() || r.backend.vendor.is_empty()
-                                || readback.runtime.get() != self.runtime || readback.create != create
+                                || r.backend.renderer.is_empty()
+                                || r.backend.vendor.is_empty()
+                                || readback.runtime.get() != self.runtime
+                                || readback.create != create
                                 || r.target != target
                             {
                                 return Err(Status::Failed);
                             }
-                            let value = serde_json::to_value(&readback).map_err(|_| Status::Failed)?;
+                            let value =
+                                serde_json::to_value(&readback).map_err(|_| Status::Failed)?;
                             self.leases[i].ticket = None;
                             self.leases[i].readback = Some(value.clone());
                             self.leases[i].phase = Phase::Verified;
-                            self.observe("real_readback", json!({
-                                "target":target,"create_seq":create,"readback":value,
-                            }))?;
+                            self.observe(
+                                "real_readback",
+                                json!({
+                                    "target":target,"create_seq":create,"readback":value,
+                                }),
+                            )?;
                         }
                     }
                 }
                 Phase::Verified => {
                     let request = self.next()?;
-                    let status = self.issue(registry, json!({
-                        "type":"adapter_applied","schema":1,"request_id":request.to_string(),
-                        "command_seq":create,"target":target,"action":"create",
-                    }));
-                    if status == Status::Busy { continue; }
-                    if status != Status::Accepted { return Err(status); }
+                    let status = self.issue(
+                        registry,
+                        json!({
+                            "type":"adapter_applied","schema":1,"request_id":request.to_string(),
+                            "command_seq":create,"target":target,"action":"create",
+                        }),
+                    );
+                    if status == Status::Busy {
+                        continue;
+                    }
+                    if status != Status::Accepted {
+                        return Err(status);
+                    }
                     self.leases[i].ack_request = Some(request);
                     self.leases[i].phase = Phase::AckQueued;
-                    self.observe("create_queued", json!({
-                        "target":target,"create_seq":create,"request_id":request.to_string(),
-                    }))?;
+                    self.observe(
+                        "create_queued",
+                        json!({
+                            "target":target,"create_seq":create,"request_id":request.to_string(),
+                        }),
+                    )?;
                 }
                 Phase::AckQueued => {
                     let request = self.leases[i].ack_request.ok_or(Status::Failed)?;
@@ -301,14 +374,21 @@ impl HostSdkAdapter {
                     }
                     let snapshot = registry.guarded(self.runtime, Runtime::snapshot)?;
                     let applied = snapshot.panels.iter().any(|panel| {
-                        panel.target == target && panel.command_seq == create
-                            && panel.action == PanelAction::Create && panel.applied
+                        panel.target == target
+                            && panel.command_seq == create
+                            && panel.action == PanelAction::Create
+                            && panel.applied
                     });
-                    if !applied { return Err(Status::Stale); }
+                    if !applied {
+                        return Err(Status::Stale);
+                    }
                     self.leases[i].phase = Phase::Applied;
-                    self.observe("create_applied", json!({
-                        "target":target,"create_seq":create,"request_id":request.to_string(),
-                    }))?;
+                    self.observe(
+                        "create_applied",
+                        json!({
+                            "target":target,"create_seq":create,"request_id":request.to_string(),
+                        }),
+                    )?;
                     return Ok(self.leases[i].readback.clone());
                 }
                 Phase::Applied => return Ok(self.leases[i].readback.clone()),
@@ -323,20 +403,28 @@ impl HostSdkAdapter {
     /// leaves exactly the same lease pending for a later attempt.
     pub fn tick_retire(&mut self, registry: &Registry) -> Result<bool, Status> {
         for i in 0..self.leases.len() {
-            if self.leases[i].phase == Phase::Retired { continue; }
+            if self.leases[i].phase == Phase::Retired {
+                continue;
+            }
             let target = self.leases[i].target;
             let create = self.leases[i].create;
             let entity = self.leases[i].entity.as_mut().ok_or(Status::NotReady)?;
             entity.seal();
-            if !entity.dispose() { return Ok(false); }
+            if !entity.dispose() {
+                return Ok(false);
+            }
             if self.leases[i].phase != Phase::Retiring {
                 let request = self.next()?;
                 let code = self.issue(registry, json!({
                     "type":"sdk_binding_evidence","schema":1,"request_id":request.to_string(),
                     "target":target,"create_command":create,"adapter":self.adapter,"phase":"retiring",
                 }));
-                if code == Status::NotReady { return Ok(false); }
-                if code != Status::Accepted { return Err(code); }
+                if code == Status::NotReady {
+                    return Ok(false);
+                }
+                if code != Status::Accepted {
+                    return Err(code);
+                }
                 self.leases[i].phase = Phase::Retiring;
                 self.observe("sdk_retiring", json!({"target":target,"create_seq":create}))?;
             }
@@ -345,19 +433,37 @@ impl HostSdkAdapter {
                 "type":"sdk_binding_evidence","schema":1,"request_id":request.to_string(),
                 "target":target,"create_command":create,"adapter":self.adapter,"phase":"retired",
             }));
-            if code == Status::NotReady { return Ok(false); }
-            if code != Status::Accepted { return Err(code); }
-            if !self.leases[i].entity.as_ref().is_some_and(SyntheticEntity::drained) {
+            if code == Status::NotReady {
+                return Ok(false);
+            }
+            if code != Status::Accepted {
+                return Err(code);
+            }
+            if !self.leases[i]
+                .entity
+                .as_ref()
+                .is_some_and(SyntheticEntity::drained)
+            {
                 return Err(Status::Failed);
             }
             self.leases[i].phase = Phase::Retired;
-            self.observe("sdk_retired", json!({"target":target,"create_seq":create,"status":0}))?;
+            self.observe(
+                "sdk_retired",
+                json!({"target":target,"create_seq":create,"status":0}),
+            )?;
         }
-        Ok(self.leases.iter().all(|lease| lease.phase == Phase::Retired))
+        Ok(self
+            .leases
+            .iter()
+            .all(|lease| lease.phase == Phase::Retired))
     }
 
-    pub fn observations(&self) -> &[Value] { &self.observations }
-    pub fn owns_lease(&self) -> bool { !self.leases.is_empty() }
+    pub fn observations(&self) -> &[Value] {
+        &self.observations
+    }
+    pub fn owns_lease(&self) -> bool {
+        !self.leases.is_empty()
+    }
     pub fn has_retired_all(&self) -> bool {
         !self.leases.is_empty() && self.leases.iter().all(|l| l.phase == Phase::Retired)
     }
@@ -390,6 +496,9 @@ mod tests {
     }
     #[test]
     fn invalid_runtime_is_not_an_owner() {
-        assert!(matches!(HostSdkAdapter::new(0), Err(Status::InvalidArgument)));
+        assert!(matches!(
+            HostSdkAdapter::new(0),
+            Err(Status::InvalidArgument)
+        ));
     }
 }
