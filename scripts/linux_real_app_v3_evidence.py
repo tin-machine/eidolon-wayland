@@ -722,6 +722,13 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                     expected_target=next(iter(targets.values())),
                     expected_source=before,
                 )
+                # The current Host-only receipt proves product retirement,
+                # NOT deletion of the disposable Docker/container environment.
+                # A producer may not upgrade that independent boundary by
+                # editing the enclosing case; a future exterior disposal
+                # witness needs its own separately reviewed contract.
+                require(cases[key][0]["cleanup"]["environment_disposal"] == "not_yet",
+                        "I6_N02_RECEIPT_INVALID")
                 receipts[path] = result
                 continue
             require(path in cases[key][0]["trace"]["artifacts"], "I6_TRACE_INVALID")
