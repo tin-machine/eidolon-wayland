@@ -298,6 +298,45 @@ def _trace(native, owner, environment):
                                    "inspect_request": capture["inspect_request"], "generation": capture["io_generation"]})
     _require(capture_hash == capture["capture_id"], "I6_OWNER_MISMATCH")
     protocol_events = by_kind.get("protocol_event", [])
+    # Failure cleanup can recover the same capture before a catalog exists.
+    # Inspect every present recovery record independently of catalog admission.
+    if "recovery_receipt" in by_kind:
+        recovery = item("recovery_receipt")["data"]
+        for key in ("eof", "exit_signal", "channel_closed"):
+            _require(type(recovery[key]) is bool)
+        _number(recovery["router_active"])
+        _number(recovery["exit_status"], 0, (1 << 32) - 1)
+        prepared = [e for e in protocol_events if e["data"]["record"]["event"]["type"] == "prepared"]
+        _require(len(prepared) <= 1, "I6_TRACE_INVALID")
+        if prepared:
+            frame = wire.parse_event(evidence.canonical(prepared[0]["data"]["record"]),
+                                     wire.Binding(context, pins), None)
+            boot = frame["event"]["payload"]["boot_id"]
+            _require(recovery["expected_boot_id"] == boot, "I6_OWNER_MISMATCH")
+            _require(int(prepared[0]["sequence"]) < int(item("recovery_receipt")["sequence"]), "I6_TRACE_INVALID")
+        else:
+            # Still validate the receipt's schema, capture and sources. The
+            # recorded recovery expectation alone cannot prove the original boot.
+            missing.append("receipt/prepared_protocol")
+            boot = recovery["expected_boot_id"]
+        recovered = wire.parse_receipt(evidence.canonical(recovery["record"]) + b"\n",
+            wire.Binding(context, pins), native["compiled_source_hashes"], boot, recovery["exit_status"])
+        if (recovered["status"] != "complete" or recovered["process_evidence"] != "receipt"
+                or recovered["origin_boot_id"] != boot or recovered["boot_id"] != boot
+                or not recovered["pipes_eof"] or recovery["exit_status"] != 0
+                or not recovery["eof"] or recovery["exit_signal"] or not recovery["channel_closed"]
+                or recovery["router_active"] != 0):
+            failures.append("helper_ssh_reaped")
+    if "recovery_durable_complete" in by_kind:
+        cleanup = item("recovery_durable_complete")["data"]["cleanup"]
+        _exact(cleanup, {"process_complete", "pipes_eof", "remote_cleaned", "receipt_written", "channel_complete",
+                         "forward_retired", "router_drained", "boot_changed"})
+        _require(all(type(value) is bool for value in cleanup.values()))
+        if not all(cleanup[k] for k in cleanup.keys() - {"boot_changed"}) or cleanup["boot_changed"]:
+            failures.append("helper_ssh_reaped")
+        if "journal_complete" not in by_kind:
+            missing.append("receipt/journal_complete")
+        ordered("journal_complete", "recovery_durable_complete")
     catalogs = [e for e in protocol_events if e["data"]["record"].get("event", {}).get("type") == "catalog"]
     if not catalogs:
         missing.append("receipt/catalog_protocol")
@@ -326,35 +365,6 @@ def _trace(native, owner, environment):
         _require(native["start_count"] == start_count, "I6_TRACE_INVALID")
         if inspect_count != 1 or stop_count != 1 or not recovering and protocol.phase != "stopped":
             missing.append("receipt/protocol_complete")
-        if recovering:
-            if "recovery_receipt" in by_kind:
-                recovery = item("recovery_receipt")["data"]
-                for key in ("eof", "exit_signal", "channel_closed"):
-                    _require(type(recovery[key]) is bool)
-                _number(recovery["router_active"])
-                _number(recovery["exit_status"], 0, (1 << 32) - 1)
-                prepared = [e for e in protocol_events if e["data"]["record"]["event"]["type"] == "prepared"]
-                _require(len(prepared) == 1, "I6_TRACE_INVALID")
-                boot = prepared[0]["data"]["record"]["event"]["payload"]["boot_id"]
-                _require(recovery["expected_boot_id"] == boot, "I6_OWNER_MISMATCH")
-                recovered = wire.parse_receipt(evidence.canonical(recovery["record"]) + b"\n",
-                    wire.Binding(context, pins), native["compiled_source_hashes"], boot, recovery["exit_status"])
-                if (recovered["status"] != "complete" or recovered["process_evidence"] != "receipt"
-                        or recovered["origin_boot_id"] != boot or recovered["boot_id"] != boot
-                        or not recovered["pipes_eof"] or recovery["exit_status"] != 0
-                        or not recovery["eof"] or recovery["exit_signal"] or not recovery["channel_closed"]
-                        or recovery["router_active"] != 0):
-                    failures.append("helper_ssh_reaped")
-            if "recovery_durable_complete" in by_kind:
-                cleanup = item("recovery_durable_complete")["data"]["cleanup"]
-                _exact(cleanup, {"process_complete", "pipes_eof", "remote_cleaned", "receipt_written", "channel_complete",
-                                 "forward_retired", "router_drained", "boot_changed"})
-                _require(all(type(value) is bool for value in cleanup.values()))
-                if not all(cleanup[k] for k in cleanup.keys() - {"boot_changed"}) or cleanup["boot_changed"]:
-                    failures.append("helper_ssh_reaped")
-                if "journal_complete" not in by_kind:
-                    missing.append("receipt/journal_complete")
-                ordered("journal_complete", "recovery_durable_complete")
         if "catalog_published" in by_kind:
             selections = [contract.Selection.parse(evidence.canonical({"scope": context.scope(),
                           "revision": contract.catalog_revision(context, pins), "app_id": app})).record()
@@ -626,9 +636,15 @@ def verify_receipt(receipt, *, expected_run_id, expected_source_sha256, expected
              and native["runtime"] == owner["runtime"] and native["owner_id"] == owner["owner_id"], "I6_OWNER_MISMATCH")
     _require(native["source_sha256"] == expected_source_sha256, "I6_SOURCE_MISMATCH")
     evidence._source(native["build_source"])
-    _require(native["build_source"]["tree_sha256"] == expected_source_sha256, "I6_SOURCE_MISMATCH")
+    _require(native["build_source"]["tree_sha256"] == expected_source_sha256
+             and native["build_source"]["build_features"] == ["host-acceptance"], "I6_SOURCE_MISMATCH")
     if expected_source is not None:
-        _same(native["build_source"], expected_source, "I6_SOURCE_MISMATCH")
+        # The validator observes a checkout, while the runner embeds its fixed
+        # build profile. Every physical-source field must still match exactly.
+        _require(expected_source["build_features"] == [], "I6_SOURCE_MISMATCH")
+        physical = evidence.SOURCE_FIELDS - {"build_features"}
+        _same({k: native["build_source"][k] for k in physical},
+              {k: expected_source[k] for k in physical}, "I6_SOURCE_MISMATCH")
     source_inputs = evidence.source_input_hashes()
     for field in source_inputs:
         _same(native[field], source_inputs[field], "I6_SOURCE_MISMATCH")

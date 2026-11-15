@@ -37,7 +37,7 @@ Host fixture の `admission_epoch: "1"` はこの実行の ordinal であり、A
 | 実装 | 責務 |
 | --- | --- |
 | [Host runner](../../../scripts/fixtures/linux-real-app-v3-host/src/main.rs) | 通常 parser／Registry／credential scope／command／poll／destroy を使用。private credential FDを消費 |
-| [build identity](../../../scripts/fixtures/linux-real-app-v3-host/build_identity.py) | build時の実 Git commit、tracked tree digest、dirty状態をrunnerへ埋込。descriptorの自己申告を使わない |
+| [build identity](../../../scripts/fixtures/linux-real-app-v3-host/build_identity.py) | build時の実 Git commit、tracked tree digest、dirty状態、必須 `host-acceptance` featureをrunnerへ埋込。descriptorの自己申告を使わない |
 | [Host trace](../../../native/transport/src/host_acceptance.rs) | default-off `host-acceptance` featureの読み取り専用・boundedな観測。public setterなし |
 | [supervisor](../../../scripts/linux_real_app_v3_n01.py) | 明示したdisposable containerだけをprovision。専用account、実HOME、鍵、sshd、実FS／process census |
 | [N01 oracle](../../../scripts/linux_real_app_v3_n01_oracle.py) | Python B1契約を用いたcatalog／wire／owner／capture／回収順序の独立照合 |
@@ -47,6 +47,11 @@ Host fixture の `admission_epoch: "1"` はこの実行の ordinal であり、A
 | [image準備](../../../scripts/fixtures/linux-desktop-v3-acceptance/prepare-n01-image) | 別の実Docker containerで未改変の固定Mousepad builder／install／inventoryを実行 |
 
 source inventoryの15ファイルとcompiled source tableを実bytesで照合する。
+一般のread-only `source_snapshot` の `build_features: []` はbinary buildを主張しないcheckout markerである。
+N01の `native.build_source.build_features` は、固定Cargo entrypointの実dependency宣言を確認した
+`["host-acceptance"]` でなければならない。oracleは両markerを区別して厳密に照合し、
+`commit`／`tree_sha256`／`dirty`／`pr_head` は全fieldのcanonical完全一致を要求する。
+空または未知のnative feature、物理sourceの不一致はinvalid、一致していてもdirtyなsourceは非成功である。
 remote bundleは既存のbuilderが実passwd HOME配下へ生成し、`--print-config --build-id` を前後に実行する。
 通常 `Profile`、`StorageCapture`、`StorageRecord`、`ConnectionConfig`、`RuntimeBinding`、
 `RuntimeConfig` のparserを通す。profile本文・秘密鍵は公開artifactへ含めない。
@@ -159,3 +164,51 @@ Rust公式配布への通常の直接HTTP確認も約5秒でtimeoutした。既�
 
 後続は通常Launchと実EGL/readback、GUI／設定永続化、故障注入／v2互換、残りrequired集合のoracleである。
 I7/V12とHの証拠は引き続き独立して必要になる。
+
+## 2026-11-15: 未改変C2のsettings probeによるN01未達
+
+PR head `3099a2dea07646d3076f0b92a61e169079f26feb` に対する
+[N01 job 132737706508](https://github.com/tin-machine/eidolon-wayland/actions/runs/43689526255/job/132737706508) は、
+実行source `cdd6629edefe039a39a597d5b88340fef4846496` で実SSHと未改変C2に到達した。
+[artifact 14152345487](https://github.com/tin-machine/eidolon-wayland/actions/runs/43689526255/artifacts/14152345487) の
+ZIP SHA-256は `08fd947eb41505b7cc286a5f583ddec3880b6d7f94c96e60561a20c62ee5a880`。
+**この実行のN01 smokeは不合格であり、catalogの成功を観測していない。**
+
+実traceには `Prepared`、`Inspect` 送信、その後の
+`pending { reason: tool_inspection, public_reason: APP_SETTINGS_UNVERIFIED }` がある。
+`Start=0` で、immutable bundleの実行前後の入力も一致した。
+失敗後には同Runtime／同captureのRecover、finalizer、Runtime shutdown、最後のcensus、
+実 `Registry::destroy == Accepted` とRegistry数0を観測した。
+これらの失敗後の回収観測を、catalog、NoLocalAllocation seal、通常Inspect→Stopの成功には読み替えない。
+独立oracleはcatalog／disconnect／seal等を不足として残し、verified assertionは0、
+`n01_inspect_only_passed=false`、正式acceptanceもfalseである。
+
+失敗原因は、固定helperのsynthetic probeと固定settings backendのHOME契約の矛盾である。
+
+| 固定source | 実際の条件 |
+| --- | --- |
+| [C1 profile environment](../../../scripts/linux/eidolon_linux_persistent_profile.py) | `HOME` はpersistent profileの `home`、`XDG_CONFIG_HOME` は同profileの `config` |
+| [C2 run_settings_probe](../../../scripts/linux/eidolon_linux_desktop_v3.py) | Inspectの `synthetic=True` ではsession runtime配下に `probe/config` を作り、`XDG_CONFIG_HOME` だけを変更する。`HOME` は元のままで、`probe/home` も作らない |
+| [settings backend profile_filename](../../../scripts/linux/eidolon_settings_backend.c) | `HOME == dirname(XDG_CONFIG_HOME)/home` と、その実private directoryの存在を必須とする。不成立なら `APP_SETTINGS_UNVERIFIED`／exit 78で停止する |
+
+[固定C2 session](../../../scripts/linux/eidolon_linux_desktop_session_v3.py) の通常Inspectは
+このsynthetic経路を使用するため、専用sshd、passwd HOME、package、GIO moduleを正しく準備しても
+上記の不一致は残る。環境変数の外側からの上書きやdirectoryの追加では、helper内部で組み立てる
+`HOME` と `XDG_CONFIG_HOME` の文字列不一致を正当に解消できない。
+本実装はC2、settings backend、source inventory／pins、product deadline／leaseを変更していない。
+このblockerの修正には、未改変C2という今回の境界とは別に、source変更とそのpin更新を扱う必要がある。
+
+[fixture回帰](../../../scripts/tests/test_i6_n01_settings_blocker.py) は無変更の
+`run_settings_probe` のspawn境界を捕捉し、`HOME=persistent/home`、
+`XDG_CONFIG_HOME=runtime/probe/config`、必須の `runtime/probe/home` が不在であることを検査する。
+通常HOMEやpersistent settingsへ試験値を書かず、probe実行前に停止する。
+この回帰のpassは既知blockerの再現を意味し、実GIO probe、N01、GUI／EGL／SDK／Android保存の成功ではない。
+ローカルには `gio-2.0`／`gmodule-2.0` の開発用pkg-config情報がなく、実GIO moduleの再実行は未実施である。
+実runtimeの失敗は上記CI receipt、HOME不整合の詳細はこのspawn観測と固定C sourceの条件を根拠とする。
+
+```sh
+python3 -m unittest discover -s scripts/tests -p test_i6_n01_settings_blocker.py -v
+```
+
+28 family／87 required variant／533 assertion参照と未実装oracleを保持する。
+この既知の不合格をCI skip、allow-failure、成功receiptの補填で隠さない。

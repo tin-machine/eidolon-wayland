@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import linux_desktop_v3_contract as contract
@@ -101,7 +103,8 @@ def specimen():
     observe("last_live_census", 16, {"snapshot": snapshot})
     observe("registry_destroy_return", 16, {"status": 0, "counts": {"runtimes": 0, "workers": 0}})
     native = {"schema": oracle.NATIVE_REVISION, "run_id": run, "runtime": "1", "owner_id": owner["owner_id"],
-              "source_sha256": source["tree_sha256"], "build_source": source, **sources,
+              "source_sha256": source["tree_sha256"],
+              "build_source": {**source, "build_features": ["host-acceptance"]}, **sources,
               "trace": {"overflow": False, "events": events}, "observations": observations, "start_count": 0,
               "catalog": {"schema": 1, "code": 0, "catalog": {"session": "1", "request_id": "2", "pending": False,
                           "reply": None, "error": None, "desktop": None, "desktop_v3": contract.catalog_descriptor(context, pins)}},
@@ -182,6 +185,76 @@ def recovery_specimen(*, durable=False):
     return receipt, source
 
 
+def no_catalog_recovery_specimen(*, prepared=True):
+    """Synthetic shape of Inspect pending -> same-capture Recover; no success evidence."""
+    receipt, source = recovery_specimen()
+    native = receipt["native"]
+    native.update(catalog=None, error="I6_OUTER_TIMEOUT")
+    kept, old_sequences = [], []
+    for event in native["trace"]["events"]:
+        kind, data = event["kind"], event["data"]
+        if (kind in {"catalog_published", "no_local_allocation_sealed"}
+                or kind == "control_send_attempt" and data["action"] == "stop"
+                or kind == "protocol_event" and data["record"]["event"]["type"] == "stopped"
+                or not prepared and kind == "protocol_event" and data["record"]["event"]["type"] == "prepared"):
+            continue
+        if kind == "protocol_event" and data["record"]["event"]["type"] == "catalog":
+            data["record"]["event"] = {"type": "pending", "payload": {
+                "reason": "tool_inspection", "public_reason": "APP_SETTINGS_UNVERIFIED",
+                "process_complete": True, "pipes_eof": True}}
+        if kind == "remote_cleanup_observed":
+            data["remote"].update(phase="failed", reason="tool_inspection", stop_reason=None,
+                                  exit_status=1, receipt_written=False, remote_cleaned=False, protocol_valid=False)
+        old_sequences.append(int(event["sequence"]))
+        event["sequence"] = str(len(kept) + 1)
+        kept.append(event)
+    native["trace"]["events"] = kept
+    observations = []
+    for observation in native["observations"]:
+        data = observation["data"]
+        if observation["kind"] == "catalog_observed" or data.get("request_id") == "3":
+            continue
+        if data.get("request_id") in {"4", "5"}:
+            data["request_id"] = {"4": "11", "5": "12"}[data["request_id"]]
+        watermark = int(observation["transport_sequence"])
+        observation["transport_sequence"] = str(sum(old <= watermark for old in old_sequences))
+        observation["sequence"] = str(len(observations) + 1)
+        observations.append(observation)
+    native["observations"] = observations
+    return receipt, source
+
+
+class N01BuildIdentityTests(unittest.TestCase):
+    def setUp(self):
+        path = evidence.ROOT / "scripts/fixtures/linux-real-app-v3-host/build_identity.py"
+        spec = importlib.util.spec_from_file_location("n01_build_identity", path)
+        self.helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.helper)
+        self.manifest = self.helper.tomllib.loads(path.with_name("Cargo.toml").read_text())
+        _, self.source = specimen()
+
+    def test_fixed_cargo_profile_adds_build_feature_without_changing_checkout_identity(self):
+        for dirty in (False, True):
+            with self.subTest(dirty=dirty):
+                source = {**self.source, "dirty": dirty}
+                with mock.patch.object(self.helper, "source_snapshot", return_value=source) as snapshot:
+                    built = self.helper.build_identity()
+                snapshot.assert_called_once_with(evidence.ROOT)
+                self.assertEqual(built, {**source, "build_features": ["host-acceptance"]})
+                self.assertEqual(source["build_features"], [])
+
+    def test_missing_or_extra_dependency_feature_cannot_claim_fixed_build(self):
+        for name in ("eidolon-android", "eidolon-core", "eidolon-transport"):
+            for features in ([], ["debug-fixtures"], ["host-acceptance", "debug-fixtures"]):
+                with self.subTest(dependency=name, features=features):
+                    manifest = copy.deepcopy(self.manifest)
+                    manifest["dependencies"][name]["features"] = features
+                    with mock.patch.object(self.helper.tomllib, "loads", return_value=manifest), \
+                         mock.patch.object(self.helper, "source_snapshot", side_effect=AssertionError("source probe")):
+                        with self.assertRaisesRegex(ValueError, "I6_SOURCE_MISMATCH"):
+                            self.helper.build_identity()
+
+
 class N01OracleTests(unittest.TestCase):
     def setUp(self):
         self.receipt, self.source = specimen()
@@ -254,6 +327,32 @@ class N01OracleTests(unittest.TestCase):
         self.receipt["native"]["compiled_source_hashes"]["eidolon_linux_desktop_v3.py"] = "f" * 64
         with self.assertRaises(ValueError):
             self.verify()
+
+    def test_fixed_build_feature_never_weakens_physical_source_binding(self):
+        original = copy.deepcopy(self.receipt["native"]["build_source"])
+        for features in ([], ["debug-fixtures"], ["host-acceptance", "debug-fixtures"]):
+            with self.subTest(features=features):
+                self.receipt["native"]["build_source"] = {**original, "build_features": features}
+                with self.assertRaises(ValueError):
+                    self.verify()
+        for field, value in (("commit", "e" * 40), ("tree_sha256", "f" * 64),
+                             ("dirty", True), ("pr_head", "d" * 40)):
+            with self.subTest(field=field):
+                self.receipt["native"]["build_source"] = {**original, field: value}
+                with self.assertRaisesRegex(evidence.EvidenceError, "I6_SOURCE_MISMATCH"):
+                    self.verify()
+        self.receipt["native"]["build_source"] = original
+        self.source["build_features"] = ["host-acceptance"]
+        with self.assertRaisesRegex(evidence.EvidenceError, "I6_SOURCE_MISMATCH"):
+            self.verify()
+
+    def test_matching_dirty_build_and_checkout_remain_incomplete(self):
+        self.source["dirty"] = True
+        self.receipt["native"]["build_source"]["dirty"] = True
+        result = self.verify()
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn("clean_source", result["missing"])
+        self.assertEqual(result["verified_assertions"], [])
 
     def test_live_environment_requires_dedicated_nonroot_passwd_homes_and_pin(self):
         mutations = [lambda r: r["environment"]["app"].update(uid=0),
@@ -350,6 +449,64 @@ class N01OracleTests(unittest.TestCase):
                 self.assertEqual(result["status"], "pass", result)
                 self.assertEqual(self.receipt["owner"]["io_generation"], "1")
                 self.assertEqual(self.trace("finalizer_published")["data"]["generation"], "2")
+
+    def test_no_catalog_recovery_is_independent_but_cannot_promote_n01(self):
+        self.receipt, self.source = no_catalog_recovery_specimen()
+        result = self.verify()
+        self.assertEqual(result["status"], "incomplete", result)
+        self.assertIn("receipt/catalog_protocol", result["missing"])
+        self.assertIn("receipt/no_local_allocation_sealed", result["missing"])
+        self.assertNotIn("helper_ssh_reaped", result["failures"])
+        self.assertEqual(result["verified_assertions"], [])
+        self.assertEqual(result["census"], {})
+
+    def test_no_catalog_recovery_rejects_raw_scope_source_boot_and_proof_tampering(self):
+        mutations = [lambda r: r["record"]["context"].update(session="9"),
+                     lambda r: r["record"]["pins"].update(desktop_bundle_sha256="f" * 64),
+                     lambda r: r["record"]["source_hashes"].update({"eidolon_linux_desktop_v3.py": "f" * 64}),
+                     lambda r: r["record"].update(expected_boot_id="87654321-4321-4321-4321-abcdef123456"),
+                     lambda r: r["record"].update(origin_boot_id="87654321-4321-4321-4321-abcdef123456"),
+                     lambda r: r["record"].update(process_complete=False),
+                     lambda r: r["record"].update(unexpected=True),
+                     lambda r: r.update(expected_boot_id="87654321-4321-4321-4321-abcdef123456")]
+        for mutate in mutations:
+            self.receipt, self.source = no_catalog_recovery_specimen()
+            mutate(self.trace("recovery_receipt")["data"])
+            with self.assertRaises(ValueError):
+                self.verify()
+        self.receipt, self.source = no_catalog_recovery_specimen()
+        self.trace("protocol_event")["data"]["record"]["event"]["payload"]["lease_ms"] = 15001
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_no_catalog_recovery_still_requires_fenced_retirement_and_finalizer_order(self):
+        def index(events, kind, generation=None):
+            return next(i for i, event in enumerate(events) if event["kind"] == kind
+                        and (generation is None or event["data"].get("generation") == generation))
+
+        for first, second in ((('io_retired', '1'), ('recovery_receipt', None)),
+                              (('recovery_bound', None), ('io_retired', '2')),
+                              (('io_retired', '2'), ('journal_unlinked', None)),
+                              (('finalizer_published', None), ('controller_stop_requested', None))):
+            with self.subTest(first=first, second=second):
+                self.receipt, self.source = no_catalog_recovery_specimen()
+                events = self.receipt["native"]["trace"]["events"]
+                left, right = index(events, *first), index(events, *second)
+                events[left], events[right] = events[right], events[left]
+                for sequence, event in enumerate(events, 1):
+                    event["sequence"] = str(sequence)
+                with self.assertRaisesRegex(evidence.EvidenceError, "I6_TRACE_INVALID"):
+                    self.verify()
+
+    def test_missing_prepared_keeps_boot_unproven_but_does_not_skip_raw_recovery_validation(self):
+        self.receipt, self.source = no_catalog_recovery_specimen(prepared=False)
+        result = self.verify()
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn("receipt/prepared_protocol", result["missing"])
+        self.assertEqual(result["verified_assertions"], [])
+        self.trace("recovery_receipt")["data"]["record"]["context"]["session"] = "9"
+        with self.assertRaises(ValueError):
+            self.verify()
 
     def test_recovery_cannot_replace_owner_generation_boot_or_durable_cleanup(self):
         mutations = [lambda r: next(e for e in r["native"]["trace"]["events"] if e["kind"] == "recovery_bound")["capture"].update(capture_id="f" * 64),

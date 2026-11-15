@@ -310,6 +310,7 @@ def source_snapshot(root=ROOT):
     Canonical encoding is a sorted JSON array of [hex(path bytes), Git mode,
     SHA-256(content bytes)]. Hash both index and status before/after to reject a
     moving checkout. No source content or Git error output escapes this helper.
+    build_features=[] marks a checkout-only observation, not a binary build.
     """
     def git(*args):
         return subprocess.run(["git", "--no-optional-locks", "-C", os.fspath(root), *args], check=True, stdout=subprocess.PIPE,

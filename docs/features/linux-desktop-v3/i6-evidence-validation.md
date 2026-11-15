@@ -160,11 +160,20 @@ size/digest不一致、読み取り中のinode/ancestor/root差替えを拒否�
 
 ## 5. Source provenanceの範囲
 
-`source_snapshot` は実checkout commit、tracked path/mode/contentからのcanonical tree SHA-256、dirty状態、
-build features、任意のPR head識別を表す。treeのencodingは、pathのraw bytesをhex化した値、Git mode、
+共通のsource recordは実checkout commit、tracked path/mode/contentからのcanonical tree SHA-256、dirty状態、
+build features、任意のPR head識別を持つ。read-onlyの `source_snapshot` はbinaryを検査せず、
+`build_features: []` を「binary buildについて主張しないcheckout観測」のmarkerとして返す。
+feature無しでbinaryをbuildしたという証拠ではない。treeのencodingは、pathのraw bytesをhex化した値、Git mode、
 content SHA-256のrowをsortしたcanonical JSONである。symlinkはtarget bytesをhashし、参照先を追わない。
 採取中のHEAD/index/status変化を検査し、実行前後とvalidator側期待sourceを照合する。
 dirty/untrackedは非成功、矛盾するsourceや前後の変更はinvalidとなる。
+
+N01 runnerの `native.build_source` はbuild時の実checkoutに加えて、固定Cargo entrypointが必須にする
+product feature `build_features: ["host-acceptance"]` を埋め込む。build helperは実Cargo.tomlの
+`eidolon-android`／`eidolon-core`／`eidolon-transport` の必須dependency宣言を確認する。
+N01 oracleはnative側のfeatureをこの固定集合、validator側checkoutのmarkerを空集合とそれぞれ照合し、
+残る `commit`／`tree_sha256`／`dirty`／`pr_head` はcanonical完全一致を要求する。
+featureの違いを理由に物理sourceの差異を許容しない。一般acceptance CLIにbuild機能やfeature指定optionは追加しない。
 
 `inputs.compiled_source_hashes` は、既存15-source inventoryが指す **現在のsource bytes** を照合するfieldである。
 名前にcompiledが含まれていても、今回のPython検査が実行binaryからhashを抽出したことや、
