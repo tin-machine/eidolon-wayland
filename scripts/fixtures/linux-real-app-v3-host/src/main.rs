@@ -335,7 +335,7 @@ impl Driver {
                     .insert(request.clone(), event["code"].clone());
                 self.observe(
                     "command_complete",
-                    json!({"request_id":request,"status":event["code"]}),
+                    json!({"request_id":request.clone(),"status":event["code"]}),
                 )?;
                 if event["code"] != "ACCEPTED"
                     && self.n03_expected.get(&request).is_none_or(|status|
