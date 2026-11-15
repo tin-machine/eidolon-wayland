@@ -1,5 +1,10 @@
 # I6 第2実装単位: N01 実 SSH／Inspect-only
 
+後続の [第3実装単位: 実 Host EGL／bounded readback／renderer retirement](i6-host-egl-readback.md)
+は N02 の前提となる renderer T 証拠を追加する。core の feature が実 renderer へ伝播しても、
+Inspect-only のゼロ target と NoLocalAllocation を維持する。
+N01 の environment_disposal 成功 receipt は別の残件で `not_yet` のままとする。
+
 以下の開始時記録と修正前の実測は、その時点の状態を保持する。
 同日のユーザー依頼による C2 synthetic HOME 修正は末尾の追記を参照する。
 

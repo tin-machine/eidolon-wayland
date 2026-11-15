@@ -600,6 +600,42 @@ pub struct Runtime {
     transport: Arc<eidolon_transport::session::Controller>,
     normal_linux: bool,
 }
+
+/// A readback request is tied to the native Create that was actually issued by
+/// this Runtime. Neither a numeric handle nor a caller-supplied CreateSeq can
+/// reconstruct this owner identity.
+#[cfg(feature = "host-acceptance")]
+struct HostReadbackScope {
+    owner: std::sync::Weak<Mutex<Shared>>,
+    runtime: eidolon_model::ids::RuntimeHandle,
+    target: eidolon_model::surface::TargetKey,
+    create: eidolon_model::ids::CommandSeq,
+}
+
+/// Opaque, process-local ticket. No Deserialize or externally supplied proof.
+#[cfg(feature = "host-acceptance")]
+pub struct HostReadbackTicket {
+    scope: HostReadbackScope,
+    renderer: eidolon_render::HostReadbackTicket,
+}
+
+/// Runtime correlation added to an actual renderer receipt. This is read-only
+/// evidence, not an SDK/Ready/input-gate or reclamation proof.
+#[cfg(feature = "host-acceptance")]
+#[derive(serde::Serialize)]
+pub struct HostReadbackReceipt {
+    pub runtime: eidolon_model::ids::RuntimeHandle,
+    pub create: eidolon_model::ids::CommandSeq,
+    #[serde(flatten)]
+    pub renderer: Box<eidolon_render::HostReadbackReceipt>,
+}
+
+#[cfg(feature = "host-acceptance")]
+pub enum HostReadbackPoll {
+    Pending,
+    Complete(HostReadbackReceipt),
+}
+
 impl Runtime {
     pub fn start(config: RuntimeConfig) -> std::io::Result<Self> {
         Self::start_with_hook(config, || {})
@@ -3358,6 +3394,111 @@ impl Runtime {
     pub fn host_acceptance_trace(&self) -> eidolon_transport::host_acceptance::Snapshot {
         self.transport.host_acceptance_trace()
     }
+    /// Enqueue a bounded observation of a live native target. Registry callers
+    /// use `Registry::guarded`; retaining the Runtime guard here also protects
+    /// direct Host callers. No GL/EGL work runs under the Runtime lock.
+    #[cfg(feature = "host-acceptance")]
+    pub fn request_host_readback(
+        &self,
+        request: eidolon_render::HostReadbackRequest,
+    ) -> Result<HostReadbackTicket, Status> {
+        self.guarded(|| {
+            let state = self.lock();
+            let scope = self.host_readback_scope(&state, request.target)?;
+            // The renderer additionally checks exact live target admission,
+            // frame/ROI budgets and its own private owner identity.
+            let renderer = self.render.request_host_readback(request)?;
+            Ok(HostReadbackTicket { scope, renderer })
+        })?
+    }
+    /// Poll once without blocking the Host pump. Revalidate native ownership
+    /// before exposing even a previously completed renderer receipt; retirement,
+    /// scene replacement, stop and another Runtime cannot revive a ticket.
+    #[cfg(feature = "host-acceptance")]
+    pub fn poll_host_readback(
+        &self,
+        ticket: &HostReadbackTicket,
+    ) -> Result<HostReadbackPoll, Status> {
+        self.guarded(|| {
+            let state = self.lock();
+            self.validate_host_readback_scope(&state, &ticket.scope)?;
+            match self.render.poll_host_readback(&ticket.renderer)? {
+                eidolon_render::HostReadbackPoll::Pending => Ok(HostReadbackPoll::Pending),
+                eidolon_render::HostReadbackPoll::Complete(renderer) => {
+                    if renderer.target != ticket.scope.target {
+                        return Err(Status::Stale);
+                    }
+                    Ok(HostReadbackPoll::Complete(HostReadbackReceipt {
+                        runtime: ticket.scope.runtime,
+                        create: ticket.scope.create,
+                        renderer,
+                    }))
+                }
+            }
+        })?
+    }
+    #[cfg(feature = "host-acceptance")]
+    fn host_readback_scope(
+        &self,
+        state: &Shared,
+        target: eidolon_model::surface::TargetKey,
+    ) -> Result<HostReadbackScope, Status> {
+        if self.stop.load(Ordering::Acquire)
+            || self.reset.load(Ordering::Acquire)
+            || state.snapshot.state != RuntimeState::Ready
+        {
+            return Err(Status::NotReady);
+        }
+        if state.snapshot.scene != Some(target.scene) {
+            return Err(Status::Stale);
+        }
+        let panel = state
+            .panels
+            .snapshot()
+            .into_iter()
+            .find(|panel| {
+                panel.target == target
+                    && panel.action == eidolon_model::commands::PanelAction::Create
+                    && panel.error.is_none()
+            })
+            .ok_or(Status::Stale)?;
+        if panel.v3_evidence_required
+            && state.v3_retirement.as_ref().is_none_or(|owner| {
+                owner.origin().session() != target.session
+                    || owner.is_sealed()
+                    || !owner.owns_target(target, panel.command_seq)
+            })
+        {
+            return Err(Status::NotReady);
+        }
+        if let Some(owner) = state.v3_retirement.as_ref()
+            && owner.origin().session() == target.session
+            && (owner.is_sealed() || !owner.owns_target(target, panel.command_seq))
+        {
+            return Err(Status::NotReady);
+        }
+        Ok(HostReadbackScope {
+            owner: Arc::downgrade(&self.shared),
+            runtime: self.handle,
+            target,
+            create: panel.command_seq,
+        })
+    }
+    #[cfg(feature = "host-acceptance")]
+    fn validate_host_readback_scope(
+        &self,
+        state: &Shared,
+        scope: &HostReadbackScope,
+    ) -> Result<(), Status> {
+        if scope.runtime != self.handle || !scope.owner.ptr_eq(&Arc::downgrade(&self.shared)) {
+            return Err(Status::Stale);
+        }
+        let current = self.host_readback_scope(state, scope.target)?;
+        if current.create != scope.create {
+            return Err(Status::Stale);
+        }
+        Ok(())
+    }
     /// この返り値はUI接続専用。通常snapshot・診断・disk保存の経路から隔離する。
     pub fn ime_ui(&self) -> Option<eidolon_model::ime::ImeSnapshot> {
         let state = self.lock();
@@ -4761,5 +4902,189 @@ mod tests {
         assert!(matches!(events[0], Event::RuntimeReady));
         assert!(matches!(events[events.len() - 2], Event::Failure { .. }));
         assert!(matches!(events[events.len() - 1], Event::Stopped));
+    }
+}
+
+#[cfg(all(test, feature = "host-acceptance"))]
+mod host_readback_tests {
+    use super::*;
+    use eidolon_model::{
+        ids::{CommandSeq, FrameSeq, RuntimeHandle, SceneEpoch, SessionId, WindowId},
+        surface::TargetKey,
+    };
+
+    // These are native ownership-boundary tests. They generate a Create through
+    // the normal panel planner, but intentionally create no render target or
+    // success receipt. Real SHM/EGL evidence belongs to the separate T runner.
+    fn with_paused<T>(action: impl FnOnce(&Runtime) -> T) -> T {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let runtime = Runtime::start_owned_with_hook(
+            RuntimeConfig::default(),
+            RuntimeHandle::new(42).unwrap(),
+            move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            },
+        )
+        .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let result = catch_unwind(AssertUnwindSafe(|| action(&runtime)));
+        runtime.request_stop();
+        release_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !runtime.can_destroy() {
+            assert!(
+                Instant::now() < deadline,
+                "Host readback test cleanup stalled"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }
+
+    fn planned_target(runtime: &Runtime) -> (TargetKey, CommandSeq) {
+        let scene = SceneEpoch::new(1).unwrap();
+        assert_eq!(
+            runtime.command(Command::SceneReady {
+                schema: 1,
+                request_id: CommandSeq::new(1).unwrap(),
+                scene,
+            }),
+            Status::Accepted
+        );
+        // The core thread is deliberately held at the ready hook. Consume only
+        // the SceneReady input-reset notification in this ownership unit setup;
+        // no Session, frame, SDK state or successful receipt is installed.
+        runtime.reset.store(false, Ordering::Release);
+        let mut state = runtime.lock();
+        state
+            .panels
+            .reconcile(
+                Some(scene),
+                &[(SessionId::new(7).unwrap(), WindowId::new(9).unwrap())],
+                true,
+            )
+            .unwrap();
+        let panel = state.panels.snapshot().remove(0);
+        (panel.target, panel.command_seq)
+    }
+
+    fn request(target: TargetKey) -> eidolon_render::HostReadbackRequest {
+        eidolon_render::HostReadbackRequest {
+            target,
+            min_content_frame: FrameSeq::new(1).unwrap(),
+            request_seq: std::num::NonZeroU64::new(1).unwrap(),
+            rois: vec![eidolon_render::HostReadbackRoi {
+                id: 1,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }],
+        }
+    }
+
+    #[test]
+    fn host_readback_uses_issued_create_and_cannot_allocate_a_missing_target() {
+        with_paused(|runtime| {
+            let (target, create) = planned_target(runtime);
+            let scope = runtime
+                .host_readback_scope(&runtime.lock(), target)
+                .unwrap();
+            assert_eq!(scope.runtime, runtime.handle);
+            assert_eq!(scope.create, create);
+            assert_eq!(scope.target, target);
+            assert!(runtime.request_host_readback(request(target)).is_err());
+            let snapshot = runtime.render.snapshot();
+            assert_eq!(snapshot.contexts, 0);
+            assert!(snapshot.targets.is_empty());
+            assert_eq!(snapshot.attaches, 0);
+            assert_eq!(snapshot.latest_images, 0);
+        });
+    }
+
+    #[test]
+    fn host_readback_rejects_foreign_runtime_even_when_numeric_ids_match() {
+        with_paused(|first| {
+            let (target, _) = planned_target(first);
+            let scope = first.host_readback_scope(&first.lock(), target).unwrap();
+            with_paused(|second| {
+                let (other_target, _) = planned_target(second);
+                assert_eq!(first.handle, second.handle);
+                assert_eq!(target, other_target);
+                assert_eq!(
+                    second.validate_host_readback_scope(&second.lock(), &scope),
+                    Err(Status::Stale)
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn host_readback_rejects_old_target_scene_and_retired_create() {
+        with_paused(|runtime| {
+            let (target, _) = planned_target(runtime);
+            let scope = runtime
+                .host_readback_scope(&runtime.lock(), target)
+                .unwrap();
+            let wrong_window = TargetKey {
+                window: WindowId::new(10).unwrap(),
+                ..target
+            };
+            let wrong_scene = TargetKey {
+                scene: SceneEpoch::new(2).unwrap(),
+                ..target
+            };
+            let wrong_generation = TargetKey {
+                generation: target.generation.checked_next().unwrap(),
+                ..target
+            };
+            for other in [wrong_window, wrong_scene, wrong_generation] {
+                assert!(matches!(
+                    runtime.host_readback_scope(&runtime.lock(), other),
+                    Err(Status::Stale)
+                ));
+            }
+            runtime.lock().panels.retire(target).unwrap();
+            assert_eq!(
+                runtime.validate_host_readback_scope(&runtime.lock(), &scope),
+                Err(Status::Stale)
+            );
+            assert!(matches!(
+                runtime.request_host_readback(request(target)),
+                Err(Status::Stale)
+            ));
+        });
+    }
+
+    #[test]
+    fn host_readback_rejects_unowned_v3_plan_reset_and_stop() {
+        with_paused(|runtime| {
+            let (target, _) = planned_target(runtime);
+            let scope = runtime
+                .host_readback_scope(&runtime.lock(), target)
+                .unwrap();
+            runtime.reset.store(true, Ordering::Release);
+            assert_eq!(
+                runtime.validate_host_readback_scope(&runtime.lock(), &scope),
+                Err(Status::NotReady)
+            );
+            runtime.reset.store(false, Ordering::Release);
+            runtime.lock().panels.require_v3_evidence(target);
+            assert!(matches!(
+                runtime.host_readback_scope(&runtime.lock(), target),
+                Err(Status::NotReady)
+            ));
+            assert_eq!(runtime.request_stop(), Status::Accepted);
+            assert_eq!(
+                runtime.validate_host_readback_scope(&runtime.lock(), &scope),
+                Err(Status::NotReady)
+            );
+            assert!(matches!(
+                runtime.request_host_readback(request(target)),
+                Err(Status::NotReady)
+            ));
+        });
     }
 }

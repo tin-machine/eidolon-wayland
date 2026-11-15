@@ -32,7 +32,9 @@ The document does not establish product acceptance or Quest evidence.
 ### I6 Host acceptance design (manual discovery)
 
 Implementation increments: [fixed evidence validator](i6-evidence-validation.md) and
-[N01 real SSH / Inspect-only](i6-n01-inspect-only.md). N01 smoke is distinct from full I6 acceptance;
+[N01 real SSH / Inspect-only](i6-n01-inspect-only.md), followed by
+[real Host EGL / bounded readback / renderer retirement](i6-host-egl-readback.md) (T evidence only).
+N01 smoke and renderer tests are distinct from full I6 acceptance;
 all 28 families, 87 required variants and 533 assertion references remain required.
 
 The [I6 detailed design — normal v3 Host acceptance (I3-T20/V11)](../../linux-real-app-v3-i6-detailed-design.md)

@@ -208,3 +208,35 @@ jobs:
           path: ${{ runner.temp }}/n01-rustfmt.patch
           if-no-files-found: ignore
           retention-days: 3
+
+  v3_renderer:
+    needs: scope
+    if: ${{ needs.scope.outputs.mousepad == 'true' }}
+    name: I6 real Host EGL / SHM renderer (T evidence)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check standalone renderer fixture formatting
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          cargo +1.95.0 fmt --manifest-path scripts/fixtures/linux-real-app-v3-renderer/Cargo.toml -- --check
+      - name: Real SHM / llvmpipe / bounded readback / retirement in a disposable container
+        env:
+          CI_PR_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        run: bash scripts/ci/check-linux-desktop-v3-renderer --artifact-root "$RUNNER_TEMP/i6-renderer"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ always() }}
+        with:
+          name: linux-desktop-v3-renderer-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/i6-renderer/renderer-native.json
+            ${{ runner.temp }}/i6-renderer/renderer-unavailable.json
+            ${{ runner.temp }}/i6-renderer/renderer-environment.json
+            ${{ runner.temp }}/i6-renderer/renderer-validation.json
+            ${{ runner.temp }}/i6-renderer/renderer-container.json
+          if-no-files-found: warn
+          retention-days: 3

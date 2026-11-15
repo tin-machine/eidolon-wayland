@@ -49,6 +49,8 @@ pub struct TestControl {
     pub blocked: std::sync::atomic::AtomicBool,
     pub entered: std::sync::atomic::AtomicBool,
     pub fault: std::sync::atomic::AtomicU8,
+    #[cfg(feature = "host-acceptance")]
+    pub retire_failure: std::sync::atomic::AtomicBool,
 }
 pub struct Target {
     info: GpuInfo,
@@ -56,6 +58,34 @@ pub struct Target {
     control: Option<std::sync::Arc<TestControl>>,
 }
 impl Target {
+    #[cfg(all(test, feature = "host-acceptance"))]
+    pub fn retire(&mut self, _: &mut Device) -> Result<(), &'static str> {
+        // Failure-only seam for the actual Controller cleanup/FIFO path. This
+        // bookkeeping adapter never manufactures a successful GL receipt.
+        if self.control.as_ref().is_some_and(|control| {
+            control
+                .retire_failure
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        }) {
+            Err("EGL_SHUTDOWN_FAILED")
+        } else {
+            Ok(())
+        }
+    }
+    #[cfg(feature = "host-acceptance")]
+    pub fn frame_readback(
+        &mut self,
+        _: &mut Device,
+        _: u64,
+        _: &eidolon_model::window::WindowSnapshot,
+        _: &[super::compositor::Probe],
+        _: Option<&crate::decoration::Composition<'_>>,
+        _: &[crate::HostReadbackRoi],
+    ) -> Result<Vec<crate::HostReadbackPixels>, &'static str> {
+        // Unit-test bookkeeping may exercise rejection paths, but must never
+        // manufacture the real backend's success receipt.
+        Err("HOST_READBACK_REQUIRES_REAL_EGL")
+    }
     pub fn new(
         _device: &mut Device,
         _window: PlatformWindow,

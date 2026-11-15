@@ -1,4 +1,6 @@
 //! EGL所有thread。共有lockの保持中にはplatform/GL関数を呼ばない。
+#[cfg(all(feature = "host-acceptance", not(target_os = "linux")))]
+compile_error!("host-acceptance is Linux-only and must not be combined with Android");
 #[cfg(target_os = "android")]
 mod android;
 pub mod compositor;
@@ -8,8 +10,20 @@ pub mod egl;
 mod executor;
 #[cfg(any(test, feature = "debug-fixtures"))]
 pub mod fixtures;
-#[cfg(not(target_os = "android"))]
+#[cfg(all(
+    not(target_os = "android"),
+    any(not(feature = "host-acceptance"), test)
+))]
 mod host;
+#[cfg(all(target_os = "linux", feature = "host-acceptance", not(test)))]
+mod host_egl;
+#[cfg(feature = "host-acceptance")]
+pub mod host_readback;
+#[cfg(feature = "host-acceptance")]
+pub use host_readback::{
+    HostReadbackPixels, HostReadbackPoll, HostReadbackReceipt, HostReadbackRect,
+    HostReadbackRequest, HostReadbackRoi, HostReadbackTicket,
+};
 pub mod theme_state;
 #[cfg(target_os = "android")]
 use android as platform;
@@ -20,8 +34,13 @@ use eidolon_model::{
     surface::{TargetKey, validate_dimensions},
     window::WindowSnapshot,
 };
-#[cfg(not(target_os = "android"))]
+#[cfg(all(
+    not(target_os = "android"),
+    any(not(feature = "host-acceptance"), test)
+))]
 use host as platform;
+#[cfg(all(target_os = "linux", feature = "host-acceptance", not(test)))]
+use host_egl as platform;
 pub use platform::PlatformWindow;
 use serde::Serialize;
 use std::{
@@ -141,6 +160,8 @@ enum Message {
     Forget(SessionId, WindowId),
     RetireTarget(TargetKey, Arc<std::sync::atomic::AtomicBool>),
     RetireWindow(SessionId, WindowId, Arc<std::sync::atomic::AtomicBool>),
+    #[cfg(feature = "host-acceptance")]
+    Readback(u64),
 }
 struct Shared {
     queue: VecDeque<Message>,
@@ -157,6 +178,10 @@ struct Shared {
     // rely on the bounded diagnostic detached ring.
     retirement_floors: Vec<TargetKey>,
     owner_reclaimed: bool,
+    #[cfg(feature = "host-acceptance")]
+    readbacks: host_readback::Readbacks,
+    #[cfg(feature = "host-acceptance")]
+    gpu_cleanup_failed: bool,
     theme: Option<Arc<eidolon_theme::raster::CompiledTheme>>,
     theme_revision: u64,
     reduced_motion: bool,
@@ -277,6 +302,10 @@ impl Controller {
                 hidden: vec![],
                 retirement_floors: vec![],
                 owner_reclaimed: false,
+                #[cfg(feature = "host-acceptance")]
+                readbacks: host_readback::Readbacks::new()?,
+                #[cfg(feature = "host-acceptance")]
+                gpu_cleanup_failed: false,
                 theme: None,
                 theme_revision: 0,
                 reduced_motion: false,
@@ -328,6 +357,16 @@ impl Controller {
                     && !state.logical.contains(&(key.session, key.window))))
         {
             return Status::Stale;
+        }
+        #[cfg(feature = "host-acceptance")]
+        match &message {
+            Message::Attach {
+                key,
+                role: RenderMode::Windows,
+                ..
+            } => state.readbacks.admit(*key),
+            Message::Detach(key) => state.readbacks.invalidate_target(*key, Status::Stale),
+            _ => (),
         }
         state.queue.push_back(message);
         self.state.1.notify_one();
@@ -423,6 +462,11 @@ impl Controller {
         }
         state.logical.retain(|(s, _)| *s != session);
         state.logical.extend(windows.iter().map(|w| (session, *w)));
+        #[cfg(feature = "host-acceptance")]
+        {
+            let logical = state.logical.clone();
+            state.readbacks.retain_windows(&logical);
+        }
         self.state.1.notify_one();
         Status::Accepted
     }
@@ -474,6 +518,8 @@ impl Controller {
             state.retirement_floors.push(key);
         }
         let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(feature = "host-acceptance")]
+        state.readbacks.invalidate_target(key, Status::Stale);
         if !state.stop {
             state
                 .queue
@@ -503,6 +549,10 @@ impl Controller {
             .retain(|image| image.snapshot.session != session || image.snapshot.window != window);
         state.snapshot.latest_images = state.latest.len();
         let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(feature = "host-acceptance")]
+        state
+            .readbacks
+            .invalidate_window(session, window, Status::Stale);
         if !state.stop {
             state
                 .queue
@@ -542,6 +592,13 @@ impl Controller {
         let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
         if state.stop {
             return Status::NotReady;
+        }
+        // retire_window seals logical admission under this same lock. A late
+        // producer must not repopulate latest behind an already queued fence.
+        if state.mode == RenderMode::Windows
+            && !state.logical.contains(&(snapshot.session, snapshot.window))
+        {
+            return Status::Stale;
         }
         let index = state.latest.iter().position(|old| {
             old.snapshot.session == snapshot.session && old.snapshot.window == snapshot.window
@@ -669,7 +726,11 @@ impl Controller {
         self.state.1.notify_one();
     }
     pub fn request_stop(&self) {
-        self.state.0.lock().unwrap_or_else(|e| e.into_inner()).stop = true;
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.stop = true;
+        #[cfg(feature = "host-acceptance")]
+        state.readbacks.invalidate_all(Status::NotReady);
+        drop(state);
         self.state.1.notify_one();
     }
     pub fn is_stopping(&self) -> bool {
@@ -723,7 +784,15 @@ fn run_owner(owned: &State) -> bool {
     state.snapshot.composition = Default::default();
     state.snapshot.workers = 0;
     state.busy_since = None;
-    state.owner_reclaimed = true;
+    #[cfg(not(feature = "host-acceptance"))]
+    {
+        state.owner_reclaimed = true;
+    }
+    #[cfg(feature = "host-acceptance")]
+    {
+        state.readbacks.invalidate_all(Status::NotReady);
+        state.owner_reclaimed = result.is_ok() && !state.gpu_cleanup_failed;
+    }
     result.is_ok() && state.snapshot.error != Some("RENDER_STALLED")
 }
 impl Drop for Controller {
@@ -740,6 +809,11 @@ fn invalidate_content_evidence(state: &State, active: &mut [Active]) {
         target.needs_redraw = true;
     }
     update(state, |shared| {
+        #[cfg(feature = "host-acceptance")]
+        if !shared.readbacks.context_lost() {
+            shared.stop = true;
+            shared.snapshot.error = Some("HOST_READBACK_EPOCH_EXHAUSTED");
+        }
         for target in &mut shared.snapshot.targets {
             target.content_frame = None;
         }
@@ -750,6 +824,12 @@ fn update(state: &State, action: impl FnOnce(&mut Shared)) {
     action(&mut state.0.lock().unwrap_or_else(|e| e.into_inner()));
 }
 fn ack(state: &mut Shared, key: TargetKey) {
+    // Every ACK path shares the owner's sticky cleanup verdict. An absent
+    // target or a later successful disposal cannot prove a failed retirement.
+    #[cfg(feature = "host-acceptance")]
+    if state.gpu_cleanup_failed {
+        return;
+    }
     if state.snapshot.detached.back() == Some(&key) {
         return;
     }
@@ -765,9 +845,109 @@ fn busy<T>(state: &State, action: impl FnOnce() -> T) -> T {
     update(state, |s| s.busy_since = None);
     result
 }
+
+fn cleanup_failure(state: &State, error: &'static str) {
+    update(state, |shared| {
+        shared.snapshot.error = Some(error);
+        #[cfg(feature = "host-acceptance")]
+        {
+            shared.gpu_cleanup_failed = true;
+        }
+    });
+}
+
+fn cleanup_proven(state: &State) -> bool {
+    #[cfg(feature = "host-acceptance")]
+    {
+        !state
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .gpu_cleanup_failed
+    }
+    #[cfg(not(feature = "host-acceptance"))]
+    {
+        let _ = state;
+        true
+    }
+}
+
+fn finish_gpu_owner(state: &State, device: &mut Option<platform::Device>) -> bool {
+    #[cfg(all(target_os = "linux", feature = "host-acceptance", not(test)))]
+    if let Some(device) = device.as_mut()
+        && let Err(error) = busy(state, || device.finish_gpu_work())
+    {
+        cleanup_failure(state, error);
+        return false;
+    }
+    #[cfg(not(all(target_os = "linux", feature = "host-acceptance", not(test))))]
+    let _ = (state, device);
+    true
+}
+
+fn failed_backend(state: &State, error: &'static str) {
+    update(state, |shared| {
+        shared.snapshot.error = Some(error);
+        #[cfg(feature = "host-acceptance")]
+        if matches!(error, "EGL_SHUTDOWN_FAILED" | "EGL_SURFACES_PENDING") {
+            shared.gpu_cleanup_failed = true;
+        }
+    });
+}
+
+/// The stub unit adapter has no GPU work. Actual Host acceptance must observe
+/// completion and EGL surface destruction on this owner before publishing ACKs.
+fn retire_gpu_target(
+    state: &State,
+    target: &mut Active,
+    device: &mut Option<platform::Device>,
+) -> bool {
+    #[cfg(all(target_os = "linux", feature = "host-acceptance"))]
+    {
+        let result = busy(state, || {
+            device
+                .as_mut()
+                .ok_or("EGL_INIT_FAILED")
+                .and_then(|device| target.gpu.retire(device))
+        });
+        if let Err(error) = result {
+            cleanup_failure(state, error);
+            return false;
+        }
+    }
+    #[cfg(not(all(target_os = "linux", feature = "host-acceptance")))]
+    let _ = (state, target, device);
+    true
+}
+
+fn forget_gpu_window(
+    state: &State,
+    device: &mut Option<platform::Device>,
+    session: SessionId,
+    window: WindowId,
+) -> bool {
+    let result = busy(state, || {
+        if let Some(device) = device.as_mut() {
+            #[cfg(all(target_os = "linux", feature = "host-acceptance", not(test)))]
+            device.finish_gpu_work()?;
+            device.forget(session, window)?;
+            #[cfg(all(target_os = "linux", feature = "host-acceptance", not(test)))]
+            device.finish_gpu_work()?;
+        }
+        Ok::<(), &'static str>(())
+    });
+    if let Err(error) = result {
+        cleanup_failure(state, error);
+        return false;
+    }
+    true
+}
+
 fn owner(state: &State) {
-    let mut active: Vec<Active> = Vec::new();
     let mut device: Option<platform::Device> = None;
+    // Reverse local-drop order also protects EGL display/context lifetime on
+    // unwind: surfaces must go away before the device, not merely on Stop.
+    let mut active: Vec<Active> = Vec::new();
     let mut generations = Generations::default();
     let mut next = Instant::now();
     let mut owner_mode = RenderMode::Diagnostic;
@@ -829,8 +1009,10 @@ fn owner(state: &State) {
         }
         was_visible = visible;
         if owner_mode != mode {
-            if let Some(device) = device.as_mut() {
-                let _ = busy(state, || device.clear());
+            if let Some(device) = device.as_mut()
+                && let Err(error) = busy(state, || device.clear())
+            {
+                cleanup_failure(state, error);
             }
             generations.diagnostic_floor = std::mem::take(&mut generations.latest);
             owner_mode = mode;
@@ -845,6 +1027,10 @@ fn owner(state: &State) {
         }
         if let Some(message) = message {
             match message {
+                #[cfg(feature = "host-acceptance")]
+                Message::Readback(request_seq) => {
+                    update(state, |s| s.readbacks.arm(request_seq));
+                }
                 Message::Attach {
                     key,
                     window,
@@ -914,59 +1100,61 @@ fn owner(state: &State) {
                                 }
                             });
                         }
-                        Err(error) => update(state, |s| {
-                            s.snapshot.error = Some(error);
-                            ack(s, key);
-                        }),
+                        Err(error) => {
+                            failed_backend(state, error);
+                            if finish_gpu_owner(state, &mut device) && cleanup_proven(state) {
+                                update(state, |s| ack(s, key));
+                            }
+                        }
                     }
                 }
                 Message::Detach(key) => {
+                    let mut released = true;
                     if let Some(index) = active.iter().position(|a| a.report.key == key) {
-                        if let Some(device) = device.as_mut()
-                            && let Err(error) =
-                                busy(state, || device.forget(key.session, key.window))
-                        {
-                            update(state, |s| s.snapshot.error = Some(error));
-                        }
+                        released &= retire_gpu_target(state, &mut active[index], &mut device);
                         busy(state, || drop(active.remove(index)));
+                        // Texture cache is logical-window owned. An old target
+                        // cannot delete the images still used by its successor.
+                        if !active.iter().any(|a| a.report.key.same_window(key)) {
+                            released &=
+                                forget_gpu_window(state, &mut device, key.session, key.window);
+                        }
                     } else {
                         update(state, |s| s.snapshot.stale += 1);
                     }
                     // full tupleのみack。遅い旧世代detachは現targetへ触れない。
-                    update(state, |s| ack(s, key));
+                    if released {
+                        update(state, |s| ack(s, key));
+                    }
                 }
                 Message::Forget(session, window) => {
-                    if let Some(device) = device.as_mut()
-                        && let Err(error) = busy(state, || device.forget(session, window))
-                    {
-                        update(state, |s| s.snapshot.error = Some(error));
-                    }
+                    forget_gpu_window(state, &mut device, session, window);
                 }
                 Message::RetireTarget(key, completed) => {
-                    let mut released = true;
+                    let mut released = finish_gpu_owner(state, &mut device);
                     if let Some(index) = active.iter().position(|a| a.report.key == key) {
-                        if let Some(device) = device.as_mut()
-                            && let Err(error) =
-                                busy(state, || device.forget(key.session, key.window))
-                        {
-                            released = false;
-                            update(state, |s| s.snapshot.error = Some(error));
-                        }
+                        released &= retire_gpu_target(state, &mut active[index], &mut device);
                         busy(state, || drop(active.remove(index)));
+                        if !active.iter().any(|a| a.report.key.same_window(key)) {
+                            released &=
+                                forget_gpu_window(state, &mut device, key.session, key.window);
+                        }
                     }
-                    update(state, |s| ack(s, key));
-                    if released {
+                    if released && cleanup_proven(state) {
+                        update(state, |s| ack(s, key));
                         completed.store(true, std::sync::atomic::Ordering::Release);
                     }
                 }
                 Message::RetireWindow(session, window, completed) => {
                     let mut released = true;
-                    if let Some(device) = device.as_mut()
-                        && let Err(error) = busy(state, || device.forget(session, window))
-                    {
-                        released = false;
-                        update(state, |s| s.snapshot.error = Some(error));
+                    for target in &mut active {
+                        if target.report.key.session == session
+                            && target.report.key.window == window
+                        {
+                            released &= retire_gpu_target(state, target, &mut device);
+                        }
                     }
+                    released &= forget_gpu_window(state, &mut device, session, window);
                     let removed: Vec<_> = active
                         .iter()
                         .filter(|a| {
@@ -980,8 +1168,10 @@ fn owner(state: &State) {
                         })
                     });
                     update(state, |s| {
-                        for key in removed {
-                            ack(s, key);
+                        if released {
+                            for key in removed {
+                                ack(s, key);
+                            }
                         }
                         s.retirement_floors
                             .retain(|key| key.session != session || key.window != window);
@@ -995,7 +1185,7 @@ fn owner(state: &State) {
                         .filter(|key| *key != (session, window))
                         .collect();
                     players.retain(&retained);
-                    if released {
+                    if released && cleanup_proven(state) {
                         completed.store(true, std::sync::atomic::Ordering::Release);
                     }
                 }
@@ -1005,6 +1195,7 @@ fn owner(state: &State) {
         let mut theme_context_lost = false;
         if requested_revision != theme_revision {
             let mut result = busy(state, || {
+                #[cfg(not(all(target_os = "linux", feature = "host-acceptance", not(test))))]
                 if requested_theme.is_some() && device.is_none() {
                     device = Some(platform::Device::new()?);
                 }
@@ -1169,9 +1360,27 @@ fn owner(state: &State) {
                 } else {
                     None
                 };
+                #[cfg(feature = "host-acceptance")]
+                let (readback_request, readback_owner, readback_epoch) = {
+                    let shared = state.0.lock().unwrap_or_else(|e| e.into_inner());
+                    (
+                        image.as_ref().and_then(|image| {
+                            shared
+                                .readbacks
+                                .ready(target.report.key, image.snapshot.frame_seq)
+                        }),
+                        shared.readbacks.owner_id,
+                        shared.readbacks.context_epoch,
+                    )
+                };
+                #[cfg(feature = "host-acceptance")]
+                let readback_redraw = readback_request.is_some();
+                #[cfg(not(feature = "host-acceptance"))]
+                let readback_redraw = false;
                 // 装飾の時計はapp由来FrameSeqを増やさず、最終frame/停止も独立して反映する。
                 if mode == RenderMode::Windows
                     && !target.needs_redraw
+                    && !readback_redraw
                     && drawing
                         .as_ref()
                         .is_none_or(|d| !d.frame.active && !d.frame.changed)
@@ -1184,7 +1393,30 @@ fn owner(state: &State) {
                     .zip(theme.as_ref())
                     .map(|(d, t)| d.composition(t));
                 let frame_started = Instant::now();
+                #[cfg(feature = "host-acceptance")]
+                let mut readback_pixels = None;
                 match busy(state, || {
+                    #[cfg(feature = "host-acceptance")]
+                    if let Some(request) = &readback_request {
+                        readback_pixels = Some(
+                            target.gpu.frame_readback(
+                                device.as_mut().ok_or("EGL_INIT_FAILED")?,
+                                target.report.frames,
+                                image
+                                    .as_ref()
+                                    .ok_or("READBACK_NO_CONTENT")?
+                                    .snapshot
+                                    .as_ref(),
+                                image
+                                    .as_ref()
+                                    .map(|image| image.probes.as_slice())
+                                    .unwrap_or(&[]),
+                                decoration.as_ref(),
+                                &request.rois,
+                            )?,
+                        );
+                        return Ok(());
+                    }
                     target.gpu.frame(
                         device.as_mut().unwrap(),
                         target.report.frames,
@@ -1210,13 +1442,37 @@ fn owner(state: &State) {
                         target.report.content_frame =
                             image.as_ref().map(|image| image.snapshot.frame_seq);
                         target.report.gpu = target.gpu.info();
+                        #[cfg(feature = "host-acceptance")]
+                        if let Some(request) = &readback_request {
+                            let result = readback_pixels.ok_or(Status::Failed).and_then(|pixels| {
+                                host_readback::receipt(
+                                    request,
+                                    host_readback::RenderedFrame {
+                                        owner: readback_owner,
+                                        epoch: readback_epoch,
+                                        snapshot: image.as_ref().unwrap().snapshot.as_ref(),
+                                        present_seq: target.report.frames,
+                                        backend: target.report.gpu.clone(),
+                                        decoration: decoration.as_ref(),
+                                    },
+                                    pixels,
+                                )
+                            });
+                            host_readback::publish(state, request, result);
+                        }
                     }
                     Err("EGL_CONTEXT_LOST") => {
                         // 全contextを同じowner上で無効化・再構築する。
                         lost.push((index, "EGL_CONTEXT_LOST"));
                         break;
                     }
-                    Err(error) => lost.push((index, error)),
+                    Err(error) => {
+                        #[cfg(feature = "host-acceptance")]
+                        if let Some(request) = &readback_request {
+                            host_readback::publish(state, request, Err(Status::Failed));
+                        }
+                        lost.push((index, error));
+                    }
                 }
             }
             if lost.iter().any(|(_, error)| *error == "EGL_CONTEXT_LOST") {
@@ -1231,29 +1487,48 @@ fn owner(state: &State) {
                     for target in &mut active {
                         target.gpu.invalidate();
                     }
+                    #[cfg(all(target_os = "linux", feature = "host-acceptance", not(test)))]
+                    if let Some(old) = device.take()
+                        && let Err(error) = old.shutdown()
+                    {
+                        cleanup_failure(state, error);
+                    }
                     drop(device.take());
-                    device = platform::Device::new().ok();
+                    device = match platform::Device::new() {
+                        Ok(next_device) => Some(next_device),
+                        Err(error) => {
+                            failed_backend(state, error);
+                            None
+                        }
+                    };
                 });
                 for (index, target) in active.iter_mut().enumerate() {
                     target.needs_redraw = true;
                     update(state, |s| s.snapshot.context_rebuilds += 1);
-                    if device
+                    let rebuilt = device
                         .as_mut()
-                        .is_none_or(|device| busy(state, || target.gpu.rebuild(device)).is_err())
-                    {
-                        lost.push((index, "SURFACE_LOST"));
+                        .ok_or("EGL_INIT_FAILED")
+                        .and_then(|device| busy(state, || target.gpu.rebuild(device)));
+                    if let Err(error) = rebuilt {
+                        failed_backend(state, error);
+                        lost.push((index, error));
                     }
                 }
             }
             for (index, error) in lost.into_iter().rev() {
                 let key = active[index].report.key;
-                if let Some(device) = device.as_mut() {
-                    let _ = busy(state, || device.forget(key.session, key.window));
-                }
+                let mut released = retire_gpu_target(state, &mut active[index], &mut device);
                 busy(state, || drop(active.remove(index)));
+                if !active.iter().any(|a| a.report.key.same_window(key)) {
+                    released &= forget_gpu_window(state, &mut device, key.session, key.window);
+                }
                 update(state, |s| {
                     s.snapshot.error = Some(error);
-                    ack(s, key);
+                    #[cfg(feature = "host-acceptance")]
+                    s.readbacks.invalidate_target(key, Status::Failed);
+                    if released {
+                        ack(s, key);
+                    }
                 });
             }
             next = Instant::now() + FRAME;
@@ -1268,14 +1543,26 @@ fn owner(state: &State) {
         });
     }
     // 別threadはEGLを破棄しない。停止完了はこのdropの後。
+    for target in &mut active {
+        retire_gpu_target(state, target, &mut device);
+    }
     if let Some(device) = device.as_mut()
         && let Err(error) = busy(state, || device.clear())
     {
-        update(state, |s| s.snapshot.error = Some(error));
+        cleanup_failure(state, error);
     }
     busy(state, || drop(active));
+    #[cfg(all(target_os = "linux", feature = "host-acceptance", not(test)))]
+    if let Some(device) = device.take()
+        && let Err(error) = busy(state, || device.shutdown())
+    {
+        cleanup_failure(state, error);
+    }
     busy(state, || drop(device));
 }
+
+#[cfg(all(test, feature = "host-acceptance"))]
+mod retirement_checks;
 
 #[cfg(test)]
 mod tests {
