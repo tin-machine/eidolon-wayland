@@ -29,6 +29,12 @@ storage transaction, admission epochs, typed StopReceipt, normal launcher and V0
 I5 remains manually discoverable (not a registered resolver task); this link grants no design approval or Quest acceptance.
 The [I5 verification record](linux-desktop-v3-i5-validation-20261114.md) maps V09/V10 tests and records the remaining I6/I7/H acceptance work.
 
+The [I6 detailed design — normal v3 Host acceptance (I3-T20/V11)](linux-real-app-v3-i6-detailed-design.md)
+is a **proposed**, manually discoverable design based on main `0e0df43a2ce4734a00a36f830cc24a80e277bec5`.
+It specifies the real SSH/C2/Waypipe/Mousepad path, Host rendering, 28 required case families, cleanup evidence,
+an independent validator and CI integration. I6 remains unregistered and unimplemented at that baseline;
+the design is not Host acceptance, real SDK/Android storage verification, or Quest/H evidence.
+
 The LLM-first documentation structure is **being introduced in stages**. D1–D2 inventory/schemas, D3 **read-only resolver**, and D4 **always-on documentation integrity CI** are available. D5 registers [Linux Desktop v3](features/linux-desktop-v3/README.md). D6 adds curated feature indices for [Curved Workspace](features/curved-workspace/README.md), [Spatial Anchor / SA0](features/spatial-anchor/README.md), [Android IME](features/android-ime/README.md), and [initial Phase 0–6](features/initial-phases/README.md) without relocating original documents or fixtures. The Phase 0–6 task status remains authoritative in `docs/design/tasks.json`; **v3 I3/I5 and unreviewed legacy documents remain unregistered**. All added designs use conservative proposed/historical/runbook classifications; a registered ID never proves current implementation or Quest verification. For v3 I4, read **separate I2 and I4 contexts** and check the relevant PR status. See [resolver instructions](knowledge/resolver.md) and run `python3 scripts/docs.py validate` before relying on a graph.
 
 The snapshot inventory is [knowledge/inventory-20261113.csv](knowledge/inventory-20261113.csv). It lists every original `docs/` blob at its recorded commit, with **non-authoritative classification candidates**. It is not an acceptance or implementation report.
