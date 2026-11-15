@@ -508,6 +508,23 @@ def owner_from_native(native, owner_id):
             "nonce": capture["nonce"], "scope": capture["scope"], "native_origin": None}
 
 
+def read_native_receipt(path, uid, progress):
+    """Keep an invalid record's fingerprint, never export its unparsed body."""
+    progress["stage"] = "native_receipt"
+    progress["native_receipt"] = diagnostic = {
+        "status": "unreadable", "reason": "I6_EVIDENCE_MISSING", "size": None, "sha256": None}
+    raw = read_owned(path, uid)
+    diagnostic.update(status="unparsed", reason=None, size=len(raw), sha256=evidence.sha(raw))
+    try:
+        native = evidence.parse(raw)
+        evidence.require(type(native) is dict)
+    except evidence.EvidenceError:
+        diagnostic.update(status="invalid", reason="I6_REPORT_INVALID")
+        raise
+    diagnostic.update(status="parsed", reason=None)
+    return native
+
+
 def assemble_report(source, after, native, environment, artifacts):
     """The producer only references facts; the independent oracle decides N01."""
     from linux_real_app_v3_n01_oracle import REVISION, verify_receipt
@@ -606,7 +623,7 @@ def run_fixture(args, artifacts, source, progress):
         if code != 0:
             progress["first_reason"] = "I6_DRIVER_DIED"
             progress["runner_reason"] = diagnostic["reason"]
-        native = evidence.parse(read_owned(output_path, driver_uid))
+        native = read_native_receipt(output_path, driver_uid, progress)
         # Save the fixed, typed native observations before any postcondition can
         # fail. This diagnostic is opaque unless the full independent receipt
         # is available; it cannot fill an assertion or a missing cleanup proof.
@@ -661,14 +678,16 @@ def execute(args):
     source = None
     oracle = None
     progress = {"stage": "source_snapshot", "run_id": None, "first_reason": None, "cleanup_reason": None,
-                "runner_reason": None, "native_saved": False, "diagnostics": None}
+                "runner_reason": None, "native_saved": False, "diagnostics": None, "native_receipt": None}
     fixture_failure = None
     try:
         source = evidence.source_snapshot(ROOT)
         report, oracle = run_fixture(args, artifacts, source, progress)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        reason = str(error) if str(error) in FIXTURE_REASONS else "I6_ENVIRONMENT_UNAVAILABLE"
-        fixture_failure = reason
+        native_invalid = progress["native_receipt"] is not None and progress["native_receipt"]["status"] == "invalid"
+        reason = ("I6_EVIDENCE_MISSING" if native_invalid else
+                  str(error) if str(error) in FIXTURE_REASONS else "I6_ENVIRONMENT_UNAVAILABLE")
+        fixture_failure = "I6_REPORT_INVALID" if native_invalid else reason
         report = evidence.incomplete_report(source, run_id=progress["run_id"], reason=reason)
         case = report["cases"][0]
         if progress["first_reason"] is not None:
@@ -679,6 +698,12 @@ def execute(args):
     except KeyboardInterrupt:
         report = evidence.incomplete_report(source, run_id=progress["run_id"], reason="I6_OPERATOR_CANCELLED")
         report["status"] = "cancelled"
+        case = report["cases"][0]
+        if progress["first_reason"] is not None:
+            case.update(status="fail", reason=progress["first_reason"])
+            case["first_case_failure"] = {"reason": progress["first_reason"], "owner_id": None, "sequence": None}
+        if progress["cleanup_reason"] is not None:
+            case["cleanup_failures"].append({"reason": "I6_CLEANUP_FAILED", "owner_id": None, "sequence": None})
     if progress["native_saved"] and not report["artifacts"] and source is not None:
         raw = evidence.read_report(artifacts / "n01-native.json")
         report["artifacts"].append({"path": "n01-native.json", "size": len(raw), "sha256": evidence.sha(raw),
@@ -692,19 +717,26 @@ def execute(args):
     result = evidence.validate_acceptance(evidence.canonical(report), artifacts, source)
     evidence.write_report(artifacts / "acceptance.json", report)
     evidence.write_report(artifacts / "acceptance-validation.json", result)
-    n01_passed = result.get("n01_inspect_only_passed", False)
+    native_invalid = progress["native_receipt"] is not None and progress["native_receipt"]["status"] == "invalid"
+    n01_passed = result.get("n01_inspect_only_passed", False) and not native_invalid
+    # An unparseable native record cannot safely be exported as an acceptance
+    # receipt. Keep the independent acceptance result separate from this input verdict.
+    exit_code = 3 if native_invalid else 0 if n01_passed else result["exit_code"]
     n01_result = {"schema": 1, "case_id": "N01", "variant": "inspect_only",
-        "status": "pass" if n01_passed else ("fail" if result["exit_code"] == 1 else result["status"]),
-        "reason": "I6_OK" if n01_passed else result["reason"], "n01_inspect_only_passed": n01_passed,
+        "status": "invalid" if native_invalid else "pass" if n01_passed
+                  else "fail" if result["exit_code"] == 1 else result["status"],
+        "reason": "I6_REPORT_INVALID" if native_invalid else "I6_OK" if n01_passed else result["reason"],
+        "n01_inspect_only_passed": n01_passed, "exit_code": exit_code,
         "host_v3_acceptance_passed": False, "source": source,
         "required_families": 28, "required_variants": 87, "required_assertions": 533,
         "oracle": oracle, "acceptance_exit_code": result["exit_code"],
         "fixture_failure": fixture_failure, "runner_reason": progress["runner_reason"],
         "fixture_stage": progress["stage"], "diagnostics": progress["diagnostics"],
+        "native_receipt": progress["native_receipt"],
         "environment_disposal": "not_yet"}
     evidence.write_report(artifacts / "n01-validation.json", n01_result)
     print(json.dumps({k: v for k, v in n01_result.items() if k not in {"oracle", "source"}}, sort_keys=True))
-    return 0 if n01_passed else result["exit_code"]
+    return exit_code
 
 
 def main(argv=None):

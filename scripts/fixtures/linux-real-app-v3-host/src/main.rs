@@ -150,6 +150,65 @@ fn runtime_config(descriptor: &Descriptor) -> Result<String> {
     Ok(config)
 }
 
+fn snapshot_fields(value: &Value, fields: &[&str]) -> Result<Value> {
+    let mut selected = serde_json::Map::new();
+    for field in fields {
+        selected.insert(
+            (*field).to_owned(),
+            value.get(*field).ok_or("I6_RECEIPT_INVALID")?.clone(),
+        );
+    }
+    Ok(Value::Object(selected))
+}
+
+fn census_snapshot(snapshot: &Value) -> Result<Value> {
+    // Ordinary Registry snapshots also contain UI geometry (f32/f64), which
+    // is outside B1's integer-only evidence contract. Copy only census facts,
+    // retaining their actual values and types; never round or invent zeroes.
+    let mut census = snapshot_fields(snapshot, &["schema", "code", "handle", "registry"])?;
+    let runtime = snapshot.get("runtime").ok_or("I6_RECEIPT_INVALID")?;
+    let mut value = snapshot_fields(
+        runtime,
+        &[
+            "state",
+            "shutdown",
+            "reclamation",
+            "commands_pending",
+            "app_sdk_bindings",
+            "helper_workers",
+            "dependency_workers",
+            "compositor_workers",
+            "app",
+            "desktop_v3_pending_targets",
+            "desktop_v3_finalizer_pending",
+            "desktop_v3_cleanup_error",
+            "panels",
+            "error",
+        ],
+    )?;
+    value["render"] = snapshot_fields(
+        &runtime["render"],
+        &["workers", "targets", "contexts", "latest_images", "queued", "error"],
+    )?;
+    value["transport"] = snapshot_fields(
+        &runtime["transport"],
+        &[
+            "state",
+            "session",
+            "workers",
+            "tokio_threads",
+            "owned_connections",
+            "desktop_pending",
+            "pending_cleanup",
+            "error",
+        ],
+    )?;
+    value["transport"]["forward"] =
+        snapshot_fields(&runtime["transport"]["forward"], &["active"])?;
+    census["runtime"] = value;
+    Ok(census)
+}
+
 struct Driver {
     registry: Registry,
     handle: i64,
@@ -273,7 +332,7 @@ impl Driver {
         if snapshot["code"] != 0 {
             return Err("I6_RUNTIME_STALE");
         }
-        self.last_snapshot = snapshot.clone();
+        self.last_snapshot = census_snapshot(&snapshot)?;
         Ok(snapshot)
     }
     fn wait(&mut self, budget: u64, ready: impl Fn(&Value) -> bool) -> Result<Value> {
@@ -372,7 +431,7 @@ impl Driver {
         })?;
         self.observe("runtime_shutdown_complete",json!({"shutdown":snapshot["runtime"]["shutdown"],"reclamation":snapshot["runtime"]["reclamation"]}))?;
         let snapshot = self.pump()?;
-        self.observe("last_live_census", json!({"snapshot":snapshot}))?;
+        self.observe("last_live_census", json!({"snapshot":census_snapshot(&snapshot)?}))?;
         let status = self.registry.destroy(self.handle);
         self.destroy_status = Some(status as i32);
         self.append_observation(
@@ -575,5 +634,31 @@ mod tests {
         assert_ne!(owner("a", "1", "c"), owner("b", "1", "c"));
         assert_ne!(owner("a", "1", "c"), owner("a", "2", "c"));
         assert_ne!(owner("a", "1", "c"), owner("a", "1", "d"));
+    }
+    #[test]
+    fn census_projects_actual_snapshot_without_ui_floats_or_value_coercion() {
+        let mut raw = json!({
+            "schema":1,"code":0,"handle":"1",
+            "registry":{"runtimes":1,"workers":1},
+            "runtime":eidolon_core::diagnostics::Snapshot::default()
+        });
+        let bytes = serde_json::to_vec(&raw).unwrap();
+        assert!(b1::parse_json(&bytes, MAX_RECEIPT).is_err());
+        raw["runtime"]["transport"]["owned_connections"] = json!(2);
+        let census = census_snapshot(&raw).unwrap();
+        let bytes = serde_json::to_vec(&census).unwrap();
+        assert!(b1::parse_json(&bytes, MAX_RECEIPT).is_ok());
+        assert!(census["runtime"].get("workspace").is_none());
+        assert!(census["runtime"]["render"].get("window_controls").is_none());
+        assert_eq!(census["runtime"]["transport"]["owned_connections"], 2);
+        assert_eq!(census["runtime"]["reclamation"], raw["runtime"]["reclamation"]);
+        assert_eq!(census["runtime"]["shutdown"], raw["runtime"]["shutdown"]);
+        // An unexpected retained panel cannot become an empty successful census.
+        raw["runtime"]["panels"] = json!([{"position_m":[0.0,1.0,2.0]}]);
+        let census = census_snapshot(&raw).unwrap();
+        assert_eq!(census["runtime"]["panels"], raw["runtime"]["panels"]);
+        assert!(b1::parse_json(&serde_json::to_vec(&census).unwrap(), MAX_RECEIPT).is_err());
+        raw["runtime"].as_object_mut().unwrap().remove("error");
+        assert_eq!(census_snapshot(&raw), Err("I6_RECEIPT_INVALID"));
     }
 }

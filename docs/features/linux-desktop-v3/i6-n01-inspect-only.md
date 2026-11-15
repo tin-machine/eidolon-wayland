@@ -4,7 +4,9 @@
 `0a0454f0e4f6c6dce6407a4dfb2c3f0b67385fd4`。
 [PR #33](https://github.com/tin-machine/eidolon-wayland/pull/33) の merge 状態を GitHub で確認し、
 その証拠基盤を再利用して N01 を実装する。初回確認では #33 は open だったが、作業中の merge 後に
-最新 main へ fast-forward した。関連 open PR #30（構造解析）は本単位の依存ではない。
+最新 main へ fast-forward した。その後の再取得で PR #30（構造解析）の merge と最新 main
+`480e1b5fe2fedcc69d0be0c9eb3d5bb931635bdd` を確認した。追加は文書と構造解析で、N01 実装との重複はない。
+新規 open PR #35（Python Deep 解析）も本単位の依存ではない。
 
 文書は移動していなかった。[入口](../../README.md)と Git 履歴を確認し、
 I2 と I4 の resolver context を**別々に取得**した。両者の proposed／drift=check_required を
@@ -93,6 +95,10 @@ lock file欠落は「解放済み」に変換しない。これらのFS観測だ
 観測traceは最大4,096 event／1MiB、各eventは64KiB以内。producerをblockせず、overflow／取得競合はstickyな不足として残る。
 別owner／別capture、Start送信、stop前seal欠落、finalizer前全停止、census前destroy、実complete不足は成功にならない。
 
+通常のRegistry snapshotにはUI座標等の浮動小数点が含まれる。証拠の整数限定JSON契約を維持するため、
+runnerは同じ実snapshotからcensus必須fieldだけを選んで保存する。元の値と型を保ち、非zeroの所有数や
+残存app／panel／targetを消さない。制御の待機判定には通常の完全なsnapshotを使用する。
+
 fixtureのsshd停止とcontainer削除は、productの観測結果とは分けて試行する。
 失敗経路ではproduct回収が未成立でもfixture救済を行うが、これをproduct回収成功へ読み替えない。
 内部reportの `environment_disposal` は `not_yet` のままである。
@@ -122,6 +128,8 @@ scripts/ci/check-linux-desktop-v3-n01 --artifact-root /absolute/private/empty/n0
 runnerがreceiptを返せない場合も、`diagnostics` に終了code／signal、経過時間、固定stage、限定したpanic／loader分類を残す。
 解析対象のstderrは末尾2,048 bytesだけで、本文・panic message・thread名・profile／鍵は保存しない。
 これらの診断はproduct receiptやoracleの代わりにはしない。
+native JSON自体が不正な場合はbyte数とSHA-256、固定reasonだけを保持し、未解析本文を公開しない。
+N01の入力判定は `invalid / exit 3`、正式acceptanceの未完了判定は別々に記録する。
 不正なtyped receiptも保存し、独立validatorが `invalid / exit 3` を決定する。環境不足へ読み替えない。
 同一の実行sourceをcheckoutし、取得したartifactをprivateに保持したまま既存CLIで再照合できる。
 

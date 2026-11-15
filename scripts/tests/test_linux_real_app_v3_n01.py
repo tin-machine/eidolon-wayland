@@ -233,6 +233,92 @@ class N01SupervisorTests(unittest.TestCase):
         self.assertNotIn("private", json.dumps(result))
         self.assertNotIn("private", str(output.call_args))
 
+    def test_strict_native_parse_rejection_keeps_fingerprint_and_first_failure_without_raw_export(self):
+        receipt, source = specimen()
+        native = receipt["native"]
+        native["last_snapshot"]["runtime"]["workspace"] = {"scale": 1.0, "private": "private-profile"}
+        specimens = (("float", json.dumps(native).encode(), None),
+                     ("duplicate", b'{"schema":1,"schema":1,"private":"private-key"}', "I6_DRIVER_DIED"),
+                     ("array", b'["private-record"]', None))
+        for name, raw, first_reason in specimens:
+            with self.subTest(name=name):
+                path = self.root / (name + ".json")
+                path.write_bytes(raw)
+                path.chmod(0o600)
+                args = n01.argparse.Namespace(artifact_root=self.root / (name + "-artifacts"))
+
+                def malformed_fixture(_args, _artifacts, _source, progress):
+                    progress.update(run_id=receipt["run_id"], first_reason=first_reason,
+                                    runner_reason="I6_RECEIPT_INVALID" if first_reason else None)
+                    n01.read_native_receipt(path, os.getuid(), progress)
+                    self.fail("strict native parse must reject this record")
+
+                with mock.patch.object(n01.evidence, "source_snapshot", return_value=source), \
+                     mock.patch.object(n01, "run_fixture", side_effect=malformed_fixture), \
+                     mock.patch("builtins.print") as output:
+                    self.assertEqual(n01.execute(args), 3)
+                report = json.loads((args.artifact_root / "acceptance.json").read_bytes())
+                result = json.loads((args.artifact_root / "n01-validation.json").read_bytes())
+                self.assertEqual((result["status"], result["reason"], result["exit_code"]),
+                                 ("invalid", "I6_REPORT_INVALID", 3))
+                self.assertEqual(result["acceptance_exit_code"], 1 if first_reason else 2)
+                self.assertEqual(result["fixture_failure"], "I6_REPORT_INVALID")
+                self.assertEqual(result["fixture_stage"], "native_receipt")
+                self.assertEqual(result["native_receipt"], {"status": "invalid", "reason": "I6_REPORT_INVALID",
+                                                          "size": len(raw), "sha256": evidence.sha(raw)})
+                self.assertFalse(result["n01_inspect_only_passed"])
+                self.assertFalse(result["host_v3_acceptance_passed"])
+                self.assertFalse((args.artifact_root / "n01-native.json").exists())
+                self.assertEqual(report["artifacts"], [])
+                if first_reason:
+                    self.assertEqual(report["cases"][0]["first_case_failure"]["reason"], first_reason)
+                    self.assertEqual(result["runner_reason"], "I6_RECEIPT_INVALID")
+                self.assertNotIn("private", json.dumps(result))
+                self.assertNotIn("private", json.dumps(report))
+                self.assertNotIn("private", str(output.call_args))
+
+    def test_integer_native_projection_is_parsed_without_granting_product_success(self):
+        receipt, _ = specimen()
+        path = self.root / "native.json"
+        raw = evidence.canonical(receipt["native"])
+        path.write_bytes(raw)
+        path.chmod(0o600)
+        progress = {}
+        native = n01.read_native_receipt(path, os.getuid(), progress)
+        self.assertEqual(native, receipt["native"])
+        self.assertEqual(progress, {"stage": "native_receipt", "native_receipt": {
+            "status": "parsed", "reason": None, "size": len(raw), "sha256": evidence.sha(raw)}})
+
+    def test_cancellation_retains_prior_failures_without_turning_interrupted_parse_into_invalid(self):
+        args = n01.argparse.Namespace(artifact_root=self.root / "artifacts")
+        receipt, source = specimen()
+        path = self.root / "native.json"
+        path.write_bytes(evidence.canonical(receipt["native"]))
+        path.chmod(0o600)
+
+        def cancelled_fixture(_args, _artifacts, _source, progress):
+            progress.update(run_id=receipt["run_id"], first_reason="I6_ASSERTION_FAILED",
+                            cleanup_reason="I6_CLEANUP_FAILED", runner_reason="I6_FINALIZER_MISSING")
+            with mock.patch.object(n01.evidence, "parse", side_effect=KeyboardInterrupt):
+                n01.read_native_receipt(path, os.getuid(), progress)
+
+        with mock.patch.object(n01.evidence, "source_snapshot", return_value=source), \
+             mock.patch.object(n01, "run_fixture", side_effect=cancelled_fixture), \
+             mock.patch("builtins.print"):
+            self.assertEqual(n01.execute(args), 130)
+        report = json.loads((args.artifact_root / "acceptance.json").read_bytes())
+        result = json.loads((args.artifact_root / "n01-validation.json").read_bytes())
+        self.assertEqual((result["status"], result["reason"], result["exit_code"]),
+                         ("cancelled", "I6_OPERATOR_CANCELLED", 130))
+        self.assertEqual(result["acceptance_exit_code"], 130)
+        self.assertEqual(result["native_receipt"]["status"], "unparsed")
+        self.assertIsNone(result["native_receipt"]["reason"])
+        self.assertEqual(report["cases"][0]["first_case_failure"]["reason"], "I6_ASSERTION_FAILED")
+        self.assertEqual(report["cases"][0]["cleanup_failures"][0]["reason"], "I6_CLEANUP_FAILED")
+        self.assertEqual(result["runner_reason"], "I6_FINALIZER_MISSING")
+        self.assertFalse(result["n01_inspect_only_passed"])
+        self.assertFalse(result["host_v3_acceptance_passed"])
+
     def test_external_watchdog_returns_non_success_and_reaps_its_live_child(self):
         with self.assertRaisesRegex(n01.FixtureError, "I6_WATCHDOG"):
             n01.run_capture([sys.executable, "-c", "import time; time.sleep(30)"], seconds=0.1)
