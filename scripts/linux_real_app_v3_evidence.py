@@ -472,6 +472,15 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
             and type(report["host_v3_acceptance_passed"]) is bool
             and type(report["exit_code"]) is int and report["exit_code"] in {0, 1, 2, 3, 130})
     missing, failures, cleanup_failures = [], [], []
+    missing_by_case = {key: set() for key in required}
+
+    def case_missing(key, diagnostic):
+        # Public diagnostics also use artifact/ and typed_receipt/ prefixes.
+        # Track their owning case directly; a display prefix is not authority
+        # for deciding whether a case has all of its required evidence.
+        missing.append(diagnostic)
+        missing_by_case[key].add(diagnostic)
+
     exact(report["source"], {"before", "after"})
     for source in report["source"].values():
         if source is not None:
@@ -519,7 +528,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                 and (case["observed_product_outcome"] is None or case["observed_product_outcome"] in OUTCOMES))
         cancelled |= case["status"] == "cancelled" or case["reason"] == "I6_OPERATOR_CANCELLED"
         if case["status"] in {"not_run", "incomplete"}:
-            missing.append(label)
+            case_missing(key, label)
         sequence(case["owners"])
         owners = {}
         for owner in case["owners"]:
@@ -557,7 +566,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
         for path in case["trace"]["artifacts"]:
             relative_path(path)
         if case["trace"]["overflow"]:
-            missing.append(label + "/trace_overflow")
+            case_missing(key, label + "/trace_overflow")
         sequence(case["assertions"])
         found = set()
         for assertion in case["assertions"]:
@@ -573,11 +582,12 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
             if assertion["status"] == "fail":
                 failures.append({"case_id": key[0], "variant": key[1], "reason": "I6_ASSERTION_FAILED", "assertion_id": assertion_id})
             elif assertion["status"] == "not_run" or not assertion["evidence_refs"]:
-                missing.append(label + "/" + assertion_id)
+                case_missing(key, label + "/" + assertion_id)
             # R/S/T provenance and references are checked below. Their semantic
             # oracle must still be independently implemented before V11 can pass.
             unverified += 1
-        missing.extend(label + "/" + a for a in set(row["assertions"]) - found)
+        for assertion in set(row["assertions"]) - found:
+            case_missing(key, label + "/" + assertion)
         cleanup = case["cleanup"]
         exact(cleanup, {"product", "fault_resources", "fixture_rescue", "environment_disposal", "census"})
         require(cleanup["product"] in PRODUCT_STATES
@@ -595,7 +605,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
             if observed != row["expected_product_outcome"]:
                 failures.append({"case_id": key[0], "variant": key[1], "reason": "I6_CLEANUP_FAILED"})
         else:
-            missing.append(label + "/product_outcome")
+            case_missing(key, label + "/product_outcome")
         sequence(cleanup["census"])
         census = set()
         for resource in cleanup["census"]:
@@ -622,7 +632,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                                   if resource["state"] == "complete" else "resource_" + resource["state"])
                 references.append((key, ref, {"event": expected_event, "resource": resource["resource"]}))
             if not resource["evidence_refs"] or resource["missing_reasons"]:
-                missing.append(label + "/" + resource["resource"])
+                case_missing(key, label + "/" + resource["resource"])
             if resource["state"] == "failed":
                 cleanup_failures.append({"case_id": key[0], "variant": key[1], "reason": "I6_CLEANUP_FAILED",
                     "owner_id": resource["owner_id"], "sequence": None, "resource": resource["resource"]})
@@ -630,7 +640,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                 raise EvidenceError("I6_REPORT_INVALID")
         if row["cleanup_policy"] != "contract_only":
             if not owners:
-                missing.append(label + "/owners")
+                case_missing(key, label + "/owners")
             for owner in owners:
                 expected = {(r, owner, None) for r in RESOURCES - TARGET_RESOURCES}
                 owned_targets = [t for t in targets.values() if t["owner_id"] == owner]
@@ -638,14 +648,15 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                 if not owned_targets:
                     expected |= {(r, owner, None) for r in TARGET_RESOURCES}
                 for resource, _, target in expected - census:
-                    missing.append(label + "/census/" + resource + ("/" + target if target else ""))
+                    case_missing(key, label + "/census/" + resource + ("/" + target if target else ""))
             if cleanup["environment_disposal"] != "complete":
-                missing.append(label + "/environment_disposal")
+                case_missing(key, label + "/environment_disposal")
             if row["cleanup_policy"] == "preserve_unknown_then_rescue" and cleanup["fixture_rescue"] != "complete":
-                missing.append(label + "/fixture_rescue")
+                case_missing(key, label + "/fixture_rescue")
         if cleanup["fault_resources"] not in {"complete", "not_needed"}:
-            missing.append(label + "/fault_resources")
-    missing.extend("/".join(key) for key in required.keys() - cases.keys())
+            case_missing(key, label + "/fault_resources")
+    for key in required.keys() - cases.keys():
+        case_missing(key, "/".join(key))
     require(len({key[0] for key in cases}) <= 64)
 
     sequence(report["artifacts"])
@@ -671,7 +682,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
             try:
                 data = _read_at(root_fd, path, MAX_TRACE_BYTES)
             except FileNotFoundError:
-                missing.append("artifact/" + path)
+                case_missing(key, "artifact/" + path)
                 continue
             except OSError:
                 raise EvidenceError("I6_ARTIFACT_INVALID") from None
@@ -689,7 +700,8 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                                         expected_source_sha256=before["tree_sha256"],
                                         expected_owner=owners[artifact["owner_id"]], expected_source=before)
                 receipts[path] = result
-                missing.extend("/".join(key) + "/" + item for item in result["missing"])
+                for item in result["missing"]:
+                    case_missing(key, "/".join(key) + "/" + item)
                 failures.extend({"case_id": key[0], "variant": key[1],
                                  "reason": "I6_ASSERTION_FAILED", "assertion_id": item}
                                 for item in result["failures"])
@@ -731,14 +743,14 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
         for key, (case, _, _) in cases.items():
             for path in case["trace"]["artifacts"]:
                 if path not in artifacts:
-                    missing.append("artifact/" + path)
+                    case_missing(key, "artifact/" + path)
                 else:
                     require((artifacts[path]["case_id"], artifacts[path]["variant"]) == key
                             and artifacts[path]["kind"] == "trace", "I6_TRACE_INVALID")
         for key, ref, expected_fields in references:
             artifact = artifacts.get(ref["artifact"])
             if artifact is None:
-                missing.append("artifact/" + ref["artifact"])
+                case_missing(key, "artifact/" + ref["artifact"])
                 continue
             require((artifact["case_id"], artifact["variant"]) == key, "I6_OWNER_MISMATCH")
             if ref["event_seq"] is None:
@@ -746,7 +758,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                 receipt = receipts.get(ref["artifact"])
                 if artifact["kind"] == "n01_receipt":
                     if receipt is None or receipt["status"] != "pass":
-                        missing.append("typed_receipt/" + ref["artifact"])
+                        case_missing(key, "typed_receipt/" + ref["artifact"])
                     elif "assertion_id" in expected_fields:
                         assertion = expected_fields["assertion_id"]
                         require(assertion in receipt["verified_assertions"], "I6_N01_RECEIPT_INVALID")
@@ -760,7 +772,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                         require(event is not None and expected_fields["event"] == event,
                                 "I6_N01_RECEIPT_INVALID")
                 else:
-                    missing.append("typed_receipt/" + ref["artifact"])
+                    case_missing(key, "typed_receipt/" + ref["artifact"])
             elif ref["artifact"] in events:
                 event = events[ref["artifact"]].get(ref["event_seq"])
                 require(event is not None, "I6_TRACE_INVALID")
@@ -786,7 +798,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                     candidates = [n for n, _, observed in ordered if observed["event"] in kinds
                                   and (resource is None or observed["resource"] == resource)]
                     if not candidates:
-                        missing.append("/".join(key) + "/order/" + event["event"])
+                        case_missing(key, "/".join(key) + "/order/" + event["event"])
                     else:
                         require(any(n < seq for n in candidates), "I6_TRACE_INVALID")
         # A renamed/replaced artifact root cannot be substituted during a run.
@@ -809,13 +821,14 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
     else:
         status, reason = "incomplete", "I6_ORACLE_UNAVAILABLE"
     verified_cases = ["/".join(key) for key, row in required.items()
-                      if all((key, assertion) in verified_assertions for assertion in row["assertions"])
+                      if key in cases and cases[key][0]["status"] == "pass"
+                      and cases[key][0]["reason"] != "I6_OPERATOR_CANCELLED"
+                      and all((key, assertion) in verified_assertions for assertion in row["assertions"])
                       and not any(f.get("case_id") == key[0] and f.get("variant") == key[1]
                                   for f in failures + cleanup_failures)
                       and expected_source is not None and before is not None and after is not None
                       and not any(s["dirty"] for s in (before, after, expected_source))
-                      and not any((item == "/".join(key) or item.startswith("/".join(key) + "/"))
-                                  and item != "/".join(key) + "/environment_disposal" for item in missing)]
+                      and not (missing_by_case[key] - {"/".join(key) + "/environment_disposal"})]
     return _summary(status, reason, report=report, missing=missing, failures=failures,
                     cleanup=cleanup_failures, unverified=unverified - len(verified_assertions),
                     verified=verified_cases)

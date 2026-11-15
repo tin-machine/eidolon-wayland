@@ -24,7 +24,7 @@ Mousepad や GTK demo の Launch は送らず、**Start 送信数 0** を produc
 
 | 判定 | 意味 |
 | --- | --- |
-| `n01_inspect_only_passed` | N01 の8 assertionを独立 oracle が照合した product smoke の結果 |
+| `n01_inspect_only_passed` | N01 case自身がpassで、8 assertionと必須証拠参照を独立に照合した product smoke の結果。N01自身のcancelはfalse |
 | `verified_case_oracles` | 意味的な照合を実施した case の集合。N01のみ実装 |
 | `host_v3_acceptance_passed` | 正式 I6。N01だけでは false のまま |
 | `product_oracles_verified` | I6全体の oracle。未実装ケースを含むため false のまま |
@@ -87,7 +87,7 @@ Ubuntuのtag自体をreview済みimmutable image lockとは呼ばず、外側の
 
 1. Journal reservationと実C2のPrepared／Inspect／catalog。request、session、context、scope、pins、sourceが一致する。
 2. 未割当launch gateを封鎖したNoLocalAllocation seal。Stop送信より先に成立する。
-3. 通常DisconnectによるStop、remote terminal、channel close、router／I/O retirement。
+3. 通常DisconnectによるStop、受信したStopped ACK、remote cleanup、channel close、router／I/O retirement。
 4. 必要な場合は保持中の同Runtime／同captureでlive Recoverし、その実receiptとgeneration bridgeを照合する。
 5. journal unlinkとdirectory fsync、および同capture finalizerの実publication。
 6. origin retirement条件を満たした後のRuntime全停止、最後の生存snapshot、実 `Registry::destroy == Accepted`、Registry数0。
@@ -95,6 +95,12 @@ Ubuntuのtag自体をreview済みimmutable image lockとは呼ばず、外側の
 新Runtimeの空ledger、process exit、Drop、timeout、Stale、journalの不在だけを回収証拠にしない。
 runnerは失敗時も元Runtimeで回収を進め、retirementが成立しなければ通常のRuntime全停止／destroy成功を記録しない。
 最初の失敗と回収失敗を別に保持する。
+
+送信／受信protocolのsequenceを、同captureの `remote_cleanup_observed` より前へ束縛する。
+これによりStop→Stopped ACK→remote cleanup→I/O retirement→finalizer→Runtime停止の順序を
+一つの因果関係として検査する。protocol内だけの順序が正しくても、StopやACKが回収・全停止の後ならinvalidである。
+ACKを失った場合の正当な同capture Recoverは、保持された回収receiptとgeneration bridgeで別途検査し、
+存在しないACKを補って成功にしない。
 
 supervisorはrunner終了後、**専用sshdを停止する前**にapp／driver processとsshd descendantを数える。
 OS側のreapを最大3秒read-onlyで観測するが、productのdeadline／leaseを変えず、残存processをkillして0へ作り替えない。
@@ -262,3 +268,42 @@ EIDOLON_REQUIRE_GIO_TESTS=1 python3 -m unittest discover -s scripts/tests -p tes
 修正後の実 N01 の対象 head、実行 source、receipt digest、CI の成否は PR #34 に記録する。
 catalog が取得できても、独立 oracle の全 N01 条件を満たすまで成功とはしない。
 N01 が成功した場合も、他86 required variant と未実装 oracle は未完了のまま保持する。
+
+## 2026-11-15 追記: N01 部分合格のレビュー修正
+
+head `30ee180c26e3b00b6e783cde8c465f07c090574e` のレビューで、次の3点の判定不足が報告された。
+修正開始時の最新 main は `97dfdbbc13e00227b8285d09b0e880cdc6b6b130`、PR #34 は未マージ。
+別スコープの open PR #36、文書入口、I2/I4 の別々の context を再確認した。
+
+| 入力した証拠の変更 | 修正前 | 修正後 |
+| --- | --- | --- |
+| Stop送信とStopped ACKをRuntime停止要求より後へ移動 | N01部分合格、外側CIも受理 | `I6_TRACE_INVALID / exit 3`、N01部分合格false、CI拒否 |
+| censusのjournal_finalizerをnot_createdとし、参照先を不存在fileへ変更 | artifact欠落を記録するがN01部分合格、CIも受理 | `I6_EVIDENCE_MISSING / exit 2`、N01部分合格false、CI拒否 |
+| N01自身をcancelled／I6_OPERATOR_CANCELLEDへ変更 | exit 130／CI拒否だがN01部分合格true | exit 130／CI拒否、N01部分合格もfalse |
+
+順序oracleは元SSH actorの全送信／受信eventをremote cleanupより前へ束縛し、
+既存のI/O retirement・finalizer・Runtime停止への順序検査と接続した。
+validatorは不足をcaseへ直接帰属させ、`artifact/...` 等の診断prefixから推定しない。
+部分合格には当該caseがpassでcancelledではないことも必要とする。
+別caseの不足やcancelは、そのcaseとrun全体へ反映し、成立済みN01の証拠とは区別する。
+
+回帰は[oracle](../../../scripts/tests/test_linux_real_app_v3_n01_oracle.py)、
+[証拠validator](../../../scripts/tests/test_linux_real_app_v3_evidence_adversarial.py)、
+[外側CI](../../../scripts/tests/test_i6_n01_ci.py)へ計15テストを追加した。
+通常Stop／receipt Recover／durable Recoverの3経路で、Stop＋ACKまたはACK単独を
+5つの回収境界の後へ移す30 mutationを含む。ACKが失われても同captureの有効なRecovery receiptが
+回収を証明する経路は維持し、そのreceiptの回収証拠が壊れれば拒否する。
+外側CIの回帰は保存aggregateを再計算値と一致させた状態でも拒否することを確認し、
+古いsummaryとの不一致だけに依存しない。
+
+[原artifact 14155227417](https://github.com/tin-machine/eidolon-wayland/actions/runs/43697174936/artifacts/14155227417)の
+実行sourceは `a3020122b91178b2a8c2bb180fe4eb86befffba7`、ZIP SHA-256は
+`0ca652e0420f64c8357630a7590ad4e93ed7ce4d7aa891f3e504cc57b1eb87ca`。
+そのprivate copyで上記3点の修正前／修正後を再現した。原ZIPと六JSONはbyte不変で、
+原証拠を修正後validatorへ入力したN01 oracle／aggregateは保存された正常判定と完全一致した。
+これは同じ過去の物理sourceを期待値とする再検証であり、新headの実SSH実行証拠とは区別する。
+新head・新CIの実receiptと最終結果はPR本文へ記録する。
+
+今回の変更は判定器・回帰・説明文に限る。C2／backend／source inventory、product deadline／lease、
+frozen v2、固定28 family／87 required variant／533 assertion参照は変更しない。
+N01のenvironment_disposalはnot_yet、正式I6はincompleteのまま保持する。

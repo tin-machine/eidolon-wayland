@@ -413,6 +413,44 @@ class N01OracleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.verify()
 
+    def move_protocol_after_cleanup(self, boundary, *, include_stop):
+        events = self.receipt["native"]["trace"]["events"]
+        moved = [event for event in events
+                 if (event["kind"] == "protocol_event"
+                     and event["data"]["record"]["event"]["type"] == "stopped")
+                 or (include_stop and event["kind"] == "control_send_attempt"
+                     and event["data"]["action"] == "stop")]
+        events[:] = [event for event in events if event not in moved]
+        insert_at = next(i for i, event in enumerate(events) if event["kind"] == boundary) + 1
+        events[insert_at:insert_at] = moved
+        for sequence, event in enumerate(events, 1):
+            event["sequence"] = str(sequence)
+
+    def test_stop_and_ack_cannot_follow_cleanup_retirement_or_runtime_stop(self):
+        for recover in ("none", "receipt", "durable"):
+            for boundary in ("remote_cleanup_observed", "io_retired", "journal_unlinked",
+                             "finalizer_published", "controller_stop_requested"):
+                with self.subTest(recover=recover, boundary=boundary):
+                    self.receipt, self.source = (specimen() if recover == "none"
+                        else recovery_specimen(durable=recover == "durable"))
+                    self.move_protocol_after_cleanup(boundary, include_stop=True)
+                    # The wire stream still has Stop -> Stopped and every
+                    # cleanup count is zero. Its placement in the owner trace
+                    # must nevertheless contradict the claimed cleanup.
+                    with self.assertRaisesRegex(evidence.EvidenceError, "I6_TRACE_INVALID"):
+                        self.verify()
+
+    def test_ack_cannot_follow_cleanup_even_when_stop_was_sent_before_it(self):
+        for recover in ("none", "receipt", "durable"):
+            for boundary in ("remote_cleanup_observed", "io_retired", "journal_unlinked",
+                             "finalizer_published", "controller_stop_requested"):
+                with self.subTest(recover=recover, boundary=boundary):
+                    self.receipt, self.source = (specimen() if recover == "none"
+                        else recovery_specimen(durable=recover == "durable"))
+                    self.move_protocol_after_cleanup(boundary, include_stop=False)
+                    with self.assertRaisesRegex(evidence.EvidenceError, "I6_TRACE_INVALID"):
+                        self.verify()
+
     def test_failed_remote_finalizer_and_destroy_cannot_pass(self):
         for kind, field, value in (("remote_cleanup_observed", "channel_complete", False),
                                     ("finalizer_published", "status", 4)):
@@ -492,6 +530,28 @@ class N01OracleTests(unittest.TestCase):
                 self.assertEqual(result["status"], "pass", result)
                 self.assertEqual(self.receipt["owner"]["io_generation"], "1")
                 self.assertEqual(self.trace("finalizer_published")["data"]["generation"], "2")
+
+    def test_missing_stop_ack_requires_actual_same_capture_recovery_evidence(self):
+        self.receipt, self.source = recovery_specimen()
+        events = self.receipt["native"]["trace"]["events"]
+        stopped = next(event for event in events if event["kind"] == "protocol_event"
+                       and event["data"]["record"]["event"]["type"] == "stopped")
+        removed_sequence = int(stopped["sequence"])
+        events.remove(stopped)
+        for sequence, event in enumerate(events, 1):
+            event["sequence"] = str(sequence)
+        for observation in self.receipt["native"]["observations"]:
+            watermark = int(observation["transport_sequence"])
+            observation["transport_sequence"] = str(watermark - (watermark >= removed_sequence))
+        self.trace("remote_cleanup_observed")["data"]["remote"].update(
+            phase="failed", reason="connection_closed", stop_reason=None,
+            terminal_event=False, exit_status=None, protocol_valid=False)
+        result = self.verify()
+        self.assertEqual(result["status"], "pass", result)
+        self.assertEqual(set(result["verified_assertions"]), oracle.ASSERTIONS)
+        self.trace("recovery_receipt")["data"]["record"]["process_complete"] = False
+        with self.assertRaises(ValueError):
+            self.verify()
 
     def test_no_catalog_recovery_is_independent_but_cannot_promote_n01(self):
         self.receipt, self.source = no_catalog_recovery_specimen()

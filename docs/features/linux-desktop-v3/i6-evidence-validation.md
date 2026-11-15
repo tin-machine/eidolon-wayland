@@ -154,6 +154,19 @@ size/digest不一致、読み取り中のinode/ancestor/root差替えを拒否�
 欠落だけのartifactはincomplete、存在するが内容・参照が矛盾するartifactはinvalidとして区別する。
 `opaque` artifactはbyte整合性のみを検査し、typed receiptやGUI oracleを充足した扱いにはしない。
 
+部分合格を計算するときも、必須artifactと参照の欠落は、そのcase/variantの証拠不足として扱う。
+公開する `missing` の `artifact/...`／`typed_receipt/...` 表記とは別にcaseへの帰属を保持し、
+case名をprefixに持つ診断だけで充足を判定しない。宣言されていないartifact、宣言済みだが
+実fileがないartifact、読めないtrace参照、意味的に検証できないtyped receiptは部分合格を成立させない。
+別caseの証拠不足は、そのcaseに帰属させる。
+
+`verified_case_oracles` へ入れるcaseは、独立oracleと必要な参照が成立し、case自身が
+`status=pass` かつoperator cancelされていない必要がある。N01自身のcancelは
+`n01_inspect_only_passed=false` とし、全体の `cancelled / exit 130` と矛盾させない。
+完了済みN01とは別のcaseのcancelは、run全体をcancelledにするが、N01の完了済み証拠を取り消さない。
+N01 smokeでは `environment_disposal` の未完了だけを部分合格の対象外とする既存境界を保ち、
+正式I6にはその不足を残す。その他の欠落をこの例外へ含めない。
+
 `first_case_failure` と `cleanup_failures[]` は別に保持する。
 期待されたproduct failureは `first_product_failure` に記録し、それ自体を予期しないcase failureにしない。
 負例の正しいUnknown/Pending保持とrescue完了は両立するが、product completeへ昇格しない。

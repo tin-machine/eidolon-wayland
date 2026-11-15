@@ -203,6 +203,14 @@ def _trace(native, owner, environment):
              "journal_unlinked", "finalizer_published", "controller_stop_requested"]
     for first, second in zip(chain, chain[1:]):
         ordered(first, second)
+    # Bind the original SSH actor's send/receive stream to its cleanup
+    # publication, before I/O retirement, finalization and Runtime stop.
+    # Recovery uses separate events and its existing generation bridge.
+    if "remote_cleanup_observed" in by_kind:
+        cleanup_sequence = int(item("remote_cleanup_observed")["sequence"])
+        for kind in ("control_send_attempt", "protocol_event"):
+            for event in by_kind.get(kind, []):
+                _require(int(event["sequence"]) < cleanup_sequence, "I6_TRACE_INVALID")
     failures = []
     for kind, stage in (("journal_reserved", "reserved"), ("journal_prepared", "prepared"),
                          ("journal_complete", "complete")):

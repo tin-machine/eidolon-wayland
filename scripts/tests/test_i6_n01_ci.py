@@ -285,6 +285,85 @@ class ScopeTests(unittest.TestCase):
 
 
 class ExportRevalidationTests(unittest.TestCase):
+    def revalidate_mutation(self, *, mutate_receipt=None, mutate_case=None):
+        """Keep producer summaries consistent so only the real evidence gate decides."""
+        from test_linux_real_app_v3_n01_oracle import specimen
+        import linux_real_app_v3_n01 as supervisor
+
+        receipt, source = specimen()
+        with tempfile.TemporaryDirectory(prefix="eidolon-n01-export-mutation-") as temporary:
+            root = Path(temporary)
+            incoming = root / "incoming"
+            incoming.mkdir(mode=0o700)
+            report, _ = supervisor.assemble_report(source, source, receipt["native"], receipt["environment"], incoming)
+            if mutate_receipt is not None:
+                mutate_receipt(receipt)
+                raw = export.evidence.canonical(receipt) + b"\n"
+                (incoming / "n01-receipt.json").write_bytes(raw)
+                artifact = next(a for a in report["artifacts"] if a["path"] == "n01-receipt.json")
+                artifact.update(size=len(raw), sha256=export.evidence.sha(raw))
+            case = next(row for row in report["cases"] if (row["case_id"], row["variant"]) == ("N01", "inspect_only"))
+            if mutate_case is not None:
+                mutate_case(case)
+            export.evidence.write_report(incoming / "acceptance.json", report)
+            checked = export.evidence.validate_acceptance(export.evidence.canonical(report), incoming, source)
+            export.evidence.write_report(incoming / "acceptance-validation.json", checked)
+            # A producer's pass flag must not bypass failed independent checks,
+            # even when its saved aggregate matches the validator exactly.
+            export.evidence.write_report(incoming / "n01-validation.json",
+                                         {"status": "pass", "n01_inspect_only_passed": True, "source": source})
+            image = root / "image.id"
+            image.write_text("sha256:" + "b" * 64)
+            output = root / "output"
+            output.mkdir(mode=0o700)
+            with mock.patch.object(export.evidence, "source_snapshot", return_value=source):
+                accepted = export.export_and_validate(incoming, output, image, source["commit"], "0", "0", "false", ROOT)
+            return checked, accepted
+
+    def test_stop_and_ack_after_runtime_stop_cannot_pass_export_revalidation(self):
+        def move_stop(receipt):
+            native = receipt["native"]
+            events = native["trace"]["events"]
+            late = [event for event in events
+                    if (event["kind"] == "control_send_attempt" and event["data"]["action"] == "stop")
+                    or (event["kind"] == "protocol_event"
+                        and event["data"]["record"]["event"]["type"] == "stopped")]
+            self.assertEqual(len(late), 2)
+            events[:] = [event for event in events if event not in late] + late
+            renumbered = {int(event["sequence"]): number for number, event in enumerate(events, 1)}
+            for number, event in enumerate(events, 1):
+                event["sequence"] = str(number)
+            for observation in native["observations"]:
+                watermark = int(observation["transport_sequence"])
+                observation["transport_sequence"] = str(renumbered[watermark] if watermark else 0)
+
+        checked, accepted = self.revalidate_mutation(mutate_receipt=move_stop)
+        self.assertEqual((checked["status"], checked["reason"]), ("invalid", "I6_TRACE_INVALID"))
+        self.assertFalse(checked["n01_inspect_only_passed"])
+        self.assertFalse(accepted)
+
+    def test_missing_census_reference_cannot_pass_export_revalidation(self):
+        def hide_finalizer(case):
+            finalizer = next(row for row in case["cleanup"]["census"] if row["resource"] == "journal_finalizer")
+            finalizer["state"] = "not_created"
+            finalizer["evidence_refs"][0]["artifact"] = "missing-finalizer.json"
+
+        checked, accepted = self.revalidate_mutation(mutate_case=hide_finalizer)
+        self.assertEqual(checked["status"], "incomplete")
+        self.assertIn("artifact/missing-finalizer.json", checked["missing"])
+        self.assertFalse(checked["n01_inspect_only_passed"])
+        self.assertNotIn("N01/inspect_only", checked["verified_case_oracles"])
+        self.assertFalse(accepted)
+
+    def test_cancelled_n01_has_no_partial_pass_and_cannot_pass_export_revalidation(self):
+        checked, accepted = self.revalidate_mutation(
+            mutate_case=lambda case: case.update(status="cancelled", reason="I6_OPERATOR_CANCELLED"))
+        self.assertEqual((checked["status"], checked["reason"], checked["exit_code"]),
+                         ("cancelled", "I6_OPERATOR_CANCELLED", 130))
+        self.assertFalse(checked["n01_inspect_only_passed"])
+        self.assertNotIn("N01/inspect_only", checked["verified_case_oracles"])
+        self.assertFalse(accepted)
+
     def test_real_oracle_specimen_is_revalidated_and_damaged_receipt_rejected(self):
         from test_linux_real_app_v3_n01_oracle import specimen
         import linux_real_app_v3_n01 as supervisor

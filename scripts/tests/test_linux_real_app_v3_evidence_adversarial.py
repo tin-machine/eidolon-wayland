@@ -333,6 +333,131 @@ class OwnershipTraceTests(TraceSpecimen):
         self.assertFalse(result["product_oracles_verified"])
 
 
+class N01PartialVerdictTests(unittest.TestCase):
+    """A valid synthetic receipt cannot hide incomplete envelope references."""
+
+    def setUp(self):
+        from linux_real_app_v3_n01 import assemble_report
+        from test_linux_real_app_v3_n01_oracle import specimen
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.root.chmod(0o700)
+        receipt, self.source = specimen()
+        self.report, verdict = assemble_report(
+            self.source, self.source, receipt["native"], receipt["environment"], self.root)
+        self.assertEqual(verdict["status"], "pass")
+        self.case = next(c for c in self.report["cases"] if c["case_id"] == "N01")
+
+    def validate(self):
+        return evidence.validate_acceptance(evidence.canonical(self.report), self.root, self.source)
+
+    def declare(self, path, *, kind="opaque", case=None, present=False):
+        case = self.case if case is None else case
+        data = b"{}\n"
+        if present:
+            leaf = self.root / path
+            leaf.write_bytes(data)
+            leaf.chmod(0o600)
+        self.report["artifacts"].append({
+            **self.report["artifacts"][0], "path": path, "kind": kind,
+            "size": len(data), "sha256": evidence.sha(data),
+            "case_id": case["case_id"], "variant": case["variant"],
+            "owner_id": case["owners"][0]["owner_id"] if case["owners"] else None})
+
+    def assert_incomplete_n01(self, missing):
+        result = self.validate()
+        self.assertEqual(result["exit_code"], 2)
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn(missing, result["missing"])
+        self.assertFalse(result["n01_inspect_only_passed"])
+        self.assertNotIn("N01/inspect_only", result["verified_case_oracles"])
+        self.assertFalse(result["host_v3_acceptance_passed"])
+
+    def test_missing_census_reference_blocks_partial_pass(self):
+        original = copy.deepcopy(self.report)
+        for declared in (False, True):
+            for state in ("complete", "not_created"):
+                with self.subTest(declared=declared, state=state):
+                    self.report = copy.deepcopy(original)
+                    self.case = next(c for c in self.report["cases"] if c["case_id"] == "N01")
+                    row = next(c for c in self.case["cleanup"]["census"]
+                               if c["resource"] == "journal_finalizer")
+                    row["state"] = state
+                    row["evidence_refs"][0]["artifact"] = "missing-finalizer.json"
+                    if declared:
+                        self.declare("missing-finalizer.json")
+                    self.assert_incomplete_n01("artifact/missing-finalizer.json")
+
+    def test_census_reference_to_opaque_bytes_blocks_partial_pass(self):
+        row = next(c for c in self.case["cleanup"]["census"] if c["resource"] == "journal_finalizer")
+        row["evidence_refs"][0]["artifact"] = "opaque-finalizer.json"
+        self.declare("opaque-finalizer.json", present=True)
+        self.assert_incomplete_n01("typed_receipt/opaque-finalizer.json")
+
+    def test_extra_assertion_reference_must_also_exist(self):
+        assertion = self.case["assertions"][0]
+        extra = {**assertion["evidence_refs"][0], "artifact": "missing-assertion.json"}
+        assertion["evidence_refs"].append(extra)
+        self.assert_incomplete_n01("artifact/missing-assertion.json")
+
+    def test_n01_trace_declaration_must_exist(self):
+        self.case["trace"]["artifacts"] = ["missing-trace.json"]
+        self.assert_incomplete_n01("artifact/missing-trace.json")
+        self.declare("missing-trace.json", kind="trace")
+        self.assert_incomplete_n01("artifact/missing-trace.json")
+
+    def test_missing_declared_artifact_is_attached_to_its_case(self):
+        other = next(c for c in self.report["cases"] if c["case_id"] == "N02")
+        self.declare("other-missing.json", case=other)
+        result = self.validate()
+        self.assertIn("artifact/other-missing.json", result["missing"])
+        self.assertTrue(result["n01_inspect_only_passed"])
+        self.assertEqual(result["exit_code"], 2)
+        self.declare("n01-missing.json")
+        self.assert_incomplete_n01("artifact/n01-missing.json")
+
+    def test_cancelled_n01_status_or_reason_blocks_partial_pass(self):
+        for status, reason in (("cancelled", "I6_OPERATOR_CANCELLED"),
+                               ("cancelled", "I6_OK"), ("pass", "I6_OPERATOR_CANCELLED")):
+            with self.subTest(status=status, reason=reason):
+                self.case.update(status=status, reason=reason)
+                result = self.validate()
+                self.assertEqual(result["status"], "cancelled")
+                self.assertEqual(result["reason"], "I6_OPERATOR_CANCELLED")
+                self.assertEqual(result["exit_code"], 130)
+                self.assertFalse(result["n01_inspect_only_passed"])
+                self.assertNotIn("N01/inspect_only", result["verified_case_oracles"])
+
+    def test_other_case_cancellation_preserves_completed_n01(self):
+        other = next(c for c in self.report["cases"] if c["case_id"] == "N02")
+        other.update(status="cancelled", reason="I6_OPERATOR_CANCELLED")
+        result = self.validate()
+        self.assertEqual(result["exit_code"], 130)
+        self.assertTrue(result["n01_inspect_only_passed"])
+        self.assertEqual(result["verified_case_oracles"], ["N01/inspect_only"])
+        self.assertFalse(result["host_v3_acceptance_passed"])
+
+    def test_nonpass_n01_status_never_grants_partial_pass(self):
+        for status, reason, code in (("not_run", "I6_NOT_RUN", 2),
+                                     ("incomplete", "I6_EVIDENCE_MISSING", 2),
+                                     ("fail", "I6_ASSERTION_FAILED", 1)):
+            with self.subTest(status=status):
+                self.case.update(status=status, reason=reason)
+                result = self.validate()
+                self.assertEqual(result["exit_code"], code)
+                self.assertFalse(result["n01_inspect_only_passed"])
+
+    def test_available_census_reference_still_rejects_not_created_contradiction(self):
+        row = next(c for c in self.case["cleanup"]["census"] if c["resource"] == "journal_finalizer")
+        row["state"] = "not_created"
+        result = self.validate()
+        self.assertEqual(result["exit_code"], 3)
+        self.assertEqual(result["reason"], "I6_N01_RECEIPT_INVALID")
+        self.assertFalse(result["n01_inspect_only_passed"])
+
+
 class PrivateArtifactTests(TraceSpecimen):
     def test_missing_artifact_is_incomplete_not_a_corrupt_artifact(self):
         (self.root / "trace.json").unlink()
