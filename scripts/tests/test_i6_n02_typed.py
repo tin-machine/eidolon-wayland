@@ -125,6 +125,9 @@ class TypedN02Tests(unittest.TestCase):
                 "wrong_run_id": lambda r: r.update(run_id="9" * 32),
                 "different_source": lambda r: r["artifacts"][0].update(
                     source_sha256="e" * 64),
+                "unproven_disposal": lambda r: next(c for c in r["cases"]
+                    if (c["case_id"], c["variant"]) == ("N02", "gtk3_desktop")
+                    )["cleanup"].update(environment_disposal="complete"),
             }
             for name, mutate in mutations.items():
                 with self.subTest(name=name):
