@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from pathlib import PurePosixPath
 import symtable
 
-from .python_analysis import _location, _module_candidates, _symbol_tables
+from .python_analysis import _bound_names, _module_candidates, _symbol_tables
 
 
 def _source(row, revision):
@@ -63,13 +63,19 @@ def _rebindings(tree, names):
     call scope is checked separately using the compiler, not this AST scan.
     """
     rebound = set()
+    direct_import_ids = {id(node) for node in tree.body
+                         if isinstance(node, (ast.Import, ast.ImportFrom))}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            if node.id in names:
-                rebound.add(node.id)
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            if node.target.id in names:
-                rebound.add(node.target.id)
+        # The original unconditional import is the candidate's definition, not
+        # a mutation. All other bindings, even in an opaque scope, block it.
+        if id(node) not in direct_import_ids:
+            rebound.update(_bound_names(node) & names)
+        if isinstance(node, ast.ImportFrom) and any(
+                alias.name == "*" for alias in node.names):
+            rebound.update(names)
+        if (isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del))
+                and isinstance(node.value, ast.Name) and node.value.id in names):
+            rebound.add(node.value.id)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {
                 "exec", "eval", "globals", "locals", "vars", "setattr", "delattr"}:
             # Dynamic namespace mutation cannot be ruled out by static analysis.

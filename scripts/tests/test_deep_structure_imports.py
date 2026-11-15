@@ -204,6 +204,26 @@ def finish(x): return entry.run(x)
             deep.verify(self.root, artifact)
 
 
+    def test_module_level_def_nested_global_import_and_attribute_patch_block_candidates(self):
+        variants = [
+            "def core(): return 1",
+            "def rename():\n    global core\n    import other as core",
+            "core.finish = lambda value: value",
+            "try:\n    1 / 0\nexcept Exception as core:\n    pass",
+            "from unknown import *",
+        ]
+        for change in variants:
+            with self.subTest(change=change):
+                self.write("pkg/entry.py",
+                           "import service as core\n" + change +
+                           "\ndef run(): return core.finish(1)\n")
+                self.commit()
+                graph = self.graph()
+                call = self.fn(graph, "pkg/entry.py", "run")["calls"][0]
+                self.assertEqual(call["resolution"], "unresolved")
+                self.assertEqual(call["import_evidence"]["reason"],
+                                 "possible_alias_rebinding_or_dynamic_namespace")
+
     def test_real_linux_sources_follow_two_cross_module_calls_without_execution(self):
         for path in (
             "scripts/linux/eidolon_linux_desktop_session_v3.py",
