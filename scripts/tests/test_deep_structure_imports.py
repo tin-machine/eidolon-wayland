@@ -1,4 +1,5 @@
 """Cross-module candidate/negative fixtures: no target source import or execution."""
+import ast
 import copy
 from pathlib import Path
 import subprocess
@@ -283,16 +284,39 @@ def finish(x): return entry.run(x)
         with self.assertRaises(deep.DeepError):
             deep.verify(self.root, changed)
 
-    def test_real_source_cli_repository_verify_and_targeted_deep(self):
-        import json
-
+    def copy_linux_sources(self, prefix=""):
         for path in (
             "scripts/linux/eidolon_linux_desktop_session_v3.py",
             "scripts/linux/eidolon_linux_desktop_v3.py",
             "scripts/linux/eidolon_linux_process_owner.py",
         ):
-            self.write(path, (REPO / path).read_text())
+            self.write(path, prefix + (REPO / path).read_text())
         self.commit()
+
+    def source_definition(self, path, name):
+        tree = ast.parse((self.root / path).read_text())
+        definitions = [node for node in tree.body
+                       if isinstance(node, ast.FunctionDef) and node.name == name]
+        self.assertEqual(len(definitions), 1)
+        node = definitions[0]
+        return f"{path}::{name}@{node.lineno}", node, tree
+
+    def source_call_lines(self, path, caller, expression, imported_alias):
+        _, definition, tree = self.source_definition(path, caller)
+        calls = [node for node in ast.walk(definition) if isinstance(node, ast.Call)
+                 and ast.unparse(node.func) == expression]
+        imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
+                   and any(alias.asname == imported_alias for alias in node.names)]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(imports), 1)
+        return calls[0].lineno, imports[0].lineno
+
+    def test_real_source_cli_repository_verify_and_targeted_deep(self):
+        import json
+
+        # Exercise location drift in both caller and callee without executing
+        # product source. Expected locations come independently from the AST.
+        self.copy_linux_sources(prefix="# integration fixture: shifted source locations\n\n")
         command = [sys.executable, "-B", str(REPO / "scripts/deep_structure.py")]
 
         def run(*args):
@@ -305,41 +329,43 @@ def finish(x): return entry.run(x)
         artifact = Path(first["artifact"])
         self.assertTrue(artifact.exists())
         self.assertEqual(run("verify", "--artifact", str(artifact))["status"], "fresh")
-        target = "scripts/linux/eidolon_linux_desktop_session_v3.py::_cleanup@99"
+        session = "scripts/linux/eidolon_linux_desktop_session_v3.py"
+        target, _, _ = self.source_definition(session, "_cleanup")
         slice_result = run("targeted-deep", "--artifact", str(artifact),
                            "--symbol", target, "--hops", "2",
                            "--max-nodes", "160", "--max-edges", "300",
                            "--max-bytes", "262144")
         graph = json.loads(Path(slice_result["artifact"]).read_text())
         self.assertEqual(graph["symbol"], target)
-        expected = "scripts/linux/eidolon_linux_desktop_v3.py::cleanup_owner@482"
+        expected, _, _ = self.source_definition("scripts/linux/eidolon_linux_desktop_v3.py", "cleanup_owner")
         edges = [e for e in graph["edges"] if e["from"] == target and e["to"] == expected
                  and e.get("candidate_kind") == "repository_import"]
         self.assertEqual(len(edges), 1, edges)
-        self.assertEqual(edges[0]["import_evidence"]["import_location"]["line"], 16)
-        self.assertEqual(edges[0]["location"]["line"], 105)
+        call_line, import_line = self.source_call_lines(session, "_cleanup", "core.cleanup_owner", "core")
+        self.assertEqual(edges[0]["import_evidence"]["import_location"]["line"], import_line)
+        self.assertEqual(edges[0]["location"]["line"], call_line)
+        self.assertEqual(edges[0]["import_evidence"]["target_location"]["line"],
+                         int(expected.rsplit("@", 1)[1]))
         self.assertTrue(graph["unknowns"])
 
     def test_real_linux_sources_follow_two_cross_module_calls_without_execution(self):
-        for path in (
-            "scripts/linux/eidolon_linux_desktop_session_v3.py",
-            "scripts/linux/eidolon_linux_desktop_v3.py",
-            "scripts/linux/eidolon_linux_process_owner.py",
-        ):
-            self.write(path, (REPO / path).read_text())
-        self.commit()
+        self.copy_linux_sources()
         graph = self.graph()
         session = "scripts/linux/eidolon_linux_desktop_session_v3.py"
         cleanup = self.fn(graph, session, "_cleanup")
         call = next(c for c in cleanup["calls"] if c["expression"] == "core.cleanup_owner")
-        self.assertEqual(call["target"], "scripts/linux/eidolon_linux_desktop_v3.py::cleanup_owner@482")
-        self.assertEqual(call["location"]["line"], 105)
-        self.assertEqual(call["import_evidence"]["import_location"]["line"], 16)
+        expected, _, _ = self.source_definition("scripts/linux/eidolon_linux_desktop_v3.py", "cleanup_owner")
+        self.assertEqual(call["target"], expected)
+        call_line, import_line = self.source_call_lines(session, "_cleanup", "core.cleanup_owner", "core")
+        self.assertEqual(call["location"]["line"], call_line)
+        self.assertEqual(call["import_evidence"]["import_location"]["line"], import_line)
         serve = self.fn(graph, session, "serve")
         identity = next(c for c in serve["calls"] if c["expression"] == "process_identity")
-        self.assertEqual(identity["target"], "scripts/linux/eidolon_linux_process_owner.py::identity@32")
-        self.assertEqual(identity["location"]["line"], 286)
-        self.assertEqual(identity["import_evidence"]["import_location"]["line"], 14)
+        expected_identity, _, _ = self.source_definition("scripts/linux/eidolon_linux_process_owner.py", "identity")
+        self.assertEqual(identity["target"], expected_identity)
+        call_line, import_line = self.source_call_lines(session, "serve", "process_identity", "process_identity")
+        self.assertEqual(identity["location"]["line"], call_line)
+        self.assertEqual(identity["import_evidence"]["import_location"]["line"], import_line)
         result = deep.bounded_slice(graph, cleanup["id"], hops=2)
         self.assertTrue(any(e["to"] == call["target"] for e in result["edges"]))
         self.assertEqual(deep.verify(self.root, graph), graph)

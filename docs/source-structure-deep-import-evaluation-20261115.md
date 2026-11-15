@@ -1,5 +1,27 @@
 # Python Deep：repository import候補の拡張評価（2026-11-15）
 
+## main更新後のCI統合fixture修正（2026-11-15）
+
+head `6705ecce180d3642f794815e5e26fe9d564b5026` の検証run
+[43711479939](https://github.com/tin-machine/eidolon-wayland/actions/runs/43711479939) は、
+hostとAndroidのPython suiteで同じ2つの実source統合テストに失敗した。
+main `4bf08e6df9cc3a2eb3cedb8856be52d9fe1dcfca` に入ったC2変更により、
+`cleanup_owner` の定義位置が482行から484行へ移り、固定symbol IDと辺の検索条件が古くなっていた。
+AndroidのAPK buildは成功し、後続の拒否検査で実行したPython suiteがこの2件で失敗している。
+
+fixtureはコピーした実sourceを独立にAST解析し、top-level定義が一意であることを確認して
+`path::name@line` を組み立てる。call/importの位置も同じsourceから一意に選び、
+選択したcallerとcalleeの候補辺が1本であること、およびimport/call/callee位置の一致を検査する。
+CLI側fixtureは3 sourceの先頭へコメントと空行を追加し、caller/callee双方の位置が移っても
+repository-deep → verify → targeted-deepの検査が成立することを確認する。
+これは位置検査の省略や複数辺の任意選択ではなく、固定行番号への依存を取り除く変更である。
+
+修正前のPR headとmainを統合したローカルcheckoutでCIと同じ2件の失敗を再現した。
+修正後はPR単体とmain統合状態のそれぞれで、CPython **3.12.10 / 3.14.4** の
+Deep **122件すべてPASS、skip 0**。前回Unicode class名のCLI再現ケースも両版でexit 0を確認した。
+このローカル確認はhost/Android build全体の成功証拠ではない。修正push後のCI結果はPR本文へ記録する。
+変更対象は統合fixtureとこの評価記録で、解析器・製品source・CI gateの変更は含まない。
+
 ## 固定条件・過去記録との区別
 
 基準main: 97dfdbbc13e00227b8285d09b0e880cdc6b6b130（PR #35 merge）。PR #30の手動Contract Graphとは独立。
