@@ -78,6 +78,21 @@ class ClassifierTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_jobs([path], ci_scope.ALL)
 
+    def test_i6_contract_fixture_and_validator_keep_full_existing_coverage(self):
+        for path in ("scripts/fixtures/linux-desktop-v3-acceptance/cases-v1.json",
+                     "scripts/linux_real_app_v3_evidence.py", "scripts/linux_real_app_v3_acceptance.py",
+                     "scripts/tests/test_linux_real_app_v3_evidence.py"):
+            with self.subTest(path=path):
+                self.assert_jobs([path], ci_scope.ALL)
+        self.assert_jobs(["docs/features/linux-desktop-v3/i6-evidence-validation.md"], [])
+
+    def test_i6_fixture_renamed_or_copied_to_docs_keeps_source_coverage(self):
+        for operation in (b"R100", b"C100"):
+            with self.subTest(operation=operation):
+                paths = ci_scope.decode_name_status(operation + b"\0scripts/fixtures/linux-desktop-v3-acceptance/cases-v1.json\0"
+                                                    b"docs/features/linux-desktop-v3/example.md\0")
+                self.assert_jobs(paths, ci_scope.ALL)
+
     def test_notices_are_build_inputs(self):
         for path in ("LICENSE", "THIRD_PARTY_NOTICES.md", "ci/licenses/Apache-2.0.txt"):
             with self.subTest(path=path):

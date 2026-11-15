@@ -33,6 +33,11 @@ It specifies the real SSH/C2/Waypipe/Mousepad path, Host rendering, 28 required 
 an independent validator and CI integration. I6 remains unregistered and unimplemented at that baseline;
 the design is not Host acceptance, real SDK/Android storage verification, or Quest/H evidence.
 
+The [I6 evidence validation implementation](features/linux-desktop-v3/i6-evidence-validation.md)
+adds the fixed 28-family / 87-variant manifest, strict evidence validator and separate CLI stage outcomes.
+It describes the implemented contract checks, remaining product oracles and the N01 real-SSH handoff.
+I6 remains manually discoverable; this partial implementation cannot report Host acceptance passed.
+
 The LLM-first documentation structure is **being introduced in stages**. D1–D2 inventory/schemas, D3 **read-only resolver**, and D4 **always-on documentation integrity CI** are available. D5 registers [Linux Desktop v3](features/linux-desktop-v3/README.md). D6 adds curated feature indices for [Curved Workspace](features/curved-workspace/README.md), [Spatial Anchor / SA0](features/spatial-anchor/README.md), [Android IME](features/android-ime/README.md), and [initial Phase 0–6](features/initial-phases/README.md) without relocating original documents or fixtures. The Phase 0–6 task status remains authoritative in `docs/design/tasks.json`; **v3 I3/I5 and unreviewed legacy documents remain unregistered**. All added designs use conservative proposed/historical/runbook classifications; a registered ID never proves current implementation or Quest verification. For v3 I4, read **separate I2 and I4 contexts** and check the relevant PR status. See [resolver instructions](knowledge/resolver.md) and run `python3 scripts/docs.py validate` before relying on a graph.
 
 The snapshot inventory is [knowledge/inventory-20261113.csv](knowledge/inventory-20261113.csv). It lists every original `docs/` blob at its recorded commit, with **non-authoritative classification candidates**. It is not an acceptance or implementation report.

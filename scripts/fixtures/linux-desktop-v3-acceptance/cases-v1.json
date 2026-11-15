@@ -1,0 +1,1530 @@
+{
+  "schema": 1,
+  "profile": "i6-host-v1",
+  "revision": "eidolon-i6-host-acceptance-v1",
+  "verification_ids": [
+    "I3-T20",
+    "V11"
+  ],
+  "cases": [
+    {
+      "case_id": "N01",
+      "variant": "inspect_only",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "real_catalog",
+        "start_count_zero",
+        "no_local_allocation_sealed",
+        "helper_ssh_reaped",
+        "product_census_complete",
+        "journal_finalized",
+        "no_local_allocation_sealed_before_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N02",
+      "variant": "gtk3_desktop",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "same_actor_catalog",
+        "started_same_origin",
+        "fixed_main",
+        "real_content_frame",
+        "b1_ready",
+        "input_gate_current",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N02",
+      "variant": "mousepad_editor",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "same_actor_catalog",
+        "started_same_origin",
+        "fixed_main",
+        "real_content_frame",
+        "b1_ready",
+        "input_gate_current",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N03",
+      "variant": "unknown_app_id",
+      "evidence_classes": [
+        "R",
+        "T"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "invalid_argument",
+        "start_count_at_most_one",
+        "rejected_launch_no_spawn",
+        "product_census_complete",
+        "journal_finalized",
+        "no_local_allocation_sealed_before_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N03",
+      "variant": "scope_changed",
+      "evidence_classes": [
+        "R",
+        "T"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "not_ready",
+        "start_count_at_most_one",
+        "rejected_launch_no_spawn",
+        "product_census_complete",
+        "journal_finalized",
+        "no_local_allocation_sealed_before_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N03",
+      "variant": "revision_changed",
+      "evidence_classes": [
+        "R",
+        "T"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "not_ready",
+        "start_count_at_most_one",
+        "rejected_launch_no_spawn",
+        "product_census_complete",
+        "journal_finalized",
+        "no_local_allocation_sealed_before_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N03",
+      "variant": "old_catalog",
+      "evidence_classes": [
+        "R",
+        "T"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "not_ready",
+        "start_count_at_most_one",
+        "rejected_launch_no_spawn",
+        "product_census_complete",
+        "journal_finalized",
+        "no_local_allocation_sealed_before_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N03",
+      "variant": "double_launch",
+      "evidence_classes": [
+        "R",
+        "T"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "busy",
+        "start_count_at_most_one",
+        "rejected_launch_no_spawn",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N04",
+      "variant": "idle_125s",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "idle_at_least_125s",
+        "multiple_lease_heartbeats",
+        "fresh_dialog_before_idle",
+        "fresh_dialog_after_idle",
+        "stop_responsive",
+        "no_total_runtime_limit",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N05",
+      "variant": "open_edit_save_as",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "input_exact_bytes",
+        "output_exact_bytes",
+        "input_unchanged",
+        "file_owner_inode_checked",
+        "dialog_parent_main_match",
+        "real_gui_input",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N06",
+      "variant": "open_cancel",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "dialog_full_target",
+        "dialog_parent_main_match",
+        "dialog_cancelled",
+        "app_continues",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N06",
+      "variant": "save_as_confirm",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "dialog_full_target",
+        "dialog_parent_main_match",
+        "save_bytes_exact",
+        "app_continues",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N06",
+      "variant": "unsaved_close_cancel",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "dialog_full_target",
+        "dialog_parent_main_match",
+        "dialog_cancelled",
+        "app_continues",
+        "unsaved_bytes_preserved",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N06",
+      "variant": "close_confirm",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "dialog_full_target",
+        "dialog_parent_main_match",
+        "close_intent_recorded",
+        "app_exit_observed",
+        "event_order_preserved",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N07",
+      "variant": "same_storage_restart",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "same_storage_new_nonce",
+        "first_gui_off",
+        "first_key_absent",
+        "pointer_toggled_setting",
+        "first_gui_on",
+        "first_key_true",
+        "second_gui_on",
+        "second_key_true",
+        "both_sessions_complete",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N08",
+      "variant": "independent_precursor",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "precursor_identity_digest",
+        "separate_bus_display",
+        "target_fresh_response",
+        "precursor_gui_off",
+        "precursor_settings_unchanged",
+        "no_parallel_c2_lease",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N08",
+      "variant": "fresh_storage",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "distinct_storage_capture",
+        "target_fresh_response",
+        "other_storage_gui_off",
+        "other_storage_settings_unchanged",
+        "sequential_c2_leases",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N09",
+      "variant": "session_candidate",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "pre_spawn_refused",
+        "app_spawn_count_zero",
+        "candidate_bytes_unchanged",
+        "document_bytes_unchanged",
+        "settings_bytes_unchanged",
+        "product_census_complete",
+        "journal_finalized",
+        "no_local_allocation_sealed_before_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N09",
+      "variant": "autosave_candidate",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "pre_spawn_refused",
+        "app_spawn_count_zero",
+        "candidate_bytes_unchanged",
+        "document_bytes_unchanged",
+        "settings_bytes_unchanged",
+        "product_census_complete",
+        "journal_finalized",
+        "no_local_allocation_sealed_before_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N10",
+      "variant": "dialog_repetition",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "all_generations_enumerated",
+        "all_renderer_fences",
+        "all_sdk_retired",
+        "i3_history_gc",
+        "b1_history_gc",
+        "exact_lease_join",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N10",
+      "variant": "target_generation_change",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "all_generations_enumerated",
+        "all_renderer_fences",
+        "all_sdk_retired",
+        "i3_history_gc",
+        "b1_history_gc",
+        "exact_lease_join",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "N11",
+      "variant": "frozen_v2_recover",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "frozen_five_source_hashes",
+        "version_dispatch_exact",
+        "v3_denied_while_v2_pending",
+        "old_capture_recovered",
+        "no_parse_fallback",
+        "product_census_complete",
+        "legacy_journal_finalized",
+        "legacy_cleanup_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F01",
+      "variant": "started_frame_loss_once",
+      "evidence_classes": [
+        "R",
+        "T"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "received_started_digest",
+        "drop_count_one",
+        "start_count_one",
+        "start_retry_count_zero",
+        "original_ack_deadline",
+        "app_alive_until_ack_deadline",
+        "same_runtime_capture_recover",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F02",
+      "variant": "client_to_sshd_blackhole",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "bytes_and_eof_blocked",
+        "upstream_alive",
+        "c2_lease_expired",
+        "native_timeout_recorded",
+        "old_io_fenced",
+        "same_runtime_capture_recover",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F03",
+      "variant": "control_eof",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "real_control_eof",
+        "c2_input_eof",
+        "matching_terminal_receipt",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F04",
+      "variant": "kill_app",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "live_pidfd_owner_match",
+        "target_death_observed",
+        "first_product_failure_preserved",
+        "same_capture_cleanup_or_recover",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F04",
+      "variant": "kill_dbus",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "live_pidfd_owner_match",
+        "target_death_observed",
+        "first_product_failure_preserved",
+        "same_capture_cleanup_or_recover",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F04",
+      "variant": "kill_remote_waypipe",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "live_pidfd_owner_match",
+        "target_death_observed",
+        "first_product_failure_preserved",
+        "same_capture_cleanup_or_recover",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F05",
+      "variant": "low_rate_stop",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "writer_rate_64kib_per_s",
+        "stop_during_writes",
+        "c2_pipe_drained",
+        "writer_fds_closed_before_terminal",
+        "writer_reaped",
+        "shared_fd_flags_unchanged",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F05",
+      "variant": "stdout_limit",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "fault_rate_reached",
+        "c2_rate_limit_observed",
+        "writer_budget_respected",
+        "writer_fds_closed_before_terminal",
+        "writer_reaped",
+        "shared_fd_flags_unchanged",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F05",
+      "variant": "stderr_limit",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "fault_rate_reached",
+        "c2_rate_limit_observed",
+        "writer_budget_respected",
+        "writer_fds_closed_before_terminal",
+        "writer_reaped",
+        "shared_fd_flags_unchanged",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F05",
+      "variant": "write_end_held",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "retained_pending",
+      "cleanup_policy": "preserve_unknown_then_rescue",
+      "assertions": [
+        "pipe_inode_owner_match",
+        "writes_stopped",
+        "writer_fd_held",
+        "eof_missing_observed",
+        "product_result_before_fd_release",
+        "shared_fd_flags_unchanged",
+        "unknown_pending_preserved",
+        "journal_retained",
+        "save_launch_denied",
+        "rescue_after_result_fixed",
+        "fault_resources_released"
+      ]
+    },
+    {
+      "case_id": "F06",
+      "variant": "receipt_collision",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "blocker_created_exclusive",
+        "blocker_same_inode",
+        "profile_release_observed",
+        "c_proof_observed",
+        "receipt_publish_failed",
+        "owned_blocker_removed",
+        "same_runtime_capture_recover",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F07",
+      "variant": "helper_owner_lost",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "retained_pending",
+      "cleanup_policy": "preserve_unknown_then_rescue",
+      "assertions": [
+        "owner_lost_before_proof",
+        "same_boot_unknown",
+        "old_capture_retained",
+        "unknown_pending_preserved",
+        "journal_retained",
+        "save_launch_denied",
+        "rescue_after_result_fixed",
+        "fault_resources_released"
+      ]
+    },
+    {
+      "case_id": "F08",
+      "variant": "journal_publish",
+      "evidence_classes": [
+        "R",
+        "T"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "io_failure_once",
+        "same_capture_retry",
+        "no_false_clear",
+        "owner_history_preserved",
+        "other_pending_unchanged",
+        "durable_publication_after_retry",
+        "product_census_complete",
+        "journal_finalized",
+        "no_local_allocation_sealed_before_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F08",
+      "variant": "rename_dir_fsync",
+      "evidence_classes": [
+        "R",
+        "T"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "io_failure_once",
+        "same_capture_retry",
+        "no_false_clear",
+        "owner_history_preserved",
+        "other_pending_unchanged",
+        "durable_publication_after_retry",
+        "product_census_complete",
+        "journal_finalized",
+        "no_local_allocation_sealed_before_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F08",
+      "variant": "unlink_dir_fsync",
+      "evidence_classes": [
+        "R",
+        "T"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "io_failure_once",
+        "same_capture_retry",
+        "no_false_clear",
+        "owner_history_preserved",
+        "other_pending_unchanged",
+        "durable_publication_after_retry",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F09",
+      "variant": "package_changed_after_inspect",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "package_changed",
+        "launch_refused",
+        "app_spawn_count_zero",
+        "immutable_recover_independent",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F10",
+      "variant": "host_process_restart",
+      "evidence_classes": [
+        "R"
+      ],
+      "expected_product_outcome": "retained_pending",
+      "cleanup_policy": "preserve_unknown_then_rescue",
+      "assertions": [
+        "old_driver_killed",
+        "new_driver_identity",
+        "authority_loss_detected",
+        "new_zero_not_old_cleanup",
+        "supervisor_receipts_complete",
+        "unknown_pending_preserved",
+        "journal_retained",
+        "save_launch_denied",
+        "rescue_after_result_fixed",
+        "fault_resources_released"
+      ]
+    },
+    {
+      "case_id": "F11",
+      "variant": "before_session",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "cancel_original_request_complete",
+        "start_count_at_most_one",
+        "boundary_ownership_preserved",
+        "late_events_fenced",
+        "product_census_complete",
+        "no_journal_allocation_sealed",
+        "no_origin_allocation_sealed_before_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F11",
+      "variant": "catalog_wait",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "cancel_original_request_complete",
+        "start_count_at_most_one",
+        "boundary_ownership_preserved",
+        "late_events_fenced",
+        "product_census_complete",
+        "journal_finalized",
+        "no_local_allocation_sealed_before_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F11",
+      "variant": "launch_pending",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "cancel_original_request_complete",
+        "start_count_at_most_one",
+        "boundary_ownership_preserved",
+        "late_events_fenced",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F11",
+      "variant": "after_ready",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "cancel_original_request_complete",
+        "start_count_at_most_one",
+        "boundary_ownership_preserved",
+        "late_events_fenced",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F12",
+      "variant": "callback_hold_repaired",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "exact_lease_pending",
+        "callback_held_timeout_no_success",
+        "same_lease_callback_drained",
+        "real_renderer_fence",
+        "same_lease_retired",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F12",
+      "variant": "dispose_failure_repaired",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "complete",
+      "cleanup_policy": "product_complete",
+      "assertions": [
+        "exact_lease_pending",
+        "dispose_failure_preserved",
+        "empty_ledger_no_success",
+        "same_lease_dispose_retried",
+        "real_renderer_fence",
+        "same_lease_retired",
+        "product_census_complete",
+        "journal_finalized",
+        "origin_retirement_before_runtime_stop",
+        "registry_destroy_accepted"
+      ]
+    },
+    {
+      "case_id": "F12",
+      "variant": "old_scene_delete_missing",
+      "evidence_classes": [
+        "R",
+        "S"
+      ],
+      "expected_product_outcome": "retained_pending",
+      "cleanup_policy": "preserve_unknown_then_rescue",
+      "assertions": [
+        "exact_lease_pending",
+        "old_scene_delete_missing",
+        "new_scene_not_old_receipt",
+        "timeout_no_success",
+        "empty_ledger_no_success",
+        "unknown_pending_preserved",
+        "journal_retained",
+        "save_launch_denied",
+        "rescue_after_result_fixed",
+        "fault_resources_released"
+      ]
+    },
+    {
+      "case_id": "C01",
+      "variant": "config",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "common_golden_accepted",
+        "duplicate_key_rejected",
+        "unknown_key_rejected",
+        "bool_as_int_rejected"
+      ]
+    },
+    {
+      "case_id": "C01",
+      "variant": "storage",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "common_golden_accepted",
+        "duplicate_key_rejected",
+        "unknown_key_rejected",
+        "bool_as_int_rejected"
+      ]
+    },
+    {
+      "case_id": "C01",
+      "variant": "catalog",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "common_golden_accepted",
+        "duplicate_key_rejected",
+        "unknown_key_rejected",
+        "bool_as_int_rejected"
+      ]
+    },
+    {
+      "case_id": "C01",
+      "variant": "mixed_version",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "v2_v3_dispatch_by_saved_version",
+        "mixed_version_rejected",
+        "parse_failure_no_fallback"
+      ]
+    },
+    {
+      "case_id": "C01",
+      "variant": "byte_limits",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "exact_byte_limit_accepted",
+        "one_byte_over_rejected",
+        "utf8_byte_count_enforced",
+        "final_envelope_limit_enforced"
+      ]
+    },
+    {
+      "case_id": "C02",
+      "variant": "deadline_exact",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "fake_clock_declared",
+        "original_deadline_preserved",
+        "in_flight_send_preserved",
+        "start_count_at_most_one"
+      ]
+    },
+    {
+      "case_id": "C02",
+      "variant": "heartbeat_inspect_race",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "fake_clock_declared",
+        "original_deadline_preserved",
+        "in_flight_send_preserved",
+        "start_count_at_most_one"
+      ]
+    },
+    {
+      "case_id": "C02",
+      "variant": "heartbeat_launch_race",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "fake_clock_declared",
+        "original_deadline_preserved",
+        "in_flight_send_preserved",
+        "start_count_at_most_one"
+      ]
+    },
+    {
+      "case_id": "C02",
+      "variant": "heartbeat_stop_race",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "fake_clock_declared",
+        "original_deadline_preserved",
+        "in_flight_send_preserved",
+        "start_count_at_most_one"
+      ]
+    },
+    {
+      "case_id": "C02",
+      "variant": "heartbeat_eof_race",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "fake_clock_declared",
+        "original_deadline_preserved",
+        "in_flight_send_preserved",
+        "start_count_at_most_one"
+      ]
+    },
+    {
+      "case_id": "C03",
+      "variant": "boot_changed",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "synthetic_boot_declared",
+        "expected_boot_branch",
+        "pipes_eof_not_forged"
+      ]
+    },
+    {
+      "case_id": "C03",
+      "variant": "boot_same",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "synthetic_boot_declared",
+        "expected_boot_branch",
+        "pipes_eof_not_forged"
+      ]
+    },
+    {
+      "case_id": "C03",
+      "variant": "receipt_contradiction",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "synthetic_boot_declared",
+        "expected_boot_branch",
+        "pipes_eof_not_forged"
+      ]
+    },
+    {
+      "case_id": "C04",
+      "variant": "wrong_runtime",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "actual_gate_reached",
+        "window_not_admitted",
+        "input_no_effect",
+        "file_unchanged"
+      ]
+    },
+    {
+      "case_id": "C04",
+      "variant": "wrong_capture",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "actual_gate_reached",
+        "window_not_admitted",
+        "input_no_effect",
+        "file_unchanged"
+      ]
+    },
+    {
+      "case_id": "C04",
+      "variant": "stale_ack",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "actual_gate_reached",
+        "window_not_admitted",
+        "input_no_effect",
+        "file_unchanged"
+      ]
+    },
+    {
+      "case_id": "C04",
+      "variant": "stale_generation",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "actual_gate_reached",
+        "window_not_admitted",
+        "input_no_effect",
+        "file_unchanged"
+      ]
+    },
+    {
+      "case_id": "C04",
+      "variant": "stale_input_epoch",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "actual_gate_reached",
+        "window_not_admitted",
+        "input_no_effect",
+        "file_unchanged"
+      ]
+    },
+    {
+      "case_id": "C04",
+      "variant": "stale_focus_token",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "actual_gate_reached",
+        "window_not_admitted",
+        "input_no_effect",
+        "file_unchanged"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "malformed_report",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "duplicate_key",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "unknown_key",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "nonfinite_number",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "invalid_utf8",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "bool_as_int",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "trailing_bytes",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "report_size_limit",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "missing_case",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "missing_variant",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "missing_assertion",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "missing_artifact",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "artifact_digest_mismatch",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "artifact_path_escape",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "cross_run",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "cross_capture",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "cross_source",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "wrong_owner",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "wrong_target_generation",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "trace_overflow",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "cleanup_evidence_missing",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    },
+    {
+      "case_id": "C05",
+      "variant": "first_failure_preserved",
+      "evidence_classes": [
+        "T"
+      ],
+      "expected_product_outcome": "not_applicable",
+      "cleanup_policy": "contract_only",
+      "assertions": [
+        "independent_validator_nonzero",
+        "first_case_failure_preserved"
+      ]
+    }
+  ]
+}
