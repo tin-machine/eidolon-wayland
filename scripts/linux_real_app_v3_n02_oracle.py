@@ -316,8 +316,12 @@ def verify(native, env, source, variant):
     target, create = sdk_and_readback(native)
     require(target["session"] == cap["session"])
     input_proof = ready_and_input(native, target, create, cap)
-    require(only(observed, "n02_input_delivered")[1]["data"]["focus_token"]
-            == input_proof["focus_token"])
+    delivered_observation = only(observed, "n02_input_delivered")[1]["data"]
+    require(delivered_observation["focus_token"] == input_proof["focus_token"]
+            and delivered_observation["input_epoch"] == input_proof["epoch"]
+            and delivered_observation["target"] == target
+            and delivered_observation["delivery_delta"]
+                == input_proof["delivered_after"] - input_proof["delivered_before"])
     for command, request in (("linux_desktop_v3_launch", "32"),
                              ("focus_window", "1001"), ("key", "1002"), ("key", "1003")):
         if command == "key":
