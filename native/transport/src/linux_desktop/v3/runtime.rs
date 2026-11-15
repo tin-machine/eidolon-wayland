@@ -30,6 +30,8 @@ pub struct RunCapture {
     evidence: ExpectedEvidence,
     pub inspect_request: CommandSeq,
     pub generation: u64,
+    #[cfg(feature = "host-acceptance")]
+    pub(crate) host_trace: Option<Arc<crate::host_acceptance::Trace>>,
 }
 impl RunCapture {
     pub fn new(
@@ -49,6 +51,8 @@ impl RunCapture {
             evidence,
             inspect_request,
             generation,
+            #[cfg(feature = "host-acceptance")]
+            host_trace: None,
         })
     }
     pub fn binding(&self) -> &Binding {
@@ -56,6 +60,21 @@ impl RunCapture {
     }
     pub fn evidence(&self) -> &ExpectedEvidence {
         &self.evidence
+    }
+    #[cfg(feature = "host-acceptance")]
+    pub(crate) fn with_host_trace(mut self, trace: Arc<crate::host_acceptance::Trace>) -> Self {
+        self.host_trace = Some(trace);
+        self.observe("capture_created", serde_json::json!({
+            "context":self.binding.context().record(),"pins":self.binding.pins().record(),
+            "compiled_source_hashes":self.evidence.source_hashes()
+        }));
+        self
+    }
+    #[cfg(feature = "host-acceptance")]
+    pub(crate) fn observe(&self, kind: &'static str, data: serde_json::Value) {
+        if let Some(trace) = &self.host_trace {
+            trace.record(Some(crate::host_acceptance::Capture::from_run(self)), kind, data);
+        }
     }
 }
 

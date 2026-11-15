@@ -121,6 +121,8 @@ pub struct Owner {
     boot_id: Option<String>,
     remote_socket: Option<String>,
     report: RemoteReport,
+    #[cfg(feature = "host-acceptance")]
+    host_capture: Option<std::sync::Arc<super::runtime::RunCapture>>,
 }
 impl Owner {
     pub async fn open<H: client::Handler>(
@@ -181,6 +183,8 @@ impl Owner {
             boot_id: None,
             remote_socket: None,
             report: RemoteReport::default(),
+            #[cfg(feature = "host-acceptance")]
+            host_capture: None,
         }
     }
     pub fn phase(&self) -> Phase {
@@ -201,6 +205,10 @@ impl Owner {
     pub fn report(&self) -> RemoteReport {
         self.report.clone()
     }
+    #[cfg(feature = "host-acceptance")]
+    pub(crate) fn observe_with(&mut self, capture: std::sync::Arc<super::runtime::RunCapture>) {
+        self.host_capture = Some(capture);
+    }
     pub fn closed(&self) -> bool {
         self.report.channel_closed
     }
@@ -212,6 +220,12 @@ impl Owner {
             && self.report.pipes_eof
             && self.report.remote_cleaned
             && self.report.receipt_written
+    }
+    pub(crate) fn requested_inspect_stop_complete(&self) -> bool {
+        self.cancel.is_cancelled()
+            && !self.report.started
+            && self.report.stop_reason == Some(StopReason::Stop)
+            && self.terminal_remote_clean()
     }
     pub fn channel_complete(&self) -> bool {
         self.report.channel_closed
@@ -237,6 +251,11 @@ impl Owner {
             return Err("STALE");
         }
         let bytes = self.protocol.command(action, selection)?;
+        #[cfg(feature = "host-acceptance")]
+        if let Some(capture) = &self.host_capture {
+            // A send attempt is counted even if the bounded SSH enqueue fails.
+            capture.observe("control_send_attempt", serde_json::json!({"action":action.as_str()}));
+        }
         // The ACK deadline includes enqueue time, not just time after send.
         // C2 Start can perform a five-second settings probe and a three-second
         // private-bus wait before acknowledging the command.
@@ -416,6 +435,15 @@ impl Owner {
                 .protocol
                 .accept(&line)
                 .map_err(|error| self.fail(error))?;
+            #[cfg(feature = "host-acceptance")]
+            if let Some(capture) = &self.host_capture {
+                // Preserve the actual validated wire bytes, not a generated catalog.
+                // B1's strict parser has already bounded and checked this record.
+                capture.observe("protocol_event", serde_json::json!({
+                    "record":serde_json::from_slice::<serde_json::Value>(&line)
+                        .expect("strict protocol accepted JSON")
+                }));
+            }
             self.event(event.clone());
             events.push(event);
         }

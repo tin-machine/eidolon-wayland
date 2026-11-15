@@ -31,6 +31,10 @@ The document does not establish product acceptance or Quest evidence.
 
 ### I6 Host acceptance design (manual discovery)
 
+Implementation increments: [fixed evidence validator](i6-evidence-validation.md) and
+[N01 real SSH / Inspect-only](i6-n01-inspect-only.md). N01 smoke is distinct from full I6 acceptance;
+all 28 families, 87 required variants and 533 assertion references remain required.
+
 The [I6 detailed design — normal v3 Host acceptance (I3-T20/V11)](../../linux-real-app-v3-i6-detailed-design.md)
 is **proposed**, based on main `0e0df43a2ce4734a00a36f830cc24a80e277bec5` (2026-11-15 JST, after PR #31).
 It defines the real SSH/C2/Waypipe/Mousepad execution path, Host EGL/readback and synthetic SDK boundary,

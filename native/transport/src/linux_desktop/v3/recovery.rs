@@ -111,6 +111,7 @@ pub async fn recover_remote<H: client::Handler>(
     previous: &PreviousIoClosed,
     generation: u64,
     cancel: &CancellationToken,
+    #[cfg(feature = "host-acceptance")] observation: Option<&super::runtime::RunCapture>,
 ) -> RemoteRecoveryOutcome {
     let mut report = RecoveryReport::initial(request.session);
     let result: Result<ReclamationHandoff, &'static str> = async {
@@ -138,6 +139,12 @@ pub async fn recover_remote<H: client::Handler>(
             // A crash after durable Complete but before local retirement does
             // not execute C2 Recover a second time; no fabricated new channel.
             let cleanup = journal.ensure_complete_durable()?;
+            #[cfg(feature = "host-acceptance")]
+            if let Some(capture) = observation {
+                capture.observe("recovery_durable_complete", serde_json::json!({
+                    "generation":generation.to_string(),"cleanup":cleanup
+                }));
+            }
             report.apply_cleanup(&cleanup);
             return DeferredReclamation::from_complete(journal, &binding, generation);
         }
@@ -206,6 +213,15 @@ pub async fn recover_remote<H: client::Handler>(
                 &expected_boot,
                 status.unwrap(),
             )?;
+            #[cfg(feature = "host-acceptance")]
+            if let Some(capture) = observation {
+                capture.observe("recovery_receipt", serde_json::json!({
+                    "record":receipt.record(),"generation":generation.to_string(),
+                    "expected_boot_id":expected_boot,"exit_status":status.unwrap(),
+                    "eof":eof,"exit_signal":signal,"channel_closed":true,
+                    "router_active":router.report().active
+                }));
+            }
             report.channel_complete = true;
             Ok(receipt)
         };

@@ -10,6 +10,10 @@
 この単位のunit test成功やPR mergeを、I6 Host acceptanceの成功へ読み替えない。
 I6は引き続きmanual discoveryとし、resolver manifestの登録taskには追加しない。
 
+後続の [第2実装単位 N01: 実SSH／Inspect-only](i6-n01-inspect-only.md) では、
+通常Registry runner、disposable環境、読み取り専用trace、N01専用oracleを接続する。
+この文書の第1単位時点の未実施記録は維持し、N01の実施結果と正式I6全体の未完了を区別する。
+
 ## 1. 開始時の差分と今回の境界
 
 開始時に最新mainと作業treeを確認し、I6実装の重複はなかった。

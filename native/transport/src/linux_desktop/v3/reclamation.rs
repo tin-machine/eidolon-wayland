@@ -22,6 +22,8 @@ pub struct DeferredReclamation {
     key: ReclaimKey,
     generation: u64,
     cleared: bool,
+    #[cfg(feature = "host-acceptance")]
+    host_observation: Option<(std::sync::Arc<crate::host_acceptance::Trace>, crate::host_acceptance::Capture)>,
 }
 
 /// Only transport can mint one with a verified, durable remote Complete. The
@@ -84,6 +86,11 @@ impl FinalizedReclamation {
 }
 
 impl DeferredReclamation {
+    #[cfg(feature = "host-acceptance")]
+    pub(crate) fn observe_with(&mut self, capture: &super::runtime::RunCapture) {
+        self.host_observation = capture.host_trace.as_ref().map(|trace|
+            (trace.clone(), crate::host_acceptance::Capture::from_run(capture)));
+    }
     /// May be called after a new recovery or a live session, but only after
     /// Journal::finish(Complete) is durably revalidated. No clear occurs here.
     pub(crate) fn from_complete(
@@ -112,6 +119,8 @@ impl DeferredReclamation {
                 key,
                 generation,
                 cleared: false,
+                #[cfg(feature = "host-acceptance")]
+                host_observation: None,
             },
         })
     }
@@ -161,6 +170,12 @@ pub fn finalize_reclaimed(
     }
     deferred.journal.clear()?;
     deferred.cleared = true;
+    #[cfg(feature = "host-acceptance")]
+    if let Some((trace,capture)) = &deferred.host_observation {
+        trace.record(Some(capture.clone()), "journal_unlinked", serde_json::json!({
+            "generation":deferred.generation.to_string(), "directory_fsynced":true
+        }));
+    }
     Ok(FinalizedReclamation {
         generation: deferred.generation,
     })

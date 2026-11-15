@@ -21,6 +21,10 @@ Eidolon Wayland aims to operate Linux GUI applications as independently controll
 
 ## What is implemented now?
 
+For I6, follow the [evidence validator increment](features/linux-desktop-v3/i6-evidence-validation.md)
+and [N01 real SSH / Inspect-only increment](features/linux-desktop-v3/i6-n01-inspect-only.md).
+Their implementation and measured test results remain distinct from full I6, I7 and Quest/H acceptance.
+
 I5 implementation work starts from main `eca71addc58009b4576644da162d56670eebfaf5`, where PR #16 is merged.
 The [I5 detailed design](linux-real-app-v3-i5-detailed-design.md) records the current-source delta, two-stage retirement,
 storage transaction, admission epochs, typed StopReceipt, normal launcher and V09/V10 conditions.

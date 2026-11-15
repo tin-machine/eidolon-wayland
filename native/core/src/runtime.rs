@@ -3353,6 +3353,11 @@ impl Runtime {
     pub fn catalog_ui(&self) -> eidolon_transport::session::CatalogUi {
         self.transport.catalog_ui()
     }
+    /// Read-only Host evidence; no setters, credentials, admission or cleanup authority.
+    #[cfg(feature = "host-acceptance")]
+    pub fn host_acceptance_trace(&self) -> eidolon_transport::host_acceptance::Snapshot {
+        self.transport.host_acceptance_trace()
+    }
     /// この返り値はUI接続専用。通常snapshot・診断・disk保存の経路から隔離する。
     pub fn ime_ui(&self) -> Option<eidolon_model::ime::ImeSnapshot> {
         let state = self.lock();

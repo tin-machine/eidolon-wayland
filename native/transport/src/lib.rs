@@ -1,4 +1,8 @@
 //! SSH identity/pin。秘密型をSerialize/Debugへ公開しない。
+#[cfg(all(feature = "host-acceptance", not(target_os = "linux")))]
+compile_error!("host-acceptance is available only on Linux hosts");
+#[cfg(feature = "host-acceptance")]
+pub mod host_acceptance;
 pub use eidolon_model::catalog;
 pub mod connect_profile;
 pub mod credentials;

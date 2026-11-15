@@ -8,6 +8,9 @@ rust-version.workspace = true
 name = "eidolon_native"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+host-acceptance = ["eidolon-core/host-acceptance", "eidolon-transport/host-acceptance"]
+
 [dependencies]
 eidolon-model.workspace = true
 eidolon-core.workspace = true
