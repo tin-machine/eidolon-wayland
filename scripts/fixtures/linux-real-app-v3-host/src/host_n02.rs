@@ -56,7 +56,9 @@ impl Driver {
         let catalog = self.registry.catalog_ui(self.handle);
         let entry = app_id(variant)?;
         let descriptor = &catalog["catalog"]["desktop_v3"];
-        let entries = descriptor["entries"].as_array().ok_or("I6_CATALOG_MISSING")?;
+        let entries = descriptor["entries"]
+            .as_array()
+            .ok_or("I6_CATALOG_MISSING")?;
         if catalog["code"] != 0
             || catalog["catalog"]["session"] != session
             || catalog["catalog"]["pending"] != false
@@ -77,13 +79,16 @@ impl Driver {
         )
         .map_err(|_| "I6_CATALOG_MISSING")?;
         self.catalog = catalog.clone();
-        self.observe("n02_same_actor_catalog", json!({
-            "session":session,
-            "inspect_request":"31",
-            "scope": descriptor["scope"],
-            "revision": descriptor["revision"],
-            "app_id":entry,
-        }))?;
+        self.observe(
+            "n02_same_actor_catalog",
+            json!({
+                "session":session,
+                "inspect_request":"31",
+                "scope": descriptor["scope"],
+                "revision": descriptor["revision"],
+                "app_id":entry,
+            }),
+        )?;
         Ok(selection.record())
     }
 
@@ -119,9 +124,7 @@ impl Driver {
 
         let session = self.connect(30, false)?;
         self.command("linux_desktop_v3_inspect", 31, Some(&session))?;
-        self.wait(45, |s| {
-            s["runtime"]["transport"]["state"] == "DesktopReady"
-        })?;
+        self.wait(45, |s| s["runtime"]["transport"]["state"] == "DesktopReady")?;
         let selection = self.n02_catalog(&session, variant)?;
         self.n02_command(
             json!({"schema":1,"type":"linux_desktop_v3_launch","request_id":"32",
@@ -136,7 +139,10 @@ impl Driver {
                 && state["started_observed"] == true
                 && state["transport"]["phase"] == "started"
         })?;
-        self.observe("n02_transport_started", json!({"request_id":"32","session":session}))?;
+        self.observe(
+            "n02_transport_started",
+            json!({"request_id":"32","session":session}),
+        )?;
 
         let deadline = Instant::now() + Duration::from_secs(30);
         let readback = loop {
@@ -201,31 +207,41 @@ impl Driver {
             .as_u64()
             .ok_or("I6_N02_INPUT_FAILED")?;
         // A harmless US Left Shift press/release proves actual key delivery.
-        for (request, action, time_ms) in [("1002", "pressed", 100u32),
-                                           ("1003", "released", 101u32)] {
-            self.n02_command(json!({
-                "schema":1,"type":"key","request_id":request,"target":target,
-                "input_epoch":current_epoch,"focus_token":token,
-                "key":{"action":action,"device":1,"scan_code":42,"key_code":59,
-                       "repeat":0,"meta":0,"time_ms":time_ms},
-            }), "key")?;
+        for (request, action, time_ms) in
+            [("1002", "pressed", 100u32), ("1003", "released", 101u32)]
+        {
+            self.n02_command(
+                json!({
+                    "schema":1,"type":"key","request_id":request,"target":target,
+                    "input_epoch":current_epoch,"focus_token":token,
+                    "key":{"action":action,"device":1,"scan_code":42,"key_code":59,
+                           "repeat":0,"meta":0,"time_ms":time_ms},
+                }),
+                "key",
+            )?;
             self.n02_wait_command(request, 10)?;
         }
         let after = self.wait(5, |s| {
-            s["runtime"]["app"]["input"]["delivered"].as_u64().is_some_and(|n| n >= before + 2)
+            s["runtime"]["app"]["input"]["delivered"]
+                .as_u64()
+                .is_some_and(|n| n >= before + 2)
         })?;
         let delivered = after["runtime"]["app"]["input"]["delivered"]
-            .as_u64().ok_or("I6_N02_INPUT_FAILED")?;
+            .as_u64()
+            .ok_or("I6_N02_INPUT_FAILED")?;
         self.n02_input = Some(json!({
             "target":target,"epoch":current_epoch,"focus_token":token,
             "focus_request":"1001","key_requests":["1002","1003"],
             "delivered_before":before,"delivered_after":delivered,
             "focus_window":after["runtime"]["app"]["input"]["focus_window"],
         }));
-        self.observe("n02_input_delivered", json!({
-            "target":target,"input_epoch":current_epoch,
-            "focus_token":token,"delivery_delta":delivered-before,
-        }))?;
+        self.observe(
+            "n02_input_delivered",
+            json!({
+                "target":target,"input_epoch":current_epoch,
+                "focus_token":token,"delivery_delta":delivered-before,
+            }),
+        )?;
         Ok(())
     }
 
@@ -257,7 +273,12 @@ impl Driver {
             };
             if done && snapshot["runtime"]["reclamation"]["origin_retired"] == true {
                 self.refresh_trace()?;
-                if !self.trace.events.iter().any(|e| e.kind == "finalizer_published") {
+                if !self
+                    .trace
+                    .events
+                    .iter()
+                    .any(|e| e.kind == "finalizer_published")
+                {
                     return Err("I6_FINALIZER_MISSING");
                 }
                 self.observe(
@@ -266,7 +287,8 @@ impl Driver {
                 )?;
                 return Ok(());
             }
-            if done && !recovered
+            if done
+                && !recovered
                 && snapshot["runtime"]["reclamation"]["recovery_connect_allowed"] == true
             {
                 let session = self.connect(61, true)?;
@@ -281,11 +303,14 @@ impl Driver {
     }
 
     pub(super) fn receipt_n02(
-        &self, run_id: &str, variant: &str,
-        error: Option<&str>, cleanup_error: Option<&str>,
+        &self,
+        run_id: &str,
+        variant: &str,
+        error: Option<&str>,
+        cleanup_error: Option<&str>,
     ) -> Value {
-        let source: Value = serde_json::from_str(env!("EIDOLON_I6_BUILD_SOURCE"))
-            .expect("compiled source");
+        let source: Value =
+            serde_json::from_str(env!("EIDOLON_I6_BUILD_SOURCE")).expect("compiled source");
         let capture = self.trace.events.iter().find_map(|e| e.capture.as_ref());
         let owner_id = capture.map(|capture| {
             digest(format!("{run_id}:{}:{}", self.handle, capture.capture_id))[..32].to_owned()
