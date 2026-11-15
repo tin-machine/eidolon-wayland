@@ -1,0 +1,971 @@
+{
+  "schema": 1,
+  "scope": "retirement-settings",
+  "reviewed_revision": "0e0df43a2ce4734a00a36f830cc24a80e277bec5",
+  "domains": [
+    "android-model",
+    "android-adapter",
+    "native"
+  ],
+  "profiles": {
+    "android-product": {
+      "domains": [
+        "android-model",
+        "android-adapter",
+        "native"
+      ],
+      "execution_environment": "Quest Android client; remote Linux is an unresolved boundary",
+      "rust_target": "aarch64-linux-android",
+      "android_variant": "debug",
+      "cfg_features": "declared scope only; compiler resolution not performed",
+      "test_evidence": "JVM/native model references; no device execution"
+    },
+    "host-model": {
+      "domains": [
+        "android-model",
+        "native"
+      ],
+      "execution_environment": "Linux native tests and JVM Kotlin models; excludes Android/JNI adapters",
+      "rust_target": "host (not auto-detected)",
+      "android_variant": "testDebugUnitTest model",
+      "cfg_features": "cfg(test) model scope; compiler resolution not performed",
+      "test_evidence": "test references only; no remote Linux/SDK execution"
+    }
+  },
+  "files": {
+    "coordinator": "android/app/src/main/java/io/github/tinmachine/eidolon/RuntimeSaveCoordinator.kt",
+    "admission": "android/app/src/main/java/io/github/tinmachine/eidolon/RuntimeAdmission.kt",
+    "host": "android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt",
+    "sdk": "android/app/src/main/java/io/github/tinmachine/eidolon/SdkEvidenceBridge.kt",
+    "hub": "android/app/src/main/java/io/github/tinmachine/eidolon/SdkRetirementHub.kt",
+    "settings": "android/app/src/main/java/io/github/tinmachine/eidolon/LinuxDesktopSettingsRepository.kt",
+    "bridge": "native/android/src/bridge.rs",
+    "registry": "native/android/src/registry.rs",
+    "runtime": "native/core/src/runtime.rs",
+    "finalizer": "native/core/src/v3_retirement.rs",
+    "transport": "native/transport/src/session.rs",
+    "reclamation": "native/transport/src/linux_desktop/v3/reclamation.rs",
+    "save_tests": "android/app/src/test/java/io/github/tinmachine/eidolon/RuntimeSaveCoordinatorTest.kt",
+    "integration_tests": "android/app/src/test/java/io/github/tinmachine/eidolon/RuntimeSettingsIntegrationTest.kt",
+    "sdk_tests": "android/app/src/test/java/io/github/tinmachine/eidolon/SdkEvidenceBridgeTest.kt",
+    "cargo": "Cargo.toml",
+    "toolchain": "rust-toolchain.toml",
+    "android_cargo": "native/android/Cargo.toml",
+    "android_lib": "native/android/src/lib.rs",
+    "gradle": "android/app/build.gradle.kts",
+    "adapter": "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt",
+    "scope": "android/app/src/main/java/io/github/tinmachine/eidolon/SdkResourceScope.kt"
+  },
+  "nodes": [
+    {
+      "id": "save.poll",
+      "file": "coordinator",
+      "anchor": "fun poll() {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "save.stop",
+      "file": "coordinator",
+      "anchor": "private fun beginRuntimeStop(op: Operation) {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "save.finish",
+      "file": "coordinator",
+      "anchor": "private fun finishRuntimeStop(op: Operation, observed: NativeReclamation) {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "save.receipt",
+      "file": "coordinator",
+      "anchor": "fun accept(owner: RuntimeAdmission.Owner, runtime: Long, native: NativeReclamation,",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "save.publish",
+      "file": "coordinator",
+      "anchor": "private fun publish(op: Operation) {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "save.resume",
+      "file": "coordinator",
+      "anchor": "fun resumePublication(originalCapture: String, token: String,",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "save.decode",
+      "file": "coordinator",
+      "anchor": "fun decode(expectedRuntime: Long, envelope: JSONObject): NativeReclamation {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "admission.begin",
+      "file": "admission",
+      "anchor": "fun begin(captureToken: String): Owner = synchronized(lock) {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "sdk.seal",
+      "file": "hub",
+      "anchor": "fun retireRuntime(runtime: Long, admissionEpoch: Long, captureToken: String): Ticket {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "sdk.progress",
+      "file": "sdk",
+      "anchor": "fun runtimeProgress(runtime: Long): Progress = synchronized(lock) {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "settings.save",
+      "file": "settings",
+      "anchor": "fun save(request: SaveRequest, barrier: LinuxStorageRepository.ReclamationBarrier): Snapshot = attempt {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "settings.resume",
+      "file": "settings",
+      "anchor": "fun resume(expectedCaptureToken: String, barrier: LinuxStorageRepository.ReclamationBarrier): Snapshot = attempt {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "settings.finish",
+      "file": "settings",
+      "anchor": "private fun finish(intent: Intent, intentToken: String, evidence: LinuxStorageRepository.ReclamationEvidence): Snapshot {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "host.port",
+      "file": "host",
+      "anchor": "private val settingsSave: RuntimeSaveCoordinator by lazy { RuntimeSaveCoordinator(runtimeAdmission, sdkRetirement,",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "host.resume",
+      "file": "host",
+      "anchor": "fun resumeLinuxSettings(expectedCaptureToken:String) {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "jni.destroy",
+      "file": "bridge",
+      "anchor": "Java_io_github_tinmachine_eidolon_NativeBridge_nativeDestroy,",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "jni.snapshot",
+      "file": "bridge",
+      "anchor": "pub extern \"system\" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeSnapshot<'a>(",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "registry.destroy",
+      "file": "registry",
+      "anchor": "pub fn destroy(&self, id: i64) -> Status {",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "registry.snapshot",
+      "file": "registry",
+      "anchor": "pub fn snapshot(&self, id: i64) -> Value {",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "native.snapshot",
+      "file": "runtime",
+      "anchor": "pub fn snapshot(&self) -> Snapshot {",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "native.advance",
+      "file": "runtime",
+      "anchor": "fn advance_v3_reclamation(",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "native.finalizer",
+      "file": "finalizer",
+      "anchor": "pub(crate) fn tick(",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "transport.take",
+      "file": "transport",
+      "anchor": "pub fn take_v3_reclamation(&self) -> Option<desktop_v3::reclamation::ReclamationHandoff> {",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "transport.publish",
+      "file": "transport",
+      "anchor": "pub fn publish_v3_finalized(",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "proof.confirm",
+      "file": "reclamation",
+      "anchor": "pub fn confirm(&self, gate: &impl LocalRetirementGate) -> Result<LocalReclaimed, &'static str> {",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "proof.finalize",
+      "file": "reclamation",
+      "anchor": "pub fn finalize_reclaimed(",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "test.order",
+      "file": "save_tests",
+      "anchor": "@Test fun originCleanupPrecedesWholeRuntimeStopAndActualDestroyPrecedesPublication() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.resources",
+      "file": "save_tests",
+      "anchor": "@Test fun everySingleRemainingResourceAndRemoteOrLocalPendingPreventsAnySave() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.recover",
+      "file": "save_tests",
+      "anchor": "@Test fun remoteUnknownKeepsControllerAndCaptureUntilExplicitLiveRecoverAndFinalizer() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.sdk",
+      "file": "save_tests",
+      "anchor": "@Test fun sdkDisposalAndOldSceneLateCallbacksContinueBetweenNonblockingPolls() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.receipt",
+      "file": "save_tests",
+      "anchor": "@Test fun stopReceiptRequiresExactRuntimeEpochCaptureAndAcceptedDestroy() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.decode",
+      "file": "save_tests",
+      "anchor": "@Test fun typedNativeSnapshotRejectsMissingCoercedNegativeAndForeignEvidence() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.files",
+      "file": "integration_tests",
+      "anchor": "@Test fun realFilesAndIdsAppearOnlyAfterOriginNativeAndEverySdkGenerationRetire() = Fixture().use { f ->",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.resume",
+      "file": "integration_tests",
+      "anchor": "@Test fun realPublishFailureRetainsReceiptAndIntentAndExplicitResumeDoesNotReallocate() = Fixture().use { f ->",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.lost",
+      "file": "integration_tests",
+      "anchor": "@Test fun lostSameProcessAuthorityKeepsRealPendingFilesAndCannotUseAFreshRuntimeZero() = Fixture().use { f ->",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.stale",
+      "file": "integration_tests",
+      "anchor": "@Test fun concurrentProfileMutationInvalidatesCapturedSaveWithoutOverwritingOrCreatingE1() = Fixture().use { f ->",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.generations",
+      "file": "sdk_tests",
+      "anchor": "@Test fun generationsAreNotEvictedAndSceneAndAdapterMustMatch() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.registry",
+      "file": "registry",
+      "anchor": "fn storage_receipt_requires_the_last_live_snapshot_and_actual_destroy_result() {",
+      "domain": "native",
+      "role": "test"
+    },
+    {
+      "id": "test.native-generations",
+      "file": "finalizer",
+      "anchor": "fn every_registered_generation_requires_its_own_sdk_receipt() {",
+      "domain": "native",
+      "role": "test"
+    },
+    {
+      "id": "test.remote",
+      "file": "reclamation",
+      "anchor": "fn remote_complete_does_not_unlink_until_matching_local_retirement() {",
+      "domain": "native",
+      "role": "test"
+    },
+    {
+      "id": "test.proof-retry",
+      "file": "reclamation",
+      "anchor": "fn incomplete_retirement_can_be_rechecked_without_losing_authority() {",
+      "domain": "native",
+      "role": "test"
+    },
+    {
+      "id": "test.finalize",
+      "file": "reclamation",
+      "anchor": "fn finalization_requires_same_generation_and_all_local_proofs() {",
+      "domain": "native",
+      "role": "test"
+    },
+    {
+      "id": "window.create",
+      "file": "adapter",
+      "anchor": "private fun create(handle: Long, plan: JSONObject? = null, initialPose: JSONObject? = null,",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "window.destroy",
+      "file": "adapter",
+      "anchor": "private fun destroy(current: Binding) {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "sdk.reserve",
+      "file": "sdk",
+      "anchor": "fun reserve(id: Lease): Boolean = synchronized(lock) {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "sdk.callback",
+      "file": "sdk",
+      "anchor": "fun enterCallback(id: Lease): CallbackTicket? = synchronized(lock) {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "sdk.producer",
+      "file": "sdk",
+      "anchor": "fun beginProducer(id: Lease): Boolean = synchronized(lock) {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "scope.entity",
+      "file": "scope",
+      "anchor": "internal fun createEntity(create: () -> Entity): Entity {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "scope.destroy",
+      "file": "scope",
+      "anchor": "internal fun destroyEntity(entity: Entity) {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "scope.future",
+      "file": "scope",
+      "anchor": "internal fun sceneObject(",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "scope.release",
+      "file": "scope",
+      "anchor": "internal fun nativeReleased() {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "scene.pass",
+      "file": "scope",
+      "anchor": "fun lateExecute(value: Scene) = synchronized(lock) {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "test.registration",
+      "file": "sdk_tests",
+      "anchor": "@Test fun rejectedRegistrationCanRetryOnlyIfItHadNoSdkOrNativeEffects() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.children",
+      "file": "sdk_tests",
+      "anchor": "@Test fun everyChildAndProducerMustFinishBeforeSynchronousNativeRelease() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.scene-pass",
+      "file": "sdk_tests",
+      "anchor": "@Test fun otherScenePassCannotFinishDeletionAndSamePassDoesNotComplete() {",
+      "domain": "android-model",
+      "role": "test"
+    }
+  ],
+  "edges": [
+    {
+      "id": "admission",
+      "from": "save.poll",
+      "to": "admission.begin",
+      "relation": "requires",
+      "invariant": "capture の Owner/epoch が有効な間だけ進む。保存完了まで product admission を閉じる。",
+      "evidence": [
+        "save.poll",
+        "admission.begin"
+      ],
+      "tests": [
+        "test.order",
+        "test.lost"
+      ]
+    },
+    {
+      "id": "origin-first",
+      "from": "save.poll",
+      "to": "save.stop",
+      "relation": "calls",
+      "invariant": "originRetired の観測後に全 runtime 停止を要求する。remote unknown は明示 Recover まで Controller を保持する。",
+      "evidence": [
+        "save.poll",
+        "save.stop"
+      ],
+      "tests": [
+        "test.order",
+        "test.recover"
+      ]
+    },
+    {
+      "id": "seal",
+      "from": "save.stop",
+      "to": "sdk.seal",
+      "relation": "calls",
+      "invariant": "SDK ledger を seal して同 runtime/epoch/capture の ticket を保持する。",
+      "evidence": [
+        "save.stop",
+        "sdk.seal"
+      ],
+      "tests": [
+        "test.sdk",
+        "test.receipt"
+      ]
+    },
+    {
+      "id": "sdk-drain",
+      "from": "save.finish",
+      "to": "sdk.progress",
+      "relation": "requires",
+      "invariant": "全 SDK 世代・producer・callback の回収と failure=0 が必要。空 ledger も seal 前は成功でない。",
+      "evidence": [
+        "save.finish",
+        "sdk.progress",
+        "sdk.seal"
+      ],
+      "tests": [
+        "test.sdk",
+        "test.generations"
+      ]
+    },
+    {
+      "id": "destroy-receipt",
+      "from": "save.finish",
+      "to": "save.receipt",
+      "relation": "calls",
+      "invariant": "native fullyStopped と SDK progress の一致に加え、実際の Destroy 戻り値 Accepted を結合する。",
+      "evidence": [
+        "save.finish",
+        "save.receipt"
+      ],
+      "tests": [
+        "test.receipt",
+        "test.resources"
+      ]
+    },
+    {
+      "id": "publication",
+      "from": "save.publish",
+      "to": "save.receipt",
+      "relation": "requires",
+      "invariant": "同 runtime/epoch/capture の receipt と閉じた admission を保存 action の前後で確認する。handle=0 単独では証拠でない。",
+      "evidence": [
+        "save.publish",
+        "save.receipt"
+      ],
+      "tests": [
+        "test.files",
+        "test.lost"
+      ]
+    },
+    {
+      "id": "save-barrier",
+      "from": "save.publish",
+      "to": "settings.save",
+      "relation": "bridges",
+      "invariant": "Host が渡す callback の barrier 内だけで intent と設定ファイルを公開する。",
+      "evidence": [
+        "save.publish",
+        "settings.save"
+      ],
+      "tests": [
+        "test.files",
+        "test.stale"
+      ]
+    },
+    {
+      "id": "save-readback",
+      "from": "settings.save",
+      "to": "settings.finish",
+      "relation": "calls",
+      "invariant": "capture/intent の一致を確認して intent を永続化し、profile/config/marker の readback を完了する。",
+      "evidence": [
+        "settings.save",
+        "settings.finish"
+      ],
+      "tests": [
+        "test.files",
+        "test.resume"
+      ]
+    },
+    {
+      "id": "resume-readback",
+      "from": "settings.resume",
+      "to": "settings.finish",
+      "relation": "calls",
+      "invariant": "明示 resume は同じ durable intent を roll-forward し、ID/revision を再発行しない。",
+      "evidence": [
+        "settings.resume",
+        "settings.finish"
+      ],
+      "tests": [
+        "test.resume",
+        "test.stale"
+      ]
+    },
+    {
+      "id": "resume-receipt",
+      "from": "save.resume",
+      "to": "save.publish",
+      "relation": "calls",
+      "invariant": "元 receipt と Owner を保ったまま publication token の別名を使う。失敗で admission を開かない。",
+      "evidence": [
+        "save.resume",
+        "save.publish"
+      ],
+      "tests": [
+        "test.resume",
+        "test.lost"
+      ]
+    },
+    {
+      "id": "host-intent",
+      "from": "host.resume",
+      "to": "save.resume",
+      "relation": "bridges",
+      "invariant": "Host が durable intent または変更前 capture の一致を確認してから token の別名を許す。モデルテストは Host 自体を実行しない。",
+      "evidence": [
+        "host.resume",
+        "save.resume"
+      ],
+      "tests": [
+        "test.resume",
+        "test.stale"
+      ]
+    },
+    {
+      "id": "host-snapshot",
+      "from": "host.port",
+      "to": "save.decode",
+      "relation": "calls",
+      "invariant": "schema/code/runtime handle と厳密な非負 counter/boolean を検査する。",
+      "evidence": [
+        "host.port",
+        "save.decode"
+      ],
+      "tests": [
+        "test.decode"
+      ]
+    },
+    {
+      "id": "jni-snapshot",
+      "from": "host.port",
+      "to": "jni.snapshot",
+      "relation": "bridges",
+      "invariant": "nativeSnapshot の JSON を読む。JNI 実行環境は Android のみ。",
+      "evidence": [
+        "host.port",
+        "jni.snapshot"
+      ],
+      "tests": [
+        "test.decode",
+        "test.registry"
+      ]
+    },
+    {
+      "id": "registry-snapshot",
+      "from": "jni.snapshot",
+      "to": "registry.snapshot",
+      "relation": "bridges",
+      "invariant": "JNI は registry.snapshot(handle) を JSON 化する。stale handle に runtime を捏造しない。",
+      "evidence": [
+        "jni.snapshot",
+        "registry.snapshot"
+      ],
+      "tests": [
+        "test.registry"
+      ]
+    },
+    {
+      "id": "census",
+      "from": "registry.snapshot",
+      "to": "native.snapshot",
+      "relation": "calls",
+      "invariant": "guarded な同 handle の census に transport/render/core の残存資源を集計する。",
+      "evidence": [
+        "registry.snapshot",
+        "native.snapshot"
+      ],
+      "tests": [
+        "test.registry",
+        "test.resources"
+      ]
+    },
+    {
+      "id": "jni-destroy",
+      "from": "host.port",
+      "to": "jni.destroy",
+      "relation": "bridges",
+      "invariant": "Host が nativeDestroy の実戻り値を Coordinator へ返す。macro 展開/JNI ABI は自動解決しない。",
+      "evidence": [
+        "host.port",
+        "jni.destroy"
+      ],
+      "tests": [
+        "test.registry",
+        "test.receipt"
+      ]
+    },
+    {
+      "id": "registry-destroy",
+      "from": "jni.destroy",
+      "to": "registry.destroy",
+      "relation": "bridges",
+      "invariant": "status_entry の destroy 対応は人手照合。can_destroy 前に registry の owner を外さない。",
+      "evidence": [
+        "jni.destroy",
+        "registry.destroy"
+      ],
+      "tests": [
+        "test.registry"
+      ]
+    },
+    {
+      "id": "handoff",
+      "from": "native.advance",
+      "to": "transport.take",
+      "relation": "calls",
+      "invariant": "SSH Tokio I/O 世代が実際に退役し busy=false になってから journal handoff を渡す。",
+      "evidence": [
+        "native.advance",
+        "transport.take"
+      ],
+      "tests": [
+        "test.remote",
+        "test.proof-retry"
+      ]
+    },
+    {
+      "id": "join",
+      "from": "native.advance",
+      "to": "native.finalizer",
+      "relation": "calls",
+      "invariant": "local proof と remote handoff を別々に保持して結合する。SDK tick は journal I/O を待たない。",
+      "evidence": [
+        "native.advance",
+        "native.finalizer"
+      ],
+      "tests": [
+        "test.native-generations",
+        "test.proof-retry"
+      ]
+    },
+    {
+      "id": "confirm",
+      "from": "native.finalizer",
+      "to": "proof.confirm",
+      "relation": "calls",
+      "invariant": "context と local generation が一致し、全 local retirement 条件を満たして初めて capability を得る。",
+      "evidence": [
+        "native.finalizer",
+        "proof.confirm"
+      ],
+      "tests": [
+        "test.proof-retry",
+        "test.remote"
+      ]
+    },
+    {
+      "id": "unlink",
+      "from": "native.finalizer",
+      "to": "proof.finalize",
+      "relation": "calls",
+      "invariant": "同 key/generation の capability でだけ journal を clear。remote 完了だけでは unlink しない。",
+      "evidence": [
+        "native.finalizer",
+        "proof.finalize"
+      ],
+      "tests": [
+        "test.remote",
+        "test.finalize"
+      ]
+    },
+    {
+      "id": "finalized-publication",
+      "from": "native.finalizer",
+      "to": "transport.publish",
+      "relation": "publishes",
+      "invariant": "journal clear の receipt と同 session 世代、I/O 退役、pending journal 無しを再確認して公開する。",
+      "evidence": [
+        "native.finalizer",
+        "transport.publish"
+      ],
+      "tests": [
+        "test.finalize",
+        "test.proof-retry"
+      ]
+    },
+    {
+      "id": "window-reserve",
+      "from": "window.create",
+      "to": "sdk.reserve",
+      "relation": "calls",
+      "invariant": "Reserve the captured runtime/target/Scene/adapter lease before native registration or SDK effects; rejected registration has no credited allocation.",
+      "evidence": [
+        "window.create",
+        "sdk.reserve"
+      ],
+      "tests": [
+        "test.registration"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
+    },
+    {
+      "id": "window-allocation",
+      "from": "window.create",
+      "to": "scope.entity",
+      "relation": "calls",
+      "invariant": "Native registration must be Accepted before registered/entity allocation; immutable callback ownership is installed before Panel can invoke producers.",
+      "evidence": [
+        "window.create",
+        "scope.entity"
+      ],
+      "tests": [
+        "test.registration",
+        "test.children"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
+    },
+    {
+      "id": "allocation-ticket",
+      "from": "scope.entity",
+      "to": "sdk.callback",
+      "relation": "requires",
+      "invariant": "Enter a callback ticket before Entity.create; seal/live checks precede allocation and a concurrent seal leaves created Entity as an obligation; finally drains the ticket.",
+      "evidence": [
+        "scope.entity",
+        "sdk.callback"
+      ],
+      "tests": [
+        "test.children"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
+    },
+    {
+      "id": "future-reservation",
+      "from": "scope.future",
+      "to": "sdk.producer",
+      "relation": "requires",
+      "invariant": "Reserve the producer before asking for a future; late results after seal can only be disposed and failed post/dispose is not completion.",
+      "evidence": [
+        "scope.future",
+        "sdk.producer"
+      ],
+      "tests": [
+        "test.children"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
+    },
+    {
+      "id": "entity-deletion-pass",
+      "from": "scope.destroy",
+      "to": "scene.pass",
+      "relation": "requires",
+      "invariant": "Record destroyRequested before SDK destroy; an actual delete and a later pass of the captured Scene are required; neither request return nor a different Scene completes it.",
+      "evidence": [
+        "scope.destroy",
+        "scene.pass"
+      ],
+      "tests": [
+        "test.scene-pass"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
+    },
+    {
+      "id": "accepted-native-release",
+      "from": "window.destroy",
+      "to": "scope.release",
+      "relation": "calls",
+      "invariant": "Dispose/detach/readyToRelease then the exact captured native release Accepted precedes nativeReleased/collectCompleted; Busy/STALE leaves the binding.",
+      "evidence": [
+        "window.destroy",
+        "scope.release"
+      ],
+      "tests": [
+        "test.children"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
+    }
+  ],
+  "unknowns": [
+    {
+      "id": "U1",
+      "boundary": "Android Host / JNI / JSON",
+      "detail": "Separate Kotlin and Rust tests do not execute the complete Host → JNI → census/destroy connection. Macro/trait resolution is not implemented."
+    },
+    {
+      "id": "U2",
+      "boundary": "SDK / Scene / renderer",
+      "detail": "All real SDK effect sites reserving leases, late callbacks and deletion passes require adapter/device review. Model ledger success is not Quest acceptance."
+    },
+    {
+      "id": "U3",
+      "boundary": "remote Linux / SSH / Waypipe",
+      "detail": "Source order drop(runtime) before io_retired was reviewed; actual disconnect/recovery, all failure branches and real SSH remain unverified. Remote helper Python is outside this pilot."
+    },
+    {
+      "id": "U4",
+      "boundary": "build configuration",
+      "detail": "Profiles select reviewed source domains, not a compiler-derived active call graph. Features/generated/vendor bodies and unregistered callers are not covered."
+    },
+    {
+      "id": "U5",
+      "boundary": "test coverage",
+      "detail": "Referenced tests cover parts of each invariant; their existence is not full edge coverage or a passing result. Launch/presentation outside retirement are not reviewed."
+    },
+    {
+      "id": "U6",
+      "boundary": "filesystem / crash recovery",
+      "detail": "Settings barrier/intent/readback were inspected; all lower-level E1 filesystem primitives and power-loss/cold-restart ownership transfer are outside this review."
+    },
+    {
+      "id": "U7",
+      "boundary": "IME retirement / publication",
+      "detail": "Product IME UI is outside the SDK binding ledger; publication can precede its disposal. The proposed combined receipt is not implemented. See docs/source-structure-ime-retirement-contract-20261115.md. Current composition probe is characterization, not acceptance."
+    }
+  ],
+  "watch": [
+    {
+      "id": "android-source",
+      "root": "android/app/src",
+      "suffixes": [
+        ".kt",
+        ".java"
+      ],
+      "reason": "SDK effect sites, IME/Activity, debug/release callers and tests; new files require classification, not automatic semantic approval"
+    },
+    {
+      "id": "native-android",
+      "root": "native/android",
+      "suffixes": [
+        ".rs"
+      ],
+      "reason": "Rust source/test/build inputs in android; detect changes without claiming semantic review"
+    },
+    {
+      "id": "native-core",
+      "root": "native/core",
+      "suffixes": [
+        ".rs"
+      ],
+      "reason": "Rust source/test/build inputs in core; detect changes without claiming semantic review"
+    },
+    {
+      "id": "native-model",
+      "root": "native/model",
+      "suffixes": [
+        ".rs"
+      ],
+      "reason": "Rust source/test/build inputs in model; detect changes without claiming semantic review"
+    },
+    {
+      "id": "native-transport",
+      "root": "native/transport",
+      "suffixes": [
+        ".rs"
+      ],
+      "reason": "Rust source/test/build inputs in transport; detect changes without claiming semantic review"
+    },
+    {
+      "id": "native-render",
+      "root": "native/render",
+      "suffixes": [
+        ".rs"
+      ],
+      "reason": "Rust source/test/build inputs in render; detect changes without claiming semantic review"
+    },
+    {
+      "id": "native-theme",
+      "root": "native/theme",
+      "suffixes": [
+        ".rs"
+      ],
+      "reason": "Rust source/test/build inputs in theme; detect changes without claiming semantic review"
+    },
+    {
+      "id": "native-fixtures",
+      "root": "native/fixtures",
+      "suffixes": [
+        ".rs"
+      ],
+      "reason": "Rust source/test/build inputs in fixtures; detect changes without claiming semantic review"
+    }
+  ]
+}
