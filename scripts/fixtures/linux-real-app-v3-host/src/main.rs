@@ -1,7 +1,7 @@
 //! N01 only: normal Registry/Runtime/Controller, real SSH and unmodified C2.
 //! A successful process exit is a smoke result; it never claims all-I6 acceptance.
-mod host_sdk;
 mod host_n02;
+mod host_sdk;
 use eidolon_core::runtime::Runtime;
 use eidolon_model::{
     connection_profile::Profile,
