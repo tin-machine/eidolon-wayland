@@ -3,13 +3,22 @@
 ## 結論と評価条件
 
 Git 管理 source の事前リストを作らず、Repository Deep → 関数選択 → Targeted Deep → 元 source の確認まで実行できた。
-**調査範囲の発見と局所依存の読解には利用できるが、Stop / Recover 全体の意味解析やリファクタリング安全性の証明には至っていない。**
+評価区分は **調査補助として試用可能**。
+以下は動作確認と固定 source を使った調査の記録であり、比較による有用性の測定ではない。調査時間短縮、見落とし削減、リファクタリング判断の改善は未測定である。
+Stop / Recover 全体の意味解析やリファクタリング安全性の証明には至っていない。
 特に例外・context manager と cross-module dispatch が、次の Python 解析で埋めるべき主要な穴だった。
+
+### 初回提出時点の固定記録
+
+以下の件数・digest・slice・検証結果は、[PR #35 初回 head `cbca05b6ecff157f2dc7d55b4e3f3f8d39f6c4c3`](https://github.com/tin-machine/eidolon-wayland/commit/cbca05b6ecff157f2dc7d55b4e3f3f8d39f6c4c3) に記録した **2026-11-15 時点の過去の証拠**として保持する。
+後続の scope / shadowing 修正は generator の入力を変えるため、この artifact を修正版の current artifact として再利用できない。
+修正版や別の CPython での結果は、新しい生成・検証結果として区別する。
 
 解析対象は、その時点の最新 main [`0a0454f0e4f6c6dce6407a4dfb2c3f0b67385fd4`](https://github.com/tin-machine/eidolon-wayland/commit/0a0454f0e4f6c6dce6407a4dfb2c3f0b67385fd4) の別 clean worktree。
 この PR 自身の解析器・テスト・文書を追加する前の製品 repository を測った値であり、マージ後に `--repo .` で得る件数とは異なる。
 PR #30 は head `f37096304ef6dc6a6793f559f0912a0f6fd4e0af` の未マージ状態として確認し、その契約索引は取り込まず、依存もしなかった。
 並行中の I6 PR #34 の source は、この snapshot に含めていない。
+その後 PR #30 は main `480e1b5` へマージされたが、上記の解析対象をその main に差し替えたという意味ではない。
 
 使用した実行系は CPython 3.12.14、profile は `python-local-v1`、追加 `--exclude` はなし。
 
@@ -132,9 +141,9 @@ session fileは当初例示された4ファイルの外だが、全体inventory�
 ただし `core.launch_mousepad` 等のcross-module callは現在unresolvedであり、この境界の確認には `rg` と直接source読解を併用した。自動callee解決の成果として数えない。
 Accidental Complexityとして削除・共通化してよいと確定した箇所や、新しい製品bugは、この評価だけでは報告しない。
 
-## 検証と再実行
+## 初回提出時点の検証と再実行
 
-ローカルで次を確認した。
+初回提出時点のローカル検証で次を確認した。件数は修正前の固定記録であり、後続 patch や CPython 3.13 / 3.14 の検証結果には読み替えない。
 
 - Deep unit tests **69件 PASS**：Python意味fixture 33、Git / artifact / slice 35、stale generator bytecode 1。
 - CI scope regression **27件 PASS**、docs resolver regression **25件 PASS**。
@@ -147,24 +156,106 @@ Accidental Complexityとして削除・共通化してよいと確定した箇�
 このツールの新規unit testは既存hostのunittest discoveryに含まれるが、製品graphの鮮度や内容をrequired CIで毎回検査するjobは追加していない。
 ここに実SSH、GUI、JNI、実SDK、Quest成功の証拠は含まれない。GitHub Actionsの状態はPRの実headに対して別途確認する。
 
-このPRのtoolを持つcheckoutから、同じ製品sourceを再評価する例：
+この PR の tool を持つ checkout から、CPython 3.12 で同じ製品 source を新規評価する例：
 
 ```sh
 git worktree add --detach /tmp/eidolon-deep-source \
   0a0454f0e4f6c6dce6407a4dfb2c3f0b67385fd4
-python3 scripts/deep_structure.py repository-deep \
-  --repo /tmp/eidolon-deep-source --output /tmp/eidolon-deep.json
-python3 scripts/deep_structure.py verify \
-  --repo /tmp/eidolon-deep-source --artifact /tmp/eidolon-deep.json
-python3 scripts/deep_structure.py targeted-deep \
-  --repo /tmp/eidolon-deep-source --artifact /tmp/eidolon-deep.json \
+python3.12 scripts/deep_structure.py repository-deep \
+  --repo /tmp/eidolon-deep-source --output /tmp/eidolon-deep-py312.json
+python3.12 scripts/deep_structure.py verify \
+  --repo /tmp/eidolon-deep-source --artifact /tmp/eidolon-deep-py312.json
+python3.12 scripts/deep_structure.py targeted-deep \
+  --repo /tmp/eidolon-deep-source --artifact /tmp/eidolon-deep-py312.json \
   --symbol 'scripts/linux/eidolon_linux_desktop_v3.py::cleanup_owner@482'
 ```
 
-同一artifact digestの再現には上記generator / Python / profileの一致も必要。
-変更後の解析器で旧sourceを分析することは可能だが、異なるgeneratorとして新しいartifactを作る。
+初回と同一 artifact digest の再現には、上記の generator / CPython **3.12.14** / profile の一致も必要。
+`python3.12` というコマンド名だけでは patch version の一致は保証されない。
+変更後の解析器で旧 source を分析することは可能だが、異なる generator として新しい artifact を作る。
+
+### 修正版の実行系方針
+
+対応する CLI 実行系は CPython **3.12 / 3.13 / 3.14**。生成・検証・slice には同じ完全な interpreter version を使い、版ごとに artifact を分ける。
+`python3.13` / `python3.14` の具体的な生成・検証例は[解析ガイド](source-structure-deep-analysis.md#対応する-python-実行系)にある。
+この対応方針は、ここに保存した初回の件数や69件の unit test を、その全実行系で確認したという主張ではない。
+
+[Python 3.14](https://docs.python.org/3.14/reference/executionmodel.html#annotation-scopes) は通常の annotation にも annotation scope を使用し、その内部の `:=` を禁止する。
+3.12 / 3.13 の通常の非 generic annotation で受理できた代入式を、3.14 の同じ fixture で `parse_failed` とする場合は、parser 版に応じた期待結果として扱う。
+[3.12](https://docs.python.org/3.12/reference/executionmodel.html#annotation-scopes)から存在する型パラメータ等の annotation scope の制限とは区別し、同じ版依存 snippet に対して、実行系ごとに正常系と構文エラーの期待を分けて検証する。全版で有効な既存fixtureも引き続き検証する。
+
+### レビュー後に確認した問題と修正方針
+
+初回 head `cbca05b` の Deep unit test 69件を CPython **3.14.4** で実行し、**4件の失敗**を再現した。
+上記の CPython 3.12.14 での成功を、3.14 の成功へ読み替えられないことを確認した記録である。
+annotation 内の代入式を正常系 fixture に含めていた問題は、版ごとの構文受理と `parse_failed` の期待を分離して扱う。
+
+また、型パラメータと nested definition の default による shadowing を、手書きの AST 束縛収集が落とす問題を受け、関数の束縛区分を CPython 標準ライブラリの [`symtable`](https://docs.python.org/3.14/library/symtable.html) へ移した。
+AST 関数と compiler の function scope は名前と定義行で一意に照合し、compiler が global とした名前だけを module の call candidate へ結ぶ。
+table の欠落・曖昧さは unresolved / CFG unsupported として保持し、deferred type alias や comprehension の scope を通常の関数 body へ誤って混ぜない。
+private name で AST / compiler の表記が一致しない場合も関数全体の CFG / DFG を unsupported にし、独自の mangling で解決したことにしない。
+compiler が正規化した declared global は、mangled name も含めて module candidate を抑制する。
+対応外の CLI 実行系は repository 読込み前に exit 2 で拒否する。
+
+これらは初回 artifact の generator と異なる修正であり、初回の件数・digest を更新後の結果として流用しない。
+
+### 修正後の再検証 — 2026-11-15
+
+symtable と実行系 guard の修正後に、次の version matrix を確認した。
+テストは [Python core](../scripts/tests/test_python_deep_analysis.py) 44件、[repository / artifact / slice](../scripts/tests/test_deep_structure_repository.py) 36件、[source-only loader](../scripts/tests/test_deep_structure_loader.py) 1件の合計81件である。
+
+| 実行系 | Deep unit tests | 結果 |
+| --- | ---: | --- |
+| CPython 3.12.14 | 81 | PASS |
+| CPython 3.13.5 | 81 | PASS |
+| CPython 3.14.4 | 81 | PASS |
+
+annotation の版依存 fixture は、3.14 での `parse_failed` を期待結果として検査する。旧版で成功したことを根拠に、その検査を省略していない。
+さらに、独立した読み取り専用レビューで追加の13ケースを各実行系へ入力し、3版すべてでPASSを確認した。
+追加ケースは制御した source 文字列の静的解析であり、対象コードを execute していない。
+
+上の3ファイルを同じ interpreter で再実行する例：
+
+```sh
+python3.12 -m unittest discover -s scripts/tests -p 'test_*deep*.py' -v
+python3.13 -m unittest discover -s scripts/tests -p 'test_*deep*.py' -v
+python3.14 -m unittest discover -s scripts/tests -p 'test_*deep*.py' -v
+```
+
+この改修では、CI scope regression 27件、docs resolver regression 25件、マージ済み契約索引のunit test 26件もPASSを確認した。
+docs registry validate は37 managed docs / 6 manifests / 154 unregistered Markdown、`scripts/check-design` は31 tasks / 45 checksでPASS。
+これらは製品runtimeや実機受入れの結果ではなく、解析器と文書・CI scope・既存索引の整合確認である。
+
+同じ固定製品 source `0a0454f0e4f6c6dce6407a4dfb2c3f0b67385fd4` を、修正後の generator とCPython **3.12.14 / 3.14.4** で、それぞれ実CLIから**新しく生成**した。
+両方で949 tracked files、671 source candidates、241 Python files、430 unsupported-language files、parse failed 0、少なくとも1関数でDeep対応した189 files、3,277 functions、CFG / DFG supported 1,282 / unsupported 1,995だった。
+集計値は初回と同じだが、compiler scope情報やcall判定を更新しているため、同一artifactではない。初回のdigestやslice bytesをこの新規生成物の証拠として流用しない。
+
+| 修正後の実行系 | 入力・生成物 | SHA-256 |
+| --- | --- | --- |
+| CPython 3.12.14 | generator | `1a6d2f15d12ac4b64ec869dca447957000278a8efd842acb1f8fc6bd8bb6a58c` |
+| CPython 3.12.14 | repository artifact | `d88b103703c70bb6078aa3a877fc390eb4adcb2be35007000000a06a412c5e4f` |
+| CPython 3.14.4 | generator | `8a57d68038ff8462586fc4dd82e5fedc4c1e2d0f5214be021ce36c16b80464eb` |
+| CPython 3.14.4 | repository artifact | `cffc7100701f6a81b7379c2fe64db012f8211c207fb99f81a81c1934f7bdca40` |
+| 両実行系 | profile | `be1bc739d0fa751b6b73a0dcf931d81b4f49499080e336e2f7fb7835b8a34d7b` |
+
+CPython 3.12.14 のrepository JSONは23,590,848 bytesで、独立した2回の生成がbyte一致した。
+CPython 3.14.4 の生成物は23,590,847 bytesだった。各artifactは生成したものと同じinterpreterによる `verify` で `fresh` を確認した。
+旧 `cbca05b` generatorのartifactは修正後の `verify` がexit 2で拒否し、3.14.4のartifactを3.12.14で検証する操作もexit 2で拒否した。
+これはgeneratorとparser版の違いを検出する証拠であり、版をまたぐbyte一致の主張ではない。
+
+修正後のCPython 3.12.14で `cleanup_owner@482` のtargeted sliceも再生成した。
+CFG 19 nodes / 20 edges、DFG 15 edges、slice 26 nodes / 61 edges、31,856 bytes、`complete=true` / omitted nodes・edgesとも0だった。
+`complete` の意味は初回と同じく予算内の候補近傍に限り、回収の成立や全意味論の解析完了を示さない。
+
+同じ固定sourceのcall candidateは3,888から3,800へ減った。
+差分の88 call siteはすべてcomprehension内の `nested_expression_scope_unresolved` への変更であり、新たなcandidateの追加は0だった。
+scopeを十分に解決していない辺を候補から外した保守性の修正であって、88件の製品bugの発見や、比較測定による有用性の向上を意味しない。
+評価区分は引き続き **調査補助として試用可能** とする。
 
 ## 次の独立単位
+
+今回の compiler に基づく束縛区分と、曖昧な scope を unresolved に保つ境界を維持して拡張する。
+例外・cleanup の CFG を検証する前に、その上の PDG を完成扱いにしない。
 
 1. **Pythonのimport aliasとmodule境界の候補解決**。shadowing、relative import、動的load、monkey patchを明示し、`core.*` / profile / process ownerのsourceをつなぐ。runtime-resolvedへ昇格させない。
 2. **限定した例外・cleanup CFG**。`return / raise / break / continue` と `finally` のcompletion reason、例外handler、`with` の抑制を別fixtureで検証する。finallyへの合流で理由を失う実装は採用しない。

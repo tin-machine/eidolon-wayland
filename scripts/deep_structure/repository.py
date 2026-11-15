@@ -44,6 +44,7 @@ GENERATED_PARTS = frozenset({"vendor", "third_party", "third-party", "node_modul
                              ".venv", "venv", "__pycache__"})
 TEST_PARTS = frozenset({"test", "tests", "fixture", "fixtures", "androidtest", "probes"})
 KINDS = {"eidolon-repository-deep", "eidolon-targeted-deep"}
+SUPPORTED_PYTHON_MINORS = {(3, 12), (3, 13), (3, 14)}
 
 
 def require(condition, message):
@@ -528,7 +529,8 @@ def write_artifact(root, result, output=None):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     epilog="Runtime: CPython 3.12, 3.13 or 3.14; use the same interpreter for each artifact.")
     subcommands = parser.add_subparsers(dest="command", required=True)
     for command in ("repository-deep", "verify", "targeted-deep"):
         sub = subcommands.add_parser(command)
@@ -546,6 +548,9 @@ def main(argv=None):
             sub.add_argument("--max-bytes", type=int, default=65536)
     args = parser.parse_args(argv)
     try:
+        require(sys.implementation.name == "cpython"
+                and sys.version_info[:2] in SUPPORTED_PYTHON_MINORS,
+                "unsupported Python runtime; use CPython 3.12, 3.13 or 3.14")
         root = repository_root(args.repo)
         if args.command == "repository-deep":
             result = build(root, args.exclude)

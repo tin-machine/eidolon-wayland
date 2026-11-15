@@ -3,6 +3,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import textwrap
 import unittest
 from unittest.mock import patch
@@ -343,30 +344,216 @@ class PythonDeepTests(unittest.TestCase):
 
     def test_module_annotations_and_definition_expressions_can_rebind_candidates(self):
         variants = [
-            "value: (helper := external)",
-            "def another(value=(helper := external)):\n    pass",
-            "def another(value: (helper := external)):\n    pass",
-            "class Another((helper := external)):\n    pass",
-            "def another():\n    global helper\n    helper = external",
-            "class Another:\n    global helper\n    value: (helper := external)",
+            ("value: (helper := external)", True),
+            ("def another(value=(helper := external)):\n    pass", False),
+            ("def another(value: (helper := external)):\n    pass", True),
+            ("class Another((helper := external)):\n    pass", False),
+            ("def another():\n    global helper\n    helper = external", False),
+            ("class Another:\n    global helper\n    value: (helper := external)", True),
         ]
-        for variant in variants:
+        for variant, annotation_walrus in variants:
             with self.subTest(variant=variant):
-                f = self.function("def helper(): return 1\n" + variant + "\ndef f(): return helper()\n")
+                source = "def helper(): return 1\n" + variant + "\ndef f(): return helper()\n"
+                if annotation_walrus and sys.version_info >= (3, 14):
+                    result = self.analyze(source)
+                    self.assertEqual(result["parse_status"], "parse_failed")
+                    self.assertEqual(result["diagnostics"][0]["kind"], "SyntaxError")
+                    continue
+                f = self.function(source)
                 self.assertEqual(f["calls"][0]["resolution"], "unresolved")
 
     def test_class_local_annotation_binding_does_not_rebind_module_helper(self):
-        f = self.function("""
+        source = """
             def helper(): return 1
             class Another:
                 value: (helper := external)
                 def method(self):
                     local: helper()
             def f(): return helper()
-        """)
-        self.assertEqual(f["calls"][0]["resolution"], "candidate")
+        """
+        if sys.version_info >= (3, 14):
+            result = self.analyze(source)
+            self.assertEqual(result["parse_status"], "parse_failed")
+            self.assertEqual(result["diagnostics"][0]["kind"], "SyntaxError")
+        else:
+            f = self.function(source)
+            self.assertEqual(f["calls"][0]["resolution"], "candidate")
         method = self.function("class C:\n    def f(self):\n        local: helper()\n", name="C.f")
         self.assertEqual(method["calls"], [])
+
+    def test_type_parameters_shadow_module_calls_in_function_and_class_scopes(self):
+        for parameter in ("helper", "*helper", "**helper"):
+            variants = [
+                (f"def f[{parameter}](): return helper()", "f"),
+                (f"def outer[{parameter}]():\n    def f(): return helper()\n    return f", "outer.<locals>.f"),
+                (f"class C[{parameter}]:\n    def f(self): return helper()", "C.f"),
+                (f"class C:\n    def f[{parameter}](self): return helper()", "C.f"),
+                (f"class C[{parameter}]:\n    def outer(self):\n        def f(): return helper()\n        return f", "C.outer.<locals>.f"),
+                (f"class C[{parameter}]:\n    class Inner:\n        def f(self): return helper()", "C.Inner.f"),
+            ]
+            for variant, name in variants:
+                with self.subTest(parameter=parameter, name=name):
+                    f = self.function("def helper(): return 1\n" + variant + "\n", name=name)
+                    self.assertEqual(f["scope_resolution"], "compiler_symtable")
+                    self.assertEqual(f["calls"][0]["resolution"], "unresolved")
+                    self.assertNotIn("target", f["calls"][0])
+                    self.assertEqual(f["cfg"]["status"], "supported")
+                    self.assertNotIn("helper", f["dfg"]["local_variables"])
+                    self.assertTrue(any(use["variable"] == "helper" and
+                                        use["reason"] == "free_variable_environment_not_modeled"
+                                        for use in f["dfg"]["unresolved_uses"]))
+
+    def test_type_parameters_do_not_leak_into_sibling_function_scope(self):
+        f = self.function("""
+            def helper(): return 1
+            def other[helper](): return helper()
+            class C[helper]:
+                def method(self): return helper()
+            def f(): return helper()
+        """)
+        self.assertEqual(f["calls"][0]["resolution"], "candidate")
+
+    def test_nested_definition_time_bindings_shadow_local_and_enclosing_calls(self):
+        declarations = [
+            "def nested(value=(helper := external)):\n    pass",
+            "def nested(*, value=(helper := external)):\n    pass",
+            "@(helper := decorator)\ndef nested():\n    pass",
+            "class Nested((helper := Base)):\n    pass",
+            "class Nested(metaclass=(helper := Meta)):\n    pass",
+            "@(helper := decorator)\nclass Nested:\n    pass",
+            "nested = lambda value=(helper := external): value",
+            "nested = lambda *, value=(helper := external): value",
+        ]
+        for declaration in declarations:
+            with self.subTest(declaration=declaration):
+                source = ("def helper(): return 1\ndef f():\n"
+                          + textwrap.indent(declaration, "    ") + "\n    return helper()\n")
+                f = self.function(source)
+                self.assertEqual(f["calls"][-1]["resolution"], "unresolved")
+                self.assertNotIn("target", f["calls"][-1])
+                source = ("def helper(): return 1\ndef outer():\n"
+                          + textwrap.indent(declaration, "    ")
+                          + "\n    def f(): return helper()\n    return f\n")
+                f = self.function(source, name="outer.<locals>.f")
+                self.assertEqual(f["calls"][0]["resolution"], "unresolved")
+
+    def test_nested_body_and_class_local_bindings_do_not_shadow_outer_calls(self):
+        declarations = [
+            "def nested():\n    helper = external",
+            "nested = lambda: (helper := external)",
+            "class Nested:\n    helper = external",
+            "class Nested:\n    def method(value=(helper := external)):\n        pass",
+        ]
+        for declaration in declarations:
+            with self.subTest(declaration=declaration):
+                source = ("def helper(): return 1\ndef f():\n"
+                          + textwrap.indent(declaration, "    ") + "\n    return helper()\n")
+                f = self.function(source)
+                self.assertEqual(f["calls"][-1]["resolution"], "candidate")
+        f = self.function("""
+            def helper(): return 1
+            class C:
+                helper = external
+                def f(self): return helper()
+        """, name="C.f")
+        self.assertEqual(f["calls"][0]["resolution"], "candidate")
+
+    def test_unevaluated_annotation_walrus_is_lexical_local_or_invalid_by_version(self):
+        source = "def helper(): return 1\ndef f():\n    value: (helper := external)\n    return helper()\n"
+        if sys.version_info >= (3, 14):
+            result = self.analyze(source)
+            self.assertEqual(result["parse_status"], "parse_failed")
+            self.assertEqual(result["diagnostics"][0]["kind"], "SyntaxError")
+        else:
+            f = self.function(source)
+            self.assertEqual(f["cfg"]["status"], "supported")
+            self.assertEqual(f["calls"][0]["resolution"], "unresolved")
+            self.assertIn("helper", f["dfg"]["local_variables"])
+            self.assertTrue(self.unbound(f, self.node(f, "return"), "helper"))
+            self.assertEqual(self.node(f, "annassign")["defs"], [])
+            self.assertEqual(self.node(f, "annassign")["uses"], [])
+
+    def test_nested_function_annotation_walrus_binding_is_version_aware(self):
+        source = """
+            def helper(): return 1
+            def outer():
+                def declaration(value: (helper := external)):
+                    pass
+                def f(): return helper()
+                return f
+        """
+        if sys.version_info >= (3, 14):
+            result = self.analyze(source)
+            self.assertEqual(result["parse_status"], "parse_failed")
+            self.assertEqual(result["diagnostics"][0]["kind"], "SyntaxError")
+        else:
+            f = self.function(source, name="outer.<locals>.f")
+            self.assertEqual(f["calls"][0]["resolution"], "unresolved")
+
+    def test_comprehension_calls_cannot_reuse_enclosing_global_binding(self):
+        f = self.function("""
+            def helper(): return 1
+            def f(items):
+                helper()
+                return [helper() for helper in items]
+        """)
+        self.assertEqual([call["resolution"] for call in f["calls"]], ["candidate", "unresolved"])
+        self.assertEqual(f["calls"][1]["reason"], "nested_expression_scope_unresolved")
+
+    def test_type_alias_values_are_not_enclosing_body_call_sites(self):
+        for parameters in ("", "[helper]", "[*helper]", "[**helper]"):
+            with self.subTest(parameters=parameters):
+                f = self.function("def helper(): return 1\ndef f():\n    type Alias" + parameters
+                                  + " = helper()\n    return Alias\n")
+                self.assertEqual(f["calls"], [])
+                self.assertEqual(f["cfg"]["status"], "unsupported")
+                self.assertTrue(any(u["detail"] == "TypeAlias" for u in f["unknowns"]))
+
+    def test_missing_or_ambiguous_compiler_function_scope_fails_closed(self):
+        original = analysis._function_scopes
+
+        def duplicate(table):
+            return {key: scopes * 2 for key, scopes in original(table).items()}
+
+        for replacement in (lambda table: {}, duplicate):
+            with self.subTest(replacement=replacement):
+                with patch.object(analysis, "_function_scopes", side_effect=replacement):
+                    f = self.function("def helper(): return 1\ndef f(): return helper()\n")
+                self.assertEqual(f["scope_resolution"], "unresolved")
+                self.assertEqual(f["cfg"]["status"], "unsupported")
+                self.assertEqual(f["dfg"]["edges"], [])
+                self.assertEqual(f["calls"][0]["resolution"], "unresolved")
+
+    def test_class_private_spelling_mismatch_refuses_dfg_without_guessing_mangling(self):
+        variants = [
+            ("class C:\n    def f(self, __value): return __value", "C.f"),
+            ("class C:\n    def f(self):\n        __value = 1\n        return __value", "C.f"),
+            ("class C:\n    def outer(self):\n        def f(__value): return __value\n        return f", "C.outer.<locals>.f"),
+            ("class C:\n    def f(self):\n        import external as __value\n        return 1", "C.f"),
+        ]
+        for source, name in variants:
+            with self.subTest(name=name, source=source):
+                f = self.function(source, name=name)
+                self.assertEqual(f["cfg"]["status"], "unsupported")
+                self.assertEqual(f["dfg"]["edges"], [])
+                self.assertTrue(any("private-name spelling mismatch" in u["detail"] for u in f["unknowns"]))
+        for source, name in [("def f(__value): return __value", "f"),
+                             ("class ___:\n    def f(self, __value): return __value", "___.f"),
+                             ("class C:\n    def f(self, __value__): return __value__", "C.f")]:
+            with self.subTest(name=name):
+                f = self.function(source, name=name)
+                self.assertEqual(f["cfg"]["status"], "supported")
+
+    def test_compiler_mangled_declared_global_suppresses_module_candidate(self):
+        f = self.function("""
+            def _C__helper(): return 1
+            class C:
+                def mutate(self):
+                    global __helper
+                    __helper = lambda: 2
+            def f(): return _C__helper()
+        """)
+        self.assertEqual(f["calls"][0]["resolution"], "unresolved")
 
     def test_import_alias_is_local_binding_and_import_provenance_is_syntactic(self):
         f = self.function("""

@@ -9,7 +9,10 @@ Codex が調査する箇所を選ぶための読み取り専用ツールであ�
 2026-11-15 の実装開始時点で、[PR #30](https://github.com/tin-machine/eidolon-wayland/pull/30) は未マージだった。
 確認した head は `f37096304ef6dc6a6793f559f0912a0f6fd4e0af`。
 同 PR の `scripts/structure.py` と `scripts/structure/retirement.json` は、人が確認した意味的契約の索引と変更監視である。
-この Deep ツールは最新 main から独立して実装し、それらのファイルを main に存在するものとして読み込まない。
+この Deep ツールは当時の main から独立して実装し、それらのファイルを main に存在するものとして読み込まなかった。
+その後 PR #30 は main `480e1b5` へマージされた。これは後の状態変化であり、このツールが契約索引に依存するという意味ではない。
+現在も自動解析は `retirement.json` を契約索引として解釈・変更せず、人手レビュー済み契約と candidate graph を分離する。
+全 tracked files の snapshot 鮮度を検証するための bytes 照合には含まれるが、その契約辺を自動解析の結果へ取り込まない。
 
 本書は、PR #30 の[旧評価計画](https://github.com/tin-machine/eidolon-wayland/blob/f37096304ef6dc6a6793f559f0912a0f6fd4e0af/docs/source-structure-post-i5-evaluation-plan-20261114.md)にある、Lightweight を先に完成させる将来方針と、全評価を PR #30 へ継続反映する運用を、**この新しい Deep 実装について置き換える**。
 同計画に記録された過去の計測、`scoped_only` 判定、契約レビューを新しい解析結果として書き換えない。
@@ -23,7 +26,7 @@ Lightweight の完成や人手による対象ファイルの全件登録は、De
 
 | 機能 | この単位で扱うこと |
 | --- | --- |
-| Repository Deep | Git 管理ファイルを自動発見し、選択根拠、役割、言語、解析状態を記録する。Python を AST で読み、調査候補を示す。 |
+| Repository Deep | Git 管理ファイルを自動発見し、選択根拠、役割、言語、解析状態を記録する。Python の AST と compiler の symbol table を読み、調査候補を示す。 |
 | Targeted Deep | Repository Deep が発見した正確な symbol ID を選び、選択関数の CFG / DFG、関数単位の呼出候補、テストの file 参照候補から限定近傍を得る。 |
 | Source provenance | source revision、ファイル位置、入力の同一性、generator / profile / Python 実行系を記録する。 |
 | 鮮度検証 | 現在の source と生成条件から再検証し、古い artifact や改変された artifact を拒否する。 |
@@ -35,32 +38,68 @@ Lightweight の完成や人手による対象ファイルの全件登録は、De
 通常開発の前に常時実行する required CI は追加しない。
 この実装の `scripts/**` 変更自体は、既存の [CI change-scope policy](ci-change-scope-20261113.md) に従う。
 
+## 対応する Python 実行系
+
+CLI の対応範囲は **CPython 3.12 / 3.13 / 3.14** とする。
+`python3` がどの版を指すかに依存せず、`python3.12`、`python3.13`、`python3.14` のいずれかを明示する。
+この範囲はツールの実行方針であり、異なる版で同じ source が必ず構文受理されるという意味ではない。
+CLI は対象 repository を開く前に実行系を検査し、対応外の Python implementation / minor version を exit 2 で拒否する。
+
+**一つの artifact の生成・`verify`・`targeted-deep` には、同じ interpreter を使用する。**
+generator identity は implementation 名と完全な `sys.version_info`（major / minor / micro / release level / serial）を含む。
+3.12 と 3.13 の違いだけでなく、patch version が変わった場合も別の生成条件となる。
+parser の版をまたぐ artifact 互換性は提供しない。更新した interpreter を使うときは新しい artifact を生成する。
+
+### Annotation scope による構文差
+
+[Python 3.14 の execution model](https://docs.python.org/3.14/reference/executionmodel.html#annotation-scopes)では、通常の関数・変数 annotation にも annotation scope が使われ、その scope 内の `:=` は許可されない。
+例えば、非 generic 関数の引数 annotation `def f(x: (alias := int)): ...` のような、3.12 / 3.13 では受理できる形式も、3.14 では構文エラーになる。
+このツールは実行中の parser と context-sensitive な compile 検査に従い、該当ファイルを `parse_failed` にする。互換性のために禁止された構文を成功扱いしない。
+
+[3.12](https://docs.python.org/3.12/reference/executionmodel.html#annotation-scopes)と[3.13](https://docs.python.org/3.13/reference/executionmodel.html#annotation-scopes)でも、PEP 695 の型パラメータや generic 関数などに導入された annotation scope では、すでに `:=` が禁止されている。
+「古い Python なら全 annotation で代入式が使える」とは扱わない。
+型パラメータによる shadowing と、nested definition の default で enclosing scope が束縛される場合も、同名 module 関数への call candidate を保守的に抑制する。
+
 ## Codex の基本手順
 
 1. 現在の main、対象 branch、関連 open PR と差分を確認する。解析対象の source と generator を確定する。
-2. clean checkout で `repository-deep` を実行する。全ファイルを手書きで列挙する必要はない。
+2. 実行する CPython の版を選び、clean checkout で `repository-deep` を実行する。全ファイルを手書きで列挙する必要はない。
 3. coverage と未対応理由を読み、関数の責務集中、分岐、局所データ依存、呼出候補から調査対象を選ぶ。
 4. artifact 内の正確な symbol ID を使って `targeted-deep` を実行する。hop 数と出力上限を目的に合わせる。
 5. slice に記録された source location を開き、要件、関連テスト、所有境界を照合する。
 6. 複雑さの分類と反証条件を記録する。製品修正は別の実装判断とし、変更後には新しい確定 revision から再生成する。
 
-以下は repository root からの例。`--repo` は対象 repository の root を指定する。
+以下は repository root から CPython 3.12 を使う例。`--repo` は対象 repository の root を指定する。
 使用可能な引数は各 subcommand の `--help` でも確認できる。上限は下表のとおり。
 
 ```sh
-python3 scripts/deep_structure.py repository-deep --repo .
+python3.12 scripts/deep_structure.py repository-deep --repo .
 
-python3 scripts/deep_structure.py repository-deep --repo . \
-  --output /tmp/eidolon-deep.json
+python3.12 scripts/deep_structure.py repository-deep --repo . \
+  --output /tmp/eidolon-deep-py312.json
 
-python3 scripts/deep_structure.py verify --repo . \
-  --artifact /tmp/eidolon-deep.json
+python3.12 scripts/deep_structure.py verify --repo . \
+  --artifact /tmp/eidolon-deep-py312.json
 
-python3 scripts/deep_structure.py targeted-deep --repo . \
-  --artifact /tmp/eidolon-deep.json \
+python3.12 scripts/deep_structure.py targeted-deep --repo . \
+  --artifact /tmp/eidolon-deep-py312.json \
   --symbol 'ARTIFACTに記録された正確なsymbol ID' \
   --hops 2 \
   --max-nodes 40 --max-edges 80 --max-bytes 32000
+```
+
+CPython 3.13 または 3.14 を選ぶ場合も、生成と検証の組を同じ interpreter にする。次の各組は別 artifact を作る例であり、版をまたいで同一結果になるという主張ではない。
+
+```sh
+python3.13 scripts/deep_structure.py repository-deep --repo . \
+  --output /tmp/eidolon-deep-py313.json
+python3.13 scripts/deep_structure.py verify --repo . \
+  --artifact /tmp/eidolon-deep-py313.json
+
+python3.14 scripts/deep_structure.py repository-deep --repo . \
+  --output /tmp/eidolon-deep-py314.json
+python3.14 scripts/deep_structure.py verify --repo . \
+  --artifact /tmp/eidolon-deep-py314.json
 ```
 
 初版の slice は辺を両方向へ辿る限定近傍であり、行番号指定や前方 / 後方の program slicing は実装していない。
@@ -100,7 +139,7 @@ checkout 外では新しい `.json` を作成できる。既存ファイルは�
 | Generated / Vendor | 除外理由を残して parser の対象外とする。これらの内部を解析したとは扱わない。 |
 | Unsupported language | source 候補として発見したが、この版に対応 parser がないもの。Rust / Kotlin / JNI 境界を暗黙に解決しない。 |
 | Excluded source / non-source | 明示除外や既定規則で選ばなかったもの。適用した規則と理由を残す。 |
-| Parse failed | Python 候補として読んだが AST を生成できなかったもの。ファイル単位の失敗として残す。 |
+| Parse failed | Python 候補として読んだが、AST / symbol table の生成または context-sensitive な compile 検査に失敗したもの。AST 生成だけが成功しても解析済みとはしない。ファイル単位の失敗として残す。 |
 | AST analyzed | ファイルの `analysis_status=analyzed`。関数や呼出式を抽出できたもの。全関数の CFG / DFG 成立とは別に数える。 |
 | Deep supported / unsupported | 関数ごとの制御・データ解析の対応範囲。未対応構文の種類と位置を隠さない。 |
 
@@ -116,13 +155,27 @@ tracked source 以外を暗黙の製品 source として graph に混ぜない�
 
 ### 関数と呼出候補
 
-Python 標準ライブラリの `ast` から宣言と call site の位置を抽出する。
+Python 標準ライブラリの `ast` から宣言と call site の位置を抽出し、[`symtable`](https://docs.python.org/3.14/library/symtable.html) から compiler が決定した local / free / global の束縛区分を得る。
+local / free の判定を、AST の代入 target の手書き収集だけで再実装しない。
 symbol ID は `path::qualname@definition_line`。method は `Class.method`、nested function は `outer.<locals>.inner` として scope を区別する。
 行番号は 1 始まり、column は Python AST に従う 0 始まりの UTF-8 byte offset である。
+AST の各関数と compiler の function scope を、関数名と定義行が一致する一意な table で対応付ける。
+table が見つからない、または一致が複数ある場合は、scope を推測せず call target を unresolved とし、その関数の CFG / DFG も unsupported にする。
+関数の `scope_resolution` は `compiler_symtable` または `unresolved`。対応が曖昧な場合の理由は、位置付きの `analysis_limit` に残す。
 call site が存在することと、実行時の callee が一意に定まることを分けて記録する。
-同じ module の、重複せず shadowing されていない関数宣言だけを call target の **candidate** とする。これも実行時 dispatch の確定ではない。
+単純な名前による call のうち、compiler がその関数 scope で global と分類し、同じ module の一意な関数宣言へ結び付けられるものだけを **candidate** とする。
+module 側の再束縛、decorator、動的変更等への保守的な検査も維持する。compiler の global 判定は、実行時 dispatch の確定ではない。
 ローカル名の shadowing、再束縛、動的 receiver、別 module、外部 library、decorator などを解決できない場合は `unknown` / unresolved とする。
 関数名が似ていることだけで caller / callee や関連テストを確定しない。
+
+型パラメータの free binding、nested definition の default による enclosing local の束縛も、compiler の区分に従う。
+遅延評価される type alias の式を enclosing function body の即時 call として数えない。
+comprehension 内の call は、function scope と同一だと仮定せず unresolved に残す。この版では comprehension を含む関数の CFG / DFG も未対応である。
+該当する call の理由は `nested_expression_scope_unresolved`、型パラメータを含む free variable のデータ利用は `free_variable_environment_not_modeled` とする。
+
+class の private name などで AST の名前表記と compiler の名前表記が一致しない場合は、その関数の CFG / DFG を位置付きの `analysis_limit` で unsupported とする。
+同名の module 関数を推測で結ばず、該当 call は unresolved に残す。独自の name mangling 規則で補完しない。
+compiler が正規化した declared global は、mangled name も含めて module candidate の抑制に使う。
 
 `related_tests` は、Test / Fixture 内の import module 名や `.py` path 文字列の basename が、production 候補の filename と一致する場合の **file 単位の lexical reference candidate** である。
 同名ファイルが複数あれば候補集合を残し、関数呼出やテスト coverage を確定しない。
@@ -156,7 +209,8 @@ iterator が返す値そのものの provenance は、この Name DFG の対象�
 
 ### DFG：局所変数の reaching definitions
 
-DFG は、対応 CFG 上で局所 `Name` の定義がどの使用へ到達し得るかを求める。
+DFG は、compiler の symbol table による局所名の区分と対応 CFG を使い、局所 `Name` の定義がどの使用へ到達し得るかを求める。
+free variable を module global や局所定義へ置き換えて解決しない。
 分岐の合流では複数の到達定義を保持し、loop は固定点まで伝播する。
 同名変数が途中で再定義された場合は、その経路の古い定義を置き換える。
 
@@ -177,10 +231,10 @@ artifact は次の入力と結び付ける。
 
 - source の exact revision と Git tree の全追跡対象、HEAD と一致する index。
 - 全 tracked blob の内容と mode。解析 node には元の path / line / column も付ける。
-- generator の実装内容と版、選択・除外 profile、Python 実行系。
+- generator の実装内容と版、選択・除外 profile、CPython の完全な parser version。
 - graph 本文、coverage、未対応理由を含む生成 payload。
 
-source と generator が変わっていない同じ条件から、同じ JSON を生成する。
+source、generator、profile、CPython の完全な版が一致する条件から、同じ JSON を生成する。
 時刻、絶対 checkout path、実行ごとに変わる ID を解析内容の識別に使わない。
 source は抽出の前後で検査し、途中での変更を正しい snapshot として保存しない。
 公開インターフェースは新しい process で起動する CLI である。自身の package / parser / repository module は既存 `.pyc` を使わず、読み込んだ bytes を compile し、その digest とディスク上の source を照合する。
@@ -249,7 +303,9 @@ Repository Deep で調査対象を発見できること、Targeted Deep の出�
 
 ## 参考資料
 
-- Python 公式: [AST と source location](https://docs.python.org/3/library/ast.html)。AST grammar は Python の版に依存するため、実行系も生成条件として記録する。
+- Python 公式: AST と source location（[3.12](https://docs.python.org/3.12/library/ast.html) / [3.13](https://docs.python.org/3.13/library/ast.html) / [3.14](https://docs.python.org/3.14/library/ast.html)）。AST grammar は Python の版に依存するため、実行系も生成条件として記録する。
+- Python 公式: [`symtable` — compiler の symbol table](https://docs.python.org/3.14/library/symtable.html)。関数 scope の識別と local / free / global の区分を得る。解析対象を import / execute する API ではない。
+- Python 公式: annotation scopes（[3.12](https://docs.python.org/3.12/reference/executionmodel.html#annotation-scopes) / [3.13](https://docs.python.org/3.13/reference/executionmodel.html#annotation-scopes) / [3.14](https://docs.python.org/3.14/reference/executionmodel.html#annotation-scopes)）、[PEP 695](https://peps.python.org/pep-0695/)。型パラメータの scope と、版に依存する annotation の構文を区別する。
 - Python 公式: [Compound statements](https://docs.python.org/3/reference/compound_stmts.html)。loop / `else`、`try` / `finally`、`with`、async などの実際の言語意味論を fixture の根拠にする。
 - Git 公式: [git-ls-tree](https://git-scm.com/docs/git-ls-tree)、[git-cat-file](https://git-scm.com/docs/git-cat-file)。確定 tree と object 内容を得るための一次資料。
 - homecluster-runbook: [source_selection.py](https://github.com/tin-machine/homecluster-runbook/blob/4254b272a187df97f6c9bc346ff4c3aaa324b6aa/.agents/skills/homecluster-source-structure/scripts/source_selection.py)、[snapshot_contract.py](https://github.com/tin-machine/homecluster-runbook/blob/4254b272a187df97f6c9bc346ff4c3aaa324b6aa/.agents/skills/homecluster-source-structure/scripts/snapshot_contract.py)、[deep_snapshot.py](https://github.com/tin-machine/homecluster-runbook/blob/4254b272a187df97f6c9bc346ff4c3aaa324b6aa/.agents/skills/homecluster-source-structure/scripts/deep_snapshot.py)、[slice_graph.py](https://github.com/tin-machine/homecluster-runbook/blob/4254b272a187df97f6c9bc346ff4c3aaa324b6aa/.agents/skills/homecluster-source-structure/scripts/slice_graph.py)。自動発見、固定入力、鮮度検証、bounded slice の参考。

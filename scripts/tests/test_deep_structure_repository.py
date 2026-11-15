@@ -457,6 +457,22 @@ def conditional(flag):
         self.assertEqual(json.loads(result.stderr)["status"], "error")
         self.assertEqual(output.read_bytes(), before)
 
+    def test_cli_refuses_unsupported_interpreters_before_reading_repository(self):
+        for implementation, version in (("cpython", (3, 11)), ("cpython", (3, 15)),
+                                        ("pypy", (3, 12))):
+            with self.subTest(implementation=implementation, version=version):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with patch.object(sys.implementation, "name", implementation), \
+                        patch.object(sys, "version_info", version), \
+                        patch.object(deep, "repository_root") as read_repository, \
+                        redirect_stdout(stdout), redirect_stderr(stderr):
+                    code = deep.main(["repository-deep", "--repo", str(self.root)])
+                self.assertEqual(code, 2)
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertIn("use CPython 3.12, 3.13 or 3.14", json.loads(stderr.getvalue())["error"])
+                read_repository.assert_not_called()
+                self.assertFalse((self.root / ".git/eidolon-deep").exists())
+
     def test_targeted_cli_refuses_new_source_snapshot_during_slicing(self):
         graph = self.build()
         artifact = deep.write_artifact(self.root, graph)

@@ -9,14 +9,17 @@ fallthrough edge through a cleanup/exception boundary.
 """
 
 import ast
-from collections import Counter, deque
+from collections import Counter, defaultdict, deque
+import symtable
 import warnings
 
 
 MAX_CFG_NODES = 1200
 MAX_FUNCTION_AST_NODES = 20000
 _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
-_SCOPES = _FUNCTIONS + (ast.ClassDef, ast.Lambda)
+_TYPE_ALIASES = (ast.TypeAlias,) if hasattr(ast, "TypeAlias") else ()
+_SCOPES = _FUNCTIONS + (ast.ClassDef, ast.Lambda) + _TYPE_ALIASES
+_COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
 
 def _location(node):
@@ -30,7 +33,12 @@ def _location(node):
 
 
 def _own_walk(statements):
-    """Include nested scope declarations, but never their bodies or defaults."""
+    """Body inventory, excluding nested declarations and lazy alias values.
+
+    This is not a binding collector: default/decorator expressions can bind
+    names in the surrounding function, and unevaluated local annotations can
+    affect lexical locals. The compiler's symbol table supplies that information.
+    """
     pending = list(reversed(statements))
     while pending:
         node = pending.pop()
@@ -61,6 +69,8 @@ def _bound_names(node):
                 for alias in node.names}
     if isinstance(node, _FUNCTIONS + (ast.ClassDef,)):
         return {node.name}
+    if isinstance(node, _TYPE_ALIASES):
+        return {node.name.id}
     if isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
         return {node.name}
     if isinstance(node, ast.MatchMapping) and node.rest:
@@ -107,7 +117,29 @@ def _index_functions(tree, path):
     return sorted(result, key=lambda item: (item[0].lineno, item[0].col_offset, item[1]))
 
 
-def _module_candidates(tree, path):
+def _symbol_tables(table):
+    pending = [table]
+    while pending:
+        scope = pending.pop()
+        yield scope
+        pending.extend(scope.get_children())
+
+
+def _function_scopes(table):
+    """Index compiler function scopes; annotation/type-parameter wrappers differ.
+
+    A source definition is mapped only when name and definition line identify
+    one function table. Missing/ambiguous matches never fall back to AST guesses.
+    """
+    result = defaultdict(list)
+    for scope in _symbol_tables(table):
+        scope_type = scope.get_type()
+        if getattr(scope_type, "value", scope_type) == "function":
+            result[(scope.get_name(), scope.get_lineno())].append(scope)
+    return result
+
+
+def _module_candidates(tree, path, declared_globals):
     # Count lexical module bindings even inside conditionals. A candidate is
     # still not a runtime dispatch claim: Python globals can be monkey-patched.
     # Definition defaults/decorators and class bases run in the surrounding
@@ -134,30 +166,40 @@ def _module_candidates(tree, path):
                     pending.append(node.returns)
         elif isinstance(node, ast.ClassDef):
             pending.extend(node.decorator_list + node.bases + node.keywords)
+        elif isinstance(node, _TYPE_ALIASES):
+            # The alias name binds here; its value/type-parameter expressions
+            # belong to separate, lazy annotation scopes.
+            continue
         else:
             pending.extend(ast.iter_child_nodes(node))
     if "*" in counts:
         return {}
-    global_names = {name for node in ast.walk(tree) if isinstance(node, ast.Global) for name in node.names}
     return {node.name: f"{path}::{node.name}@{node.lineno}"
             for node in tree.body
             if isinstance(node, ast.FunctionDef) and counts[node.name] == 1
-            and node.name not in global_names and not node.decorator_list}
+            and node.name not in declared_globals and not node.decorator_list}
 
 
-def _call_sites(nodes, candidates, shadowed):
+def _call_sites(nodes, candidates, global_names):
+    # The enclosing function's table cannot resolve a comprehension's implicit
+    # scope, including comprehensions inlined by newer CPython versions. Keep
+    # their calls visible but unresolved rather than guessing a module target.
+    nested_calls = {id(child) for node in nodes if isinstance(node, _COMPREHENSIONS)
+                    for child in ast.walk(node) if isinstance(child, ast.Call)}
     calls = []
     for node in nodes:
         if not isinstance(node, ast.Call):
             continue
         expression = _callee(node.func)
         name = node.func.id if isinstance(node.func, ast.Name) else None
-        target = candidates.get(name) if name not in shadowed else None
+        nested_scope = id(node) in nested_calls
+        target = candidates.get(name) if name in global_names and not nested_scope else None
         item = {
             "location": _location(node), "expression": expression,
             "callee_name": name, "resolution": "candidate" if target else "unresolved",
-            "reason": ("unique_unshadowed_module_definition_not_runtime_dispatch"
-                       if target else "dynamic_external_or_shadowed_call"),
+            "reason": ("unique_module_definition_with_compiler_global_binding_not_runtime_dispatch"
+                       if target else "nested_expression_scope_unresolved" if nested_scope
+                       else "dynamic_external_or_non_global_binding"),
         }
         if target:
             item["target"] = target
@@ -333,7 +375,7 @@ class _CFG:
         }
 
 
-def _dfg(cfg, local_variables, arguments):
+def _dfg(cfg, local_variables, arguments, free_variables=()):
     nodes = {node["id"]: node for node in cfg["nodes"] if node["reachable"]}
     predecessors = {key: [] for key in nodes}
     successors = {key: [] for key in nodes}
@@ -372,7 +414,8 @@ def _dfg(cfg, local_variables, arguments):
         for name in node["uses"]:
             if name not in local_variables:
                 unresolved.append({"node": node["id"], "variable": name,
-                                   "reason": "nonlocal_global_or_builtin"})
+                                   "reason": ("free_variable_environment_not_modeled" if name in free_variables
+                                              else "nonlocal_global_or_builtin")})
                 continue
             for definition in sorted(incoming[node["id"]][name], key=lambda value: value or ""):
                 if definition is None:
@@ -388,27 +431,42 @@ def _dfg(cfg, local_variables, arguments):
     }
 
 
-def _analyze_function(function, qualname, enclosing, path, candidates):
+def _analyze_function(function, qualname, enclosing, path, candidates, scopes):
     function_id = f"{path}::{qualname}@{function.lineno}"
     nodes = list(_own_walk(function.body))
     arguments = set(_arguments(function))
-    locals_ = _bindings(nodes) | arguments
-    shadowed = set(locals_)
-    for outer in enclosing:
-        shadowed.update(_bindings(_own_walk(outer.body)))
-        shadowed.update(_arguments(outer))
-    for node in nodes:
-        if isinstance(node, (ast.Global, ast.Nonlocal)):
-            shadowed.update(node.names)
-    calls = _call_sites(nodes, candidates, shadowed)
+    matches = scopes.get((function.name, function.lineno), [])
+    symbols = matches[0].get_symbols() if len(matches) == 1 else []
+    # symtable handles type parameters, closure/class boundaries, declaration
+    # defaults and unevaluated-annotation stores without reimplementing Python's
+    # binding rules. Type parameters are free variables, not runtime arguments.
+    locals_ = {symbol.get_name() for symbol in symbols if symbol.is_local()}
+    global_names = {symbol.get_name() for symbol in symbols if symbol.is_global()}
+    free_variables = {symbol.get_name() for symbol in symbols if symbol.is_free()}
+    calls = _call_sites(nodes, candidates, global_names)
     unknowns = _unsupported(function, nodes)
+    if len(matches) != 1:
+        unknowns.append(_unknown("analysis_limit", function, "compiler function scope missing or ambiguous"))
+    else:
+        compiler_names = {symbol.get_name() for symbol in symbols}
+        ast_names = (_bindings(nodes) | arguments
+                     | {node.id for node in nodes if isinstance(node, ast.Name)})
+        private_mismatches = sorted(name for name in ast_names
+                                    if name.startswith("__") and not name.endswith("__")
+                                    and name not in compiler_names)
+        if private_mismatches:
+            # Class-private names may be mangled by the compiler. Keep the
+            # lexical call unresolved and refuse a DFG that would confuse the
+            # AST spelling with another local/global binding. No ad-hoc mangler.
+            unknowns.append(_unknown("analysis_limit", function,
+                                     "compiler/AST private-name spelling mismatch: " + ", ".join(private_mismatches)))
     if unknowns:
         cfg = {"status": "unsupported", "nodes": [], "edges": []}
         dfg = {"status": "unsupported", "nodes": [], "edges": [], "unresolved_uses": []}
     else:
         try:
             cfg = _CFG(function, function_id).build()
-            dfg = _dfg(cfg, locals_, arguments)
+            dfg = _dfg(cfg, locals_, arguments, free_variables)
         except _GraphLimit as error:
             unknowns.append(_unknown("analysis_limit", function, str(error)))
             cfg = {"status": "unsupported", "nodes": [], "edges": []}
@@ -427,9 +485,9 @@ def _analyze_function(function, qualname, enclosing, path, candidates):
         first = next((node for node in nodes if isinstance(node, types)), None)
         if first:
             unknowns.append(_unknown(kind, first, detail))
-    if enclosing:
+    if enclosing or free_variables:
         unknowns.append(_unknown("closure_environment_not_modeled", function,
-                                 "Outer-scope values remain unresolved; nested function body is indexed independently."))
+                                 "Free variables, including type parameters, remain unresolved; lexical bodies are indexed independently."))
     if function.decorator_list:
         unknowns.append(_unknown("decorator_dispatch_not_modeled", function,
                                  "Graph describes the lexical function body, not decorator-generated runtime behavior."))
@@ -437,6 +495,7 @@ def _analyze_function(function, qualname, enclosing, path, candidates):
     return {
         "id": function_id, "name": function.name, "qualname": qualname, "path": path,
         "location": _location(function), "calls": calls, "unknowns": unknowns,
+        "scope_resolution": "compiler_symtable" if len(matches) == 1 else "unresolved",
         "cfg": cfg, "dfg": dfg, "pdg": {"status": "not_implemented"},
         "metrics": {
             "lines": function.end_lineno - function.lineno + 1,
@@ -462,6 +521,7 @@ def analyze_python(path, source):
             warnings.simplefilter("ignore", SyntaxWarning)
             tree = ast.parse(source, filename=path, type_comments=True)
             compile(tree, path, "exec", dont_inherit=True, optimize=0)
+            compiler_scopes = symtable.symtable(source, path, "exec")
     except (SyntaxError, UnicodeError, ValueError, RecursionError, MemoryError) as error:
         base["parse_status"] = "parse_failed"
         base["diagnostics"] = [{"kind": type(error).__name__,
@@ -478,7 +538,10 @@ def analyze_python(path, source):
                 "location": _location(node), "resolution": "syntactic_import_only",
             })
     base["imports"].sort(key=lambda i: (i["location"]["line"], i["location"]["column"]))
-    candidates = _module_candidates(tree, path)
-    base["functions"] = [_analyze_function(function, qualname, enclosing, path, candidates)
+    declared_globals = {symbol.get_name() for scope in _symbol_tables(compiler_scopes)
+                        for symbol in scope.get_symbols() if symbol.is_declared_global()}
+    candidates = _module_candidates(tree, path, declared_globals)
+    scopes = _function_scopes(compiler_scopes)
+    base["functions"] = [_analyze_function(function, qualname, enclosing, path, candidates, scopes)
                          for function, qualname, enclosing in _index_functions(tree, path)]
     return base
