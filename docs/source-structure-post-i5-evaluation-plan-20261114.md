@@ -1,14 +1,14 @@
 # Eidolon Wayland — I5完了後のソース構造解析・リファクタリング評価計画
 
-**状態:** 評価を開始し、S0/S2 の限定試行と探索比較を実施（2026-11-15）。S1 の自動 parser、S4 の独立 reviewer 比較、製品 refactor は未完了。判断は `scoped_only`。本書は既存の製品契約、I2〜I5の実装計画、host/Quest受入れ条件を変更しない。
+**状態:** PR #30 で S0/S2 の限定的な契約索引と探索比較を実施し、2026-11-15 に main `480e1b5` へ統合した。これは自動 parser の実装ではない。自動発見型 Python Deep は独立した PR #35 の[解析ガイド](source-structure-deep-analysis.md)と[初回評価](source-structure-deep-evaluation-20261115.md)を入口とする。独立 reviewer による効果比較と製品 refactor は未完了で、現段階の評価は **調査補助として試用可能**。本書は既存の製品契約、I2〜I5の実装計画、host/Quest受入れ条件を変更しない。
 **作成日:** 2026-11-14
 **対象:** Eidolon WaylandのRust / Kotlin / JNI / Python helperと、Linux Desktop v3を中心とする所有権・起動・表示・停止の境界。
 **着手時期:** 原則として **I5がmainに統合され、I2〜I5の変更境界が一度安定した後**。I5のCI成功だけで実機受入れ完了とはみなさない。
 
 ## 実施記録と現在の入口（2026-11-15）
 
-source 基準は I5 統合後の `0e0df43a2ce4734a00a36f830cc24a80e277bec5`。
-PR #30 を計画と継続する試行の共通 PR として更新する。一般的な自動 call graph ではなく、まず人が確認した契約を索引にした。
+以下の契約索引の初回評価に用いた source 基準は I5 統合後の `0e0df43a2ce4734a00a36f830cc24a80e277bec5`。
+PR #30 を共通 PR として更新する指示は、その試行期間中の運用記録であり、マージ後の恒久規則ではない。後続の独立した解析責務は現在の main と PR 状態を確認して別 PR で扱う。PR #30 では人が確認した契約を索引にした。
 PR head `769315f` のローカル実行と source 再レビューも、回収・保存レビュー末尾へ記録した。新規の製品不具合は確認せず、IME の既知課題、SDK の案内が分断される点、adapter/JNI 結合の未検証範囲を整理している。
 
 - [回収・設定保存の source / 不変条件 / テスト](source-structure-retirement-review-20261115.md)
@@ -68,7 +68,7 @@ IME の新しい保存前提は製品修正案として残し、Host の大き�
 
 現時点で確認した規模の例は`runtime.rs`約3,200行、`transport/session.rs`約1,800行、`core/session.rs`約1,200行。**規模は探索候補の選択にのみ使う**。対象の正確な行数・symbol・call数・coverageは着手時のpinned sourceから再計測する。
 
-対象を全repositoryへ一度に広げない。最初は重要な **3つのslice** に限定する。
+Repository Deep は Git 管理ソース全体を自動発見し、その結果から Codex が Targeted Deep の対象を選ぶ。上表と次の **3つのslice** は調査仮説であり、固定の対象一覧や事前登録の要件ではない。各 slice の展開範囲は予算を設けて制限する。
 
 1. **Launch slice:** v3の認証済みInspect→LaunchPermit→local listener→remote Start→main/dialog admission。
 2. **Retirement slice:** Stop/timeout/切断→process/forward→Wayland native window→SDK target世代退役→journal finalization。
@@ -76,7 +76,9 @@ IME の新しい保存前提は製品修正案として残し、Host の大き�
 
 ## 4. 解析モデルの候補
 
-### 4.1 Lightweight（最初に実装・評価）
+### 4.1 自動発見と構造索引（Deep と同じ実行経路）
+
+Lightweight 解析の完成を Deep の前提にしない。Git 管理ソースから Production 候補、Test / Fixture、Generated / Vendor、Unsupported language、Excluded source、Parse failed を区別し、選択・除外理由を profile と結果へ記録する。初回の実装範囲は Python AST と局所 CFG / DFG とし、Rust / Kotlin は未対応を明示する。以下は言語 adapter を拡張する際の候補である。
 
 - Rust、Kotlin、Pythonそれぞれのmodule/file、symbol、可視性、source location。
 - 静的に一意なcall、import、参照。非一意なtrait dispatch、macro、callback、reflection、FFI、動的登録は`unknown` / `unresolved`に残す。
@@ -85,7 +87,7 @@ IME の新しい保存前提は製品修正案として残し、Host の大き�
 
 Rust候補: `cargo metadata` + Tree-sitter Rust。Kotlin候補: Tree-sitter Kotlin。Python候補: 標準AST。いずれも**検証前の候補**であり、rust-analyzer/コンパイラ情報、他の解析器、手動定義でもよい。まず出力したい関係を定義し、ツール選定を後から行う。
 
-### 4.2 Semantic Contract Graph（Eidolonで優先）
+### 4.2 Semantic Contract Graph（レビュー済み契約として独立）
 
 言語に依存しないenvelopeを共有し、関係の意味はdomainごとに区別する。
 
@@ -107,9 +109,9 @@ evidence: source selector / test reference / contract document
 
 **最も重要:** `OWNS`、`RETIRES`、`VALIDATES`等の意味的な辺を、名前の類似や単なるcall edgeから自動昇格させない。契約本文と対象source/testの証拠を確認してから、明示的なレビュー対象として登録する。証拠が消失・多重化したらunknown/要レビューとする。行番号の移動だけでは意味を変えないselectorを選ぶが、無条件の曖昧一致・自動修復は禁止する。
 
-### 4.3 Deep（必要になった箇所のみ）
+### 4.3 Deep（Codex からオンデマンドで実行）
 
-CFG/DFG/PDGは、状態遷移・値の起源・条件分岐を追う必要が確認された**限定した関数/モジュール**でのみ比較する。Python helperにはAST起点の保守的な実験が可能。Rustはmacro/async/trait、Kotlinはcoroutine/SDK callback、JNIは言語境界により、単純なASTベースのPDGだけで実際の実行順や寿命を証明できない。
+Repository Deep で責務集中や依存の候補を発見し、Targeted Deep で**限定した関数/モジュール**の呼出候補・制御フロー・局所データ依存と関連テスト候補を読む。Python helper では AST 起点の CFG / DFG を実装し、未対応構文や曖昧な束縛を fixture で検証する。例外・cleanup CFG の精度を確認してから PDG を検討する。Rustはmacro/async/trait、Kotlinはcoroutine/SDK callback、JNIは言語境界により、単純なASTベースのPDGだけで実際の実行順や寿命を証明できない。
 
 特に`select!`、送信future cancellation、ACK喪失、Drop、外部プロセス、EGL/SDK callbackの順序は実コードとfixtureが優先する。解析精度の限界を測らずに網羅的PDGを先行実装しない。
 
@@ -150,12 +152,11 @@ flowchart TD
 
 ```text
 clean pinned source
-  -> parser / source evidence extraction
+  -> automatic discovery / parser / source evidence extraction
   -> coverage + unknown report
-  -> lightweight graph / reviewed contracts
-  -> consistency check / bounded slice
-  -> source + testsで再確認
-  -> 人間による採否判断
+  -> automated candidate graph / bounded structural slice
+  -> Codex review with source + tests
+  -> reviewed contract graph への登録可否を個別判断
 ```
 
 - source commit SHA、解析器のversion/content digest、profile、contract登録版、選択path、coverage、generated artifact digestをmanifestへ残す。
@@ -170,11 +171,11 @@ clean pinned source
 | Step | 作業 | 成果物 / 判定 |
 | --- | --- | --- |
 | S0: I5後の再調査 | main/PR SHA、関連設計、テスト、現行owner、I6/I7残件を確認 | `baseline.md`、coverage候補、未実装との区別 |
-| S1: Lightweight PoC | Rust主要3モジュールからsymbol/import/call、Python helperからASTを抽出。必要ならKotlinはsymbolのみ | `graph.json`、`coverage.json`、unknown一覧、3つのbounded slice |
+| S1: 自動発見型 Deep | Git 管理ソース全体から対象を発見し、Python AST / CFG / 局所 DFG と呼出候補を抽出。Rust / Kotlin は未対応を明示 | 決定論的な候補 artifact、coverage / unknown 一覧、Codex が選んだ対象の bounded slice |
 | S2: Contract / Ownership | I2〜I5の最重要境界を少数のレビュー済みedgeにする | source evidence付きcontract mapとresource retirement matrix |
 | S3: refactor候補探索 | hotspot、重複、凝集度、外部edgeとテストを確認。単純な行数ランキングを採用しない | 最大3件の候補。各候補に`keep / extract / investigate`の判断と理由 |
 | S4: 小さな比較実験 | 同等の限定taskでsource-only探索とstructural sliceありを比較 | 再現可能な結果表、false positive/negative、コスト |
-| S5: 継続判断 | 開発効果・維持コスト・CI負荷をレビュー | `adopt_lightweight / scoped_only / stop`の明示判断 |
+| S5: 継続判断 | 開発効果・維持コスト・CI負荷をレビュー | `trial_deep / scoped_only / stop`の明示判断。比較測定までは調査補助として試用可能 |
 
 S1〜S4は**別PRで行ってよい**。設計PRだけでS0以降を「実装済み」にしない。全体グラフ、全言語対応、CI強制を初回の完成条件にしない。
 
