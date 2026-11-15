@@ -93,7 +93,7 @@ class TypedN02Tests(unittest.TestCase):
             self.assertEqual(checked["exit_code"], 2)
             self.assertFalse(checked["host_v3_acceptance_passed"])
             self.assertEqual(checked["verified_case_oracles"], ["N02/gtk3_desktop"])
-            self.assertTrue(checked["unverified_assertions"] > 0)
+            self.assertTrue(any(item.startswith("N03/") for item in checked["missing"]))
             self.assertEqual(independent.call_count, 1)
             self.assertEqual(report["manifest_sha256"], evidence.MANIFEST_SHA256)
             self.assertEqual(len(report["cases"]), 87)
