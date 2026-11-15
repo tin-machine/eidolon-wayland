@@ -91,14 +91,20 @@ def write_checked(source, native, environment, variant, artifacts):
     # Do not normalize an invalid/missing reference or an incomplete N02
     # result to success, even if the standalone producer oracle passed.
     expected = f"N02/{variant}"
+    # Save even a rejected, bounded aggregate for independent diagnostics.
+    # No failure becomes a successful typed receipt by writing this file.
+    evidence.write_report(artifacts / acceptance, report)
+    evidence.write_report(artifacts / validation, result)
+    # "unverified_assertions" counts only assertions actually *declared* in
+    # this report; the other 85 not_run cases declare none. Do not mistake
+    # zero for 533 verified assertions. The fixed manifest + missing is the
+    # authority for unperformed cases.
     evidence.require(
         result["status"] == "incomplete"
         and result["host_v3_acceptance_passed"] is False
         and result["exit_code"] == 2
         and result["verified_case_oracles"] == [expected]
-        and result["unverified_assertions"] > 0,
+        and any(item.startswith("N03/") for item in result["missing"]),
         "I6_N02_RECEIPT_INVALID",
     )
-    evidence.write_report(artifacts / acceptance, report)
-    evidence.write_report(artifacts / validation, result)
     return result
