@@ -20,6 +20,10 @@ NAMES = (
     "n02-validation.json",
     "n02-gtk3_desktop-native.json", "n02-gtk3_desktop-environment.json",
     "n02-mousepad_editor-native.json", "n02-mousepad_editor-environment.json",
+    "n02-gtk3_desktop-receipt.json", "acceptance-gtk3_desktop.json",
+    "acceptance-gtk3_desktop-validation.json",
+    "n02-mousepad_editor-receipt.json", "acceptance-mousepad_editor.json",
+    "acceptance-mousepad_editor-validation.json",
 )
 
 
@@ -139,6 +143,31 @@ def export_and_validate(incoming, output, image_file, head, attached, runtime, r
         if row.get("status") != "pass" or row.get("reason") != "I6_OK":
             return False
         if row.get("verified_assertions") != actual["verified_assertions"]:
+            return False
+        # The standard, frozen 87-variant I6 validator must independently
+        # reopen the exact typed N02 R/S/T receipts from the exported bytes.
+        # A standalone N02 pass is not itself formal Host acceptance.
+        acceptance = receipts["acceptance-" + variant + ".json"]
+        claim = receipts["acceptance-" + variant + "-validation.json"]
+        expected_case = "N02/" + variant
+        checked = evidence.validate_acceptance(
+            evidence.canonical(acceptance), output, source
+        )
+        if evidence.canonical(claim) != evidence.canonical(checked):
+            return False
+        if (acceptance.get("run_id") != native["run_id"]
+                or acceptance.get("host_v3_acceptance_passed") is not False
+                or checked["status"] != "incomplete"
+                or checked["exit_code"] != 2
+                or checked["host_v3_acceptance_passed"] is not False
+                or checked["verified_case_oracles"] != [expected_case]
+                or checked["unverified_assertions"] <= 0):
+            return False
+        matched = [case for case in acceptance["cases"]
+                   if (case["case_id"], case["variant"]) == ("N02", variant)]
+        if (len(matched) != 1 or matched[0]["status"] != "pass"
+                or matched[0]["reason"] != "I6_OK"
+                or matched[0]["cleanup"]["environment_disposal"] != "not_yet"):
             return False
     return observed == set(CASES)
 
