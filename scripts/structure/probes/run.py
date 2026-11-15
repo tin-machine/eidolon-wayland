@@ -17,7 +17,7 @@ TEST = ROOT / "android/app/src/test/java/io/github/tinmachine/eidolon"
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["sdk", "models", "ime"])
+    parser.add_argument("mode", choices=["sdk", "models", "ime", "save-ime"])
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--cache", type=Path, default=Path.home() / ".gradle/caches/modules-2/files-2.1")
     args = parser.parse_args()
@@ -43,7 +43,8 @@ def main():
                 jar("org.jetbrains.kotlinx", "kotlinx-coroutines-core-jvm", "1.10.1"), annotations]
     cp = [stdlib, annotations]
     if args.mode == "sdk":
-        sources = [MAIN / "SdkResourceScope.kt", MAIN / "SdkEvidenceBridge.kt", *sorted(HERE.glob("*.kt"))]
+        sources = [MAIN / "SdkResourceScope.kt", MAIN / "SdkEvidenceBridge.kt",
+                   *(HERE / name for name in ("AndroidDoubles.kt", "CoreDoubles.kt", "RuntimeDoubles.kt", "SdkBoundaryProbe.kt"))]
         entry = [PACKAGE + "SdkBoundaryProbeKt"]
     else:
         names = ["RuntimeSaveCoordinator", "RuntimeAdmission", "RuntimeOriginStop", "SdkRetirementHub", "SdkEvidenceBridge",
@@ -58,6 +59,10 @@ def main():
             tests = ["ImeSessionConnectionTest", "ImeRawFocusReturnTest"]
         helpers = ["HostLinuxStorageFixture"] if args.mode == "models" else []
         sources = [MAIN / (name + ".kt") for name in names] + [TEST / (name + ".kt") for name in [*tests, *helpers]]
+        if args.mode == "save-ime":
+            sources = [MAIN / (name + ".kt") for name in [*names, "ImeEditorState", "ImeTransactionBridge", "ImeSessionConnection"]]
+            sources += [HERE / "SaveImeBoundaryTest.kt"]
+            tests = ["SaveImeBoundaryTest"]
         cp += [jar("org.json", "json", "20240303"), jar("junit", "junit", "4.13.2"),
                jar("org.hamcrest", "hamcrest-core", "1.3")]
         entry = ["org.junit.runner.JUnitCore", *(PACKAGE + test for test in tests)]

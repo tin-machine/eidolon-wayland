@@ -1,9 +1,25 @@
 # Eidolon Wayland — I5完了後のソース構造解析・リファクタリング評価計画
 
-**状態:** 提案（未着手、評価前）。本書は既存の製品契約、I2〜I5の実装計画、host/Quest受入れ条件を変更しない。  
+**状態:** 評価を開始し、S0/S2 の限定試行と探索比較を実施（2026-11-15）。S1 の自動 parser、S4 の独立 reviewer 比較、製品 refactor は未完了。判断は `scoped_only`。本書は既存の製品契約、I2〜I5の実装計画、host/Quest受入れ条件を変更しない。
 **作成日:** 2026-11-14  
 **対象:** Eidolon WaylandのRust / Kotlin / JNI / Python helperと、Linux Desktop v3を中心とする所有権・起動・表示・停止の境界。  
 **着手時期:** 原則として **I5がmainに統合され、I2〜I5の変更境界が一度安定した後**。I5のCI成功だけで実機受入れ完了とはみなさない。
+
+## 実施記録と現在の入口（2026-11-15）
+
+source 基準は I5 統合後の `0e0df43a2ce4734a00a36f830cc24a80e277bec5`。
+PR #30 を計画と継続する試行の共通 PR として更新する。一般的な自動 call graph ではなく、まず人が確認した契約を索引にした。
+
+- [回収・設定保存の source / 不変条件 / テスト](source-structure-retirement-review-20261115.md)
+- [Host/JNI・SDK 境界と初回の探索比較](source-structure-boundary-review-20261115.md)
+- [独立した変更監視、所有境界、追加3問の評価](source-structure-watch-ownership-20261115.md)
+- [IME 終了証拠の接続案と現行 composition probe](source-structure-ime-retirement-contract-20261115.md)
+- [契約索引の使い方・適用限界](../scripts/structure/README.md)
+
+399 source ファイルの変更監視と、55 anchor / 28関係の意味的索引は異なる範囲である。
+model テスト、SDK doubles、現行 IME composition の成功を、実 Host/JNI/Quest 受入へ昇格させない。
+探索比較は同じ reviewer が既知 source を扱う限定評価で、レビュー時間短縮は未測定。
+IME の新しい保存前提は製品修正案として残し、Host の大きな分割に混ぜない。
 
 ## 1. 目的と期待値
 

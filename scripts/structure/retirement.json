@@ -52,7 +52,9 @@
     "toolchain": "rust-toolchain.toml",
     "android_cargo": "native/android/Cargo.toml",
     "android_lib": "native/android/src/lib.rs",
-    "gradle": "android/app/build.gradle.kts"
+    "gradle": "android/app/build.gradle.kts",
+    "adapter": "android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt",
+    "scope": "android/app/src/main/java/io/github/tinmachine/eidolon/SdkResourceScope.kt"
   },
   "nodes": [
     {
@@ -347,6 +349,97 @@
       "file": "reclamation",
       "anchor": "fn finalization_requires_same_generation_and_all_local_proofs() {",
       "domain": "native",
+      "role": "test"
+    },
+    {
+      "id": "window.create",
+      "file": "adapter",
+      "anchor": "private fun create(handle: Long, plan: JSONObject? = null, initialPose: JSONObject? = null,",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "window.destroy",
+      "file": "adapter",
+      "anchor": "private fun destroy(current: Binding) {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "sdk.reserve",
+      "file": "sdk",
+      "anchor": "fun reserve(id: Lease): Boolean = synchronized(lock) {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "sdk.callback",
+      "file": "sdk",
+      "anchor": "fun enterCallback(id: Lease): CallbackTicket? = synchronized(lock) {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "sdk.producer",
+      "file": "sdk",
+      "anchor": "fun beginProducer(id: Lease): Boolean = synchronized(lock) {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "scope.entity",
+      "file": "scope",
+      "anchor": "internal fun createEntity(create: () -> Entity): Entity {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "scope.destroy",
+      "file": "scope",
+      "anchor": "internal fun destroyEntity(entity: Entity) {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "scope.future",
+      "file": "scope",
+      "anchor": "internal fun sceneObject(",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "scope.release",
+      "file": "scope",
+      "anchor": "internal fun nativeReleased() {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "scene.pass",
+      "file": "scope",
+      "anchor": "fun lateExecute(value: Scene) = synchronized(lock) {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "test.registration",
+      "file": "sdk_tests",
+      "anchor": "@Test fun rejectedRegistrationCanRetryOnlyIfItHadNoSdkOrNativeEffects() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.children",
+      "file": "sdk_tests",
+      "anchor": "@Test fun everyChildAndProducerMustFinishBeforeSynchronousNativeRelease() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.scene-pass",
+      "file": "sdk_tests",
+      "anchor": "@Test fun otherScenePassCannotFinishDeletionAndSamePassDoesNotComplete() {",
+      "domain": "android-model",
       "role": "test"
     }
   ],
@@ -678,6 +771,97 @@
         "test.finalize",
         "test.proof-retry"
       ]
+    },
+    {
+      "id": "window-reserve",
+      "from": "window.create",
+      "to": "sdk.reserve",
+      "relation": "calls",
+      "invariant": "Reserve the captured runtime/target/Scene/adapter lease before native registration or SDK effects; rejected registration has no credited allocation.",
+      "evidence": [
+        "window.create",
+        "sdk.reserve"
+      ],
+      "tests": [
+        "test.registration"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
+    },
+    {
+      "id": "window-allocation",
+      "from": "window.create",
+      "to": "scope.entity",
+      "relation": "calls",
+      "invariant": "Native registration must be Accepted before registered/entity allocation; immutable callback ownership is installed before Panel can invoke producers.",
+      "evidence": [
+        "window.create",
+        "scope.entity"
+      ],
+      "tests": [
+        "test.registration",
+        "test.children"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
+    },
+    {
+      "id": "allocation-ticket",
+      "from": "scope.entity",
+      "to": "sdk.callback",
+      "relation": "requires",
+      "invariant": "Enter a callback ticket before Entity.create; seal/live checks precede allocation and a concurrent seal leaves created Entity as an obligation; finally drains the ticket.",
+      "evidence": [
+        "scope.entity",
+        "sdk.callback"
+      ],
+      "tests": [
+        "test.children"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
+    },
+    {
+      "id": "future-reservation",
+      "from": "scope.future",
+      "to": "sdk.producer",
+      "relation": "requires",
+      "invariant": "Reserve the producer before asking for a future; late results after seal can only be disposed and failed post/dispose is not completion.",
+      "evidence": [
+        "scope.future",
+        "sdk.producer"
+      ],
+      "tests": [
+        "test.children"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
+    },
+    {
+      "id": "entity-deletion-pass",
+      "from": "scope.destroy",
+      "to": "scene.pass",
+      "relation": "requires",
+      "invariant": "Record destroyRequested before SDK destroy; an actual delete and a later pass of the captured Scene are required; neither request return nor a different Scene completes it.",
+      "evidence": [
+        "scope.destroy",
+        "scene.pass"
+      ],
+      "tests": [
+        "test.scene-pass"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
+    },
+    {
+      "id": "accepted-native-release",
+      "from": "window.destroy",
+      "to": "scope.release",
+      "relation": "calls",
+      "invariant": "Dispose/detach/readyToRelease then the exact captured native release Accepted precedes nativeReleased/collectCompleted; Busy/STALE leaves the binding.",
+      "evidence": [
+        "window.destroy",
+        "scope.release"
+      ],
+      "tests": [
+        "test.children"
+      ],
+      "test_scope": "References execute ledger models, not SpatialPanelAdapter or product JNI. Optional SDK-double probe executes scope/fence only; see probes/README.md."
     }
   ],
   "unknowns": [
@@ -710,6 +894,11 @@
       "id": "U6",
       "boundary": "filesystem / crash recovery",
       "detail": "Settings barrier/intent/readback were inspected; all lower-level E1 filesystem primitives and power-loss/cold-restart ownership transfer are outside this review."
+    },
+    {
+      "id": "U7",
+      "boundary": "IME retirement / publication",
+      "detail": "Product IME UI is outside the SDK binding ledger; publication can precede its disposal. The proposed combined receipt is not implemented. See docs/source-structure-ime-retirement-contract-20261115.md. Current composition probe is characterization, not acceptance."
     }
   ],
   "watch": [

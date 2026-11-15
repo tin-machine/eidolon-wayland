@@ -39,8 +39,10 @@ def main():
         parser.error("question IDs must be unique lowercase names")
     started = time.perf_counter()
     graph = structure.build(ROOT, "android-product")
-    if packet and packet["revision"] != graph["revision"]:
-        parser.error("question packet revision differs from source HEAD")
+    if packet and packet["revision"] != graph["reviewed_revision"]:
+        parser.error("question packet revision differs from reviewed source baseline")
+    if graph["status"] != "ok":
+        parser.error("source differs from reviewed baseline; inspect structure.py build output")
     build_seconds = time.perf_counter() - started
     results = []
     for question in questions:
@@ -88,6 +90,7 @@ def main():
     registered = {f["path"] for f in graph["files"].values()}
     result = {"revision": graph["revision"], "graph_sha256": graph["artifact_sha256"],
               "generator_sha256": graph["generator_sha256"], "registry_sha256": graph["registry_sha256"],
+              "question_source_revision": packet["revision"] if packet else None,
               "graph_build_seconds": round(build_seconds, 6), "questions": results,
               "watch_files": graph["coverage"]["watched_files"],
               "boundary_review_files_missing_from_watch": [p for p in candidates if p not in graph["watch"]["inventory"]],

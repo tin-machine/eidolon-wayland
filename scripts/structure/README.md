@@ -3,7 +3,8 @@
 回収・設定保存のレビューで確認した関係を、source、不変条件、負例を含むテストへ結ぶ。
 homecluster の graph、queue、DB、設定には依存しない。Python 標準ライブラリと Git だけを使う。
 [レビューと適用判断](../../docs/source-structure-retirement-review-20261115.md)がこの試行の基準である。
-続報の[監視範囲・所有境界・追加3問](../../docs/source-structure-watch-ownership-20261115.md)も参照する。
+続報の[監視範囲・所有境界・追加3問](../../docs/source-structure-watch-ownership-20261115.md)、
+[IME 終了証拠の接続案](../../docs/source-structure-ime-retirement-contract-20261115.md)も参照する。
 
 ## 使い方
 
@@ -15,6 +16,9 @@ python3 scripts/structure.py check --profile host-model
 python3 scripts/structure.py slice --profile android-product --node save.receipt
 python3 scripts/structure.py slice --profile android-product --node save.resume
 python3 scripts/structure.py slice --profile android-product --node proof.finalize --hops 2 --max-bytes 32000
+python3 scripts/structure.py slice --profile android-product --node window.create --hops 2 --max-bytes 32000
+python3 scripts/structure.py slice --profile android-product --node scope.future --max-bytes 32000
+python3 scripts/structure.py slice --profile android-product --node window.destroy --max-bytes 32000
 ```
 
 `build --profile android-product` は全登録関係を JSON で標準出力へ返す。
@@ -47,15 +51,21 @@ profile が除いた辺は `profile_excluded_edges` に残す。上限を下げ�
 - 基準 SHA・現在 HEAD の Git tree と実ファイルを比較する。追加・削除・内容・実行 mode の変更を記録する。rename は削除と追加として表示する。
 - 指定範囲の ignored/untracked source も含む。source や配下 directory の symlink は追わずエラーにする。抽出前後で一覧と内容の一致も確認する。
 - `watch.changes` は `reviewed_to_head` と `head_to_worktree` を分ける。監視だけのファイルの変更でも `needs_review`、終了コード1。旧 artifact の `verify` と新しい `slice` は拒否する。
-- 2026-11-15 の基準は監視399ファイル、そのうち意味的登録 `files` 外が383。登録20ファイルとの和集合は403（4つの build 設定は suffix 外だが従来の登録ファイル検査を受ける）。この数は網羅率ではない。
+- 初版の監視399ファイル / `files` 外383に対し、SDK の狭い6関係を追加した後は `files` 外381、登録22ファイルとの和集合403（4つの build 設定は suffix 外だが従来の登録ファイル検査を受ける）。この数は網羅率ではない。
 
 両 profile とも同じ監視範囲を保守的に検査する。host profile でも Android source の変更で再レビューになる。
-registry は `reviewed_revision` を監視の比較基準にも使うが、383ファイルの意味を一括承認したという意味はない。
+registry は `reviewed_revision` を監視の比較基準にも使うが、監視ファイルの意味を一括承認したという意味はない。
 変更を確認して基準を進める際に、新 caller の ownership や辺・テストの追加が必要かを判断する。
 
 root/suffix 外のファイル、C/XML/生成物/vendor/SDK内部、任意の新 source root は監視しない。
 既存 root の追加 caller は変更として見つかるが、その呼出・副作用・所有者を自動解析しない。
 Cargo/Gradle 設定の全 include 解決も行わない。`unknowns` は各 slice に必ず残る。
+
+現在の Android profile は55 node / 28関係。SDK の追加6関係は reserve、native registration → allocation、
+callback ticket、future producer、delete と同 Scene pass、実 Accepted 後の native release を対象にする。
+辺の `test_scope` に、参照テストが ledger model を実行し adapter/JNI を実行しないことを記す。
+optional SDK probe は実 scope/fence + doubles の証拠として別に参照する。IME の新 receipt は未実装なので辺にしない。
+host profile は44 node / 16関係で、Android/SDK adapter の12辺を除外表示する。
 
 ## 環境 profile
 
