@@ -164,3 +164,38 @@ context-loss の拒否検査は明示的な T seam である。実 Mesa context 
 **N01 の environment_disposal 成功 receipt は別の残件で、引き続き `not_yet`。**
 新しい renderer wrapper も削除を試行しただけでは環境破棄を complete にせず、
 正式 I6 acceptance の判定へこの T artifact を自動加算しない。
+
+## 8. PR #37 の失敗経路・証跡検証レビュー修正（2026-11-15）
+
+レビュー対象は `aae6a3a480a9336682f810afd6aab81406e26e9b`。
+その実 CI artifact が正常な資源 census を記録していることと、異常な記録を
+validator が拒否できることは別に検証する。今回の指摘は実成果物のリークを
+示すものではなく、回収失敗後の ACK と証跡検査の欠落だった。
+
+- **回収失敗後の ACK:** `ack()` の共通入口で、同じ Shared lock 内の sticky な
+  `gpu_cleanup_failed` を確認する。対象が active から消えたあとの再送 Detach、
+  拒否された旧 Attach、別 target の Detach、RetireWindow、surface loss も迂回できない。
+  過去に正当に完了した ACK は保持し、Stop 後も失敗した owner を reclaimed に昇格しない。
+  default／Android の feature 無効時の経路は変更しない。
+- **段階別 census:** before／window retirement 後／Stop 後の全 field と型を照合し、
+  queue、target、image、app texture 数・容量、GL error、renderer／composition error を検査する。
+  window retirement 後は renderer 共通の context 最大 1 と theme 最大 32 MiB を許容するが、
+  context が 0 なら theme も 0 が必要。Stop 後は worker／context／全 texture・容量もゼロを要求する。
+  fixture は実 fence と対応する census の公開を両方待ち、ゼロ値を補わない。
+- **保持上限:** product の capacity 定数を参照せず、固定入力から 8 件の受理と Pending を観測し、
+  9 件目の実要求が Busy になることを確認する。validator も `accepted` が厳密な整数 8 の場合だけ受理する。
+  過少容量・9 以上・64・bool／float 等の代入を成功にしない。
+
+修正前には実 Controller FIFO と failure-only `Target::retire` seam で 5 件の ACK 漏れを再現した。
+修正後はその 5 件を含む feature unit 36 件、実 EGL integration 3 件、retirement integration 1 件が成功し、
+default unit 26 件も成功した。故障注入は `cfg(test)` に限定し、実 Mesa の teardown 故障を発生させたとは扱わない。
+
+Python suite は 30 件成功。369 census mutation と 11 capacity mutation を、直接 validator と
+外側 CI export の双方で拒否した。元の実 CI artifact の正例は元 checkout の source で引き続き受理する。
+同 artifact の texture／queue／GL error／capacity を変えた独立した 8 例も、修正前の誤受理と修正後の拒否を確認した。
+これらの開発時検査を新 head の実行証拠に流用せず、最終 head／CI checkout／実 fingerprint／再検証結果は PR 本文に記録する。
+
+レビュー継続時の最新 main は `c890f50fbb0d63aeb6de6171e2eb192269285ea0`（PR #36 の Deep 解析）で、
+renderer 修正との重複はない。最新 main を作業 branch へ取り込み、新 head の CI と証跡を採り直す。
+固定 manifest、source pinning、deadline／lease、N01 の 3 修正、N02 の `not_run`、
+正式 I6 の非成功と `environment_disposal=not_yet` は維持する。

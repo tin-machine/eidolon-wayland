@@ -824,6 +824,12 @@ fn update(state: &State, action: impl FnOnce(&mut Shared)) {
     action(&mut state.0.lock().unwrap_or_else(|e| e.into_inner()));
 }
 fn ack(state: &mut Shared, key: TargetKey) {
+    // Every ACK path shares the owner's sticky cleanup verdict. An absent
+    // target or a later successful disposal cannot prove a failed retirement.
+    #[cfg(feature = "host-acceptance")]
+    if state.gpu_cleanup_failed {
+        return;
+    }
     if state.snapshot.detached.back() == Some(&key) {
         return;
     }
@@ -896,7 +902,7 @@ fn retire_gpu_target(
     target: &mut Active,
     device: &mut Option<platform::Device>,
 ) -> bool {
-    #[cfg(all(target_os = "linux", feature = "host-acceptance", not(test)))]
+    #[cfg(all(target_os = "linux", feature = "host-acceptance"))]
     {
         let result = busy(state, || {
             device
@@ -909,7 +915,7 @@ fn retire_gpu_target(
             return false;
         }
     }
-    #[cfg(not(all(target_os = "linux", feature = "host-acceptance", not(test))))]
+    #[cfg(not(all(target_os = "linux", feature = "host-acceptance")))]
     let _ = (state, target, device);
     true
 }
@@ -1554,6 +1560,9 @@ fn owner(state: &State) {
     }
     busy(state, || drop(device));
 }
+
+#[cfg(all(test, feature = "host-acceptance"))]
+mod retirement_checks;
 
 #[cfg(test)]
 mod tests {

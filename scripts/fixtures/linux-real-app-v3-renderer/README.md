@@ -36,11 +36,30 @@ Negative cases exercise foreign owner tickets, replay, wrong session/window,
 uncreated and retired generations, minimum-content-frame Pending, ROI count,
 byte and geometry limits, bounded queue Busy, foreign retirement fences,
 generation admission seals, late old-target retirement, window retirement and
-post-stop readback. A separate process with no GLVND vendor must report an actual
+post-stop readback. The capacity case admits exactly eight future-frame tickets,
+observes all eight as Pending, and requires the actual ninth request to return
+Busy while the first eight remain Pending. Both the fixture and the independent
+validator use the fixed eight-request contract; neither derives the accepted
+capacity from product configuration or a producer-supplied count.
+A separate process with no GLVND vendor must report an actual
 EGL initialization failure; it cannot return a successful stub frame or skip.
 The fixture waits for actual Wayland destruction, renderer target/window fences,
 image/cache release and the same renderer's `owner_reclaimed` before checking
 its final zero-resource census.
+
+The independent validator checks the complete census schema and exact integer,
+boolean and null types at every stage. Each observation has an empty queue and
+no target, image, app texture, texture byte or GL/error residue. Before any target,
+the actual theme adoption must leave the EGL context and GPU theme allocation at
+zero. After window retirement, the renderer's single context and global theme
+may remain alive (theme bytes remain bounded by 32 MiB). After owner reclamation,
+worker/context counts and all GPU texture bytes, including the global theme,
+must be zero. Historical attach/detach counters and the stable owner thread ID
+remain observable. The fixture waits for both the real retirement fence and
+the corresponding published census; it never replaces stale observations with
+invented zero counts. Direct-validator and outer-export mutation tests reject
+nonzero residue, missing fields, boolean/float aliases and under/over-capacity
+claims while allowing the retained global theme at the window-retirement stage.
 
 Context-loss receipt invalidation is additionally covered by the renderer's
 explicit test backend. That test seam is T evidence, not a claim that this

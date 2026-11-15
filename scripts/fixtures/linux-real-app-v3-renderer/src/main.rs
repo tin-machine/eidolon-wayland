@@ -33,6 +33,10 @@ type Result<T> = std::result::Result<T, &'static str>;
 const SIDE: i32 = 1280;
 const ORIGIN: u32 = 624;
 const LIMIT: Duration = Duration::from_secs(18);
+// Fixed independent fixture contracts; do not read back product capacity to
+// decide how many requests or retained theme bytes count as bounded.
+const READBACK_CAPACITY: usize = 8;
+const MAX_RETAINED_THEME_BYTES: usize = 32 * 1024 * 1024;
 const THEME_MANIFEST: &[u8] = b"format_version=2\nid='i6-fixed'\nname='I6 fixed'\nstyle='style.css'\n[parts.backdrop]\nkind='svg-mask'\nslot='window-backdrop'\nsrc='white.svg'\nsize=[1280.0,1280.0]\n";
 const THEME_STYLE: &[u8] =
     b"#backdrop {-eidolon-tint:#102040;opacity:1;}\n#backdrop.focused {-eidolon-tint:#506070;}\n";
@@ -75,6 +79,44 @@ fn renderer_census(snapshot: &eidolon_render::Snapshot) -> Value {
         },
     })
 }
+
+fn census_errors_clear(snapshot: &eidolon_render::Snapshot) -> bool {
+    snapshot.error.is_none()
+        && snapshot.composition.error.is_none()
+        && snapshot.composition.gl_error == 0
+}
+
+fn window_resources_released(snapshot: &eidolon_render::Snapshot) -> bool {
+    snapshot.targets.is_empty()
+        && snapshot.latest_images == 0
+        && snapshot.queued == 0
+        && snapshot.composition.textures == 0
+        && snapshot.composition.texture_bytes == 0
+}
+
+fn retired_census_complete(snapshot: &eidolon_render::Snapshot, owner_tid: i32) -> bool {
+    window_resources_released(snapshot)
+        && snapshot.workers == 1
+        && snapshot.owner_tid == owner_tid
+        && snapshot.attaches == 2
+        && snapshot.detaches == 2
+        && !snapshot.paused
+        && snapshot.contexts <= 1
+        && snapshot.composition.decoration_texture_bytes <= MAX_RETAINED_THEME_BYTES
+        && (snapshot.contexts != 0 || snapshot.composition.decoration_texture_bytes == 0)
+}
+
+fn final_census_complete(snapshot: &eidolon_render::Snapshot, owner_tid: i32) -> bool {
+    window_resources_released(snapshot)
+        && snapshot.workers == 0
+        && snapshot.owner_tid == owner_tid
+        && snapshot.attaches == 2
+        && snapshot.detaches == 2
+        && !snapshot.paused
+        && snapshot.contexts == 0
+        && snapshot.composition.decoration_texture_bytes == 0
+}
+
 fn rois() -> Vec<HostReadbackRoi> {
     vec![
         HostReadbackRoi {
@@ -265,16 +307,32 @@ fn run() -> Result<Value> {
         &RasterBudget::default(),
     )
     .map_err(|_| "FIXTURE_THEME")?;
-    accepted(renderer.set_theme(Some(Arc::new(theme)), true))?;
-    // Give the normal theme staging path work without ever creating a target.
-    thread::sleep(Duration::from_millis(60));
-    let no_target = renderer.snapshot();
+    let theme_revision = renderer
+        .request_theme(Some(Arc::new(theme)), true)
+        .map_err(|_| "FIXTURE_THEME_REQUEST")?;
+    // Observe adoption by the normal theme path, without ever creating a target.
+    let staged = Instant::now();
+    let no_target = loop {
+        let snapshot = renderer.snapshot();
+        require(
+            census_errors_clear(&snapshot) && snapshot.theme_error.is_none(),
+            "FIXTURE_THEME_STAGE",
+        )?;
+        if snapshot.theme_revision == theme_revision {
+            break snapshot;
+        }
+        require(staged.elapsed() < LIMIT, "FIXTURE_THEME_STAGE_TIMEOUT")?;
+        thread::sleep(Duration::from_millis(2));
+    };
     require(
-        no_target.contexts == 0
-            && no_target.targets.is_empty()
+        window_resources_released(&no_target)
+            && no_target.contexts == 0
             && no_target.attaches == 0
-            && no_target.latest_images == 0
-            && no_target.error.is_none(),
+            && no_target.detaches == 0
+            && no_target.workers == 1
+            && no_target.owner_tid > 0
+            && no_target.paused
+            && no_target.composition.decoration_texture_bytes == 0,
         "FIXTURE_EAGER_EGL_ALLOCATION",
     )?;
     renderer.use_windows();
@@ -468,20 +526,34 @@ fn run() -> Result<Value> {
     // No callback produces frame 2 yet, so all requests must remain bounded and
     // Pending. The controller must refuse capacity rather than silently evict.
     let mut pending = Vec::new();
-    for sequence in 10..75 {
-        match fixture.renderer.request_host_readback(request(
-            key,
-            second_frame.checked_next().unwrap(),
-            sequence,
-        )) {
-            Ok(ticket) => pending.push(ticket),
-            Err(Status::Busy) => break,
-            Err(_) => return Err("FIXTURE_CAPACITY_WRONG_STATUS"),
-        }
+    for offset in 0..READBACK_CAPACITY {
+        let ticket = fixture
+            .renderer
+            .request_host_readback(request(
+                key,
+                second_frame.checked_next().unwrap(),
+                10 + offset as u64,
+            ))
+            .map_err(|_| "FIXTURE_CAPACITY_EARLY_REJECTION")?;
+        require(
+            matches!(
+                fixture.renderer.poll_host_readback(&ticket),
+                Ok(HostReadbackPoll::Pending)
+            ),
+            "FIXTURE_MIN_FRAME_FALSE_SUCCESS",
+        )?;
+        pending.push(ticket);
     }
     require(
-        !pending.is_empty() && pending.len() < 65,
-        "FIXTURE_UNBOUNDED_READBACK",
+        matches!(
+            fixture.renderer.request_host_readback(request(
+                key,
+                second_frame.checked_next().unwrap(),
+                10 + READBACK_CAPACITY as u64,
+            )),
+            Err(Status::Busy)
+        ),
+        "FIXTURE_NINTH_READBACK_NOT_BUSY",
     )?;
     negatives.push(json!({"case":"queue_capacity","status":"Busy","accepted":pending.len()}));
     for ticket in &pending {
@@ -605,15 +677,25 @@ fn run() -> Result<Value> {
         .renderer
         .retire_window(session, window)
         .map_err(|_| "FIXTURE_RETIRE")?;
-    fixture.until(|this| Ok(this.renderer.retirement_complete(&window_fence)))?;
-    let retired = fixture.renderer.snapshot();
-    require(
-        retired.targets.is_empty()
-            && retired.latest_images == 0
-            && retired.composition.textures == 0
-            && retired.composition.texture_bytes == 0,
-        "FIXTURE_EARLY_WINDOW_RETIREMENT",
-    )?;
+    // Fence completion and census publication can occur at different points in
+    // the same tick. Wait for both observed conditions, never insert zero counts.
+    let mut retired = None;
+    fixture.until(|this| {
+        let snapshot = this.renderer.snapshot();
+        require(
+            census_errors_clear(&snapshot),
+            "FIXTURE_RETIREMENT_GL_ERROR",
+        )?;
+        if this.renderer.retirement_complete(&window_fence)
+            && retired_census_complete(&snapshot, no_target.owner_tid)
+        {
+            retired = Some(snapshot);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    })?;
+    let retired = retired.ok_or("FIXTURE_EARLY_WINDOW_RETIREMENT")?;
     require(
         fixture
             .renderer
@@ -634,21 +716,20 @@ fn run() -> Result<Value> {
     )?;
     negatives.push(json!({"case":"after_stop","status":"NotReadyOrStale"}));
     let stopped = Instant::now();
-    while !fixture.renderer.owner_reclaimed() {
+    let final_render = loop {
+        let snapshot = fixture.renderer.snapshot();
+        require(census_errors_clear(&snapshot), "FIXTURE_FINAL_GL_ERROR")?;
+        if fixture.renderer.owner_reclaimed()
+            && final_census_complete(&snapshot, no_target.owner_tid)
+        {
+            break snapshot;
+        }
         require(
             stopped.elapsed() < Duration::from_secs(3),
             "FIXTURE_RENDERER_NOT_RECLAIMED",
         )?;
         thread::sleep(Duration::from_millis(2));
-    }
-    let final_render = fixture.renderer.snapshot();
-    require(
-        final_render.workers == 0
-            && final_render.contexts == 0
-            && final_render.targets.is_empty()
-            && final_render.latest_images == 0,
-        "FIXTURE_FINAL_CENSUS",
-    )?;
+    };
     foreign.request_stop();
     Ok(
         json!({"schema":1,"evidence_class":"T","revision":"eidolon-i6-renderer-v1",

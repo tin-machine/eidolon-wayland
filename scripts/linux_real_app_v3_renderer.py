@@ -35,6 +35,13 @@ FIXED_ROIS = [{"id": 1, "x": 624, "y": 624, "width": 32, "height": 32},
 RECEIPT_FIELDS = {"renderer_owner", "context_epoch", "request_seq", "target", "min_content_frame",
                   "content_frame", "present_seq", "snapshot_id", "geometry", "logical_size", "layers",
                   "content_rect", "roi_revision", "roi_sha256", "pixel_sha256", "backend", "rois"}
+CENSUS_FIELDS = {"workers", "owner_tid", "queued", "contexts", "targets", "latest_images",
+                 "attaches", "detaches", "paused", "error", "composition"}
+COMPOSITION_FIELDS = {"textures", "texture_bytes", "decoration_texture_bytes", "gl_error", "error"}
+# Independent limits for this fixed fixture, not values read from producer
+# configuration or accepted-count evidence.
+READBACK_CAPACITY = 8
+MAX_RETAINED_THEME_BYTES = 32 * 1024 * 1024
 
 
 def need(condition, reason="I6_RENDERER_EVIDENCE_INVALID"):
@@ -81,6 +88,31 @@ def expected_bytes(frame, roi, focused):
                  for channel in (frame % 128, (y + frame) % 128, (x + frame) % 128, 255))
 
 
+def validate_census(value, stage):
+    need(type(value) is dict and set(value) == CENSUS_FIELDS)
+    before, final = stage == "before_target", stage == "final_renderer"
+    expected = {"workers": 0 if final else 1, "queued": 0, "targets": [],
+                "latest_images": 0, "attaches": 0 if before else 2,
+                "detaches": 0 if before else 2, "paused": before, "error": None}
+    need(all(same_typed(value[name], wanted) for name, wanted in expected.items()))
+    need(type(value["owner_tid"]) is int and 0 < value["owner_tid"] < 2**31)
+    composition = value["composition"]
+    need(type(composition) is dict and set(composition) == COMPOSITION_FIELDS)
+    need(all(same_typed(composition[name], 0) for name in ("textures", "texture_bytes", "gl_error"))
+         and composition["error"] is None)
+    if stage == "retired":
+        # Window retirement releases window-owned images/cache/targets. The
+        # renderer may retain its one context and bounded global theme until Stop.
+        need(type(value["contexts"]) is int and 0 <= value["contexts"] <= 1)
+        retained = composition["decoration_texture_bytes"]
+        need(type(retained) is int and 0 <= retained <= MAX_RETAINED_THEME_BYTES)
+        need(value["contexts"] != 0 or retained == 0)
+    else:
+        need(same_typed(value["contexts"], 0)
+             and same_typed(composition["decoration_texture_bytes"], 0))
+    return value["owner_tid"]
+
+
 def validate(native, source, inputs, unavailable):
     need(type(native) is dict and same_typed(native.get("schema"), 1) and native.get("revision") == REVISION
          and native.get("status") == "pass" and native.get("evidence_class") == "T")
@@ -88,9 +120,9 @@ def validate(native, source, inputs, unavailable):
     need(source["dirty"] is False and source["build_features"] == [])
     need(native.get("identity") == {"source": {**source, "build_features": ["host-acceptance"]}, "inputs": inputs},
          "I6_SOURCE_MISMATCH")
-    before = native["before_target"]
-    need(all(same_typed(before[k], 0) for k in ("contexts", "attaches", "latest_images"))
-         and before["targets"] == [] and before["error"] is None)
+    census_owners = [validate_census(native[stage], stage)
+                     for stage in ("before_target", "retired", "final_renderer")]
+    need(len(set(census_owners)) == 1 and native["owner_reclaimed"] is True)
     rows = native["readbacks"]
     need(type(rows) is list and [row["label"] for row in rows] == LABELS)
     keys, frames, owners, presents, requests, minimums, contexts, surfaces, contents = [], [], [], [], [], [], [], [], []
@@ -170,14 +202,8 @@ def validate(native, source, inputs, unavailable):
     for row in negatives:
         need(row["status"] == permitted[row["case"]])
         if row["case"] == "queue_capacity":
-            need(type(row["accepted"]) is int and 1 <= row["accepted"] < 65)
+            need(same_typed(row["accepted"], READBACK_CAPACITY))
     need(same_typed(native["client"]["frames"], 100) and native["client"]["protocol_error"] is False)
-    retired = native["retired"]
-    need(retired["targets"] == [] and same_typed(retired["latest_images"], 0)
-         and same_typed(retired["composition"]["textures"], 0) and same_typed(retired["composition"]["texture_bytes"], 0))
-    final = native["final_renderer"]
-    need(native["owner_reclaimed"] is True and same_typed(final["workers"], 0) and same_typed(final["contexts"], 0)
-         and final["targets"] == [] and same_typed(final["latest_images"], 0) and final["error"] is None)
     need(type(unavailable) is dict and same_typed(unavailable.get("returncode"), 1)
          and unavailable.get("status") == "fail" and same_typed(unavailable.get("successful_receipts"), 0)
          and unavailable.get("reason") in {"EGL_INIT_FAILED", "EGL_DRIVER_UNAVAILABLE", "EGL_UNAVAILABLE"},

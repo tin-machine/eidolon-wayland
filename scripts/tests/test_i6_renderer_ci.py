@@ -19,6 +19,84 @@ INPUTS = {"inventory_sha256": "a" * 64, "compiled_source_hashes": {"test": "b" *
 UNAVAILABLE = {"returncode": 1, "status": "fail", "reason": "EGL_INIT_FAILED", "successful_receipts": 0}
 ROI = [{"id": 1, "x": 624, "y": 624, "width": 32, "height": 32},
        {"id": 2, "x": 8, "y": 8, "width": 2, "height": 2}]
+MISSING = object()
+
+
+def census(stage):
+    """Full synthetic census, retaining the global theme until renderer stop."""
+    before, final = stage == "before_target", stage == "final_renderer"
+    return {"workers": 0 if final else 1, "owner_tid": 7, "queued": 0,
+            "contexts": 1 if stage == "retired" else 0, "targets": [],
+            "latest_images": 0, "attaches": 0 if before else 2,
+            "detaches": 0 if before else 2, "paused": before, "error": None,
+            "composition": {"textures": 0, "texture_bytes": 0,
+                            "decoration_texture_bytes": 6553604 if stage == "retired" else 0,
+                            "gl_error": 0, "error": None}}
+
+
+def census_mutations():
+    """Each yielded change violates the stage's independent census contract."""
+    for stage in ("before_target", "retired", "final_renderer"):
+        original = census(stage)
+        zero_paths = [("queued",), ("latest_images",), ("composition", "textures"),
+                      ("composition", "texture_bytes"), ("composition", "gl_error")]
+        if stage != "retired":
+            zero_paths += [("contexts",), ("composition", "decoration_texture_bytes")]
+        if stage == "before_target":
+            zero_paths += [("attaches",), ("detaches",)]
+        elif stage == "final_renderer":
+            zero_paths += [("workers",)]
+        for path in zero_paths:
+            for changed in (1, 64, -1, False, True, 0.0, "0", None):
+                yield (stage, *path), changed
+        for path in (("error",), ("composition", "error")):
+            for changed in (0, 1, False, True, 0.0, "GL_ERROR"):
+                yield (stage, *path), changed
+        for changed in (0, -1, False, True, 1.0, "7", None, 2**31):
+            yield (stage, "owner_tid"), changed
+        for changed in (0, 1, 0.0, None, not original["paused"]):
+            yield (stage, "paused"), changed
+        yield (stage, "targets"), [{}]
+        yield (stage, "targets"), None
+        if stage != "final_renderer":
+            for changed in (0, 2, 64, False, True, 1.0, None):
+                yield (stage, "workers"), changed
+        if stage != "before_target":
+            for field in ("attaches", "detaches"):
+                for changed in (0, 1, 64, False, True, 2.0, None):
+                    yield (stage, field), changed
+        if stage == "retired":
+            for changed in (-1, 0, 2, 64, False, True, 1.0, None):
+                yield (stage, "contexts"), changed
+            for changed in (-1, 32 * 1024 * 1024 + 1, False, True, 0.0, None):
+                yield (stage, "composition", "decoration_texture_bytes"), changed
+        for field in original:
+            yield (stage, field), MISSING
+        for field in original["composition"]:
+            yield (stage, "composition", field), MISSING
+        yield (stage, "unknown"), 0
+        yield (stage, "composition", "unknown"), 0
+    yield ("retired", "owner_tid"), 8
+    yield ("final_renderer", "owner_tid"), 8
+
+
+def mutate_path(value, path, changed):
+    for key in path[:-1]:
+        value = value[key]
+    if changed is MISSING:
+        del value[path[-1]]
+    else:
+        value[path[-1]] = changed
+
+
+def queue_mutations():
+    for changed in (0, 1, 7, 9, 64, False, True, 8.0, "8", None, MISSING):
+        yield changed
+
+
+def mutate_queue(native, changed):
+    row = next(row for row in native["negative_cases"] if row["case"] == "queue_capacity")
+    mutate_path(row, ("accepted",), changed)
 
 
 def specimen():
@@ -63,13 +141,13 @@ def specimen():
     return {"schema": 1, "revision": renderer.REVISION, "status": "pass", "evidence_class": "T",
             "host_v3_acceptance_passed": False, "coverage": deepcopy(renderer.COVERAGE),
             "identity": {"source": {**SOURCE, "build_features": ["host-acceptance"]}, "inputs": deepcopy(INPUTS)},
-            "before_target": {"contexts": 0, "targets": [], "attaches": 0, "latest_images": 0, "error": None},
+            "before_target": census("before_target"),
             "readbacks": rows,
             "negative_cases": [{"case": case, "status": status, **({"accepted": 8} if case == "queue_capacity" else {})}
                                for case, status in negative_statuses.items()],
             "client": {"frames": 100, "protocol_error": False},
-            "retired": {"targets": [], "latest_images": 0, "composition": {"textures": 0, "texture_bytes": 0}},
-            "final_renderer": {"workers": 0, "contexts": 0, "targets": [], "latest_images": 0, "error": None},
+            "retired": census("retired"),
+            "final_renderer": census("final_renderer"),
             "owner_reclaimed": True}
 
 
@@ -214,6 +292,28 @@ class RendererEvidenceTests(unittest.TestCase):
             with self.subTest(section=section, field=field), self.assertRaises(ValueError):
                 self.checked(native)
 
+    def test_stage_census_requires_quiescent_owned_resources_and_strict_types(self):
+        for path, changed in census_mutations():
+            native = specimen()
+            mutate_path(native, path, changed)
+            with self.subTest(path=path, changed=changed), self.assertRaises((ValueError, KeyError)):
+                self.checked(native)
+
+    def test_retired_global_theme_and_context_remain_legal_until_stop(self):
+        for contexts, theme_bytes in ((1, 6553604), (1, 0), (0, 0)):
+            native = specimen()
+            native["retired"]["contexts"] = contexts
+            native["retired"]["composition"]["decoration_texture_bytes"] = theme_bytes
+            with self.subTest(contexts=contexts, theme_bytes=theme_bytes):
+                self.assertTrue(self.checked(native)["renderer_t_passed"])
+
+    def test_capacity_requires_exactly_eight_pending_requests_before_busy(self):
+        for changed in queue_mutations():
+            native = specimen()
+            mutate_queue(native, changed)
+            with self.subTest(changed=changed), self.assertRaises((ValueError, KeyError)):
+                self.checked(native)
+
     def test_missing_negative_case_and_unbounded_queue_are_rejected(self):
         native = specimen()
         native["negative_cases"].pop()
@@ -297,6 +397,32 @@ class RendererExportTests(unittest.TestCase):
             path.write_text(json.dumps({**original, **changed}))
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 self.export()
+
+    def test_outer_export_rejects_every_stage_census_mutation(self):
+        path = self.incoming / "renderer-native.json"
+        for index, (fields, changed) in enumerate(census_mutations()):
+            native = specimen()
+            mutate_path(native, fields, changed)
+            # Deliberately write arbitrary JSON here: float and type failures
+            # must be rejected by the real outer reader, not this test writer.
+            path.write_text(json.dumps(native))
+            self.output = self.root / f"census-mutation-{index}"
+            self.output.mkdir(mode=0o700)
+            with self.subTest(fields=fields, changed=changed), self.assertRaises((ValueError, KeyError)):
+                self.export()
+            self.assertFalse((self.output / "renderer-container.json").exists())
+
+    def test_outer_export_rejects_capacity_underfill_overflow_and_type_aliases(self):
+        path = self.incoming / "renderer-native.json"
+        for index, changed in enumerate(queue_mutations()):
+            native = specimen()
+            mutate_queue(native, changed)
+            path.write_text(json.dumps(native))
+            self.output = self.root / f"capacity-mutation-{index}"
+            self.output.mkdir(mode=0o700)
+            with self.subTest(changed=changed), self.assertRaises((ValueError, KeyError)):
+                self.export()
+            self.assertFalse((self.output / "renderer-container.json").exists())
 
     def test_missing_and_symlink_receipts_cannot_pass(self):
         path = self.incoming / "renderer-unavailable.json"

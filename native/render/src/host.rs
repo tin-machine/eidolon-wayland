@@ -49,6 +49,8 @@ pub struct TestControl {
     pub blocked: std::sync::atomic::AtomicBool,
     pub entered: std::sync::atomic::AtomicBool,
     pub fault: std::sync::atomic::AtomicU8,
+    #[cfg(feature = "host-acceptance")]
+    pub retire_failure: std::sync::atomic::AtomicBool,
 }
 pub struct Target {
     info: GpuInfo,
@@ -56,6 +58,20 @@ pub struct Target {
     control: Option<std::sync::Arc<TestControl>>,
 }
 impl Target {
+    #[cfg(all(test, feature = "host-acceptance"))]
+    pub fn retire(&mut self, _: &mut Device) -> Result<(), &'static str> {
+        // Failure-only seam for the actual Controller cleanup/FIFO path. This
+        // bookkeeping adapter never manufactures a successful GL receipt.
+        if self.control.as_ref().is_some_and(|control| {
+            control
+                .retire_failure
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        }) {
+            Err("EGL_SHUTDOWN_FAILED")
+        } else {
+            Ok(())
+        }
+    }
     #[cfg(feature = "host-acceptance")]
     pub fn frame_readback(
         &mut self,
