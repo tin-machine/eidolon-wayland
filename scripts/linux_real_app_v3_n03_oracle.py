@@ -168,7 +168,7 @@ def normalized_n02(native):
     return converted
 
 
-def phase_no_launch(native, env, owner, phase, catalog):
+def phase_no_launch(native, env, owner, phase, catalog, *, intermediate=False):
     """Use N01's independent strict protocol and physical cleanup checker."""
     stage = copy.deepcopy(native)
     stage["trace"] = {
@@ -188,12 +188,18 @@ def phase_no_launch(native, env, owner, phase, catalog):
     phase_owner["launch_request"] = None
     phase_owner["native_origin"] = None
     missing, failures, seen, kinds = n01._trace(stage, phase_owner, env)
-    require(not missing and not failures and seen is not None,
+    # Controller::request_stop is a Runtime-wide event, not an Inspect
+    # capture event. An old, already finalized capture must NOT fabricate
+    # the later Runtime's stop as its own. Retain only that precise missing
+    # event for the intermediate phase, and require the actual stop on the
+    # final phase (and check it after finalization).
+    allowable = {"receipt/controller_stop_requested"} if intermediate else set()
+    require(set(missing) == allowable and not failures and seen is not None,
             "I6_N03_CLEANUP_UNPROVEN")
     require("no_local_allocation_sealed" in kinds
             and "remote_cleanup_observed" in kinds
             and "finalizer_published" in kinds
-            and "controller_stop_requested" in kinds)
+            and (intermediate or "controller_stop_requested" in kinds))
     remote = only({k: [(int(v["sequence"]), v) for v in rows]
                    for k, rows in kinds.items()}, "remote_cleanup_observed")[1]["data"]
     require(remote["start_attempted"] is False
@@ -331,8 +337,9 @@ def verify(native, env, source, variant):
         # Product cleanup/NoLocalAllocation is checked for BOTH old and current
         # captures. One new Runtime with a zero ledger cannot prove an old one.
         owner, _ = owner_target(native)
-        for phase, (_, row) in zip(phases, catalogs):
-            phase_no_launch(native, env, owner, phase, row["data"]["registry"])
+        for index, (phase, (_, row)) in enumerate(zip(phases, catalogs)):
+            phase_no_launch(native, env, owner, phase, row["data"]["registry"],
+                            intermediate=index + 1 < len(phases))
         require(native["start_count"] == 0
                 and native["sdk_observations"] is None
                 and native["readback"] is None and native["ready"] is None
