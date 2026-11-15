@@ -190,7 +190,7 @@ def resolve_imports(files, modules, functions, sources, revision):
                 evidence = {k: binding[k] for k in ("source", "import_location", "scope", "bound_name",
                            "imported_name", "imported_module", "level", "resolution", "reason")}
                 for key in ("module_path", "module_source", "module_candidates", "import_root_rule",
-                            "target", "target_location"):
+                            "target", "target_location", "additional_boundaries"):
                     if key in binding:
                         evidence[key] = binding[key]
                 call["import_evidence"] = evidence
