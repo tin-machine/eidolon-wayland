@@ -39,8 +39,11 @@ def _module_path(importer, name, level, paths, analyzed):
     else:
         # Other directory layouts can supply the same absolute module name at
         # runtime. Refuse conflicting tracked module basenames, even if excluded.
-        competing = sorted(p for p in paths if p.endswith("/" + parts[-1] + ".py")
-                           or p == parts[-1] + ".py")
+        competing = sorted(p for p in paths
+                           if p.endswith("/" + parts[-1] + ".py")
+                           or p == parts[-1] + ".py"
+                           or p.endswith("/" + parts[-1] + "/__init__.py")
+                           or p == parts[-1] + "/__init__.py")
         if len(competing) > 1:
             return None, "ambiguous_repository_module_basename", competing, rule
     for part in parts[:-1]:

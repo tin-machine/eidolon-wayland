@@ -154,6 +154,16 @@ def run():
         self.assertEqual(call["resolution"], "unresolved")
         self.assertEqual(call["import_evidence"]["reason"], "namespace_or_missing_package_init")
 
+    def test_same_named_packages_in_different_roots_are_unresolved(self):
+        self.write("pkg/tool/__init__.py", "def finish(): return 1\n")
+        self.write("other/tool/__init__.py", "def finish(): return 2\n")
+        self.write("pkg/entry.py", "import tool as core\ndef run(): return core.finish()\n")
+        self.commit()
+        call = self.fn(self.graph(), "pkg/entry.py", "run")["calls"][0]
+        self.assertEqual(call["resolution"], "unresolved")
+        self.assertEqual(call["import_evidence"]["reason"], "ambiguous_repository_module_basename")
+        self.assertEqual(len(call["import_evidence"]["module_candidates"]), 2)
+
     def test_relative_import_cannot_escape_root_even_with_init_present(self):
         self.write("__init__.py", "")
         self.write("service.py", "def finish(x): return x\n")
