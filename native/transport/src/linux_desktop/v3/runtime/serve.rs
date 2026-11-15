@@ -384,11 +384,14 @@ pub async fn serve<H: client::Handler>(
         boot_changed: false,
     };
     #[cfg(feature = "host-acceptance")]
-    request.capture.observe("remote_cleanup_observed", serde_json::json!({
-        "remote":remote,"channel_complete":channel_complete,
-        "forward_retired":forward_retired,"router_drained":router_drained,
-        "start_attempted":report.start_attempted
-    }));
+    request.capture.observe(
+        "remote_cleanup_observed",
+        serde_json::json!({
+            "remote":remote,"channel_complete":channel_complete,
+            "forward_retired":forward_retired,"router_drained":router_drained,
+            "start_attempted":report.start_attempted
+        }),
+    );
     report.remote_cleanup = RemoteCleanup {
         process_complete: cleanup.process_complete,
         pipes_eof: cleanup.pipes_eof,
@@ -407,11 +410,13 @@ pub async fn serve<H: client::Handler>(
                     let value = {
                         let mut value = value;
                         value.deferred.observe_with(&request.capture);
-                        request.capture.observe("journal_complete", serde_json::json!({"stage":"complete"}));
+                        request
+                            .capture
+                            .observe("journal_complete", serde_json::json!({"stage":"complete"}));
                         value
                     };
                     handoff = Some(value);
-                },
+                }
                 Err(error) => report.fault(error),
             },
             Err(error) => {

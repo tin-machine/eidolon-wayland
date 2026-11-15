@@ -141,9 +141,12 @@ pub async fn recover_remote<H: client::Handler>(
             let cleanup = journal.ensure_complete_durable()?;
             #[cfg(feature = "host-acceptance")]
             if let Some(capture) = observation {
-                capture.observe("recovery_durable_complete", serde_json::json!({
-                    "generation":generation.to_string(),"cleanup":cleanup
-                }));
+                capture.observe(
+                    "recovery_durable_complete",
+                    serde_json::json!({
+                        "generation":generation.to_string(),"cleanup":cleanup
+                    }),
+                );
             }
             report.apply_cleanup(&cleanup);
             return DeferredReclamation::from_complete(journal, &binding, generation);
@@ -215,12 +218,15 @@ pub async fn recover_remote<H: client::Handler>(
             )?;
             #[cfg(feature = "host-acceptance")]
             if let Some(capture) = observation {
-                capture.observe("recovery_receipt", serde_json::json!({
-                    "record":receipt.record(),"generation":generation.to_string(),
-                    "expected_boot_id":expected_boot,"exit_status":status.unwrap(),
-                    "eof":eof,"exit_signal":signal,"channel_closed":true,
-                    "router_active":router.report().active
-                }));
+                capture.observe(
+                    "recovery_receipt",
+                    serde_json::json!({
+                        "record":receipt.record(),"generation":generation.to_string(),
+                        "expected_boot_id":expected_boot,"exit_status":status.unwrap(),
+                        "eof":eof,"exit_signal":signal,"channel_closed":true,
+                        "router_active":router.report().active
+                    }),
+                );
             }
             report.channel_complete = true;
             Ok(receipt)

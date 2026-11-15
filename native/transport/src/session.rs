@@ -637,9 +637,14 @@ impl Controller {
             let proof = admission.seal_without_local_allocation();
             #[cfg(feature = "host-acceptance")]
             if proof.is_some() {
-                admission.capture().observe("no_local_allocation_sealed", serde_json::json!({"before_cancel":true}));
+                admission.capture().observe(
+                    "no_local_allocation_sealed",
+                    serde_json::json!({"before_cancel":true}),
+                );
             }
-            if proof.is_some() { s.desktop_v3_no_local_allocation = proof; }
+            if proof.is_some() {
+                s.desktop_v3_no_local_allocation = proof;
+            }
         }
         if let Some(cancel) = &s.cancel {
             cancel.cancel();
@@ -1045,9 +1050,12 @@ impl Controller {
         s.desktop_v3_finalization_pending = false;
         #[cfg(feature = "host-acceptance")]
         if let Some(capture) = &s.desktop_v3_capture {
-            capture.observe("finalizer_published", serde_json::json!({
-                "generation":result.generation().to_string(),"status":Status::Accepted as i32
-            }));
+            capture.observe(
+                "finalizer_published",
+                serde_json::json!({
+                    "generation":result.generation().to_string(),"status":Status::Accepted as i32
+                }),
+            );
         }
         s.desktop_v3_capture = None;
         s.desktop_v3_no_local_allocation = None;
@@ -1472,7 +1480,9 @@ impl Controller {
     pub fn request_stop(&self) {
         #[cfg(feature = "host-acceptance")]
         if !self.signals.stop.load(Ordering::Acquire) {
-            self.signals.host_trace.record_current("controller_stop_requested", serde_json::json!({}));
+            self.signals
+                .host_trace
+                .record_current("controller_stop_requested", serde_json::json!({}));
         }
         self.signals.stop.store(true, Ordering::Release);
         self.signals.update(|s| {
@@ -1635,10 +1645,13 @@ fn owner(
                 s.desktop_v3_io_retired = true;
                 #[cfg(feature = "host-acceptance")]
                 if let Some(capture) = &s.desktop_v3_capture {
-                    capture.observe("io_retired", serde_json::json!({
-                        "generation":connect.session.get().to_string(),
-                        "tokio_threads":signals.tokio_workers.load(Ordering::Acquire)
-                    }));
+                    capture.observe(
+                        "io_retired",
+                        serde_json::json!({
+                            "generation":connect.session.get().to_string(),
+                            "tokio_threads":signals.tokio_workers.load(Ordering::Acquire)
+                        }),
+                    );
                 }
                 if let Some(report) = &mut s.report.desktop_v3_transport {
                     report.io_retired = true;
@@ -2083,7 +2096,7 @@ async fn connection(
                                     capture.observe("recovery_bound", serde_json::json!({"generation":connect.session.get().to_string()}));
                                 }
                                 true
-                            },
+                            }
                             Err(error) => {
                                 outcome.report.error = Some(error);
                                 false

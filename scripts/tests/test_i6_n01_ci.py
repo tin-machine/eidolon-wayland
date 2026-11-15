@@ -141,9 +141,13 @@ class DockerLifecycleTests(unittest.TestCase):
 
     def test_product_exit_failure_is_not_overridden_by_pass_receipt(self):
         self.env["N01_TEST_RUNTIME_EXIT"] = "1"
+        self.write("n01-native.json", {"schema": "eidolon-i6-n01-native-v1", "error": "I6_ASSERTION_FAILED"})
         result = self.execute()
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(json.loads((self.out / "container.json").read_text())["container_exit"], 1)
+        diagnostic = self.out / "n01-native.json"
+        self.assertEqual(json.loads(diagnostic.read_text())["error"], "I6_ASSERTION_FAILED")
+        self.assertEqual(diagnostic.stat().st_mode & 0o777, 0o600)
         self.assert_cleaned()
 
     def test_external_watchdog_and_rescue_cannot_pass_even_if_container_exits_zero(self):
@@ -158,7 +162,39 @@ class DockerLifecycleTests(unittest.TestCase):
 
     def test_missing_receipt_does_not_pass_with_success_exit(self):
         (self.receipts / "n01-receipt.json").unlink()
+        self.write("n01-native.json", {"schema": "eidolon-i6-n01-native-v1", "error": None})
         self.assertNotEqual(self.execute().returncode, 0)
+        self.assertTrue((self.out / "n01-native.json").is_file())
+        self.assert_cleaned()
+
+    def test_optional_diagnostic_is_not_an_acceptance_gate(self):
+        self.write("n01-native.json", {"schema": "eidolon-i6-n01-native-v1", "error": "I6_ASSERTION_FAILED"})
+        result = self.execute()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.out / "n01-native.json").is_file())
+        self.assert_cleaned()
+
+    def test_invalid_optional_diagnostic_is_omitted(self):
+        (self.receipts / "n01-native.json").write_text('{"invalid":', encoding="utf-8")
+        result = self.execute()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.out / "n01-native.json").exists())
+        self.assert_cleaned()
+
+    def test_optional_diagnostic_symlink_is_never_exported(self):
+        target = self.root / "private.json"
+        target.write_text('{"secret":"not exported"}', encoding="utf-8")
+        (self.receipts / "n01-native.json").symlink_to(target)
+        result = self.execute()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.out / "n01-native.json").exists())
+        self.assert_cleaned()
+
+    def test_optional_diagnostic_larger_than_bound_is_omitted(self):
+        (self.receipts / "n01-native.json").write_bytes(b'"' + b"a" * (1024 * 1024) + b'"')
+        result = self.execute()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.out / "n01-native.json").exists())
         self.assert_cleaned()
 
     def test_formal_acceptance_promotion_is_rejected(self):

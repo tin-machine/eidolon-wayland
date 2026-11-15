@@ -118,7 +118,9 @@ fn inspect_stop_ack_requires_the_requested_validated_stop_and_complete_cleanup()
             "context":binding.context().record(),"scope":binding.scope(),
             "sequence":sequence,"request_sequence":request,
             "event":{"type":kind,"payload":payload}
-        }).to_string().into_bytes();
+        })
+        .to_string()
+        .into_bytes();
         bytes.push(b'\n');
         bytes
     };
@@ -126,22 +128,36 @@ fn inspect_stop_ack_requires_the_requested_validated_stop_and_complete_cleanup()
         "lease_ms":15000,"boot_id":BOOT,
         "remote_socket":format!("/home/fixture/.eidolon-desktop-v3/s-{}/p",binding().nonce())
     }))).unwrap();
-    owner.protocol.command(Action::Stop,None).unwrap();
-    owner.data(&frame("2","1","stopped",serde_json::json!({
-        "reason":"stop","process_complete":true,"pipes_eof":true,
-        "remote_cleaned":true,"receipt_written":true
-    }))).unwrap();
-    assert!(!owner.requested_inspect_stop_complete(),"an unsolicited observation is not requested Stop");
+    owner.protocol.command(Action::Stop, None).unwrap();
+    owner
+        .data(&frame(
+            "2",
+            "1",
+            "stopped",
+            serde_json::json!({
+                "reason":"stop","process_complete":true,"pipes_eof":true,
+                "remote_cleaned":true,"receipt_written":true
+            }),
+        ))
+        .unwrap();
+    assert!(
+        !owner.requested_inspect_stop_complete(),
+        "an unsolicited observation is not requested Stop"
+    );
     owner.cancel.cancel();
     assert!(owner.requested_inspect_stop_complete());
-    for reason in [StopReason::LeaseExpired, StopReason::InputEof, StopReason::ProcessExited] {
-        owner.report.stop_reason=Some(reason);
+    for reason in [
+        StopReason::LeaseExpired,
+        StopReason::InputEof,
+        StopReason::ProcessExited,
+    ] {
+        owner.report.stop_reason = Some(reason);
         assert!(!owner.requested_inspect_stop_complete());
     }
-    owner.report.stop_reason=Some(StopReason::Stop);
-    owner.report.pipes_eof=false;
+    owner.report.stop_reason = Some(StopReason::Stop);
+    owner.report.pipes_eof = false;
     assert!(!owner.requested_inspect_stop_complete());
-    owner.report.pipes_eof=true;
+    owner.report.pipes_eof = true;
     owner.fail("DESKTOP_V3_PROTOCOL_INVALID");
     assert!(!owner.requested_inspect_stop_complete());
 }

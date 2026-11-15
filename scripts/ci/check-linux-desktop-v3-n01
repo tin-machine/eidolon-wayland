@@ -80,8 +80,9 @@ i6_runtime_exit=$(docker inspect --format '{{.State.ExitCode}}' "$i6_container")
 mkdir -m 0700 "$i6_work/export"
 docker cp "$i6_container:/artifacts/." "$i6_work/export" >/dev/null 2>&1 || true
 
-# Export only the fixed, bounded, flat JSON receipts. Never copy logs, keys,
-# the fixture root, a profile, or arbitrary recursive container contents.
+# Export only the fixed, bounded, flat JSON receipts and optional n01-native.json
+# diagnostics. Diagnostics cannot satisfy an assertion or a missing receipt.
+# Never copy logs, keys, the fixture root, a profile, or arbitrary recursive data.
 python3 "$i6_source_root/scripts/linux_real_app_v3_n01_ci.py" \
   "$i6_work/export" "$i6_artifact_root" "$i6_work/image.id" \
   "$i6_source_head" "$i6_attach_exit" "$i6_runtime_exit" "$i6_running" "$i6_source_root"

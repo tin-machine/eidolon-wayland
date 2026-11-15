@@ -10,6 +10,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import linux_real_app_v3_evidence as evidence
 import linux_real_app_v3_n01 as n01
+from test_linux_real_app_v3_n01_oracle import specimen
 
 
 class N01SupervisorTests(unittest.TestCase):
@@ -17,6 +18,65 @@ class N01SupervisorTests(unittest.TestCase):
         self.work = tempfile.TemporaryDirectory(prefix="eidolon-n01-unit-")
         self.addCleanup(self.work.cleanup)
         self.root = Path(self.work.name)
+
+    def execute_receipt(self, receipt, source, name="artifacts"):
+        args = n01.argparse.Namespace(artifact_root=self.root / name)
+
+        def completed_fixture(_args, artifacts, _source, _progress):
+            return n01.assemble_report(source, source, receipt["native"], receipt["environment"], artifacts)
+
+        with mock.patch.object(n01.evidence, "source_snapshot", return_value=source), \
+             mock.patch.object(n01, "run_fixture", side_effect=completed_fixture):
+            code = n01.execute(args)
+        report = json.loads((args.artifact_root / "acceptance.json").read_bytes())
+        validation = json.loads((args.artifact_root / "acceptance-validation.json").read_bytes())
+        result = json.loads((args.artifact_root / "n01-validation.json").read_bytes())
+        return code, args.artifact_root, report, validation, result
+
+    def test_rejected_typed_receipt_reaches_validator_as_invalid_not_environment_unavailable(self):
+        for mutation, reason in (("mixed_capture", "I6_OWNER_MISMATCH"),
+                                 ("cleanup_order", "I6_TRACE_INVALID"),
+                                 ("malformed_protocol", "I6_REPORT_INVALID")):
+            with self.subTest(mutation=mutation):
+                receipt, source = specimen()
+                events = receipt["native"]["trace"]["events"]
+                if mutation == "mixed_capture":
+                    next(e for e in events if e["kind"] == "journal_unlinked")["capture"]["capture_id"] = "f" * 64
+                elif mutation == "cleanup_order":
+                    io = next(i for i, e in enumerate(events) if e["kind"] == "io_retired")
+                    unlink = next(i for i, e in enumerate(events) if e["kind"] == "journal_unlinked")
+                    events[io], events[unlink] = events[unlink], events[io]
+                    for sequence, event in enumerate(events, 1):
+                        event["sequence"] = str(sequence)
+                else:
+                    prepared = next(e for e in events if e["kind"] == "protocol_event")
+                    prepared["data"]["record"]["event"]["payload"]["lease_ms"] = "private-value-must-not-appear"
+                code, artifacts, report, validation, result = self.execute_receipt(receipt, source, mutation)
+                self.assertEqual(code, 3)
+                self.assertEqual((validation["status"], validation["reason"]), ("invalid", reason))
+                self.assertEqual(result["acceptance_exit_code"], 3)
+                self.assertEqual(result["oracle"]["status"], "invalid")
+                self.assertEqual(result["oracle"]["reason"], reason)
+                self.assertIsNone(result["fixture_failure"])
+                self.assertFalse(result["n01_inspect_only_passed"])
+                self.assertFalse(result["host_v3_acceptance_passed"])
+                self.assertNotIn("private-value-must-not-appear", json.dumps(result))
+                self.assertEqual(len(report["artifacts"]), 1)
+                self.assertEqual(report["artifacts"][0]["kind"], "n01_receipt")
+                self.assertEqual(json.loads((artifacts / "n01-receipt.json").read_bytes()), receipt)
+                self.assertEqual(report["cases"][0]["assertions"], [])
+
+    def test_valid_typed_receipt_verifies_n01_with_all_other_required_cases_retained(self):
+        receipt, source = specimen()
+        code, _artifacts, report, validation, result = self.execute_receipt(receipt, source)
+        self.assertEqual(code, 0)
+        self.assertEqual(validation["exit_code"], 2)
+        self.assertTrue(result["n01_inspect_only_passed"])
+        self.assertFalse(result["host_v3_acceptance_passed"])
+        self.assertEqual(len(report["cases"]), 87)
+        self.assertEqual(len(report["cases"][0]["assertions"]), 8)
+        self.assertTrue(all(row["status"] == "not_run" for row in report["cases"][1:]))
+        self.assertEqual(result["required_assertions"], 533)
 
     def test_without_explicit_disposable_flag_no_account_probe_or_mutation(self):
         with mock.patch.object(n01.pwd, "getpwnam", side_effect=AssertionError("account lookup")), \

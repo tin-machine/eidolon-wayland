@@ -167,7 +167,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Collect rustfmt diagnostics from an isolated source copy
+      - name: Check Rust formatting in an isolated source copy
         run: |
           set -euo pipefail
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt
@@ -183,7 +183,8 @@ jobs:
             cargo +1.95.0 fmt --all
             cargo +1.95.0 fmt --manifest-path scripts/fixtures/linux-real-app-v3-host/Cargo.toml
             git diff --binary > "$RUNNER_TEMP/n01-rustfmt.patch"
-            echo '::warning::Rust formatting needs review; the existing host formatting gate remains authoritative.'
+            echo '::error::Rust formatting must pass for the workspace and standalone N01 runner.'
+            exit 1
           fi
       - name: Disposable container build and real N01 smoke
         run: bash scripts/ci/check-linux-desktop-v3-n01 --artifact-root "$RUNNER_TEMP/i6-n01"
@@ -191,7 +192,13 @@ jobs:
         if: ${{ always() }}
         with:
           name: linux-desktop-v3-n01-${{ github.sha }}
-          path: ${{ runner.temp }}/i6-n01/*.json
+          path: |
+            ${{ runner.temp }}/i6-n01/acceptance.json
+            ${{ runner.temp }}/i6-n01/acceptance-validation.json
+            ${{ runner.temp }}/i6-n01/n01-validation.json
+            ${{ runner.temp }}/i6-n01/n01-receipt.json
+            ${{ runner.temp }}/i6-n01/n01-native.json
+            ${{ runner.temp }}/i6-n01/container.json
           if-no-files-found: warn
           retention-days: 3
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

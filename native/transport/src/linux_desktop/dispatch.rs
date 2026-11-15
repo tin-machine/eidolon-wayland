@@ -202,10 +202,16 @@ pub async fn recover<H: russh::client::Handler>(
             validate_recovery_selection(request.files, Version::V3)?;
             Ok(RecoveryReport::V3(Box::new(
                 v3::recovery::recover_remote(
-                    client, router, request, previous, generation, cancel,
+                    client,
+                    router,
+                    request,
+                    previous,
+                    generation,
+                    cancel,
                     #[cfg(feature = "host-acceptance")]
                     None,
-                ).await,
+                )
+                .await,
             )))
         }
     }

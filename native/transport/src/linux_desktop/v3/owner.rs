@@ -254,7 +254,10 @@ impl Owner {
         #[cfg(feature = "host-acceptance")]
         if let Some(capture) = &self.host_capture {
             // A send attempt is counted even if the bounded SSH enqueue fails.
-            capture.observe("control_send_attempt", serde_json::json!({"action":action.as_str()}));
+            capture.observe(
+                "control_send_attempt",
+                serde_json::json!({"action":action.as_str()}),
+            );
         }
         // The ACK deadline includes enqueue time, not just time after send.
         // C2 Start can perform a five-second settings probe and a three-second
@@ -439,10 +442,13 @@ impl Owner {
             if let Some(capture) = &self.host_capture {
                 // Preserve the actual validated wire bytes, not a generated catalog.
                 // B1's strict parser has already bounded and checked this record.
-                capture.observe("protocol_event", serde_json::json!({
-                    "record":serde_json::from_slice::<serde_json::Value>(&line)
-                        .expect("strict protocol accepted JSON")
-                }));
+                capture.observe(
+                    "protocol_event",
+                    serde_json::json!({
+                        "record":serde_json::from_slice::<serde_json::Value>(&line)
+                            .expect("strict protocol accepted JSON")
+                    }),
+                );
             }
             self.event(event.clone());
             events.push(event);

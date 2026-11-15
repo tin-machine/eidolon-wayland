@@ -304,7 +304,13 @@ def prepare_sshd(fixture, app_home):
     child = subprocess.Popen(["/usr/sbin/sshd", "-D", "-e", "-f", str(fixture / "sshd_config")],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              env=clean_environment("/"), start_new_session=True)
-    pidfd = os.pidfd_open(child.pid)
+    try:
+        pidfd = os.pidfd_open(child.pid)
+    except OSError:
+        # This is our unreaped Popen child, never a PID recovered from a file.
+        child.kill()
+        child.wait(timeout=2)
+        raise FixtureError("I6_ENVIRONMENT_UNAVAILABLE") from None
     try:
         deadline = time.monotonic() + 5
         while True:
@@ -448,9 +454,6 @@ def assemble_report(source, after, native, environment, artifacts):
     receipt = {"schema": 1, "kind": REVISION, "run_id": report["run_id"], "case_id": "N01",
                "variant": "inspect_only", "source_sha256": source["tree_sha256"], "owner": owner,
                "native": native, "environment": environment}
-    oracle = verify_receipt(receipt, expected_run_id=report["run_id"],
-                            expected_source_sha256=source["tree_sha256"], expected_owner=owner,
-                            expected_source=source)
     evidence.write_report(artifacts / "n01-receipt.json", receipt)
     raw = evidence.read_report(artifacts / "n01-receipt.json")
     reference = {"artifact": "n01-receipt.json", "owner_id": owner["owner_id"],
@@ -459,8 +462,22 @@ def assemble_report(source, after, native, environment, artifacts):
         "evidence_class": "R", "kind": "n01_receipt", "run_id": report["run_id"], "case_id": "N01",
         "variant": "inspect_only", "owner_id": owner["owner_id"], "target_id": None,
         "source_sha256": source["tree_sha256"]})
+    try:
+        oracle = verify_receipt(receipt, expected_run_id=report["run_id"],
+                                expected_source_sha256=source["tree_sha256"], expected_owner=owner,
+                                expected_source=source)
+    except (ValueError, TypeError, KeyError, RecursionError) as error:
+        # Keep malformed or mixed evidence available to the final validator.
+        # It must independently reopen this typed receipt and return invalid,
+        # rather than turn an oracle rejection into environment unavailability.
+        invalid = evidence.invalid_result(str(error) if isinstance(error, evidence.EvidenceError) else None)
+        oracle = {"status": "invalid", "reason": invalid["reason"], "missing": [], "failures": [],
+                  "verified_assertions": [], "census": {}}
     case = next(row for row in report["cases"] if (row["case_id"], row["variant"]) == ("N01", "inspect_only"))
-    case.update(status=oracle["status"], reason=oracle["reason"], owners=[owner])
+    # The producer schema has no invalid case status. Only the final evidence
+    # validator grants that verdict after checking the referenced receipt.
+    case.update(status="incomplete" if oracle["status"] == "invalid" else oracle["status"],
+                reason="I6_EVIDENCE_MISSING" if oracle["status"] == "invalid" else oracle["reason"], owners=[owner])
     if oracle["status"] == "pass":
         case["observed_product_outcome"] = "complete"
         case["cleanup"]["product"] = "complete"
@@ -475,17 +492,22 @@ def assemble_report(source, after, native, environment, artifacts):
 
 
 def run_fixture(args, artifacts, source, progress):
+    progress["stage"] = "disposable_preflight"
     isolation = disposable_preflight(args.disposable_container)
     need(args.source_root == ROOT and not source["dirty"], "I6_SOURCE_DIRTY")
     fixture = fresh_directory(args.fixture_root)
+    progress["stage"] = "dedicated_accounts"
     accounts = prepare_accounts()
     app_home = Path(accounts["app"]["passwd_home"])
     driver_home = Path(accounts["driver"]["passwd_home"])
     driver_uid = accounts["driver"]["uid"]
+    progress["stage"] = "base_bundle"
     waypipe = prepare_base_bundle(app_home)
+    progress["stage"] = "immutable_bundle"
     build_result = evidence.parse(command(["/usr/bin/python3", ROOT / "scripts/build-linux-desktop-v3-bundle",
         "--reviewed-package", args.reviewed_package], uid=ACCOUNTS["app"][0], home=app_home, seconds=180))
     need(build_result.get("status") == "built")
+    progress["stage"] = "normal_configuration"
     configuration, before = export_bundle(build_result["build_id"], app_home)
     driver = fresh_directory(driver_home / "fixture", uid=driver_uid, gid=driver_uid)
     files = fresh_directory(driver / "files", uid=driver_uid, gid=driver_uid)
@@ -494,6 +516,7 @@ def run_fixture(args, artifacts, source, progress):
     runner_hash = evidence.sha(read_owned(args.runner, 0, limit=128 * 1024 * 1024, private=False))
     sshd = None
     try:
+        progress["stage"] = "dedicated_sshd"
         sshd, sshd_pidfd, host_key, ssh = prepare_sshd(fixture, app_home)
         run_id = secrets.token_hex(16)
         progress["run_id"] = run_id
@@ -508,6 +531,7 @@ def run_fixture(args, artifacts, source, progress):
         exclusive(descriptor_path, evidence.canonical(descriptor), uid=driver_uid, gid=driver_uid)
         credential = os.open(fixture / "client-key", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         diagnostic = bytearray()
+        progress["stage"] = "registry_runner"
         try:
             code, _ = run_capture([args.runner, "--descriptor", descriptor_path, "--credential-fd", str(credential),
                 "--output", output_path], uid=driver_uid, home=driver_home, seconds=180,
@@ -532,10 +556,12 @@ def run_fixture(args, artifacts, source, progress):
         if native.get("cleanup_error") is not None:
             progress["cleanup_reason"] = "I6_CLEANUP_FAILED"
         owner_id = native["owner_id"]
+        progress["stage"] = "final_census"
         # This census precedes fixture sshd termination. A later kill cannot
         # manufacture a clean product observation.
         counts = settled_census(sshd)
         counts.update(filesystem_census(files, app_home, installation_id, storage_id))
+        progress["stage"] = "immutable_recheck"
         _, after_inputs = export_bundle(build_result["build_id"], app_home)
         need(runner_hash == evidence.sha(read_owned(args.runner, 0, limit=128 * 1024 * 1024, private=False)),
              "I6_SOURCE_MISMATCH")
@@ -544,6 +570,7 @@ def run_fixture(args, artifacts, source, progress):
             "before": before, "after": after_inputs, "runner": {"source_sha256": source["tree_sha256"],
             "binary_sha256": runner_hash}, "isolation": isolation, "final": counts}
         after_source = evidence.source_snapshot(ROOT)
+        progress["stage"] = "independent_receipt"
         report, oracle = assemble_report(source, after_source, native, environment, artifacts)
         if progress["first_reason"] is not None:
             case = report["cases"][0]
@@ -570,7 +597,7 @@ def execute(args):
     artifacts = private_artifact_root(args.artifact_root)
     source = None
     oracle = None
-    progress = {"run_id": None, "first_reason": None, "cleanup_reason": None,
+    progress = {"stage": "source_snapshot", "run_id": None, "first_reason": None, "cleanup_reason": None,
                 "runner_reason": None, "native_saved": False}
     fixture_failure = None
     try:
@@ -610,6 +637,7 @@ def execute(args):
         "required_families": 28, "required_variants": 87, "required_assertions": 533,
         "oracle": oracle, "acceptance_exit_code": result["exit_code"],
         "fixture_failure": fixture_failure, "runner_reason": progress["runner_reason"],
+        "fixture_stage": progress["stage"],
         "environment_disposal": "not_yet"}
     evidence.write_report(artifacts / "n01-validation.json", n01_result)
     print(json.dumps({k: v for k, v in n01_result.items() if k not in {"oracle", "source"}}, sort_keys=True))

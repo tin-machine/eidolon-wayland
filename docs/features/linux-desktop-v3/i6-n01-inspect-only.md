@@ -1,6 +1,6 @@
 # I6 第2実装単位: N01 実 SSH／Inspect-only
 
-2026-11-15（日本時間）。開始時の最新 main は
+2026-11-15（日本時間）。実装の基準とした最新 main は
 `0a0454f0e4f6c6dce6407a4dfb2c3f0b67385fd4`。
 [PR #33](https://github.com/tin-machine/eidolon-wayland/pull/33) の merge 状態を GitHub で確認し、
 その証拠基盤を再利用して N01 を実装する。初回確認では #33 は open だったが、作業中の merge 後に
@@ -40,7 +40,7 @@ Host fixture の `admission_epoch: "1"` はこの実行の ordinal であり、A
 | [supervisor](../../../scripts/linux_real_app_v3_n01.py) | 明示したdisposable containerだけをprovision。専用account、実HOME、鍵、sshd、実FS／process census |
 | [N01 oracle](../../../scripts/linux_real_app_v3_n01_oracle.py) | Python B1契約を用いたcatalog／wire／owner／capture／回収順序の独立照合 |
 | [既存validator](../../../scripts/linux_real_app_v3_evidence.py) | `n01_receipt` typed artifactを検証。ほかのrequired行を保持 |
-| [Docker wrapper](../../../scripts/ci/check-linux-desktop-v3-n01) | clean commitのcloneからimageをbuild。container実行・限定artifact採取・外側の再照合・破棄 |
+| [Docker wrapper](../../../scripts/ci/check-linux-desktop-v3-n01) | clean commitのcloneからimageをbuild。container実行・限定artifact採取・外側の再照合・破棄の試行 |
 | [Dockerfile](../../../scripts/fixtures/linux-desktop-v3-acceptance/Dockerfile.n01) | Ubuntu 24.04、Rust 1.95.0、既存の固定native／Waypipe／Mousepad builderを利用 |
 
 source inventoryの15ファイルとcompiled source tableを実bytesで照合する。
@@ -82,9 +82,11 @@ lock file欠落は「解放済み」に変換しない。これらのFS観測だ
 観測traceは最大4,096 event／1MiB、各eventは64KiB以内。producerをblockせず、overflow／取得競合はstickyな不足として残る。
 別owner／別capture、Start送信、stop前seal欠落、finalizer前全停止、census前destroy、実complete不足は成功にならない。
 
-fixtureのsshd終了とcontainer破棄はproduct回収の後に行う。
-container内部から環境破棄を自己申告せず、内部reportの `environment_disposal` は `not_yet`、
-外側wrapperが実container状態と救済の有無を記録する。
+fixtureのsshd停止とcontainer削除は、productの観測結果とは分けて試行する。
+失敗経路ではproduct回収が未成立でもfixture救済を行うが、これをproduct回収成功へ読み替えない。
+内部reportの `environment_disposal` は `not_yet` のままである。
+外側wrapperは削除前のcontainer終了codeと救済判定を記録し、EXIT trapでcontainer／imageの削除を試行する。
+削除成功のreceiptは採取していないため、N01 wrapperのexit 0は環境破棄完了を証明しない。
 
 ## 実行方法
 
@@ -102,9 +104,11 @@ scripts/ci/check-linux-desktop-v3-n01 --artifact-root /absolute/private/empty/n0
 - `n01-validation.json`: N01のみの独立判定と正式I6未完了の境界。
 - `acceptance.json`: 全87variantを残したraw report。
 - `acceptance-validation.json`: raw reportとartifactから再計算した正式I6の判定。
-- `container.json`: 外側が実測したimage／container終了／watchdog／救済の記録。
+- `container.json`: image ID、実行source commit、attachとcontainerの終了code、停止救済の判定。削除完了の証明は含まない。
+- `n01-native.json`: 失敗解析用のoptionalなnative観測。必須receiptやassertionの代替にはしない。
 
-環境不足や実行失敗時はN01成功receiptを生成しない。出力された固定reasonと未実施行を確認する。
+環境不足や実行失敗時はN01成功receiptを生成しない。出力された固定reason、`fixture_stage`、未実施行を確認する。
+不正なtyped receiptも保存し、独立validatorが `invalid / exit 3` を決定する。環境不足へ読み替えない。
 同一の実行sourceをcheckoutし、取得したartifactをprivateに保持したまま既存CLIで再照合できる。
 
 ```sh
@@ -114,6 +118,9 @@ python3 scripts/check-linux-real-app --stage acceptance \
 ```
 
 CIがsynthetic merge commitで実行した場合は、PR headではなくreceiptの実source commitと一致させる。
+現在のPR workflowはmerge用checkoutを使用し、`source.commit` と `container.json.source_commit` に実行commitを記録する。
+`source.pr_head` は `null` であり、PR headとの対応はGitHub Actionsのrun／PRメタデータで別に確認する。
+receipt自体がPR headを束縛したとは扱わない。
 source／artifactの相違を無視するオプションは設けない。
 
 ## 検証記録と残件

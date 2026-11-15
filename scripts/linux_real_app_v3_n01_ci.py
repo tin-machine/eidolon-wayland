@@ -9,6 +9,23 @@ import sys
 import linux_real_app_v3_evidence as evidence
 
 NAMES = ("acceptance.json", "acceptance-validation.json", "n01-validation.json", "n01-receipt.json")
+DIAGNOSTIC_NAMES = ("n01-native.json",)
+
+
+def read_json(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                not 0 < info.st_size <= 1024 * 1024):
+            raise ValueError("N01 exported receipt is invalid")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(1024 * 1024 + 1)
+        if len(raw) != info.st_size:
+            raise ValueError("N01 exported receipt changed")
+        return raw, evidence.parse(raw)
+    finally:
+        os.close(fd)
 
 
 def export_and_validate(incoming, output, image_file, head, attached, runtime, running, source_root):
@@ -18,26 +35,22 @@ def export_and_validate(incoming, output, image_file, head, attached, runtime, r
     if not (attached.isdecimal() and runtime.isdecimal() and running in {"true", "false"}):
         raise ValueError("N01 container disposition is invalid")
     receipts = {}
-    for name in NAMES:
+    for name in NAMES + DIAGNOSTIC_NAMES:
         try:
-            fd = os.open(incoming / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            raw, parsed = read_json(incoming / name)
         except FileNotFoundError:
             continue
-        try:
-            info = os.fstat(fd)
-            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
-                    not 0 < info.st_size <= 1024 * 1024):
-                raise ValueError("N01 exported receipt is invalid")
-            with os.fdopen(fd, "rb", closefd=False) as stream:
-                raw = stream.read(1024 * 1024 + 1)
-            if len(raw) != info.st_size:
-                raise ValueError("N01 exported receipt changed")
-            receipts[name] = evidence.parse(raw)
-            with (output / name).open("xb") as target:
-                target.write(raw)
-            (output / name).chmod(0o600)
-        finally:
-            os.close(fd)
+        except (OSError, ValueError, TypeError):
+            if name in DIAGNOSTIC_NAMES:
+                # Diagnostics are optional, untrusted observations. Omit an
+                # unsafe file without promoting it to an acceptance gate.
+                continue
+            raise
+        if name in NAMES:
+            receipts[name] = parsed
+        with (output / name).open("xb") as target:
+            target.write(raw)
+        (output / name).chmod(0o600)
     envelope = {"schema": 1, "source_commit": head, "image_id": image_id,
                 "attach_exit": int(attached), "container_exit": int(runtime),
                 "external_rescue": running == "true", "network": "none",
