@@ -161,6 +161,8 @@ pub async fn serve<H: client::Handler>(
                     report.transport.journal_pending = true;
                     journal = Some(Journal::reserve(request.files, binding)?);
                     report.journal_stage = Some(Stage::Reserved);
+                    #[cfg(feature = "host-acceptance")]
+                    request.capture.observe("journal_reserved", serde_json::json!({"stage":"reserved"}));
                     publish(&report);
                     Ok(())
                 },
@@ -168,6 +170,8 @@ pub async fn serve<H: client::Handler>(
             .await?,
         );
         let active = owner.as_mut().expect("opened owner");
+        #[cfg(feature = "host-acceptance")]
+        active.observe_with(request.capture.clone());
         while active.phase() == Phase::AwaitingPrepared {
             active.next().await?;
             if active.report().terminal_event {
@@ -182,6 +186,8 @@ pub async fn serve<H: client::Handler>(
             .unwrap()
             .prepared(active.boot_id().ok_or("DESKTOP_V3_PROTOCOL_INVALID")?)?;
         report.journal_stage = Some(Stage::Prepared);
+        #[cfg(feature = "host-acceptance")]
+        request.capture.observe("journal_prepared", serde_json::json!({"stage":"prepared"}));
         active.inspect().await?;
         while active.phase() == Phase::Prepared {
             active.next().await?;
@@ -200,11 +206,19 @@ pub async fn serve<H: client::Handler>(
             active.selection("mousepad-editor-v1")?,
         ];
         report.transport.phase = TransportPhase::Catalog;
+        #[cfg(feature = "host-acceptance")]
+        request.capture.observe("catalog_published", serde_json::json!({"selections":selections.iter().map(|selection|selection.record()).collect::<Vec<_>>()}));
         publish(&report);
         catalog(&selections);
 
         let mut launch = loop {
             if active.phase() != Phase::Catalog || active.report().terminal_event {
+                // A user Disconnect after Inspect is a normal no-Launch path.
+                // Only its validated Stop ACK qualifies; unsolicited expiry,
+                // pending cleanup and channel failures keep their first fault.
+                if active.requested_inspect_stop_complete() {
+                    return Ok(());
+                }
                 return Err("DESKTOP_CATALOG_UNAVAILABLE");
             }
             match active.next_launch(&mut launches).await? {
@@ -369,6 +383,15 @@ pub async fn serve<H: client::Handler>(
         router_drained,
         boot_changed: false,
     };
+    #[cfg(feature = "host-acceptance")]
+    request.capture.observe(
+        "remote_cleanup_observed",
+        serde_json::json!({
+            "remote":remote,"channel_complete":channel_complete,
+            "forward_retired":forward_retired,"router_drained":router_drained,
+            "start_attempted":report.start_attempted
+        }),
+    );
     report.remote_cleanup = RemoteCleanup {
         process_complete: cleanup.process_complete,
         pipes_eof: cleanup.pipes_eof,
@@ -382,7 +405,18 @@ pub async fn serve<H: client::Handler>(
     if let Some(mut owned) = journal {
         match owned.finish(cleanup) {
             Ok(()) => match DeferredReclamation::from_complete(owned, binding, generation) {
-                Ok(value) => handoff = Some(value),
+                Ok(value) => {
+                    #[cfg(feature = "host-acceptance")]
+                    let value = {
+                        let mut value = value;
+                        value.deferred.observe_with(&request.capture);
+                        request
+                            .capture
+                            .observe("journal_complete", serde_json::json!({"stage":"complete"}));
+                        value
+                    };
+                    handoff = Some(value);
+                }
                 Err(error) => report.fault(error),
             },
             Err(error) => {

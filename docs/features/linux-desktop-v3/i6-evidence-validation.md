@@ -10,6 +10,10 @@
 この単位のunit test成功やPR mergeを、I6 Host acceptanceの成功へ読み替えない。
 I6は引き続きmanual discoveryとし、resolver manifestの登録taskには追加しない。
 
+後続の [第2実装単位 N01: 実SSH／Inspect-only](i6-n01-inspect-only.md) では、
+通常Registry runner、disposable環境、読み取り専用trace、N01専用oracleを接続する。
+この文書の第1単位時点の未実施記録は維持し、N01の実施結果と正式I6全体の未完了を区別する。
+
 ## 1. 開始時の差分と今回の境界
 
 開始時に最新mainと作業treeを確認し、I6実装の重複はなかった。
@@ -150,17 +154,39 @@ size/digest不一致、読み取り中のinode/ancestor/root差替えを拒否�
 欠落だけのartifactはincomplete、存在するが内容・参照が矛盾するartifactはinvalidとして区別する。
 `opaque` artifactはbyte整合性のみを検査し、typed receiptやGUI oracleを充足した扱いにはしない。
 
+部分合格を計算するときも、必須artifactと参照の欠落は、そのcase/variantの証拠不足として扱う。
+公開する `missing` の `artifact/...`／`typed_receipt/...` 表記とは別にcaseへの帰属を保持し、
+case名をprefixに持つ診断だけで充足を判定しない。宣言されていないartifact、宣言済みだが
+実fileがないartifact、読めないtrace参照、意味的に検証できないtyped receiptは部分合格を成立させない。
+別caseの証拠不足は、そのcaseに帰属させる。
+
+`verified_case_oracles` へ入れるcaseは、独立oracleと必要な参照が成立し、case自身が
+`status=pass` かつoperator cancelされていない必要がある。N01自身のcancelは
+`n01_inspect_only_passed=false` とし、全体の `cancelled / exit 130` と矛盾させない。
+完了済みN01とは別のcaseのcancelは、run全体をcancelledにするが、N01の完了済み証拠を取り消さない。
+N01 smokeでは `environment_disposal` の未完了だけを部分合格の対象外とする既存境界を保ち、
+正式I6にはその不足を残す。その他の欠落をこの例外へ含めない。
+
 `first_case_failure` と `cleanup_failures[]` は別に保持する。
 期待されたproduct failureは `first_product_failure` に記録し、それ自体を予期しないcase failureにしない。
 負例の正しいUnknown/Pending保持とrescue完了は両立するが、product completeへ昇格しない。
 
 ## 5. Source provenanceの範囲
 
-`source_snapshot` は実checkout commit、tracked path/mode/contentからのcanonical tree SHA-256、dirty状態、
-build features、任意のPR head識別を表す。treeのencodingは、pathのraw bytesをhex化した値、Git mode、
+共通のsource recordは実checkout commit、tracked path/mode/contentからのcanonical tree SHA-256、dirty状態、
+build features、任意のPR head識別を持つ。read-onlyの `source_snapshot` はbinaryを検査せず、
+`build_features: []` を「binary buildについて主張しないcheckout観測」のmarkerとして返す。
+feature無しでbinaryをbuildしたという証拠ではない。treeのencodingは、pathのraw bytesをhex化した値、Git mode、
 content SHA-256のrowをsortしたcanonical JSONである。symlinkはtarget bytesをhashし、参照先を追わない。
 採取中のHEAD/index/status変化を検査し、実行前後とvalidator側期待sourceを照合する。
 dirty/untrackedは非成功、矛盾するsourceや前後の変更はinvalidとなる。
+
+N01 runnerの `native.build_source` はbuild時の実checkoutに加えて、固定Cargo entrypointが必須にする
+product feature `build_features: ["host-acceptance"]` を埋め込む。build helperは実Cargo.tomlの
+`eidolon-android`／`eidolon-core`／`eidolon-transport` の必須dependency宣言を確認する。
+N01 oracleはnative側のfeatureをこの固定集合、validator側checkoutのmarkerを空集合とそれぞれ照合し、
+残る `commit`／`tree_sha256`／`dirty`／`pr_head` はcanonical完全一致を要求する。
+featureの違いを理由に物理sourceの差異を許容しない。一般acceptance CLIにbuild機能やfeature指定optionは追加しない。
 
 `inputs.compiled_source_hashes` は、既存15-source inventoryが指す **現在のsource bytes** を照合するfieldである。
 名前にcompiledが含まれていても、今回のPython検査が実行binaryからhashを抽出したことや、

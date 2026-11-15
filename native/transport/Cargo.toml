@@ -7,6 +7,7 @@ rust-version.workspace = true
 [features]
 default = []
 debug-fixtures = []
+host-acceptance = []
 
 [dependencies]
 eidolon-model.workspace = true

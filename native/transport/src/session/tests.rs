@@ -52,21 +52,32 @@ async fn cold_journal_and_live_capture_have_distinct_recovery_admission() {
     // This gate is held in-process before any local allocation. An on-disk
     // Complete or a new Runtime's empty counters cannot construct its proof.
     let (sender, _receiver) = tokio::sync::mpsc::channel(1);
-    let admission = LaunchAdmission::new(
+    let session = binding.session();
+    let cancel = CancellationToken::new();
+    let admission = Arc::new(LaunchAdmission::new(
         RunCapture::new(binding, evidence, request(7), 7).unwrap(),
         sender,
-        CancellationToken::new(),
-    );
+        cancel.clone(),
+    ));
     controller.signals.update(|shared| {
         shared.desktop_v3_capture = Some(admission.capture());
-        shared.desktop_v3_no_local_allocation = admission.seal_without_local_allocation();
+        shared.desktop_v3_launch = Some(admission.clone());
+        shared.report.session = Some(session);
+        shared.cancel = Some(cancel.clone());
     });
+    assert!(admission.gate_open());
+    assert!(!cancel.is_cancelled());
+    assert_eq!(controller.disconnect(session), Status::Accepted);
+    assert!(cancel.is_cancelled());
+    assert!(!admission.gate_open());
     let (_, before_io_retirement) = controller.reclamation_snapshot();
     assert!(before_io_retirement.no_local_allocation_proven);
     assert!(!before_io_retirement.recovery_connect_allowed);
-    controller
-        .signals
-        .update(|shared| shared.desktop_v3_io_retired = true);
+    controller.signals.update(|shared| {
+        shared.desktop_v3_launch = None;
+        shared.cancel = None;
+        shared.desktop_v3_io_retired = true;
+    });
     let (_, live) = controller.reclamation_snapshot();
     assert!(live.recovery_connect_allowed);
     assert!(
@@ -164,6 +175,7 @@ async fn finalized_receipt_survives_a_transient_publication_read_failure() {
         s.report.session = Some(SessionId::new(7).unwrap());
         s.desktop_v3_io_retired = true;
         s.desktop_v3_finalization_pending = true;
+        s.report.error = Some("DESKTOP_CLEANUP_PENDING");
     });
     let receipt = finalize_reclaimed(&mut handoff.deferred, &local).unwrap();
     let directory = root.0.join("linux-desktop-v3-state");
@@ -180,6 +192,7 @@ async fn finalized_receipt_survives_a_transient_publication_read_failure() {
     );
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(controller.publish_v3_finalized(&receipt), Status::Accepted);
+    assert!(controller.snapshot().error.is_none());
     assert!(
         !controller
             .signals

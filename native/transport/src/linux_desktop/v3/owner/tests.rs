@@ -82,6 +82,8 @@ async fn output_frame_incomplete_or_event_after_terminal_never_closes_cleanly() 
         boot_id: None,
         remote_socket: None,
         report: RemoteReport::default(),
+        #[cfg(feature = "host-acceptance")]
+        host_capture: None,
     };
     assert!(owner.data(b"{").unwrap().is_empty());
     owner.report.eof = true;
@@ -90,4 +92,72 @@ async fn output_frame_incomplete_or_event_after_terminal_never_closes_cleanly() 
     assert!(!owner.channel_complete());
     assert!(owner.data(b"}\n").is_err());
     assert!(!owner.report.protocol_valid);
+}
+
+#[test]
+fn inspect_stop_ack_requires_the_requested_validated_stop_and_complete_cleanup() {
+    let mut owner = Owner {
+        channel: None,
+        protocol: Protocol::new(binding(), evidence()).unwrap(),
+        cancel: CancellationToken::new(),
+        deadline: None,
+        heartbeat: Instant::now(),
+        stopping: false,
+        stop_deadline: None,
+        frames: FrameDecoder::default(),
+        boot_id: None,
+        remote_socket: None,
+        report: RemoteReport::default(),
+        #[cfg(feature = "host-acceptance")]
+        host_capture: None,
+    };
+    let frame = |sequence: &str, request: &str, kind: &str, payload: serde_json::Value| {
+        let binding = binding();
+        let mut bytes = serde_json::json!({
+            "schema":1,"protocol_revision":super::super::REVISION,
+            "context":binding.context().record(),"scope":binding.scope(),
+            "sequence":sequence,"request_sequence":request,
+            "event":{"type":kind,"payload":payload}
+        })
+        .to_string()
+        .into_bytes();
+        bytes.push(b'\n');
+        bytes
+    };
+    owner.data(&frame("1","0","prepared",serde_json::json!({
+        "lease_ms":15000,"boot_id":BOOT,
+        "remote_socket":format!("/home/fixture/.eidolon-desktop-v3/s-{}/p",binding().nonce())
+    }))).unwrap();
+    owner.protocol.command(Action::Stop, None).unwrap();
+    owner
+        .data(&frame(
+            "2",
+            "1",
+            "stopped",
+            serde_json::json!({
+                "reason":"stop","process_complete":true,"pipes_eof":true,
+                "remote_cleaned":true,"receipt_written":true
+            }),
+        ))
+        .unwrap();
+    assert!(
+        !owner.requested_inspect_stop_complete(),
+        "an unsolicited observation is not requested Stop"
+    );
+    owner.cancel.cancel();
+    assert!(owner.requested_inspect_stop_complete());
+    for reason in [
+        StopReason::LeaseExpired,
+        StopReason::InputEof,
+        StopReason::ProcessExited,
+    ] {
+        owner.report.stop_reason = Some(reason);
+        assert!(!owner.requested_inspect_stop_complete());
+    }
+    owner.report.stop_reason = Some(StopReason::Stop);
+    owner.report.pipes_eof = false;
+    assert!(!owner.requested_inspect_stop_complete());
+    owner.report.pipes_eof = true;
+    owner.fail("DESKTOP_V3_PROTOCOL_INVALID");
+    assert!(!owner.requested_inspect_stop_complete());
 }

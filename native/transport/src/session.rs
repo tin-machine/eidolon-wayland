@@ -230,6 +230,8 @@ struct Signals {
     tokio_workers: AtomicUsize,
     observation: tokio::sync::watch::Sender<bool>,
     files: Option<PathBuf>,
+    #[cfg(feature = "host-acceptance")]
+    host_trace: Arc<crate::host_acceptance::Trace>,
 }
 impl Signals {
     fn update(&self, action: impl FnOnce(&mut Shared)) {
@@ -344,6 +346,8 @@ impl Controller {
             tokio_workers: AtomicUsize::new(0),
             observation: tokio::sync::watch::channel(true).0,
             files: root.clone(),
+            #[cfg(feature = "host-acceptance")]
+            host_trace: Arc::new(crate::host_acceptance::Trace::default()),
         });
         let owned = signals.clone();
         let worker = thread::Builder::new()
@@ -627,6 +631,21 @@ impl Controller {
         if s.report.session != Some(session) {
             return Status::Stale;
         }
+        // Close native allocation admission before cancellation can send Stop.
+        // The proof comes from this live capture; absence of a Session is not it.
+        if let Some(admission) = &s.desktop_v3_launch {
+            let proof = admission.seal_without_local_allocation();
+            #[cfg(feature = "host-acceptance")]
+            if proof.is_some() {
+                admission.capture().observe(
+                    "no_local_allocation_sealed",
+                    serde_json::json!({"before_cancel":true}),
+                );
+            }
+            if proof.is_some() {
+                s.desktop_v3_no_local_allocation = proof;
+            }
+        }
         if let Some(cancel) = &s.cancel {
             cancel.cancel();
         }
@@ -661,6 +680,10 @@ impl Controller {
     }
     pub fn snapshot(&self) -> Snapshot {
         self.reclamation_snapshot().0
+    }
+    #[cfg(feature = "host-acceptance")]
+    pub fn host_acceptance_trace(&self) -> crate::host_acceptance::Snapshot {
+        self.signals.host_trace.snapshot()
     }
     /// Snapshot and recovery admission are observed under the same owner lock.
     /// NoLocalAllocation comes from the original live gate, never from an
@@ -1025,6 +1048,15 @@ impl Controller {
         }
         s.desktop_v3_pending = Ok(None);
         s.desktop_v3_finalization_pending = false;
+        #[cfg(feature = "host-acceptance")]
+        if let Some(capture) = &s.desktop_v3_capture {
+            capture.observe(
+                "finalizer_published",
+                serde_json::json!({
+                    "generation":result.generation().to_string(),"status":Status::Accepted as i32
+                }),
+            );
+        }
         s.desktop_v3_capture = None;
         s.desktop_v3_no_local_allocation = None;
         s.report.desktop_pending = !matches!(s.desktop_pending, Ok(None));
@@ -1033,6 +1065,11 @@ impl Controller {
             snapshot.cleanup_pending = false;
         }
         s.report.state = State::Disconnected;
+        // Finalization has discharged the same capture's transient pending
+        // cleanup. Preserve an unrelated legacy barrier if one still exists.
+        if !s.report.desktop_pending {
+            s.report.error = None;
+        }
         Status::Accepted
     }
 
@@ -1441,6 +1478,12 @@ impl Controller {
         Status::Accepted
     }
     pub fn request_stop(&self) {
+        #[cfg(feature = "host-acceptance")]
+        if !self.signals.stop.load(Ordering::Acquire) {
+            self.signals
+                .host_trace
+                .record_current("controller_stop_requested", serde_json::json!({}));
+        }
         self.signals.stop.store(true, Ordering::Release);
         self.signals.update(|s| {
             s.credential = None;
@@ -1600,6 +1643,16 @@ fn owner(
             }
             if was_v3 {
                 s.desktop_v3_io_retired = true;
+                #[cfg(feature = "host-acceptance")]
+                if let Some(capture) = &s.desktop_v3_capture {
+                    capture.observe(
+                        "io_retired",
+                        serde_json::json!({
+                            "generation":connect.session.get().to_string(),
+                            "tokio_threads":signals.tokio_workers.load(Ordering::Acquire)
+                        }),
+                    );
+                }
                 if let Some(report) = &mut s.report.desktop_v3_transport {
                     report.io_retired = true;
                 }
@@ -1925,6 +1978,8 @@ async fn connection(
                         inspect_request,
                         connect.session.get() as u64,
                     )?;
+                    #[cfg(feature = "host-acceptance")]
+                    let capture = capture.with_host_trace(signals.host_trace.clone());
                     let (sender, launches) = tokio::sync::mpsc::channel(1);
                     let admission = Arc::new(desktop_v3::runtime::LaunchAdmission::new(
                         capture,
@@ -2026,13 +2081,22 @@ async fn connection(
                         previous,
                         connect.session.get() as u64,
                         &connect.cancel,
+                        #[cfg(feature = "host-acceptance")]
+                        live_capture.as_deref(),
                     )
                     .await;
                     let bridged = if let (Some(handoff), Some(capture)) =
                         (outcome.handoff.as_mut(), live_capture.as_ref())
                     {
                         match handoff.bind_live_recovery(previous, capture) {
-                            Ok(()) => true,
+                            Ok(()) => {
+                                #[cfg(feature = "host-acceptance")]
+                                {
+                                    handoff.deferred.observe_with(capture);
+                                    capture.observe("recovery_bound", serde_json::json!({"generation":connect.session.get().to_string()}));
+                                }
+                                true
+                            }
                             Err(error) => {
                                 outcome.report.error = Some(error);
                                 false

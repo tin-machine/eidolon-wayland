@@ -3,7 +3,7 @@
   "protocol_revision": "eidolon-linux-desktop-v3",
   "integration": {
     "c1_commit": "8450772476a1331efbf5f80e34ee3f57351b2744",
-    "c2_commit": "34f7a8240f4be0c1a232b172536805ffa618081d"
+    "c2_commit": "b32eaf18bf0613e928c036a884fc19aac38a68b3"
   },
   "sources": {
     "eidolon-linux-session.py": "scripts/linux/eidolon-linux-session.py",

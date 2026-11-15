@@ -450,10 +450,12 @@ def run_settings_probe(owner, profile, drain, env, bundle, synthetic=True):
     if synthetic:
         root = Path(env["XDG_RUNTIME_DIR"]) / "probe"
         root.mkdir(mode=0o700)
+        (root / "home").mkdir(mode=0o700)
         (root / "config").mkdir(mode=0o700)
         marker = root / "settings-probe-v1"
         marker.write_bytes(b"eidolon-settings-probe-v1\n")
         marker.chmod(0o600)
+        probe_env["HOME"] = str(root / "home")
         probe_env["XDG_CONFIG_HOME"] = str(root / "config")
     child = spawn_tracked(owner, profile, drain,
                           [str(bundle.directory / "linux-settings-probe"), "--check"], probe_env)
