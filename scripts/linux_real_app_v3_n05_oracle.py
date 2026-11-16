@@ -109,8 +109,9 @@ def verify_gui(native, owner, targets):
     delivered=observed.get("n05_step_delivered",[])
     created=observed.get("n05_dialog_created",[])
     closed=observed.get("n05_dialog_closed",[])
+    confirmed=observed.get("n05_confirm_delivered",[])
     need(len(focus)==10 and len(delivered)==8
-         and len(created)==len(closed)==2
+         and len(created)==len(closed)==len(confirmed)==2
          and len(observed.get("n05_open_confirmed",[]))==1
          and len(observed.get("n05_save_confirmed",[]))==1,
          "I6_N05_INPUT_MISSING")
@@ -123,8 +124,12 @@ def verify_gui(native, owner, targets):
         same(step["target"],target)
         need(type(step["epoch"]) is int and step["epoch"]>=0
              and n02.b1.decimal(step["token"]))
-        same(focus[i+(1 if i>=3 else 0)][1]["data"]["token"],
-             step["token"], "I6_N05_STALE_FOCUS")
+        focus_fact=focus[i+(1 if i>=3 else 0)][1]["data"]
+        same(focus_fact["token"],step["token"], "I6_N05_STALE_FOCUS")
+        same(focus_fact["target"],target, "I6_N05_STALE_FOCUS")
+        need(focus_fact["epoch"]==step["epoch"]
+             and focus_fact["request_id"]==str(int(step["first_key_request"])-1),
+             "I6_N05_STALE_FOCUS")
         count=step["expected_delivery"]
         expected = (4,4,len(gui["input"])*2,4,len(files.APPEND_BYTES)*2,6,4,
                     len(gui["output"])*2)[i]
@@ -182,6 +187,22 @@ def verify_gui(native, owner, targets):
              and closed[i][1]["data"]["name"]==dialog["name"]
              and closed[i][1]["data"]["window"]==win["window"],
              "I6_N05_DIALOG_MISSING")
+        confirm=confirmed[i][1]["data"]
+        need(confirm["name"]==dialog["name"]
+             and confirm["target"]==dialog["target"]
+             and confirm["attempts"] in (1,2,3)
+             and type(confirm["delivered_before"]) is int
+             and type(confirm["delivered_after"]) is int
+             and confirm["expected_delivery"]=={1:1,2:3,3:8}[confirm["attempts"]]
+             and confirm["delivered_after"]>=confirm["delivered_before"]
+                       +confirm["expected_delivery"],
+             "I6_N05_CONFIRM_NOT_DELIVERED")
+        actual_focus=focus[3 if i==0 else 9][1]["data"]
+        same(confirm["token"],actual_focus["token"],"I6_N05_STALE_FOCUS")
+        same(confirm["target"],actual_focus["target"],"I6_N05_STALE_FOCUS")
+        need(confirm["epoch"]==actual_focus["epoch"]
+             and closed[i][0]<confirmed[i][0],
+             "I6_N05_CONFIRM_ORDER")
     for target in targets:
         key = {k:target[k] for k in ("session","window","scene","generation")}
         sequence=[]
