@@ -21,9 +21,9 @@ The probe never writes or creates the settings directory or keyfile. It traverse
 Three independently measured snapshots are compared:
 - before first GUI toggle: show-line-numbers *key absent*, not merely false;
 - after first GUI toggle: key present with exactly lowercase true;
-- second session without a settings toggle: same persistent profile root, same canonical storage identity, same saved value and unchanged keyfile stamp.
+- second session without a settings toggle: same persistent profile root, same canonical storage identity, same saved value, owner, and exact keyfile bytes digest (the inode may change during an atomic GLib Close flush).
 
-The digest of all *other* keys/sections must be identical in all three snapshots. Changed unrelated settings, a rewritten keyfile on second launch, a replaced root, link aliases, malformed keyfiles and cross-storage receipts are rejected. The setting can only earn product authority if the separate N07 normal Registry pointer delivery, GUI state, renderer and C2 proofs all pass. A malicious direct edit can satisfy this **file-only** predicate and must never satisfy N07 acceptance.
+The digest of all *other* keys/sections must be identical in all three snapshots. Changed unrelated settings, an unexpected change to the keyfile bytes on second launch, a replaced root or intermediate directory, link aliases, malformed keyfiles and cross-storage receipts are rejected. The setting can only earn product authority if the separate N07 normal Registry pointer delivery, GUI state, renderer and C2 proofs all pass. A malicious direct edit can satisfy this **file-only** predicate and must never satisfy N07 acceptance.
 
 ## B. Independently reviewed pixel golden
 
