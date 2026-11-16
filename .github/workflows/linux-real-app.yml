@@ -385,6 +385,44 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
+
+  v3_n07_a:
+    needs: scope
+    if: ${{ needs.scope.outputs.mousepad == 'true' }}
+    name: N07-A keyfile / pixel oracle negative gate (NOT live acceptance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Keep checkout commit distinct from untrusted PR head
+        env:
+          CI_PR_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [[ -n "$CI_PR_HEAD" ]]; then
+            [[ "$CI_PR_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          fi
+      - name: N07-A immutable manifest, independent keyfile and golden-failure mutations
+        run: python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_v3_n07_a.py' -v
+      - name: Explicitly assert N07 remains unaccepted without reviewed golden
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, 'scripts')
+          from linux_real_app_v3_n07_pixel import APPROVED_SHA256, load_reviewed, PixelEvidenceError
+          assert APPROVED_SHA256 is None
+          try:
+              load_reviewed()
+          except PixelEvidenceError as error:
+              assert str(error) == 'N07_GOLDEN_UNREVIEWED'
+          else:
+              raise AssertionError('Unreviewed pixel golden MUST NOT pass')
+          PY
+
   v3_n03:
     needs: scope
     if: ${{ needs.scope.outputs.mousepad == 'true' }}
