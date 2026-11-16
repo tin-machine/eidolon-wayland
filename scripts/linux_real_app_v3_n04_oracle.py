@@ -222,11 +222,17 @@ def verify_dialogs(native, owner, targets):
             "delivered_before","delivered_open","window","dialog_target",
             "dialog_readback","open_gui_windows","escape_epoch","escape_focus_token",
             "delivered_before_escape","delivered_closed",
+            "escape_resets_before","escape_resets_after","escape_pressed_after",
             "closed_gui_windows","closed_windows"})
         phase, base = (("before", 2000),("after",3000))[ix]
         need(dialog["phase"] == phase and dialog["base_request"] == str(base))
         same(dialog["main_target"], main)
         child=dialog["window"]
+        need(type(child) is dict
+             and set(child) == {"window", "parent", "life", "frame", "app_id"})
+        need(type(dialog["closed_windows"]) is list
+             and all(type(w) is dict and set(w) == {"window", "life"}
+                     for w in dialog["closed_windows"]))
         key=dialog["dialog_target"]
         readback=dialog["dialog_readback"]
         need(type(child) is dict and child["window"] == key["window"]
@@ -276,7 +282,13 @@ def verify_dialogs(native, owner, targets):
         before, opened = dialog["delivered_before"],dialog["delivered_open"]
         before_esc, closed = dialog["delivered_before_escape"],dialog["delivered_closed"]
         need(all(type(n) is int and n>=0 for n in (before,opened,before_esc,closed))
-             and opened >= before+4 and before_esc >= opened and closed >= before_esc+2)
+             and opened >= before+4 and before_esc >= opened and closed >= before_esc+1)
+        need(type(dialog["escape_resets_before"]) is int
+             and type(dialog["escape_resets_after"]) is int
+             and type(dialog["escape_pressed_after"]) is int
+             and dialog["escape_resets_after"] > dialog["escape_resets_before"] >= 0
+             and dialog["escape_pressed_after"] == 0,
+             "I6_N04_INPUT_NOT_RETIRED")
         need(type(dialog["main_epoch"]) is int and dialog["main_epoch"]>=0
              and type(dialog["escape_epoch"]) is int and dialog["escape_epoch"]>=0
              and n02.b1.decimal(dialog["main_focus_token"])
@@ -291,7 +303,7 @@ def verify_dialogs(native, owner, targets):
             same(data["target"],expected_target)
         for offset, command in [(0,"focus_window"),(1,"key"),(2,"key"),
                                 (3,"key"),(4,"key"),(5,"focus_window"),
-                                (6,"key"),(7,"key")]:
+                                (6,"key")]:
             request=str(base+offset)
             need(request not in seen_requests)
             seen_requests.add(request)
@@ -303,6 +315,13 @@ def verify_dialogs(native, owner, targets):
                        if e["data"]["request_id"] == request
                        and e["data"]["status"] == "ACCEPTED"]
             need(len(accepted) == len(completed) == 1, "I6_N04_INPUT_NOT_DELIVERED")
+        # Destroy on Esc-down invalidates the target. A synthetic stale
+        # Esc-up request is not required (or allowed) to pass the input gate.
+        release_id = str(base + 7)
+        need(not any(e["data"]["request_id"] == release_id
+                     for _,e in ordered.get("n02_command_accepted", [])
+                     + ordered.get("command_complete", [])),
+             "I6_N04_STALE_INPUT_REUSE")
         event=dialog_done[ix][1]["data"]
         need(event["phase"]==phase and event["window"]==child["window"]
              and event["parent"] == main["window"]
