@@ -213,6 +213,21 @@ impl Driver {
         selection: Value,
     ) -> Result<()> {
         self.n02_wait_command("32", 15)?;
+        let first_snapshot = self.pump()?;
+        let first = &first_snapshot["runtime"];
+        // Diagnostic only: this observation cannot satisfy N03 admission.
+        // Preserve the asynchronous gap between command completion and the
+        // real first owner becoming visible to the Runtime's read-only census.
+        self.observe(
+            "n03_first_launch_pending",
+            json!({
+                "request_id":"32",
+                "origin_retired":first["reclamation"]["origin_retired"],
+                "launch_request":first["transport"]["desktop_v3_transport"]["launch_request"],
+                "app_state":first["app"]["state"],
+                "transport_error":first["transport"]["desktop_v3_transport"]["error"],
+            }),
+        )?;
         // The Accepted completion is *only* dispatch admission. Local app
         // creation and the v3 transport origin become observable later.
         // Do not mistake a queued first Launch for its live owner, nor race
