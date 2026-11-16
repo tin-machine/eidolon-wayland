@@ -91,6 +91,35 @@ def verify_files(env, native, owner):
     return True
 
 
+def verify_dialog_baselines(observed, main, dialogs, delivered, created):
+    """Both dialog freshness baselines precede their real shortcut commands.
+
+    Reject a post-command 'previous' census: GTK may create the transient
+    toplevel before the final key-complete result is collected.
+    """
+    baselines=observed.get("n05_dialog_baseline",[])
+    need(len(baselines)==2, "I6_N05_DIALOG_BASELINE_MISSING")
+    for i,phase,step in ((0,"open",0),(1,"save_as",5)):
+        position,event=baselines[i]
+        fact=event["data"]
+        need(type(fact) is dict
+             and set(fact)=={"phase","main_target","mapped_windows"}
+             and fact["phase"]==phase, "I6_N05_DIALOG_BASELINE_INVALID")
+        same(fact["main_target"],main)
+        windows=fact["mapped_windows"]
+        need(type(windows) is list and 1<=len(windows)<=64
+             and all(n02.b1.decimal(w) for w in windows)
+             and len(windows)==len(set(windows))
+             and main["window"] in windows
+             and dialogs[i]["window"]["window"] not in windows,
+             "I6_N05_DIALOG_NOT_FRESH")
+        need(position<delivered[step][0]<created[i][0],
+             "I6_N05_DIALOG_BASELINE_ORDER")
+    need(delivered[4][0] < baselines[1][0],
+         "I6_N05_DIALOG_BASELINE_ORDER")
+    return True
+
+
 def verify_gui(native, owner, targets):
     gui=native["n05"]
     need(type(gui) is dict and set(gui) == {
@@ -115,6 +144,7 @@ def verify_gui(native, owner, targets):
          and len(observed.get("n05_open_confirmed",[]))==1
          and len(observed.get("n05_save_confirmed",[]))==1,
          "I6_N05_INPUT_MISSING")
+    verify_dialog_baselines(observed,main,gui["dialogs"],delivered,created)
     sdk=n02.ordinal_events(native["sdk_observations"],limit=128)
     preceding=0
     first_key=0
