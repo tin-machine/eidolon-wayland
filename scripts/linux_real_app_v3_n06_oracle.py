@@ -349,6 +349,173 @@ def verify_gui(native,owner,targets,variant):
     return observations
 
 
+def verify_natural_close_product(base,env,source,observed):
+    """N06-specific natural Close oracle: exact N02 success preconditions,
+    with the sole documented *actual* APP_WINDOW_UNSUPPORTED outcome.
+
+    This never patches the product reason or modifies the N02 oracle. All
+    source-bound launch, controller, SDK, file, resource and ownership checks
+    are repeated using the original raw evidence.
+    """
+    n02.strict_runtime(base,source,"mousepad_editor")
+    need(type(env) is dict and env["run_id"]==base["run_id"]
+         and env["owner_id"]==base["owner_id"]
+         and env["source_sha256"]==base["source_sha256"]
+         and env["revision"]=="eidolon-i6-n02-environment-v1")
+    same(env["before"],env["after"],"I6_SOURCE_MISMATCH")
+    need(env["runner"]["source_sha256"]==base["source_sha256"]
+         and env["app"]["uid"]!=env["driver"]["uid"]
+         and env["ssh"]["pinned_host_key_sha256"]==env["ssh"]["host_key_sha256"]
+         and env["isolation"]["docker_socket_present"] is False,
+         "I6_N06_ENVIRONMENT_INVALID")
+    events,cap,context,pins,selection=n02.transport(base,env,"mousepad_editor")
+    catalog=base["catalog"]["catalog"]
+    need(base["catalog"]["code"]==0 and catalog["session"]==cap["session"]
+         and catalog["request_id"]==cap["inspect_request"]
+         and catalog["pending"] is False and catalog["error"] is None,
+         "I6_N06_INSPECT_INVALID")
+    n02.b1.validate_catalog(evidence.canonical(catalog["desktop_v3"]),context,pins)
+    same(n02.only(observed,"n02_same_actor_catalog")[1]["data"]["scope"],
+         context.scope(),"I6_N06_SELECTION_INVALID")
+    same(n02.only(observed,"n02_same_actor_catalog")[1]["data"]["app_id"],
+         selection.record()["app_id"],"I6_N06_SELECTION_INVALID")
+    target,create=n02.sdk_and_readback(base)
+    need(target["session"]==cap["session"])
+    proof=n02.ready_and_input(base,target,create,cap)
+    delivery=n02.only(observed,"n02_input_delivered")[1]["data"]
+    need(delivery["focus_token"]==proof["focus_token"]
+         and delivery["input_epoch"]==proof["epoch"]
+         and delivery["target"]==target
+         and delivery["delivery_delta"]==
+             proof["delivered_after"]-proof["delivered_before"],
+         "I6_N06_LAUNCH_INPUT_INVALID")
+    for command,request in (("linux_desktop_v3_launch","32"),
+                            ("focus_window","1001"),("key","1002"),("key","1003")):
+        need(any(e["data"]["request_id"]==request
+                 and e["data"]["command"]==command
+                 and e["data"]["status"]==0
+                 for _,e in observed.get("n02_command_accepted",[])))
+        need(any(e["data"]["request_id"]==request
+                 and e["data"]["status"]=="ACCEPTED"
+                 for _,e in observed.get("command_complete",[])))
+
+    snapshot=base["last_snapshot"]
+    n02.exact(snapshot,{"schema","code","handle","runtime","registry"})
+    need(snapshot["schema"]==1 and snapshot["code"]==0
+         and snapshot["handle"]==base["runtime"]
+         and n02._counts(snapshot["registry"],1,0)
+         and n02._reclamation(snapshot["runtime"]["reclamation"],base["runtime"],True)
+         and n02._shutdown(snapshot["runtime"]["shutdown"]),
+         "I6_N06_CENSUS_INVALID")
+    runtime=snapshot["runtime"]
+    need(runtime["state"]=="Stopped" and runtime["app_sdk_bindings"]==0
+         and runtime["commands_pending"]==0
+         and runtime["desktop_v3_pending_targets"]==0
+         and runtime["desktop_v3_finalizer_pending"] is False
+         and runtime["desktop_v3_cleanup_error"] is None
+         and runtime["panels"]==[] and runtime["error"] is None,
+         "I6_N06_CENSUS_INVALID")
+    for key in ("helper_workers","dependency_workers","compositor_workers"):
+        n02._number(runtime[key])
+        need(runtime[key]==0,"I6_N06_CENSUS_INVALID")
+    app=runtime["app"]
+    # The product reason is EXPECTED only on the observed close path. It is
+    # never silently erased before running a pre-existing strict oracle.
+    need(app["error"]=="APP_WINDOW_UNSUPPORTED"
+         and app["state"]=="stopped" and app["ready"] is False
+         and app["directory_cleaned"] is True and app["windows"]==[],
+         "I6_N06_NATURAL_CLOSE_REASON_MISMATCH")
+    exit_data=n02.only(observed,"n06_app_exit")[1]["data"]
+    need(exit_data["app_error"]==app["error"]
+         and exit_data["local_waited"] is True
+         and exit_data["local_workers"]==0
+         and exit_data["transport_state"] in ("CleanupPending","Stopped"),
+         "I6_N06_NATURAL_CLOSE_REASON_MISMATCH")
+    for key in ("clients","objects","surfaces","pixel_bytes",
+                "pool_bytes","pool_count","memfd_fds_after","memfd_maps_after"):
+        n02._number(app[key])
+        need(app[key]==0,"I6_N06_CENSUS_INVALID")
+    local=app["local"]
+    need(local["workers"]==0 and local["owned_groups"]==0
+         and local["waited"] is True and local["error"] is None,
+         "I6_N06_CENSUS_INVALID")
+    render=runtime["render"]
+    for key in ("workers","contexts","latest_images","queued"):
+        n02._number(render[key])
+        need(render[key]==0,"I6_N06_CENSUS_INVALID")
+    need(render["targets"]==[] and render["error"] is None)
+    for key in ("textures","texture_bytes","decoration_texture_bytes","gl_error"):
+        n02._number(render["composition"][key])
+        need(render["composition"][key]==0,"I6_N06_CENSUS_INVALID")
+    need(render["composition"]["error"] is None)
+    transport=runtime["transport"]
+    for key in ("workers","tokio_threads","owned_connections"):
+        n02._number(transport[key])
+        need(transport[key]==0,"I6_N06_CENSUS_INVALID")
+    need(transport["forward"]["active"]==0
+         and transport["desktop_pending"] is False
+         and transport["pending_cleanup"]==[]
+         and transport["error"] is None
+         and transport["state"]=="Stopped",
+         "I6_N06_CENSUS_INVALID")
+    final=env["final"]
+    need(all(final[k]==0 for k in (
+        "app_process_count","driver_child_count","sshd_child_count","journal_entries"))
+        and final["profile_lock_held"] is False
+        and final["journal_lock_held"] is False,
+        "I6_N06_CENSUS_INVALID")
+    unlink=n02.only(events,"journal_unlinked")
+    published=n02.only(events,"finalizer_published")
+    need(unlink[0]<published[0]
+         and unlink[1]["data"]["directory_fsynced"] is True
+         and published[1]["data"]["status"]==0,
+         "I6_N06_FINALIZER_MISSING")
+    origin=n02.only(observed,"origin_retired")
+    stop=n02.only(observed,"runtime_stop_requested")
+    census=n02.only(observed,"last_live_census")
+    destroy=n02.only(observed,"registry_destroy_return")
+    need(origin[0]<stop[0]<census[0]<destroy[0]
+         and stop[1]["data"]["status"]==0
+         and destroy[1]["data"]["status"]==0
+         and origin[1]["data"]["reclamation"]["origin_retired"] is True
+         and destroy[1]["data"]["counts"]==base["registry_counts"]
+         and base["sdk_retired"] is True
+         and base["destroy_status"]==0
+         and base["registry_counts"]=={"runtimes":0,"workers":0}
+         and int(origin[1]["transport_sequence"])>=published[0],
+         "I6_N06_RETIREMENT_INVALID")
+    return True
+
+
+def verify_natural_close_terminal(native,observed):
+    """Independent C2 natural process exit, never Registry Accepted alone."""
+    records=native["trace"]["events"]
+    stop_sent=[(i,e) for i,e in enumerate(records,1)
+               if e["kind"]=="control_send_attempt"
+               and e["data"]["action"]=="stop"]
+    terminal=[(i,e) for i,e in enumerate(records,1)
+              if e["kind"]=="protocol_event"
+              and e["data"]["record"]["event"]["type"]=="stopped"]
+    need(len(stop_sent)==len(terminal)==1
+         and stop_sent[0][0]<terminal[0][0],
+         "I6_N06_TERMINAL_NOT_OBSERVED")
+    payload=terminal[0][1]["data"]["record"]["event"]["payload"]
+    need(payload["reason"]=="process_exited"
+         and all(payload[k] is True for k in (
+             "process_complete","pipes_eof","remote_cleaned","receipt_written")),
+         "I6_N06_TERMINAL_NOT_OBSERVED")
+    intent=n02.only(observed,"n06_close_intent")
+    destroyed=n02.only(observed,"n06_main_destroyed")
+    exited=n02.only(observed,"n06_app_exit")
+    origin=n02.only(observed,"origin_retired")
+    need(intent[0]<destroyed[0]<exited[0]<origin[0]
+         and int(intent[1]["transport_sequence"])<stop_sent[0][0]
+         and int(exited[1]["transport_sequence"])<=stop_sent[0][0]
+         and int(origin[1]["transport_sequence"])>=terminal[0][0],
+         "I6_N06_TERMINAL_ORDER")
+    return True
+
+
 def verify_product(native,env,source,observed,variant):
     # Source-bound controller/process/Wayland/renderer/SDK cleanup: same
     # trusted N02 product oracle, but each N06 child SDK generation gets its
@@ -369,10 +536,20 @@ def verify_product(native,env,source,observed,variant):
     n01_env["revision"]="eidolon-i6-n01-environment-v1"
     n01._environment(n01_env,native["run_id"],native["owner_id"],
                      native["source_sha256"])
-    outcome=n02.verify(base,standard,source,"mousepad_editor")
-    need(outcome["status"]=="pass"
-         and outcome["verified_assertions"]==list(n02.ASSERTIONS),
-         "I6_N06_PRODUCT_INCOMPLETE")
+    n04.validate_control_sequence(native["trace"]["events"])
+    if variant=="close_confirm":
+        verify_natural_close_terminal(native,observed)
+    if variant=="close_confirm" and (
+            base["last_snapshot"]["runtime"]["app"]["error"]==
+            "APP_WINDOW_UNSUPPORTED"):
+        # Real natural-close result is an expected documented product outcome,
+        # *never* normalized or rewritten as an N02 stopped-without-error.
+        verify_natural_close_product(base,standard,source,observed)
+    else:
+        outcome=n02.verify(base,standard,source,"mousepad_editor")
+        need(outcome["status"]=="pass"
+             and outcome["verified_assertions"]==list(n02.ASSERTIONS),
+             "I6_N06_PRODUCT_INCOMPLETE")
     origin=n02.only(observed,"origin_retired")
     stopping=n02.only(observed,"runtime_stop_requested")
     need(origin[0]<stopping[0],"I6_N06_PRODUCT_ORDER")
