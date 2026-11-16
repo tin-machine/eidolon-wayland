@@ -108,6 +108,16 @@ class N03RequestCorrelationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             n03.request_and_status({}, seen, phases, "old_catalog")
 
+    def test_live_double_launch_census_cannot_report_negative_resources(self):
+        # The first launch may have allocations, but -1 is never a valid
+        # product count and must not survive mutation revalidation.
+        for field in ("pending_targets", "sdk_bindings"):
+            with self.subTest(field=field):
+                seen, phases = self.fixture("double_launch")
+                seen["n03_rejection_boundary"][0][1]["data"][field] = -1
+                with self.assertRaises(ValueError):
+                    n03.request_and_status({}, seen, phases, "double_launch")
+
     def test_busy_is_second_live_request_not_success_of_first(self):
         seen, phases = self.fixture("double_launch")
         seen["n03_rejection_observed"][0][1]["data"]["status"] = "ACCEPTED"

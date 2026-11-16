@@ -235,7 +235,12 @@ def main(argv=None):
     incoming, output, image_file = map(Path, args[:3])
     try:
         passed = export_and_validate(incoming, output, image_file, *args[3:7], Path(args[7]))
-    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+    except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+        # Only report known, hard-coded mutation labels; arbitrary exception
+        # text could contain private paths or runtime identifiers.
+        diagnostic = str(error)
+        if re.fullmatch(r"N03 independent oracle accepted mutation [a-z_]+", diagnostic):
+            print(diagnostic, file=sys.stderr)
         passed = False
     if not passed:
         print("N03 independent revalidation failed; formal I6 remains incomplete", file=sys.stderr)

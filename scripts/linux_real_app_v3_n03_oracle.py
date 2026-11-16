@@ -279,6 +279,17 @@ def request_and_status(native, seen, phases, variant):
                  "render_targets", "origin_retired", "launch_request",
                  "start_attempted", "presentation"})
     require(data["request_id"] == request)
+    # All live census fields must retain their product domains even when
+    # the first Launch legitimately owns the local/renderer resources.
+    # Without this check the outer CI's hidden_target mutation (-1) was
+    # accepted for double_launch, making a genuine 5/5 run fail revalidation.
+    require(b1.integer(data["pending_targets"], 0, b1.MAX_I64)
+            and b1.integer(data["sdk_bindings"], 0, b1.MAX_I64)
+            and type(data["render_targets"]) is list
+            and type(data["origin_retired"]) is bool
+            and type(data["start_attempted"]) is bool
+            and (data["presentation"] is None or type(data["presentation"]) is str),
+            "I6_TRACE_INVALID")
     if variant != "double_launch":
         require(data["app"] is None and data["pending_targets"] == 0
                 and data["sdk_bindings"] == 0 and data["render_targets"] == []
