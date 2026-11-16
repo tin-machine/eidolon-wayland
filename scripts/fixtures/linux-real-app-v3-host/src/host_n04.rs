@@ -28,8 +28,14 @@ impl Driver {
         self.n02_wait_command(&request.to_string(),10)?;
         let s = self.wait(10,|s| s["runtime"]["app"]["input"]["focus_window"] == target["window"]
             && s["runtime"]["app"]["input"]["focus_token"].is_string())?;
-        Ok((s["runtime"]["input_resets"].as_u64().ok_or("I6_N04_INPUT_FAILED")?,
-            s["runtime"]["app"]["input"]["focus_token"].clone()))
+        let epoch=s["runtime"]["input_resets"].as_u64().ok_or("I6_N04_INPUT_FAILED")?;
+        let token=s["runtime"]["app"]["input"]["focus_token"].clone();
+        self.observe("n04_focus_current",json!({
+            "request_id":request.to_string(),"target":target,"input_epoch":epoch,
+            "focus_token":token,
+            "delivered":s["runtime"]["app"]["input"]["delivered"],
+        }))?;
+        Ok((epoch,token))
     }
 
     fn n04_key(&mut self, target:&Value, epoch:u64, token:&Value,
