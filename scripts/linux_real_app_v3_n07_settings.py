@@ -171,7 +171,7 @@ class StorageKeyfileProbe:
                     child = _child(parent, component, self.uid)
                 except FileNotFoundError:
                     return self._absent()
-                opened.append(child)
+                opened.append((parent, component, child))
                 parent = child
             try:
                 metadata, contents, _ = _read_keyfile(parent, self.uid)
@@ -181,8 +181,18 @@ class StorageKeyfileProbe:
             self._assert_root()
             return self._proof(metadata, present, value, other)
         finally:
-            for child in reversed(opened):
-                os.close(child)
+            try:
+                # The name chain must still identify the same open directories.
+                # C1 persistent root alone is not sufficient if an intermediate
+                # config/settings directory was replaced during a GUI run.
+                for ancestor, name, child in opened:
+                    named = os.stat(name, dir_fd=ancestor, follow_symlinks=False)
+                    need(_identity(named) == _identity(os.fstat(child)),
+                         "N07_DIRECTORY_REPLACED")
+                self._assert_root()
+            finally:
+                for _, _, child in reversed(opened):
+                    os.close(child)
 
     def _proof(self, file: dict | None, present: bool,
                value: bool | None, others: str) -> dict:
