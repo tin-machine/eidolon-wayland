@@ -200,6 +200,39 @@ impl Driver {
         )
     }
 
+    /// V3 activity is not the legacy desktop forwarding report's "running"
+    /// string. The ordinary V3 path may retain "starting_remote" even after
+    /// a genuine Started ACK, B1 Ready and successful GUI input. Use the
+    /// current transport, presentation, live main and app ownership instead.
+    fn n04_main_live(snapshot: &Value, target: &Value) -> bool {
+        let runtime = &snapshot["runtime"];
+        let app = &runtime["app"];
+        let transport = &runtime["transport"]["desktop_v3_transport"];
+        runtime["state"] == "Ready"
+            && runtime["shutdown"]["requested"] == false
+            && transport["session"] == target["session"]
+            && transport["transport"]["phase"] == "started"
+            && transport["started_observed"] == true
+            && transport["terminal_observed"] == false
+            && transport["error"].is_null()
+            && runtime["desktop_v3_presentation"]["state"] == "ready"
+            && runtime["desktop_v3_presentation"]["startup_completed"] == true
+            && runtime["desktop_v3_presentation"]["main"] == target["window"]
+            && app["ready"] == true
+            && !matches!(app["state"].as_str(), Some("stopped" | "closing" | "fail"))
+            && app["error"].is_null()
+            && app["gui_windows"]
+                .as_array()
+                .is_some_and(|admitted| admitted.contains(&target["window"]))
+            && app["windows"].as_array().is_some_and(|windows| {
+                windows.iter().any(|w| {
+                    w["window"] == target["window"]
+                        && w["life"] == "Mapped"
+                        && w["parent"].is_null()
+                })
+            })
+    }
+
     pub(super) fn exercise_n04(&mut self, run_id: &str) -> Result<()> {
         self.n04_active = true;
         self.exercise_n02("mousepad_editor")?;
@@ -221,11 +254,17 @@ impl Driver {
         let mut next = Duration::from_secs(6);
         while start.elapsed() < IDLE {
             let s = self.pump()?;
-            if s["runtime"]["state"] != "Ready"
-                || s["runtime"]["app"]["state"] != "running"
-                || s["runtime"]["transport"]["desktop_v3_transport"]["transport"]["phase"]
-                    != "started"
-            {
+            if !Self::n04_main_live(&s, &main) {
+                self.observe("n04_idle_lost", json!({
+                    "runtime_state":s["runtime"]["state"],
+                    "app_state":s["runtime"]["app"]["state"],
+                    "app_ready":s["runtime"]["app"]["ready"],
+                    "app_error":s["runtime"]["app"]["error"],
+                    "transport":s["runtime"]["transport"]["desktop_v3_transport"]["transport"],
+                    "transport_error":s["runtime"]["transport"]["desktop_v3_transport"]["error"],
+                    "presentation_state":s["runtime"]["desktop_v3_presentation"]["state"],
+                    "gui_windows":s["runtime"]["app"]["gui_windows"],
+                }))?;
                 return Err("I6_N04_IDLE_LOST");
             }
             if start.elapsed() >= next {
@@ -238,6 +277,7 @@ impl Driver {
         self.observe("n04_idle_end", json!({"ns":end}))?;
         eprintln!("I6_N04_IDLE_END {run_id}");
         let after = self.n04_dialog("after", 3000, &main)?;
+        self.n04_stop_monitoring = true;
         self.n04 = Some(json!({"schema":1,"run_id":run_id,"capture_id":capture,
             "idle":{"begin_ns":begin,"end_ns":end},"main_target":main,
             "dialogs":[before,after]}));
