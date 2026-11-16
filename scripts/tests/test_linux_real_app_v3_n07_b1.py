@@ -56,9 +56,29 @@ def diagnostic() -> dict:
         "host_v3_acceptance_passed": False,
         "n07_assertions_verified": [],
         "readback": {"target": TARGET, "create": "18"},
-        "trace": {"events": [{"capture": {"capture_id": CAPTURE}}]},
+        "trace": {"events": [
+            {"capture": {"capture_id": CAPTURE}},
+            {"kind": "remote_cleanup_observed", "data": {}},
+            {"kind": "io_retired", "data": {}},
+            {"kind": "journal_unlinked", "data": {}},
+            {"kind": "finalizer_published", "data": {"status": 0}},
+        ]},
         "error": None, "cleanup_error": None,
         "sdk_retired": True, "destroy_status": 0,
+        "registry_counts": {"runtimes": 0, "workers": 0},
+        "last_snapshot": {"runtime": {
+            "state": "Stopped",
+            "reclamation": {
+                "origin_retired": True, "shutdown_complete": True,
+                "sdk_bindings": 0, "native_targets": 0,
+                "panels": 0, "pending_operations": 0,
+            },
+            "render": {
+                "targets": [], "queued": 0, "error": None,
+                "composition": {"textures": 0, "texture_bytes": 0,
+                                "decoration_texture_bytes": 0, "gl_error": 0},
+            },
+        }},
         "n07_probe": {
             "schema": 1, "run_id": RUN_ID,
             "variant": "pointer_popup_readback_probe",
@@ -177,6 +197,30 @@ class N07B1DiagnosticTests(unittest.TestCase):
                 for key in path[:-1]:
                     parent = parent[key]
                 parent[path[-1]] = value
+                self.reject(invalid)
+
+    def test_renderer_retirement_registry_census_and_finalizer_are_required(self):
+        cases = [
+            lambda n: n["registry_counts"].update(runtimes=1),
+            lambda n: n["last_snapshot"]["runtime"]["reclamation"].update(
+                origin_retired=False),
+            lambda n: n["last_snapshot"]["runtime"]["reclamation"].update(
+                sdk_bindings=1),
+            lambda n: n["last_snapshot"]["runtime"]["render"].update(
+                targets=[{"key": TARGET}]),
+            lambda n: n["last_snapshot"]["runtime"]["render"]["composition"].update(
+                texture_bytes=4096),
+            lambda n: n["last_snapshot"]["runtime"]["render"]["composition"].update(
+                gl_error=1282),
+            lambda n: n["trace"]["events"].pop(),
+            lambda n: n["trace"]["events"].reverse(),
+            lambda n: n["trace"]["events"][-1]["data"].update(status=1),
+            lambda n: n["trace"].update(overflow=True),
+        ]
+        for index, mutate in enumerate(cases):
+            with self.subTest(case=index):
+                invalid = diagnostic()
+                mutate(invalid)
                 self.reject(invalid)
 
     def reject(self, value: dict) -> None:
