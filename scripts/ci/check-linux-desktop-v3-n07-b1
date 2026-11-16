@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Explicit disposable Docker smoke. Exit 0 means a saved real Host diagnostic was independently revalidated, NOT N07 acceptance.
+set -euo pipefail
+umask 077
+
+if [[ $# != 2 || $1 != --artifact-root ]]; then
+  echo 'usage: check-linux-desktop-v3-n07-b1 --artifact-root ABSOLUTE_EMPTY_DIRECTORY' >&2
+  exit 2
+fi
+i6_artifact_root=$2
+i6_source_root=$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel)
+python3 - "$i6_artifact_root" "$i6_source_root" <<'PY'
+import os
+from pathlib import Path
+import stat
+import sys
+
+path, source = map(Path, sys.argv[1:])
+if (not path.is_absolute() or path.parent.resolve() != path.parent or
+        path == source or source in path.parents or path.is_symlink()):
+    raise SystemExit("N07-B1 artifact directory must be private, external and absolute")
+if not path.exists():
+    path.mkdir(mode=0o700)
+info = path.lstat()
+if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+        info.st_mode & 0o077 or any(path.iterdir())):
+    raise SystemExit("N07-B1 artifact directory must be owned, private and empty")
+PY
+if [[ -n $(git -C "$i6_source_root" status --porcelain=v1 --untracked-files=all) ]]; then
+  echo 'N07-B1 requires a clean committed source checkout' >&2
+  exit 2
+fi
+i6_source_head=$(git -C "$i6_source_root" rev-parse HEAD)
+if [[ ! $i6_source_head =~ ^[0-9a-f]{40}$ ]]; then
+  echo 'N07-B1 source commit is invalid' >&2
+  exit 2
+fi
+# Detect Python syntax errors before the expensive pinned image / fixture
+# build; ast.parse is read-only and leaves the clean Git source unchanged.
+python3 - <<'PY'
+import ast
+from pathlib import Path
+for relative in (
+    "scripts/linux_real_app_v3_n01.py",
+    "scripts/linux_real_app_v3_n07_b1.py",
+    "scripts/linux_real_app_v3_n07_b1_probe.py",
+    "scripts/linux_real_app_v3_n07_b1_ci.py",
+
+):
+    path = Path(relative)
+    ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+PY
+python3 -m unittest discover -s scripts/tests -p "test_linux_real_app_v3_n07_b1.py" -v
+command -v docker >/dev/null
+i6_work=$(mktemp -d "${TMPDIR:-/tmp}/eidolon-i6-n07-b1.XXXXXXXX")
+i6_image="eidolon-i6-n07-b1:$(basename "$i6_work" | tr '[:upper:]' '[:lower:]')"
+i6_build_image="${i6_image}-build"
+i6_prepare_container=''
+i6_container=''
+cleanup() {
+  if [[ -n $i6_container ]]; then
+    docker rm --force "$i6_container" >/dev/null 2>&1 || true
+  fi
+  if [[ -n $i6_prepare_container ]]; then
+    docker rm --force "$i6_prepare_container" >/dev/null 2>&1 || true
+  fi
+  docker image rm "$i6_image" "$i6_build_image" >/dev/null 2>&1 || true
+  rm -rf -- "$i6_work"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# A clean clone contains only committed inputs and its own Git database. It
+# cannot accidentally send the caller's private/untracked artifacts to Docker.
+git clone --quiet --no-local --no-hardlinks "$i6_source_root" "$i6_work/source"
+git -C "$i6_work/source" checkout --quiet --detach "$i6_source_head"
+git -C "$i6_work/source" remote remove origin
+timeout --signal=TERM --kill-after=30s 1800s docker build \
+  --file "$i6_work/source/scripts/fixtures/linux-desktop-v3-acceptance/Dockerfile.n01" \
+  --tag "$i6_build_image" "$i6_work/source"
+
+# The unchanged Mousepad builder requires an actual disposable Docker runtime,
+# not BuildKit's build sandbox. Only this preparation container has outbound
+# networking; it contains no product accounts, credentials, or host mounts.
+i6_entrypoint=$(docker image inspect --format '{{json .Config.Entrypoint}}' "$i6_build_image")
+i6_prepare_container=$(docker create --network bridge --pids-limit 256 --memory 6g \
+  --cpus 4 --entrypoint /bin/bash "$i6_build_image" \
+  /src/scripts/fixtures/linux-desktop-v3-acceptance/prepare-n01-image)
+if [[ ! $i6_prepare_container =~ ^[0-9a-f]{64}$ ]]; then
+  echo 'N07-B1 preparation did not return a container ID' >&2
+  exit 2
+fi
+set +e
+timeout --signal=TERM --kill-after=10s 600s docker start --attach "$i6_prepare_container"
+i6_prepare_attach_exit=$?
+set -e
+i6_prepare_running=$(docker inspect --format '{{.State.Running}}' "$i6_prepare_container")
+i6_prepare_exit=$(docker inspect --format '{{.State.ExitCode}}' "$i6_prepare_container")
+if [[ $i6_prepare_attach_exit != 0 || $i6_prepare_running != false || $i6_prepare_exit != 0 ]]; then
+  echo 'N07-B1 package preparation failed; no product run or prepared image was accepted' >&2
+  exit 1
+fi
+# Restore the original default invocation: preparation must never become the
+# test image's ENTRYPOINT or leave its script as a CMD argument to the runner.
+timeout --signal=TERM --kill-after=10s 120s docker commit \
+  --change "ENTRYPOINT $i6_entrypoint" --change 'CMD []' \
+  "$i6_prepare_container" "$i6_image" >/dev/null
+if [[ $(docker image inspect --format '{{json .Config.Entrypoint}}' "$i6_image") != "$i6_entrypoint" ]]; then
+  echo 'N07-B1 prepared image did not retain the original entrypoint' >&2
+  exit 2
+fi
+docker image inspect --format '{{.Id}}' "$i6_image" > "$i6_work/image.id"
+
+# The test has loopback networking only. No host PID/network namespace, home,
+# desktop/ADB socket, or Docker socket is made available to the container.
+i6_container=$(docker create --network none --pids-limit 256 --memory 6g \
+  --cpus 4 --entrypoint /usr/bin/python3 "$i6_image" \
+  /src/scripts/linux_real_app_v3_n07_b1.py --disposable-container --source-root /src \
+  --fixture-root /run/eidolon-i6 --reviewed-package /opt/i6/reviewed-package.json \
+  --runner /opt/i6/eidolon-i6-host --artifact-root /artifacts)
+if [[ ! $i6_container =~ ^[0-9a-f]{64}$ ]]; then
+  echo 'N07-B1 container creation did not return a container ID' >&2
+  exit 2
+fi
+set +e
+timeout --signal=TERM --kill-after=10s 1800s docker start --attach "$i6_container"
+i6_attach_exit=$?
+set -e
+i6_running=$(docker inspect --format '{{.State.Running}}' "$i6_container")
+if [[ $i6_running == true ]]; then
+  # This is external fixture rescue, never successful product retirement.
+  docker stop --time 15 "$i6_container" >/dev/null || true
+fi
+i6_runtime_exit=$(docker inspect --format '{{.State.ExitCode}}' "$i6_container")
+mkdir -m 0700 "$i6_work/export"
+docker cp "$i6_container:/artifacts/." "$i6_work/export" >/dev/null 2>&1 || true
+
+# Export only the fixed, bounded, flat JSON receipts and optional n07-b1-native.json
+# diagnostics. Diagnostics cannot satisfy an assertion or a missing receipt.
+# Never copy logs, keys, the fixture root, a profile, or arbitrary recursive data.
+python3 "$i6_source_root/scripts/linux_real_app_v3_n07_b1_ci.py" \
+  "$i6_work/export" "$i6_artifact_root" "$i6_work/image.id" \
+  "$i6_source_head" "$i6_attach_exit" "$i6_runtime_exit" "$i6_running" "$i6_source_root" "${CI_PR_HEAD:-}"
