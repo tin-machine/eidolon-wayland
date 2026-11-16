@@ -196,13 +196,16 @@ impl Driver {
     fn n05_fresh_child(app: &Value, main: &Value, previous: &[Value]) -> Option<Value> {
         let admitted = app["gui_windows"].as_array()?;
         let windows = app["windows"].as_array()?;
-        windows.iter().find(|w| {
-            w["parent"] == main["window"]
-                && w["life"] == "Mapped"
-                && w["frame"].is_string()
-                && !previous.contains(&w["window"])
-                && admitted.contains(&w["window"])
-        }).cloned()
+        windows
+            .iter()
+            .find(|w| {
+                w["parent"] == main["window"]
+                    && w["life"] == "Mapped"
+                    && w["frame"].is_string()
+                    && !previous.contains(&w["window"])
+                    && admitted.contains(&w["window"])
+            })
+            .cloned()
     }
 
     // MUST be sampled before the key command. A dialog can be created by
@@ -225,9 +228,10 @@ impl Driver {
             .filter(|w| w["life"] == "Mapped")
             .map(|w| w["window"].clone())
             .collect();
-        if windows.iter().any(|w| {
-            w["life"] == "Mapped" && w["parent"] == main["window"]
-        }) {
+        if windows
+            .iter()
+            .any(|w| w["life"] == "Mapped" && w["parent"] == main["window"])
+        {
             return Err("I6_N05_STALE_DIALOG");
         }
         self.observe(
@@ -237,12 +241,7 @@ impl Driver {
         Ok(previous)
     }
 
-    fn n05_dialog(
-        &mut self,
-        main: &Value,
-        name: &str,
-        previous: &[Value],
-    ) -> Result<Value> {
+    fn n05_dialog(&mut self, main: &Value, name: &str, previous: &[Value]) -> Result<Value> {
         // The snapshot is deliberately sampled AFTER the shortcut; the
         // baseline argument is from BEFORE it and is never overwritten.
         let mapped = self.wait(25, |s| {
@@ -504,7 +503,7 @@ mod tests {
         let result = Driver::n05_fresh_child(&app, &main, &[json!("7")]);
         assert_eq!(result, Some(child.clone()));
         // A dialog existing before the shortcut cannot be minted as new.
-        assert!(Driver::n05_fresh_child(&app, &main, &[json!("7"),json!("8")]).is_none());
+        assert!(Driver::n05_fresh_child(&app, &main, &[json!("7"), json!("8")]).is_none());
         // Parent, admission and mapped lifetime are all mandatory.
         let mut wrong = app.clone();
         wrong["windows"][1]["parent"] = json!("99");
