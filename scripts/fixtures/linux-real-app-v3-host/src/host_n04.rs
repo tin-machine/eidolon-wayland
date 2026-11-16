@@ -8,7 +8,7 @@ use std::{thread, time::{Duration, Instant}};
 pub(super) const VARIANT: &str = "idle_125s";
 const IDLE: Duration = Duration::from_secs(127);
 
-fn clock_ns() -> Result<u64> {
+pub(super) fn clock_ns() -> Result<u64> {
     let mut ts = libc::timespec { tv_sec:0, tv_nsec:0 };
     if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) } != 0
         || ts.tv_sec < 0 || !(0..1_000_000_000).contains(&ts.tv_nsec) {
@@ -119,6 +119,7 @@ impl Driver {
     }
 
     pub(super) fn exercise_n04(&mut self,run_id:&str) -> Result<()> {
+        self.n04_active = true;
         self.exercise_n02("mousepad_editor")?;
         let main=self.n02_readback.as_ref().ok_or("I6_N04_DIALOG_MISSING")?
             ["target"].clone();
@@ -130,7 +131,7 @@ impl Driver {
         self.observe("n04_idle_begin",json!({"ns":begin}))?;
         eprintln!("I6_N04_IDLE_BEGIN {run_id}");
         let start=Instant::now();
-        let mut next=Duration::from_secs(5);
+        let mut next=Duration::from_secs(6);
         while start.elapsed() < IDLE {
             let s=self.pump()?;
             if s["runtime"]["state"]!="Ready"
