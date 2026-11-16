@@ -111,7 +111,9 @@ impl Driver {
         }
         let proof = json!({
             "target":target,"source":SOURCE,"input_epoch":epoch,
-            "uv":VIEW_CANDIDATE_UV,"coordinate_reviewed":false,
+            // Receipt contract prohibits JSON floats. Transport still uses
+            // the real [f64;2] UV command; evidence stores exact milli-units.
+            "uv_milli":[180,21],"coordinate_reviewed":false,
             "first_request":(*req - 3).to_string(),
             "next_request":req.to_string(),
             "before":before["runtime"]["app"]["input"]["pointer"],

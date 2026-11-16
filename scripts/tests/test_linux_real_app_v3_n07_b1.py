@@ -10,6 +10,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from linux_real_app_v3_n07_b1_probe import ProbeInvalid, inspect
+from linux_desktop_v3_contract import canonical_json, parse_json
 
 TARGET = {"session": "1", "window": "7", "scene": "1", "generation": "1"}
 RUN_ID = "c" * 32
@@ -86,7 +87,7 @@ def diagnostic() -> dict:
             "menu_coordinate_reviewed": False, "menu_identity_verified": False,
             "pointer": {
                 "target": TARGET, "source": "1", "input_epoch": 3,
-                "epoch_after": 3, "uv": [0.18, 0.021],
+                "epoch_after": 3, "uv_milli": [180, 21],
                 "coordinate_reviewed": False,
                 "provenance": "normal_registry_command_and_compositor_forward",
                 "before": {"delivered_buttons": 3},
@@ -111,6 +112,9 @@ def diagnostic() -> dict:
 
 class N07B1DiagnosticTests(unittest.TestCase):
     def test_good_synthetic_diagnostic_is_probe_only_never_acceptance(self):
+        # Actual Host receipts go through strict A0/B1 integer-only JSON
+        # domain validation before the independent diagnostic oracle.
+        self.assertEqual(parse_json(canonical_json(diagnostic())), diagnostic())
         result = inspect(diagnostic())
         self.assertEqual(result["status"], "probe_only")
         self.assertFalse(result["reviewed_golden"])
@@ -134,6 +138,8 @@ class N07B1DiagnosticTests(unittest.TestCase):
             (("pointer", "after", "last_delivered_press_serial"), 0),
             (("pointer", "after", "pressed"), 1),
             (("capture_id",), "b" * 64),
+            (("pointer", "uv_milli"), [180, 22]),
+            (("pointer", "uv_milli"), [0.18, 0.021]),
         ):
             with self.subTest(path=path):
                 invalid = diagnostic()

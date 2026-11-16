@@ -62,9 +62,8 @@ def _pointer(probe: dict, target: dict) -> None:
          "N07_B1_POINTER_NOT_FORWARDED")
     need(pointer.get("provenance") == "normal_registry_command_and_compositor_forward"
          and pointer.get("coordinate_reviewed") is False
-         and type(pointer.get("uv")) is list
-         and len(pointer["uv"]) == 2
-         and all(type(n) in (int, float) and 0 < n < 1 for n in pointer["uv"]),
+         and pointer.get("uv_milli") == [180, 21]
+         and "uv" not in pointer,
          "N07_B1_POINTER_UNREVIEWED")
 
 
