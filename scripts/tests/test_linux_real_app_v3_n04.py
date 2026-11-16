@@ -95,5 +95,57 @@ class N04TemporalTests(unittest.TestCase):
                     n04.verify_temporal(native,outside)
 
 
+class N04CompleteControlSequenceTests(unittest.TestCase):
+    def control_trace(self):
+        """Full normal capture: pre-idle renewals are not disposable."""
+        events = []
+        def observed(kind, data):
+            events.append({"kind":kind, "data":data,
+                           "sequence":str(len(events)+1)})
+        wire_sequence = 1
+        observed("protocol_event",{"record":{
+            "sequence":"1", "request_sequence":"0",
+            "event":{"type":"prepared"}}})
+        request_sequence = 0
+        for action, event_type in (
+            [("inspect","catalog"),("heartbeat","heartbeat"),
+             ("heartbeat","heartbeat"),("start","started")]
+            + [("heartbeat","heartbeat")] * 25
+            + [("stop","stopped")]
+        ):
+            observed("control_send_attempt",{"action":action})
+            wire_sequence += 1
+            request_sequence += 1
+            observed("protocol_event",{"record":{
+                "sequence":str(wire_sequence),
+                "request_sequence":str(request_sequence),
+                "event":{"type":event_type,
+                         "payload":{"phase":"started"} if action=="heartbeat" else {}}
+            }})
+        return events
+
+    def test_pre_idle_and_post_idle_c2_sequence_is_contiguous(self):
+        rows = self.control_trace()
+        self.assertEqual(n04.validate_control_sequence(rows),27)
+        changes = (
+            ("pre_idle_hb_sequence",lambda rows: rows[4]["data"]["record"].update(
+                request_sequence="999999")),
+            ("pre_idle_hb_replay",lambda rows: rows[4]["data"]["record"].update(
+                request_sequence="1")),
+            ("pre_idle_hb_ack_missing",lambda rows: rows[4].update(kind="missing")),
+            ("pre_idle_hb_ack_duplicated",lambda rows: rows.insert(
+                5,copy.deepcopy(rows[4]))),
+            ("pre_idle_hb_send_missing",lambda rows: rows[3].update(kind="missing")),
+            ("stop_ack_reused",lambda rows: rows[-1]["data"]["record"].update(
+                request_sequence="29")),
+        )
+        for name, mutation in changes:
+            with self.subTest(name=name):
+                altered=copy.deepcopy(rows)
+                mutation(altered)
+                with self.assertRaises((ValueError,KeyError,TypeError)):
+                    n04.validate_control_sequence(altered)
+
+
 if __name__=="__main__":
     unittest.main()
