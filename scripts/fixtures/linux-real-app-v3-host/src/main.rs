@@ -263,6 +263,9 @@ struct Driver {
     n02_ready: Option<Value>,
     n02_input: Option<Value>,
     n04: Option<Value>,
+    n04_active: bool,
+    n04_stop_sent_ns: Option<u64>,
+    n04_stop_ack_ns: Option<u64>,
 }
 impl Driver {
     fn new(config: &str, secret: Secret) -> Result<Self> {
@@ -290,6 +293,9 @@ impl Driver {
             n02_ready: None,
             n02_input: None,
             n04: None,
+            n04_active: false,
+            n04_stop_sent_ns: None,
+            n04_stop_ack_ns: None,
         };
         driver.observe(
             "registry_created",
@@ -387,6 +393,34 @@ impl Driver {
             return Err("I6_RUNTIME_STALE");
         }
         self.last_snapshot = census_snapshot(&snapshot)?;
+        if self.n04_active {
+            // Observed clock timestamps cannot replace the original protocol
+            // and cleanup deadlines. The independent oracle validates the wire.
+            self.refresh_trace()?;
+            let send = self.trace.events.iter().find(|event| {
+                event.kind == "control_send_attempt"
+                    && event.data["action"] == "stop"
+            }).map(|e| e.sequence.clone());
+            if let Some(send) = send && self.n04_stop_sent_ns.is_none() {
+                let ns = host_n04::clock_ns()?;
+                self.n04_stop_sent_ns = Some(ns);
+                self.append_observation("n04_stop_send_seen",
+                    json!({"ns":ns, "transport_sequence":send}))?;
+            }
+            let stopped = self.trace.events.iter().find(|event| {
+                event.kind == "protocol_event"
+                    && event.data["record"]["event"]["type"] == "stopped"
+            }).map(|e| e.sequence.clone());
+            if let Some(stopped) = stopped
+                && self.n04_stop_sent_ns.is_some()
+                && self.n04_stop_ack_ns.is_none()
+            {
+                let ns = host_n04::clock_ns()?;
+                self.n04_stop_ack_ns = Some(ns);
+                self.append_observation("n04_stop_ack_seen",
+                    json!({"ns":ns,"transport_sequence":stopped}))?;
+            }
+        }
         Ok(snapshot)
     }
     fn wait(&mut self, budget: u64, ready: impl Fn(&Value) -> bool) -> Result<Value> {
