@@ -113,6 +113,41 @@ class KeyfileSupervisorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "UNEXPECTED_SETTING_CHANGE"):
                 settings.validate_file_sequence(before, enabled, restarted)
 
+    def test_atomic_close_flush_same_bytes_allowed_but_rewrite_denied(self):
+        content = "[org/xfce/mousepad/preferences/view]\nshow-line-numbers=true\n"
+        with self.probe() as supervisor:
+            before = supervisor.snapshot()
+            self.write(content)
+            enabled = supervisor.snapshot()
+            replacement = self.folder / "atomic-new"
+            replacement.write_text(content, encoding="utf-8")
+            os.chmod(replacement, 0o600)
+            os.replace(replacement, self.folder / "keyfile")
+            restarted = supervisor.snapshot()
+            settings.validate_file_sequence(before, enabled, restarted)
+            self.assertNotEqual(enabled["file"]["inode"], restarted["file"]["inode"])
+            self.write("[org/xfce/mousepad/preferences/view]\n"
+                       "show-line-numbers = true\n")
+            rewritten = supervisor.snapshot()
+            with self.assertRaisesRegex(ValueError, "RESTART_KEYFILE_CHANGED"):
+                settings.validate_file_sequence(before, enabled, rewritten)
+
+    def test_intermediate_directory_replaced_during_read_is_denied(self):
+        from unittest import mock
+        self.write("[org/xfce/mousepad/preferences/view]\nshow-line-numbers=true\n")
+        original = settings._read_keyfile
+
+        def swap_after_read(fd, uid):
+            result = original(fd, uid)
+            self.folder.rename(self.folder.with_name("settings-old"))
+            self.folder.mkdir(mode=0o700)
+            return result
+
+        with self.probe() as supervisor:
+            with mock.patch.object(settings, "_read_keyfile", side_effect=swap_after_read):
+                with self.assertRaisesRegex(ValueError, "DIRECTORY_REPLACED"):
+                    supervisor.snapshot()
+
     def test_symlink_hardlink_and_duplicate_key_are_rejected(self):
         self.folder.mkdir(mode=0o700, parents=True)
         target = self.folder / "keyfile"
