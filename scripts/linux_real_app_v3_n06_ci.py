@@ -74,6 +74,14 @@ def reject_mutations(native,env,source,variant):
             ("no_close_intent",lambda n,e:observation(n,"n06_close_intent")
                 .update(kind="missing")),
             ("app_not_exited",lambda n,e:n["n06"]["app_exit"].update(local_workers=1)),
+            ("source_reason_rewritten",lambda n,e:n["last_snapshot"]["runtime"]["app"]
+                .update(error=None)),
+            ("terminal_reason_rewritten",lambda n,e:next(x for x in n["trace"]["events"]
+                if x["kind"]=="protocol_event"
+                and x["data"]["record"]["event"]["type"]=="stopped")
+                ["data"]["record"]["event"]["payload"].update(reason="stop")),
+            ("process_exit_only_claim",lambda n,e:n["n06"]["app_exit"].update(
+                local_waited=False)),
             ("main_not_destroyed",lambda n,e:n["n06"]["main_destroyed"].update(main_mapped=True)),
             ("exit_before_intent",lambda n,e:n["observations"].reverse()),
             ("discard_no_delivery",lambda n,e:n["n06"]["discard"].update(
@@ -153,7 +161,10 @@ def export_and_validate(incoming,output,image_file,head,attached,runtime,running
         runs.add(native["run_id"])
         captures.add(native["n06"]["capture_id"])
         owners.add(native["owner_id"])
-        sessions.add(native["n06"]["main_target"]["session"])
+        # Numeric session IDs are scoped to the independent Rust Runtime.
+        # Four fresh processes can legitimately all allocate session "1";
+        # distinct run/capture/owner identities prove isolation.
+        sessions.add((native["run_id"],native["n06"]["main_target"]["session"]))
         acceptance=receipts[f"n06-acceptance-{variant}.json"]
         claim=receipts[f"n06-acceptance-{variant}-validation.json"]
         actual=evidence.validate_acceptance(evidence.canonical(acceptance),output,source)
