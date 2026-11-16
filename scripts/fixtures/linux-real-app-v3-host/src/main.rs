@@ -397,28 +397,43 @@ impl Driver {
             // Observed clock timestamps cannot replace the original protocol
             // and cleanup deadlines. The independent oracle validates the wire.
             self.refresh_trace()?;
-            let send = self.trace.events.iter().find(|event| {
-                event.kind == "control_send_attempt"
-                    && event.data["action"] == "stop"
-            }).map(|e| e.sequence.clone());
-            if let Some(send) = send && self.n04_stop_sent_ns.is_none() {
+            let send = self
+                .trace
+                .events
+                .iter()
+                .find(|event| {
+                    event.kind == "control_send_attempt" && event.data["action"] == "stop"
+                })
+                .map(|e| e.sequence.clone());
+            if let Some(send) = send
+                && self.n04_stop_sent_ns.is_none()
+            {
                 let ns = host_n04::clock_ns()?;
                 self.n04_stop_sent_ns = Some(ns);
-                self.append_observation("n04_stop_send_seen",
-                    json!({"ns":ns, "transport_sequence":send}))?;
+                self.append_observation(
+                    "n04_stop_send_seen",
+                    json!({"ns":ns, "transport_sequence":send}),
+                )?;
             }
-            let stopped = self.trace.events.iter().find(|event| {
-                event.kind == "protocol_event"
-                    && event.data["record"]["event"]["type"] == "stopped"
-            }).map(|e| e.sequence.clone());
+            let stopped = self
+                .trace
+                .events
+                .iter()
+                .find(|event| {
+                    event.kind == "protocol_event"
+                        && event.data["record"]["event"]["type"] == "stopped"
+                })
+                .map(|e| e.sequence.clone());
             if let Some(stopped) = stopped
                 && self.n04_stop_sent_ns.is_some()
                 && self.n04_stop_ack_ns.is_none()
             {
                 let ns = host_n04::clock_ns()?;
                 self.n04_stop_ack_ns = Some(ns);
-                self.append_observation("n04_stop_ack_seen",
-                    json!({"ns":ns,"transport_sequence":stopped}))?;
+                self.append_observation(
+                    "n04_stop_ack_seen",
+                    json!({"ns":ns,"transport_sequence":stopped}),
+                )?;
             }
         }
         Ok(snapshot)
@@ -659,13 +674,17 @@ fn run() -> Result<bool> {
                 }
                 variant = Some(value);
             }
-            "--n03-variant" if n03_variant.is_none() && variant.is_none() && n04_variant.is_none() => {
+            "--n03-variant"
+                if n03_variant.is_none() && variant.is_none() && n04_variant.is_none() =>
+            {
                 if !host_n03::N03_VARIANTS.contains(&value.as_str()) {
                     return Err("I6_ARGUMENT_INVALID");
                 }
                 n03_variant = Some(value);
             }
-            "--n04-variant" if n04_variant.is_none() && variant.is_none() && n03_variant.is_none() => {
+            "--n04-variant"
+                if n04_variant.is_none() && variant.is_none() && n03_variant.is_none() =>
+            {
                 if value != host_n04::VARIANT {
                     return Err("I6_ARGUMENT_INVALID");
                 }
@@ -697,7 +716,11 @@ fn run() -> Result<bool> {
     eprintln!("I6_RUNNER_STAGE registry_create");
     let mut driver = Driver::new(&config, key)?;
     eprintln!("I6_RUNNER_STAGE exercise");
-    let first = match (variant.as_deref(), n03_variant.as_deref(), n04_variant.as_deref()) {
+    let first = match (
+        variant.as_deref(),
+        n03_variant.as_deref(),
+        n04_variant.as_deref(),
+    ) {
         (Some(value), None, None) => driver.exercise_n02(value).err(),
         (None, Some(value), None) => driver.exercise_n03(value).err(),
         (None, None, Some(_)) => driver.exercise_n04(&descriptor.run_id).err(),
@@ -732,7 +755,11 @@ fn run() -> Result<bool> {
         driver.shutdown().err()
     });
     eprintln!("I6_RUNNER_STAGE receipt");
-    let receipt = match (variant.as_deref(), n03_variant.as_deref(), n04_variant.as_deref()) {
+    let receipt = match (
+        variant.as_deref(),
+        n03_variant.as_deref(),
+        n04_variant.as_deref(),
+    ) {
         (Some(value), None, None) => driver.receipt_n02(&descriptor.run_id, value, first, cleanup),
         (None, Some(value), None) => driver.receipt_n03(&descriptor.run_id, value, first, cleanup),
         (None, None, Some(_)) => driver.receipt_n04(&descriptor.run_id, first, cleanup),
