@@ -57,6 +57,10 @@ def reject_mutations(native, env, source):
             base_request="2000")),
         ("registry_only",lambda n,e: n["n04"]["dialogs"][1].update(
             delivered_open=n["n04"]["dialogs"][1]["delivered_before"])),
+        ("esc_not_reset",lambda n,e: n["n04"]["dialogs"][1].update(
+            escape_resets_after=n["n04"]["dialogs"][1]["escape_resets_before"])),
+        ("esc_key_still_pressed",lambda n,e: n["n04"]["dialogs"][1].update(
+            escape_pressed_after=1)),
         ("no_fresh_dialog",lambda n,e: n["n04"]["dialogs"][1]["window"].update(
             window=n["n04"]["dialogs"][0]["window"]["window"])),
         ("old_focus_token",lambda n,e: n["n04"]["dialogs"][1].update(
