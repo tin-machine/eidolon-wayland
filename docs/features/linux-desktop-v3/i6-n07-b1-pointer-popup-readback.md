@@ -54,8 +54,11 @@ for actual owned `xdg_popup` and captures renderer ROIs after popup
 presentation. It follows N02 normal product cleanup, never direct Mousepad
 execution or `GTK3_MODULES` injection.
 
-**The candidate View-coordinate UV `[0.18, 0.021]` is deliberately
-unreviewed.** This first discovery must not claim the actual View menu
+**The candidate View-coordinate UV `[0.16, 0.063]` is deliberately
+unreviewed.** This location was calibrated from a real Host renderer ROI in
+PR #48's first Docker probe: the screenshot shows the View label near
+content pixel (160, 48) on a 1024×768 main surface, whereas the first
+candidate y=16 missed the menu bar. Observed pixels are *not* the golden. This first discovery must not claim the actual View menu
 was opened merely because a popup appeared. A separate observed visual
 calibration, precise named GTK menu item selection, and pixel checkmark
 readback are still required. A missing xdg_popup is a diagnostic failure:

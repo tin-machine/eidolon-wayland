@@ -88,7 +88,7 @@ def diagnostic() -> dict:
             "menu_coordinate_reviewed": False, "menu_identity_verified": False,
             "pointer": {
                 "target": TARGET, "source": "1", "input_epoch": 3,
-                "epoch_after": 3, "uv_milli": [180, 21],
+                "epoch_after": 3, "uv_milli": [160, 63],
                 "coordinate_reviewed": False,
                 "provenance": "normal_registry_command_and_compositor_forward",
                 "before": {"delivered_buttons": 3},
@@ -145,7 +145,7 @@ class N07B1DiagnosticTests(unittest.TestCase):
             (("pointer", "after", "last_delivered_press_serial"), 0),
             (("pointer", "after", "pressed"), 1),
             (("capture_id",), "b" * 64),
-            (("pointer", "uv_milli"), [180, 22]),
+            (("pointer", "uv_milli"), [160, 64]),
             (("pointer", "uv_milli"), [0.18, 0.021]),
         ):
             with self.subTest(path=path):

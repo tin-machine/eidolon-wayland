@@ -13,7 +13,7 @@ pub(super) const VARIANT: &str = "pointer_popup_readback_probe";
 const SOURCE: &str = "1";
 // An explicitly UNREVIEWED discovery coordinate. Only native pointer and
 // visual evidence can show which widget GTK actually received this click.
-const VIEW_CANDIDATE_UV: [f64; 2] = [0.18, 0.021];
+const VIEW_CANDIDATE_UV: [f64; 2] = [0.16, 0.063];
 
 fn delivered_pointer(before: &Value, after: &Value, target: &Value) -> bool {
     let a = &before["runtime"]["app"]["input"]["pointer"];
@@ -115,7 +115,7 @@ impl Driver {
             "target":target,"source":SOURCE,"input_epoch":epoch,
             // Receipt contract prohibits JSON floats. Transport still uses
             // the real [f64;2] UV command; evidence stores exact milli-units.
-            "uv_milli":[180,21],"coordinate_reviewed":false,
+            "uv_milli":[160,63],"coordinate_reviewed":false,
             "first_request":(*req - 3).to_string(),
             "next_request":req.to_string(),
             "before":before["runtime"]["app"]["input"]["pointer"],
@@ -322,6 +322,6 @@ mod tests {
         assert!(regions.iter().all(|r| r.width * r.height <= 32768));
         assert!(discovery_rois(319, 768).is_err());
         assert!(discovery_rois(1024, 239).is_err());
-        assert_eq!(VIEW_CANDIDATE_UV, [0.18, 0.021]);
+        assert_eq!(VIEW_CANDIDATE_UV, [0.16, 0.063]);
     }
 }
