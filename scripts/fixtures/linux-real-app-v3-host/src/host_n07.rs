@@ -8,6 +8,10 @@ use super::{Driver, Result};
 use eidolon_model::{state::Status, surface::TargetKey};
 use eidolon_render::HostReadbackRoi;
 use serde_json::{Value, json};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 pub(super) const VARIANT: &str = "pointer_popup_readback_probe";
 const SOURCE: &str = "1";
@@ -194,14 +198,46 @@ impl Driver {
             "main_target":main,"pointer":pointer,"before_menu":off,
             "menu_coordinate_reviewed":false,"menu_identity_verified":false,
         }));
-        // Do not invent a popup from the button ACK. GTK could use a
-        // different menu surface strategy; a missing xdg_popup is a discovery
-        // failure, not an xdg_toplevel dialog or a successful N07 assertion.
-        let current = self.wait(8, |s| {
-            s["runtime"]["app"]["popups"]
-                .as_array()
-                .is_some_and(|popups| popups.iter().any(|popup| popup_is_current(popup, &main)))
-        })?;
+        // A real post-click image is captured even on discovery failure.
+        // It lets reviewers distinguish no visible change from GTK drawing
+        // an inline menu, without inventing an xdg_popup or a pixel golden.
+        let post = self.n07_capture(&main, "after_pointer")?;
+        self.n07_probe.as_mut().unwrap()["after_pointer"] = post;
+        // Do not mint a popup from Registry Accepted: retain only actual
+        // bounded protocol-owner snapshots. Capture every distinct popup
+        // state, including unconfigured/undrawn/dismissed roles, for review.
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut popup_samples = Vec::new();
+        let mut previous = Value::Null;
+        let current = loop {
+            let snapshot = self.pump()?;
+            let raw = snapshot["runtime"]["app"]["popups"].clone();
+            if raw != previous && popup_samples.len() < 8 {
+                popup_samples.push(json!({
+                    "popups":raw,
+                    "input_resets":snapshot["runtime"]["input_resets"],
+                    "render_target":snapshot["runtime"]["render"]["targets"]
+                        .as_array().and_then(|targets| targets.iter()
+                            .find(|item| item["key"] == main))
+                        .map(|item| json!({
+                            "content_frame":item["content_frame"],
+                            "frames":item["frames"],
+                        })),
+                }));
+                previous = raw.clone();
+            }
+            if raw.as_array().is_some_and(|popups| {
+                popups.iter().any(|popup| popup_is_current(popup, &main))
+            }) {
+                break snapshot;
+            }
+            if Instant::now() >= deadline {
+                self.n07_probe.as_mut().unwrap()["popup_samples"] = json!(popup_samples);
+                return Err("I6_N07_POPUP_UNOBSERVED");
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
+        self.n07_probe.as_mut().unwrap()["popup_samples"] = json!(popup_samples);
         let popup = current["runtime"]["app"]["popups"]
             .as_array()
             .and_then(|v| v.iter().find(|p| popup_is_current(p, &main)))
