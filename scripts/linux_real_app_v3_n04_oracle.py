@@ -205,6 +205,8 @@ def verify_dialogs(native, owner, targets):
     need(len(dialog_done) == 2
          and dialog_done[0][0] < first_done < last_idle < dialog_done[1][0])
     sdk = n02.ordinal_events(native["sdk_observations"],limit=128)
+    focus = ordered.get("n04_focus_current", [])
+    need(len(focus)==4,"I6_N04_FOCUS_MISSING")
     main = info["main_target"]
     seen_requests = set()
     for ix, dialog in enumerate(info["dialogs"]):
@@ -272,6 +274,14 @@ def verify_dialogs(native, owner, targets):
              and type(dialog["escape_epoch"]) is int and dialog["escape_epoch"]>=0
              and n02.b1.decimal(dialog["main_focus_token"])
              and n02.b1.decimal(dialog["escape_focus_token"]))
+        for recorded, request, expected_target, expected_epoch, expected_token in (
+            (focus[ix*2],str(base),main,dialog["main_epoch"],dialog["main_focus_token"]),
+            (focus[ix*2+1],str(base+5),key,dialog["escape_epoch"],dialog["escape_focus_token"]),
+        ):
+            data=recorded[1]["data"]
+            need(data["request_id"]==request and data["input_epoch"]==expected_epoch
+                 and data["focus_token"]==expected_token)
+            same(data["target"],expected_target)
         for offset, command in [(0,"focus_window"),(1,"key"),(2,"key"),
                                 (3,"key"),(4,"key"),(5,"focus_window"),
                                 (6,"key"),(7,"key")]:
