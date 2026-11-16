@@ -4,6 +4,7 @@ mod host_n02;
 mod host_n03;
 mod host_n04;
 mod host_n05;
+mod host_n06;
 mod host_sdk;
 use eidolon_core::runtime::Runtime;
 use eidolon_model::{
@@ -270,6 +271,7 @@ struct Driver {
     n04_stop_ack_ns: Option<u64>,
     n05_active: bool,
     n05: Option<Value>,
+    n06: Option<Value>,
 }
 impl Driver {
     fn new(config: &str, secret: Secret) -> Result<Self> {
@@ -303,6 +305,7 @@ impl Driver {
             n04_stop_ack_ns: None,
             n05_active: false,
             n05: None,
+            n06: None,
         };
         driver.observe(
             "registry_created",
@@ -673,6 +676,8 @@ fn run() -> Result<bool> {
     let mut n04_variant: Option<String> = None;
     let mut n05_variant: Option<String> = None;
     let mut n05_directory: Option<String> = None;
+    let mut n06_variant: Option<String> = None;
+    let mut n06_directory: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         let value = args.next().ok_or("I6_ARGUMENT_INVALID")?;
@@ -686,7 +691,8 @@ fn run() -> Result<bool> {
                 if variant.is_none()
                     && n03_variant.is_none()
                     && n04_variant.is_none()
-                    && n05_variant.is_none() =>
+                    && n05_variant.is_none()
+                    && n06_variant.is_none() =>
             {
                 if !host_n02::N02_VARIANTS.contains(&value.as_str()) {
                     return Err("I6_ARGUMENT_INVALID");
@@ -697,7 +703,9 @@ fn run() -> Result<bool> {
                 if n03_variant.is_none()
                     && variant.is_none()
                     && n04_variant.is_none()
-                    && n05_variant.is_none() =>
+                    && n05_variant.is_none()
+                    && n06_variant.is_none()
+                    && n06_variant.is_none() =>
             {
                 if !host_n03::N03_VARIANTS.contains(&value.as_str()) {
                     return Err("I6_ARGUMENT_INVALID");
@@ -708,7 +716,9 @@ fn run() -> Result<bool> {
                 if n04_variant.is_none()
                     && variant.is_none()
                     && n03_variant.is_none()
-                    && n05_variant.is_none() =>
+                    && n05_variant.is_none()
+                    && n06_variant.is_none()
+                    && n06_variant.is_none() =>
             {
                 if value != host_n04::VARIANT {
                     return Err("I6_ARGUMENT_INVALID");
@@ -727,8 +737,21 @@ fn run() -> Result<bool> {
                 n05_variant = Some(value);
             }
             "--n05-directory" if n05_directory.is_none() => n05_directory = Some(value),
+            "--n06-variant" if n06_variant.is_none()
+                && variant.is_none() && n03_variant.is_none()
+                && n04_variant.is_none() && n05_variant.is_none() =>
+            {
+                if !host_n06::VARIANTS.contains(&value.as_str()) {
+                    return Err("I6_ARGUMENT_INVALID");
+                }
+                n06_variant = Some(value);
+            }
+            "--n06-directory" if n06_directory.is_none() => n06_directory = Some(value),
             _ => return Err("I6_ARGUMENT_INVALID"),
         }
+    }
+    if n06_variant.is_some() != n06_directory.is_some() {
+        return Err("I6_ARGUMENT_INVALID");
     }
     if n05_variant.is_some() != n05_directory.is_some() {
         return Err("I6_ARGUMENT_INVALID");
@@ -756,7 +779,13 @@ fn run() -> Result<bool> {
     eprintln!("I6_RUNNER_STAGE registry_create");
     let mut driver = Driver::new(&config, key)?;
     eprintln!("I6_RUNNER_STAGE exercise");
-    let first = match (
+    let first = if let Some(value) = n06_variant.as_deref() {
+        driver.exercise_n06(
+            &descriptor.run_id,
+            n06_directory.as_deref().ok_or("I6_ARGUMENT_INVALID")?,
+            value,
+        ).err()
+    } else { match (
         variant.as_deref(),
         n03_variant.as_deref(),
         n04_variant.as_deref(),
@@ -773,7 +802,7 @@ fn run() -> Result<bool> {
             .err(),
         (None, None, None, None) => driver.exercise().err(),
         _ => return Err("I6_ARGUMENT_INVALID"),
-    };
+    } };
     let retirement = if n03_variant.is_some() {
         if first.is_none() {
             None // N03 completed real owner retirement in its exercise.
@@ -782,7 +811,7 @@ fn run() -> Result<bool> {
         } else {
             driver.retire_after_failure().err()
         }
-    } else if variant.is_some() || n04_variant.is_some() || n05_variant.is_some() {
+    } else if variant.is_some() || n04_variant.is_some() || n05_variant.is_some() || n06_variant.is_some() {
         eprintln!("I6_RUNNER_STAGE n02_retire");
         // A failed launch without a native Create still needs the existing
         // same-capture recovery. The SDK ledger never invents an empty receipt.
@@ -802,7 +831,9 @@ fn run() -> Result<bool> {
         driver.shutdown().err()
     });
     eprintln!("I6_RUNNER_STAGE receipt");
-    let receipt = match (
+    let receipt = if let Some(value) = n06_variant.as_deref() {
+        driver.receipt_n06(&descriptor.run_id, value, first, cleanup)
+    } else { match (
         variant.as_deref(),
         n03_variant.as_deref(),
         n04_variant.as_deref(),
@@ -818,7 +849,7 @@ fn run() -> Result<bool> {
         (None, None, None, Some(_)) => driver.receipt_n05(&descriptor.run_id, first, cleanup),
         (None, None, None, None) => driver.receipt(&descriptor.run_id, first, cleanup),
         _ => return Err("I6_ARGUMENT_INVALID"),
-    };
+    } };
     write_receipt(&output.ok_or("I6_ARGUMENT_INVALID")?, &receipt)?;
     if retirement.is_some() {
         // Product remains unresolved. Freeze that result before the external
