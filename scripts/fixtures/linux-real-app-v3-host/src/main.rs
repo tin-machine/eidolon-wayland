@@ -1,10 +1,11 @@
-//! N01 only: normal Registry/Runtime/Controller, real SSH and unmodified C2.
+//! I6 Host driver: normal Registry/Runtime/Controller, real SSH and unmodified C2.
 //! A successful process exit is a smoke result; it never claims all-I6 acceptance.
 mod host_n02;
 mod host_n03;
 mod host_n04;
 mod host_n05;
 mod host_n06;
+mod host_n07;
 mod host_sdk;
 use eidolon_core::runtime::Runtime;
 use eidolon_model::{
@@ -272,6 +273,7 @@ struct Driver {
     n05_active: bool,
     n05: Option<Value>,
     n06: Option<Value>,
+    n07_probe: Option<Value>,
 }
 impl Driver {
     fn new(config: &str, secret: Secret) -> Result<Self> {
@@ -306,6 +308,7 @@ impl Driver {
             n05_active: false,
             n05: None,
             n06: None,
+            n07_probe: None,
         };
         driver.observe(
             "registry_created",
@@ -678,6 +681,7 @@ fn run() -> Result<bool> {
     let mut n05_directory: Option<String> = None;
     let mut n06_variant: Option<String> = None;
     let mut n06_directory: Option<String> = None;
+    let mut n07_probe_variant: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         let value = args.next().ok_or("I6_ARGUMENT_INVALID")?;
@@ -692,7 +696,8 @@ fn run() -> Result<bool> {
                     && n03_variant.is_none()
                     && n04_variant.is_none()
                     && n05_variant.is_none()
-                    && n06_variant.is_none() =>
+                    && n06_variant.is_none()
+                    && n07_probe_variant.is_none() =>
             {
                 if !host_n02::N02_VARIANTS.contains(&value.as_str()) {
                     return Err("I6_ARGUMENT_INVALID");
@@ -704,7 +709,8 @@ fn run() -> Result<bool> {
                     && variant.is_none()
                     && n04_variant.is_none()
                     && n05_variant.is_none()
-                    && n06_variant.is_none() =>
+                    && n06_variant.is_none()
+                    && n07_probe_variant.is_none() =>
             {
                 if !host_n03::N03_VARIANTS.contains(&value.as_str()) {
                     return Err("I6_ARGUMENT_INVALID");
@@ -716,7 +722,8 @@ fn run() -> Result<bool> {
                     && variant.is_none()
                     && n03_variant.is_none()
                     && n05_variant.is_none()
-                    && n06_variant.is_none() =>
+                    && n06_variant.is_none()
+                    && n07_probe_variant.is_none() =>
             {
                 if value != host_n04::VARIANT {
                     return Err("I6_ARGUMENT_INVALID");
@@ -728,7 +735,8 @@ fn run() -> Result<bool> {
                     && variant.is_none()
                     && n03_variant.is_none()
                     && n04_variant.is_none()
-                    && n06_variant.is_none() =>
+                    && n06_variant.is_none()
+                    && n07_probe_variant.is_none() =>
             {
                 if value != host_n05::VARIANT {
                     return Err("I6_ARGUMENT_INVALID");
@@ -749,6 +757,19 @@ fn run() -> Result<bool> {
                 n06_variant = Some(value);
             }
             "--n06-directory" if n06_directory.is_none() => n06_directory = Some(value),
+            "--n07-probe-variant"
+                if n07_probe_variant.is_none()
+                    && variant.is_none()
+                    && n03_variant.is_none()
+                    && n04_variant.is_none()
+                    && n05_variant.is_none()
+                    && n06_variant.is_none() =>
+            {
+                if value != host_n07::VARIANT {
+                    return Err("I6_ARGUMENT_INVALID");
+                }
+                n07_probe_variant = Some(value);
+            }
             _ => return Err("I6_ARGUMENT_INVALID"),
         }
     }
@@ -781,7 +802,9 @@ fn run() -> Result<bool> {
     eprintln!("I6_RUNNER_STAGE registry_create");
     let mut driver = Driver::new(&config, key)?;
     eprintln!("I6_RUNNER_STAGE exercise");
-    let first = if let Some(value) = n06_variant.as_deref() {
+    let first = if n07_probe_variant.is_some() {
+        driver.exercise_n07_probe(&descriptor.run_id).err()
+    } else if let Some(value) = n06_variant.as_deref() {
         driver
             .exercise_n06(
                 &descriptor.run_id,
@@ -821,6 +844,7 @@ fn run() -> Result<bool> {
         || n04_variant.is_some()
         || n05_variant.is_some()
         || n06_variant.is_some()
+        || n07_probe_variant.is_some()
     {
         eprintln!("I6_RUNNER_STAGE n02_retire");
         // A failed launch without a native Create still needs the existing
@@ -841,7 +865,9 @@ fn run() -> Result<bool> {
         driver.shutdown().err()
     });
     eprintln!("I6_RUNNER_STAGE receipt");
-    let receipt = if let Some(value) = n06_variant.as_deref() {
+    let receipt = if n07_probe_variant.is_some() {
+        driver.receipt_n07_probe(&descriptor.run_id, first, cleanup)
+    } else if let Some(value) = n06_variant.as_deref() {
         driver.receipt_n06(&descriptor.run_id, value, first, cleanup)
     } else {
         match (
