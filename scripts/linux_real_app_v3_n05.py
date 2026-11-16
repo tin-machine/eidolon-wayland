@@ -168,9 +168,13 @@ def prepare_and_run(args, artifacts, source, report):
                         result,run_id,native["n05"]["capture_id"],"disposable-supervisor")
                     file_proof["baseline"] = {
                         k:v for k,v in baseline.items() if k!="bytes"}
-                except (OSError,ValueError,TypeError,KeyError):
-                    # Never turn absent or changed output into a skipped PASS.
-                    pass
+                except (OSError,ValueError,TypeError,KeyError) as problem:
+                    # This is diagnostic data only, NEVER successful evidence.
+                    # It contains only typed metadata and comparisons with
+                    # fixed literals; no arbitrary paths or raw saved bytes.
+                    report["file_diagnostic"] = file_oracle.diagnostic_snapshot(
+                        file_fd, fixture.ACCOUNTS["app"][0], str(problem))
+                    file_proof = None
             finally:
                 os.close(file_fd)
             counts = fixture.settled_census(sshd)
