@@ -5,10 +5,7 @@
 //! Menu identity and click coordinates require independent visual review before
 //! B2 may use this probe to toggle the actual Line Numbers action.
 use super::{Driver, Result};
-use eidolon_model::{
-    state::Status,
-    surface::TargetKey,
-};
+use eidolon_model::{state::Status, surface::TargetKey};
 use eidolon_render::HostReadbackRoi;
 use serde_json::{Value, json};
 
@@ -23,7 +20,9 @@ fn delivered_pointer(before: &Value, after: &Value, target: &Value) -> bool {
     let b = &after["runtime"]["app"]["input"]["pointer"];
     let count = a["delivered_buttons"].as_u64();
     let completed = b["delivered_buttons"].as_u64();
-    count.zip(completed).is_some_and(|(old, new)| new >= old + 2)
+    count
+        .zip(completed)
+        .is_some_and(|(old, new)| new >= old + 2)
         && b["last_delivered_source"] == SOURCE
         && b["last_delivered_surface"].as_str().is_some()
         && b["pressed"] == 0
@@ -36,7 +35,9 @@ fn popup_is_current(popup: &Value, target: &Value) -> bool {
         && popup["root_window"] == target["window"]
         && popup["captured_origin"] == true
         && popup["dismissed"] == false
-        && popup["ack_serial"].as_u64().is_some_and(|serial| serial > 0)
+        && popup["ack_serial"]
+            .as_u64()
+            .is_some_and(|serial| serial > 0)
         && popup["layer"].as_u64().is_some()
         && popup["surface"].as_str().is_some()
         && popup["parent_surface"].as_str().is_some()
@@ -50,8 +51,20 @@ fn discovery_rois(width: u32, height: u32) -> Result<Vec<HostReadbackRoi>> {
         return Err("I6_N07_ROI_UNAVAILABLE");
     }
     Ok(vec![
-        HostReadbackRoi { id: 1, x: 0, y: 64, width: 48, height: 128 },
-        HostReadbackRoi { id: 2, x: 64, y: 16, width: 192, height: 128 },
+        HostReadbackRoi {
+            id: 1,
+            x: 0,
+            y: 64,
+            width: 48,
+            height: 128,
+        },
+        HostReadbackRoi {
+            id: 2,
+            x: 64,
+            y: 16,
+            width: 192,
+            height: 128,
+        },
     ])
 }
 
@@ -102,15 +115,20 @@ impl Driver {
             .and_then(|targets| targets.iter().find(|r| r["key"] == *target))
             .ok_or("I6_N07_RENDERER_NOT_READY")?;
         let width = renderer_target["gpu"]["width"]
-            .as_u64().and_then(|n| u32::try_from(n).ok())
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
             .ok_or("I6_N07_RENDERER_NOT_READY")?;
         let height = renderer_target["gpu"]["height"]
-            .as_u64().and_then(|n| u32::try_from(n).ok())
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
             .ok_or("I6_N07_RENDERER_NOT_READY")?;
-        let native_target: TargetKey = serde_json::from_value(target.clone())
-            .map_err(|_| "I6_N07_TARGET_INVALID")?;
+        let native_target: TargetKey =
+            serde_json::from_value(target.clone()).map_err(|_| "I6_N07_TARGET_INVALID")?;
         let rois = discovery_rois(width, height)?;
-        let evidence = self.n02_sdk.as_mut().ok_or("I6_N07_SDK_MISSING")?
+        let evidence = self
+            .n02_sdk
+            .as_mut()
+            .ok_or("I6_N07_SDK_MISSING")?
             .capture_live_rois(&self.registry, native_target, &rois)
             .map_err(|_| "I6_N07_RENDERER_READBACK_FAILED")?;
         if evidence["target"] != *target
@@ -121,11 +139,14 @@ impl Driver {
         {
             return Err("I6_N07_RENDERER_ORIGIN_INVALID");
         }
-        self.observe("n07_roi_readback_observed", json!({
-            "phase":phase, "target":target, "create":evidence["create_seq"],
-            "content_frame":evidence["receipt"]["content_frame"],
-            "roi_sha256":evidence["receipt"]["roi_sha256"],
-        }))?;
+        self.observe(
+            "n07_roi_readback_observed",
+            json!({
+                "phase":phase, "target":target, "create":evidence["create_seq"],
+                "content_frame":evidence["receipt"]["content_frame"],
+                "roi_sha256":evidence["receipt"]["roi_sha256"],
+            }),
+        )?;
         Ok(json!({"phase":phase,"readback":evidence}))
     }
 
@@ -134,16 +155,20 @@ impl Driver {
     /// popup identity is derived from actual compositor xdg role callbacks.
     pub(super) fn exercise_n07_probe(&mut self, run_id: &str) -> Result<()> {
         self.exercise_n02("mousepad_editor")?;
-        let main = self.n02_readback.as_ref()
-            .ok_or("I6_N07_MAIN_MISSING")?["target"].clone();
+        let main = self.n02_readback.as_ref().ok_or("I6_N07_MAIN_MISSING")?["target"].clone();
         let off = self.n07_capture(&main, "before_menu")?;
         let mut req = 7000u32;
         let (epoch, _token) = self.n05_focus(&main, &mut req)?;
         let pointer = self.n07_click(&main, epoch, &mut req)?;
         self.refresh_trace()?;
-        let capture_id = self.trace.events.iter()
+        let capture_id = self
+            .trace
+            .events
+            .iter()
             .find_map(|event| event.capture.as_ref())
-            .ok_or("I6_N07_CAPTURE_MISSING")?.capture_id.clone();
+            .ok_or("I6_N07_CAPTURE_MISSING")?
+            .capture_id
+            .clone();
         self.n07_probe = Some(json!({
             "schema":1,"run_id":run_id,"variant":VARIANT,
             "capture_id":capture_id,
@@ -154,29 +179,37 @@ impl Driver {
         // different menu surface strategy; a missing xdg_popup is a discovery
         // failure, not an xdg_toplevel dialog or a successful N07 assertion.
         let current = self.wait(8, |s| {
-            s["runtime"]["app"]["popups"].as_array().is_some_and(|popups| {
-                popups.iter().any(|popup| popup_is_current(popup, &main))
-            })
+            s["runtime"]["app"]["popups"]
+                .as_array()
+                .is_some_and(|popups| popups.iter().any(|popup| popup_is_current(popup, &main)))
         })?;
-        let popup = current["runtime"]["app"]["popups"].as_array()
+        let popup = current["runtime"]["app"]["popups"]
+            .as_array()
             .and_then(|v| v.iter().find(|p| popup_is_current(p, &main)))
-            .ok_or("I6_N07_POPUP_UNOBSERVED")?.clone();
+            .ok_or("I6_N07_POPUP_UNOBSERVED")?
+            .clone();
         let menu = self.n07_capture(&main, "menu_open")?;
         if self.n07_probe.as_ref().is_none() {
             return Err("I6_N07_PROBE_MISSING");
         }
         self.n07_probe.as_mut().unwrap()["popup"] = popup.clone();
         self.n07_probe.as_mut().unwrap()["menu_open"] = menu;
-        self.observe("n07_popup_observed", json!({
-            "role":popup["role"],"parent_surface":popup["parent_surface"],
-            "root_window":popup["root_window"],"ack_serial":popup["ack_serial"],
-            "grab_serial":popup["grab_serial"],"layer":popup["layer"],
-        }))?;
+        self.observe(
+            "n07_popup_observed",
+            json!({
+                "role":popup["role"],"parent_surface":popup["parent_surface"],
+                "root_window":popup["root_window"],"ack_serial":popup["ack_serial"],
+                "grab_serial":popup["grab_serial"],"layer":popup["layer"],
+            }),
+        )?;
         Ok(())
     }
 
     pub(super) fn receipt_n07_probe(
-        &self, run_id: &str, error: Option<&str>, cleanup: Option<&str>,
+        &self,
+        run_id: &str,
+        error: Option<&str>,
+        cleanup: Option<&str>,
     ) -> Value {
         let mut result = self.receipt_n02(run_id, "mousepad_editor", error, cleanup);
         result["schema"] = json!("eidolon-i6-n07-b1-native-probe-v1");
