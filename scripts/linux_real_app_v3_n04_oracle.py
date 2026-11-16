@@ -78,11 +78,12 @@ def verify_temporal(native, external):
             capture = cap
         need(cap == capture and cap.get("capture_id") == native["n04"]["capture_id"],
              "I6_OWNER_MISMATCH")
-    heartbeats = []
+    # Include the whole capture for pairing to tolerate a heartbeat already
+    # in flight at the exact idle boundary. Its earlier send cannot count as
+    # a fresh idle renewal. The per-request sequence is source wire data.
+    pairs = []
     pending = None
     for pos, event in enumerate(events, 1):
-        if pos <= low or pos > high:
-            continue
         if event["kind"] == "control_send_attempt" and event["data"]["action"] == "heartbeat":
             need(pending is None, "I6_N04_HEARTBEAT_UNACKED")
             pending = pos
@@ -91,15 +92,21 @@ def verify_temporal(native, external):
             kind = record["event"]["type"]
             if kind == "heartbeat":
                 need(pending is not None and pending < pos, "I6_N04_HEARTBEAT_UNACKED")
-                need(record["event"]["payload"] == {"phase":"started"})
                 seq = record["request_sequence"]
                 need(type(seq) is str and seq.isascii() and seq.isdecimal()
                      and int(seq) > 0)
-                heartbeats.append((pos, int(seq)))
+                pairs.append((pending, pos, int(seq),
+                              record["event"]["payload"]["phase"]))
                 pending = None
-            elif kind in ("stopped", "pending"):
+            elif low < pos <= high and kind in ("stopped", "pending"):
                 need(False, "I6_N04_LEASE_LOST")
-    need(pending is None and len(heartbeats) >= 20, "I6_N04_HEARTBEAT_UNACKED")
+    need(pending is None, "I6_N04_HEARTBEAT_UNACKED")
+    heartbeats = [(ack, seq) for send, ack, seq, phase in pairs
+                  if low < send < ack <= high and phase == "started"]
+    need(len(heartbeats) >= 20, "I6_N04_HEARTBEAT_UNACKED")
+    # A non-started heartbeat inside idle is never a valid lease renewal.
+    need(not any(low < send < ack <= high and phase != "started"
+                 for send, ack, seq, phase in pairs), "I6_N04_LEASE_LOST")
     seqs = [seq for _, seq in heartbeats]
     need(len(set(seqs)) == len(seqs) and
          all(next_seq == seq + 1 for seq, next_seq in zip(seqs, seqs[1:])),
