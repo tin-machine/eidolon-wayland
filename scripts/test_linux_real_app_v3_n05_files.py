@@ -40,6 +40,7 @@ class N05FileProofTests(unittest.TestCase):
             self.fd,self.uid,"N05_MISSING_OR_UNSAFE_FILE")
         self.assertEqual(missing["output"]["state"],"missing_or_unsafe")
         self.assertEqual(missing["kind"],"eidolon-i6-n05-file-diagnostic-v1")
+        self.assertEqual(missing["directory_entry_count_bounded"],1)
         self.assertNotIn("status",missing)
         self.assertTrue(all(
             not isinstance(value,(bytes,bytearray))
@@ -49,6 +50,7 @@ class N05FileProofTests(unittest.TestCase):
                  bytes((0xef,0xbb,0xbf)) + oracle.INPUT_BYTES + oracle.APPEND_BYTES)
         mismatched=oracle.diagnostic_snapshot(self.fd,self.uid,"N05_OUTPUT_MISMATCH")
         self.assertEqual(mismatched["output"]["state"],"present")
+        self.assertEqual(mismatched["directory_entry_count_bounded"],2)
         self.assertTrue(mismatched["output"]["bom"])
         self.assertFalse(mismatched["output"]["exact_bytes"])
         self.assertTrue(mismatched["output"]["append_suffix"])
