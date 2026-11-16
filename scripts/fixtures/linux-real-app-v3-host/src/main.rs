@@ -704,7 +704,6 @@ fn run() -> Result<bool> {
                     && variant.is_none()
                     && n04_variant.is_none()
                     && n05_variant.is_none()
-                    && n06_variant.is_none()
                     && n06_variant.is_none() =>
             {
                 if !host_n03::N03_VARIANTS.contains(&value.as_str()) {
@@ -717,7 +716,6 @@ fn run() -> Result<bool> {
                     && variant.is_none()
                     && n03_variant.is_none()
                     && n05_variant.is_none()
-                    && n06_variant.is_none()
                     && n06_variant.is_none() =>
             {
                 if value != host_n04::VARIANT {
@@ -729,7 +727,8 @@ fn run() -> Result<bool> {
                 if n05_variant.is_none()
                     && variant.is_none()
                     && n03_variant.is_none()
-                    && n04_variant.is_none() =>
+                    && n04_variant.is_none()
+                    && n06_variant.is_none() =>
             {
                 if value != host_n05::VARIANT {
                     return Err("I6_ARGUMENT_INVALID");
