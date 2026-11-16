@@ -176,19 +176,18 @@ impl Driver {
         };
         let child_target = readback["target"].clone();
         let (esc_epoch, esc_token) = self.n04_focus(&child_target, base + 5)?;
-        let before_esc = self.pump()?["runtime"]["app"]["input"]["delivered"]
+        let before_esc_snapshot = self.pump()?;
+        let before_esc = before_esc_snapshot["runtime"]["app"]["input"]["delivered"]
             .as_u64()
             .ok_or("I6_N04_INPUT_FAILED")?;
+        let resets_before = before_esc_snapshot["runtime"]["app"]["input"]["resets"]
+            .as_u64()
+            .ok_or("I6_N04_INPUT_FAILED")?;
+        // The dialog may synchronously destroy its Wayland target on ESC-down.
+        // A subsequent key-up command to that stale target is correctly denied
+        // by the normal product input gate. The compositor must instead retire
+        // the focused window and release held keys through reset_input().
         self.n04_key(&child_target, esc_epoch, &esc_token, base + 6, 1, 111, true)?;
-        self.n04_key(
-            &child_target,
-            esc_epoch,
-            &esc_token,
-            base + 7,
-            1,
-            111,
-            false,
-        )?;
         let gone = self.wait(25, |s| {
             s["runtime"]["app"]["windows"].as_array().is_some_and(|ws| {
                 !ws.iter()
@@ -203,7 +202,17 @@ impl Driver {
         let open_count = found["runtime"]["app"]["input"]["delivered"]
             .as_u64()
             .ok_or("I6_N04_INPUT_FAILED")?;
-        if open_count < prior + 4 || after < before_esc + 2 {
+        let resets_after = gone["runtime"]["app"]["input"]["resets"]
+            .as_u64()
+            .ok_or("I6_N04_INPUT_FAILED")?;
+        let pressed_after = gone["runtime"]["app"]["input"]["pressed"]
+            .as_u64()
+            .ok_or("I6_N04_INPUT_FAILED")?;
+        if open_count < prior + 4
+            || after < before_esc + 1
+            || resets_after <= resets_before
+            || pressed_after != 0
+        {
             return Err("I6_N04_INPUT_FAILED");
         }
         let child_fact = dialog_window_fact(&child)?;
@@ -225,6 +234,8 @@ impl Driver {
             "dialog_readback":readback,"open_gui_windows":app["gui_windows"],
             "escape_epoch":esc_epoch,"escape_focus_token":esc_token,
             "delivered_before_escape":before_esc,"delivered_closed":after,
+            "escape_resets_before":resets_before,"escape_resets_after":resets_after,
+            "escape_pressed_after":pressed_after,
             "closed_gui_windows":gone["runtime"]["app"]["gui_windows"],
             "closed_windows":closed_facts}),
         )
