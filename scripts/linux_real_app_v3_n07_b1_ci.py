@@ -111,12 +111,17 @@ def export_and_validate(
     outcome = inspect(native)
     if outcome != report.get("probe") or outcome["status"] != "probe_only":
         return False
-    if not isinstance(environment.get("final"), dict):
+    census = environment.get("final")
+    if not isinstance(census, dict) or set(census) != {
+            "app_process_count", "driver_child_count", "sshd_child_count",
+            "journal_entries", "journal_lock_held", "profile_lock_held"}:
         return False
-    for field in ("app_process_count", "driver_process_count"):
-        value = environment["final"].get(field)
-        if value is not None and value != 0:
-            return False
+    if (any(type(census[field]) is not int or census[field] != 0
+            for field in ("app_process_count", "driver_child_count",
+                          "sshd_child_count", "journal_entries"))
+            or census["journal_lock_held"] is not False
+            or census["profile_lock_held"] is not False):
+        return False
     adversarial_checks(native)
     return True
 
