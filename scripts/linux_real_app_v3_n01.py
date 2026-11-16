@@ -159,7 +159,7 @@ def runner_diagnostics(returncode, elapsed_ms, stderr_tail):
             "panic_location": location, "missing_soname": soname}
 
 
-def run_capture(argv, *, uid=None, home="/", seconds=30, pass_fds=(), input_bytes=None, diagnostic=None):
+def run_capture(argv, *, uid=None, home="/", seconds=30, pass_fds=(), input_bytes=None, diagnostic=None, line_observer=None):
     """Bound retained bytes and time, with a live pidfd for the owned child.
 
     Unexpected children are never promoted to product cleanup. The disposable
@@ -172,6 +172,9 @@ def run_capture(argv, *, uid=None, home="/", seconds=30, pass_fds=(), input_byte
         options.update(user=uid, group=uid, extra_groups=[])
     started = time.monotonic()
     stderr = bytearray()
+    # Optional N04 *external* monotonic observation of complete stderr lines.
+    # Default None leaves N01/N02/N03 behaviour and receipts unchanged.
+    observer_fragment = b""
 
     def record(returncode):
         if diagnostic is not None:
@@ -219,9 +222,17 @@ def run_capture(argv, *, uid=None, home="/", seconds=30, pass_fds=(), input_byte
                 need(total <= MAX_OUTPUT, "I6_EVIDENCE_MISSING")
                 if key.data == "stdout":
                     stdout.extend(data)
-                elif diagnostic is not None:
-                    stderr.extend(data)
-                    del stderr[:-2048]
+                elif key.data == "stderr":
+                    if line_observer is not None:
+                        combined = observer_fragment + data
+                        *lines, observer_fragment = combined.split(b"\n")
+                        observer_fragment = observer_fragment[-256:]
+                        for line in lines:
+                            if line.startswith(b"I6_N04_IDLE_") and len(line) <= 128:
+                                line_observer(line, time.monotonic_ns())
+                    if diagnostic is not None:
+                        stderr.extend(data)
+                        del stderr[:-2048]
         return child.wait(timeout=1), bytes(stdout)
     finally:
         if child.poll() is None:
