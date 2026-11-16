@@ -264,6 +264,7 @@ struct Driver {
     n02_input: Option<Value>,
     n04: Option<Value>,
     n04_active: bool,
+    n04_stop_monitoring: bool,
     n04_stop_sent_ns: Option<u64>,
     n04_stop_ack_ns: Option<u64>,
 }
@@ -294,6 +295,7 @@ impl Driver {
             n02_input: None,
             n04: None,
             n04_active: false,
+            n04_stop_monitoring: false,
             n04_stop_sent_ns: None,
             n04_stop_ack_ns: None,
         };
@@ -393,7 +395,7 @@ impl Driver {
             return Err("I6_RUNTIME_STALE");
         }
         self.last_snapshot = census_snapshot(&snapshot)?;
-        if self.n04_active {
+        if self.n04_active && self.n04_stop_monitoring {
             // Observed clock timestamps cannot replace the original protocol
             // and cleanup deadlines. The independent oracle validates the wire.
             self.refresh_trace()?;
