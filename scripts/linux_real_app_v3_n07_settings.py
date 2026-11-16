@@ -235,6 +235,10 @@ def validate_file_sequence(before: dict, enabled: dict, restarted: dict) -> None
         need(file["nlink"] == 1 and file["size"] > 0
              and re.fullmatch(r"[0-9a-f]{64}", file["sha256"]) is not None,
              "N07_UNSAFE_KEYFILE")
-    # The second session is read-only with respect to this setting; a rewritten
-    # keyfile is not accepted merely because the boolean remains true.
-    need(enabled["file"] == restarted["file"], "N07_RESTART_KEYFILE_CHANGED")
+    # GLib can atomically replace the keyfile when flushing on normal Close:
+    # a changed inode/ctime is not itself a changed user setting. Require exact
+    # saved bytes and owner instead of comparing inode/timestamp metadata.
+    need(enabled["file"]["sha256"] == restarted["file"]["sha256"]
+         and enabled["file"]["size"] == restarted["file"]["size"]
+         and enabled["file"]["uid"] == restarted["file"]["uid"],
+         "N07_RESTART_KEYFILE_CHANGED")
