@@ -129,6 +129,7 @@ pub use ime::ImeReport;
 pub use input::InputReport;
 pub(crate) use input::monotonic_time_ms;
 pub use pointer::PointerReport;
+pub use popup::PopupReport;
 pub use snapshot::WindowReport;
 
 pub struct ProtocolState {
@@ -150,6 +151,9 @@ pub struct ProtocolState {
     popups: Vec<PopupSurface>,
     dismissed_popups: HashSet<ObjectId>,
     popup_grabs: Vec<ObjectId>,
+    // Actual compositor configure ACK and accepted grab serials; never client claims.
+    popup_ack_serials: HashMap<ObjectId, u32>,
+    popup_grab_serials: HashMap<ObjectId, u32>,
     popup_focused: Option<WlSurface>,
     session: SessionId,
     // Captured by Session::start_v3 before the first listener accept. No
@@ -252,6 +256,8 @@ impl ProtocolState {
             popups: vec![],
             dismissed_popups: HashSet::new(),
             popup_grabs: vec![],
+            popup_ack_serials: HashMap::new(),
+            popup_grab_serials: HashMap::new(),
             popup_focused: None,
             session,
             verified_origin: None,
@@ -629,6 +635,8 @@ impl CompositorHandler for ProtocolState {
         self.surface_meta.remove(&surface.id());
         self.popups.retain(|popup| popup.wl_surface() != surface);
         self.dismissed_popups.remove(&surface.id());
+        self.popup_ack_serials.remove(&surface.id());
+        self.popup_grab_serials.remove(&surface.id());
         self.pixels.remove(&surface.id());
         self.surfaces.retain(|s| s != surface);
         self.output.leave(surface);
@@ -704,10 +712,17 @@ impl XdgShellHandler for ProtocolState {
     fn reposition_request(&mut self, _: PopupSurface, _: PositionerState, _: u32) {}
     fn ack_configure(&mut self, surface: WlSurface, configure: Configure) {
         self.counters.acks += 1;
-        if let Configure::Toplevel(configure) = configure
-            && let Some(window) = self.toplevels.get_mut(&surface.id())
-        {
-            window.resize.acknowledge(configure.serial.into());
+        match configure {
+            Configure::Toplevel(configure) => {
+                if let Some(window) = self.toplevels.get_mut(&surface.id()) {
+                    window.resize.acknowledge(configure.serial.into());
+                }
+            }
+            Configure::Popup(configure) => {
+                if self.popups.iter().any(|popup| popup.wl_surface() == &surface) {
+                    self.popup_ack_serials.insert(surface.id(), configure.serial.into());
+                }
+            }
         }
         self.role_acked(&surface);
     }
