@@ -719,8 +719,13 @@ impl XdgShellHandler for ProtocolState {
                 }
             }
             Configure::Popup(configure) => {
-                if self.popups.iter().any(|popup| popup.wl_surface() == &surface) {
-                    self.popup_ack_serials.insert(surface.id(), configure.serial.into());
+                if self
+                    .popups
+                    .iter()
+                    .any(|popup| popup.wl_surface() == &surface)
+                {
+                    self.popup_ack_serials
+                        .insert(surface.id(), configure.serial.into());
                 }
             }
         }
