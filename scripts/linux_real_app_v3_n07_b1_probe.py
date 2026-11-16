@@ -191,8 +191,40 @@ def inspect(native: dict) -> dict:
          and probe.get("menu_identity_verified") is False,
          "N07_B1_UNREVIEWED_MENU")
     need(native.get("sdk_retired") is True
-         and native.get("destroy_status") == 0,
+         and native.get("destroy_status") == 0
+         and native.get("registry_counts") == {"runtimes": 0, "workers": 0},
          "N07_B1_CLEANUP_UNVERIFIED")
+    final = native.get("last_snapshot", {}).get("runtime", {})
+    reclamation = final.get("reclamation", {})
+    render = final.get("render", {})
+    composition = render.get("composition", {})
+    need(final.get("state") == "Stopped"
+         and reclamation.get("origin_retired") is True
+         and reclamation.get("shutdown_complete") is True
+         and reclamation.get("sdk_bindings") == 0
+         and reclamation.get("native_targets") == 0
+         and reclamation.get("panels") == 0
+         and reclamation.get("pending_operations") == 0
+         and render.get("targets") == []
+         and render.get("queued") == 0
+         and composition.get("textures") == 0
+         and composition.get("texture_bytes") == 0
+         and composition.get("decoration_texture_bytes") == 0
+         and composition.get("gl_error") == 0
+         and render.get("error") is None,
+         "N07_B1_RENDERER_NOT_RETIRED")
+    kinds = ("remote_cleanup_observed", "io_retired",
+             "journal_unlinked", "finalizer_published")
+    trace_events = trace["events"]
+    positions = [index for kind in kinds
+                 for index, event in enumerate(trace_events)
+                 if event.get("kind") == kind]
+    need(len(positions) == len(kinds)
+         and positions == sorted(positions)
+         and [trace_events[index]["kind"] for index in positions] == list(kinds)
+         and trace_events[positions[-1]].get("data", {}).get("status") == 0
+         and trace.get("overflow") is not True,
+         "N07_B1_FINALIZER_MISSING")
     return {
         "status": "probe_only",
         "role": "xdg_popup",
