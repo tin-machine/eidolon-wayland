@@ -54,6 +54,9 @@ def _pointer(probe: dict, target: dict) -> None:
     need(after.get("last_delivered_source") == "1"
          and positive(after.get("last_delivered_surface"))
          and positive_number(after.get("last_delivered_serial"))
+         and positive_number(after.get("last_delivered_press_serial"))
+         and after["last_delivered_press_serial"] !=
+         before.get("last_delivered_press_serial")
          and after.get("hover_window") == target["window"]
          and after.get("pressed") == 0,
          "N07_B1_POINTER_NOT_FORWARDED")
@@ -182,7 +185,10 @@ def inspect(native: dict) -> dict:
          and positive_number(popup.get("ack_serial")),
          "N07_B1_POPUP_ORIGIN")
     grab = popup.get("grab_serial")
-    need(grab is None or positive_number(grab), "N07_B1_POPUP_SERIAL")
+    need(grab is None or (positive_number(grab) and grab in {
+         probe["pointer"]["after"]["last_delivered_press_serial"],
+         probe["pointer"]["after"]["last_delivered_serial"],
+         }), "N07_B1_POPUP_SERIAL")
     layer = popup.get("layer")
     need(type(layer) is int and 0 <= layer < len(menu["layers"])
          and menu["layers"][layer].get("surface") == popup["surface"],

@@ -30,6 +30,8 @@ pub struct PointerReport {
     pub last_delivered_source: Option<InputSourceId>,
     pub last_delivered_surface: Option<SurfaceId>,
     pub last_delivered_serial: Option<u32>,
+    /// Serial of the last actual pointer press, needed to correlate xdg_popup.grab.
+    pub last_delivered_press_serial: Option<u32>,
     pub axis_frames: u64,
     pub resets: u64,
 }
@@ -299,6 +301,9 @@ impl ProtocolState {
                         self.input.report.pointer.last_delivered_surface =
                             Some(delta.target.surface);
                         self.input.report.pointer.last_delivered_serial = Some(serial.into());
+                        if delta.pressed {
+                            self.input.report.pointer.last_delivered_press_serial = Some(serial.into());
+                        }
                     }
                 }
                 if was_captured && self.input.pointer.tracker.capture().is_none() {

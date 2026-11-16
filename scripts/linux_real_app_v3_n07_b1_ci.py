@@ -32,6 +32,8 @@ def adversarial_checks(native: dict) -> None:
         ("popup_parent", lambda n: n["n07_probe"]["popup"].update(
             parent_surface=n["n07_probe"]["popup"]["surface"])),
         ("popup_serial", lambda n: n["n07_probe"]["popup"].update(ack_serial=None)),
+        ("foreign_grab_serial", lambda n: n["n07_probe"]["popup"].update(
+            grab_serial=999999)),
         ("popup_layer", lambda n: n["n07_probe"]["popup"].update(layer=999)),
         ("popup_generation", lambda n: n["n07_probe"]["main_target"].update(
             generation="999")),

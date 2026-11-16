@@ -93,6 +93,7 @@ def diagnostic() -> dict:
                 "after": {
                     "delivered_buttons": 5, "last_delivered_source": "1",
                     "last_delivered_surface": "11", "last_delivered_serial": 40,
+                    "last_delivered_press_serial": 39,
                     "hover_window": "7", "pressed": 0,
                 },
             },
@@ -102,7 +103,7 @@ def diagnostic() -> dict:
                 "role": "xdg_popup", "root_window": "7",
                 "captured_origin": True, "dismissed": False,
                 "surface": "11", "parent_surface": "1",
-                "ack_serial": 66, "grab_serial": 40, "layer": 1,
+                "ack_serial": 66, "grab_serial": 39, "layer": 1,
             },
         },
     }
@@ -130,6 +131,7 @@ class N07B1DiagnosticTests(unittest.TestCase):
         for path, value in (
             (("pointer", "after", "last_delivered_source"), "2"),
             (("pointer", "after", "last_delivered_surface"), None),
+            (("pointer", "after", "last_delivered_press_serial"), 0),
             (("pointer", "after", "pressed"), 1),
             (("capture_id",), "b" * 64),
         ):
@@ -149,6 +151,7 @@ class N07B1DiagnosticTests(unittest.TestCase):
             ("dismissed", True),
             ("ack_serial", None),
             ("grab_serial", 0),
+            ("grab_serial", 777),
             ("layer", 4),
             ("parent_surface", "11"),
         ):

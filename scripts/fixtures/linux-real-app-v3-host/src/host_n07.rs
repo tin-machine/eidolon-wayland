@@ -25,9 +25,24 @@ fn delivered_pointer(before: &Value, after: &Value, target: &Value) -> bool {
         .is_some_and(|(old, new)| new >= old + 2)
         && b["last_delivered_source"] == SOURCE
         && b["last_delivered_surface"].as_str().is_some()
+        && b["last_delivered_press_serial"].as_u64().is_some_and(|n| n > 0)
+        && b["last_delivered_press_serial"] != a["last_delivered_press_serial"]
         && b["pressed"] == 0
         && b["hover_window"] == target["window"]
         && before["runtime"]["input_resets"] == after["runtime"]["input_resets"]
+}
+
+fn popup_grab_matches_click(popup: &Value, pointer: &Value) -> bool {
+    // An explicit xdg_popup.grab must cite the initiating client pointer
+    // event's serial, not an unrelated input epoch or another capture.
+    match popup["grab_serial"].as_u64() {
+        Some(serial) => {
+            serial > 0
+                && (pointer["after"]["last_delivered_press_serial"] == serial
+                    || pointer["after"]["last_delivered_serial"] == serial)
+        }
+        None => popup["grab_serial"].is_null(),
+    }
 }
 
 fn popup_is_current(popup: &Value, target: &Value) -> bool {
@@ -188,6 +203,9 @@ impl Driver {
             .and_then(|v| v.iter().find(|p| popup_is_current(p, &main)))
             .ok_or("I6_N07_POPUP_UNOBSERVED")?
             .clone();
+        if !popup_grab_matches_click(&popup, &pointer) {
+            return Err("I6_N07_POPUP_SERIAL_MISMATCH");
+        }
         let menu = self.n07_capture(&main, "menu_open")?;
         if self.n07_probe.as_ref().is_none() {
             return Err("I6_N07_PROBE_MISSING");
@@ -234,6 +252,8 @@ mod tests {
         assert!(!delivered_pointer(&old, &after, &target));
         after["runtime"]["app"]["input"]["pointer"]["delivered_buttons"] = json!(7);
         after["runtime"]["app"]["input"]["pointer"]["last_delivered_source"] = json!("1");
+        after["runtime"]["app"]["input"]["pointer"]["last_delivered_press_serial"] = json!(38);
+        after["runtime"]["app"]["input"]["pointer"]["last_delivered_serial"] = json!(39);
         after["runtime"]["app"]["input"]["pointer"]["last_delivered_surface"] = json!("11");
         assert!(delivered_pointer(&old, &after, &target));
         after["runtime"]["input_resets"] = json!(2);
@@ -262,6 +282,18 @@ mod tests {
             value[field] = bad;
             assert!(!popup_is_current(&value, &target), "{field}");
         }
+    }
+    #[test]
+    fn real_popup_grab_serial_must_match_delivered_pointer_press_or_release() {
+        let pointer = json!({"after":{
+            "last_delivered_press_serial":38,
+            "last_delivered_serial":39,
+        }});
+        assert!(popup_grab_matches_click(&json!({"grab_serial":38}), &pointer));
+        assert!(popup_grab_matches_click(&json!({"grab_serial":39}), &pointer));
+        assert!(popup_grab_matches_click(&json!({"grab_serial":null}), &pointer));
+        assert!(!popup_grab_matches_click(&json!({"grab_serial":40}), &pointer));
+        assert!(!popup_grab_matches_click(&json!({"grab_serial":0}), &pointer));
     }
     #[test]
     fn calibration_rois_are_bounded_but_not_reviewed_goldens() {

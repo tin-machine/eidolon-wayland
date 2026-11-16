@@ -27,7 +27,9 @@ contains `_View`, `Line N_umbers` and
   parent `wl_surface`, real `ack_configure` serial and valid grab serial
   (if grabbed). `popup_reports()` emits owned scalar data only: role,
   surface, parent, root WindowId, configure ACK serial, grab serial,
-  snapshot layer index, captured origin match, and dismissed state. Popup
+  snapshot layer index, captured origin match, and dismissed state. When a
+  GTK popup explicitly grabs, its grab serial must match the actual
+  initiating pointer press/release delivery serial. Popup
   state disappears on actual protocol destroy. It is **not** a synthetic
   `xdg_toplevel`, a new SDK panel, or an admission bypass.
 - `PointerReport::delivered_buttons` counts actual `pointer.button`
