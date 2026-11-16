@@ -338,9 +338,8 @@ impl Driver {
             let still_mapped = self.last_snapshot["runtime"]["app"]["windows"]
                 .as_array()
                 .is_some_and(|rows| {
-                    rows.iter().any(|w| {
-                        w["window"] == dialog["window"]["window"] && w["life"] == "Mapped"
-                    })
+                    rows.iter()
+                        .any(|w| w["window"] == dialog["window"]["window"] && w["life"] == "Mapped")
                 });
             let probe = json!({
                 "name":dialog["name"], "attempt":attempt, "target":target,
