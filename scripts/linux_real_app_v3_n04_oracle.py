@@ -36,6 +36,56 @@ def natural(value):
     return value
 
 
+def validate_control_sequence(events):
+    """Validate the *entire* normal C2 capture, not just 125s idle.
+
+    C2 request_sequence advances exactly once per Inspect/Heartbeat/Start/Stop.
+    The initial asynchronous Prepared has request_sequence=0. Every later
+    response must match the sole outstanding product control action. Checking
+    only the idle window would let a forged pre-idle Heartbeat ACK through.
+    """
+    require = {
+        "inspect": "catalog",
+        "heartbeat": "heartbeat",
+        "start": "started",
+        "stop": "stopped",
+    }
+    pending = None
+    request_number = 0
+    wire_number = 0
+    actions = []
+    for item in events:
+        kind = item["kind"]
+        if kind == "control_send_attempt":
+            action = item["data"]["action"]
+            need(action in require and pending is None,
+                 "I6_N04_HEARTBEAT_SEQUENCE")
+            pending = action
+        elif kind == "protocol_event":
+            record = item["data"]["record"]
+            wire_number += 1
+            need(record["sequence"] == str(wire_number),
+                 "I6_N04_HEARTBEAT_SEQUENCE")
+            received = record["event"]["type"]
+            if received == "prepared":
+                need(wire_number == 1 and request_number == 0
+                     and pending is None
+                     and record["request_sequence"] == "0",
+                     "I6_N04_HEARTBEAT_SEQUENCE")
+                continue
+            need(pending is not None and received == require[pending]
+                 and record["request_sequence"] == str(request_number + 1),
+                 "I6_N04_HEARTBEAT_SEQUENCE")
+            request_number += 1
+            actions.append(pending)
+            pending = None
+    need(pending is None and wire_number == request_number + 1
+         and actions and actions[0] == "inspect" and actions[-1] == "stop"
+         and actions.count("start") == 1 and actions.count("stop") == 1,
+         "I6_N04_HEARTBEAT_SEQUENCE")
+    return actions.count("heartbeat")
+
+
 def verify_temporal(native, external):
     """Reconstruct one capture's real idle heartbeat/ACK progression.
 
@@ -378,6 +428,8 @@ def verify(native, environment, source, variant="idle_125s"):
         "begin_ns":require_one(observations_by_kind(native),"n04_idle_begin")[1]["data"]["ns"],
         "end_ns":require_one(observations_by_kind(native),"n04_idle_end")[1]["data"]["ns"]})
     temporal=verify_temporal(native,environment["supervisor"])
+    need(validate_control_sequence(native["trace"]["events"])
+         >= temporal["heartbeat_acks"], "I6_N04_HEARTBEAT_SEQUENCE")
     need(temporal["capture_id"]==owner["capture_sha256"])
     observed=verify_dialogs(native,owner,targets)
     verify_stop(native,observed)
