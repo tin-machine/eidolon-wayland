@@ -148,6 +148,51 @@ def verify_after(dir_fd: int, uid: int, before: dict) -> dict:
     return {"input": source, "output": target}
 
 
+def diagnostic_snapshot(dir_fd: int, uid: int, reason: str) -> dict:
+    """Bounded, failure-only facts from pinned descriptors; never acceptance.
+
+    No file contents, arbitrary paths, or directory-entry names are exported.
+    The run-owned input/output names are the only opened file descriptors.
+    """
+    allowed = {
+        "N05_MISSING_OR_UNSAFE_FILE", "N05_NOT_REGULAR",
+        "N05_OWNER_MISMATCH", "N05_LINK_COUNT", "N05_FILE_SIZE_BOUNDS",
+        "N05_FILE_TOO_LARGE", "N05_FILE_SIZE_RACE",
+        "N05_FILE_CHANGED_DURING_READ", "N05_INPUT_MISMATCH",
+        "N05_OUTPUT_MISMATCH", "N05_INPUT_CHANGED", "N05_INPUT_OUTPUT_ALIAS",
+        "N05_OUTPUT_PREDATES_INPUT",
+    }
+    result = {"schema": 1, "kind": "eidolon-i6-n05-file-diagnostic-v1",
+              "reason": reason if reason in allowed else "N05_FILE_PROOF_MISSING",
+              "directory_entry_count_bounded": min(len(os.listdir(dir_fd)), 17)}
+    for name, key, expected in (
+        (INPUT_NAME, "input", INPUT_BYTES),
+        (OUTPUT_NAME, "output", INPUT_BYTES + APPEND_BYTES),
+    ):
+        try:
+            found = snapshot(dir_fd, name, uid)
+        except (OSError, FileEvidenceError) as exc:
+            code = str(exc) if isinstance(exc, FileEvidenceError) else ""
+            result[key] = {"state": "missing_or_unsafe",
+                           "reason": code if code in allowed else "N05_FILE_PROOF_MISSING"}
+            continue
+        payload = found["bytes"]
+        result[key] = {
+            "state": "present",
+            "size": found["size"],
+            "sha256": found["sha256"],
+            "uid": found["uid"],
+            "nlink": found["nlink"],
+            "exact_bytes": payload == expected,
+            "initial_prefix": payload.startswith(INPUT_BYTES),
+            "append_suffix": payload.endswith(APPEND_BYTES),
+            "bom": payload.startswith(bytes((0xef, 0xbb, 0xbf))),
+            "crlf": bytes((13, 10)) in payload,
+            "final_lf": payload.endswith(bytes((10,))),
+        }
+    return result
+
+
 def bounded_receipt(result: dict, run_id: str, capture_id: str, owner: str) -> dict:
     """Redact raw file bytes, bind an independently owned observation to run."""
     need(all(isinstance(v, str) and v and len(v) <= 128
