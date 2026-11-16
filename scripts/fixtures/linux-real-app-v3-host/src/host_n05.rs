@@ -307,12 +307,12 @@ impl Driver {
                 let current = self.pump()?;
                 let app = &current["runtime"]["app"];
                 let gone = app["windows"].as_array().is_some_and(|windows| {
-                    !windows.iter().any(|w| {
-                        w["window"] == dialog["window"]["window"] && w["life"] == "Mapped"
-                    })
-                }) && app["gui_windows"].as_array().is_some_and(|windows| {
-                    !windows.contains(&dialog["window"]["window"])
-                });
+                    !windows
+                        .iter()
+                        .any(|w| w["window"] == dialog["window"]["window"] && w["life"] == "Mapped")
+                }) && app["gui_windows"]
+                    .as_array()
+                    .is_some_and(|windows| !windows.contains(&dialog["window"]["window"]));
                 if gone {
                     let after = app["input"]["delivered"]
                         .as_u64()
