@@ -300,6 +300,36 @@ impl Driver {
 mod tests {
     use super::*;
     #[test]
+    fn v3_idle_liveness_accepts_started_owner_without_legacy_running_status() {
+        let target = json!({"session":"1","window":"1","scene":"1","generation":"1"});
+        let mut observed = json!({"runtime":{
+            "state":"Ready","shutdown":{"requested":false},
+            "transport":{"desktop_v3_transport":{
+                "session":"1","transport":{"phase":"started"},
+                "started_observed":true,"terminal_observed":false,"error":null
+            }},
+            "desktop_v3_presentation":{
+                "state":"ready","startup_completed":true,"main":"1"
+            },
+            "app":{"state":"starting_remote","ready":true,"error":null,
+                "gui_windows":["1"],"windows":[
+                    {"window":"1","parent":null,"life":"Mapped"}
+                ]}
+        }});
+        assert!(Driver::n04_main_live(&observed, &target));
+        observed["runtime"]["transport"]["desktop_v3_transport"]["terminal_observed"] =
+            json!(true);
+        assert!(!Driver::n04_main_live(&observed, &target));
+        observed["runtime"]["transport"]["desktop_v3_transport"]["terminal_observed"] =
+            json!(false);
+        observed["runtime"]["app"]["gui_windows"] = json!([]);
+        assert!(!Driver::n04_main_live(&observed, &target));
+        observed["runtime"]["app"]["gui_windows"] = json!(["1"]);
+        observed["runtime"]["app"]["windows"][0]["life"] = json!("Destroyed");
+        assert!(!Driver::n04_main_live(&observed, &target));
+    }
+
+    #[test]
     fn original_product_deadlines_are_not_modified() {
         assert_eq!(VARIANT, "idle_125s");
         assert!(IDLE >= Duration::from_secs(125));
