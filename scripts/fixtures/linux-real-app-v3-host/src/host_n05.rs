@@ -4,7 +4,10 @@
 use super::{Driver, Result};
 use eidolon_model::state::Status;
 use serde_json::{Value, json};
-use std::{thread, time::{Duration, Instant}};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 pub(super) const VARIANT: &str = "open_edit_save_as";
 const EDIT: &[u8] = b"eidolon-i6-saved\n";
@@ -12,24 +15,35 @@ const MAX_PATH: usize = 160;
 
 fn ascii_key(byte: u8) -> Result<(i32, i32, bool)> {
     let letter_scan = [
-        30,48,46,32,18,33,34,35,23,36,37,38,50,49,24,25,16,19,31,20,22,47,17,45,21,44
+        30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17,
+        45, 21, 44,
     ];
     match byte {
-        b'a'..=b'z' => Ok((letter_scan[(byte-b'a') as usize],29+(byte-b'a') as i32,false)),
-        b'0' => Ok((11,7,false)),
-        b'1'..=b'9' => Ok((byte as i32 - b'1' as i32+2, byte as i32-b'1' as i32+8,false)),
-        b'/' => Ok((53,76,false)),
-        b'.' => Ok((52,56,false)),
-        b'-' => Ok((12,69,false)),
-        b'_' => Ok((12,69,true)),
-        b'\n' => Ok((28,66,false)),
+        b'a'..=b'z' => Ok((
+            letter_scan[(byte - b'a') as usize],
+            29 + (byte - b'a') as i32,
+            false,
+        )),
+        b'0' => Ok((11, 7, false)),
+        b'1'..=b'9' => Ok((
+            byte as i32 - b'1' as i32 + 2,
+            byte as i32 - b'1' as i32 + 8,
+            false,
+        )),
+        b'/' => Ok((53, 76, false)),
+        b'.' => Ok((52, 56, false)),
+        b'-' => Ok((12, 69, false)),
+        b'_' => Ok((12, 69, true)),
+        b'\n' => Ok((28, 66, false)),
         _ => Err("I6_N05_UNSUPPORTED_CHARACTER"),
     }
 }
 
 fn project_window(raw: &Value) -> Result<Value> {
-    for key in ["window","parent","life","frame","app_id"] {
-        if raw.get(key).is_none() { return Err("I6_N05_DIALOG_MISSING"); }
+    for key in ["window", "parent", "life", "frame", "app_id"] {
+        if raw.get(key).is_none() {
+            return Err("I6_N05_DIALOG_MISSING");
+        }
     }
     Ok(json!({"window":raw["window"],"parent":raw["parent"],
               "life":raw["life"],"frame":raw["frame"],"app_id":raw["app_id"]}))
@@ -48,23 +62,40 @@ impl Driver {
         let request = req.to_string();
         *req += 1;
         let epoch = self.pump()?["runtime"]["input_resets"]
-            .as_u64().ok_or("I6_N05_INPUT_FAILED")?;
-        self.n02_command(json!({"schema":1,"type":"focus_window",
-            "request_id":request,"target":target,"input_epoch":epoch}),"focus_window")?;
-        self.n02_wait_command(&request,10)?;
-        let s = self.wait(10,|s| {
+            .as_u64()
+            .ok_or("I6_N05_INPUT_FAILED")?;
+        self.n02_command(
+            json!({"schema":1,"type":"focus_window",
+            "request_id":request,"target":target,"input_epoch":epoch}),
+            "focus_window",
+        )?;
+        self.n02_wait_command(&request, 10)?;
+        let s = self.wait(10, |s| {
             s["runtime"]["app"]["input"]["focus_window"] == target["window"]
                 && s["runtime"]["app"]["input"]["focus_token"].is_string()
         })?;
-        let epoch = s["runtime"]["input_resets"].as_u64().ok_or("I6_N05_INPUT_FAILED")?;
+        let epoch = s["runtime"]["input_resets"]
+            .as_u64()
+            .ok_or("I6_N05_INPUT_FAILED")?;
         let token = s["runtime"]["app"]["input"]["focus_token"].clone();
-        self.observe("n05_focus_current",json!({
-            "request_id":request,"target":target,"epoch":epoch,"token":token}))?;
-        Ok((epoch,token))
+        self.observe(
+            "n05_focus_current",
+            json!({
+            "request_id":request,"target":target,"epoch":epoch,"token":token}),
+        )?;
+        Ok((epoch, token))
     }
 
-    fn n05_key(&mut self, target: &Value, epoch: u64, token: &Value,
-               req: &mut u32, scan: i32, android: i32, down: bool) -> Result<()> {
+    fn n05_key(
+        &mut self,
+        target: &Value,
+        epoch: u64,
+        token: &Value,
+        req: &mut u32,
+        scan: i32,
+        android: i32,
+        down: bool,
+    ) -> Result<()> {
         let number = *req;
         *req = req.checked_add(1).ok_or("I6_N05_INPUT_FAILED")?;
         let request = number.to_string();
@@ -75,177 +106,268 @@ impl Driver {
             "key":{"action":if down {"pressed"} else {"released"},
                 "device":1,"scan_code":scan,"key_code":android,
                 "repeat":0,"meta":0,"time_ms":number+1000}});
-        if self.registry.command(self.handle,&command.to_string()) != Status::Accepted {
+        if self.registry.command(self.handle, &command.to_string()) != Status::Accepted {
             return Err("I6_N05_INPUT_REJECTED");
         }
-        self.n02_wait_command(&request,10)?;
+        self.n02_wait_command(&request, 10)?;
         Ok(())
     }
 
-    fn n05_shortcut(&mut self, target: &Value, epoch: u64, token: &Value,
-                    req: &mut u32, scan: i32, android: i32,
-                    shift: bool) -> Result<u64> {
-        self.n05_key(target,epoch,token,req,29,113,true)?;
-        if shift { self.n05_key(target,epoch,token,req,42,59,true)?; }
-        self.n05_key(target,epoch,token,req,scan,android,true)?;
-        self.n05_key(target,epoch,token,req,scan,android,false)?;
-        if shift { self.n05_key(target,epoch,token,req,42,59,false)?; }
-        self.n05_key(target,epoch,token,req,29,113,false)?;
-        Ok(if shift {6} else {4})
+    fn n05_shortcut(
+        &mut self,
+        target: &Value,
+        epoch: u64,
+        token: &Value,
+        req: &mut u32,
+        scan: i32,
+        android: i32,
+        shift: bool,
+    ) -> Result<u64> {
+        self.n05_key(target, epoch, token, req, 29, 113, true)?;
+        if shift {
+            self.n05_key(target, epoch, token, req, 42, 59, true)?;
+        }
+        self.n05_key(target, epoch, token, req, scan, android, true)?;
+        self.n05_key(target, epoch, token, req, scan, android, false)?;
+        if shift {
+            self.n05_key(target, epoch, token, req, 42, 59, false)?;
+        }
+        self.n05_key(target, epoch, token, req, 29, 113, false)?;
+        Ok(if shift { 6 } else { 4 })
     }
 
-    fn n05_ascii(&mut self, target: &Value, epoch: u64, token: &Value,
-                 req: &mut u32, text: &[u8]) -> Result<u64> {
+    fn n05_ascii(
+        &mut self,
+        target: &Value,
+        epoch: u64,
+        token: &Value,
+        req: &mut u32,
+        text: &[u8],
+    ) -> Result<u64> {
         let mut delivered = 0;
         for &byte in text {
-            let (scan,android,shift) = ascii_key(byte)?;
+            let (scan, android, shift) = ascii_key(byte)?;
             if shift {
-                self.n05_key(target,epoch,token,req,42,59,true)?;
-                delivered+=1;
+                self.n05_key(target, epoch, token, req, 42, 59, true)?;
+                delivered += 1;
             }
-            self.n05_key(target,epoch,token,req,scan,android,true)?;
-            self.n05_key(target,epoch,token,req,scan,android,false)?;
-            delivered+=2;
+            self.n05_key(target, epoch, token, req, scan, android, true)?;
+            self.n05_key(target, epoch, token, req, scan, android, false)?;
+            delivered += 2;
             if shift {
-                self.n05_key(target,epoch,token,req,42,59,false)?;
-                delivered+=1;
+                self.n05_key(target, epoch, token, req, 42, 59, false)?;
+                delivered += 1;
             }
         }
         Ok(delivered)
     }
 
-    fn n05_step(&mut self, name: &str, target: &Value, req: &mut u32,
-                input: impl FnOnce(&mut Self,&Value,u64,&Value,&mut u32)->Result<u64>)
-                -> Result<Value> {
-        let (epoch,token) = self.n05_focus(target,req)?;
+    fn n05_step(
+        &mut self,
+        name: &str,
+        target: &Value,
+        req: &mut u32,
+        input: impl FnOnce(&mut Self, &Value, u64, &Value, &mut u32) -> Result<u64>,
+    ) -> Result<Value> {
+        let (epoch, token) = self.n05_focus(target, req)?;
         let before = self.pump()?["runtime"]["app"]["input"]["delivered"]
-            .as_u64().ok_or("I6_N05_INPUT_FAILED")?;
+            .as_u64()
+            .ok_or("I6_N05_INPUT_FAILED")?;
         let first_request = req.to_string();
-        let expected = input(self,target,epoch,&token,req)?;
-        let after = self.wait(15,|s|
-            s["runtime"]["app"]["input"]["delivered"].as_u64()
-                .is_some_and(|n| n >= before+expected))?;
+        let expected = input(self, target, epoch, &token, req)?;
+        let after = self.wait(15, |s| {
+            s["runtime"]["app"]["input"]["delivered"]
+                .as_u64()
+                .is_some_and(|n| n >= before + expected)
+        })?;
         let count = after["runtime"]["app"]["input"]["delivered"]
-            .as_u64().ok_or("I6_N05_INPUT_FAILED")?;
-        if count < before+expected { return Err("I6_N05_INPUT_FAILED"); }
-        let proof=json!({"phase":name,"target":target,"epoch":epoch,"token":token,
+            .as_u64()
+            .ok_or("I6_N05_INPUT_FAILED")?;
+        if count < before + expected {
+            return Err("I6_N05_INPUT_FAILED");
+        }
+        let proof = json!({"phase":name,"target":target,"epoch":epoch,"token":token,
             "first_key_request":first_request,"next_key_request":req.to_string(),
             "expected_delivery":expected,"delivered_before":before,"delivered_after":count});
-        self.observe("n05_step_delivered",proof.clone())?;
+        self.observe("n05_step_delivered", proof.clone())?;
         Ok(proof)
     }
 
     fn n05_dialog(&mut self, main: &Value, name: &str) -> Result<Value> {
         let before = self.pump()?;
         let previous: Vec<Value> = before["runtime"]["app"]["windows"]
-            .as_array().ok_or("I6_N05_DIALOG_MISSING")?
-            .iter().map(|w|w["window"].clone()).collect();
-        let mapped = self.wait(25,|s| {
-            let app=&s["runtime"]["app"];
-            app["windows"].as_array().is_some_and(|rows|rows.iter().any(|w|
-                w["parent"]==main["window"] && w["life"]=="Mapped"
-                && w["frame"].is_string() && !previous.contains(&w["window"])
-                && app["gui_windows"].as_array().is_some_and(|g|g.contains(&w["window"]))))
+            .as_array()
+            .ok_or("I6_N05_DIALOG_MISSING")?
+            .iter()
+            .map(|w| w["window"].clone())
+            .collect();
+        let mapped = self.wait(25, |s| {
+            let app = &s["runtime"]["app"];
+            app["windows"].as_array().is_some_and(|rows| {
+                rows.iter().any(|w| {
+                    w["parent"] == main["window"]
+                        && w["life"] == "Mapped"
+                        && w["frame"].is_string()
+                        && !previous.contains(&w["window"])
+                        && app["gui_windows"]
+                            .as_array()
+                            .is_some_and(|g| g.contains(&w["window"]))
+                })
+            })
         })?;
-        let app=&mapped["runtime"]["app"];
-        let window=app["windows"].as_array().ok_or("I6_N05_DIALOG_MISSING")?
-            .iter().find(|w|w["parent"]==main["window"] && w["life"]=="Mapped"
-                && !previous.contains(&w["window"]))
-            .ok_or("I6_N05_DIALOG_MISSING")?.clone();
-        let win_id=window["window"].clone();
-        let deadline=Instant::now()+Duration::from_secs(30);
-        let readback=loop {
+        let app = &mapped["runtime"]["app"];
+        let window = app["windows"]
+            .as_array()
+            .ok_or("I6_N05_DIALOG_MISSING")?
+            .iter()
+            .find(|w| {
+                w["parent"] == main["window"]
+                    && w["life"] == "Mapped"
+                    && !previous.contains(&w["window"])
+            })
+            .ok_or("I6_N05_DIALOG_MISSING")?
+            .clone();
+        let win_id = window["window"].clone();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let readback = loop {
             self.pump()?;
-            let sdk=self.n02_sdk.as_mut().ok_or("I6_N05_DIALOG_MISSING")?;
-            match sdk.tick_create_fresh(&self.registry,&self.completed) {
-                Ok(Some(r)) if r["target"]["window"]==win_id => break r,
+            let sdk = self.n02_sdk.as_mut().ok_or("I6_N05_DIALOG_MISSING")?;
+            match sdk.tick_create_fresh(&self.registry, &self.completed) {
+                Ok(Some(r)) if r["target"]["window"] == win_id => break r,
                 Ok(Some(_)) => return Err("I6_N05_DIALOG_MISSING"),
-                Ok(None)|Err(Status::NotReady|Status::Busy) => (),
+                Ok(None) | Err(Status::NotReady | Status::Busy) => (),
                 Err(_) => return Err("I6_N05_DIALOG_MISSING"),
             }
-            if Instant::now()>=deadline {return Err("I6_OUTER_TIMEOUT");}
+            if Instant::now() >= deadline {
+                return Err("I6_OUTER_TIMEOUT");
+            }
             thread::sleep(Duration::from_millis(10));
         };
-        let proof=json!({"name":name,"window":project_window(&window)?,
+        let proof = json!({"name":name,"window":project_window(&window)?,
                          "target":readback["target"],"readback":readback});
-        self.observe("n05_dialog_created",json!({"name":name,"window":win_id,
-            "parent":main["window"],"target":proof["target"]}))?;
+        self.observe(
+            "n05_dialog_created",
+            json!({"name":name,"window":win_id,
+            "parent":main["window"],"target":proof["target"]}),
+        )?;
         Ok(proof)
     }
 
     fn n05_closed(&mut self, dialog: &Value, main: &Value) -> Result<()> {
-        let win=&dialog["window"]["window"];
-        self.wait(30,|s| {
-            let app=&s["runtime"]["app"];
-            app["windows"].as_array().is_some_and(|windows|
-                !windows.iter().any(|w|w["window"]==*win && w["life"]=="Mapped"))
-                && app["gui_windows"].as_array().is_some_and(|g|
-                    !g.contains(win) && g.contains(&main["window"]))
+        let win = &dialog["window"]["window"];
+        self.wait(30, |s| {
+            let app = &s["runtime"]["app"];
+            app["windows"].as_array().is_some_and(|windows| {
+                !windows
+                    .iter()
+                    .any(|w| w["window"] == *win && w["life"] == "Mapped")
+            }) && app["gui_windows"]
+                .as_array()
+                .is_some_and(|g| !g.contains(win) && g.contains(&main["window"]))
         })?;
-        self.observe("n05_dialog_closed",json!({
-            "name":dialog["name"],"window":win,"target":dialog["target"]}))?;
+        self.observe(
+            "n05_dialog_closed",
+            json!({
+            "name":dialog["name"],"window":win,"target":dialog["target"]}),
+        )?;
         Ok(())
     }
 
     pub(super) fn exercise_n05(&mut self, run_id: &str, directory: &str) -> Result<()> {
-        if !path_valid(directory) { return Err("I6_N05_PATH_INVALID"); }
-        self.exercise_n02("mousepad_editor")?;
-        self.n05_active=true;
-        let main=self.n02_readback.as_ref().ok_or("I6_N05_MAIN_MISSING")?["target"].clone();
-        let input=format!("{directory}/input.txt");
-        let output=format!("{directory}/saved-as.txt");
-        if input.len()>MAX_PATH || output.len()>MAX_PATH {
+        if !path_valid(directory) {
             return Err("I6_N05_PATH_INVALID");
         }
-        let mut req=5000u32;
-        let mut steps=Vec::new();
+        self.exercise_n02("mousepad_editor")?;
+        self.n05_active = true;
+        let main = self.n02_readback.as_ref().ok_or("I6_N05_MAIN_MISSING")?["target"].clone();
+        let input = format!("{directory}/input.txt");
+        let output = format!("{directory}/saved-as.txt");
+        if input.len() > MAX_PATH || output.len() > MAX_PATH {
+            return Err("I6_N05_PATH_INVALID");
+        }
+        let mut req = 5000u32;
+        let mut steps = Vec::new();
         // N04's proven live Ctrl+O path, but keep the dialog open.
-        steps.push(self.n05_step("open_shortcut",&main,&mut req,|s,t,e,k,r|
-            s.n05_shortcut(t,e,k,r,24,43,false))?);
-        let open=self.n05_dialog(&main,"open")?;
-        let child=&open["target"];
-        steps.push(self.n05_step("open_location",child,&mut req,|s,t,e,k,r|
-            s.n05_shortcut(t,e,k,r,38,40,false))?);
-        steps.push(self.n05_step("open_path",child,&mut req,|s,t,e,k,r|
-            s.n05_ascii(t,e,k,r,input.as_bytes()))?);
+        steps.push(
+            self.n05_step("open_shortcut", &main, &mut req, |s, t, e, k, r| {
+                s.n05_shortcut(t, e, k, r, 24, 43, false)
+            })?,
+        );
+        let open = self.n05_dialog(&main, "open")?;
+        let child = &open["target"];
+        steps.push(
+            self.n05_step("open_location", child, &mut req, |s, t, e, k, r| {
+                s.n05_shortcut(t, e, k, r, 38, 40, false)
+            })?,
+        );
+        steps.push(
+            self.n05_step("open_path", child, &mut req, |s, t, e, k, r| {
+                s.n05_ascii(t, e, k, r, input.as_bytes())
+            })?,
+        );
         // Enter-down can synchronously destroy the file chooser; do not
         // send a stale-target key-up (same rule as N04 Esc-down).
-        let (epoch,token)=self.n05_focus(child,&mut req)?;
-        self.n05_key(child,epoch,&token,&mut req,28,66,true)?;
-        self.n05_closed(&open,&main)?;
-        self.observe("n05_open_confirmed",json!({"target":child}))?;
-        steps.push(self.n05_step("edit_ctrl_end",&main,&mut req,|s,t,e,k,r|
-            s.n05_shortcut(t,e,k,r,107,123,false))?);
-        steps.push(self.n05_step("edit_append",&main,&mut req,|s,t,e,k,r|
-            s.n05_ascii(t,e,k,r,EDIT))?);
-        steps.push(self.n05_step("save_as_shortcut",&main,&mut req,|s,t,e,k,r|
-            s.n05_shortcut(t,e,k,r,31,47,true))?);
-        let save=self.n05_dialog(&main,"save_as")?;
-        let child=&save["target"];
-        steps.push(self.n05_step("save_location",child,&mut req,|s,t,e,k,r|
-            s.n05_shortcut(t,e,k,r,38,40,false))?);
-        steps.push(self.n05_step("save_path",child,&mut req,|s,t,e,k,r|
-            s.n05_ascii(t,e,k,r,output.as_bytes()))?);
-        let (epoch,token)=self.n05_focus(child,&mut req)?;
-        self.n05_key(child,epoch,&token,&mut req,28,66,true)?;
-        self.n05_closed(&save,&main)?;
-        self.observe("n05_save_confirmed",json!({"target":child}))?;
+        let (epoch, token) = self.n05_focus(child, &mut req)?;
+        self.n05_key(child, epoch, &token, &mut req, 28, 66, true)?;
+        self.n05_closed(&open, &main)?;
+        self.observe("n05_open_confirmed", json!({"target":child}))?;
+        steps.push(
+            self.n05_step("edit_ctrl_end", &main, &mut req, |s, t, e, k, r| {
+                s.n05_shortcut(t, e, k, r, 107, 123, false)
+            })?,
+        );
+        steps.push(
+            self.n05_step("edit_append", &main, &mut req, |s, t, e, k, r| {
+                s.n05_ascii(t, e, k, r, EDIT)
+            })?,
+        );
+        steps.push(
+            self.n05_step("save_as_shortcut", &main, &mut req, |s, t, e, k, r| {
+                s.n05_shortcut(t, e, k, r, 31, 47, true)
+            })?,
+        );
+        let save = self.n05_dialog(&main, "save_as")?;
+        let child = &save["target"];
+        steps.push(
+            self.n05_step("save_location", child, &mut req, |s, t, e, k, r| {
+                s.n05_shortcut(t, e, k, r, 38, 40, false)
+            })?,
+        );
+        steps.push(
+            self.n05_step("save_path", child, &mut req, |s, t, e, k, r| {
+                s.n05_ascii(t, e, k, r, output.as_bytes())
+            })?,
+        );
+        let (epoch, token) = self.n05_focus(child, &mut req)?;
+        self.n05_key(child, epoch, &token, &mut req, 28, 66, true)?;
+        self.n05_closed(&save, &main)?;
+        self.observe("n05_save_confirmed", json!({"target":child}))?;
         self.refresh_trace()?;
-        let capture=self.trace.events.iter().find_map(|e|e.capture.as_ref())
-            .ok_or("I6_N05_CAPTURE_MISSING")?.capture_id.clone();
-        self.n05=Some(json!({"schema":1,"run_id":run_id,"capture_id":capture,
+        let capture = self
+            .trace
+            .events
+            .iter()
+            .find_map(|e| e.capture.as_ref())
+            .ok_or("I6_N05_CAPTURE_MISSING")?
+            .capture_id
+            .clone();
+        self.n05 = Some(json!({"schema":1,"run_id":run_id,"capture_id":capture,
             "main_target":main,"directory":directory,
             "input":input,"output":output,"steps":steps,"dialogs":[open,save],
             "final_key_request":req.to_string()}));
         Ok(())
     }
 
-    pub(super) fn receipt_n05(&self, run_id: &str, error: Option<&str>,
-                              cleanup: Option<&str>) -> Value {
-        let mut result=self.receipt_n02(run_id,"mousepad_editor",error,cleanup);
-        result["schema"]=json!("eidolon-i6-n05-native-v1");
-        result["variant"]=json!(VARIANT);
-        result["n05"]=self.n05.clone().unwrap_or(Value::Null);
+    pub(super) fn receipt_n05(
+        &self,
+        run_id: &str,
+        error: Option<&str>,
+        cleanup: Option<&str>,
+    ) -> Value {
+        let mut result = self.receipt_n02(run_id, "mousepad_editor", error, cleanup);
+        result["schema"] = json!("eidolon-i6-n05-native-v1");
+        result["variant"] = json!(VARIANT);
+        result["n05"] = self.n05.clone().unwrap_or(Value::Null);
         result
     }
 }
@@ -254,13 +376,13 @@ mod tests {
     use super::*;
     #[test]
     fn fixed_ascii_physicals_not_arbitrary_unicode_or_ime() {
-        assert_eq!(EDIT,b"eidolon-i6-saved\n");
+        assert_eq!(EDIT, b"eidolon-i6-saved\n");
         for b in b"/home/eidolon-app/n05-cafe0123/input.txt" {
             assert!(ascii_key(*b).is_ok());
         }
-        assert_eq!(ascii_key(b'_').unwrap(),(12,69,true));
-        assert_eq!(ascii_key(b'0').unwrap(),(11,7,false));
-        assert_eq!(ascii_key(b'9').unwrap(),(10,16,false));
+        assert_eq!(ascii_key(b'_').unwrap(), (12, 69, true));
+        assert_eq!(ascii_key(b'0').unwrap(), (11, 7, false));
+        assert_eq!(ascii_key(b'9').unwrap(), (10, 16, false));
         assert!(ascii_key(0xff).is_err());
         assert!(!path_valid("/tmp/eidolon"));
         assert!(!path_valid("/home/eidolon-app/n05-../other"));
