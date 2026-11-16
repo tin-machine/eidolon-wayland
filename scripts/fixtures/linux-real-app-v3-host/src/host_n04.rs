@@ -28,6 +28,29 @@ pub(super) fn clock_ns() -> Result<u64> {
         .ok_or("I6_N04_CLOCK_FAILED")
 }
 
+// Only B1's integer/string/null evidence fields may cross the native receipt
+// boundary. WindowReport::sizing contains f32 physical dimensions, which the
+// strict JSON evidence parser intentionally rejects. Preserve raw compositor
+// state for the native decision, but never emit it as an untyped receipt.
+fn dialog_window_fact(window: &Value) -> Result<Value> {
+    for field in ["window", "parent", "life", "frame", "app_id"] {
+        if window.get(field).is_none() {
+            return Err("I6_N04_DIALOG_MISSING");
+        }
+    }
+    Ok(json!({
+        "window":window["window"], "parent":window["parent"],
+        "life":window["life"], "frame":window["frame"], "app_id":window["app_id"],
+    }))
+}
+
+fn closed_window_fact(window: &Value) -> Result<Value> {
+    if window.get("window").is_none() || window.get("life").is_none() {
+        return Err("I6_N04_DIALOG_MISSING");
+    }
+    Ok(json!({"window":window["window"], "life":window["life"]}))
+}
+
 impl Driver {
     fn n04_focus(&mut self, target: &Value, request: u32) -> Result<(u64, Value)> {
         let s = self.pump()?;
@@ -183,6 +206,13 @@ impl Driver {
         if open_count < prior + 4 || after < before_esc + 2 {
             return Err("I6_N04_INPUT_FAILED");
         }
+        let child_fact = dialog_window_fact(&child)?;
+        let closed_facts = gone["runtime"]["app"]["windows"]
+            .as_array()
+            .ok_or("I6_N04_DIALOG_MISSING")?
+            .iter()
+            .map(closed_window_fact)
+            .collect::<Result<Vec<_>>>()?;
         self.observe(
             "n04_dialog_completed",
             json!({"phase":phase,"window":child_id,
@@ -191,12 +221,12 @@ impl Driver {
         Ok(
             json!({"phase":phase,"base_request":base.to_string(),"main_target":main,
             "main_epoch":epoch,"main_focus_token":token,"delivered_before":prior,
-            "delivered_open":open_count,"window":child,"dialog_target":child_target,
+            "delivered_open":open_count,"window":child_fact,"dialog_target":child_target,
             "dialog_readback":readback,"open_gui_windows":app["gui_windows"],
             "escape_epoch":esc_epoch,"escape_focus_token":esc_token,
             "delivered_before_escape":before_esc,"delivered_closed":after,
             "closed_gui_windows":gone["runtime"]["app"]["gui_windows"],
-            "closed_windows":gone["runtime"]["app"]["windows"]}),
+            "closed_windows":closed_facts}),
         )
     }
 
@@ -326,6 +356,27 @@ mod tests {
         observed["runtime"]["app"]["gui_windows"] = json!(["1"]);
         observed["runtime"]["app"]["windows"][0]["life"] = json!("Destroyed");
         assert!(!Driver::n04_main_live(&observed, &target));
+    }
+
+    #[test]
+    fn window_evidence_projects_f32_sizing_out_of_strict_b1_receipts() {
+        let raw = json!({
+            "window":"9", "parent":"1", "app_id":"org.xfce.mousepad",
+            "life":"Mapped", "frame":"18",
+            "sizing":{"physical_size_m":{"width_m":1.2,"height_m":0.9}}
+        });
+        let raw_bytes = serde_json::to_vec(&raw).unwrap();
+        assert!(eidolon_model::linux_desktop_v3::parse_json(&raw_bytes, 1024).is_err());
+        let dialog = dialog_window_fact(&raw).unwrap();
+        assert!(dialog.get("sizing").is_none());
+        assert_eq!(dialog["parent"], "1");
+        assert_eq!(dialog["frame"], "18");
+        let closed = closed_window_fact(&raw).unwrap();
+        assert_eq!(closed, json!({"window":"9","life":"Mapped"}));
+        for fact in [dialog, closed] {
+            let bytes = serde_json::to_vec(&fact).unwrap();
+            assert!(eidolon_model::linux_desktop_v3::parse_json(&bytes, 1024).is_ok());
+        }
     }
 
     #[test]
