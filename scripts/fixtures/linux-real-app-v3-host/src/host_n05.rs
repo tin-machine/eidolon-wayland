@@ -51,7 +51,7 @@ fn project_window(raw: &Value) -> Result<Value> {
 }
 
 fn path_valid(path: &str) -> bool {
-    path.starts_with("/home/eidolon-app/n05-")
+    (path.starts_with("/home/eidolon-app/n05-") || path.starts_with("/home/eidolon-app/n06-"))
         && path.len() <= MAX_PATH
         && path.len() > "/home/eidolon-app/n05-".len()
         && path.bytes().all(|b| ascii_key(b).is_ok())
@@ -59,7 +59,7 @@ fn path_valid(path: &str) -> bool {
 }
 
 impl Driver {
-    fn n05_focus(&mut self, target: &Value, req: &mut u32) -> Result<(u64, Value)> {
+    pub(super) fn n05_focus(&mut self, target: &Value, req: &mut u32) -> Result<(u64, Value)> {
         let request = req.to_string();
         *req += 1;
         let epoch = self.pump()?["runtime"]["input_resets"]
@@ -87,7 +87,7 @@ impl Driver {
         Ok((epoch, token))
     }
 
-    fn n05_key(
+    pub(super) fn n05_key(
         &mut self,
         target: &Value,
         epoch: u64,
@@ -114,7 +114,7 @@ impl Driver {
         Ok(())
     }
 
-    fn n05_shortcut(
+    pub(super) fn n05_shortcut(
         &mut self,
         target: &Value,
         epoch: u64,
@@ -137,7 +137,7 @@ impl Driver {
         Ok(if shift { 6 } else { 4 })
     }
 
-    fn n05_ascii(
+    pub(super) fn n05_ascii(
         &mut self,
         target: &Value,
         epoch: u64,
@@ -163,7 +163,7 @@ impl Driver {
         Ok(delivered)
     }
 
-    fn n05_step(
+    pub(super) fn n05_step(
         &mut self,
         name: &str,
         target: &Value,
@@ -212,7 +212,7 @@ impl Driver {
     // MUST be sampled before the key command. A dialog can be created by
     // GTK synchronously during the last key completion, so sampling the
     // "previous" set afterward would silently exclude the actual child.
-    fn n05_dialog_baseline(&mut self, main: &Value, phase: &str) -> Result<Vec<Value>> {
+    pub(super) fn n05_dialog_baseline(&mut self, main: &Value, phase: &str) -> Result<Vec<Value>> {
         let snapshot = self.pump()?;
         let app = &snapshot["runtime"]["app"];
         let windows = app["windows"].as_array().ok_or("I6_N05_DIALOG_MISSING")?;
@@ -242,7 +242,7 @@ impl Driver {
         Ok(previous)
     }
 
-    fn n05_dialog(&mut self, main: &Value, name: &str, previous: &[Value]) -> Result<Value> {
+    pub(super) fn n05_dialog(&mut self, main: &Value, name: &str, previous: &[Value]) -> Result<Value> {
         // The snapshot is deliberately sampled AFTER the shortcut; the
         // baseline argument is from BEFORE it and is never overwritten.
         let mapped = self.wait(25, |s| {
@@ -276,7 +276,7 @@ impl Driver {
         Ok(proof)
     }
 
-    fn n05_closed(&mut self, dialog: &Value, main: &Value) -> Result<()> {
+    pub(super) fn n05_closed(&mut self, dialog: &Value, main: &Value) -> Result<()> {
         let win = &dialog["window"]["window"];
         self.wait(30, |s| {
             let app = &s["runtime"]["app"];
@@ -299,7 +299,7 @@ impl Driver {
     // GtkFileChooser may resolve the location entry on its first Enter and
     // only activate the Open/Save response on the next key. Every retry is
     // another real Registry dispatch; only actual dialog destruction counts.
-    fn n05_confirm(&mut self, dialog: &Value, main: &Value, req: &mut u32) -> Result<()> {
+    pub(super) fn n05_confirm(&mut self, dialog: &Value, main: &Value, req: &mut u32) -> Result<()> {
         let target = &dialog["target"];
         let (epoch, token) = self.n05_focus(target, req)?;
         let before = self.pump()?["runtime"]["app"]["input"]["delivered"]
@@ -536,5 +536,6 @@ mod tests {
         assert!(ascii_key(0xff).is_err());
         assert!(!path_valid("/tmp/eidolon"));
         assert!(!path_valid("/home/eidolon-app/n05-../other"));
+        assert!(path_valid("/home/eidolon-app/n06-cafe0123"));
     }
 }
