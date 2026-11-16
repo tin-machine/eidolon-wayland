@@ -193,40 +193,63 @@ impl Driver {
         Ok(proof)
     }
 
-    fn n05_dialog(&mut self, main: &Value, name: &str) -> Result<Value> {
-        let before = self.pump()?;
-        let previous: Vec<Value> = before["runtime"]["app"]["windows"]
+    fn n05_fresh_child(app: &Value, main: &Value, previous: &[Value]) -> Option<Value> {
+        let admitted = app["gui_windows"].as_array()?;
+        let windows = app["windows"].as_array()?;
+        windows.iter().find(|w| {
+            w["parent"] == main["window"]
+                && w["life"] == "Mapped"
+                && w["frame"].is_string()
+                && !previous.contains(&w["window"])
+                && admitted.contains(&w["window"])
+        }).cloned()
+    }
+
+    // MUST be sampled before the key command. A dialog can be created by
+    // GTK synchronously during the last key completion, so sampling the
+    // "previous" set afterward would silently exclude the actual child.
+    fn n05_dialog_baseline(&mut self, main: &Value, phase: &str) -> Result<Vec<Value>> {
+        let snapshot = self.pump()?;
+        let app = &snapshot["runtime"]["app"];
+        let windows = app["windows"].as_array().ok_or("I6_N05_DIALOG_MISSING")?;
+        if !windows.iter().any(|w| {
+            w["window"] == main["window"] && w["life"] == "Mapped" && w["parent"].is_null()
+        }) || !app["gui_windows"]
             .as_array()
-            .ok_or("I6_N05_DIALOG_MISSING")?
+            .is_some_and(|g| g.contains(&main["window"]))
+        {
+            return Err("I6_N05_MAIN_MISSING");
+        }
+        let previous: Vec<Value> = windows
             .iter()
+            .filter(|w| w["life"] == "Mapped")
             .map(|w| w["window"].clone())
             .collect();
+        if windows.iter().any(|w| {
+            w["life"] == "Mapped" && w["parent"] == main["window"]
+        }) {
+            return Err("I6_N05_STALE_DIALOG");
+        }
+        self.observe(
+            "n05_dialog_baseline",
+            json!({"phase":phase,"main_target":main,"mapped_windows":previous}),
+        )?;
+        Ok(previous)
+    }
+
+    fn n05_dialog(
+        &mut self,
+        main: &Value,
+        name: &str,
+        previous: &[Value],
+    ) -> Result<Value> {
+        // The snapshot is deliberately sampled AFTER the shortcut; the
+        // baseline argument is from BEFORE it and is never overwritten.
         let mapped = self.wait(25, |s| {
-            let app = &s["runtime"]["app"];
-            app["windows"].as_array().is_some_and(|rows| {
-                rows.iter().any(|w| {
-                    w["parent"] == main["window"]
-                        && w["life"] == "Mapped"
-                        && w["frame"].is_string()
-                        && !previous.contains(&w["window"])
-                        && app["gui_windows"]
-                            .as_array()
-                            .is_some_and(|g| g.contains(&w["window"]))
-                })
-            })
+            Self::n05_fresh_child(&s["runtime"]["app"], main, previous).is_some()
         })?;
-        let app = &mapped["runtime"]["app"];
-        let window = app["windows"]
-            .as_array()
-            .ok_or("I6_N05_DIALOG_MISSING")?
-            .iter()
-            .find(|w| {
-                w["parent"] == main["window"]
-                    && w["life"] == "Mapped"
-                    && !previous.contains(&w["window"])
-            })
-            .ok_or("I6_N05_DIALOG_MISSING")?
-            .clone();
+        let window = Self::n05_fresh_child(&mapped["runtime"]["app"], main, previous)
+            .ok_or("I6_N05_DIALOG_MISSING")?;
         let win_id = window["window"].clone();
         let deadline = Instant::now() + Duration::from_secs(30);
         let readback = loop {
@@ -369,13 +392,14 @@ impl Driver {
         }
         let mut req = 5000u32;
         let mut steps = Vec::new();
+        let open_previous = self.n05_dialog_baseline(&main, "open")?;
         // N04's proven live Ctrl+O path, but keep the dialog open.
         steps.push(
             self.n05_step("open_shortcut", &main, &mut req, |s, t, e, k, r| {
                 s.n05_shortcut(t, e, k, r, 24, 43, false)
             })?,
         );
-        let open = self.n05_dialog(&main, "open")?;
+        let open = self.n05_dialog(&main, "open", &open_previous)?;
         let child = &open["target"];
         steps.push(
             self.n05_step("open_location", child, &mut req, |s, t, e, k, r| {
@@ -408,12 +432,13 @@ impl Driver {
                 s.n05_ascii(t, e, k, r, EDIT)
             })?,
         );
+        let save_previous = self.n05_dialog_baseline(&main, "save_as")?;
         steps.push(
             self.n05_step("save_as_shortcut", &main, &mut req, |s, t, e, k, r| {
                 s.n05_shortcut(t, e, k, r, 31, 47, true)
             })?,
         );
-        let save = self.n05_dialog(&main, "save_as")?;
+        let save = self.n05_dialog(&main, "save_as", &save_previous)?;
         let child = &save["target"];
         steps.push(
             self.n05_step("save_location", child, &mut req, |s, t, e, k, r| {
@@ -466,6 +491,32 @@ impl Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn early_created_dialog_is_not_excluded_by_late_detection() {
+        let main = json!({"session":"1","window":"7","scene":"1","generation":"1"});
+        let child = json!({"window":"8","parent":"7","life":"Mapped",
+                           "frame":"20","app_id":"org.xfce.mousepad"});
+        let app = json!({"windows":[
+            {"window":"7","parent":null,"life":"Mapped","frame":"19"},
+            child.clone()
+        ],"gui_windows":["7","8"]});
+        // The child already exists at the first post-command snapshot.
+        let result = Driver::n05_fresh_child(&app, &main, &[json!("7")]);
+        assert_eq!(result, Some(child.clone()));
+        // A dialog existing before the shortcut cannot be minted as new.
+        assert!(Driver::n05_fresh_child(&app, &main, &[json!("7"),json!("8")]).is_none());
+        // Parent, admission and mapped lifetime are all mandatory.
+        let mut wrong = app.clone();
+        wrong["windows"][1]["parent"] = json!("99");
+        assert!(Driver::n05_fresh_child(&wrong, &main, &[json!("7")]).is_none());
+        wrong = app.clone();
+        wrong["gui_windows"] = json!(["7"]);
+        assert!(Driver::n05_fresh_child(&wrong, &main, &[json!("7")]).is_none());
+        wrong = app;
+        wrong["windows"][1]["life"] = json!("Destroyed");
+        assert!(Driver::n05_fresh_child(&wrong, &main, &[json!("7")]).is_none());
+    }
+
     #[test]
     fn fixed_ascii_physicals_not_arbitrary_unicode_or_ime() {
         assert_eq!(EDIT, b"eidolon-i6-saved\n");
