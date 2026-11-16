@@ -376,9 +376,10 @@ def verify_product(native,env,source,observed,variant):
     origin=n02.only(observed,"origin_retired")
     stopping=n02.only(observed,"runtime_stop_requested")
     need(origin[0]<stopping[0],"I6_N06_PRODUCT_ORDER")
-    trace=n02.ordinal_events(native["trace"]["events"],limit=evidence.MAX_TRACE_EVENTS)
-    finalizer=n02.only(trace,"finalizer_published")
-    need(int(origin[1]["transport_sequence"])>=finalizer[0],
+    trace=native["trace"]["events"]
+    finalizers=[event for event in trace if event["kind"]=="finalizer_published"]
+    need(len(finalizers)==1
+         and int(origin[1]["transport_sequence"])>=int(finalizers[0]["sequence"]),
          "I6_N06_FINALIZER_MISSING")
     return True
 
