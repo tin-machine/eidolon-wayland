@@ -538,6 +538,13 @@ def verify_product(native,env,source,observed,variant):
                      native["source_sha256"])
     n04.validate_control_sequence(native["trace"]["events"])
     if variant=="close_confirm":
+        # Preserve and bind the actual reason throughout observation and
+        # final product census. A rewritten reason is never accepted.
+        observed_reason=native["n06"]["app_exit"]["app_error"]
+        final_reason=base["last_snapshot"]["runtime"]["app"]["error"]
+        need(observed_reason==final_reason
+             and final_reason in (None,"APP_WINDOW_UNSUPPORTED"),
+             "I6_N06_NATURAL_CLOSE_REASON_MISMATCH")
         verify_natural_close_terminal(native,observed)
     if variant=="close_confirm" and (
             base["last_snapshot"]["runtime"]["app"]["error"]==
