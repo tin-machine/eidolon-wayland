@@ -273,6 +273,76 @@ impl Driver {
         Ok(())
     }
 
+    // GtkFileChooser may resolve the location entry on its first Enter and
+    // only activate the Open/Save response on the next key. Every retry is
+    // another real Registry dispatch; only actual dialog destruction counts.
+    fn n05_confirm(&mut self, dialog: &Value, main: &Value, req: &mut u32) -> Result<()> {
+        let target = &dialog["target"];
+        let (epoch, token) = self.n05_focus(target, req)?;
+        let before = self.pump()?["runtime"]["app"]["input"]["delivered"]
+            .as_u64()
+            .ok_or("I6_N05_INPUT_FAILED")?;
+        let mut dispatched = 0u64;
+        for attempt in 1..=3 {
+            if attempt < 3 {
+                self.n05_key(target, epoch, &token, req, 28, 66, true)?;
+                dispatched += 1;
+            } else {
+                // An explicit dialog mnemonic is the last bounded fallback.
+                // It cannot bypass focus/input authorization or cause a file
+                // to be written by the supervisor.
+                self.n05_key(target, epoch, &token, req, 56, 57, true)?;
+                let (scan, android) = if dialog["name"] == "open" {
+                    (24, 43)
+                } else {
+                    (31, 47)
+                };
+                self.n05_key(target, epoch, &token, req, scan, android, true)?;
+                self.n05_key(target, epoch, &token, req, scan, android, false)?;
+                self.n05_key(target, epoch, &token, req, 56, 57, false)?;
+                dispatched += 4;
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let current = self.pump()?;
+                let app = &current["runtime"]["app"];
+                let gone = app["windows"].as_array().is_some_and(|windows| {
+                    !windows.iter().any(|w| {
+                        w["window"] == dialog["window"]["window"] && w["life"] == "Mapped"
+                    })
+                }) && app["gui_windows"].as_array().is_some_and(|windows| {
+                    !windows.contains(&dialog["window"]["window"])
+                });
+                if gone {
+                    let after = app["input"]["delivered"]
+                        .as_u64()
+                        .ok_or("I6_N05_INPUT_FAILED")?;
+                    if after < before + dispatched {
+                        return Err("I6_N05_INPUT_FAILED");
+                    }
+                    self.n05_closed(dialog, main)?;
+                    self.observe(
+                        "n05_confirm_delivered",
+                        json!({"name":dialog["name"],"target":target,
+                            "epoch":epoch,"token":token,"attempts":attempt,
+                            "delivered_before":before,"delivered_after":after,
+                            "expected_delivery":dispatched}),
+                    )?;
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            if attempt < 3 {
+                self.n05_key(target, epoch, &token, req, 28, 66, false)?;
+                dispatched += 1;
+            }
+        }
+        Err("I6_N05_DIALOG_CONFIRM_TIMEOUT")
+    }
+
     pub(super) fn exercise_n05(&mut self, run_id: &str, directory: &str) -> Result<()> {
         if !path_valid(directory) {
             return Err("I6_N05_PATH_INVALID");
@@ -307,9 +377,7 @@ impl Driver {
         );
         // Enter-down can synchronously destroy the file chooser; do not
         // send a stale-target key-up (same rule as N04 Esc-down).
-        let (epoch, token) = self.n05_focus(child, &mut req)?;
-        self.n05_key(child, epoch, &token, &mut req, 28, 66, true)?;
-        self.n05_closed(&open, &main)?;
+        self.n05_confirm(&open, &main, &mut req)?;
         self.observe("n05_open_confirmed", json!({"target":child}))?;
         steps.push(
             self.n05_step("edit_ctrl_end", &main, &mut req, |s, t, e, k, r| {
@@ -338,9 +406,7 @@ impl Driver {
                 s.n05_ascii(t, e, k, r, output.as_bytes())
             })?,
         );
-        let (epoch, token) = self.n05_focus(child, &mut req)?;
-        self.n05_key(child, epoch, &token, &mut req, 28, 66, true)?;
-        self.n05_closed(&save, &main)?;
+        self.n05_confirm(&save, &main, &mut req)?;
         self.observe("n05_save_confirmed", json!({"target":child}))?;
         self.refresh_trace()?;
         let capture = self
