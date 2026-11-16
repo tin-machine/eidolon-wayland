@@ -11,6 +11,7 @@ use std::{
 
 pub(super) const VARIANT: &str = "open_edit_save_as";
 const EDIT: &[u8] = b"eidolon-i6-saved\n";
+const SAVE_NAME: &[u8] = b"saved-as.txt";
 const MAX_PATH: usize = 160;
 
 fn ascii_key(byte: u8) -> Result<(i32, i32, bool)> {
@@ -439,18 +440,23 @@ impl Driver {
         );
         let save = self.n05_dialog(&main, "save_as", &save_previous)?;
         let child = &save["target"];
+        // Mousepad 0.6.3's Save As dialog seeds the existing file's parent
+        // folder and basename via gtk_file_chooser_set_file(). Ctrl+L opens
+        // the location/name entry; Ctrl+A replaces its prefilled input.txt.
+        // Use the fixed NEW basename, not an absolute path appended to the
+        // existing filename. Both operations use the normal Registry gate.
         steps.push(
             self.n05_step("save_location", child, &mut req, |s, t, e, k, r| {
-                s.n05_shortcut(t, e, k, r, 38, 40, false)
+                let location = s.n05_shortcut(t, e, k, r, 38, 40, false)?;
+                thread::sleep(Duration::from_millis(350));
+                let select = s.n05_shortcut(t, e, k, r, 30, 29, false)?;
+                Ok(location + select)
             })?,
         );
-        // GTK's location entry is created asynchronously after Ctrl+L.
-        // Delivery by the compositor alone is not proof that the entry has
-        // received focus. Allow the real GTK main loop to expose it first.
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(350));
         steps.push(
             self.n05_step("save_path", child, &mut req, |s, t, e, k, r| {
-                s.n05_ascii(t, e, k, r, output.as_bytes())
+                s.n05_ascii(t, e, k, r, SAVE_NAME)
             })?,
         );
         // The location chooser resolves file paths through GTK/GIO after its
@@ -519,6 +525,8 @@ mod tests {
     #[test]
     fn fixed_ascii_physicals_not_arbitrary_unicode_or_ime() {
         assert_eq!(EDIT, b"eidolon-i6-saved\n");
+        assert_eq!(SAVE_NAME, b"saved-as.txt");
+        assert!(SAVE_NAME.iter().all(|b| ascii_key(*b).is_ok()));
         for b in b"/home/eidolon-app/n05-cafe0123/input.txt" {
             assert!(ascii_key(*b).is_ok());
         }
