@@ -96,11 +96,10 @@ def prepare_and_run(args, artifacts, source, report):
             fixture.exclusive(file_directory / file_oracle.INPUT_NAME,
                               file_oracle.INPUT_BYTES, uid=fixture.ACCOUNTS["app"][0],
                               gid=fixture.ACCOUNTS["app"][0])
+            # Keep one immutable directory FD throughout GUI operation.
+            # Reopening a path after preflight would allow directory swap.
             file_fd = file_oracle.trusted_directory(file_directory)
-            try:
-                baseline = file_oracle.baseline(file_fd,fixture.ACCOUNTS["app"][0])
-            finally:
-                os.close(file_fd)
+            baseline = file_oracle.baseline(file_fd,fixture.ACCOUNTS["app"][0])
             driver = fixture.fresh_directory(driver_home / ("n05-" + name),
                                              uid=fixture.ACCOUNTS["driver"][0],
                                              gid=fixture.ACCOUNTS["driver"][0])
@@ -151,7 +150,16 @@ def prepare_and_run(args, artifacts, source, report):
             # never using the native producer's pass claim or file bytes.
             report["stage"]="independent_file_oracle"
             file_proof = None
-            file_fd = file_oracle.trusted_directory(file_directory)
+            # Also prove that the pathname still resolves to the original
+            # pinned directory FD, not a renamed/replaced run directory.
+            current_fd = file_oracle.trusted_directory(file_directory)
+            try:
+                original_stat, current_stat = os.fstat(file_fd), os.fstat(current_fd)
+                fixture.need((original_stat.st_dev,original_stat.st_ino) ==
+                             (current_stat.st_dev,current_stat.st_ino),
+                             "I6_EVIDENCE_MISSING")
+            finally:
+                os.close(current_fd)
             try:
                 try:
                     result = file_oracle.verify_after(
