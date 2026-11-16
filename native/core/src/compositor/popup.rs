@@ -1,8 +1,61 @@
 //! popupは親panel内。明示grabの入力は同じpopup chainへ限定する。
 use super::{PopupSurface, ProtocolState, Seat, Serial, WlSeat, WlSurface};
 use smithay::reexports::wayland_server::Resource;
+use eidolon_model::ids::{SurfaceId, WindowId};
+use serde::Serialize;
+
+/// Read-only observation of an actual xdg_popup, not an admitted xdg_toplevel.
+/// Root target generation / SDK binding must be verified by the Host caller.
+#[derive(Clone, Debug, Serialize)]
+pub struct PopupReport {
+    pub role: &'static str,
+    pub surface: SurfaceId,
+    pub parent_surface: SurfaceId,
+    pub root_window: WindowId,
+    pub ack_serial: Option<u32>,
+    pub grab_serial: Option<u32>,
+    pub layer: Option<usize>,
+    pub captured_origin: bool,
+    pub dismissed: bool,
+}
 
 impl ProtocolState {
+    /// Owned scalar facts only. WlSurface/PopupSurface never leave this owner.
+    /// The caller must correlate root_window with its current TargetKey.
+    pub fn popup_reports(&self) -> Vec<PopupReport> {
+        self.popups
+            .iter()
+            .filter_map(|popup| {
+                let surface = popup.wl_surface();
+                let parent = popup.get_parent_surface()?;
+                let surface_id = self.surface_meta.get(&surface.id())?.id;
+                let parent_id = self.surface_meta.get(&parent.id())?.id;
+                let root = self.root_for_surface(surface)?;
+                let window = self.toplevels.get(&root)?;
+                let layer = self.latest_snapshot(window.id).and_then(|snapshot| {
+                    snapshot
+                        .layers
+                        .iter()
+                        .position(|layer| layer.surface_id == surface_id)
+                });
+                Some(PopupReport {
+                    role: "xdg_popup",
+                    surface: surface_id,
+                    parent_surface: parent_id,
+                    root_window: window.id,
+                    ack_serial: self.popup_ack_serials.get(&surface.id()).copied(),
+                    grab_serial: self.popup_grab_serials.get(&surface.id()).copied(),
+                    layer,
+                    captured_origin: self.verified_origin.as_ref().is_some_and(|origin| {
+                        window.origin.as_ref() == Some(origin)
+                    }),
+                    dismissed: self.dismissed_popups.contains(&surface.id()),
+                })
+            })
+            .take(eidolon_model::limits::SURFACES)
+            .collect()
+    }
+
     pub(super) fn grab_popup(&mut self, popup: PopupSurface, seat: WlSeat, serial: Serial) {
         let parent = popup.get_parent_surface();
         let valid = (|| {
@@ -34,6 +87,8 @@ impl ProtocolState {
         })()
         .is_some();
         if valid {
+            self.popup_grab_serials
+                .insert(popup.wl_surface().id(), serial.into());
             self.popup_grabs.push(popup.wl_surface().id());
         } else {
             self.dismiss_popup_tree(popup.wl_surface());
