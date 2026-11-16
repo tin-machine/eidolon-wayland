@@ -163,7 +163,8 @@ def diagnostic_snapshot(dir_fd: int, uid: int, reason: str) -> dict:
         "N05_OUTPUT_PREDATES_INPUT",
     }
     result = {"schema": 1, "kind": "eidolon-i6-n05-file-diagnostic-v1",
-              "reason": reason if reason in allowed else "N05_FILE_PROOF_MISSING"}
+              "reason": reason if reason in allowed else "N05_FILE_PROOF_MISSING",
+              "directory_entry_count_bounded": min(len(os.listdir(dir_fd)), 17)}
     for name, key, expected in (
         (INPUT_NAME, "input", INPUT_BYTES),
         (OUTPUT_NAME, "output", INPUT_BYTES + APPEND_BYTES),
