@@ -25,6 +25,11 @@ pub struct PointerReport {
     pub pressed: u32,
     pub motions: u64,
     pub buttons: u64,
+    /// Actual pointer.button forwarded for a live surface, excluding reset releases.
+    pub delivered_buttons: u64,
+    pub last_delivered_source: Option<InputSourceId>,
+    pub last_delivered_surface: Option<SurfaceId>,
+    pub last_delivered_serial: Option<u32>,
     pub axis_frames: u64,
     pub resets: u64,
 }
@@ -284,6 +289,19 @@ impl ProtocolState {
                         },
                     );
                     self.input.report.pointer.buttons += 1;
+                    // Registry Accepted alone does not establish pointer delivery.
+                    // Count only a real compositor button forwarded to a live
+                    // hit/captured Wayland surface; reset-generated releases are
+                    // deliberately excluded from this counter.
+                    if self.pointer_surface(delta.target.surface).is_some() {
+                        self.input.report.pointer.delivered_buttons += 1;
+                        self.input.report.pointer.last_delivered_source =
+                            Some(delta.target.source);
+                        self.input.report.pointer.last_delivered_surface =
+                            Some(delta.target.surface);
+                        self.input.report.pointer.last_delivered_serial =
+                            Some(serial.into());
+                    }
                 }
                 if was_captured && self.input.pointer.tracker.capture().is_none() {
                     self.input.pointer.grab = None;
