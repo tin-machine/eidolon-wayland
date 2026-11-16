@@ -317,8 +317,7 @@ mod tests {
                 ]}
         }});
         assert!(Driver::n04_main_live(&observed, &target));
-        observed["runtime"]["transport"]["desktop_v3_transport"]["terminal_observed"] =
-            json!(true);
+        observed["runtime"]["transport"]["desktop_v3_transport"]["terminal_observed"] = json!(true);
         assert!(!Driver::n04_main_live(&observed, &target));
         observed["runtime"]["transport"]["desktop_v3_transport"]["terminal_observed"] =
             json!(false);
