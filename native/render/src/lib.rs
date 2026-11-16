@@ -2013,10 +2013,15 @@ mod tests {
         drop(theme);
         assert_eq!(renderer.pixel_budget().used_bytes(), 0);
     }
+    #[track_caller]
     fn wait(test: impl Fn() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(3);
         while !test() {
-            assert!(Instant::now() < deadline);
+            assert!(
+                Instant::now() < deadline,
+                "renderer test wait exceeded 3s at {}",
+                std::panic::Location::caller()
+            );
             thread::sleep(Duration::from_millis(2));
         }
     }
