@@ -750,7 +750,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                         "I6_N03_RECEIPT_INVALID")
                 receipts[path] = result
                 continue
-            if artifact["kind"] in {"n04_receipt", "n05_receipt"}:
+            if artifact["kind"] == "n04_receipt":
                 from linux_real_app_v3_n04_oracle import verify_receipt as verify_n04
                 require(key == ("N04", "idle_125s") and artifact["evidence_class"] == "R"
                         and artifact["owner_id"] is not None and artifact["target_id"] is None
