@@ -349,6 +349,66 @@ def verify_gui(native,owner,targets,variant):
     return observations
 
 
+def validate_n06_natural_close_control(events):
+    """R: validate real natural Close C2 order, without an invented Stop ACK.
+
+    A process-exited terminal can be emitted asynchronously while Stop is
+    in flight. Its `request_sequence` remains that of the last completed
+    action. This is distinct from a regular N04 Stop ACK (which advances the
+    sequence); the N04 oracle and all other N06 variants remain strict.
+    """
+    response={"inspect":"catalog","heartbeat":"heartbeat",
+              "start":"started","stop":"stopped"}
+    pending=None
+    request_number=0
+    wire_number=0
+    actions=[]
+    spontaneous_terminal=False
+    for item in events:
+        kind=item["kind"]
+        if kind=="control_send_attempt":
+            action=item["data"]["action"]
+            need(action in response and pending is None
+                 and not spontaneous_terminal,
+                 "I6_N06_CLOSE_CONTROL_SEQUENCE")
+            pending=action
+        elif kind=="protocol_event":
+            record=item["data"]["record"]
+            wire_number+=1
+            need(record["sequence"]==str(wire_number),
+                 "I6_N06_CLOSE_CONTROL_SEQUENCE")
+            received=record["event"]["type"]
+            if received=="prepared":
+                need(wire_number==1 and request_number==0
+                     and pending is None and record["request_sequence"]=="0",
+                     "I6_N06_CLOSE_CONTROL_SEQUENCE")
+                continue
+            need(pending is not None and received==response[pending],
+                 "I6_N06_CLOSE_CONTROL_SEQUENCE")
+            if received=="stopped":
+                payload=record["event"]["payload"]
+                need(pending=="stop" and not spontaneous_terminal
+                     and record["request_sequence"]==str(request_number)
+                     and payload["reason"]=="process_exited"
+                     and all(payload[k] is True for k in (
+                         "process_complete","pipes_eof",
+                         "remote_cleaned","receipt_written")),
+                     "I6_N06_CLOSE_CONTROL_SEQUENCE")
+                spontaneous_terminal=True
+            else:
+                need(record["request_sequence"]==str(request_number+1),
+                     "I6_N06_CLOSE_CONTROL_SEQUENCE")
+                request_number+=1
+            actions.append(pending)
+            pending=None
+    need(pending is None and spontaneous_terminal
+         and wire_number==request_number+2
+         and actions and actions[0]=="inspect" and actions[-1]=="stop"
+         and actions.count("start")==actions.count("stop")==1,
+         "I6_N06_CLOSE_CONTROL_SEQUENCE")
+    return True
+
+
 def verify_natural_close_product(base,env,source,observed):
     """N06-specific natural Close oracle: exact N02 success preconditions,
     with the sole documented *actual* APP_WINDOW_UNSUPPORTED outcome.
@@ -541,7 +601,10 @@ def verify_product(native,env,source,observed,variant):
     n01_env["revision"]="eidolon-i6-n01-environment-v1"
     n01._environment(n01_env,native["run_id"],native["owner_id"],
                      native["source_sha256"])
-    n04.validate_control_sequence(native["trace"]["events"])
+    if variant=="close_confirm":
+        validate_n06_natural_close_control(native["trace"]["events"])
+    else:
+        n04.validate_control_sequence(native["trace"]["events"])
     if variant=="close_confirm":
         # Preserve and bind the actual reason throughout observation and
         # final product census. A rewritten reason is never accepted.
