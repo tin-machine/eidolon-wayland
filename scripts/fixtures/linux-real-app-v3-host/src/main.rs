@@ -352,8 +352,7 @@ impl Driver {
                 // N05 sends hundreds of real physical key events. Preserve
                 // every completion status and delivery, but do not fill the
                 // bounded evidence envelope with one observation per key.
-                if !(self.n05_active && request.parse::<u32>()
-                    .is_ok_and(|n| n >= 5000)) {
+                if !(self.n05_active && request.parse::<u32>().is_ok_and(|n| n >= 5000)) {
                     self.observe(
                         "command_complete",
                         json!({"request_id":request.clone(),"status":event["code"]}),
@@ -683,14 +682,22 @@ fn run() -> Result<bool> {
                 credential = Some(value.parse::<i32>().map_err(|_| "I6_ARGUMENT_INVALID")?)
             }
             "--output" if output.is_none() => output = Some(PathBuf::from(value)),
-            "--variant" if variant.is_none() && n03_variant.is_none() && n04_variant.is_none() && n05_variant.is_none() => {
+            "--variant"
+                if variant.is_none()
+                    && n03_variant.is_none()
+                    && n04_variant.is_none()
+                    && n05_variant.is_none() =>
+            {
                 if !host_n02::N02_VARIANTS.contains(&value.as_str()) {
                     return Err("I6_ARGUMENT_INVALID");
                 }
                 variant = Some(value);
             }
             "--n03-variant"
-                if n03_variant.is_none() && variant.is_none() && n04_variant.is_none() && n05_variant.is_none() =>
+                if n03_variant.is_none()
+                    && variant.is_none()
+                    && n04_variant.is_none()
+                    && n05_variant.is_none() =>
             {
                 if !host_n03::N03_VARIANTS.contains(&value.as_str()) {
                     return Err("I6_ARGUMENT_INVALID");
@@ -698,16 +705,25 @@ fn run() -> Result<bool> {
                 n03_variant = Some(value);
             }
             "--n04-variant"
-                if n04_variant.is_none() && variant.is_none() && n03_variant.is_none() && n05_variant.is_none() =>
+                if n04_variant.is_none()
+                    && variant.is_none()
+                    && n03_variant.is_none()
+                    && n05_variant.is_none() =>
             {
                 if value != host_n04::VARIANT {
                     return Err("I6_ARGUMENT_INVALID");
                 }
                 n04_variant = Some(value);
             }
-            "--n05-variant" if n05_variant.is_none() && variant.is_none()
-                && n03_variant.is_none() && n04_variant.is_none() => {
-                if value != host_n05::VARIANT { return Err("I6_ARGUMENT_INVALID"); }
+            "--n05-variant"
+                if n05_variant.is_none()
+                    && variant.is_none()
+                    && n03_variant.is_none()
+                    && n04_variant.is_none() =>
+            {
+                if value != host_n05::VARIANT {
+                    return Err("I6_ARGUMENT_INVALID");
+                }
                 n05_variant = Some(value);
             }
             "--n05-directory" if n05_directory.is_none() => n05_directory = Some(value),
@@ -749,8 +765,12 @@ fn run() -> Result<bool> {
         (Some(value), None, None, None) => driver.exercise_n02(value).err(),
         (None, Some(value), None, None) => driver.exercise_n03(value).err(),
         (None, None, Some(_), None) => driver.exercise_n04(&descriptor.run_id).err(),
-        (None, None, None, Some(_)) => driver.exercise_n05(
-            &descriptor.run_id,n05_directory.as_deref().ok_or("I6_ARGUMENT_INVALID")?).err(),
+        (None, None, None, Some(_)) => driver
+            .exercise_n05(
+                &descriptor.run_id,
+                n05_directory.as_deref().ok_or("I6_ARGUMENT_INVALID")?,
+            )
+            .err(),
         (None, None, None, None) => driver.exercise().err(),
         _ => return Err("I6_ARGUMENT_INVALID"),
     };
@@ -788,8 +808,12 @@ fn run() -> Result<bool> {
         n04_variant.as_deref(),
         n05_variant.as_deref(),
     ) {
-        (Some(value), None, None, None) => driver.receipt_n02(&descriptor.run_id, value, first, cleanup),
-        (None, Some(value), None, None) => driver.receipt_n03(&descriptor.run_id, value, first, cleanup),
+        (Some(value), None, None, None) => {
+            driver.receipt_n02(&descriptor.run_id, value, first, cleanup)
+        }
+        (None, Some(value), None, None) => {
+            driver.receipt_n03(&descriptor.run_id, value, first, cleanup)
+        }
         (None, None, Some(_), None) => driver.receipt_n04(&descriptor.run_id, first, cleanup),
         (None, None, None, Some(_)) => driver.receipt_n05(&descriptor.run_id, first, cleanup),
         (None, None, None, None) => driver.receipt(&descriptor.run_id, first, cleanup),
