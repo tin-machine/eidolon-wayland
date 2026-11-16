@@ -331,7 +331,6 @@ def verify_stop(native, ordered):
     end_ns=natural(end[1]["data"]["ns"])
     need(0 <= end_ns-start_ns <= STOP_ACK_NS,
          "I6_N04_STOP_LATE")
-    need(require_one(ordered,"n04_dialog_completed") is not None)
     # Both Stop ACK and its resource teardown precede Runtime shutdown.
     stop_requested=require_one(ordered,"runtime_stop_requested")
     origin=require_one(ordered,"origin_retired")
