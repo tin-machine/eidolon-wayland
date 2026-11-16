@@ -508,9 +508,14 @@ def verify_natural_close_terminal(native,observed):
     destroyed=n02.only(observed,"n06_main_destroyed")
     exited=n02.only(observed,"n06_app_exit")
     origin=n02.only(observed,"origin_retired")
+    # In natural Close, the product may send C2 Stop as soon as the GTK
+    # main is destroyed; by the time the Host *observes* process wait,
+    # the terminal event can already have arrived. Do not impose the
+    # unsupported "Host app-exit observation before C2 Stop" ordering.
     need(intent[0]<destroyed[0]<exited[0]<origin[0]
          and int(intent[1]["transport_sequence"])<stop_sent[0][0]
-         and int(exited[1]["transport_sequence"])<=stop_sent[0][0]
+         and int(destroyed[1]["transport_sequence"])
+             <=int(exited[1]["transport_sequence"])
          and int(origin[1]["transport_sequence"])>=terminal[0][0],
          "I6_N06_TERMINAL_ORDER")
     return True
