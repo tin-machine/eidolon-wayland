@@ -114,11 +114,11 @@ impl Driver {
             .as_array()
             .and_then(|targets| targets.iter().find(|r| r["key"] == *target))
             .ok_or("I6_N07_RENDERER_NOT_READY")?;
-        let width = renderer_target["gpu"]["width"]
+        let width = renderer_target["width"]
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
             .ok_or("I6_N07_RENDERER_NOT_READY")?;
-        let height = renderer_target["gpu"]["height"]
+        let height = renderer_target["height"]
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
             .ok_or("I6_N07_RENDERER_NOT_READY")?;
