@@ -242,7 +242,12 @@ impl Driver {
         Ok(previous)
     }
 
-    pub(super) fn n05_dialog(&mut self, main: &Value, name: &str, previous: &[Value]) -> Result<Value> {
+    pub(super) fn n05_dialog(
+        &mut self,
+        main: &Value,
+        name: &str,
+        previous: &[Value],
+    ) -> Result<Value> {
         // The snapshot is deliberately sampled AFTER the shortcut; the
         // baseline argument is from BEFORE it and is never overwritten.
         let mapped = self.wait(25, |s| {
@@ -299,7 +304,12 @@ impl Driver {
     // GtkFileChooser may resolve the location entry on its first Enter and
     // only activate the Open/Save response on the next key. Every retry is
     // another real Registry dispatch; only actual dialog destruction counts.
-    pub(super) fn n05_confirm(&mut self, dialog: &Value, main: &Value, req: &mut u32) -> Result<()> {
+    pub(super) fn n05_confirm(
+        &mut self,
+        dialog: &Value,
+        main: &Value,
+        req: &mut u32,
+    ) -> Result<()> {
         let target = &dialog["target"];
         let (epoch, token) = self.n05_focus(target, req)?;
         let before = self.pump()?["runtime"]["app"]["input"]["delivered"]
