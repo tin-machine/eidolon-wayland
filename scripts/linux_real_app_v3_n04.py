@@ -1,6 +1,6 @@
 """Explicit disposable N04 launch smoke, separate from N01 and formal I6.
 
-Run both fixed variants sequentially on real pinned SSH + ordinary Registry.
+Run the one fixed variant on real pinned SSH + ordinary Registry.
 No app is spawned by this supervisor. The independent oracle reopens each
 native receipt and combines R/T with the synthetic Host SDK owner's S evidence.
 """
@@ -62,12 +62,14 @@ def run(args):
 
 
 def prepare_and_run(args, artifacts, source, report):
+    report["stage"]="disposable_preflight"
     isolation = fixture.disposable_preflight(args.disposable_container)
     fixture.need(args.source_root == ROOT and source["dirty"] is False, "I6_SOURCE_DIRTY")
     fixture_root = fixture.fresh_directory(args.fixture_root)
     accounts = fixture.prepare_accounts()
     app_home = Path(accounts["app"]["passwd_home"])
     driver_home = Path(accounts["driver"]["passwd_home"])
+    report["stage"]="prepare_bundle"
     waypipe = fixture.prepare_base_bundle(app_home)
     raw = fixture.command(["/usr/bin/python3", ROOT / "scripts/build-linux-desktop-v3-bundle",
                            "--reviewed-package", args.reviewed_package],
@@ -76,10 +78,11 @@ def prepare_and_run(args, artifacts, source, report):
     fixture.need(build.get("status") == "built")
     configuration, before_inputs = fixture.export_bundle(build["build_id"], app_home)
     binary_hash = evidence.sha(fixture.read_owned(args.runner,0,limit=128*1024*1024,private=False))
+    report["stage"]="start_sshd"
     sshd = None
     try:
         sshd, pidfd, host_key, ssh = fixture.prepare_sshd(
-            fixture_root, app_home, n04_remote_streamlocal=True)
+            fixture_root, app_home, n02_remote_streamlocal=True)
         for row in report["cases"]:
             variant = row["variant"]
             name = variant.replace("_", "-")
@@ -119,6 +122,7 @@ def prepare_and_run(args, artifacts, source, report):
                 if match and match.group(2).decode("ascii") == run_id:
                     markers.append({"kind":match.group(1).decode("ascii").lower(),
                                     "run_id":run_id,"at_ns":at_ns})
+            report["stage"]="native_runner"
             try:
                 returncode,_ = fixture.run_capture(
                     [args.runner,"--descriptor",descriptor_path,"--credential-fd",str(credential),
@@ -129,6 +133,8 @@ def prepare_and_run(args, artifacts, source, report):
                 os.close(credential)
             # This is independent of the product's Runtime::snapshot; no
             # supervisor process kill can manufacture a success census.
+            report["stage"]="native_receipt"
+            report["runner_diagnostic"]=diagnostic
             native = fixture.read_native_receipt(output_path,fixture.ACCOUNTS["driver"][0],
                                                   {"stage":"native_receipt"})
             native_name = "n04-" + variant + "-native.json"
@@ -150,6 +156,7 @@ def prepare_and_run(args, artifacts, source, report):
             }
             # The oracle reads *saved* evidence bytes, not a status produced
             # by this supervisor. Failure is retained even if rescue follows.
+            report["stage"]="independent_oracle"
             try:
                 measured = evidence.parse(evidence.read_report(artifacts / native_name))
                 outcome = verify(measured,environment,source,variant)
@@ -163,6 +170,7 @@ def prepare_and_run(args, artifacts, source, report):
             environment_name = "n04-" + variant + "-environment.json"
             evidence.write_report(artifacts / environment_name, environment)
             if outcome["status"] == "pass":
+                report["stage"]="formal_typed_receipt"
                 # One fixed-I6 report per actual native run_id. The second
                 # variant is a new SSH Session/capture, never the same owner.
                 # This call independently reopens the typed receipt before
