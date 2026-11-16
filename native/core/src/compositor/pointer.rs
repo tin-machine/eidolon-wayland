@@ -295,12 +295,10 @@ impl ProtocolState {
                     // deliberately excluded from this counter.
                     if self.pointer_surface(delta.target.surface).is_some() {
                         self.input.report.pointer.delivered_buttons += 1;
-                        self.input.report.pointer.last_delivered_source =
-                            Some(delta.target.source);
+                        self.input.report.pointer.last_delivered_source = Some(delta.target.source);
                         self.input.report.pointer.last_delivered_surface =
                             Some(delta.target.surface);
-                        self.input.report.pointer.last_delivered_serial =
-                            Some(serial.into());
+                        self.input.report.pointer.last_delivered_serial = Some(serial.into());
                     }
                 }
                 if was_captured && self.input.pointer.tracker.capture().is_none() {
