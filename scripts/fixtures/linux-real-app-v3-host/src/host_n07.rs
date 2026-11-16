@@ -25,7 +25,9 @@ fn delivered_pointer(before: &Value, after: &Value, target: &Value) -> bool {
         .is_some_and(|(old, new)| new >= old + 2)
         && b["last_delivered_source"] == SOURCE
         && b["last_delivered_surface"].as_str().is_some()
-        && b["last_delivered_press_serial"].as_u64().is_some_and(|n| n > 0)
+        && b["last_delivered_press_serial"]
+            .as_u64()
+            .is_some_and(|n| n > 0)
         && b["last_delivered_press_serial"] != a["last_delivered_press_serial"]
         && b["pressed"] == 0
         && b["hover_window"] == target["window"]
@@ -291,11 +293,26 @@ mod tests {
             "last_delivered_press_serial":38,
             "last_delivered_serial":39,
         }});
-        assert!(popup_grab_matches_click(&json!({"grab_serial":38}), &pointer));
-        assert!(popup_grab_matches_click(&json!({"grab_serial":39}), &pointer));
-        assert!(popup_grab_matches_click(&json!({"grab_serial":null}), &pointer));
-        assert!(!popup_grab_matches_click(&json!({"grab_serial":40}), &pointer));
-        assert!(!popup_grab_matches_click(&json!({"grab_serial":0}), &pointer));
+        assert!(popup_grab_matches_click(
+            &json!({"grab_serial":38}),
+            &pointer
+        ));
+        assert!(popup_grab_matches_click(
+            &json!({"grab_serial":39}),
+            &pointer
+        ));
+        assert!(popup_grab_matches_click(
+            &json!({"grab_serial":null}),
+            &pointer
+        ));
+        assert!(!popup_grab_matches_click(
+            &json!({"grab_serial":40}),
+            &pointer
+        ));
+        assert!(!popup_grab_matches_click(
+            &json!({"grab_serial":0}),
+            &pointer
+        ));
     }
     #[test]
     fn calibration_rois_are_bounded_but_not_reviewed_goldens() {

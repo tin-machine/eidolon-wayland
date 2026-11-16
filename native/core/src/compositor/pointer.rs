@@ -302,7 +302,8 @@ impl ProtocolState {
                             Some(delta.target.surface);
                         self.input.report.pointer.last_delivered_serial = Some(serial.into());
                         if delta.pressed {
-                            self.input.report.pointer.last_delivered_press_serial = Some(serial.into());
+                            self.input.report.pointer.last_delivered_press_serial =
+                                Some(serial.into());
                         }
                     }
                 }

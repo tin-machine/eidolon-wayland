@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::sync::{
-    Mutex,
+    Arc, Mutex, MutexGuard, TryLockError,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -60,7 +60,9 @@ pub struct Snapshot {
 }
 #[derive(Default)]
 struct Entries {
-    events: Vec<Event>,
+    // Cheap Arc references keep Snapshot's deep clone outside the producer
+    // lock. Host polling may request many snapshots during long idle runs.
+    events: Vec<Arc<Event>>,
     bytes: usize,
     current: Option<Capture>,
 }
@@ -70,12 +72,30 @@ pub struct Trace {
     overflow: AtomicBool,
 }
 impl Trace {
-    /// Internal product owners only. No public mutation or deserialization API.
-    pub(crate) fn record(&self, capture: Option<Capture>, kind: &'static str, data: Value) {
-        let Ok(mut entries) = self.entries.try_lock() else {
-            self.overflow.store(true, Ordering::Release);
-            return;
-        };
+    /// A bounded, nonblocking retry protects producer evidence from a reader
+    /// taking a very short snapshot of the Arc handles. Continuous contention,
+    /// poison and any capacity failure still fail closed with sticky overflow.
+    /// This is Host-only observation; the product SSH/Controller does not wait
+    /// indefinitely on this mutex or downgrade a lost event to success.
+    fn try_entries(&self) -> Option<MutexGuard<'_, Entries>> {
+        for _ in 0..16 {
+            match self.entries.try_lock() {
+                Ok(entries) => return Some(entries),
+                Err(TryLockError::Poisoned(_)) => break,
+                Err(TryLockError::WouldBlock) => std::thread::yield_now(),
+            }
+        }
+        self.overflow.store(true, Ordering::Release);
+        None
+    }
+
+    fn append_locked(
+        &self,
+        entries: &mut Entries,
+        capture: Option<Capture>,
+        kind: &'static str,
+        data: Value,
+    ) {
         let event = Event {
             sequence: (entries.events.len() + 1).to_string(),
             kind,
@@ -94,27 +114,41 @@ impl Trace {
         if event.capture.is_some() {
             entries.current = event.capture.clone();
         }
-        entries.events.push(event);
+        entries.events.push(Arc::new(event));
     }
+
+    /// Internal product owners only. No public mutation or deserialization API.
+    pub(crate) fn record(&self, capture: Option<Capture>, kind: &'static str, data: Value) {
+        if let Some(mut entries) = self.try_entries() {
+            self.append_locked(&mut entries, capture, kind, data);
+        }
+    }
+
+    /// Preserve the exact last captured owner and append under ONE lock.
+    /// Previously a two-lock read/append gap could lose the stop observation
+    /// when an asynchronous cleanup event arrived between the two try_locks.
     pub(crate) fn record_current(&self, kind: &'static str, data: Value) {
-        let current = match self.entries.try_lock() {
-            Ok(entries) => entries.current.clone(),
-            Err(_) => {
-                self.overflow.store(true, Ordering::Release);
-                return;
-            }
-        };
-        self.record(current, kind, data);
+        if let Some(mut entries) = self.try_entries() {
+            let current = entries.current.clone();
+            self.append_locked(&mut entries, current, kind, data);
+        }
     }
+
     pub fn snapshot(&self) -> Snapshot {
-        let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        // Do not clone the potentially 1 MiB deep event payload while
+        // holding the writer mutex. Only Arc pointers are cloned here.
+        let events = self
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .events
+            .clone();
         Snapshot {
             overflow: self.overflow.load(Ordering::Acquire),
-            events: entries.events.clone(),
+            events: events.iter().map(|event| (**event).clone()).collect(),
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,6 +171,41 @@ mod tests {
             MAX_EVENTS.to_string()
         );
     }
+    #[test]
+    fn snapshot_and_current_capture_do_not_share_mutable_event_storage() {
+        let trace = Trace::default();
+        let capture = Capture {
+            session: "1".into(), inspect_request: "20".into(),
+            io_generation: "1".into(), nonce: "1111111111111111".into(),
+            scope: "capture".into(), context_digest: "a".repeat(64),
+            capture_id: "b".repeat(64),
+        };
+        trace.record(Some(capture.clone()), "created", serde_json::json!({"stage":1}));
+        let before = trace.snapshot();
+        trace.record_current("controller_stop_requested", serde_json::json!({}));
+        let after = trace.snapshot();
+        assert!(!after.overflow);
+        assert_eq!(before.events.len(), 1);
+        assert_eq!(after.events.len(), 2);
+        assert_eq!(after.events[0].capture, Some(capture.clone()));
+        assert_eq!(after.events[1].capture, Some(capture));
+        assert_eq!(after.events[1].sequence, "2");
+        assert_eq!(after.events[1].kind, "controller_stop_requested");
+    }
+
+    #[test]
+    fn overflowing_after_maximum_bytes_or_events_still_fails_closed() {
+        let trace = Trace::default();
+        for i in 0..MAX_EVENTS {
+            trace.record(None, "test", serde_json::json!({"value":i}));
+        }
+        assert!(!trace.snapshot().overflow);
+        trace.record_current("excess", serde_json::json!({}));
+        let snap = trace.snapshot();
+        assert_eq!(snap.events.len(), MAX_EVENTS);
+        assert!(snap.overflow);
+    }
+
     #[test]
     fn oversized_event_is_not_admitted() {
         let trace = Trace::default();

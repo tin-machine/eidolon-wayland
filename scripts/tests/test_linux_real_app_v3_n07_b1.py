@@ -10,7 +10,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from linux_real_app_v3_n07_b1_probe import ProbeInvalid, inspect
-from linux_desktop_v3_contract import canonical_json, parse_json
+import linux_real_app_v3_evidence as evidence
+from linux_desktop_v3_contract import canonical_json, parse_json, MAX_RECORD_BYTES
 
 TARGET = {"session": "1", "window": "7", "scene": "1", "generation": "1"}
 RUN_ID = "c" * 32
@@ -114,7 +115,13 @@ class N07B1DiagnosticTests(unittest.TestCase):
     def test_good_synthetic_diagnostic_is_probe_only_never_acceptance(self):
         # Actual Host receipts go through strict A0/B1 integer-only JSON
         # domain validation before the independent diagnostic oracle.
-        self.assertEqual(parse_json(canonical_json(diagnostic())), diagnostic())
+        raw = canonical_json(diagnostic())
+        # A0/B1's default 16 KiB record limit protects control-plane
+        # objects; a renderer pixel diagnostic is a bounded 1 MiB artifact.
+        self.assertGreater(len(raw), MAX_RECORD_BYTES)
+        self.assertEqual(evidence.parse(raw), diagnostic())
+        with self.assertRaises(ValueError):
+            parse_json(raw)
         result = inspect(diagnostic())
         self.assertEqual(result["status"], "probe_only")
         self.assertFalse(result["reviewed_golden"])
