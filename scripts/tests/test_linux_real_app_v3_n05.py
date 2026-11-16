@@ -30,7 +30,59 @@ def proof_fixture():
     return env,native,owner
 
 
+def dialog_baseline_fixture():
+    main={"session":"1","window":"1","scene":"1","generation":"1"}
+    dialogs=[{"window":{"window":"2"}},{"window":{"window":"3"}}]
+    def observed(pos,phase,windows):
+        return (pos,{"data":{"phase":phase,"main_target":copy.deepcopy(main),
+                             "mapped_windows":windows}})
+    baseline=[observed(1,"open",["1"]),observed(8,"save_as",["1"])]
+    delivery_positions=(2,4,5,6,7,9,11,12)
+    delivered=[(pos,{}) for pos in delivery_positions]
+    created=[(3,{}),(10,{})]
+    return {"n05_dialog_baseline":baseline},main,dialogs,delivered,created
+
+
 class N05OwnerOracleTests(unittest.TestCase):
+    def test_dialog_baseline_precedes_shortcut_and_excludes_new_child(self):
+        args=dialog_baseline_fixture()
+        self.assertTrue(n05.verify_dialog_baselines(*args))
+        # This reproduces the fast GTK creation race: taking the set after
+        # Ctrl+Shift+S includes the newly created child and must be rejected.
+        cases=[
+            ("save_dialog_already_in_previous",lambda a:
+             a[0]["n05_dialog_baseline"][1][1]["data"]
+               ["mapped_windows"].append("3")),
+            ("open_dialog_already_in_previous",lambda a:
+             a[0]["n05_dialog_baseline"][0][1]["data"]
+               ["mapped_windows"].append("2")),
+            ("late_save_baseline",lambda a:
+             a[0]["n05_dialog_baseline"].__setitem__(
+                1,(11,a[0]["n05_dialog_baseline"][1][1]))),
+            ("baseline_before_edit",lambda a:
+             a[0]["n05_dialog_baseline"].__setitem__(
+                1,(6,a[0]["n05_dialog_baseline"][1][1]))),
+            ("missing_open_baseline",lambda a:
+             a[0]["n05_dialog_baseline"].pop(0)),
+            ("wrong_phase",lambda a:
+             a[0]["n05_dialog_baseline"][1][1]["data"].update(phase="open")),
+            ("foreign_main",lambda a:
+             a[0]["n05_dialog_baseline"][1][1]["data"]
+               ["main_target"].update(window="999")),
+            ("duplicate_id",lambda a:
+             a[0]["n05_dialog_baseline"][1][1]["data"]
+               ["mapped_windows"].append("1")),
+            ("main_missing",lambda a:
+             a[0]["n05_dialog_baseline"][0][1]["data"].update(
+                mapped_windows=["5"])),
+        ]
+        for label,mutate in cases:
+            with self.subTest(mutation=label):
+                testcase=copy.deepcopy(dialog_baseline_fixture())
+                mutate(testcase)
+                with self.assertRaises((ValueError,TypeError,KeyError)):
+                    n05.verify_dialog_baselines(*testcase)
+
     def test_frozen_manifest(self):
         rows=evidence.load_manifest()["cases"]
         row,=[x for x in rows if x["case_id"]=="N05"]
