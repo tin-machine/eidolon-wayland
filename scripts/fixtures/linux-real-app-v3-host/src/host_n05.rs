@@ -335,16 +335,19 @@ impl Driver {
                 }
                 thread::sleep(Duration::from_millis(50));
             }
-            self.observe(
-                "n05_confirm_attempt",
-                json!({
-                    "name":dialog["name"], "attempt":attempt, "target":target,
-                    "dialog_mapped":self.last_snapshot["runtime"]["app"]["windows"]
-                        .as_array().is_some_and(|rows| rows.iter().any(|w|
-                            w["window"] == dialog["window"]["window"] && w["life"] == "Mapped")),
-                    "delivered":self.last_snapshot["runtime"]["app"]["input"]["delivered"],
-                }),
-            )?;
+            let still_mapped = self.last_snapshot["runtime"]["app"]["windows"]
+                .as_array()
+                .is_some_and(|rows| {
+                    rows.iter().any(|w| {
+                        w["window"] == dialog["window"]["window"] && w["life"] == "Mapped"
+                    })
+                });
+            let probe = json!({
+                "name":dialog["name"], "attempt":attempt, "target":target,
+                "dialog_mapped":still_mapped,
+                "delivered":self.last_snapshot["runtime"]["app"]["input"]["delivered"],
+            });
+            self.observe("n05_confirm_attempt", probe)?;
             if attempt < 3 {
                 self.n05_key(target, epoch, &token, req, 28, 66, false)?;
                 dispatched += 1;
