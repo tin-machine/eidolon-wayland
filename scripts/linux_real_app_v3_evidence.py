@@ -676,7 +676,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                     and before is not None and artifact["source_sha256"] == before["tree_sha256"], "I6_SOURCE_MISMATCH")
             require(contract.integer(artifact["size"], 0, MAX_TRACE_BYTES) and contract.hexadecimal(artifact["sha256"], 64)
                     and artifact["evidence_class"] in required[key]["evidence_classes"]
-                    and artifact["kind"] in {"trace", "opaque", "n01_receipt", "n02_receipt", "n03_receipt", "n04_receipt"})
+                    and artifact["kind"] in {"trace", "opaque", "n01_receipt", "n02_receipt", "n03_receipt", "n04_receipt", "n05_receipt"})
             _, owners, targets = cases[key]
             _reference({"artifact": path, "owner_id": artifact["owner_id"], "target_id": artifact["target_id"], "event_seq": None}, owners, targets)
             artifacts[path] = artifact
@@ -750,7 +750,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                         "I6_N03_RECEIPT_INVALID")
                 receipts[path] = result
                 continue
-            if artifact["kind"] == "n04_receipt":
+            if artifact["kind"] in {"n04_receipt", "n05_receipt"}:
                 from linux_real_app_v3_n04_oracle import verify_receipt as verify_n04
                 require(key == ("N04", "idle_125s") and artifact["evidence_class"] == "R"
                         and artifact["owner_id"] is not None and artifact["target_id"] is None
@@ -766,6 +766,24 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                 )
                 require(cases[key][0]["cleanup"]["environment_disposal"] == "not_yet",
                         "I6_N04_RECEIPT_INVALID")
+                receipts[path] = result
+                continue
+            if artifact["kind"] == "n05_receipt":
+                from linux_real_app_v3_n05_oracle import verify_receipt as verify_n05
+                require(key == ("N05", "open_edit_save_as") and artifact["evidence_class"] == "R"
+                        and artifact["owner_id"] is not None and artifact["target_id"] is None
+                        and len(targets) == 3, "I6_OWNER_MISMATCH")
+                require(not any((artifacts[p]["case_id"], artifacts[p]["variant"]) == key
+                                for p in receipts), "I6_N05_RECEIPT_INVALID")
+                result = verify_n05(
+                    parse(data), expected_run_id=report["run_id"],
+                    expected_source_sha256=before["tree_sha256"],
+                    expected_owner=owners[artifact["owner_id"]],
+                    expected_targets=list(targets.values()),
+                    expected_source=before,
+                )
+                require(cases[key][0]["cleanup"]["environment_disposal"] == "not_yet",
+                        "I6_N05_RECEIPT_INVALID")
                 receipts[path] = result
                 continue
             require(path in cases[key][0]["trace"]["artifacts"], "I6_TRACE_INVALID")
@@ -820,13 +838,13 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                 # A N02 typed receipt is owner-scoped but proves one exact
                 # native target. Target-resource refs may use only that derived
                 # TargetKey identity, never a producer-selected alias.
-                if artifact["kind"] in {"n02_receipt", "n03_receipt", "n04_receipt"}:
+                if artifact["kind"] in {"n02_receipt", "n03_receipt", "n04_receipt", "n05_receipt"}:
                     require(artifact["owner_id"] == ref["owner_id"]
                             and artifact["target_id"] is None
                             and (ref["target_id"] is None
                                  or ref["target_id"] in cases[key][2]), "I6_OWNER_MISMATCH")
                     if receipt is not None and ref["target_id"] is not None:
-                        if artifact["kind"] == "n04_receipt":
+                        if artifact["kind"] in {"n04_receipt", "n05_receipt"}:
                             require(ref["target_id"] in receipt["target_ids"],
                                     "I6_OWNER_MISMATCH")
                         else:
@@ -835,7 +853,7 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                 else:
                     require(artifact["owner_id"] == ref["owner_id"]
                             and artifact["target_id"] == ref["target_id"], "I6_OWNER_MISMATCH")
-                if artifact["kind"] in {"n01_receipt", "n02_receipt", "n03_receipt", "n04_receipt"}:
+                if artifact["kind"] in {"n01_receipt", "n02_receipt", "n03_receipt", "n04_receipt", "n05_receipt"}:
                     if receipt is None or receipt["status"] != "pass":
                         case_missing(key, "typed_receipt/" + ref["artifact"])
                     elif "assertion_id" in expected_fields:
@@ -848,8 +866,8 @@ def _validate(raw, artifact_root, expected_source, expected_manifest):
                         verified_assertions.add((key, assertion))
                     else:
                         resource = expected_fields["resource"]
-                        if artifact["kind"] in {"n02_receipt", "n03_receipt", "n04_receipt"}:
-                            require((ref["target_id"] in receipt["target_ids"] if artifact["kind"] == "n04_receipt"
+                        if artifact["kind"] in {"n02_receipt", "n03_receipt", "n04_receipt", "n05_receipt"}:
+                            require((ref["target_id"] in receipt["target_ids"] if artifact["kind"] in {"n04_receipt", "n05_receipt"}
                                      else ref["target_id"] == receipt["target_id"])
                                     if resource in TARGET_RESOURCES else ref["target_id"] is None,
                                     "I6_OWNER_MISMATCH")
