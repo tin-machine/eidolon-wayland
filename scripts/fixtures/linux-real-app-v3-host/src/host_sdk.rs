@@ -25,8 +25,7 @@ use std::{
 /// Unlike HostReadbackReceipt::Serialize, these bytes never enter the generic
 /// Runtime/SDK snapshot and must be kept in bounded private artifacts.
 fn n07_base64(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::with_capacity(input.len().div_ceil(3) * 4);
     for block in input.chunks(3) {
         let a = block[0];
@@ -501,9 +500,8 @@ impl HostSdkAdapter {
         })??;
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let readback = registry.guarded(self.runtime, |runtime| {
-                runtime.poll_host_readback(&ticket)
-            })?;
+            let readback =
+                registry.guarded(self.runtime, |runtime| runtime.poll_host_readback(&ticket))?;
             match readback {
                 Ok(HostReadbackPoll::Pending) | Err(Status::Busy | Status::NotReady) => (),
                 Err(error) => return Err(error),
@@ -522,9 +520,7 @@ impl HostSdkAdapter {
                         return Err(Status::Failed);
                     }
                     let mut pixels = Vec::new();
-                    for (index, (actual, expected)) in
-                        renderer.rois.iter().zip(rois).enumerate()
-                    {
+                    for (index, (actual, expected)) in renderer.rois.iter().zip(rois).enumerate() {
                         let length = (expected.width as usize)
                             .checked_mul(expected.height as usize)
                             .and_then(|n| n.checked_mul(4))
@@ -547,8 +543,7 @@ impl HostSdkAdapter {
                             "sha256": digest,
                         }));
                     }
-                    let receipt = serde_json::to_value(&result)
-                        .map_err(|_| Status::Failed)?;
+                    let receipt = serde_json::to_value(&result).map_err(|_| Status::Failed)?;
                     self.observe(
                         "n07_renderer_pixel_readback",
                         json!({"target":target,"create_seq":create,
