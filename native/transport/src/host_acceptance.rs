@@ -11,7 +11,7 @@ use std::sync::{
 pub const MAX_EVENTS: usize = 4096;
 pub const MAX_BYTES: usize = 1024 * 1024;
 
-#[derive(Clone, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct Capture {
     pub session: String,
     pub inspect_request: String,
@@ -175,12 +175,19 @@ mod tests {
     fn snapshot_and_current_capture_do_not_share_mutable_event_storage() {
         let trace = Trace::default();
         let capture = Capture {
-            session: "1".into(), inspect_request: "20".into(),
-            io_generation: "1".into(), nonce: "1111111111111111".into(),
-            scope: "capture".into(), context_digest: "a".repeat(64),
+            session: "1".into(),
+            inspect_request: "20".into(),
+            io_generation: "1".into(),
+            nonce: "1111111111111111".into(),
+            scope: "capture".into(),
+            context_digest: "a".repeat(64),
             capture_id: "b".repeat(64),
         };
-        trace.record(Some(capture.clone()), "created", serde_json::json!({"stage":1}));
+        trace.record(
+            Some(capture.clone()),
+            "created",
+            serde_json::json!({"stage":1}),
+        );
         let before = trace.snapshot();
         trace.record_current("controller_stop_requested", serde_json::json!({}));
         let after = trace.snapshot();
