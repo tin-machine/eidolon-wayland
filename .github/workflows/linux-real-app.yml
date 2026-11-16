@@ -338,6 +338,53 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
+  v3_n06:
+    needs: scope
+    if: ${{ needs.scope.outputs.mousepad == 'true' }}
+    name: N06 live GTK Dialog Cancel / Save As / Unsaved Close / Close Confirm (partial I6)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: N06 immutable contract, independent file and hostile proof tests
+        run: python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_v3_n06.py' -v
+      - name: N06 real four-variant disposable GUI and independent 34-assertion verification
+        env:
+          CI_PR_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        run: bash scripts/ci/check-linux-desktop-v3-n06 --artifact-root "$RUNNER_TEMP/i6-n06"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ always() }}
+        with:
+          name: linux-desktop-v3-n06-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/i6-n06/n06-validation.json
+            ${{ runner.temp }}/i6-n06/n06-open_cancel-native.json
+            ${{ runner.temp }}/i6-n06/n06-open_cancel-environment.json
+            ${{ runner.temp }}/i6-n06/n06-open_cancel-receipt.json
+            ${{ runner.temp }}/i6-n06/n06-acceptance-open_cancel.json
+            ${{ runner.temp }}/i6-n06/n06-acceptance-open_cancel-validation.json
+            ${{ runner.temp }}/i6-n06/n06-save_as_confirm-native.json
+            ${{ runner.temp }}/i6-n06/n06-save_as_confirm-environment.json
+            ${{ runner.temp }}/i6-n06/n06-save_as_confirm-receipt.json
+            ${{ runner.temp }}/i6-n06/n06-acceptance-save_as_confirm.json
+            ${{ runner.temp }}/i6-n06/n06-acceptance-save_as_confirm-validation.json
+            ${{ runner.temp }}/i6-n06/n06-unsaved_close_cancel-native.json
+            ${{ runner.temp }}/i6-n06/n06-unsaved_close_cancel-environment.json
+            ${{ runner.temp }}/i6-n06/n06-unsaved_close_cancel-receipt.json
+            ${{ runner.temp }}/i6-n06/n06-acceptance-unsaved_close_cancel.json
+            ${{ runner.temp }}/i6-n06/n06-acceptance-unsaved_close_cancel-validation.json
+            ${{ runner.temp }}/i6-n06/n06-close_confirm-native.json
+            ${{ runner.temp }}/i6-n06/n06-close_confirm-environment.json
+            ${{ runner.temp }}/i6-n06/n06-close_confirm-receipt.json
+            ${{ runner.temp }}/i6-n06/n06-acceptance-close_confirm.json
+            ${{ runner.temp }}/i6-n06/n06-acceptance-close_confirm-validation.json
+            ${{ runner.temp }}/i6-n06/container.json
+          if-no-files-found: warn
+          retention-days: 3
+
   v3_n03:
     needs: scope
     if: ${{ needs.scope.outputs.mousepad == 'true' }}
