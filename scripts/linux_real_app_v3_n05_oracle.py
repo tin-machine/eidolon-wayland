@@ -161,11 +161,11 @@ def verify_gui(native, owner, targets):
              and focus_fact["request_id"]==str(int(step["first_key_request"])-1),
              "I6_N05_STALE_FOCUS")
         count=step["expected_delivery"]
-        expected = (4,4,len(gui["input"])*2,4,len(files.APPEND_BYTES)*2,6,4,
-                    len(gui["output"])*2)[i]
+        expected = (4,4,len(gui["input"])*2,4,len(files.APPEND_BYTES)*2,6,8,
+                    len(files.OUTPUT_NAME)*2)[i]
         # Underscore needs a genuine Shift down/up in the physical key stream.
         expected += (gui["input"].count("_") if i==2 else
-                     gui["output"].count("_") if i==7 else 0)*2
+                     files.OUTPUT_NAME.count("_") if i==7 else 0)*2
         need(type(count) is int and count==expected and count>0)
         before=step["delivered_before"]
         after=step["delivered_after"]
