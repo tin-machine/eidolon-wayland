@@ -140,8 +140,13 @@ impl Driver {
         let mut req = 7000u32;
         let (epoch, _token) = self.n05_focus(&main, &mut req)?;
         let pointer = self.n07_click(&main, epoch, &mut req)?;
+        self.refresh_trace()?;
+        let capture_id = self.trace.events.iter()
+            .find_map(|event| event.capture.as_ref())
+            .ok_or("I6_N07_CAPTURE_MISSING")?.capture_id.clone();
         self.n07_probe = Some(json!({
             "schema":1,"run_id":run_id,"variant":VARIANT,
+            "capture_id":capture_id,
             "main_target":main,"pointer":pointer,"before_menu":off,
             "menu_coordinate_reviewed":false,"menu_identity_verified":false,
         }));
