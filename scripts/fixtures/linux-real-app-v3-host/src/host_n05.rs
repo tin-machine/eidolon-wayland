@@ -335,6 +335,16 @@ impl Driver {
                 }
                 thread::sleep(Duration::from_millis(50));
             }
+            self.observe(
+                "n05_confirm_attempt",
+                json!({
+                    "name":dialog["name"], "attempt":attempt, "target":target,
+                    "dialog_mapped":self.last_snapshot["runtime"]["app"]["windows"]
+                        .as_array().is_some_and(|rows| rows.iter().any(|w|
+                            w["window"] == dialog["window"]["window"] && w["life"] == "Mapped")),
+                    "delivered":self.last_snapshot["runtime"]["app"]["input"]["delivered"],
+                }),
+            )?;
             if attempt < 3 {
                 self.n05_key(target, epoch, &token, req, 28, 66, false)?;
                 dispatched += 1;
@@ -370,11 +380,18 @@ impl Driver {
                 s.n05_shortcut(t, e, k, r, 38, 40, false)
             })?,
         );
+        // GTK's location entry is created asynchronously after Ctrl+L.
+        // Delivery by the compositor alone is not proof that the entry has
+        // received focus. Allow the real GTK main loop to expose it first.
+        thread::sleep(Duration::from_millis(500));
         steps.push(
             self.n05_step("open_path", child, &mut req, |s, t, e, k, r| {
                 s.n05_ascii(t, e, k, r, input.as_bytes())
             })?,
         );
+        // The location chooser resolves file paths through GTK/GIO after its
+        // input queue drains. This bound does not change any product lease.
+        thread::sleep(Duration::from_millis(900));
         // Enter-down can synchronously destroy the file chooser; do not
         // send a stale-target key-up (same rule as N04 Esc-down).
         self.n05_confirm(&open, &main, &mut req)?;
@@ -401,11 +418,18 @@ impl Driver {
                 s.n05_shortcut(t, e, k, r, 38, 40, false)
             })?,
         );
+        // GTK's location entry is created asynchronously after Ctrl+L.
+        // Delivery by the compositor alone is not proof that the entry has
+        // received focus. Allow the real GTK main loop to expose it first.
+        thread::sleep(Duration::from_millis(500));
         steps.push(
             self.n05_step("save_path", child, &mut req, |s, t, e, k, r| {
                 s.n05_ascii(t, e, k, r, output.as_bytes())
             })?,
         );
+        // The location chooser resolves file paths through GTK/GIO after its
+        // input queue drains. This bound does not change any product lease.
+        thread::sleep(Duration::from_millis(900));
         self.n05_confirm(&save, &main, &mut req)?;
         self.observe("n05_save_confirmed", json!({"target":child}))?;
         self.refresh_trace()?;
