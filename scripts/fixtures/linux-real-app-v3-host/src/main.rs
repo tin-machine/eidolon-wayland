@@ -736,9 +736,12 @@ fn run() -> Result<bool> {
                 n05_variant = Some(value);
             }
             "--n05-directory" if n05_directory.is_none() => n05_directory = Some(value),
-            "--n06-variant" if n06_variant.is_none()
-                && variant.is_none() && n03_variant.is_none()
-                && n04_variant.is_none() && n05_variant.is_none() =>
+            "--n06-variant"
+                if n06_variant.is_none()
+                    && variant.is_none()
+                    && n03_variant.is_none()
+                    && n04_variant.is_none()
+                    && n05_variant.is_none() =>
             {
                 if !host_n06::VARIANTS.contains(&value.as_str()) {
                     return Err("I6_ARGUMENT_INVALID");
@@ -779,29 +782,33 @@ fn run() -> Result<bool> {
     let mut driver = Driver::new(&config, key)?;
     eprintln!("I6_RUNNER_STAGE exercise");
     let first = if let Some(value) = n06_variant.as_deref() {
-        driver.exercise_n06(
-            &descriptor.run_id,
-            n06_directory.as_deref().ok_or("I6_ARGUMENT_INVALID")?,
-            value,
-        ).err()
-    } else { match (
-        variant.as_deref(),
-        n03_variant.as_deref(),
-        n04_variant.as_deref(),
-        n05_variant.as_deref(),
-    ) {
-        (Some(value), None, None, None) => driver.exercise_n02(value).err(),
-        (None, Some(value), None, None) => driver.exercise_n03(value).err(),
-        (None, None, Some(_), None) => driver.exercise_n04(&descriptor.run_id).err(),
-        (None, None, None, Some(_)) => driver
-            .exercise_n05(
+        driver
+            .exercise_n06(
                 &descriptor.run_id,
-                n05_directory.as_deref().ok_or("I6_ARGUMENT_INVALID")?,
+                n06_directory.as_deref().ok_or("I6_ARGUMENT_INVALID")?,
+                value,
             )
-            .err(),
-        (None, None, None, None) => driver.exercise().err(),
-        _ => return Err("I6_ARGUMENT_INVALID"),
-    } };
+            .err()
+    } else {
+        match (
+            variant.as_deref(),
+            n03_variant.as_deref(),
+            n04_variant.as_deref(),
+            n05_variant.as_deref(),
+        ) {
+            (Some(value), None, None, None) => driver.exercise_n02(value).err(),
+            (None, Some(value), None, None) => driver.exercise_n03(value).err(),
+            (None, None, Some(_), None) => driver.exercise_n04(&descriptor.run_id).err(),
+            (None, None, None, Some(_)) => driver
+                .exercise_n05(
+                    &descriptor.run_id,
+                    n05_directory.as_deref().ok_or("I6_ARGUMENT_INVALID")?,
+                )
+                .err(),
+            (None, None, None, None) => driver.exercise().err(),
+            _ => return Err("I6_ARGUMENT_INVALID"),
+        }
+    };
     let retirement = if n03_variant.is_some() {
         if first.is_none() {
             None // N03 completed real owner retirement in its exercise.
@@ -810,7 +817,11 @@ fn run() -> Result<bool> {
         } else {
             driver.retire_after_failure().err()
         }
-    } else if variant.is_some() || n04_variant.is_some() || n05_variant.is_some() || n06_variant.is_some() {
+    } else if variant.is_some()
+        || n04_variant.is_some()
+        || n05_variant.is_some()
+        || n06_variant.is_some()
+    {
         eprintln!("I6_RUNNER_STAGE n02_retire");
         // A failed launch without a native Create still needs the existing
         // same-capture recovery. The SDK ledger never invents an empty receipt.
@@ -832,23 +843,25 @@ fn run() -> Result<bool> {
     eprintln!("I6_RUNNER_STAGE receipt");
     let receipt = if let Some(value) = n06_variant.as_deref() {
         driver.receipt_n06(&descriptor.run_id, value, first, cleanup)
-    } else { match (
-        variant.as_deref(),
-        n03_variant.as_deref(),
-        n04_variant.as_deref(),
-        n05_variant.as_deref(),
-    ) {
-        (Some(value), None, None, None) => {
-            driver.receipt_n02(&descriptor.run_id, value, first, cleanup)
+    } else {
+        match (
+            variant.as_deref(),
+            n03_variant.as_deref(),
+            n04_variant.as_deref(),
+            n05_variant.as_deref(),
+        ) {
+            (Some(value), None, None, None) => {
+                driver.receipt_n02(&descriptor.run_id, value, first, cleanup)
+            }
+            (None, Some(value), None, None) => {
+                driver.receipt_n03(&descriptor.run_id, value, first, cleanup)
+            }
+            (None, None, Some(_), None) => driver.receipt_n04(&descriptor.run_id, first, cleanup),
+            (None, None, None, Some(_)) => driver.receipt_n05(&descriptor.run_id, first, cleanup),
+            (None, None, None, None) => driver.receipt(&descriptor.run_id, first, cleanup),
+            _ => return Err("I6_ARGUMENT_INVALID"),
         }
-        (None, Some(value), None, None) => {
-            driver.receipt_n03(&descriptor.run_id, value, first, cleanup)
-        }
-        (None, None, Some(_), None) => driver.receipt_n04(&descriptor.run_id, first, cleanup),
-        (None, None, None, Some(_)) => driver.receipt_n05(&descriptor.run_id, first, cleanup),
-        (None, None, None, None) => driver.receipt(&descriptor.run_id, first, cleanup),
-        _ => return Err("I6_ARGUMENT_INVALID"),
-    } };
+    };
     write_receipt(&output.ok_or("I6_ARGUMENT_INVALID")?, &receipt)?;
     if retirement.is_some() {
         // Product remains unresolved. Freeze that result before the external
