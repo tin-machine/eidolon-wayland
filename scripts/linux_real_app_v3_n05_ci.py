@@ -50,6 +50,14 @@ def reject_mutations(native, env, source):
         ("dialog_target",lambda n,e: n["n05"]["dialogs"][1]["target"].update(window="999999")),
         ("dialog_reuse",lambda n,e: n["n05"]["dialogs"][1]["window"].update(
             window=n["n05"]["dialogs"][0]["window"]["window"])),
+        ("missing_dialog_baseline",lambda n,e: n.update(observations=[
+            row for row in n["observations"]
+            if row["kind"]!="n05_dialog_baseline"])),
+        ("post_shortcut_baseline",lambda n,e: next(row for row in
+            n["observations"] if row["kind"]=="n05_dialog_baseline"
+            and row["data"]["phase"]=="save_as")["data"]["mapped_windows"].append(
+                n["n05"]["dialogs"][1]["window"]["window"])),
+
         ("missing_sdk",lambda n,e: n.update(sdk_observations=[
             x for x in n["sdk_observations"] if x["data"]["target"] !=
             n["n05"]["dialogs"][1]["target"]])),
