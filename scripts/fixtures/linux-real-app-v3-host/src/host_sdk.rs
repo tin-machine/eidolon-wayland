@@ -184,6 +184,27 @@ impl HostSdkAdapter {
         registry: &Registry,
         completed: &std::collections::BTreeMap<String, Value>,
     ) -> Result<Option<Value>, Status> {
+        self.tick_create_mode(registry, completed, true)
+    }
+
+    /// N04: advance only a *new* native Create plan. Returning the main
+    /// window's already-applied readback forever would starve transient dialog
+    /// targets. The caller cannot supply a target or invent a CreateSeq.
+    /// N02's existing tick_create semantics remain unchanged.
+    pub fn tick_create_fresh(
+        &mut self,
+        registry: &Registry,
+        completed: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<Option<Value>, Status> {
+        self.tick_create_mode(registry, completed, false)
+    }
+
+    fn tick_create_mode(
+        &mut self,
+        registry: &Registry,
+        completed: &std::collections::BTreeMap<String, Value>,
+        return_applied: bool,
+    ) -> Result<Option<Value>, Status> {
         self.reserve_native_plan(registry)?;
         for i in 0..self.leases.len() {
             let target = self.leases[i].target;
@@ -391,7 +412,13 @@ impl HostSdkAdapter {
                     )?;
                     return Ok(self.leases[i].readback.clone());
                 }
-                Phase::Applied => return Ok(self.leases[i].readback.clone()),
+                Phase::Applied => {
+                    if return_applied {
+                        return Ok(self.leases[i].readback.clone());
+                    }
+                    // Already reported to the caller. Keep scanning later
+                    // leases so a fresh dialog can reach its own SDK ACK.
+                }
                 Phase::Retiring | Phase::Retired => {}
             }
         }

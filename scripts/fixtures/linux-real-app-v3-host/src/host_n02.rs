@@ -22,7 +22,7 @@ fn app_id(variant: &str) -> Result<&'static str> {
 }
 
 impl Driver {
-    fn n02_command(&mut self, value: Value, name: &'static str) -> Result<()> {
+    pub(super) fn n02_command(&mut self, value: Value, name: &'static str) -> Result<()> {
         let request = value["request_id"]
             .as_str()
             .ok_or("I6_N02_COMMAND_FAILED")?
