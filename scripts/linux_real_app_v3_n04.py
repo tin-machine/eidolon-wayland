@@ -52,11 +52,11 @@ def run(args):
     passed = all(c["status"] == "pass" for c in report["cases"])
     report["status"] = "pass" if passed else "cancelled" if report.get("reason") == "I6_OPERATOR_CANCELLED" else "fail"
     report["reason"] = "I6_OK" if passed else report.get("reason", "I6_ASSERTION_FAILED")
-    report["n04_two_variant_smoke_passed"] = passed
+    report["n04_single_variant_smoke_passed"] = passed
     report["exit_code"] = 0 if passed else 130 if report["status"] == "cancelled" else 2
     evidence.write_report(artifacts / "n04-validation.json", report)
     print(json.dumps({"status":report["status"],"reason":report["reason"],
-                      "n04_two_variant_smoke_passed":passed,
+                      "n04_single_variant_smoke_passed":passed,
                       "host_v3_acceptance_passed":False},sort_keys=True))
     return report["exit_code"]
 
@@ -168,7 +168,7 @@ def prepare_and_run(args, artifacts, source, report):
                 # This call independently reopens the typed receipt before
                 # exporting any partial formal acceptance result.
                 import linux_real_app_v3_n04_typed as typed
-                typed.write_checked(source, native, environment, variant, artifacts)
+                typed.write_checked(source, native, environment, artifacts)
             else:
                 # Same C2 account/lease must not be used by the next run until
                 # this runtime's actual retirement has been proven.
