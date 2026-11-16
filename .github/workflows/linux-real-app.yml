@@ -273,3 +273,55 @@ jobs:
             ${{ runner.temp }}/i6-n02/container.json
           if-no-files-found: warn
           retention-days: 3
+
+  v3_n03:
+    needs: scope
+    if: ${{ needs.scope.outputs.mousepad == 'true' }}
+    name: N03 real Registry Launch Admission refusals (5 variants / partial I6)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Source-bound N03 negative oracle unit tests
+        run: python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_v3_n03.py' -v
+      - name: Actual disposable N03 Registry / SSH / C2 / native admission
+        env:
+          CI_PR_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        run: bash scripts/ci/check-linux-desktop-v3-n03 --artifact-root "$RUNNER_TEMP/i6-n03"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ always() }}
+        with:
+          name: linux-desktop-v3-n03-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/i6-n03/n03-validation.json
+            ${{ runner.temp }}/i6-n03/n03-unknown_app_id-native.json
+            ${{ runner.temp }}/i6-n03/n03-unknown_app_id-environment.json
+            ${{ runner.temp }}/i6-n03/n03-unknown_app_id-receipt.json
+            ${{ runner.temp }}/i6-n03/n03-acceptance-unknown_app_id.json
+            ${{ runner.temp }}/i6-n03/n03-acceptance-unknown_app_id-validation.json
+            ${{ runner.temp }}/i6-n03/n03-scope_changed-native.json
+            ${{ runner.temp }}/i6-n03/n03-scope_changed-environment.json
+            ${{ runner.temp }}/i6-n03/n03-scope_changed-receipt.json
+            ${{ runner.temp }}/i6-n03/n03-acceptance-scope_changed.json
+            ${{ runner.temp }}/i6-n03/n03-acceptance-scope_changed-validation.json
+            ${{ runner.temp }}/i6-n03/n03-revision_changed-native.json
+            ${{ runner.temp }}/i6-n03/n03-revision_changed-environment.json
+            ${{ runner.temp }}/i6-n03/n03-revision_changed-receipt.json
+            ${{ runner.temp }}/i6-n03/n03-acceptance-revision_changed.json
+            ${{ runner.temp }}/i6-n03/n03-acceptance-revision_changed-validation.json
+            ${{ runner.temp }}/i6-n03/n03-old_catalog-native.json
+            ${{ runner.temp }}/i6-n03/n03-old_catalog-environment.json
+            ${{ runner.temp }}/i6-n03/n03-old_catalog-receipt.json
+            ${{ runner.temp }}/i6-n03/n03-acceptance-old_catalog.json
+            ${{ runner.temp }}/i6-n03/n03-acceptance-old_catalog-validation.json
+            ${{ runner.temp }}/i6-n03/n03-double_launch-native.json
+            ${{ runner.temp }}/i6-n03/n03-double_launch-environment.json
+            ${{ runner.temp }}/i6-n03/n03-double_launch-receipt.json
+            ${{ runner.temp }}/i6-n03/n03-acceptance-double_launch.json
+            ${{ runner.temp }}/i6-n03/n03-acceptance-double_launch-validation.json
+            ${{ runner.temp }}/i6-n03/container.json
+          if-no-files-found: warn
+          retention-days: 3

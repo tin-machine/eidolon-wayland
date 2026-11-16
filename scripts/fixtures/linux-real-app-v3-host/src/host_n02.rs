@@ -38,7 +38,7 @@ impl Driver {
         Ok(())
     }
 
-    fn n02_wait_command(&mut self, request: &str, seconds: u64) -> Result<Value> {
+    pub(super) fn n02_wait_command(&mut self, request: &str, seconds: u64) -> Result<Value> {
         let deadline = Instant::now() + Duration::from_secs(seconds);
         loop {
             let snapshot = self.pump()?;
@@ -96,6 +96,10 @@ impl Driver {
     /// Use the actual inspected actor's Selection; no local app spawn, no SDK
     /// success from a fixture boolean, and no helper bypass.
     pub(super) fn exercise_n02(&mut self, variant: &str) -> Result<()> {
+        self.exercise_n02_inner(variant, false)
+    }
+
+    pub(super) fn exercise_n02_inner(&mut self, variant: &str, n03_double: bool) -> Result<()> {
         app_id(variant)?;
         self.wait(15, |s| s["runtime"]["state"] == "Ready")?;
         self.observe("runtime_ready", json!({}))?;
@@ -128,10 +132,13 @@ impl Driver {
         let selection = self.n02_catalog(&session, variant)?;
         self.n02_command(
             json!({"schema":1,"type":"linux_desktop_v3_launch","request_id":"32",
-                   "session":session,"selection":selection}),
+                   "session":session,"selection":selection.clone()}),
             "linux_desktop_v3_launch",
         )?;
         self.n02_sdk = Some(HostSdkAdapter::new(self.handle).map_err(|_| "I6_N02_SDK_FAILED")?);
+        if n03_double {
+            self.n03_second_while_first_live(&session, selection)?;
+        }
         // Inspect actual launch transitions rather than timing out on a
         // misleading queue Accepted. This is bounded read-only R evidence,
         // not a setter or a replacement for Started.

@@ -1,6 +1,7 @@
 //! N01 only: normal Registry/Runtime/Controller, real SSH and unmodified C2.
 //! A successful process exit is a smoke result; it never claims all-I6 acceptance.
 mod host_n02;
+mod host_n03;
 mod host_sdk;
 use eidolon_core::runtime::Runtime;
 use eidolon_model::{
@@ -248,6 +249,8 @@ struct Driver {
     secret: Secret,
     supplied: Vec<(String, String)>,
     completed: BTreeMap<String, Value>,
+    // N03 only: a specific in-flight request may be rejected by the gate.
+    n03_expected: BTreeMap<String, String>,
     observations: Vec<Value>,
     trace: host_acceptance::Snapshot,
     catalog: Value,
@@ -271,6 +274,7 @@ impl Driver {
             secret,
             supplied: vec![],
             completed: BTreeMap::new(),
+            n03_expected: BTreeMap::new(),
             observations: vec![],
             trace: host_acceptance::Snapshot {
                 overflow: false,
@@ -331,9 +335,14 @@ impl Driver {
                     .insert(request.clone(), event["code"].clone());
                 self.observe(
                     "command_complete",
-                    json!({"request_id":request,"status":event["code"]}),
+                    json!({"request_id":request.clone(),"status":event["code"]}),
                 )?;
-                if event["code"] != "ACCEPTED" {
+                if event["code"] != "ACCEPTED"
+                    && self
+                        .n03_expected
+                        .get(&request)
+                        .is_none_or(|status| event["code"].as_str() != Some(status.as_str()))
+                {
                     return Err("I6_COMMAND_REJECTED");
                 }
             }
@@ -596,6 +605,7 @@ fn run() -> Result<bool> {
     let mut credential = None;
     let mut output = None;
     let mut variant: Option<String> = None;
+    let mut n03_variant: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         let value = args.next().ok_or("I6_ARGUMENT_INVALID")?;
@@ -605,11 +615,17 @@ fn run() -> Result<bool> {
                 credential = Some(value.parse::<i32>().map_err(|_| "I6_ARGUMENT_INVALID")?)
             }
             "--output" if output.is_none() => output = Some(PathBuf::from(value)),
-            "--variant" if variant.is_none() => {
+            "--variant" if variant.is_none() && n03_variant.is_none() => {
                 if !host_n02::N02_VARIANTS.contains(&value.as_str()) {
                     return Err("I6_ARGUMENT_INVALID");
                 }
                 variant = Some(value);
+            }
+            "--n03-variant" if n03_variant.is_none() && variant.is_none() => {
+                if !host_n03::N03_VARIANTS.contains(&value.as_str()) {
+                    return Err("I6_ARGUMENT_INVALID");
+                }
+                n03_variant = Some(value);
             }
             _ => return Err("I6_ARGUMENT_INVALID"),
         }
@@ -637,11 +653,21 @@ fn run() -> Result<bool> {
     eprintln!("I6_RUNNER_STAGE registry_create");
     let mut driver = Driver::new(&config, key)?;
     eprintln!("I6_RUNNER_STAGE exercise");
-    let first = match variant.as_deref() {
-        Some(value) => driver.exercise_n02(value).err(),
-        None => driver.exercise().err(),
+    let first = match (variant.as_deref(), n03_variant.as_deref()) {
+        (Some(value), None) => driver.exercise_n02(value).err(),
+        (None, Some(value)) => driver.exercise_n03(value).err(),
+        (None, None) => driver.exercise().err(),
+        _ => return Err("I6_ARGUMENT_INVALID"),
     };
-    let retirement = if variant.is_some() {
+    let retirement = if n03_variant.is_some() {
+        if first.is_none() {
+            None // N03 completed real owner retirement in its exercise.
+        } else if driver.n02_sdk.as_ref().is_some_and(|sdk| sdk.owns_lease()) {
+            driver.retire_n02().err()
+        } else {
+            driver.retire_after_failure().err()
+        }
+    } else if variant.is_some() {
         eprintln!("I6_RUNNER_STAGE n02_retire");
         // A failed launch without a native Create still needs the existing
         // same-capture recovery. The SDK ledger never invents an empty receipt.
@@ -661,9 +687,11 @@ fn run() -> Result<bool> {
         driver.shutdown().err()
     });
     eprintln!("I6_RUNNER_STAGE receipt");
-    let receipt = match variant.as_deref() {
-        Some(value) => driver.receipt_n02(&descriptor.run_id, value, first, cleanup),
-        None => driver.receipt(&descriptor.run_id, first, cleanup),
+    let receipt = match (variant.as_deref(), n03_variant.as_deref()) {
+        (Some(value), None) => driver.receipt_n02(&descriptor.run_id, value, first, cleanup),
+        (None, Some(value)) => driver.receipt_n03(&descriptor.run_id, value, first, cleanup),
+        (None, None) => driver.receipt(&descriptor.run_id, first, cleanup),
+        _ => return Err("I6_ARGUMENT_INVALID"),
     };
     write_receipt(&output.ok_or("I6_ARGUMENT_INVALID")?, &receipt)?;
     if retirement.is_some() {
