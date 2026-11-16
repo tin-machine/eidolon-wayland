@@ -185,9 +185,9 @@ def diagnostic_snapshot(dir_fd: int, uid: int, reason: str) -> dict:
             "exact_bytes": payload == expected,
             "initial_prefix": payload.startswith(INPUT_BYTES),
             "append_suffix": payload.endswith(APPEND_BYTES),
-            "bom": payload.startswith(b"\\xef\\xbb\\xbf"),
-            "crlf": b"\\r\\n" in payload,
-            "final_lf": payload.endswith(b"\\n"),
+            "bom": payload.startswith(bytes((0xef, 0xbb, 0xbf))),
+            "crlf": bytes((13, 10)) in payload,
+            "final_lf": payload.endswith(bytes((10,))),
         }
     return result
 
