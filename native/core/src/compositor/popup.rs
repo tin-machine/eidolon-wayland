@@ -1,8 +1,8 @@
 //! popupは親panel内。明示grabの入力は同じpopup chainへ限定する。
 use super::{PopupSurface, ProtocolState, Seat, Serial, WlSeat, WlSurface};
-use smithay::reexports::wayland_server::Resource;
 use eidolon_model::ids::{SurfaceId, WindowId};
 use serde::Serialize;
+use smithay::reexports::wayland_server::Resource;
 
 /// Read-only observation of an actual xdg_popup, not an admitted xdg_toplevel.
 /// Root target generation / SDK binding must be verified by the Host caller.
@@ -46,9 +46,10 @@ impl ProtocolState {
                     ack_serial: self.popup_ack_serials.get(&surface.id()).copied(),
                     grab_serial: self.popup_grab_serials.get(&surface.id()).copied(),
                     layer,
-                    captured_origin: self.verified_origin.as_ref().is_some_and(|origin| {
-                        window.origin.as_ref() == Some(origin)
-                    }),
+                    captured_origin: self
+                        .verified_origin
+                        .as_ref()
+                        .is_some_and(|origin| window.origin.as_ref() == Some(origin)),
                     dismissed: self.dismissed_popups.contains(&surface.id()),
                 })
             })
