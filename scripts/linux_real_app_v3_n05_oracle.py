@@ -123,7 +123,7 @@ def verify_gui(native, owner, targets):
         same(step["target"],target)
         need(type(step["epoch"]) is int and step["epoch"]>=0
              and n02.b1.decimal(step["token"]))
-        same(focus[i+(1 if i>=3 else 0)+(1 if i>=6 else 0)][1]["data"]["token"],
+        same(focus[i+(1 if i>=3 else 0)][1]["data"]["token"],
              step["token"], "I6_N05_STALE_FOCUS")
         count=step["expected_delivery"]
         expected = (4,4,len(gui["input"])*2,4,len(files.APPEND_BYTES)*2,6,4,
@@ -144,7 +144,7 @@ def verify_gui(native, owner, targets):
              and n02.b1.decimal(step["next_key_request"]), "I6_N05_REQUEST_INVALID")
         preceding=after
         first_key=end-1
-        need(focus[i+(1 if i>=3 else 0)+(1 if i>=6 else 0)][0]
+        need(focus[i+(1 if i>=3 else 0)][0]
              < delivered[i][0], "I6_N05_STALE_FOCUS")
     need(n02.b1.decimal(gui["final_key_request"])
          and int(gui["final_key_request"]) > first_key)
