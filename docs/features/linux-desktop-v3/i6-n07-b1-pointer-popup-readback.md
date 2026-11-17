@@ -202,3 +202,25 @@ fingerprint and golden SHA; B4 must use a second nonce and same C1
 StorageRecord to test persistence; B5 can only then integrate the
 independent 13-assertion N07 acceptance oracle. Quest 3 Meta SDK
 proof remains a separate I7/H milestone.
+
+### B2 follow-up: immutable Renderer identity vs dynamic GPU timing
+
+The four live B2 Host frames were observed as `2 → 5 → 9 → 14`,
+with the same SDK Create target, renderer owner `1` and context
+epoch `1`. The Host EGL `backend.max_swap_us` reported
+`5 → 12 → 12 → 12`: this is a running wall-time maximum, **not**
+a renderer identity. Comparing the entire `backend` object would
+incorrectly fail a real captured GUI transition.
+
+The B2 independent oracle now requires an exact typed backend shape;
+compares all immutable EGL identity fields (vendor, renderer, version,
+config ID, width/height, RGBA channel bits, readback capability);
+and enforces a nonnegative nondecreasing `max_swap_us` measurement
+**without** treating its legitimate increase as renderer replacement.
+Owner, context epoch, target/generation, Create lease and RGBA/SHA
+checks remain unchanged. Both synthetic adversarial mutations and
+reopened saved Host receipts are used as regression gates.
+
+This change does not claim verified Line Numbers semantics or approve
+a pixel golden. `host_v3_acceptance_passed=false`, N07 is still
+**0/13 verified**, and B3 golden review remains required.
