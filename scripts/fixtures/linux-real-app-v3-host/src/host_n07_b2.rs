@@ -1,9 +1,15 @@
 //! N07-B2: one real Mousepad GUI candidate toggle, four actual renderer states.
 //! No reviewed golden, independent keyfile proof or second C2 session exists yet.
-use super::{Driver, Result, host_n07::{popup_grab_matches_click, popup_is_current}};
+use super::{
+    Driver, Result,
+    host_n07::{popup_grab_matches_click, popup_is_current},
+};
 use eidolon_render::HostReadbackRoi;
 use serde_json::{Value, json};
-use std::{thread, time::{Duration, Instant}};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 pub(super) const VARIANT: &str = "line_numbers_four_rois_probe";
 // Candidate positions in the fixed 1024x768 Host fixture. The menu item is
@@ -13,11 +19,23 @@ const VIEW_UV: [f64; 2] = [0.16, 0.063];
 const LINE_NUMBERS_UV: [f64; 2] = [0.195, 0.198];
 
 fn gutter_roi() -> HostReadbackRoi {
-    HostReadbackRoi { id: 1, x: 0, y: 64, width: 48, height: 128 }
+    HostReadbackRoi {
+        id: 1,
+        x: 0,
+        y: 64,
+        width: 48,
+        height: 128,
+    }
 }
 fn checkmark_roi() -> HostReadbackRoi {
     // Covers the proposed Line Numbers row and checkmark, but not a golden.
-    HostReadbackRoi { id: 2, x: 112, y: 96, width: 112, height: 128 }
+    HostReadbackRoi {
+        id: 2,
+        x: 112,
+        y: 96,
+        width: 112,
+        height: 128,
+    }
 }
 fn frame(stage: &Value) -> Result<u64> {
     stage["readback"]["receipt"]["content_frame"]
@@ -31,8 +49,11 @@ fn hash(stage: &Value) -> Result<&str> {
         .ok_or("I6_N07_B2_ROI_INVALID")
 }
 fn popup(snapshot: &Value, target: &Value) -> Option<Value> {
-    snapshot["runtime"]["app"]["popups"].as_array()?
-        .iter().find(|p| popup_is_current(p, target)).cloned()
+    snapshot["runtime"]["app"]["popups"]
+        .as_array()?
+        .iter()
+        .find(|p| popup_is_current(p, target))
+        .cloned()
 }
 
 impl Driver {
@@ -46,7 +67,8 @@ impl Driver {
         let initial_pointer = base["pointer"].clone();
         let off = base["before_menu"].clone();
         let epoch = initial_pointer["input_epoch"]
-            .as_u64().ok_or("I6_N07_B2_STALE_EPOCH")?;
+            .as_u64()
+            .ok_or("I6_N07_B2_STALE_EPOCH")?;
         if !popup_grab_matches_click(&initial_popup, &initial_pointer) {
             return Err("I6_N07_B2_POPUP_SERIAL");
         }
@@ -71,13 +93,16 @@ impl Driver {
             "first_on_checkmark": null
         });
         let off_check = self.n07_capture_with_rois(
-            &target, "first_off_checkmark", Some(vec![checkmark_roi()]))?;
+            &target,
+            "first_off_checkmark",
+            Some(vec![checkmark_roi()]),
+        )?;
         self.n07_probe.as_mut().unwrap()["b2"]["first_off_checkmark"] = off_check.clone();
         let mut req = 7100u32;
         // The item must be selected on its real popup surface, not a Registry
         // Accepted status on the main toplevel. Preserve the B1 press barrier.
-        let item = self.n07_click_at(
-            &target, epoch, &mut req, LINE_NUMBERS_UV, [195, 198], false)?;
+        let item =
+            self.n07_click_at(&target, epoch, &mut req, LINE_NUMBERS_UV, [195, 198], false)?;
         self.n07_probe.as_mut().unwrap()["b2"]["item_pointer"] = item.clone();
         if item["after"]["last_delivered_surface"]
             != self.n07_probe.as_ref().unwrap()["b2"]["initial_popup"]["surface"]
@@ -96,26 +121,27 @@ impl Driver {
         loop {
             let current = self.pump()?;
             let newer = current["runtime"]["render"]["targets"]
-                .as_array().and_then(|targets| targets.iter()
-                    .find(|r| r["key"] == target))
+                .as_array()
+                .and_then(|targets| targets.iter().find(|r| r["key"] == target))
                 .and_then(|r| r["content_frame"].as_u64())
                 .is_some_and(|n| n > frame(&off_check).unwrap_or(u64::MAX));
-            if newer { break; }
+            if newer {
+                break;
+            }
             if Instant::now() >= deadline {
                 return Err("I6_N07_B2_NO_NEW_CONTENT_FRAME");
             }
             thread::sleep(Duration::from_millis(50));
         }
-        let on = self.n07_capture_with_rois(
-            &target, "first_on_gutter", Some(vec![gutter_roi()]))?;
+        let on =
+            self.n07_capture_with_rois(&target, "first_on_gutter", Some(vec![gutter_roi()]))?;
         self.n07_probe.as_mut().unwrap()["b2"]["first_on_gutter"] = on.clone();
         // B1 first_off_gutter is the first ROI of the real before_menu readback.
         if frame(&on)? <= frame(&off)? || hash(&on)? == hash(&off)? {
             return Err("I6_N07_B2_GUTTER_UNCHANGED");
         }
         // Reopen View through the same ordinary Registry pointer commands.
-        let reopen = self.n07_click_at(
-            &target, epoch, &mut req, VIEW_UV, [160, 63], true)?;
+        let reopen = self.n07_click_at(&target, epoch, &mut req, VIEW_UV, [160, 63], true)?;
         self.n07_probe.as_mut().unwrap()["b2"]["reopen_pointer"] = reopen.clone();
         let current = self.wait(12, |s| {
             popup(s, &target).is_some_and(|p| {
@@ -128,23 +154,27 @@ impl Driver {
         if !popup_grab_matches_click(&fresh, &reopen) {
             return Err("I6_N07_B2_REOPEN_POPUP_SERIAL");
         }
-        let on_check = self.n07_capture_with_rois(
-            &target, "first_on_checkmark", Some(vec![checkmark_roi()]))?;
+        let on_check =
+            self.n07_capture_with_rois(&target, "first_on_checkmark", Some(vec![checkmark_roi()]))?;
         self.n07_probe.as_mut().unwrap()["b2"]["first_on_checkmark"] = on_check.clone();
-        if frame(&on_check)? <= frame(&off_check)?
-            || hash(&on_check)? == hash(&off_check)?
-        {
+        if frame(&on_check)? <= frame(&off_check)? || hash(&on_check)? == hash(&off_check)? {
             return Err("I6_N07_B2_CHECKMARK_UNCHANGED");
         }
-        self.observe("n07_b2_candidate_gui_transition", json!({
-            "target": target, "popup_surface": fresh["surface"],
-            "old_content_frame": frame(&off)?, "new_content_frame": frame(&on)?,
-            "golden_approved": false, "verified_n07_assertions": [],
-        }))?;
+        self.observe(
+            "n07_b2_candidate_gui_transition",
+            json!({
+                "target": target, "popup_surface": fresh["surface"],
+                "old_content_frame": frame(&off)?, "new_content_frame": frame(&on)?,
+                "golden_approved": false, "verified_n07_assertions": [],
+            }),
+        )?;
         Ok(())
     }
     pub(super) fn receipt_n07_b2_probe(
-        &self, run_id: &str, error: Option<&str>, cleanup: Option<&str>,
+        &self,
+        run_id: &str,
+        error: Option<&str>,
+        cleanup: Option<&str>,
     ) -> Value {
         let mut receipt = self.receipt_n07_probe(run_id, error, cleanup);
         receipt["schema"] = json!("eidolon-i6-n07-b2-native-probe-v1");
