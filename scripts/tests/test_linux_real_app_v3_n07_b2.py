@@ -70,10 +70,10 @@ def candidate() -> dict:
         "coordinate_reviewed": False, "menu_identity_verified": False,
         "initial_popup": copy.deepcopy(probe["popup"]),
         "first_off_gutter": {"source_stage": "before_menu", "roi_id": 1},
-        "candidate_item_uv_milli": [195, 198],
+        "candidate_item_uv_milli": [195, 164],
         "first_off_checkmark": readback(
             n, "first_off_checkmark", 22, 2, (112, 96, 112, 128)),
-        "item_pointer": pointer(t, 5, 41, "11", [195, 198]),
+        "item_pointer": pointer(t, 5, 41, "11", [195, 164]),
         "first_on_gutter": readback(
             n, "first_on_gutter", 23, 1, (0, 64, 48, 128), change=32),
         "reopen_pointer": pointer(t, 7, 43, "1", [160, 63]),
