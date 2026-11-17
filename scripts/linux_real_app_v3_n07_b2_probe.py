@@ -171,10 +171,9 @@ def inspect(native: dict) -> dict:
     create = native["readback"]["create"]
     sdk = probe["before_menu"]["readback"]["sdk_adapter"]
     need(b2.get("initial_popup") == probe["popup"]
-         and type(b2.get("first_off_gutter")) is dict
-         and b2["first_off_gutter"].get("source_stage") == "before_menu"
-         and b2["first_off_gutter"].get("readback") ==
-         probe["before_menu"]["readback"], "N07_B2_OFF_PROVENANCE")
+         and b2.get("first_off_gutter") == {
+             "source_stage": "before_menu", "roi_id": 1,
+         }, "N07_B2_OFF_PROVENANCE")
     off_readback = probe["before_menu"]["readback"]
     # The B1 independent validator checked both ROIs and digest above.
     off_gutter = base64.b64decode(off_readback["pixels"][0]["rgba_b64"], validate=True)
