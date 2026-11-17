@@ -185,3 +185,37 @@ impl Driver {
         receipt
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_roi_bounds_and_menu_positions_are_not_goldens() {
+        let a = gutter_roi();
+        let b = checkmark_roi();
+        assert_eq!((a.x, a.y, a.width, a.height), (0, 64, 48, 128));
+        assert_eq!((b.x, b.y, b.width, b.height), (112, 96, 112, 128));
+        assert!(a.width * a.height <= 32768);
+        assert!(b.width * b.height <= 32768);
+        assert_eq!(LINE_NUMBERS_UV, [0.195, 0.198]);
+        assert_eq!(VIEW_UV, [0.16, 0.063]);
+    }
+
+    #[test]
+    fn candidate_requires_current_owned_popup_and_real_content_frame() {
+        let target = json!({"window":"7"});
+        let valid = json!({"runtime":{"app":{"popups":[{
+            "role":"xdg_popup","root_window":"7","captured_origin":true,
+            "dismissed":false,"ack_serial":24,"layer":1,
+            "surface":"11","parent_surface":"1"
+        }]}}});
+        assert!(popup(&valid, &target).is_some());
+        assert!(popup(&valid, &json!({"window":"8"})).is_none());
+        let mut stale = valid.clone();
+        stale["runtime"]["app"]["popups"][0]["dismissed"] = json!(true);
+        assert!(popup(&stale, &target).is_none());
+        assert!(frame(&json!({"readback":{"receipt":{"content_frame":"20"}}})).is_ok());
+        assert!(frame(&json!({"readback":{"receipt":{"content_frame":null}}})).is_err());
+    }
+}
