@@ -14,9 +14,10 @@ use std::{
 pub(super) const VARIANT: &str = "line_numbers_four_rois_probe";
 // Candidate positions in the fixed 1024x768 Host fixture. The menu item is
 // third in the pinned upstream View menu after Select Font / Color Scheme.
-// The visual identity is NOT approved until independent B3 golden review.
+// An actual CI renderer crop located Line Numbers around y=126; this
+// coordinate still needs independent B3 golden review.
 const VIEW_UV: [f64; 2] = [0.16, 0.063];
-const LINE_NUMBERS_UV: [f64; 2] = [0.195, 0.198];
+const LINE_NUMBERS_UV: [f64; 2] = [0.195, 0.164];
 
 fn gutter_roi() -> HostReadbackRoi {
     HostReadbackRoi {
@@ -81,7 +82,7 @@ impl Driver {
             "menu_identity_verified": false,
             "initial_popup": initial_popup,
             "first_off_gutter": {"source_stage": "before_menu", "roi_id": 1},
-            "candidate_item_uv_milli": [195, 198],
+            "candidate_item_uv_milli": [195, 164],
             "item_pointer": null,
             "first_off_checkmark": null,
             "first_on_gutter": null,
@@ -99,7 +100,7 @@ impl Driver {
         // The item must be selected on its real popup surface, not a Registry
         // Accepted status on the main toplevel. Preserve the B1 press barrier.
         let item =
-            self.n07_click_at(&target, epoch, &mut req, LINE_NUMBERS_UV, [195, 198], false)?;
+            self.n07_click_at(&target, epoch, &mut req, LINE_NUMBERS_UV, [195, 164], false)?;
         self.n07_probe.as_mut().unwrap()["b2"]["item_pointer"] = item.clone();
         if item["after"]["last_delivered_surface"]
             != self.n07_probe.as_ref().unwrap()["b2"]["initial_popup"]["surface"]
@@ -195,7 +196,7 @@ mod tests {
         assert_eq!((b.x, b.y, b.width, b.height), (112, 96, 112, 128));
         assert!(a.width * a.height <= 32768);
         assert!(b.width * b.height <= 32768);
-        assert_eq!(LINE_NUMBERS_UV, [0.195, 0.198]);
+        assert_eq!(LINE_NUMBERS_UV, [0.195, 0.164]);
         assert_eq!(VIEW_UV, [0.16, 0.063]);
     }
 
