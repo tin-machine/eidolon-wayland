@@ -524,6 +524,8 @@ impl ProtocolState {
         }
         self.popups.retain(|popup| popup.wl_surface() != surface);
         self.dismissed_popups.remove(&surface.id());
+        self.popup_ack_serials.remove(&surface.id());
+        self.popup_grab_serials.remove(&surface.id());
         if let Some(root) = root {
             self.refresh_window(&root);
         }

@@ -13,10 +13,39 @@ use eidolon_model::{
 use eidolon_native::registry::Registry;
 use eidolon_render::{HostReadbackRequest, HostReadbackRoi, PlatformWindow, RenderMode};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     num::NonZeroU64,
     sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::{Duration, Instant},
 };
+
+/// Host-only explicit binary encoding for independently checked N07 pixel ROIs.
+/// Unlike HostReadbackReceipt::Serialize, these bytes never enter the generic
+/// Runtime/SDK snapshot and must be kept in bounded private artifacts.
+fn n07_base64(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity(input.len().div_ceil(3) * 4);
+    for block in input.chunks(3) {
+        let a = block[0];
+        let b = *block.get(1).unwrap_or(&0);
+        let c = *block.get(2).unwrap_or(&0);
+        result.push(TABLE[(a >> 2) as usize] as char);
+        result.push(TABLE[((a & 3) << 4 | b >> 4) as usize] as char);
+        result.push(if block.len() > 1 {
+            TABLE[((b & 15) << 2 | c >> 6) as usize] as char
+        } else {
+            '='
+        });
+        result.push(if block.len() > 2 {
+            TABLE[(c & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    result
+}
 
 const MAX_OBSERVATIONS: usize = 128;
 static NEXT_ADAPTER: AtomicU64 = AtomicU64::new(1);
@@ -423,6 +452,120 @@ impl HostSdkAdapter {
             }
         }
         Ok(None)
+    }
+
+    /// N07-B1: observe arbitrary bounded, semantically positioned content ROIs
+    /// through the exact live Registry/Runtime/SDK Create owner. No caller may
+    /// supply a successful renderer receipt, pixels, or SDK binding.
+    ///
+    /// The returned rgba is Host fixture evidence only, NOT a reviewed golden.
+    pub fn capture_live_rois(
+        &mut self,
+        registry: &Registry,
+        target: TargetKey,
+        rois: &[HostReadbackRoi],
+    ) -> Result<Value, Status> {
+        if rois.is_empty() || rois.len() > 8 {
+            return Err(Status::InvalidArgument);
+        }
+        let create = self
+            .leases
+            .iter()
+            .find(|lease| lease.target == target && lease.phase == Phase::Applied)
+            .ok_or(Status::NotReady)?
+            .create;
+        let snapshot = registry.guarded(self.runtime, Runtime::snapshot)?;
+        let frame = snapshot
+            .render
+            .targets
+            .iter()
+            .find(|report| {
+                report.key == target
+                    && report.role == RenderMode::Windows
+                    && !report.presentation_paused
+            })
+            .and_then(|report| report.content_frame)
+            .ok_or(Status::NotReady)?;
+        let request = HostReadbackRequest {
+            target,
+            min_content_frame: frame,
+            request_seq: NonZeroU64::new(self.next()?).ok_or(Status::Failed)?,
+            rois: rois.to_vec(),
+        };
+        // Both calls below go through the same guarded Runtime capability
+        // as N02. Renderer checks generation, current target, ROI bounds,
+        // context epoch, and the actual content frame.
+        let ticket = registry.guarded(self.runtime, |runtime| {
+            runtime.request_host_readback(request)
+        })??;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let readback =
+                registry.guarded(self.runtime, |runtime| runtime.poll_host_readback(&ticket))?;
+            match readback {
+                Ok(HostReadbackPoll::Pending) | Err(Status::Busy | Status::NotReady) => (),
+                Err(error) => return Err(error),
+                Ok(HostReadbackPoll::Complete(result)) => {
+                    let renderer = &result.renderer;
+                    if result.runtime.get() != self.runtime
+                        || result.create != create
+                        || renderer.target != target
+                        || renderer.content_frame < frame
+                        || renderer.layers.is_empty()
+                        || renderer.rois.len() != rois.len()
+                        || renderer.pixel_sha256.len() != rois.len()
+                        || renderer.backend.vendor.is_empty()
+                        || renderer.backend.renderer.is_empty()
+                    {
+                        return Err(Status::Failed);
+                    }
+                    let mut pixels = Vec::new();
+                    for (index, (actual, expected)) in renderer.rois.iter().zip(rois).enumerate() {
+                        let length = (expected.width as usize)
+                            .checked_mul(expected.height as usize)
+                            .and_then(|n| n.checked_mul(4))
+                            .ok_or(Status::Failed)?;
+                        let hash = Sha256::digest(&actual.rgba);
+                        let digest: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+                        if actual.roi != *expected
+                            || actual.rgba.len() != length
+                            || renderer.pixel_sha256[index] != digest
+                        {
+                            return Err(Status::Failed);
+                        }
+                        pixels.push(json!({
+                            "id": expected.id,
+                            "rect": {
+                                "x": expected.x, "y": expected.y,
+                                "width": expected.width, "height": expected.height,
+                            },
+                            "rgba_b64": n07_base64(&actual.rgba),
+                            "sha256": digest,
+                        }));
+                    }
+                    let receipt = serde_json::to_value(&result).map_err(|_| Status::Failed)?;
+                    self.observe(
+                        "n07_renderer_pixel_readback",
+                        json!({"target":target,"create_seq":create,
+                            "sdk_adapter":self.adapter.to_string(),
+                            "content_frame":renderer.content_frame,
+                            "roi_count":rois.len()}),
+                    )?;
+                    return Ok(json!({
+                        "source":"host_renderer_readback",
+                        "target":target,
+                        "create_seq":create,
+                        "sdk_adapter":self.adapter.to_string(),
+                        "receipt":receipt,
+                        "pixels":pixels,
+                    }));
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(Status::NotReady);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// The synthetic callback producer is sealed before retirement. Native

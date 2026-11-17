@@ -423,6 +423,37 @@ jobs:
               raise AssertionError('Unreviewed pixel golden MUST NOT pass')
           PY
 
+  v3_n07_b1:
+    needs: scope
+    if: ${{ needs.scope.outputs.mousepad == 'true' }}
+    name: N07-B1 real Registry pointer / xdg_popup / renderer ROI probe (NOT acceptance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: N07-B1 hostile provenance tests and frozen N07-A golden gate
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_v3_n07_a.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_v3_n07_b1.py' -v
+      - name: Real nonroot Mousepad pointer/popup and renderer ROI diagnostic only
+        env:
+          CI_PR_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        run: bash scripts/ci/check-linux-desktop-v3-n07-b1 --artifact-root "$RUNNER_TEMP/i6-n07-b1"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ always() }}
+        with:
+          name: linux-desktop-v3-n07-b1-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/i6-n07-b1/n07-b1-validation.json
+            ${{ runner.temp }}/i6-n07-b1/n07-b1-native.json
+            ${{ runner.temp }}/i6-n07-b1/n07-b1-environment.json
+            ${{ runner.temp }}/i6-n07-b1/container.json
+          if-no-files-found: warn
+          retention-days: 3
+
   v3_n03:
     needs: scope
     if: ${{ needs.scope.outputs.mousepad == 'true' }}

@@ -48,6 +48,8 @@ pub struct Report {
     pub window_ids: Vec<WindowId>,
     pub visible_windows: Vec<WindowId>,
     pub windows: Vec<WindowReport>,
+    /// Actual xdg_popup objects; not additional admitted application windows.
+    pub popups: Vec<crate::compositor::protocol::PopupReport>,
     pub workloads: Vec<crate::workload::WindowWorkload>,
     pub clients: usize,
     pub objects: usize,
@@ -1088,6 +1090,7 @@ impl Session {
             return;
         };
         self.report.windows = state.windows();
+        self.report.popups = state.popup_reports();
         if self.v3_origin.is_some() {
             let v3_result = self
                 .v3_history
