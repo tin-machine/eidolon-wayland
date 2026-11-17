@@ -80,10 +80,7 @@ impl Driver {
             "coordinate_reviewed": false,
             "menu_identity_verified": false,
             "initial_popup": initial_popup,
-            "first_off_gutter": {
-                "source_stage": "before_menu",
-                "readback": off["readback"]
-            },
+            "first_off_gutter": {"source_stage": "before_menu", "roi_id": 1},
             "candidate_item_uv_milli": [195, 198],
             "item_pointer": null,
             "first_off_checkmark": null,
