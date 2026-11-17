@@ -95,6 +95,10 @@ impl Driver {
     /// forwarded button; a Registry Accepted or button-reset delta cannot.
     fn n07_click(&mut self, target: &Value, epoch: u64, req: &mut u32) -> Result<Value> {
         let before = self.pump()?;
+        let press_baseline = before["runtime"]["app"]["input"]["pointer"]["delivered_buttons"]
+            .as_u64()
+            .ok_or("I6_N07_POINTER_NOT_DELIVERED")?;
+        let mut popup_before_release = false;
         for (event, time_ms) in [
             (json!({"type":"move"}), 700u32),
             (json!({"type":"buttons","changed":1,"state":1}), 701),
@@ -110,6 +114,38 @@ impl Driver {
             });
             self.n02_command(command, "pointer")?;
             self.n02_wait_command(&number.to_string(), 10)?;
+            if time_ms == 701 {
+                // GTK must round-trip the press through Waypipe before it can
+                // request xdg_popup.grab. The compositor requires a live
+                // pressed button when that request is processed. Releasing
+                // immediately after a Registry command ACK races this grab.
+                // Wait for actual protocol-owner popup evidence, bounded so
+                // menus that open on release can still be diagnosed below.
+                self.wait(10, |s| {
+                    let pointer = &s["runtime"]["app"]["input"]["pointer"];
+                    pointer["pressed"] == 1
+                        && pointer["delivered_buttons"]
+                            .as_u64()
+                            .is_some_and(|n| n > press_baseline)
+                        && pointer["last_delivered_source"] == SOURCE
+                        && pointer["hover_window"] == target["window"]
+                })?;
+                let deadline = Instant::now() + Duration::from_secs(2);
+                loop {
+                    let snapshot = self.pump()?;
+                    if snapshot["runtime"]["app"]["popups"]
+                        .as_array()
+                        .is_some_and(|popups| popups.iter().any(|popup| popup_is_current(popup, target)))
+                    {
+                        popup_before_release = true;
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
         }
         let after = self.wait(10, |s| delivered_pointer(&before, s, target))?;
         if !delivered_pointer(&before, &after, target) {
@@ -124,6 +160,7 @@ impl Driver {
             "next_request":req.to_string(),
             "before":before["runtime"]["app"]["input"]["pointer"],
             "after":after["runtime"]["app"]["input"]["pointer"],
+            "popup_visible_before_release":popup_before_release,
             "epoch_after":after["runtime"]["input_resets"],
             "provenance":"normal_registry_command_and_compositor_forward",
         });
@@ -226,9 +263,10 @@ impl Driver {
                 }));
                 previous = raw.clone();
             }
-            if raw.as_array().is_some_and(|popups| {
-                popups.iter().any(|popup| popup_is_current(popup, &main))
-            }) {
+            if raw
+                .as_array()
+                .is_some_and(|popups| popups.iter().any(|popup| popup_is_current(popup, &main)))
+            {
                 break snapshot;
             }
             if Instant::now() >= deadline {
