@@ -51,7 +51,14 @@ captures the pre-menu renderer ROIs, focuses current main target, sends
 pointer move/button down/button up through ordinary Registry command
 processing, demands real delivery count and current input epoch, then looks
 for actual owned `xdg_popup` and captures renderer ROIs after popup
-presentation. It follows N02 normal product cleanup, never direct Mousepad
+presentation. The diagnostic Host keeps the press active for at most two
+seconds while checking actual configured/mapped popup state, before sending
+release: GTK can require a remote Waypipe round trip to request
+`xdg_popup.grab`, and the compositor's current grab policy checks that the
+initiating button remains pressed. The timeout always permits release; it
+never treats a Registry ACK, elapsed time, or a transient popup as success.
+The Host records `popup_visible_before_release` only as additional
+diagnostic evidence. It follows N02 normal product cleanup, never direct Mousepad
 execution or `GTK3_MODULES` injection.
 
 **The candidate View-coordinate UV `[0.16, 0.063]` is deliberately
