@@ -63,6 +63,17 @@ def candidate() -> dict:
     n["variant"] = "line_numbers_four_rois_probe"
     probe = n["n07_probe"]
     probe["variant"] = "line_numbers_four_rois_probe"
+    # Match the exact real Host EGL backend report shape, not a shortened
+    # vendor/renderer-only mock that hides mutable vs immutable fields.
+    egl = {
+        "vendor": "Mesa test", "renderer": "software",
+        "version": "OpenGL ES 3.2 Mock", "config_id": 21,
+        "width": 1024, "height": 768, "rgba_bits": [8, 8, 8, 8],
+        "readback": True, "max_swap_us": 5,
+    }
+    for stage in ("before_menu", "menu_open"):
+        probe[stage]["readback"]["receipt"]["backend"] = copy.deepcopy(egl)
+    probe["menu_open"]["readback"]["receipt"]["backend"]["max_swap_us"] = 12
     t = probe["main_target"]
     probe["b2"] = {
         "schema": 1,
@@ -87,6 +98,14 @@ def candidate() -> dict:
             n, "first_on_checkmark", 24, 2,
             (112, 96, 112, 128), change=32, popup_surface="12"),
     }
+    # The same renderer works harder as the menu and text are rendered. A
+    # monotonic maximum is valid evidence, never an identity mismatch.
+    for stage, maximum in (
+        ("first_off_checkmark", 12),
+        ("first_on_gutter", 13),
+        ("first_on_checkmark", 13),
+    ):
+        probe["b2"][stage]["readback"]["receipt"]["backend"]["max_swap_us"] = maximum
     return n
 
 
@@ -104,6 +123,46 @@ class B2ProofTests(unittest.TestCase):
         self.assertEqual(result["renderer_states"], 4)
         self.assertEqual(result["verified_n07_assertions"], [])
         self.assertFalse(result["host_v3_acceptance_passed"])
+
+    def test_live_evidence_swap_max_changes_dont_replace_renderer(self):
+        native = candidate()
+        backend = native["n07_probe"]["before_menu"]["readback"]["receipt"]["backend"]
+        self.assertEqual(backend["max_swap_us"], 5)
+        values = [native["n07_probe"]["b2"][s]["readback"]["receipt"]["backend"]
+                  ["max_swap_us"] for s in (
+                      "first_off_checkmark", "first_on_gutter",
+                      "first_on_checkmark")]
+        self.assertEqual(values, [12, 13, 13])
+        self.assertEqual(inspect(native)["status"], "probe_only")
+
+    def test_every_frozen_backend_identity_field_rejects_mutation(self):
+        mutations = {
+            "vendor": "foreign", "renderer": "unrelated",
+            "version": "OpenGL ES 0", "config_id": 22,
+            "width": 1000, "height": 700,
+            "rgba_bits": [8, 8, 8, 16], "readback": False,
+        }
+        for field, invalid in mutations.items():
+            with self.subTest(field=field):
+                self.reject(lambda n, k=field, v=invalid:
+                            n["n07_probe"]["b2"]["first_on_gutter"]
+                             ["readback"]["receipt"]["backend"].update({k: v}))
+        self.reject(lambda n: n["n07_probe"]["b2"]["first_on_gutter"]
+                    ["readback"]["receipt"]["backend"].pop("version"))
+        self.reject(lambda n: n["n07_probe"]["b2"]["first_on_gutter"]
+                    ["readback"]["receipt"]["backend"].update(fake_owner="1"))
+        self.reject(lambda n: n["n07_probe"]["b2"]["first_on_gutter"]
+                    ["readback"]["receipt"]["backend"].update(width=True))
+
+    def test_dynamic_backend_measurement_is_bounded_and_monotonic(self):
+        for bad in (None, -1, "13", 2.0, True):
+            with self.subTest(value=bad):
+                self.reject(lambda n, value=bad:
+                            n["n07_probe"]["b2"]["first_on_checkmark"]
+                             ["readback"]["receipt"]["backend"].update(
+                                 max_swap_us=value))
+        self.reject(lambda n: n["n07_probe"]["b2"]["first_on_gutter"]
+                    ["readback"]["receipt"]["backend"].update(max_swap_us=0))
 
     def test_pointer_delivery_epoch_and_popup_surface_must_join(self):
         changes = [
