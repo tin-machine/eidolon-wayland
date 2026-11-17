@@ -69,10 +69,7 @@ def candidate() -> dict:
         "source": "normal_registry_pointer_and_sdk_renderer",
         "coordinate_reviewed": False, "menu_identity_verified": False,
         "initial_popup": copy.deepcopy(probe["popup"]),
-        "first_off_gutter": {
-            "source_stage": "before_menu",
-            "readback": copy.deepcopy(probe["before_menu"]["readback"]),
-        },
+        "first_off_gutter": {"source_stage": "before_menu", "roi_id": 1},
         "candidate_item_uv_milli": [195, 198],
         "first_off_checkmark": readback(
             n, "first_off_checkmark", 22, 2, (112, 96, 112, 128)),
@@ -156,14 +153,14 @@ class B2ProofTests(unittest.TestCase):
             ["readback"]["receipt"].update(
                 layers=[{"surface": "1"}, {"surface": "99"}]),
             lambda n: n["n07_probe"]["b2"]["first_off_gutter"]
-            .update(readback=None),
+            .update(roi_id=2),
             lambda n: n["n07_probe"]["b2"]["first_on_gutter"]
             ["readback"]["pixels"][0].update(
-                sha256=n["n07_probe"]["b2"]["first_off_gutter"]
+                sha256=n["n07_probe"]["before_menu"]
                 ["readback"]["pixels"][0]["sha256"]),
             lambda n: n["n07_probe"]["b2"]["first_on_gutter"]
             ["readback"]["pixels"][0].update(
-                rgba_b64=n["n07_probe"]["b2"]["first_off_gutter"]
+                rgba_b64=n["n07_probe"]["before_menu"]
                 ["readback"]["pixels"][0]["rgba_b64"]),
         ]
         for i, change in enumerate(changes):
