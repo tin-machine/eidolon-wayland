@@ -49,6 +49,21 @@ fn hash(stage: &Value) -> Result<&str> {
         .as_str()
         .ok_or("I6_N07_B2_ROI_INVALID")
 }
+
+/// Renderer TargetReport serializes content_frame as a positive decimal string,
+/// just like the SDK readback receipt. Using Value::as_u64() here would always
+/// return None and make real GUI frame progress impossible to observe.
+fn snapshot_content_frame(snapshot: &Value, target: &Value) -> Option<u64> {
+    let raw = snapshot["runtime"]["render"]["targets"]
+        .as_array()?
+        .iter()
+        .find(|r| r["key"] == *target)?["content_frame"]
+        .as_str()?;
+    if raw.is_empty() || raw.starts_with('0') || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse::<u64>().ok()
+}
 fn popup(snapshot: &Value, target: &Value) -> Option<Value> {
     snapshot["runtime"]["app"]["popups"]
         .as_array()?
@@ -114,15 +129,13 @@ impl Driver {
             return Err("I6_N07_B2_MENU_STILL_OPEN");
         }
         let deadline = Instant::now() + Duration::from_secs(12);
+        let previous_content_frame = frame(&off_check)?;
         // Closing a popup does not necessarily update main content; we need a
         // newer *actual* renderer content frame, not a timer or synthetic ACK.
         loop {
             let current = self.pump()?;
-            let newer = current["runtime"]["render"]["targets"]
-                .as_array()
-                .and_then(|targets| targets.iter().find(|r| r["key"] == target))
-                .and_then(|r| r["content_frame"].as_u64())
-                .is_some_and(|n| n > frame(&off_check).unwrap_or(u64::MAX));
+            let newer = snapshot_content_frame(&current, &target)
+                .is_some_and(|n| n > previous_content_frame);
             if newer {
                 break;
             }
@@ -198,6 +211,29 @@ mod tests {
         assert!(b.width * b.height <= 32768);
         assert_eq!(LINE_NUMBERS_UV, [0.195, 0.164]);
         assert_eq!(VIEW_UV, [0.16, 0.063]);
+    }
+
+    #[test]
+    fn snapshot_frame_is_decimal_string_not_json_number() {
+        let target = json!({"session":"1","window":"1","scene":"1","generation":"1"});
+        let mut snapshot = json!({"runtime":{"render":{"targets":[{
+            "key":target,"content_frame":"8"
+        }]}}});
+        assert_eq!(snapshot_content_frame(&snapshot, &target), Some(8));
+        assert!(snapshot_content_frame(&snapshot, &target).is_some_and(|n| n > 7));
+        assert!(!snapshot_content_frame(&snapshot, &target).is_some_and(|n| n > 8));
+        snapshot["runtime"]["render"]["targets"][0]["content_frame"] = json!(8);
+        assert_eq!(snapshot_content_frame(&snapshot, &target), None);
+        for invalid in ["", "0", "008", "8.0", "-8", "+8", "18446744073709551616"] {
+            snapshot["runtime"]["render"]["targets"][0]["content_frame"] = json!(invalid);
+            assert_eq!(snapshot_content_frame(&snapshot, &target), None, "{invalid}");
+        }
+        snapshot["runtime"]["render"]["targets"][0]["content_frame"] = json!("9");
+        assert_eq!(
+            snapshot_content_frame(&snapshot, &json!({"session":"1","window":"1",
+                "scene":"1","generation":"2"})),
+            None
+        );
     }
 
     #[test]
