@@ -135,7 +135,9 @@ impl Driver {
                     let snapshot = self.pump()?;
                     if snapshot["runtime"]["app"]["popups"]
                         .as_array()
-                        .is_some_and(|popups| popups.iter().any(|popup| popup_is_current(popup, target)))
+                        .is_some_and(|popups| {
+                            popups.iter().any(|popup| popup_is_current(popup, target))
+                        })
                     {
                         popup_before_release = true;
                         break;
