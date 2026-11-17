@@ -154,7 +154,7 @@ def inspect(native: dict) -> dict:
          and b2.get("source") == "normal_registry_pointer_and_sdk_renderer"
          and b2.get("coordinate_reviewed") is False
          and b2.get("menu_identity_verified") is False
-         and b2.get("candidate_item_uv_milli") == [195, 198]
+         and b2.get("candidate_item_uv_milli") == [195, 164]
          and not any(k in b2 for k in (
              "second_on_numbers_1_8", "second_on_checkmark",
              "reviewed_golden", "verified_n07_assertions")),
@@ -200,7 +200,7 @@ def inspect(native: dict) -> dict:
     _popup(probe["popup"], target, probe["pointer"], off_check["layers"])
     epoch = probe["pointer"]["input_epoch"]
     item = b2.get("item_pointer")
-    _forwarded(item, target, epoch, [195, 198])
+    _forwarded(item, target, epoch, [195, 164])
     need(item["after"]["last_delivered_surface"] == probe["popup"]["surface"]
          and item["before"]["delivered_buttons"] >=
          probe["pointer"]["after"]["delivered_buttons"],
