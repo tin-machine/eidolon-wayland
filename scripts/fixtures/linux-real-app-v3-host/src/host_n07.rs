@@ -226,7 +226,9 @@ impl Driver {
             || evidence["source"] != "host_renderer_readback"
             || evidence["receipt"]["target"] != *target
             || evidence["receipt"]["runtime"] != self.handle.to_string()
-            || evidence["pixels"].as_array().is_none_or(|v| v.len() != rois.len())
+            || evidence["pixels"]
+                .as_array()
+                .is_none_or(|v| v.len() != rois.len())
         {
             return Err("I6_N07_RENDERER_ORIGIN_INVALID");
         }
