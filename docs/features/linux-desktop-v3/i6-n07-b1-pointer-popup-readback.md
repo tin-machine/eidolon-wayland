@@ -153,8 +153,16 @@ B2 then measures:
 
 The initial pointer position is the B1 measured **unreviewed** View
 candidate UV (0.160,0.063), corresponding to (164,48) at 1024×768.
-The Line Numbers candidate is UV (0.195,0.198), corresponding to
-(200,152). The proposed menu item is third in the fixed Mousepad
+The Line Numbers candidate is UV (0.195,0.164), corresponding to
+(200,126). CI diagnostic run `44089737962` retained a real View popup crop:
+the previous y=152 click was actually on **Menubar**, not Line Numbers;
+the compositor forwarded the click to its popup surface, but the native
+probe rejected missing post-action content-frame progress. The
+visible Line Numbers row is near y=126, so B2 calibrates this coordinate
+from real renderer data. This is a **discovery**, not a reviewed golden,
+a verified checkbox toggle, or formal N07 evidence.
+
+The proposed menu item is third in the fixed Mousepad
 0.6.3 upstream View menu (following Select Font and Color Scheme), but
 **neither coordinate nor observed glyph has been independently reviewed**.
 The region is broad enough to retain post-run diagnostics. No shortcut,
