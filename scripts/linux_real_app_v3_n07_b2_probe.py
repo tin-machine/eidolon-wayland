@@ -133,7 +133,9 @@ def _popup(popup: dict, target: dict, pointer: dict, layers: list) -> None:
     }), "N07_B2_POPUP_SERIAL")
     layer = popup.get("layer")
     need(type(layer) is int and 0 <= layer < len(layers)
-         and layers[layer].get("surface") == popup["surface"],
+         and layers[layer].get("surface") == popup["surface"]
+         and any(type(item) is dict and item.get("surface") ==
+                 popup["parent_surface"] for item in layers),
          "N07_B2_POPUP_LAYER")
 
 
@@ -210,6 +212,8 @@ def inspect(native: dict) -> dict:
          item["after"]["delivered_buttons"], "N07_B2_POINTER_ORDER")
     fresh = b2.get("reopened_popup")
     _popup(fresh, target, reopen, on_check["layers"])
+    need(fresh["parent_surface"] == probe["popup"]["parent_surface"],
+         "N07_B2_POPUP_PARENT_CHANGED")
     need(fresh["surface"] != probe["popup"]["surface"]
          or fresh["ack_serial"] != probe["popup"]["ack_serial"],
          "N07_B2_OLD_POPUP_REUSED")
