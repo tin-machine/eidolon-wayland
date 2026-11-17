@@ -57,6 +57,14 @@ def adversarial_checks(native: dict) -> None:
          ["readback"]["pixels"][0].update(rgba_b64="AAAA")),
         ("fabricated_second", lambda n: n["n07_probe"]["b2"]
          .update(second_on_checkmark={"verified": True})),
+        ("foreign_renderer_vendor", lambda n: n["n07_probe"]["b2"]
+         ["first_on_gutter"]["readback"]["receipt"]["backend"].update(vendor="foreign")),
+        ("foreign_renderer_config", lambda n: n["n07_probe"]["b2"]
+         ["first_on_checkmark"]["readback"]["receipt"]["backend"].update(config_id=777)),
+        ("backend_undeclared_field", lambda n: n["n07_probe"]["b2"]
+         ["first_on_checkmark"]["readback"]["receipt"]["backend"].update(fake_identity=1)),
+        ("backend_swap_metric_regression", lambda n: n["n07_probe"]["b2"]
+         ["first_on_checkmark"]["readback"]["receipt"]["backend"].update(max_swap_us=-1)),
         ("sdk_not_retired", lambda n: n.update(sdk_retired=False)),
         ("no_registry_destroy", lambda n: n.update(destroy_status=None)),
     )
