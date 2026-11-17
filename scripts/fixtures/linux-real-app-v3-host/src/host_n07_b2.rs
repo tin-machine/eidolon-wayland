@@ -226,12 +226,19 @@ mod tests {
         assert_eq!(snapshot_content_frame(&snapshot, &target), None);
         for invalid in ["", "0", "008", "8.0", "-8", "+8", "18446744073709551616"] {
             snapshot["runtime"]["render"]["targets"][0]["content_frame"] = json!(invalid);
-            assert_eq!(snapshot_content_frame(&snapshot, &target), None, "{invalid}");
+            assert_eq!(
+                snapshot_content_frame(&snapshot, &target),
+                None,
+                "{invalid}"
+            );
         }
         snapshot["runtime"]["render"]["targets"][0]["content_frame"] = json!("9");
         assert_eq!(
-            snapshot_content_frame(&snapshot, &json!({"session":"1","window":"1",
-                "scene":"1","generation":"2"})),
+            snapshot_content_frame(
+                &snapshot,
+                &json!({"session":"1","window":"1",
+                "scene":"1","generation":"2"})
+            ),
             None
         );
     }
