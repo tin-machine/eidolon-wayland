@@ -23,6 +23,32 @@ GUTTER = (1, 0, 64, 48, 128)
 CHECK = (2, 112, 96, 112, 128)
 MAX_RGBA = 128 * 1024
 
+# This is the exact Host EGL backend report shape, not a producer-selected
+# collection of fields. max_swap_us is a monotonic *measurement*, not a GPU
+# configuration or renderer allocation identity. Do not ignore any other key.
+BACKEND_IDENTITY = frozenset((
+    "vendor", "renderer", "version", "config_id", "width", "height",
+    "rgba_bits", "readback",
+))
+BACKEND_FIELDS = BACKEND_IDENTITY | {"max_swap_us"}
+
+
+def _backend_identity(value: object) -> dict:
+    need(type(value) is dict and set(value) == BACKEND_FIELDS,
+         "N07_B2_BACKEND_SHAPE")
+    need(all(type(value[k]) is str and 0 < len(value[k]) <= 160
+             for k in ("vendor", "renderer", "version"))
+         and all(type(value[k]) is int and 0 < value[k] <= 16384
+                 for k in ("config_id", "width", "height"))
+         and type(value["rgba_bits"]) is list and len(value["rgba_bits"]) == 4
+         and all(type(n) is int and 0 < n <= 32 for n in value["rgba_bits"])
+         and value["readback"] is True
+         and type(value["max_swap_us"]) is int and value["max_swap_us"] >= 0,
+         "N07_B2_BACKEND_INVALID")
+    # This copy avoids treating the mutable diagnostic max_swap_us as identity
+    # while enforcing every frozen field and its type on every observation.
+    return {key: value[key] for key in BACKEND_IDENTITY}
+
 
 def _forwarded(proof: dict, target: dict, epoch: int, uv: list[int]) -> None:
     need(type(proof) is dict and proof.get("target") == target
@@ -75,10 +101,10 @@ def _state(stage: dict, expected_phase: str, target: dict, runtime: str,
          and receipt.get("roi_revision") == 1,
          "N07_B2_RENDERER_ORIGIN")
     backend = receipt.get("backend")
-    need(type(backend) is dict
-         and type(backend.get("vendor")) is str and bool(backend["vendor"])
-         and type(backend.get("renderer")) is str and bool(backend["renderer"]),
-         "N07_B2_BACKEND")
+    identity = _backend_identity(backend)
+    _, x, y, w, h = expected
+    need(x + w <= identity["width"] and y + h <= identity["height"],
+         "N07_B2_ROI_BACKEND_BOUNDS")
     layers = receipt.get("layers")
     need(type(layers) is list and 0 < len(layers) <= 64,
          "N07_B2_LAYERS")
@@ -190,10 +216,17 @@ def inspect(native: dict) -> dict:
     # A single SDK Create, renderer allocation and EGL context must survive
     # all states. Reuse/replacement across observations invalidates the probe.
     receipts = (off_receipt, off_check, on_gutter, on_check)
+    baseline_backend = _backend_identity(off_receipt.get("backend"))
     need(all(r["renderer_owner"] == off_receipt["renderer_owner"]
              and r["context_epoch"] == off_receipt["context_epoch"]
-             and r["backend"] == off_receipt["backend"] for r in receipts),
+             and _backend_identity(r.get("backend")) == baseline_backend
+             for r in receipts),
          "N07_B2_RENDERER_CHANGED")
+    # The Host EGL backend reports a running maximum. Checking its shape and
+    # nondecreasing order catches corrupted measurements without conflating
+    # normal GPU work with a change of renderer identity.
+    swap_times = [r["backend"]["max_swap_us"] for r in receipts]
+    need(swap_times == sorted(swap_times), "N07_B2_SWAP_METRIC_REGRESSION")
     frames = [int(r["content_frame"]) for r in receipts]
     need(frames[0] < frames[1] < frames[2] < frames[3],
          "N07_B2_STALE_FRAME")
