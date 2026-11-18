@@ -264,6 +264,7 @@ def _all_sdk(native):
     leases = {}
     for key in keys:
         chain = []
+        projected = []
         identity = None
         for kind in n02.SDK_KINDS:
             matching = [(i, row) for i, row in sdk[kind]
@@ -276,7 +277,16 @@ def _all_sdk(native):
             need(identity is None or identity == current, "N07_B4_SDK_LEASE")
             identity = current
             chain.append(i)
+            projected.append(copy.deepcopy(row))
         need(chain == sorted(chain), "N07_B4_SDK_ORDER")
+        for sequence, row in enumerate(projected, 1):
+            row["sequence"] = str(sequence)
+        # Every admitted target, including the Open dialog, must retain the
+        # ordinary Create readback contract. Its 4-by-4 ticket is not an
+        # N07 candidate ROI and cannot be replaced by a claimed SDK ACK.
+        n02.sdk_and_readback({"runtime": native["runtime"],
+                             "sdk_observations": projected,
+                             "readback": projected[4]["data"]["readback"]})
         leases[key] = (identity, chain[6], chain[7])
     for position, row in sdk["n07_renderer_pixel_readback"]:
         data = row["data"]
@@ -327,8 +337,10 @@ def _open(native, observed):
         and type(dialogs) is list and len(dialogs) == 1, "N07_B4_OPEN_MISSING")
     dialog, main = dialogs[0], p["main_target"]
     exact(dialog, {"name", "window", "target", "readback"})
+    exact(dialog["window"], {"window", "parent", "life", "frame", "app_id"})
     need(dialog["name"] == "open" and dialog["window"]["parent"] == main["window"]
          and dialog["window"]["life"] == "Mapped"
+         and contract.decimal(dialog["window"]["frame"])
          and dialog["window"]["window"] == dialog["target"]["window"]
          and dialog["target"]["window"] != main["window"]
          and dialog["target"]["session"] == main["session"]
@@ -340,6 +352,11 @@ def _open(native, observed):
     created = n02.only(observed, "n05_dialog_created")
     closed = n02.only(observed, "n05_dialog_closed")
     confirm = n02.only(observed, "n05_confirm_delivered")
+    same(created[1]["data"], {"name": "open", "window": dialog["target"]["window"],
+                              "parent": main["window"], "target": dialog["target"]},
+         "N07_B4_OPEN_DIALOG")
+    same(closed[1]["data"], {"name": "open", "window": dialog["target"]["window"],
+                             "target": dialog["target"]}, "N07_B4_OPEN_DIALOG")
     delivered = observed.get("n05_step_delivered", [])
     need(len(delivered) == 3, "N07_B4_OPEN_INPUT")
     baseline = before[1]["data"]
@@ -400,9 +417,18 @@ def _open(native, observed):
              and row["data"]["token"] == fact["token"]
              and row["data"]["epoch"] == fact["epoch"]
              for i, row in observed.get("n05_focus_current", [])), "N07_B4_OPEN_FOCUS")
+    opened = n02.only(observed, "n07_b4_open_confirmed")
+    same(opened[1]["data"], {"target": dialog["target"], "document": path},
+         "N07_B4_OPEN_CONFIRM")
+    need(confirm[0] < opened[0] and contract.decimal(p["final_key_request"])
+         and int(p["final_key_request"]) > request, "N07_B4_OPEN_CONFIRM")
     sdk_keys = _all_sdk(native)
     need(sdk_keys == {evidence.canonical(main), evidence.canonical(dialog["target"])},
          "N07_B4_OPEN_SDK_TARGETS")
+    actual = [row["data"]["readback"] for row in native["sdk_observations"]
+              if row["kind"] == "real_readback" and row["data"]["target"] == dialog["target"]]
+    need(len(actual) == 1, "N07_B4_OPEN_DIALOG")
+    same(actual[0], dialog["readback"], "N07_B4_OPEN_DIALOG")
     return dialog
 
 
@@ -439,7 +465,8 @@ def _post_open_settling(proof, before, after):
              and contract.decimal(sample["main_content_seq"])
              and type(sample["request_seq"]) is int and type(sample["elapsed_ms"]) is int
              and last[0] < sample["request_seq"] <= after["request_seq"]
-             and last[1] <= sample["elapsed_ms"] <= 12000
+             and 0 <= sample["elapsed_ms"] <= 12000
+             and last[1] <= sample["elapsed_ms"]
              and last[2] <= int(sample["content_frame"]) <= int(after["content_frame"])
              and last[3] <= int(sample["main_content_seq"]) <= int(new["content_seq"]),
              "N07_B4_SETTLING_ORDER")
@@ -485,6 +512,8 @@ def second_readbacks(native):
                  for a, b in zip(receipts[1:], receipts[2:])), "N07_B4_SECOND_STALE_FRAME")
     need([r["backend"]["max_swap_us"] for r in receipts] ==
          sorted(r["backend"]["max_swap_us"] for r in receipts), "N07_B4_SECOND_METRIC_ORDER")
+    need(type(p["pointer"]["input_epoch"]) is int and p["pointer"]["input_epoch"] >= 0
+         and type(p["pointer"]["epoch_after"]) is int, "N07_B4_SECOND_POINTER_EPOCH")
     _forwarded(p["pointer"], target, p["pointer"]["input_epoch"], [160, 63])
     _popup(p["popup"], target, p["pointer"], receipts[-1]["layers"])
     need(p["popup"]["parent_surface"] == first["layers"][0]["surface"],
@@ -943,6 +972,22 @@ def adversarial_checks(**inputs):
     noticing that a wrapper file digest changed.
     """
     validate_collection(**inputs)
+
+    def reuse_nonce(data):
+        nonce = next(row["capture"]["nonce"] for row in data["first"]["trace"]["events"]
+                     if row["capture"] is not None)
+        for row in data["second"]["trace"]["events"]:
+            if row["capture"] is not None:
+                row["capture"]["nonce"] = nonce
+            if row["kind"] == "capture_created":
+                row["data"]["context"]["nonce"] = nonce
+
+    def early_second_runtime(data):
+        early = data["native"]["barriers"][2]["response_monotonic_ns"] - 1
+        creation = next(row for row in data["second"]["observations"]
+                        if row["kind"] == "n07_b4_runtime_created")
+        creation["data"]["started_at_ns"] = early
+
     mutations = (
         ("foreign_storage", lambda d: d["supervisor"]["trusted_storage"]["record"]
          .update(profile_storage_id="f" * 32)),
@@ -959,11 +1004,16 @@ def adversarial_checks(**inputs):
         ("owner_reuse", lambda d: d["second"].update(owner_id=d["first"]["owner_id"])),
         ("capture_reuse", lambda d: d["second"]["n07_second"]
          .update(capture_id=d["first"]["n07_probe"]["capture_id"])),
+        ("nonce_reuse", reuse_nonce),
         ("second_missing", lambda d: d["second"]["n07_second"].pop("second_on_checkmark")),
         ("first_relabel", lambda d: d["second"]["n07_second"].update(
             second_on_checkmark=copy.deepcopy(d["first"]["n07_probe"]["b2"]["first_on_checkmark"]))),
         ("foreign_create", lambda d: d["second"]["n07_second"]["second_on_checkmark"]
          ["readback"]["receipt"].update(create="999999")),
+        ("foreign_dialog_create", lambda d: d["second"]["n07_second"]["dialogs"][0]
+         ["readback"].update(create="999999")),
+        ("foreign_dialog_closed", lambda d: next(row["data"] for row in d["second"]["observations"]
+         if row["kind"] == "n05_dialog_closed").update(window="999999")),
         ("foreign_renderer", lambda d: d["second"]["n07_second"]["second_on_checkmark"]
          ["readback"]["receipt"].update(renderer_owner=999999)),
         ("integer_frame", lambda d: d["second"]["n07_second"]["second_on_checkmark"]
@@ -972,11 +1022,14 @@ def adversarial_checks(**inputs):
          ["readback"]["receipt"].update(content_frame="1")),
         ("old_main_buffer", lambda d: d["second"]["n07_second"]["post_open_settling"]
          .update(main_content_seq=d["second"]["n07_second"]["post_open_settling"]["baseline_main_content_seq"])),
+        ("negative_settling_time", lambda d: d["second"]["n07_second"]["post_open_settling"]
+         ["samples"][0].update(elapsed_ms=-1)),
         ("fingerprint_changed", lambda d: d["fingerprints"]["second"]["values"].update(gtk_version="0.0.0")),
         ("configured_theme_promoted", lambda d: d["fingerprints"]["second"]["values"].update(theme="Adwaita")),
         ("cleanup_gate_removed", lambda d: d["supervisor"]["barriers"][2]
          ["observation"].update(product_cleanup_verified=False)),
         ("first_not_retired", lambda d: d["first"].update(sdk_retired=False)),
+        ("runtime_created_before_cleanup", early_second_runtime),
         ("external_rescue", lambda d: d["supervisor"].update(external_rescue=True)),
         ("document_changed", lambda d: d["supervisor"]["document"]["final"].update(sha256="f" * 64)),
         ("fake_approval", lambda d: d["native"].update(reviewed_golden=True)),

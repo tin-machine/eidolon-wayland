@@ -5,9 +5,12 @@ import copy
 import os
 from pathlib import Path
 import shutil
+import stat
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import linux_real_app_v3_n07_settings as settings
@@ -77,6 +80,29 @@ class RetainedStorageObservation(unittest.TestCase):
         for fd in retained_fds:
             with self.assertRaises(OSError):
                 os.fstat(fd)
+
+    def test_directory_one_link_is_valid_zero_links_and_regular_hardlinks_are_not(self):
+        self.write_true()
+        real_fstat = os.fstat
+
+        def directory_links(fd, nlink):
+            info = real_fstat(fd)
+            if not stat.S_ISDIR(info.st_mode):
+                return info
+            return SimpleNamespace(st_dev=info.st_dev, st_ino=info.st_ino,
+                st_mode=info.st_mode, st_uid=info.st_uid, st_nlink=nlink)
+
+        # Exercise every actual opened root/intermediate FD with the link
+        # count reported by union filesystems, keeping identities unchanged.
+        with patch.object(settings.os, "fstat", side_effect=lambda fd: directory_links(fd, 1)):
+            with self.probe() as probe:
+                self.assertTrue(probe.snapshot()["value"])
+                os.link(self.path, self.path.with_name("hardlink"))
+                with self.assertRaisesRegex(ValueError, "UNSAFE_KEYFILE"):
+                    probe.snapshot()
+        with patch.object(settings.os, "fstat", side_effect=lambda fd: directory_links(fd, 0)):
+            with self.assertRaisesRegex(ValueError, "UNSAFE_DIRECTORY"):
+                self.probe()
 
     def test_strict_saved_metadata_types_and_bounds(self):
         with self.probe() as probe:

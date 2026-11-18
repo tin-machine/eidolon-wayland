@@ -416,6 +416,35 @@ def run_host(argv, supervisor, *, uid, home, credential, channel):
         child.stderr.close()
 
 
+def close_fixture(supervisor, sshd, sshd_pidfd, fixture_root):
+    """A failed checkpoint must not strand observer FDs or owned fixture SSH."""
+    try:
+        if supervisor is not None:
+            try:
+                supervisor.save()
+            finally:
+                supervisor.close()
+    finally:
+        try:
+            if sshd is not None:
+                fixture.stop_owned(sshd, sshd_pidfd)
+        finally:
+            for name in ("client-key", "host-key"):
+                path = fixture_root / name
+                if path.is_file() and not path.is_symlink():
+                    path.unlink()
+
+
+def require_complete_run(code, native, supervisor):
+    # Preserve the actual first observation failure. A rejected prelaunch
+    # barrier has no document/root to verify and is not a later missing-root
+    # failure. Its normal product retirement still remains independently saved.
+    failures = supervisor.record["failures"]
+    need(not failures, failures[0] if failures else "N07_B4_RUN_INCOMPLETE")
+    need(code == 0 and supervisor.record["external_rescue"] is False,
+         fixed_reason(native.get("error"), "N07_B4_RUN_INCOMPLETE"))
+
+
 def prepare_and_run(args, artifacts, source, report):
     report["stage"] = "disposable_preflight"
     isolation = fixture.disposable_preflight(args.disposable_container)
@@ -434,7 +463,7 @@ def prepare_and_run(args, artifacts, source, report):
     configuration, before = fixture.export_bundle(bundle["build_id"], app_home)
     runner_hash = evidence.sha(fixture.read_owned(args.runner, 0,
         limit=128 * 1024 * 1024, private=False))
-    sshd, supervisor, output_path = None, None, None
+    sshd, sshd_pidfd, supervisor, output_path = None, None, None, None
     try:
         report["stage"] = "start_sshd"
         sshd, sshd_pidfd, host_key, ssh = fixture.prepare_sshd(
@@ -488,12 +517,12 @@ def prepare_and_run(args, artifacts, source, report):
         counts = fixture.settled_census(sshd)
         counts.update(fixture.filesystem_census(dirs["files"], app_home, installation_id, storage_id))
         supervisor.record["final_census"] = counts
-        supervisor.storage.verify_document()
+        if supervisor.storage.document is not None:
+            supervisor.storage.verify_document()
         supervisor.save()
         need(evidence.sha(fixture.read_owned(args.runner, 0,
             limit=128 * 1024 * 1024, private=False)) == runner_hash, "I6_SOURCE_MISMATCH")
-        need(code == 0 and not supervisor.record["failures"]
-             and supervisor.record["external_rescue"] is False, "N07_B4_RUN_INCOMPLETE")
+        require_complete_run(code, native, supervisor)
         clean_census(counts)
         from linux_real_app_v3_n07_b4_probe import validate_collection
         result = validate_collection(native, supervisor.record,
@@ -504,43 +533,38 @@ def prepare_and_run(args, artifacts, source, report):
         report.update(status="collected", reason="N07_B4_UNAPPROVED_COLLECTION",
                       collection=result)
     finally:
-        if supervisor is not None:
-            # Stop observer children before taking any final OS census, even
-            # if the Host failed before it could reach a retired barrier.
-            for session in tuple(supervisor.observer_active):
-                supervisor._stop_observer(session)
-            for session in ("first", "second"):
-                try:
-                    supervisor.export_session(session)
-                except (OSError, ValueError, TypeError, KeyError) as error:
-                    supervisor.failure(error)
-            if output_path is not None and output_path.exists() and not (artifacts / "n07-b4-native.json").exists():
-                try:
-                    raw = fixture.read_owned(output_path, accounts["driver"]["uid"])
-                    evidence.parse(raw)
-                    fixture.exclusive(artifacts / "n07-b4-native.json", raw)
-                except (OSError, ValueError, TypeError, KeyError) as error:
-                    supervisor.failure(error)
-            if supervisor.record["final_census"] is None and sshd is not None:
-                try:
-                    counts = fixture.settled_census(sshd)
-                    counts.update(fixture.filesystem_census(dirs["files"], app_home, installation_id, storage_id))
-                    supervisor.record["final_census"] = counts
-                except (OSError, ValueError, TypeError, KeyError) as error:
-                    supervisor.failure(error)
-            for session in ("first", "second"):
-                try:
-                    supervisor.preserve_partial_session(session)
-                except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
-                    supervisor.failure(error)
-            supervisor.save()
-            supervisor.close()
-        if sshd is not None:
-            fixture.stop_owned(sshd, sshd_pidfd)
-        for name in ("client-key", "host-key"):
-            path = fixture_root / name
-            if path.is_file() and not path.is_symlink():
-                path.unlink()
+        try:
+            if supervisor is not None:
+                # Stop observer children before taking any final OS census, even
+                # if the Host failed before it could reach a retired barrier.
+                for session in tuple(supervisor.observer_active):
+                    supervisor._stop_observer(session)
+                for session in ("first", "second"):
+                    try:
+                        supervisor.export_session(session)
+                    except (OSError, ValueError, TypeError, KeyError) as error:
+                        supervisor.failure(error)
+                if output_path is not None and output_path.exists() and not (artifacts / "n07-b4-native.json").exists():
+                    try:
+                        raw = fixture.read_owned(output_path, accounts["driver"]["uid"])
+                        evidence.parse(raw)
+                        fixture.exclusive(artifacts / "n07-b4-native.json", raw)
+                    except (OSError, ValueError, TypeError, KeyError) as error:
+                        supervisor.failure(error)
+                if supervisor.record["final_census"] is None and sshd is not None:
+                    try:
+                        counts = fixture.settled_census(sshd)
+                        counts.update(fixture.filesystem_census(dirs["files"], app_home, installation_id, storage_id))
+                        supervisor.record["final_census"] = counts
+                    except (OSError, ValueError, TypeError, KeyError) as error:
+                        supervisor.failure(error)
+                for session in ("first", "second"):
+                    try:
+                        supervisor.preserve_partial_session(session)
+                    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+                        supervisor.failure(error)
+        finally:
+            close_fixture(supervisor, sshd, sshd_pidfd, fixture_root)
 
 
 def main(argv=None):

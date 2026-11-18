@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import linux_desktop_v3_contract as contract
@@ -132,6 +134,47 @@ class SupervisorAdmissionTests(unittest.TestCase):
 
 
 class PartialExportTests(unittest.TestCase):
+    def test_original_prelaunch_failure_survives_final_collection_check(self):
+        supervisor = SimpleNamespace(record={"failures": ["N07_B4_UNSAFE_ANCESTOR"],
+                                              "external_rescue": False})
+        with self.assertRaisesRegex(ValueError, "^N07_B4_UNSAFE_ANCESTOR$"):
+            live.require_complete_run(2, {"error": "I6_N07_B4_SUPERVISOR_REFUSED"}, supervisor)
+        supervisor.record["failures"] = []
+        with self.assertRaisesRegex(ValueError, "^I6_N07_B4_SUPERVISOR_REFUSED$"):
+            live.require_complete_run(2, {"error": "I6_N07_B4_SUPERVISOR_REFUSED"}, supervisor)
+        supervisor.record["external_rescue"] = True
+        with self.assertRaisesRegex(ValueError, "^N07_B4_RUN_INCOMPLETE$"):
+            live.require_complete_run(0, {"error": None}, supervisor)
+
+    def test_checkpoint_failure_still_closes_observer_and_owned_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("client-key", "host-key"):
+                (root/name).write_bytes(b"synthetic fixture key")
+            fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            supervisor = SimpleNamespace(save=Mock(side_effect=OSError("synthetic fsync failure")),
+                                         close=Mock(side_effect=lambda: os.close(fd)))
+            sshd = object()
+            with patch.object(live.fixture, "stop_owned") as stopped:
+                with self.assertRaisesRegex(OSError, "synthetic fsync failure"):
+                    live.close_fixture(supervisor, sshd, 123, root)
+                stopped.assert_called_once_with(sshd, 123)
+            supervisor.close.assert_called_once_with()
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_fixture_stop_failure_still_removes_only_owned_fixture_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root/"client-key").write_bytes(b"synthetic fixture key")
+            (root/"host-key").write_bytes(b"synthetic fixture key")
+            (root/"unrelated").write_bytes(b"retain")
+            with patch.object(live.fixture, "stop_owned", side_effect=OSError("synthetic stop failure")):
+                with self.assertRaisesRegex(OSError, "synthetic stop failure"):
+                    live.close_fixture(None, object(), 123, root)
+            self.assertEqual([p.name for p in root.iterdir()], ["unrelated"])
+
     def test_failed_second_session_preserves_available_first_and_rescue(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

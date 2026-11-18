@@ -117,6 +117,71 @@ def storage_fixture():
     return storage, sessions, environments
 
 
+def open_fixture():
+    """Synthetic admitted Open traces for target/Create join rejection."""
+    main = {"scene": "1", "session": "2", "window": "17", "generation": "1"}
+    child = {**main, "window": "18"}
+    path = storage_fixture()[0]["root_path"] + "/Documents/n07-eight-lines.txt"
+
+    def ticket(target, create):
+        return {"runtime": "2", "target": target, "create": create,
+                "content_frame": "1", "min_content_frame": "1", "layers": [{"surface": "1"}],
+                "present_seq": 1, "roi_revision": 1,
+                "rois": [{"roi": {"id": 1, "x": 0, "y": 0, "width": 4, "height": 4}}],
+                "pixel_sha256": ["a" * 64], "roi_sha256": "b" * 64,
+                "backend": {"readback": True, "renderer": "synthetic", "vendor": "synthetic"}}
+
+    main_rb, child_rb = ticket(main, "2"), ticket(child, "3")
+    dialog = {"name": "open", "window": {"window": "18", "parent": "17", "life": "Mapped",
+              "frame": "1", "app_id": "synthetic"}, "target": child, "readback": child_rb}
+    native = {"runtime": "2", "readback": main_rb, "observations": [], "sdk_observations": [],
+              "n07_second": {"main_target": main, "dialogs": [dialog], "steps": [], "input": path}}
+
+    def observe(kind, data):
+        rows = native["observations"]
+        rows.append({"sequence": str(len(rows) + 1), "kind": kind, "data": copy.deepcopy(data)})
+
+    observe("n05_dialog_baseline", {"phase": "open", "main_target": main, "mapped_windows": ["17"]})
+    request, delivered = 8000, 0
+    for index, phase in enumerate(("open_shortcut", "open_location", "open_path")):
+        target = main if index == 0 else child
+        token = str(100 + index)
+        count = (4, 4, 2 * len(path) + 2)[index]
+        observe("n05_focus_current", {"target": target, "request_id": str(request), "token": token, "epoch": 0})
+        request += 1
+        step = {"phase": phase, "target": target, "epoch": 0, "token": token,
+                "expected_delivery": count, "delivered_before": delivered,
+                "delivered_after": delivered + count, "first_key_request": str(request),
+                "next_key_request": str(request + count)}
+        native["n07_second"]["steps"].append(step)
+        observe("n05_step_delivered", step)
+        request += count
+        delivered += count
+        if index == 0:
+            observe("n05_dialog_created", {"name": "open", "window": "18", "parent": "17", "target": child})
+    observe("n07_roi_readback_observed", {"phase": "before_open_confirm"})
+    observe("n05_focus_current", {"target": child, "request_id": str(request), "token": "103", "epoch": 0})
+    observe("n05_dialog_closed", {"name": "open", "window": "18", "target": child})
+    observe("n05_confirm_delivered", {"name": "open", "target": child, "epoch": 0, "token": "103",
+            "attempts": 1, "expected_delivery": 1, "delivered_before": delivered, "delivered_after": delivered + 1})
+    observe("n07_b4_open_confirmed", {"target": child, "document": path})
+    native["n07_second"]["final_key_request"] = str(request + 10)
+    for target, readback in ((main, main_rb), (child, child_rb)):
+        for kind in probe.n02.SDK_KINDS:
+            rows = native["sdk_observations"]
+            data = {"target": target, "create_seq": readback["create"]}
+            if kind == "real_readback":
+                data["readback"] = readback
+            rows.append({"sequence": str(len(rows) + 1), "runtime": "2", "adapter": "2",
+                         "kind": kind, "data": copy.deepcopy(data)})
+            if kind == "create_applied" and target == main:
+                rows.append({"sequence": str(len(rows) + 1), "runtime": "2", "adapter": "2",
+                             "kind": "n07_renderer_pixel_readback", "data": {
+                                 "target": main, "create_seq": "2", "sdk_adapter": "2",
+                                 "content_frame": "1", "roi_count": 1}})
+    return native
+
+
 def barrier_fixture():
     run_id = "a" * 32
     host = {"run_id": run_id, "barriers": []}
@@ -198,8 +263,10 @@ class SecondRendererTests(unittest.TestCase):
             lambda n, f: n["n07_second"][pixel.STATES[5]]["readback"]["receipt"].update(content_frame=9),
             lambda n, f: n["n07_second"][pixel.STATES[5]]["readback"]["receipt"].update(content_frame="6"),
             lambda n, f: n["n07_second"]["post_open_settling"].update(main_content_seq="3"),
+            lambda n, f: n["n07_second"]["post_open_settling"]["samples"][0].update(elapsed_ms=-1),
             lambda n, f: n["n07_second"]["post_open_settling"]["samples"][-1].update(elapsed_ms=100),
             lambda n, f: n["n07_second"]["pointer"]["after"].update(delivered_buttons=0),
+            lambda n, f: n["n07_second"]["pointer"].update(input_epoch=False),
             lambda n, f: n["n07_second"]["popup"].update(grab_serial=999),
             lambda n, f: n["n07_second"].update(item_pointer={"status": "pass"}),
         ]
@@ -238,6 +305,32 @@ class SecondRendererTests(unittest.TestCase):
 
 
 class IndependentStorageAndGateTests(unittest.TestCase):
+    def test_open_dialog_is_joined_to_actual_sdk_create_and_lifecycle(self):
+        native = open_fixture()
+        probe._open(native, probe.n02.ordinal_events(native["observations"], limit=128))
+
+        def event(data, kind):
+            return next(row["data"] for row in data["observations"] if row["kind"] == kind)
+
+        def sdk_readback(data):
+            return next(row["data"]["readback"] for row in data["sdk_observations"]
+                        if row["kind"] == "real_readback" and row["data"]["target"]["window"] == "18")
+
+        mutations = (
+            lambda d: d["n07_second"]["dialogs"][0]["readback"].update(create="9999"),
+            lambda d: event(d, "n05_dialog_created").update(window="99"),
+            lambda d: event(d, "n05_dialog_closed")["target"].update(generation="2"),
+            lambda d: event(d, "n07_b4_open_confirmed").update(document="foreign"),
+            lambda d: sdk_readback(d).update(content_frame=1),
+            lambda d: d["n07_second"]["dialogs"][0]["window"].update(frame=True),
+            lambda d: d["n07_second"].update(final_key_request="8000"),
+        )
+        for index, mutate in enumerate(mutations):
+            changed = copy.deepcopy(native)
+            mutate(changed)
+            with self.subTest(index=index), self.assertRaises((ValueError, KeyError, TypeError)):
+                probe._open(changed, probe.n02.ordinal_events(changed["observations"], limit=128))
+
     def test_canonical_storage_root_owner_and_control_files(self):
         storage, sessions, env = storage_fixture()
         self.assertEqual(probe._storage(storage, sessions, env), storage["record"])

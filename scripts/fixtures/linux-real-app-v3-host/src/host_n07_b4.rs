@@ -29,6 +29,7 @@ const SECOND_CONTEXT_PHASES: [&str; 2] = ["second_on_context", "second_on_menu_c
 
 pub(super) struct BarrierChannel {
     stream: UnixStream,
+    received: Option<(Value, u64)>,
 }
 
 #[derive(Deserialize)]
@@ -48,7 +49,7 @@ fn hash_valid(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn validate_response(raw: &[u8], request: &Value, expected: &str) -> Result<Value> {
+fn parse_bound_response(raw: &[u8], request: &Value, expected: &str) -> Result<(Value, bool)> {
     let value = b1::parse_json(raw, BARRIER_LIMIT).map_err(|_| "I6_N07_B4_BARRIER_INVALID")?;
     let reply: Response =
         serde_json::from_value(value.clone()).map_err(|_| "I6_N07_B4_BARRIER_INVALID")?;
@@ -59,10 +60,7 @@ fn validate_response(raw: &[u8], request: &Value, expected: &str) -> Result<Valu
     {
         return Err("I6_N07_B4_BARRIER_INVALID");
     }
-    if !reply.allow {
-        return Err("I6_N07_B4_SUPERVISOR_REFUSED");
-    }
-    Ok(value)
+    Ok((value, reply.allow))
 }
 
 impl BarrierChannel {
@@ -105,10 +103,14 @@ impl BarrierChannel {
         stream
             .set_nonblocking(true)
             .map_err(|_| "I6_N07_B4_BARRIER_INVALID")?;
-        Ok(Self { stream })
+        Ok(Self {
+            stream,
+            received: None,
+        })
     }
 
     fn exchange(&mut self, request: &Value, mut pump: impl FnMut() -> Result<()>) -> Result<Value> {
+        self.received = None;
         let raw = serde_json::to_vec(request).map_err(|_| "I6_N07_B4_BARRIER_INVALID")?;
         if raw.len() > BARRIER_LIMIT {
             return Err("I6_N07_B4_BARRIER_INVALID");
@@ -143,7 +145,16 @@ impl BarrierChannel {
                             if newline + 1 != response.len() {
                                 return Err("I6_N07_B4_BARRIER_INVALID");
                             }
-                            return validate_response(&response[..newline], request, &expected);
+                            let (value, allow) =
+                                parse_bound_response(&response[..newline], request, &expected)?;
+                            // Retain an authentic refusal as observed evidence,
+                            // while keeping the same fail-closed launch gate.
+                            self.received = Some((value.clone(), clock_ns()?));
+                            return if allow {
+                                Ok(value)
+                            } else {
+                                Err("I6_N07_B4_SUPERVISOR_REFUSED")
+                            };
                         }
                     }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => (),
@@ -232,16 +243,15 @@ impl Driver {
             }
             Ok(())
         });
+        if let Some((response, received_at)) = channel.received.take() {
+            self.n07_b4_barriers[index]["response"] = response;
+            self.n07_b4_barriers[index]["response_monotonic_ns"] = json!(received_at);
+        }
         self.n07_b4_channel = Some(channel);
-        let response = match result {
-            Ok(reply) => reply,
-            Err(error) => {
-                self.n07_b4_barriers[index]["error"] = json!(error);
-                return Err(error);
-            }
-        };
-        self.n07_b4_barriers[index]["response"] = response;
-        self.n07_b4_barriers[index]["response_monotonic_ns"] = json!(clock_ns()?);
+        if let Err(error) = result {
+            self.n07_b4_barriers[index]["error"] = json!(error);
+            return Err(error);
+        }
         if self.destroy_status.is_none() {
             self.observe("n07_b4_barrier", self.n07_b4_barriers[index].clone())?;
         }
@@ -687,7 +697,7 @@ mod tests {
     #[test]
     fn barrier_requires_exact_typed_reply_bound_to_current_request() {
         assert!(
-            validate_response(
+            parse_bound_response(
                 &serde_json::to_vec(&reply()).unwrap(),
                 &request(),
                 &"a".repeat(64)
@@ -698,14 +708,14 @@ mod tests {
             ("schema", json!(true)),
             ("phase", json!("second_before_launch")),
             ("request_sha256", json!("c".repeat(64))),
-            ("allow", json!(false)),
+            ("allow", json!("false")),
             ("observation_sha256", json!(null)),
             ("unexpected", json!(true)),
         ] {
             let mut changed = reply();
             changed[field] = value;
             assert!(
-                validate_response(
+                parse_bound_response(
                     &serde_json::to_vec(&changed).unwrap(),
                     &request(),
                     &"a".repeat(64)
@@ -715,7 +725,8 @@ mod tests {
             );
         }
         assert!(
-            validate_response(br#"{"schema":1,"schema":1}"#, &request(), &"a".repeat(64)).is_err()
+            parse_bound_response(br#"{"schema":1,"schema":1}"#, &request(), &"a".repeat(64))
+                .is_err()
         );
     }
 
@@ -729,7 +740,10 @@ mod tests {
             assert!(count > 0);
             right.write_all(b"{}\n{}\n").unwrap();
         });
-        let mut channel = BarrierChannel { stream: left };
+        let mut channel = BarrierChannel {
+            stream: left,
+            received: None,
+        };
         assert_eq!(
             channel.exchange(&request(), || Ok(())),
             Err("I6_N07_B4_BARRIER_INVALID")
@@ -739,9 +753,12 @@ mod tests {
         left.set_nonblocking(true).unwrap();
         drop(right);
         assert!(
-            BarrierChannel { stream: left }
-                .exchange(&request(), || Ok(()))
-                .is_err()
+            BarrierChannel {
+                stream: left,
+                received: None,
+            }
+            .exchange(&request(), || Ok(()))
+            .is_err()
         );
     }
 
@@ -768,18 +785,62 @@ mod tests {
             right.write_all(&encoded).unwrap();
         });
         let mut pumped = 0;
-        let response = BarrierChannel { stream: left }
-            .exchange(&request(), || {
-                pumped += 1;
-                Ok(())
-            })
-            .unwrap();
+        let response = BarrierChannel {
+            stream: left,
+            received: None,
+        }
+        .exchange(&request(), || {
+            pumped += 1;
+            Ok(())
+        })
+        .unwrap();
         assert_eq!(
             response["request_sha256"],
             digest(serde_json::to_vec(&request()).unwrap())
         );
         assert!(pumped > 0);
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn refused_barrier_retains_real_negative_ack_without_admitting_next_phase() {
+        let (left, mut right) = UnixStream::pair().unwrap();
+        left.set_nonblocking(true).unwrap();
+        let handle = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            loop {
+                let mut byte = [0u8; 1];
+                right.read_exact(&mut byte).unwrap();
+                if byte[0] == b'\n' {
+                    break;
+                }
+                bytes.push(byte[0]);
+            }
+            let request: Value = serde_json::from_slice(&bytes).unwrap();
+            let response = json!({"schema":1,"phase":request["phase"],
+                "request_sha256":digest(&bytes),"allow":false,
+                "observation_sha256":"b".repeat(64)});
+            let mut encoded = serde_json::to_vec(&response).unwrap();
+            encoded.push(b'\n');
+            right.write_all(&encoded).unwrap();
+            response
+        });
+        let mut channel = BarrierChannel {
+            stream: left,
+            received: None,
+        };
+        let started = clock_ns().unwrap();
+        assert_eq!(
+            channel.exchange(&request(), || Ok(())),
+            Err("I6_N07_B4_SUPERVISOR_REFUSED")
+        );
+        let actual = handle.join().unwrap();
+        let (retained, received_at) = channel.received.as_ref().unwrap();
+        assert_eq!(retained, &actual);
+        assert!(*received_at >= started && *received_at <= clock_ns().unwrap());
+        // A later incomplete exchange must never inherit the earlier reply.
+        assert!(channel.exchange(&request(), || Ok(())).is_err());
+        assert!(channel.received.is_none());
     }
 
     #[test]

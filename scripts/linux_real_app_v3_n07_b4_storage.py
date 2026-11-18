@@ -81,11 +81,33 @@ class TrustedStorage:
         self.metadata = None
         self.document = None
 
+    def _ancestor_info(self, info, expected_uid, index, component):
+        # C1 permits any still-linked directory. Overlay/union filesystems
+        # may report one link; the Unix "2 + subdirectories" convention is
+        # not an identity or ownership guarantee. Regular files keep their
+        # separate exact single-link rules below.
+        safe = (stat.S_ISDIR(info.st_mode) and info.st_nlink > 0
+                and info.st_uid == expected_uid and not info.st_mode & 0o022)
+        if not safe:
+            # Only fixed, supervisor-derived chain components are admitted.
+            # Retain a bounded failed observation, never a trusted-root proof.
+            parts = self.root.parts
+            need(type(index) is int and 0 <= index < len(parts)
+                 and component == parts[index], "N07_B4_STORAGE_INVALID")
+            self.metadata = {
+                "schema": 1, "revision": "eidolon-i6-n07-b4-storage-rejected-v1",
+                "status": "rejected", "reason": "N07_B4_UNSAFE_ANCESTOR",
+                "root_path": str(self.root), "component_index": index,
+                "component": component, "expected_uid": expected_uid,
+                "observed": {**directory_identity(info), "nlink": info.st_nlink,
+                             "file_type": stat.S_IFMT(info.st_mode)},
+            }
+        need(safe, "N07_B4_UNSAFE_ANCESTOR")
+
     def _pin_chain(self):
         parent = os.open("/", DIR_FLAGS)
         self.chain.append((None, "/", parent, directory_identity(os.fstat(parent))))
-        need(os.fstat(parent).st_uid == 0
-             and not os.fstat(parent).st_mode & 0o022)
+        self._ancestor_info(os.fstat(parent), 0, 0, "/")
         accumulated = Path("/")
         for component in self.root.parts[1:]:
             child = os.open(component, DIR_FLAGS, dir_fd=parent)
@@ -93,9 +115,7 @@ class TrustedStorage:
             accumulated /= component
             expected_uid = self.uid if self.home == accumulated or self.home in accumulated.parents else 0
             self.chain.append((parent, component, child, directory_identity(info)))
-            need(stat.S_ISDIR(info.st_mode) and info.st_uid == expected_uid
-                 and not info.st_mode & 0o022 and info.st_nlink >= 2,
-                 "N07_B4_UNSAFE_ANCESTOR")
+            self._ancestor_info(info, expected_uid, len(self.chain) - 1, component)
             need(directory_identity(os.stat(component, dir_fd=parent, follow_symlinks=False))
                  == directory_identity(info), "N07_B4_ANCESTOR_REPLACED")
             parent = child
@@ -189,15 +209,35 @@ class TrustedStorage:
             }
             self.assert_current()
             self.probe = StorageKeyfileProbe(self.root, self.uid, self.record.sha256())
+            self._assert_probe_root()
+            self.assert_current()
             return self.metadata
         except BaseException:
             self.close()
             raise
 
+    def _assert_probe_root(self):
+        # The probe opens its own description. Bind that actual FD to the
+        # supervisor's already retained no-follow C1 chain immediately, not
+        # only to the pathname or to the later saved-receipt validator.
+        need(self.probe is not None and self.probe.fd is not None,
+             "N07_B4_STORAGE_NOT_OPEN")
+        need(directory_identity(os.fstat(self.probe.fd)) == self.chain[-1][3]
+             == directory_identity(self.probe.root)
+             and self.probe.uid == self.uid
+             and self.probe.storage_digest == self.record.sha256(),
+             "N07_B4_PROBE_ROOT_MISMATCH")
+
     def snapshot(self):
         self.assert_current()
-        need(self.probe is not None, "N07_B4_STORAGE_NOT_OPEN")
+        self._assert_probe_root()
         result = self.probe.snapshot()
+        self._assert_probe_root()
+        root = self.chain[-1][3]
+        need(type(result["root_dev"]) is int and type(result["root_ino"]) is int
+             and result["root_dev"] == root["dev"] and result["root_ino"] == root["ino"]
+             and result["storage_digest"] == self.record.sha256(),
+             "N07_B4_PROBE_ROOT_MISMATCH")
         self.assert_current()
         return result
 

@@ -44,8 +44,11 @@ def _identity(info: os.stat_result) -> tuple:
 
 def _directory(fd: int, uid: int) -> os.stat_result:
     info = os.fstat(fd)
+    # Match C1's directory contract: overlay/union filesystems can expose
+    # st_nlink == 1 for a valid linked directory. This is separate from the
+    # exact nlink == 1 requirement for regular keyfile/control files.
     need(stat.S_ISDIR(info.st_mode) and info.st_uid == uid
-         and not info.st_mode & 0o022 and info.st_nlink >= 2,
+         and not info.st_mode & 0o022 and info.st_nlink > 0,
          "N07_UNSAFE_DIRECTORY")
     return info
 

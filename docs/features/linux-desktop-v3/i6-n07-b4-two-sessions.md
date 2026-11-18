@@ -77,7 +77,10 @@ no-follow directory chain and fixed C1 directory identities. It opens and
 retains that exact root across both sessions. A path supplied by the GUI
 producer cannot select an alternative trusted profile. Missing, unsafe or
 replaced components are failures rather than permission to adopt another
-root.
+root. The keyfile probe's separately opened root FD is compared with the
+retained C1 root immediately after open and before and after every snapshot.
+Each returned proof's root device/inode and storage digest must match that
+same authority before the supervisor can acknowledge the barrier.
 
 The supervisor prepares only the managed, fixed eight-line document below
 the profile's `Documents/` at this first barrier, before either GUI launch.
@@ -180,6 +183,17 @@ in for inode/UID/size values, decimal strings cannot stand in for integers,
 hashes must be lowercase SHA-256, and file size remains bounded to 64 KiB.
 The existing no-follow, owner, mode, type, single-link, duplicate-key and
 concurrent-change guards are preserved.
+
+Directory link counts follow the product C1 rule: a directory must remain
+linked (`st_nlink > 0`). The earlier `>= 2` check in the observer assumed a
+filesystem-specific directory-link convention; a valid overlay/union
+directory may report one link. This correction does not change the exact
+`nlink == 1` requirement for regular keyfiles, `owner.json` or `profile.lock`,
+or any UID, mode, no-follow, retained-identity or setting-value predicate.
+If an ancestor check fails, the partial receipt retains only its fixed-chain
+component ordinal/name and bounded actual stat fields under the rejected
+`eidolon-i6-n07-b4-storage-rejected-v1` revision. This partial metadata cannot
+satisfy the successful trusted-storage schema.
 
 These are file observations. Even a successful three-point file predicate
 cannot establish that a particular menu item caused the change; independent
@@ -327,6 +341,47 @@ identities, three keyfile observations, six acquired states, fingerprint
 gaps and complete cleanup results here or in the PR's dated validation record.
 Until that evidence exists, this design does not claim a completed second
 session, GUI capture, successful CI or independent human approval.
+
+#### Initial CI acquisition — 2026-11-18
+
+- PR HEAD: `6342ac1c2253d632633239af5fd7eae487c2693f`;
+  CI checkout/source: `2035f8803e9cc34b5d4d4824bc6588a9d06f3451`.
+- L7a run [44302994015](https://github.com/tin-machine/eidolon-wayland/actions/runs/44302994015),
+  attempt 1; B4 job [134797319710](https://github.com/tin-machine/eidolon-wayland/actions/runs/44302994015/job/134797319710).
+- Failed artifact `14425489750`, named
+  `linux-desktop-v3-n07-b4-2035f8803e9cc34b5d4d4824bc6588a9d06f3451`;
+  downloaded ZIP SHA-256
+  `d299c5a4eb34e0bf26b5b7da0029a769194483170f78acf1f7a1b61af1e7a2c1`
+  (10,739 bytes).
+
+The independent supervisor refused the **first prelaunch** barrier with
+`N07_B4_UNSAFE_ANCESTOR`. No Mousepad Start, keyfile snapshot, fingerprint,
+candidate image or second session occurred. A later unconditional document
+check reported the secondary `N07_B4_STORAGE_NOT_OPEN`; the fix retains the
+first actual refusal and does not verify a never-created document.
+
+Independent re-reading of the unmodified saved packet applied the existing
+N01 trace and live-census predicates to the actual Inspect/Stop path. Remote
+finalizer, origin retirement, Runtime shutdown and Registry destruction were
+present; all final process/journal counts were zero and both locks were free.
+`external_rescue=false`. This proves recovery of the **prelaunch abort**,
+not cleanup of two launched Mousepad sessions. The Host fixture compiled and
+its 32 Rust tests plus four targeted core tests passed in this job.
+
+The initial packet did not retain the failing ancestor's stat fields. Review
+found an invalid filesystem assumption: the new ancestor guard and existing
+keyfile directory primitive required `st_nlink >= 2`, whereas product C1's
+directory contract requires a positive link count. Directory link count 1 is
+valid on filesystems including overlay layouts. The correction preserves all
+type/UID/mode/no-follow/held-inode checks and the regular-file single-link
+requirement; a rejected-only bounded stat diagnostic identifies future
+ancestor failures. This is not yet evidence of a successful acquisition.
+
+At the same HEAD, all five CodeQL language jobs succeeded. Verification run
+[44302994306](https://github.com/tin-machine/eidolon-wayland/actions/runs/44302994306)
+attempt 1 stopped Host and Android before compilation because APT installation
+exceeded the existing 240-second deadline (exit 124). Only failed jobs were
+requested again at the same SHA; no APT or product deadline was changed.
 
 ## 8. Remaining B5 and independent-review work
 
