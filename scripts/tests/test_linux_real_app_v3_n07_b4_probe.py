@@ -289,19 +289,36 @@ class SecondRendererTests(unittest.TestCase):
             probe.second_context(n, raw, values)
 
     def test_second_fingerprint_has_its_own_process_and_capture_binding(self):
-        record, _, _, source = fingerprint_fixture()
+        for schema in (probe.SECOND_SCHEMA, probe.SECOND_SCHEMA_V2):
+            with self.subTest(schema=schema):
+                record, _, _, source = fingerprint_fixture()
+                second, _, _ = second_fixture()
+                second["schema"] = schema
+                environment = {
+                    "run_id": second["run_id"], "source_sha256": source["tree_sha256"],
+                    "app": {"uid": 12002}, "before": {"pins": {"waypipe_sha256": "4" * 64}},
+                    "after": {"pins": {"waypipe_sha256": "4" * 64}}}
+                record["binding"] = fingerprint._binding(second, environment, source)
+                record["evidence"]["renderer"] = fingerprint._renderer(second)
+                record["values"] = fingerprint._derive(record, second, environment, source)
+                fingerprint.validate_fingerprint(record, second, environment, source)
+                self.assertEqual(record["binding"]["runtime"], "2")
+                record["binding"]["capture_id"] = "b" * 64
+                with self.assertRaises(ValueError):
+                    fingerprint.validate_fingerprint(record, second, environment, source)
+
+    def test_second_fingerprint_rejects_unknown_schema_and_variant(self):
         second, _, _ = second_fixture()
-        environment = {"run_id": second["run_id"], "source_sha256": source["tree_sha256"],
-                       "app": {"uid": 12002}, "before": {"pins": {"waypipe_sha256": "4" * 64}},
-                       "after": {"pins": {"waypipe_sha256": "4" * 64}}}
-        record["binding"] = fingerprint._binding(second, environment, source)
-        record["evidence"]["renderer"] = fingerprint._renderer(second)
-        record["values"] = fingerprint._derive(record, second, environment, source)
-        fingerprint.validate_fingerprint(record, second, environment, source)
-        self.assertEqual(record["binding"]["runtime"], "2")
-        record["binding"]["capture_id"] = "b" * 64
-        with self.assertRaises(ValueError):
-            fingerprint.validate_fingerprint(record, second, environment, source)
+        for schema in (None, "eidolon-i6-n07-b4-second-native-v3"):
+            with self.subTest(schema=schema):
+                second["schema"] = schema
+                with self.assertRaisesRegex(ValueError, "N07_FINGERPRINT_SESSION_SCHEMA"):
+                    fingerprint._session_readbacks(second)
+        for schema in (probe.SECOND_SCHEMA, probe.SECOND_SCHEMA_V2):
+            with self.subTest(schema=schema, variant="foreign"):
+                second.update(schema=schema, variant="foreign")
+                with self.assertRaisesRegex(ValueError, "N07_FINGERPRINT_SESSION_SCHEMA"):
+                    fingerprint._session_readbacks(second)
 
 
 class IndependentStorageAndGateTests(unittest.TestCase):

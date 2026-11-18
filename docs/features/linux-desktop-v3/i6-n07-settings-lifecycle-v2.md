@@ -269,3 +269,41 @@ Effective-theme read-only observation, independent reference review and
 Golden pin, B5 typed N07 receipt / Acceptance integration, and Quest / I7 / H
 validation remain separate work. No production six-state requirement or
 fail-closed pixel behavior is relaxed by this settings revision.
+
+## 8. First v2 execution: preserved partial failure
+
+The first new acquisition on 2026-11-19 JST failed at the final
+`second_retired` barrier with `N07_FINGERPRINT_SESSION_SCHEMA`:
+
+- PR HEAD: `a6c36581de72a0007ccf4f4857c90e613b15cf2d`.
+- Actual CI checkout/source: `92a81ad2783cef23a534bda9676b4ed101dc902f`.
+  Both commits have tree `bc1128dd713b41e91af9401eeb1df8fe7746e291`;
+  the CI checkout is a PR merge checkout, not a merge into main.
+- [L7a run 44414933333, attempt 1, B4 job 135192697859](https://github.com/tin-machine/eidolon-wayland/actions/runs/44414933333/job/135192697859).
+- Artifact `14477904906`,
+  `linux-desktop-v3-n07-b4-92a81ad2783cef23a534bda9676b4ed101dc902f`.
+- Original ZIP: 187,019 bytes; SHA-256
+  `557f139c2e14445b12644ab6fbfc25949f4edf77baee9adfba08979074ace1e1`.
+
+The fingerprint reader dispatched only `second-native-v1`. It rejected the
+explicit new `second-native-v2` after independently verified second product
+retirement, before the seventh settings snapshot. The correction adds that
+specific schema to the same per-process reader and tests both revisions,
+foreign bindings, unknown revisions and wrong variants. It changes no
+settings, identity, cleanup, pixel or fingerprint predicate.
+
+Independent rereading of the saved packet verified both native sessions and
+their product retirements, all six actual raw Renderer states and contexts,
+and the first six settings observations with actual geometry bounds. Full
+seven-point validation correctly rejected the missing final snapshot with
+`N07_SETTINGS_PHASE_MISSING`; old strict v1 still rejected the changed other
+settings. The first fingerprint contained 12/13 items, with theme missing.
+The second process's partial observations had `observation_errors=[]`, but
+its typed fingerprint receipt was not produced. No PNG candidate was made.
+
+Both native errors / cleanup errors were null; final process and journal
+censuses were zero, locks were released, and external rescue was false.
+The existing first Close reason classification was retained. Missing final
+observations are not reconstructed from these partial results: a new
+source-bound acquisition is required after the dispatch fix. The original
+failure ZIP and independent audit remain separate from that later run.

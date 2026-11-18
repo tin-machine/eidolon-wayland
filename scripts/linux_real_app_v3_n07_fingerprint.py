@@ -267,7 +267,9 @@ def _session_readbacks(native):
     its own pre-Open baseline and two acquired states under a distinct schema.
     The observer instance still owns exactly one Mousepad PID/start identity.
     """
-    if native.get("schema") == "eidolon-i6-n07-b4-second-native-v1":
+    if native.get("schema") in (
+            "eidolon-i6-n07-b4-second-native-v1",
+            "eidolon-i6-n07-b4-second-native-v2"):
         probe = native["n07_second"]
         need(native.get("variant") == "same_storage_restart_collection",
              "N07_FINGERPRINT_SESSION_SCHEMA")
