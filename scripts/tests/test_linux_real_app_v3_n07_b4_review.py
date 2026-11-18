@@ -162,20 +162,24 @@ class ReviewV2Tests(unittest.TestCase):
             review.ensure_independent(candidate, "f" * 32, observed_capture_ids=[
                 "f" * 64, candidate["sessions"]["second"]["capture_id"]])
 
-    def test_partial_or_failed_product_keeps_evidence_and_never_images(self):
+    def test_failed_product_export_keeps_only_bounded_diagnostic(self):
         inputs, _ = packet_inputs()
+        original = copy.deepcopy(inputs)
         with tempfile.TemporaryDirectory() as temporary, patch.object(
                 probe, "validate_collection", side_effect=probe.B4Invalid("N07_B4_SECOND_BEFORE_CLEANUP")):
             root = Path(temporary) / "packet"
             with self.assertRaisesRegex(ValueError, "N07_B4_SECOND_BEFORE_CLEANUP"):
                 review.export_bundle(root, **inputs)
-            self.assertTrue((root / "evidence" / "first-native.json").is_file())
+            self.assertEqual(list((root / "evidence").iterdir()), [])
             self.assertFalse((root / "candidate.json").exists())
             self.assertFalse((root / "raw").exists())
             diagnostic = json.loads((root / "diagnostic.json").read_text())
             self.assertFalse(diagnostic["normal_cleanup_verified"])
             self.assertFalse(diagnostic["candidate_created"])
             self.assertEqual(diagnostic["reason"], "N07_B4_SECOND_BEFORE_CLEANUP")
+        # Product partial receipts and explicit rejected-image bundles have
+        # their own preservation paths; this export never mutates its inputs.
+        self.assertEqual(inputs, original)
 
     def test_unapproved_six_state_packet_is_not_production_golden(self):
         inputs, verdict = packet_inputs()
@@ -225,6 +229,111 @@ class ReviewV2Tests(unittest.TestCase):
         with patch.object(probe, "validate_collection", return_value={"status": "collected"}), \
                 self.assertRaisesRegex(ValueError, "N07_B4_DIAGNOSTIC_REQUIRES_REJECTION"):
             review._rejected_observed(inputs, provenance)
+
+
+class PublicStorageExportTests(unittest.TestCase):
+    def test_both_revisions_preserve_prior_canonical_packet_bytes(self):
+        # Byte-compatibility pins for these synthetic unit fixtures, produced
+        # by the pre-projection builder at 2d66c10. These are not pixel Golden
+        # pins, collected GUI evidence or production approval inputs.
+        cases = (
+            (packet_inputs, "371331e8b030833b5d4e798b3e2daf2f40be9ef72593e1428e41ad0f21ba0158"),
+            (lifecycle_packet_inputs, "a2f928a9f85aa8eb15c78663373053ed9ea3214c99f0723dd12478080d2254be"),
+        )
+        for factory, digest in cases:
+            inputs, verdict = factory()
+            with self.subTest(factory=factory.__name__), patch.object(
+                    probe, "validate_collection", return_value=verdict):
+                candidate = review.build_candidate(**inputs)
+                self.assertEqual(evidence.sha(evidence.canonical(candidate)), digest)
+                self.assertEqual(evidence.canonical(candidate["storage"]),
+                                 evidence.canonical(inputs["supervisor"]["trusted_storage"]))
+                for session in candidate["sessions"].values():
+                    self.assertEqual(session["storage_digest"], candidate["storage"]["storage_digest"])
+
+    def test_projection_owns_each_mutable_public_container(self):
+        for factory in (packet_inputs, lifecycle_packet_inputs):
+            inputs, verdict = factory()
+            original = inputs["supervisor"]["trusted_storage"]
+            before = evidence.canonical(original)
+            with self.subTest(factory=factory.__name__), patch.object(
+                    probe, "validate_collection", return_value=verdict):
+                projected = review.build_candidate(**inputs)["storage"]
+            self.assertIsNot(projected, original)
+            self.assertIsNot(projected["directories"], original["directories"])
+            pairs = [(projected[name], original[name]) for name in (
+                "record", "owner", "root_identity", "control_files", "control_files_final")]
+            pairs.extend(zip(projected["directories"], original["directories"]))
+            for field in ("control_files", "control_files_final"):
+                pairs.extend((projected[field][name], original[field][name])
+                             for name in ("owner.json", "profile.lock"))
+            for exported, source in pairs:
+                self.assertIsNot(exported, source)
+                exported["unit_mutation"] = True
+            projected["directories"].append({"unit_mutation": True})
+            projected["unit_mutation"] = True
+            self.assertEqual(evidence.canonical(original), before)
+            self.assertIsNot(projected["control_files"]["owner.json"],
+                             projected["control_files_final"]["owner.json"])
+
+    def test_unknown_private_field_at_each_layer_is_rejected_before_any_evidence_write(self):
+        paths = (
+            (), ("record",), ("owner",), ("root_identity",), ("directories", 0),
+            ("directories", -1), ("control_files",), ("control_files", "owner.json"),
+            ("control_files", "profile.lock"), ("control_files_final",),
+            ("control_files_final", "owner.json"), ("control_files_final", "profile.lock"),
+        )
+        canary = "PUBLIC_EXPORT_CANARY_NOT_A_REAL_KEY"
+        for factory in (packet_inputs, lifecycle_packet_inputs):
+            for path in paths:
+                inputs, verdict = factory()
+                value = inputs["supervisor"]["trusted_storage"]
+                for key in path:
+                    value = value[key]
+                value["private_key"] = canary
+                before = evidence.canonical(inputs["supervisor"]["trusted_storage"])
+                # Even if the full collection oracle were accidentally
+                # bypassed, the public export boundary must remain closed.
+                with self.subTest(factory=factory.__name__, path=path), \
+                        tempfile.TemporaryDirectory() as temporary, patch.object(
+                            probe, "validate_collection", return_value=verdict):
+                    root = Path(temporary) / "packet"
+                    with self.assertRaises(ValueError):
+                        review.export_bundle(root, **inputs)
+                    self.assertEqual(list((root / "evidence").iterdir()), [])
+                    self.assertEqual(sorted(item.name for item in root.iterdir()),
+                                     ["diagnostic.json", "evidence"])
+                    raw = (root / "diagnostic.json").read_bytes()
+                    self.assertNotIn(canary.encode(), raw)
+                    self.assertLess(len(raw), 512)
+                    diagnostic = json.loads(raw)
+                    self.assertFalse(diagnostic["candidate_created"])
+                    self.assertFalse(diagnostic["normal_cleanup_verified"])
+                self.assertEqual(evidence.canonical(inputs["supervisor"]["trusted_storage"]), before)
+
+    def test_projection_rejects_invalid_types_and_derived_values_without_normalizing(self):
+        mutations = (
+            lambda s: s.update(uid=True),
+            lambda s: s.update(passwd_home="/home/foreign"),
+            lambda s: s.update(root_path="/tmp/foreign"),
+            lambda s: s.update(storage_digest="f" * 64),
+            lambda s: s.update(owner_sha256="f" * 64),
+            lambda s: s["owner"].update(installation_id="f" * 32),
+            lambda s: s["root_identity"].update(ino=True),
+            lambda s: s["root_identity"].update(dev=1 << 63),
+            lambda s: s["directories"][0].update(relative="foreign"),
+            lambda s: s["directories"][0].update(mode=0o777),
+            lambda s: s["control_files"]["owner.json"].update(mtime_ns="1"),
+            lambda s: s["control_files"]["owner.json"].update(nlink=2),
+            lambda s: s["control_files_final"]["owner.json"].update(ctime_ns=654321),
+        )
+        for index, mutate in enumerate(mutations):
+            storage, _, _ = storage_fixture()
+            mutate(storage)
+            before = copy.deepcopy(storage)
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                review._public_storage_evidence(storage)
+            self.assertEqual(storage, before)
 
 
 class ReviewV3LifecycleTests(unittest.TestCase):

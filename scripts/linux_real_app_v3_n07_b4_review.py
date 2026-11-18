@@ -13,9 +13,10 @@ import argparse
 import copy
 import html
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 
+import linux_desktop_v3_contract as contract
 import linux_real_app_v3_evidence as evidence
 import linux_real_app_v3_n07_b4_probe as probe
 import linux_real_app_v3_n07_pixel as pixel
@@ -117,12 +118,87 @@ def _candidate_contract(verdict, supervisor):
     }
 
 
+def _public_storage_stat(value, *, control=False, relative=None):
+    """Copy only bounded numeric fixture stat fields, never an input object."""
+    fields = ("dev", "ino", "uid", "mode") + (
+        ("nlink", "size", "mtime_ns", "ctime_ns") if control else ())
+    b3._exact(value, set(fields) | ({"relative"} if relative is not None else set()),
+              "N07_B4_REVIEW_STORAGE_FIELDS")
+    result = {}
+    for name in fields:
+        number = value[name]
+        minimum = 1 if name in ("dev", "ino", "nlink", "mtime_ns", "ctime_ns") else 0
+        maximum = 0o7777 if name == "mode" else (1 << 63) - 1
+        b3.need(type(number) is int and minimum <= number <= maximum,
+                "N07_B4_REVIEW_STORAGE_STAT")
+        result[name] = number
+    if relative is not None:
+        result["relative"] = relative
+    probe.same(result, value, "N07_B4_REVIEW_STORAGE_PROJECTION")
+    return result
+
+
+def _public_storage_evidence(value):
+    """Reconstruct the public fixture receipt after full collection validation.
+
+    The live storage owner holds FDs and private observer state. Its receipt
+    is a separate exact schema of contract identities and bounded stat facts;
+    copying that owner or an arbitrary metadata dictionary is not an export
+    boundary. Keep every existing wire field and reject extra fields rather
+    than dropping or normalizing them. The product/storage oracle remains
+    responsible for joining these facts to both actual sessions.
+    """
+    b3._exact(value, {"record", "storage_digest", "uid", "passwd_home", "root_path",
+                      "root_identity", "owner", "owner_sha256", "directories",
+                      "control_files", "control_files_final"}, "N07_B4_REVIEW_STORAGE_FIELDS")
+    record = contract.StorageRecord.parse(contract.canonical_json(value["record"]))
+    owner = contract.StorageOwner.parse(contract.canonical_json(value["owner"]))
+    record_fields, owner_fields = record.record(), owner.record()
+    b3.need(all(record_fields[name] == owner_fields[name]
+                for name in ("installation_id", "profile_storage_id")),
+            "N07_B4_REVIEW_STORAGE_PROJECTION")
+    uid = owner_fields["uid"]
+    root_path = "/home/eidolon-app/.local/share/eidolon/apps/" + record_fields["installation_id"] + "/" \
+                + record_fields["profile_storage_id"] + "/" + contract.EDITOR
+    root = _public_storage_stat(value["root_identity"])
+    b3.need(root["uid"] == uid and root["mode"] == 0o700, "N07_B4_REVIEW_STORAGE_STAT")
+    names = list(PurePosixPath(root_path).parts)
+    names[-1] = root_path
+    b3.need(type(value["directories"]) is list and len(value["directories"]) == len(names),
+            "N07_B4_REVIEW_STORAGE_FIELDS")
+    directories = [_public_storage_stat(item, relative=name)
+                   for item, name in zip(value["directories"], names)]
+    b3.need(all(item["uid"] == (0 if index < 2 else uid) and item["mode"] & 0o022 == 0
+                for index, item in enumerate(directories)), "N07_B4_REVIEW_STORAGE_STAT")
+    probe.same({name: directories[-1][name] for name in root}, root,
+               "N07_B4_REVIEW_STORAGE_PROJECTION")
+    controls = {}
+    for field in ("control_files", "control_files_final"):
+        b3._exact(value[field], {"owner.json", "profile.lock"}, "N07_B4_REVIEW_STORAGE_FIELDS")
+        controls[field] = {}
+        for name in ("owner.json", "profile.lock"):
+            stamp = _public_storage_stat(value[field][name], control=True)
+            b3.need(stamp["uid"] == uid and stamp["mode"] == 0o600 and stamp["nlink"] == 1
+                    and stamp["size"] == (len(owner.canonical()) if name == "owner.json" else 0),
+                    "N07_B4_REVIEW_STORAGE_STAT")
+            controls[field][name] = stamp
+    probe.same(controls["control_files"], controls["control_files_final"],
+               "N07_B4_REVIEW_STORAGE_PROJECTION")
+    result = {"record": record_fields, "storage_digest": record.sha256(), "uid": uid,
+              "passwd_home": "/home/eidolon-app", "root_path": root_path,
+              "root_identity": root, "owner": owner_fields, "owner_sha256": owner.sha256(),
+              "directories": directories, **controls}
+    probe.same(result, value, "N07_B4_REVIEW_STORAGE_PROJECTION")
+    return result
+
+
 def build_candidate(native, supervisor, first, second, environments, fingerprints,
                     contexts, source, *, native_raws, provenance, proposal=None):
     inputs = dict(native=native, supervisor=supervisor, first=first, second=second,
                   environments=environments, fingerprints=fingerprints,
                   contexts=contexts, source=source, native_raws=native_raws)
     verdict = probe.validate_collection(**inputs)
+    storage = _public_storage_evidence(supervisor["trusted_storage"])
     settings_contract = _candidate_contract(verdict, supervisor)
     b3._provenance(provenance, source)
     states, extra = b3._observed(first, contexts["first"])
@@ -140,7 +216,7 @@ def build_candidate(native, supervisor, first, second, environments, fingerprint
         session = verdict["sessions"][label]
         mapping[label] = {"nonce": session["capture"]["nonce"],
             "capture_id": session["capture"]["capture_id"], "runtime": session["runtime"],
-            "owner_id": session["owner_id"], "storage_digest": supervisor["trusted_storage"]["storage_digest"],
+            "owner_id": session["owner_id"], "storage_digest": storage["storage_digest"],
             "native_file": label + "-native.json", "fingerprint_file": label + "-fingerprint.json",
             "states": list(pixel.STATES[:4] if label == "first" else pixel.STATES[4:]),
             "process": {key: fingerprints[label]["evidence"]["process"][key]
@@ -175,7 +251,7 @@ def build_candidate(native, supervisor, first, second, environments, fingerprint
         "fingerprint_observation": copy.deepcopy(fingerprints),
         "fingerprint_missing": list(missing), "states": states, "diagnostic_contexts": extra,
         "document": copy.deepcopy(supervisor["document"]),
-        "storage": copy.deepcopy(supervisor["trusted_storage"]),
+        "storage": storage,
         "keyfile_sequence": copy.deepcopy(supervisor["keyfile"]),
         **settings_contract,
         "popup": {"first_initial": copy.deepcopy(first["n07_probe"]["popup"]),
@@ -297,16 +373,21 @@ def _html(candidate, digest):
 def export_bundle(output: Path, *, provenance, proposal=None, **inputs):
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     (output / "evidence").mkdir(mode=0o700)
-    raw_inputs = _evidence_bytes(inputs, provenance, proposal)
-    for name, raw in raw_inputs.items():
-        b3.need(type(raw) is bytes and 0 < len(raw) <= probe.MAX_CONTEXT_BYTES, "N07_B4_REVIEW_INPUT_BOUNDS")
-        b3._write(output / "evidence" / name, raw)
     try:
         candidate = build_candidate(**inputs, provenance=provenance, proposal=proposal)
         raw = evidence.canonical(candidate)
         b3.need(len(raw) <= MAX_PACKET_BYTES, "N07_B4_REVIEW_PACKET_BOUNDS")
         digest = evidence.sha(raw)
         validate_candidate(raw, digest, **inputs, provenance=provenance, proposal=proposal)
+        # Public candidate inputs are written only after both reconstruction
+        # passes. Product partial receipts and rejected diagnostic exports
+        # retain their separate preservation paths; invalid public metadata
+        # must not be copied first and rejected after publication.
+        raw_inputs = _evidence_bytes(inputs, provenance, proposal)
+        for name, content in raw_inputs.items():
+            b3.need(type(content) is bytes and 0 < len(content) <= probe.MAX_CONTEXT_BYTES,
+                    "N07_B4_REVIEW_INPUT_BOUNDS")
+            b3._write(output / "evidence" / name, content)
         for name in ("raw", "aids", "context"):
             (output / name).mkdir(mode=0o700)
         for name, content in _assets(candidate).items():

@@ -17,6 +17,13 @@ below remain the interpretation of their historical artifacts and failures.
 They are not silently revalidated as v2, and no new CI or Golden success is
 claimed by this supersession note.
 
+**2026-11-19 export / CI correction:** the later
+[public-metadata export record](i6-n07-b4-public-metadata-20261119.md)
+distinguishes successful Actions workflows from the independent failing
+CodeQL security check, records its reproduced data flow, and documents
+validation before public review output. Existing acquisition identities and
+candidate/settings revisions remain unchanged.
+
 ## 1. Baseline and responsibility
 
 Work starts from main `ee9192d12957a17aaa3d61bd6e8ba1ca86a99d6f`, the squash
