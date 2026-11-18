@@ -126,3 +126,101 @@ Primary references:
 [Wayland xdg_popup](https://wayland.app/protocols/xdg-shell),
 [Wayland book popup lifecycle](https://wayland-book.com/xdg-shell-in-depth/popups.html),
 [Mousepad fixed menu](https://github.com/xfce-mirror/mousepad/blob/65fbfe0459259f820fcc8b9c4dd454228304842a/mousepad/resources/gtk/menus.ui).
+
+## N07-B2 implementation checkpoint — four real GUI candidate ROIs
+
+This checkpoint is **not** N07 acceptance, does **not** approve the N07-A
+pixel golden and does **not** run a second C2 session. It extends the
+merged N07-B1 product read-only seams rather than rewriting ownership or
+adding GTK introspection. The new Host variant is
+`line_numbers_four_rois_probe` and the independent saved-artifact gate is
+`scripts/linux_real_app_v3_n07_b2_probe.py`.
+
+### Deterministic transaction and measurements
+
+The same Registry/Runtime/SDK Create target is held throughout. N07-B1
+obtains `before_menu`, opens the real View xdg_popup via its ordinary
+pointer commands (including bounded press/grab delay), binds popup
+parent/root, ACK, grab serial and renderer layer, and obtains `menu_open`.
+B2 then measures:
+
+| B2 observation | Real readback ROI | Timing |
+| --- | --- | --- |
+| `first_off_gutter` | B1's initial real ROI 1, (0,64,48,128) | Before first View click |
+| `first_off_checkmark` | (112,96,112,128) | While initial owned popup is visible |
+| `first_on_gutter` | (0,64,48,128) | After candidate Line Numbers pointer and popup dismissal |
+| `first_on_checkmark` | (112,96,112,128) | After ordinary Registry pointer reopens View |
+
+The initial pointer position is the B1 measured **unreviewed** View
+candidate UV (0.160,0.063), corresponding to (164,48) at 1024×768.
+The Line Numbers candidate is UV (0.195,0.164), corresponding to
+(200,126). CI diagnostic run `44089737962` retained a real View popup crop:
+the previous y=152 click was actually on **Menubar**, not Line Numbers;
+the compositor forwarded the click to its popup surface, but the native
+probe rejected missing post-action content-frame progress. The
+visible Line Numbers row is near y=126, so B2 calibrates this coordinate
+from real renderer data. This is a **discovery**, not a reviewed golden,
+a verified checkbox toggle, or formal N07 evidence.
+
+The proposed menu item is third in the fixed Mousepad
+0.6.3 upstream View menu (following Select Font and Color Scheme), but
+**neither coordinate nor observed glyph has been independently reviewed**.
+The region is broad enough to retain post-run diagnostics. No shortcut,
+private GTK call, direct settings mutation, or replacement renderer is used.
+
+The Host demands actual compositor forwarded button deltas for both
+press and release, actual popup-surface delivery for the item, unchanged
+input epoch and capture/target generation, popup dismissal, newer content
+frame, an independently created second View popup and newer after-state
+readbacks. Any failure leaves a partial bounded native diagnostic and
+normal N02 product retirement. B2 does **not** manufacture a successful
+Line Numbers observation if a candidate click opens a different item.
+
+`linux_real_app_v3_n07_b2_probe.py` independently reopens the saved
+B1 provenance/cleanup evidence, validates the four staged RGBA/SHA-256
+payloads, SDK Create lease, renderer owner/context, target generation,
+backend, exact ROI rectangles, frame ordering, popup parent/serial/layer,
+and a nonzero OFF/ON pixel contrast. The same observer compares real
+bytes only; an observed frame is never an expected golden. The test
+includes malicious receipt mutations and the source-bound disposable
+non-root Mousepad job. No CI green status is permitted to update
+`host_v3_acceptance_passed=false` or N07's **0/13 verified**.
+
+### Trust boundary / handoff
+
+**Only diagnostic**: without independent review of the candidate
+coordinates, exact menu item identity, checkmark/gutter glyphs, and a
+reviewed pixel golden, OFF/ON semantic labels remain hypotheses.
+No keyfile boolean measurement, verified second session, or typed N07
+receipt is produced by this stage. Pixel readback remains bound to
+the *first* capture only; `second_on_numbers_1_8` and
+`second_on_checkmark` are expressly forbidden in the B2 record.
+
+B3 must independently review the actual image pixels, refine the menu
+coordinates/ROIs as needed, freeze Mousepad/GTK/Waypipe/fonts/Mesa
+fingerprint and golden SHA; B4 must use a second nonce and same C1
+StorageRecord to test persistence; B5 can only then integrate the
+independent 13-assertion N07 acceptance oracle. Quest 3 Meta SDK
+proof remains a separate I7/H milestone.
+
+### B2 follow-up: immutable Renderer identity vs dynamic GPU timing
+
+The four live B2 Host frames were observed as `2 → 5 → 9 → 14`,
+with the same SDK Create target, renderer owner `1` and context
+epoch `1`. The Host EGL `backend.max_swap_us` reported
+`5 → 12 → 12 → 12`: this is a running wall-time maximum, **not**
+a renderer identity. Comparing the entire `backend` object would
+incorrectly fail a real captured GUI transition.
+
+The B2 independent oracle now requires an exact typed backend shape;
+compares all immutable EGL identity fields (vendor, renderer, version,
+config ID, width/height, RGBA channel bits, readback capability);
+and enforces a nonnegative nondecreasing `max_swap_us` measurement
+**without** treating its legitimate increase as renderer replacement.
+Owner, context epoch, target/generation, Create lease and RGBA/SHA
+checks remain unchanged. Both synthetic adversarial mutations and
+reopened saved Host receipts are used as regression gates.
+
+This change does not claim verified Line Numbers semantics or approve
+a pixel golden. `host_v3_acceptance_passed=false`, N07 is still
+**0/13 verified**, and B3 golden review remains required.

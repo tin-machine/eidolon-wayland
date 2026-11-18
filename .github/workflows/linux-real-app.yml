@@ -454,6 +454,39 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
+
+  v3_n07_b2:
+    needs: scope
+    if: ${{ needs.scope.outputs.mousepad == 'true' }}
+    name: N07-B2 real Line Numbers candidate / four renderer ROIs (NOT acceptance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: N07-B2 adversarial pointer, popup and pixel provenance tests
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_v3_n07_b1.py' -v
+          python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_v3_n07_b2.py' -v
+      - name: Disposable real Mousepad menu selection and four readbacks
+        env:
+          CI_PR_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        run: bash scripts/ci/check-linux-desktop-v3-n07-b2 --artifact-root "$RUNNER_TEMP/i6-n07-b2"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ always() }}
+        with:
+          name: linux-desktop-v3-n07-b2-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/i6-n07-b2/n07-b2-validation.json
+            ${{ runner.temp }}/i6-n07-b2/n07-b2-native.json
+            ${{ runner.temp }}/i6-n07-b2/n07-b2-environment.json
+            ${{ runner.temp }}/i6-n07-b2/container.json
+          if-no-files-found: warn
+          retention-days: 3
+
+
   v3_n03:
     needs: scope
     if: ${{ needs.scope.outputs.mousepad == 'true' }}

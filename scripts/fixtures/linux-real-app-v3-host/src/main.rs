@@ -6,6 +6,7 @@ mod host_n04;
 mod host_n05;
 mod host_n06;
 mod host_n07;
+mod host_n07_b2;
 mod host_sdk;
 use eidolon_core::runtime::Runtime;
 use eidolon_model::{
@@ -765,7 +766,7 @@ fn run() -> Result<bool> {
                     && n05_variant.is_none()
                     && n06_variant.is_none() =>
             {
-                if value != host_n07::VARIANT {
+                if value != host_n07::VARIANT && value != host_n07_b2::VARIANT {
                     return Err("I6_ARGUMENT_INVALID");
                 }
                 n07_probe_variant = Some(value);
@@ -802,7 +803,9 @@ fn run() -> Result<bool> {
     eprintln!("I6_RUNNER_STAGE registry_create");
     let mut driver = Driver::new(&config, key)?;
     eprintln!("I6_RUNNER_STAGE exercise");
-    let first = if n07_probe_variant.is_some() {
+    let first = if n07_probe_variant.as_deref() == Some(host_n07_b2::VARIANT) {
+        driver.exercise_n07_b2_probe(&descriptor.run_id).err()
+    } else if n07_probe_variant.is_some() {
         driver.exercise_n07_probe(&descriptor.run_id).err()
     } else if let Some(value) = n06_variant.as_deref() {
         driver
@@ -865,7 +868,9 @@ fn run() -> Result<bool> {
         driver.shutdown().err()
     });
     eprintln!("I6_RUNNER_STAGE receipt");
-    let receipt = if n07_probe_variant.is_some() {
+    let receipt = if n07_probe_variant.as_deref() == Some(host_n07_b2::VARIANT) {
+        driver.receipt_n07_b2_probe(&descriptor.run_id, first, cleanup)
+    } else if n07_probe_variant.is_some() {
         driver.receipt_n07_probe(&descriptor.run_id, first, cleanup)
     } else if let Some(value) = n06_variant.as_deref() {
         driver.receipt_n06(&descriptor.run_id, value, first, cleanup)

@@ -38,7 +38,7 @@ fn delivered_pointer(before: &Value, after: &Value, target: &Value) -> bool {
         && before["runtime"]["input_resets"] == after["runtime"]["input_resets"]
 }
 
-fn popup_grab_matches_click(popup: &Value, pointer: &Value) -> bool {
+pub(super) fn popup_grab_matches_click(popup: &Value, pointer: &Value) -> bool {
     // An explicit xdg_popup.grab must cite the initiating client pointer
     // event's serial, not an unrelated input epoch or another capture.
     match popup["grab_serial"].as_u64() {
@@ -51,7 +51,7 @@ fn popup_grab_matches_click(popup: &Value, pointer: &Value) -> bool {
     }
 }
 
-fn popup_is_current(popup: &Value, target: &Value) -> bool {
+pub(super) fn popup_is_current(popup: &Value, target: &Value) -> bool {
     popup["role"] == "xdg_popup"
         && popup["root_window"] == target["window"]
         && popup["captured_origin"] == true
@@ -94,6 +94,21 @@ impl Driver {
     /// Only the compositor's live surface-delivery counter can certify a
     /// forwarded button; a Registry Accepted or button-reset delta cannot.
     fn n07_click(&mut self, target: &Value, epoch: u64, req: &mut u32) -> Result<Value> {
+        self.n07_click_at(target, epoch, req, VIEW_CANDIDATE_UV, [160, 63], true)
+    }
+
+    /// Keep the B1 press/grab race mitigation for both menu invocations.
+    /// The item click must NOT wait for a newly created popup: activation
+    /// normally dismisses the existing menu on button release.
+    pub(super) fn n07_click_at(
+        &mut self,
+        target: &Value,
+        epoch: u64,
+        req: &mut u32,
+        uv: [f64; 2],
+        uv_milli: [u32; 2],
+        await_popup: bool,
+    ) -> Result<Value> {
         let before = self.pump()?;
         let press_baseline = before["runtime"]["app"]["input"]["pointer"]["delivered_buttons"]
             .as_u64()
@@ -109,7 +124,7 @@ impl Driver {
             let command = json!({
                 "schema":1, "type":"pointer", "request_id":number.to_string(),
                 "target":target,"input_epoch":epoch,
-                "pointer":{"source":SOURCE,"uv":VIEW_CANDIDATE_UV,
+                "pointer":{"source":SOURCE,"uv":uv,
                            "event":event,"time_ms":time_ms},
             });
             self.n02_command(command, "pointer")?;
@@ -131,7 +146,7 @@ impl Driver {
                         && pointer["hover_window"] == target["window"]
                 })?;
                 let deadline = Instant::now() + Duration::from_secs(2);
-                loop {
+                while await_popup {
                     let snapshot = self.pump()?;
                     if snapshot["runtime"]["app"]["popups"]
                         .as_array()
@@ -157,7 +172,7 @@ impl Driver {
             "target":target,"source":SOURCE,"input_epoch":epoch,
             // Receipt contract prohibits JSON floats. Transport still uses
             // the real [f64;2] UV command; evidence stores exact milli-units.
-            "uv_milli":[160,63],"coordinate_reviewed":false,
+            "uv_milli":uv_milli,"coordinate_reviewed":false,
             "first_request":(*req - 3).to_string(),
             "next_request":req.to_string(),
             "before":before["runtime"]["app"]["input"]["pointer"],
@@ -171,6 +186,17 @@ impl Driver {
     }
 
     fn n07_capture(&mut self, target: &Value, phase: &str) -> Result<Value> {
+        self.n07_capture_with_rois(target, phase, None)
+    }
+
+    /// B2 keeps the same current SDK Create lease and renderer readback API;
+    /// it never draws or fabricates pixels from the Host process.
+    pub(super) fn n07_capture_with_rois(
+        &mut self,
+        target: &Value,
+        phase: &str,
+        custom_rois: Option<Vec<HostReadbackRoi>>,
+    ) -> Result<Value> {
         let snapshot = self.pump()?;
         let renderer_target = snapshot["runtime"]["render"]["targets"]
             .as_array()
@@ -186,7 +212,10 @@ impl Driver {
             .ok_or("I6_N07_RENDERER_NOT_READY")?;
         let native_target: TargetKey =
             serde_json::from_value(target.clone()).map_err(|_| "I6_N07_TARGET_INVALID")?;
-        let rois = discovery_rois(width, height)?;
+        let rois = match custom_rois {
+            Some(rois) => rois,
+            None => discovery_rois(width, height)?,
+        };
         let evidence = self
             .n02_sdk
             .as_mut()
@@ -197,7 +226,9 @@ impl Driver {
             || evidence["source"] != "host_renderer_readback"
             || evidence["receipt"]["target"] != *target
             || evidence["receipt"]["runtime"] != self.handle.to_string()
-            || evidence["pixels"].as_array().is_none_or(|v| v.len() != 2)
+            || evidence["pixels"]
+                .as_array()
+                .is_none_or(|v| v.len() != rois.len())
         {
             return Err("I6_N07_RENDERER_ORIGIN_INVALID");
         }
