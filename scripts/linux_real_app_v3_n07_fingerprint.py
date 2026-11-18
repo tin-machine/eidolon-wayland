@@ -11,6 +11,7 @@ no widget/action API is called and no C1 setting is changed. Missing observation
 from __future__ import annotations
 
 import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -240,6 +241,25 @@ def _mapped_paths(raw):
     return sorted(fonts), libraries
 
 
+def _process_credentials(raw, uid):
+    """Filter privilege-changing SSH processes before protected /proc reads.
+
+    The owner of /proc/PID reflects effective credentials/dumpability, not all
+    real/effective/saved/fs IDs. A same-owner directory is insufficient to
+    identify an ordinary app process or to make readlink(exe) readable.
+    """
+    need(type(raw) is bytes and len(raw) <= 16384, "N07_FINGERPRINT_STATUS_BOUNDS")
+    rows = [line.split()[1:] for line in raw.splitlines() if line.startswith(b"Uid:")]
+    need(len(rows) == 1 and len(rows[0]) == 4
+         and all(value.isdigit() for value in rows[0]), "N07_FINGERPRINT_STATUS_INVALID")
+    return tuple(int(value) for value in rows[0]) == (uid, uid, uid, uid)
+
+
+def _io_reason(stage, error):
+    suffix = "ACCESS_DENIED" if error.errno in (errno.EACCES, errno.EPERM) else "IO_FAILED"
+    return "N07_FINGERPRINT_" + stage + "_" + suffix
+
+
 def _binding(native, environment, source):
     probe = native["n07_probe"]
     receipt = probe["before_menu"]["readback"]["receipt"]
@@ -453,7 +473,8 @@ class LiveFingerprintObserver:
         need(self.worker is None and self.policy == _policy(), "N07_FINGERPRINT_OBSERVER_REUSED")
         self.worker = subprocess.Popen([
             "/usr/bin/python3", "-B", str(Path(__file__).resolve()),
-            "--observe", str(self.app_uid), self.pins["mousepad_executable_sha256"],
+            "--observe", str(self.app_uid), str(self.app_uid),
+            self.pins["mousepad_executable_sha256"],
         ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             user=self.app_uid, group=self.app_uid, extra_groups=[],
             start_new_session=True, cwd="/", env={"PATH": "/usr/bin:/bin", "HOME": "/",
@@ -506,22 +527,42 @@ class LiveFingerprintObserver:
         for directory in Path("/proc").iterdir():
             if not directory.name.isdecimal():
                 continue
+            # Discovery can encounter short-lived, privileged SSH processes.
+            # An inaccessible nonidentified entry must not discard another
+            # valid Mousepad snapshot from the entire polling iteration.
             try:
                 if directory.stat().st_uid != self.app_uid:
                     continue
+                with (directory / "status").open("rb") as f:
+                    if not _process_credentials(f.read(16385), self.app_uid):
+                        continue
                 if os.readlink(directory / "exe") != "/usr/bin/mousepad":
                     continue
+            except PermissionError:
+                self.discovery_access_denied = True
+                continue
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            stage = "PROCESS_STAT"
+            try:
                 pid = int(directory.name)
                 with (directory / "stat").open("rb") as f:
                     raw_stat = f.read(8193)
                 need(len(raw_stat) <= 8192, "N07_FINGERPRINT_PROCESS_BOUNDS")
                 start = int(raw_stat.rsplit(b")", 1)[1].split()[19])
+                stage = "PROCESS_ENVIRONMENT"
                 with (directory / "environ").open("rb") as f:
                     env = _environment(f.read(65537))
+                stage = "PROCESS_MAPS"
                 with (directory / "maps").open("rb") as f:
                     fonts, libraries = _mapped_paths(f.read(MAX_MAPS + 1))
                 matched.append((pid, start, env, fonts, libraries))
             except (FileNotFoundError, ProcessLookupError):
+                continue
+            except OSError as error:
+                # Once exe and all UIDs identify Mousepad, retain a specific
+                # bounded failure. Do not fabricate its environment/fonts.
+                self.errors.add(_io_reason(stage, error))
                 continue
         need(len(matched) <= 1, "N07_FINGERPRINT_AMBIGUOUS_PROCESS")
         for pid, start, env, fonts, libraries in matched:
@@ -554,8 +595,10 @@ class LiveFingerprintObserver:
                 self._sample()
             except FingerprintError as error:
                 self.errors.add(str(error))
-            except (OSError, ValueError, UnicodeError, IndexError):
-                self.errors.add("N07_FINGERPRINT_OBSERVATION_FAILED")
+            except OSError as error:
+                self.errors.add(_io_reason("OBSERVATION", error))
+            except (ValueError, UnicodeError, IndexError):
+                self.errors.add("N07_FINGERPRINT_OBSERVATION_PARSE_FAILED")
         self.errors.add("N07_FINGERPRINT_OBSERVER_TIMEOUT")
 
     def finish(self, native, environment):
@@ -585,17 +628,23 @@ class LiveFingerprintObserver:
 
 
 def _worker_main(argv):
-    need(len(argv) == 3 and argv[0] == "--observe" and argv[1].isdecimal()
-         and _hex(argv[2]), "N07_FINGERPRINT_ARGUMENT")
-    uid = int(argv[1])
-    need(uid > 0 and os.getuid() == os.geteuid() == uid,
+    need(len(argv) == 4 and argv[0] == "--observe"
+         and argv[1].isdecimal() and argv[2].isdecimal()
+         and _hex(argv[3]), "N07_FINGERPRINT_ARGUMENT")
+    uid, gid = int(argv[1]), int(argv[2])
+    need(uid > 0 and gid > 0 and os.getresuid() == (uid, uid, uid)
+         and os.getresgid() == (gid, gid, gid),
          "N07_FINGERPRINT_WORKER_UID")
     observer = LiveFingerprintObserver.__new__(LiveFingerprintObserver)
     observer.app_uid = uid
-    observer.pins = {"mousepad_executable_sha256": argv[2]}
+    observer.pins = {"mousepad_executable_sha256": argv[3]}
     observer.process, observer.fonts, observer.libraries = None, {}, {}
     observer.errors, observer._hash_cache = set(), {}
     observer._loop()
+    if observer.process is None:
+        observer.errors.add("N07_FINGERPRINT_NO_APP_OBSERVATION")
+        if getattr(observer, "discovery_access_denied", False):
+            observer.errors.add("N07_FINGERPRINT_DISCOVERY_ACCESS_DENIED")
     raw = canonical({"process": observer.process, "fonts": observer.fonts,
                      "libraries": observer.libraries, "errors": sorted(observer.errors)})
     need(len(raw) <= 256 * 1024, "N07_FINGERPRINT_WORKER_BOUNDS")

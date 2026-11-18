@@ -163,10 +163,25 @@ def prepare(incoming: Path, output: Path, source_root: Path,
         candidate = review.build_candidate(**inputs)
         reject_mutations(candidate, inputs)
         review.validate_bundle(output / "n07-b3-review", result["candidate_sha256"])
-        report.update(status="review_prepared", reason="N07_B3_UNAPPROVED_REVIEW_ONLY",
-                      candidate_created=True, candidate=result,
+        report.update(candidate_created=True, candidate=result,
                       fingerprint_status=inputs["fingerprint"]["status"],
                       fingerprint_missing=inputs["fingerprint"]["missing"])
+        # A legacy/partial packet remains useful diagnostic material, but a
+        # fresh --prepare-review run must actually observe the promised process,
+        # mapped fonts/libraries and locale. Only effective theme is the known
+        # intentionally unobserved field. Keep the validated packet and cleanup
+        # evidence when a collector fails; do not turn missing observations into
+        # a green collection job or claim the fingerprint is production-ready.
+        fingerprint = inputs["fingerprint"]
+        observation = fingerprint["evidence"]
+        review.need(fingerprint["status"] == "partial"
+                    and fingerprint["missing"] == ["theme"]
+                    and observation["observation_errors"] == []
+                    and observation["process"] is not None
+                    and bool(observation["fonts"])
+                    and set(observation["libraries"]) == {"gtk", "pango", "cairo"},
+                    "N07_B3_REQUIRED_OBSERVATION_MISSING")
+        report.update(status="review_prepared", reason="N07_B3_UNAPPROVED_REVIEW_ONLY")
     except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError) as error:
         reason = str(error)
         report["reason"] = reason if re.fullmatch(r"[A-Z0-9_]{1,100}", reason) else "N07_B3_REJECTED"

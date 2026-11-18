@@ -10,7 +10,7 @@
 
 Work started from main `79c9134354f80d18e80df116da2e68f43e1a0929`.
 [PR #49](https://github.com/tin-machine/eidolon-wayland/pull/49) was already
-merged at that commit; its reviewed implementation HEAD was
+merged at that commit; its final implementation HEAD was
 `a819714625798130700d97e70a4275c49a709910`.
 [PR #47](https://github.com/tin-machine/eidolon-wayland/pull/47) was also merged
 (`c230aae6721db09eabfb756aaa1a989bdc4953a4`). B3 is based on main and does not
@@ -96,6 +96,16 @@ request bound. The four context phases are `first_off_context`,
 `first_off_menu_context`, `first_on_context`, `first_on_menu_context`.
 They are supplementary observations, not additional formal Pixel Oracle states.
 
+In B3 mode, the post-toggle gutter capture also waits for the same main
+surface to publish a strictly newer `content_seq`, with no popup layer and
+unchanged capture/Create/renderer/geometry identity. A bounded 200 ms quiet
+interval then stages the readback, within a 12-second budget and at most 32
+actual samples. The saved `post_popup_settling` proof records causal main-layer
+progress and request order. Neither elapsed time nor a new composed frame
+alone proves an application repaint, and no part of this wait proves glyph
+identity. Failure retains the latest actual capture and normal retirement
+evidence. The ordinary B2 mode keeps its existing behavior.
+
 The original native receipt retains its 1 MiB limit. Larger context pixels
 go into a separate **4 MiB maximum** `n07-b3-context.json`. The native
 `review_context` entry binds the exact serialized sidecar SHA, byte length,
@@ -152,6 +162,16 @@ every short-lived mapping. Exact glyph-to-font attribution remains a review
 limitation. Configured theme is not promoted to an observed effective theme.
 Consequently a successful collection can still produce a **partial** record
 and a diagnostic-only candidate. CI preparation success does not hide this gap.
+
+GTK documents `gtk-theme-name` as a readable in-process setting, while
+[`GTK_THEME`](https://docs.gtk.org/gtk3/running.html) can override it. Neither
+the [default Adwaita value](https://docs.gtk.org/gtk3/property.Settings.gtk-theme-name.html)
+nor a supervisor's separate GTK instance proves the actual app's effective
+theme. A future reference acquisition can add a separately designed read-only
+observation of that property and its override/theme assets. The documented
+GTK Inspector is one possible investigation route, but its additional app
+windows, Registry admission and retirement would need explicit treatment;
+this collector does not inject it or claim that inspection has happened.
 
 ### Waypipe commit mapping
 
@@ -218,6 +238,11 @@ The wrapper retains ordinary B2 failure status, separately validates context
 and fingerprint, runs saved-receipt mutations and exports `n07-b3-review/`.
 `n07-b3-validation.json` reports `review_prepared` only for a generated and
 revalidated packet; fingerprint completeness and missing states remain explicit.
+Fresh B3 CI additionally requires the actual app process, mapped font/library
+and locale observations, no observation error, and only the documented `theme`
+gap. An unexpected collector failure fails that gate after saving its valid
+diagnostic packet; offline extraction of honest incomplete old evidence remains
+available. A pending/absent main-content settling proof cannot pass fresh B3 CI.
 Per-file collection failures retain other safe observations and existing
 native/environment retirement evidence. No invalid body, HOME tree, key,
 arbitrary log or user document is bulk-exported. An external container rescue
@@ -296,3 +321,60 @@ unapproved production rejection; self-reference; mask/tolerance/packet drift;
 same-UID observer teardown; and retained failure/cleanup evidence. Synthetic
 unit pixels remain synthetic. Actual GUI collection is the explicitly named
 CI job/artifact; a test run alone does not establish GUI or Quest evidence.
+
+## 9. First B3 collection and retained failures (2026-11-18)
+
+The first B3 implementation was actually run, downloaded and independently
+revalidated as saved bytes. This is an engineering inspection, not a human
+Golden approval. The failed jobs below remain part of the execution record.
+That packet was validated by its source revision `38d7f67180e2de36b4721fee3b9e8e6cb3a6e4bc`.
+The corrected validator intentionally rejects its B3 context because it lacks
+the newly required main-content settling proof. Use the historical revision
+to reproduce the old diagnostic check; do not rewrite or promote the old data.
+Original B2 receipts without the B3 context remain extractable as legacy
+diagnostic packets, without making a settling or fingerprint claim.
+
+| Identity | First B3 execution |
+| --- | --- |
+| PR HEAD | `38d7f67180e2de36b4721fee3b9e8e6cb3a6e4bc` |
+| Checkout/source | `42ae856a7c1f67dfb10cee09715cc54e9aa87fae` |
+| L7a run | [44284319234](https://github.com/tin-machine/eidolon-wayland/actions/runs/44284319234) |
+| B2/B3 job | [134733031962](https://github.com/tin-machine/eidolon-wayland/actions/runs/44284319234/job/134733031962), succeeded |
+| B3 artifact ID | `14418064377` |
+| Artifact name | `linux-desktop-v3-n07-b3-42ae856a7c1f67dfb10cee09715cc54e9aa87fae` |
+| Downloaded ZIP SHA-256 | `7f5fe48e7433608ccea96313cb834d071407a56ce4bfe9855ad03c074a9d098e` |
+| Candidate SHA-256 | `2d42727629ff9cae13cc82ebcfe80d21c4fe77d44925b0476f4c6415a453d048` |
+
+Four actual canonical states and four supplemental contexts were acquired;
+normal product cleanup was verified. The complete Line Numbers label and
+unchecked/checked boxes are visible in the two menu contexts. A numeral `1`
+and a separate caret are visible at the left of the reopened-menu context.
+However, the canonical `first_on_gutter` at frame 11 remains blank: the main
+surface's `content_seq` is still 9, the same as before the toggle. Popup
+removal advanced the composed frame without establishing a new parent buffer.
+The later reopened-menu frame 15 has main `content_seq=17` and the digit.
+These numbers describe this run only; no new exact-frame expectations follow.
+
+The fingerprint helper returned no observed process/fonts/libraries, with
+`N07_FINGERPRINT_OBSERVATION_FAILED`. Thus GTK/Pango/Cairo, mapped font SHA and
+locale were missing in addition to the intentionally unobserved effective
+theme. The packet correctly remained `diagnostic_only_missing_fingerprint`;
+it must not be cited as a fully fixed environment. The generic error does not
+establish an exact syscall/errno retrospectively. This execution motivated
+per-process discovery error handling, more specific bounded diagnostics and
+a stricter fresh-CI observation gate, without backfilling its old receipt.
+
+L7a finished with 11 successful jobs and two pre-GUI dependency failures:
+foundation [134733031518](https://github.com/tin-machine/eidolon-wayland/actions/runs/44284319234/job/134733031518)
+exceeded the 240-second APT install deadline; N05
+[134733031633](https://github.com/tin-machine/eidolon-wayland/actions/runs/44284319234/job/134733031633)
+failed in Waypipe dependency acquisition with HTTP 500. N06 succeeded; this
+does not close Issue #50. In validation run
+[44284319245](https://github.com/tin-machine/eidolon-wayland/actions/runs/44284319245),
+Host and documentation passed, while Android
+[134732987711](https://github.com/tin-machine/eidolon-wayland/actions/runs/44284319245/job/134732987711)
+hit the same APT deadline before Android build/tests. CodeQL run
+[44284319238](https://github.com/tin-machine/eidolon-wayland/actions/runs/44284319238)
+passed all five languages. Bounded failure excerpts and downloaded raw
+artifacts were retained outside tracked source. No Oracle was relaxed and no
+unrelated N05/N06/Android implementation was changed to conceal these results.

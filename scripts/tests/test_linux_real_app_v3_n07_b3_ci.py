@@ -92,6 +92,31 @@ class PreparationTests(unittest.TestCase):
             self.assertTrue((output / "n07-b3-fingerprint.json").is_file())
             self.assertFalse((output / "n07-b3-review/candidate.json").exists())
 
+    def test_fresh_collection_failure_keeps_diagnostic_packet_but_fails_ci(self):
+        for missing_process in (False, True):
+            with self.subTest(missing_process=missing_process), tempfile.TemporaryDirectory() as directory:
+                data = bundle_inputs()
+                record = data["fingerprint"]
+                record["evidence"]["observation_errors"] = ["N07_FINGERPRINT_OBSERVATION_FAILED"]
+                if missing_process:
+                    record["evidence"].update(process=None, fonts=[], libraries={})
+                record["values"] = fp._derive(record, data["native"], data["environment"],
+                                               data["validation"]["source"])
+                record["missing"] = sorted(fp.pixel.FINGERPRINT - set(record["values"]))
+                ok, report, output = self.prepare(directory, data)
+                self.assertFalse(ok)
+                self.assertEqual(report["reason"], "N07_B3_REQUIRED_OBSERVATION_MISSING")
+                self.assertTrue(report["candidate_created"])
+                self.assertTrue(report["product_cleanup_verified"])
+                self.assertTrue((output / "n07-b3-fingerprint.json").is_file())
+                self.assertFalse(report["reviewed_golden"])
+                self.assertFalse(report["host_v3_acceptance_passed"])
+                # The offline diagnostic exporter continues to accept honest
+                # missing data; CI collection success is a separate contract.
+                checked = review.validate_bundle(output / "n07-b3-review",
+                                                 report["candidate"]["candidate_sha256"])
+                self.assertEqual(checked["status"], "diagnostic_only_missing_fingerprint")
+
     def test_malformed_context_keeps_other_observations_and_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             data = bundle_inputs()

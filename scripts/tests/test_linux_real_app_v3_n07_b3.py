@@ -74,6 +74,26 @@ def inputs():
 
 def add_context(data):
     native = data["native"]
+    # B3 waits for a real main-buffer update after popup removal. Synthetic
+    # B2 fixtures intentionally remain unchanged outside this opt-in helper.
+    on = native["n07_probe"]["b2"]["first_on_gutter"]["readback"]["receipt"]
+    on["layers"] = on["layers"][:1]
+    before = native["n07_probe"]["b2"]["first_off_checkmark"]["readback"]["receipt"]
+    native["n07_probe"]["b2"]["post_popup_settling"] = {
+        "schema": 1, "source": "normal_sdk_renderer_main_content_sequence",
+        "parent_surface": "1", "baseline_content_frame": before["content_frame"],
+        "baseline_main_content_seq": before["layers"][0]["content_seq"],
+        "quiet_ms": 200, "budget_ms": 12000, "status": "settled",
+        "content_frame": on["content_frame"], "main_content_seq": on["layers"][0]["content_seq"],
+        "samples": [
+            {"content_frame": on["content_frame"], "main_content_seq": before["layers"][0]["content_seq"],
+             "request_seq": before["request_seq"] + 2, "elapsed_ms": 1},
+            {"content_frame": on["content_frame"], "main_content_seq": on["layers"][0]["content_seq"],
+             "request_seq": on["request_seq"] - 1, "elapsed_ms": 50},
+            {"content_frame": on["content_frame"], "main_content_seq": on["layers"][0]["content_seq"],
+             "request_seq": on["request_seq"], "elapsed_ms": 250},
+        ],
+    }
     stages = {}
     for index, name in enumerate(review.CONTEXT_STATES):
         canonical = (native["n07_probe"]["before_menu"] if index == 0
@@ -377,6 +397,38 @@ class ReviewTests(unittest.TestCase):
                                                   bytes=len(data["context_raw"]))
             with self.assertRaises(ValueError):
                 review.build_candidate(**data)
+
+    def test_b3_requires_main_repaint_and_observed_quiet_interval(self):
+        mutations = (
+            lambda n: n["n07_probe"]["b2"].pop("post_popup_settling"),
+            lambda n: n["n07_probe"]["b2"]["post_popup_settling"].update(status="pending"),
+            lambda n: n["n07_probe"]["b2"]["post_popup_settling"].update(parent_surface="99"),
+            lambda n: n["n07_probe"]["b2"]["post_popup_settling"].update(baseline_main_content_seq="1"),
+            lambda n: n["n07_probe"]["b2"]["post_popup_settling"].update(quiet_ms=True),
+            lambda n: n["n07_probe"]["b2"]["post_popup_settling"]["samples"][-1].update(elapsed_ms=249),
+            lambda n: n["n07_probe"]["b2"]["post_popup_settling"]["samples"][-1].update(elapsed_ms=12001),
+            lambda n: n["n07_probe"]["b2"]["post_popup_settling"]["samples"][-1].update(request_seq=True),
+            lambda n: n["n07_probe"]["b2"]["post_popup_settling"]["samples"][0].update(request_seq=1),
+        )
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                data = inputs()
+                add_context(data)
+                mutate(data["native"])
+                with self.assertRaises(ValueError):
+                    review.build_candidate(**data)
+        # Deliberately make both the proof and canonical final layer describe
+        # the stale pre-action parent buffer. Popup dismissal alone must fail.
+        data = inputs()
+        add_context(data)
+        b2 = data["native"]["n07_probe"]["b2"]
+        old = b2["post_popup_settling"]["baseline_main_content_seq"]
+        b2["first_on_gutter"]["readback"]["receipt"]["layers"][0]["content_seq"] = old
+        b2["post_popup_settling"]["main_content_seq"] = old
+        for sample in b2["post_popup_settling"]["samples"]:
+            sample["main_content_seq"] = old
+        with self.assertRaisesRegex(review.ReviewError, "N07_REVIEW_MAIN_REPAINT_MISSING"):
+            review.build_candidate(**data)
 
 
 if __name__ == "__main__":

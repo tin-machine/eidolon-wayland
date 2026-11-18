@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import copy
+import errno
 import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -203,6 +206,54 @@ class FingerprintTests(unittest.TestCase):
             with self.assertRaises(fp.FingerprintError):
                 fp._mapped_paths(bad)
 
+    def test_unreadable_discovery_does_not_discard_valid_mousepad_snapshot(self):
+        # Reproduce a same-directory-owner /proc entry whose exe is protected,
+        # both before and after a readable actual-app-shaped entry. No GUI or
+        # real receipt is synthesized: this exercises only process discovery.
+        uid = os.getuid()
+        with tempfile.TemporaryDirectory(prefix="n07-proc-discovery-") as temporary:
+            first, app = Path(temporary) / "100", Path(temporary) / "200"
+            for directory in (first, app):
+                directory.mkdir()
+                (directory / "status").write_bytes(b"Uid:\t" +
+                    b"\t".join(str(uid).encode() for _ in range(4)) + b"\n")
+            (app / "stat").write_bytes(b"200 (mousepad) S " + b"0 " * 18 + b"12345\n")
+            (app / "environ").write_bytes(b"LANG=C.UTF-8\0LC_ALL=C.UTF-8\0")
+            (app / "maps").write_bytes(b"")
+
+            def executable(path):
+                if path.parent == first:
+                    raise PermissionError(errno.EACCES, "protected process")
+                return "/usr/bin/mousepad"
+
+            for order in ([first, app], [app, first]):
+                observer = fp.LiveFingerprintObserver.__new__(fp.LiveFingerprintObserver)
+                observer.app_uid, observer.pins = uid, {"mousepad_executable_sha256": "f" * 64}
+                observer.process, observer.fonts, observer.libraries = None, {}, {}
+                observer.errors = set()
+                with patch.object(fp.Path, "iterdir", return_value=iter(order)), \
+                     patch.object(fp.os, "readlink", side_effect=executable), \
+                     patch.object(observer, "_cached_file", return_value={"sha256": "f" * 64}):
+                    observer._sample()
+                self.assertEqual(observer.process["pid"], 200)
+                self.assertEqual(observer.process["start_ticks"], 12345)
+                self.assertEqual(observer.process["samples"], 1)
+                self.assertEqual(observer.errors, set())
+
+    def test_privilege_transition_is_not_an_ordinary_app_process(self):
+        uid = 12002
+        self.assertTrue(fp._process_credentials(b"Uid:\t12002\t12002\t12002\t12002\n", uid))
+        self.assertFalse(fp._process_credentials(b"Uid:\t0\t12002\t0\t12002\n", uid))
+        for invalid in (b"Uid:\t12002\n", b"Uid:\t12002 x 12002 12002\n", b"", b" " * 16385):
+            with self.assertRaises(fp.FingerprintError):
+                fp._process_credentials(invalid, uid)
+
+    def test_identified_target_access_failure_has_specific_stage_without_private_path(self):
+        reason = fp._io_reason("PROCESS_ENVIRONMENT",
+                               PermissionError(errno.EACCES, "secret", "/home/private"))
+        self.assertEqual(reason, "N07_FINGERPRINT_PROCESS_ENVIRONMENT_ACCESS_DENIED")
+        self.assertNotIn("private", reason)
+
     def test_setup_is_explicitly_disposable_only(self):
         with self.assertRaises(fp.FingerprintError):
             fp.prepare_fixture(disposable=False)
@@ -210,15 +261,44 @@ class FingerprintTests(unittest.TestCase):
             with self.assertRaises(fp.FingerprintError):
                 fp.prepare_fixture(disposable=True)
 
+    def test_docker_review_font_packages_are_opt_in_and_unknown_modes_reject(self):
+        dockerfile = (fp.ROOT / "scripts/fixtures/linux-desktop-v3-acceptance/Dockerfile.n01").read_text()
+        default = re.search(r"(?m)^ARG I6_N07_REVIEW_DEPS=(\S+)$", dockerfile).group(1)
+        self.assertEqual(default, "0")
+        # Execute the actual installation RUN fragment with inert command
+        # substitutes. This checks shell array expansion and rejects bad modes
+        # before APT, without a Docker daemon, package mutation or network.
+        command = re.search(r"(?ms)^RUN (.*?)(?=\n\n)", dockerfile).group(1)
+        harness = "timeout() { printf '%s\\0' \"$@\"; }; rm() { :; };\n" + command
+
+        def invoke(mode):
+            return subprocess.run(["/bin/bash", "-euo", "pipefail", "-c", harness],
+                env={"PATH": "/usr/bin:/bin", "I6_N07_REVIEW_DEPS": mode},
+                capture_output=True, timeout=5)
+
+        baseline, review = invoke(default), invoke("1")
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        self.assertEqual(review.returncode, 0, review.stderr)
+        baseline_args, review_args = baseline.stdout.split(b"\0"), review.stdout.split(b"\0")
+        self.assertNotIn(b"fontconfig", baseline_args)
+        self.assertNotIn(b"fonts-dejavu-core", baseline_args)
+        self.assertEqual([arg for arg in review_args if arg not in baseline_args],
+                         [b"fontconfig", b"fonts-dejavu-core"])
+        for bad in ("", "2", "true", "1 other"):
+            result = invoke(bad)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, b"")
+
     @unittest.skipIf(os.getuid() == 0, "worker deliberately rejects root")
     def test_same_uid_worker_exits_on_supervisor_eof_without_runtime_resources(self):
         completed = subprocess.run([
             sys.executable, "-B", str(Path(fp.__file__).resolve()), "--observe",
-            str(os.getuid()), "f" * 64,
+            str(os.getuid()), str(os.getgid()), "f" * 64,
         ], input=b"", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=5, check=True)
         self.assertEqual(json.loads(completed.stdout), {
-            "process": None, "fonts": {}, "libraries": {}, "errors": []})
+            "process": None, "fonts": {}, "libraries": {},
+            "errors": ["N07_FINGERPRINT_NO_APP_OBSERVATION"]})
         self.assertEqual(completed.stderr, b"")
 
     def test_failed_observer_does_not_skip_product_cleanup_export(self):

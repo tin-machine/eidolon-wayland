@@ -330,6 +330,66 @@ def _inputs(native: dict, environment: dict, validation: dict,
     return outcome
 
 
+def _settling(native: dict, readbacks: dict, *, required: bool) -> None:
+    """Check causal main-buffer repaint, without interpreting any glyph pixels."""
+    probe = native["n07_probe"]
+    proof = probe["b2"].get("post_popup_settling")
+    if proof is None:
+        need(not required, "N07_REVIEW_SETTLING_MISSING")
+        return
+    _exact(proof, {"schema", "source", "parent_surface", "baseline_content_frame",
+                   "baseline_main_content_seq", "quiet_ms", "budget_ms", "status",
+                   "samples", "content_frame", "main_content_seq"},
+           "N07_REVIEW_SETTLING_SHAPE")
+    before = readbacks["first_off_checkmark"]["receipt"]
+    after = readbacks["first_on_gutter"]["receipt"]
+    parent = probe["popup"]["parent_surface"]
+    parents = [layer for layer in before["layers"] if layer["surface"] == parent]
+    need(len(parents) == 1 and len(after["layers"]) == 1
+         and after["layers"][0]["surface"] == parent, "N07_REVIEW_SETTLING_PARENT")
+    old, new = parents[0], after["layers"][0]
+    need(type(proof["schema"]) is int and proof["schema"] == 1
+         and proof["source"] == "normal_sdk_renderer_main_content_sequence"
+         and proof["parent_surface"] == parent
+         and proof["baseline_content_frame"] == before["content_frame"]
+         and proof["baseline_main_content_seq"] == old["content_seq"]
+         and proof["content_frame"] == after["content_frame"]
+         and proof["main_content_seq"] == new["content_seq"]
+         and proof["status"] == "settled"
+         and type(proof["quiet_ms"]) is int and proof["quiet_ms"] == 200
+         and type(proof["budget_ms"]) is int and proof["budget_ms"] == 12000,
+         "N07_REVIEW_SETTLING_IDENTITY")
+    need(int(new["content_seq"]) > int(old["content_seq"])
+         and int(after["content_frame"]) > int(before["content_frame"])
+         and all(after[key] == before[key] for key in (
+             "geometry", "logical_size", "content_rect"))
+         and all(new[key] == old[key] for key in (
+             "surface", "buffer_size", "offset", "clip", "scale", "transform")),
+         "N07_REVIEW_MAIN_REPAINT_MISSING")
+    samples = proof["samples"]
+    need(type(samples) is list and 2 <= len(samples) <= 32, "N07_REVIEW_SETTLING_SAMPLES")
+    last_request, last_elapsed = before["request_seq"], -1
+    last_frame, last_main = int(before["content_frame"]), int(old["content_seq"])
+    for sample in samples:
+        _exact(sample, {"content_frame", "main_content_seq", "request_seq", "elapsed_ms"},
+               "N07_REVIEW_SETTLING_SAMPLE")
+        need(_decimal(sample["content_frame"]) and _decimal(sample["main_content_seq"])
+             and _uint(sample["request_seq"], positive=True) and _uint(sample["elapsed_ms"])
+             and last_request < sample["request_seq"] <= after["request_seq"]
+             and last_elapsed <= sample["elapsed_ms"] <= proof["budget_ms"]
+             and last_frame <= int(sample["content_frame"]) <= int(after["content_frame"])
+             and last_main <= int(sample["main_content_seq"]) <= int(new["content_seq"]),
+             "N07_REVIEW_SETTLING_ORDER")
+        last_request, last_elapsed = sample["request_seq"], sample["elapsed_ms"]
+        last_frame, last_main = int(sample["content_frame"]), int(sample["main_content_seq"])
+    prior, final = samples[-2:]
+    need(final["request_seq"] == after["request_seq"]
+         and final["content_frame"] == prior["content_frame"] == after["content_frame"]
+         and final["main_content_seq"] == prior["main_content_seq"] == new["content_seq"]
+         and final["elapsed_ms"] - prior["elapsed_ms"] >= proof["quiet_ms"],
+         "N07_REVIEW_SETTLING_QUIET_INTERVAL")
+
+
 def _observed(native: dict, context_raw: bytes | None) -> tuple[dict, dict]:
     probe, result = native["n07_probe"], {}
     rb = {"first_off_gutter": probe["before_menu"]["readback"]}
@@ -375,6 +435,7 @@ def _observed(native: dict, context_raw: bytes | None) -> tuple[dict, dict]:
          <= int(rb[STATES[1]]["receipt"]["content_frame"]), "N07_REVIEW_MENU_CONTEXT_IDENTITY")
     contexts = {"initial_menu_context": copy.deepcopy(probe["menu_open"]["readback"])}
     binding = native.get("review_context")
+    _settling(native, rb, required=binding is not None)
     if binding is None:
         need(context_raw is None, "N07_REVIEW_CONTEXT_UNBOUND")
     else:
@@ -442,6 +503,9 @@ def _observed(native: dict, context_raw: bytes | None) -> tuple[dict, dict]:
                     "N07_REVIEW_CONTEXT_TILES")
             need(len(stage["readback"]["pixels"]) == 4, "N07_REVIEW_CONTEXT_TILES")
             contexts[name] = copy.deepcopy(stage["readback"])
+        proof = probe["b2"]["post_popup_settling"]
+        need(proof["samples"][0]["request_seq"] > contexts["first_off_menu_context"]
+             ["receipt"]["request_seq"], "N07_REVIEW_SETTLING_CONTEXT_ORDER")
     return result, contexts
 
 
@@ -525,6 +589,8 @@ def build_candidate(native: dict, environment: dict, validation: dict,
         "states": states, "diagnostic_contexts": contexts,
         "popup": {"initial": copy.deepcopy(native["n07_probe"]["popup"]),
                   "reopened": copy.deepcopy(native["n07_probe"]["b2"]["reopened_popup"])},
+        **({"post_popup_settling": copy.deepcopy(native["n07_probe"]["b2"]["post_popup_settling"])}
+           if "post_popup_settling" in native["n07_probe"]["b2"] else {}),
         "pointer": {"view_uv_milli": native["n07_probe"]["pointer"]["uv_milli"],
                     "line_numbers_candidate_uv_milli":
                     native["n07_probe"]["b2"]["candidate_item_uv_milli"]},

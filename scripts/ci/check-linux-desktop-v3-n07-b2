@@ -9,8 +9,10 @@ if [[ $# -lt 2 || $# -gt 3 || $1 != --artifact-root || ( $# == 3 && $3 != --prep
 fi
 i6_artifact_root=$2
 i6_review_args=()
+i6_review_build_args=()
 if [[ $# == 3 ]]; then
   i6_review_args=(--prepare-review)
+  i6_review_build_args=(--build-arg I6_N07_REVIEW_DEPS=1)
 fi
 i6_source_root=$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel)
 python3 - "$i6_artifact_root" "$i6_source_root" <<'PY'
@@ -83,6 +85,7 @@ git clone --quiet --no-local --no-hardlinks "$i6_source_root" "$i6_work/source"
 git -C "$i6_work/source" checkout --quiet --detach "$i6_source_head"
 git -C "$i6_work/source" remote remove origin
 timeout --signal=TERM --kill-after=30s 1800s docker build \
+  "${i6_review_build_args[@]}" \
   --file "$i6_work/source/scripts/fixtures/linux-desktop-v3-acceptance/Dockerfile.n01" \
   --tag "$i6_build_image" "$i6_work/source"
 
