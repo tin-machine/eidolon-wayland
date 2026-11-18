@@ -23,6 +23,7 @@ import linux_real_app_v3_n07_fingerprint as fingerprint
 import linux_real_app_v3_n07_pixel as pixel
 import linux_real_app_v3_n07_review as review
 import linux_real_app_v3_n07_settings as settings
+import linux_real_app_v3_n07_settings_lifecycle as lifecycle
 from linux_real_app_v3_n07_b2_probe import (
     CHECK, _backend_identity, _forwarded, _popup, _state, inspect as inspect_b2,
 )
@@ -35,10 +36,58 @@ SECOND_CONTEXT_STATES = ("second_on_context", "second_on_menu_context")
 NATIVE_REVISION = "eidolon-i6-n07-b4-host-v1"
 SUPERVISOR_REVISION = "eidolon-i6-n07-b4-supervisor-v1"
 COLLECTION_REVISION = "eidolon-i6-n07-b4-collection-v1"
+SECOND_SCHEMA_V2 = "eidolon-i6-n07-b4-second-native-v2"
+NATIVE_REVISION_V2 = "eidolon-i6-n07-b4-host-v2"
+SUPERVISOR_REVISION_V2 = "eidolon-i6-n07-b4-supervisor-v2"
+COLLECTION_REVISION_V2 = "eidolon-i6-n07-b4-collection-v2"
 MAX_NATIVE_BYTES = 1024 * 1024
 MAX_CONTEXT_BYTES = 4 * 1024 * 1024
 PHASES = ("first_before_launch", "first_after_toggle", "first_retired",
           "second_before_launch", "second_after_observation", "second_retired")
+PHASES_V2 = lifecycle.PHASES
+
+
+def collection_revision(native, supervisor):
+    """Explicit revision pairing; never fall back after a failed oracle."""
+    need(type(native) is dict and type(supervisor) is dict
+         and type(native.get("schema")) is int and native["schema"] == 1
+         and type(supervisor.get("schema")) is int and supervisor["schema"] == 1,
+         "N07_B4_COLLECTION_REVISION")
+    pair = native.get("revision"), supervisor.get("revision")
+    if pair == (NATIVE_REVISION, SUPERVISOR_REVISION):
+        need("settings_revision" not in supervisor and "settings_observations" not in supervisor,
+             "N07_B4_COLLECTION_REVISION")
+        return COLLECTION_REVISION
+    need(pair == (NATIVE_REVISION_V2, SUPERVISOR_REVISION_V2)
+         and supervisor.get("settings_revision") == lifecycle.REVISION
+         and type(supervisor.get("settings_observations")) is dict,
+         "N07_B4_COLLECTION_REVISION")
+    return COLLECTION_REVISION_V2
+
+
+def validate_settings(supervisor, *, first=None, second=None, complete=True):
+    """Validate v2 file evidence; product barriers are a separate mandatory gate."""
+    need(supervisor.get("revision") == SUPERVISOR_REVISION_V2
+         and supervisor.get("settings_revision") == lifecycle.REVISION,
+         "N07_B4_COLLECTION_REVISION")
+    canonical, supplemental = supervisor["keyfile"], supervisor["supplemental_keyfile"]
+    names = {"first_before_launch": "before_first_launch", "first_after_toggle": "after_first_toggle",
+             "second_after_observation": "second_session"}
+    need(type(canonical) is dict and set(canonical) <= set(names.values())
+         and type(supplemental) is dict and set(supplemental) <= set(PHASES_V2) - set(names),
+         "N07_SETTINGS_SEQUENCE_SHAPE")
+    proofs = {phase: canonical[name] for phase, name in names.items() if name in canonical}
+    proofs.update(supplemental)
+    geometries = None
+    if first is not None or second is not None:
+        need(type(first) is dict and type(second) is dict, "N07_SETTINGS_GEOMETRY")
+        a = first["n07_probe"]["before_menu"]["readback"]["receipt"]["logical_size"]
+        b = second["n07_second"]["before_open"]["readback"]["receipt"]["logical_size"]
+        dialog = second["n07_second"]["dialogs"][0]["readback"]["logical_size"]
+        geometries = {"first": {"main": a, "chooser": dialog},
+                      "second": {"main": b, "chooser": dialog}}
+    return lifecycle.validate_sequence(proofs, supervisor["settings_observations"],
+                                       complete=complete, geometries=geometries)
 
 
 class B4Invalid(ValueError):
@@ -617,7 +666,8 @@ def validate_session(native, environment, source, session, context_raw=None):
                      **{name: rb for name, rb in first_context.items() if name != "initial_menu_context"}}
         _pixel_events(native, readbacks)
     else:
-        need(native.get("schema") == SECOND_SCHEMA and native.get("variant") == SECOND_VARIANT,
+        need(native.get("schema") in (SECOND_SCHEMA, SECOND_SCHEMA_V2)
+             and native.get("variant") == SECOND_VARIANT,
              "N07_B4_SECOND_SCHEMA")
     base, env, events, observed, cap, context = _common_native(native, source, environment)
     if session == "first":
@@ -649,7 +699,8 @@ def _retirement_binding(native, environment, source, session):
     """Source/owner admission for cleanup, without rewriting exercise errors."""
     need(session in ("first", "second") and type(native) is dict
          and n02.NATIVE_KEYS <= set(native), "N07_B4_RETIREMENT_IDENTITY")
-    need(native["schema"] == ("eidolon-i6-n07-b2-native-probe-v1" if session == "first" else SECOND_SCHEMA)
+    need(native["schema"] in (("eidolon-i6-n07-b2-native-probe-v1",) if session == "first"
+                             else (SECOND_SCHEMA, SECOND_SCHEMA_V2))
          and native["host_v3_acceptance_passed"] is False
          and native["n07_assertions_verified"] == []
          and evidence.identity(native["run_id"]) and evidence.identity(native["owner_id"])
@@ -722,11 +773,14 @@ def validate_retirement(native, environment, source, session):
 def _keyfile_diagnostics(supervisor):
     """Optional same-read key inventory is diagnostic, never an oracle substitute."""
     values = supervisor.get("keyfile_diagnostics", {})
-    need(type(values) is dict and set(values) <= set(PHASES), "N07_B4_KEYFILE_DIAGNOSTIC")
+    phases = PHASES_V2 if supervisor.get("revision") == SUPERVISOR_REVISION_V2 else PHASES
+    need(type(values) is dict and set(values) <= set(phases), "N07_B4_KEYFILE_DIAGNOSTIC")
     bindings = {"first_before_launch": supervisor["keyfile"].get("before_first_launch"),
                 "first_after_toggle": supervisor["keyfile"].get("after_first_toggle"),
                 "second_before_launch": supervisor["supplemental_keyfile"].get("second_before_launch"),
                 "second_after_observation": supervisor["keyfile"].get("second_session")}
+    if supervisor.get("revision") == SUPERVISOR_REVISION_V2:
+        bindings.update(supervisor["supplemental_keyfile"])
     for phase, value in values.items():
         proof = bindings.get(phase)
         need(type(proof) is dict, "N07_B4_KEYFILE_DIAGNOSTIC")
@@ -880,12 +934,14 @@ def _fingerprints(records, natives, environments, source):
 
 
 def _barriers(native, supervisor, sessions, natives, environments):
+    is_v2 = native.get("revision") == NATIVE_REVISION_V2
+    phases = PHASES_V2 if is_v2 else PHASES
     host, external = native["barriers"], supervisor["barriers"]
     need(type(host) is list and type(external) is list
-         and len(host) == len(external) == len(PHASES), "N07_B4_BARRIER_MISSING")
+         and len(host) == len(external) == len(phases), "N07_B4_BARRIER_MISSING")
     last_time = 0
     result = {}
-    for phase, left, right in zip(PHASES, host, external):
+    for phase, left, right in zip(phases, host, external):
         exact(left, {"request", "request_sha256", "response", "response_monotonic_ns", "error"})
         exact(right, {"request", "request_sha256", "received_at_ns", "observation",
                       "observation_sha256", "response", "sent_at_ns"})
@@ -911,7 +967,8 @@ def _barriers(native, supervisor, sessions, natives, environments):
              == evidence.sha(evidence.canonical(request))
              and left["error"] is None, "N07_B4_BARRIER_DIGEST")
         exact(observation, {"phase", "session", "observed_at_ns", "keyfile", "census",
-                            "driver_control", "product_cleanup_verified", "document_sha256"})
+                            "driver_control", "product_cleanup_verified", "document_sha256"}
+              | ({"settings_observation_sha256"} if is_v2 else set()))
         need(observation["phase"] == phase and observation["session"] == label
              and right["observation_sha256"] == evidence.sha(evidence.canonical(observation)),
              "N07_B4_OBSERVATION_DIGEST")
@@ -929,13 +986,22 @@ def _barriers(native, supervisor, sessions, natives, environments):
         last_time = times[-1]
         need(observation["document_sha256"] == supervisor["document"]["sha256"],
              "N07_B4_DOCUMENT_CHANGED")
+        if is_v2:
+            same(observation["keyfile"], (supervisor["keyfile"][{
+                "first_before_launch": "before_first_launch", "first_after_toggle": "after_first_toggle",
+                "second_after_observation": "second_session"}[phase]]
+                if phase in ("first_before_launch", "first_after_toggle", "second_after_observation")
+                else supervisor["supplemental_keyfile"][phase]), "N07_B4_SNAPSHOT_MOMENT")
+            need(observation["settings_observation_sha256"] ==
+                 evidence.sha(evidence.canonical(supervisor["settings_observations"][phase])),
+                 "N07_SETTINGS_SNAPSHOT_BINDING")
         events = n02.ordinal_events(n["observations"], limit=128)
         if phase.endswith("_retired"):
             census(observation["census"])
             same(observation["census"], env["final"])
             same(observation["driver_control"], env["driver_control"])
             need(observation["product_cleanup_verified"] is True
-                 and observation["keyfile"] is None
+                 and (is_v2 or observation["keyfile"] is None)
                  and request["transport_watermark"] == len(n["trace"]["events"]),
                  "N07_B4_RETIREMENT_GATE")
             n02.only(events, "registry_destroy_return")
@@ -959,6 +1025,12 @@ def _barriers(native, supervisor, sessions, natives, environments):
             elif phase == "first_after_toggle":
                 need(n02.only(events, "n07_b2_candidate_gui_transition")[0] < recorded[0][0]
                      < n02.only(events, "n07_b4_close_intent")[0], "N07_B4_TOGGLE_OBSERVATION_ORDER")
+            elif phase == "second_before_open":
+                captures = [(i, e) for i, e in events.get("n07_roi_readback_observed", [])
+                            if e["data"]["phase"] == "before_open"]
+                need(len(captures) == 1 and captures[0][0] < recorded[0][0]
+                     < n02.only(events, "n05_dialog_baseline")[0]
+                     < events["n05_step_delivered"][0][0], "N07_B4_PREOPEN_TOO_LATE")
             else:
                 captures = [(i, e) for i, e in events.get("n07_roi_readback_observed", [])
                             if e["data"]["phase"] == "second_on_menu_context"]
@@ -994,14 +1066,15 @@ def validate_collection(native, supervisor, first, second, environments, fingerp
     exact(native, {"schema", "revision", "run_id", "source_sha256", "build_source",
                    "sessions", "barriers", "error", "reviewed_golden",
                    "menu_identity_verified", "verified_n07_assertions", "host_v3_acceptance_passed"})
+    revision = collection_revision(native, supervisor)
+    is_v2 = revision == COLLECTION_REVISION_V2
     exact(supervisor, {"schema", "revision", "run_id", "source", "trusted_storage",
                        "document", "keyfile", "supplemental_keyfile", "barriers",
                        "fingerprint_observers", "failures", "external_rescue", "final_census"}
-          | ({"keyfile_diagnostics"} if "keyfile_diagnostics" in supervisor else set()))
+          | ({"keyfile_diagnostics"} if "keyfile_diagnostics" in supervisor else set())
+          | ({"settings_revision", "settings_observations"} if is_v2 else set()))
     need(type(native["schema"]) is int and native["schema"] == 1
-         and native["revision"] == NATIVE_REVISION
          and type(supervisor["schema"]) is int and supervisor["schema"] == 1
-         and supervisor["revision"] == SUPERVISOR_REVISION
          and evidence.identity(native["run_id"]) and native["run_id"] == supervisor["run_id"]
          and native["error"] is None and supervisor["failures"] == []
          and supervisor["external_rescue"] is False
@@ -1016,6 +1089,8 @@ def validate_collection(native, supervisor, first, second, environments, fingerp
     for value in (environments, fingerprints, contexts, native_raws):
         exact(value, {"first", "second"}, "N07_B4_SESSION_MISSING")
     natives = {"first": first, "second": second}
+    need(type(second) is dict and second.get("schema") == (SECOND_SCHEMA_V2 if is_v2 else SECOND_SCHEMA),
+         "N07_B4_SECOND_SCHEMA")
     sessions = {}
     need(type(native["sessions"]) is list and len(native["sessions"]) == 2,
          "N07_B4_SESSION_MISSING")
@@ -1045,10 +1120,13 @@ def validate_collection(native, supervisor, first, second, environments, fingerp
     _storage(storage, sessions, environments)
     exact(supervisor["keyfile"], {"before_first_launch", "after_first_toggle", "second_session"})
     keyfiles = supervisor["keyfile"]
-    settings.validate_file_sequence(keyfiles["before_first_launch"], keyfiles["after_first_toggle"],
-                                    keyfiles["second_session"])
+    if is_v2:
+        settings_evidence = validate_settings(supervisor, first=first, second=second)
+    else:
+        settings.validate_file_sequence(keyfiles["before_first_launch"], keyfiles["after_first_toggle"],
+                                        keyfiles["second_session"])
     _keyfile_diagnostics(supervisor)
-    for proof in keyfiles.values():
+    for proof in (*keyfiles.values(), *supervisor["supplemental_keyfile"].values()):
         need(proof["storage_digest"] == storage["storage_digest"]
              and proof["root_dev"] == storage["root_identity"]["dev"]
              and proof["root_ino"] == storage["root_identity"]["ino"], "N07_B4_KEYFILE_ROOT")
@@ -1059,10 +1137,14 @@ def validate_collection(native, supervisor, first, second, environments, fingerp
                         ("first_after_toggle", "after_first_toggle"),
                         ("second_after_observation", "second_session")):
         same(phases[phase]["observation"]["keyfile"], keyfiles[name], "N07_B4_SNAPSHOT_MOMENT")
-    exact(supervisor["supplemental_keyfile"], {"second_before_launch"})
-    supplemental = supervisor["supplemental_keyfile"]["second_before_launch"]
-    same(phases["second_before_launch"]["observation"]["keyfile"], supplemental)
-    settings.validate_file_sequence(keyfiles["before_first_launch"], keyfiles["after_first_toggle"], supplemental)
+    supplemental_names = ({"first_retired", "second_before_launch", "second_before_open", "second_retired"}
+                          if is_v2 else {"second_before_launch"})
+    exact(supervisor["supplemental_keyfile"], supplemental_names)
+    for phase, supplemental in supervisor["supplemental_keyfile"].items():
+        same(phases[phase]["observation"]["keyfile"], supplemental)
+    if not is_v2:
+        settings.validate_file_sequence(keyfiles["before_first_launch"], keyfiles["after_first_toggle"],
+                                        supervisor["supplemental_keyfile"]["second_before_launch"])
     _document(supervisor["document"], storage, phases["first_before_launch"], second)
     _fingerprints(fingerprints, natives, environments, source)
     observers = supervisor["fingerprint_observers"]
@@ -1079,12 +1161,14 @@ def validate_collection(native, supervisor, first, second, environments, fingerp
     need(observers["first"]["stopped_at_ns"] < observers["second"]["started_at_ns"],
          "N07_B4_OBSERVER_REUSED")
     census(supervisor["final_census"])
-    return {"status": "collected", "revision": COLLECTION_REVISION,
+    return {"status": "collected", "revision": revision,
             "sessions": sessions, "same_storage_verified": True,
             "keyfile_sequence_verified": True, "normal_cleanup_verified": True,
             "renderer_states": list(pixel.STATES), "fingerprint_missing": fingerprints["first"]["missing"],
             "menu_identity_verified": False, "reviewed_golden": False,
-            "host_v3_acceptance_passed": False, "verified_n07_assertions": []}
+            "host_v3_acceptance_passed": False, "verified_n07_assertions": [],
+            **({"settings_revision": lifecycle.REVISION, "settings_evidence": settings_evidence}
+               if is_v2 else {})}
 
 
 def load_collection(root: Path):
@@ -1093,7 +1177,7 @@ def load_collection(root: Path):
     native = evidence.parse(review._read(root / "n07-b4-native.json"))
     supervisor = evidence.parse(review._read(root / "n07-b4-supervisor.json"))
     report = evidence.parse(review._read(root / "n07-b4-validation.json"))
-    need(type(report) is dict and report.get("revision") == COLLECTION_REVISION
+    need(type(report) is dict and report.get("revision") == collection_revision(native, supervisor)
          and report.get("reviewed_golden") is False
          and report.get("menu_identity_verified") is False
          and report.get("verified_n07_assertions") == []
@@ -1186,6 +1270,52 @@ def adversarial_checks(**inputs):
         ("fake_approval", lambda d: d["native"].update(reviewed_golden=True)),
         ("false_acceptance", lambda d: d["native"].update(verified_n07_assertions=["pointer_toggled_setting"])),
     )
+    if collection_revision(inputs["native"], inputs["supervisor"]) == COLLECTION_REVISION_V2:
+        def settings_bytes(data, phase, edit):
+            """Rebind raw/proof/IPC envelopes so the semantic oracle is exercised."""
+            supervisor = data["supervisor"]
+            name = {"first_before_launch": "before_first_launch", "first_after_toggle": "after_first_toggle",
+                    "second_after_observation": "second_session"}.get(phase)
+            proof = supervisor["keyfile"][name] if name else supervisor["supplemental_keyfile"][phase]
+            auxiliary = supervisor["settings_observations"][phase]
+            raw = edit(base64.b64decode(auxiliary["bytes_b64"], validate=True))
+            present, value, others = settings._parse(raw)
+            proof.update(key_present=present, value=value, others_sha256=others)
+            proof["file"].update(sha256=evidence.sha(raw), size=len(raw))
+            auxiliary.update(bytes_b64=base64.b64encode(raw).decode("ascii"),
+                             proof_sha256=evidence.sha(evidence.canonical(proof)))
+            outer = next(row for row in supervisor["barriers"] if row["request"]["phase"] == phase)
+            outer["observation"].update(keyfile=copy.deepcopy(proof),
+                settings_observation_sha256=evidence.sha(evidence.canonical(auxiliary)))
+            outer["observation_sha256"] = evidence.sha(evidence.canonical(outer["observation"]))
+            outer["response"]["observation_sha256"] = outer["observation_sha256"]
+            host = next(row for row in data["native"]["barriers"] if row["request"]["phase"] == phase)
+            host["response"] = copy.deepcopy(outer["response"])
+            for event in data["first" if phase.startswith("first_") else "second"]["observations"]:
+                if event["kind"] == "n07_b4_barrier" and event["data"]["request"]["phase"] == phase:
+                    event["data"] = copy.deepcopy(host)
+            # The old optional diagnostic is not a substitute for this v2
+            # oracle, and may be omitted in these semantic adversarial copies.
+            supervisor.pop("keyfile_diagnostics", None)
+
+        def different_height(raw):
+            return re.sub(rb"(?m)^height=([0-9]+)$",
+                          lambda m: b"height=" + str(int(m[1]) + 1).encode("ascii"), raw)
+
+        mutations += (
+            ("missing_preopen_snapshot", lambda d: d["supervisor"]["settings_observations"].pop("second_before_open")),
+            ("missing_retired_snapshot", lambda d: d["supervisor"]["supplemental_keyfile"].pop("second_retired")),
+            ("mixed_settings_revision", lambda d: d["supervisor"].update(settings_revision="eidolon-i6-n07-settings-v1")),
+            ("legacy_second_native_relabel", lambda d: d["second"].update(schema=SECOND_SCHEMA)),
+            ("rehashed_existing_window_change", lambda d: settings_bytes(d, "second_after_observation", different_height)),
+            ("rehashed_late_stop_change", lambda d: settings_bytes(d, "second_retired", different_height)),
+            ("rehashed_unknown_chooser_key", lambda d: settings_bytes(d, "second_after_observation",
+                lambda raw: raw + b"unrecognized-setting=true\n")),
+            ("rehashed_window_type", lambda d: settings_bytes(d, "second_after_observation",
+                lambda raw: re.sub(rb"(?m)^width=[0-9]+$", b"width=true", raw))),
+            ("rehashed_bytes_only_change", lambda d: settings_bytes(d, "second_before_open",
+                lambda raw: raw + b"# unauthorized formatting change\n")),
+        )
     rejected = []
     for name, mutate in mutations:
         changed = copy.deepcopy(inputs)

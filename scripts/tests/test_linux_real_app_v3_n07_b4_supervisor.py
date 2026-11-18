@@ -127,10 +127,12 @@ class SupervisorAdmissionTests(unittest.TestCase):
         self.supervisor._request(self.request("first_before_launch"))
         self.supervisor.record["keyfile"]["before_first_launch"] = {"synthetic": "before"}
         proof = {"synthetic": "after", "key_present": True, "value": True}
+        self.supervisor.storage.probe = SimpleNamespace(last_lifecycle={
+            "proof_sha256": evidence.sha(evidence.canonical(proof))})
         with patch.object(self.supervisor, "_snapshot_true", return_value=proof), \
                 patch.object(self.supervisor, "_keyfile_diagnostic"), \
                 patch.object(self.supervisor, "_stop_observer") as stopped, \
-                patch.object(live, "validate_file_sequence",
+                patch.object(live, "validate_settings",
                              side_effect=ValueError("N07_UNEXPECTED_SETTING_CHANGE")):
             raw, event = self.supervisor.respond(evidence.canonical(self.request("first_after_toggle")))
         stopped.assert_called_once_with("first")
@@ -144,9 +146,11 @@ class SupervisorAdmissionTests(unittest.TestCase):
         self.supervisor._request(self.request("first_before_launch"))
         self.supervisor.record["keyfile"]["before_first_launch"] = {"synthetic": "before"}
         proof = {"synthetic": "after", "key_present": True, "value": True}
+        self.supervisor.storage.probe = SimpleNamespace(last_lifecycle={
+            "proof_sha256": evidence.sha(evidence.canonical(proof))})
         with patch.object(self.supervisor, "_snapshot_true", return_value=proof), \
                 patch.object(self.supervisor, "_keyfile_diagnostic"), \
-                patch.object(live, "validate_file_sequence",
+                patch.object(live, "validate_settings",
                              side_effect=ValueError("N07_UNEXPECTED_SETTING_CHANGE")), \
                 patch.object(self.supervisor, "_stop_observer",
                              side_effect=subprocess.TimeoutExpired("synthetic observer", 5)) as stopped:

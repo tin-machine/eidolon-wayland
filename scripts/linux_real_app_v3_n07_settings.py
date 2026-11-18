@@ -157,18 +157,21 @@ class StorageKeyfileProbe:
     root, not the per-nonce temporary C2 directory, is used for both sessions.
     """
 
-    def __init__(self, root: Path, uid: int, storage_digest: str, *, diagnostic: bool = False):
+    def __init__(self, root: Path, uid: int, storage_digest: str, *, diagnostic: bool = False,
+                 lifecycle: bool = False):
         need(isinstance(root, Path) and root.is_absolute()
              and type(uid) is int and uid >= 0
              and type(storage_digest) is str
              and re.fullmatch(r"[0-9a-f]{64}", storage_digest) is not None,
              "N07_STORAGE_BINDING_INVALID")
-        need(type(diagnostic) is bool, "N07_STORAGE_BINDING_INVALID")
+        need(type(diagnostic) is bool and type(lifecycle) is bool, "N07_STORAGE_BINDING_INVALID")
         self.path = root
         self.uid = uid
         self.storage_digest = storage_digest
         self.diagnostic_enabled = diagnostic
         self.last_diagnostic = None
+        self.lifecycle_enabled = lifecycle
+        self.last_lifecycle = None
         # Hold the first observed intermediate directory descriptions across
         # both GUI sessions. Comparing only within one read would allow an
         # entire settings directory to be replaced between observations.
@@ -205,12 +208,14 @@ class StorageKeyfileProbe:
 
     def snapshot(self) -> dict:
         self.last_diagnostic = None
+        self.last_lifecycle = None
         try:
             return self._snapshot()
         except BaseException:
             # A failed final path/FD check cannot leave a diagnostic that
             # looks bound to a successful snapshot.
             self.last_diagnostic = None
+            self.last_lifecycle = None
             raise
 
     def _snapshot(self) -> dict:
@@ -246,7 +251,7 @@ class StorageKeyfileProbe:
             inventory = {} if self.diagnostic_enabled else None
             present, value, other = _parse(contents, diagnostic=inventory)
             self._assert_root()
-            return self._proof(metadata, present, value, other, inventory=inventory)
+            return self._proof(metadata, present, value, other, inventory=inventory, raw=contents)
         finally:
             try:
                 # The name chain must still identify the same open directories.
@@ -262,7 +267,8 @@ class StorageKeyfileProbe:
                     os.close(child)
 
     def _proof(self, file: dict | None, present: bool,
-               value: bool | None, others: str, *, inventory: dict | None = None) -> dict:
+               value: bool | None, others: str, *, inventory: dict | None = None,
+               raw: bytes | None = None) -> dict:
         proof = {"storage_digest": self.storage_digest,
                  "root_dev": self.root.st_dev, "root_ino": self.root.st_ino,
                  "file": file, "key_present": present, "value": value,
@@ -278,6 +284,9 @@ class StorageKeyfileProbe:
                 "value_hash": "sha256_utf8_parsed_value",
                 **(_diagnostic_inventory({}) if inventory is None else inventory),
             }
+        if self.lifecycle_enabled:
+            from linux_real_app_v3_n07_settings_lifecycle import observe_snapshot
+            self.last_lifecycle = observe_snapshot(proof, raw)
         return proof
 
     def _absent(self) -> dict:
@@ -286,40 +295,45 @@ class StorageKeyfileProbe:
         return self._proof(None, False, None, sha(b"{}"))
 
 
-def validate_file_sequence(before: dict, enabled: dict, restarted: dict) -> None:
-    """Compare *independent* snapshots; never certify that a GUI caused them.
-
-    Full N07 success additionally requires native pointer/readback, two distinct
-    product sessions, complete cleanup, and reviewed pixel golden acceptance.
-    """
+def validate_snapshot(item: dict) -> None:
+    """The unchanged v1 proof shape and metadata checks, shared with v2."""
     def integer(value: object, minimum: int = 0) -> bool:
         return type(value) is int and value >= minimum
 
     def digest(value: object) -> bool:
         return type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
+    need(type(item) is dict and set(item) == PROOF_KEYS, "N07_KEYFILE_PROOF_INVALID")
+    need(digest(item["storage_digest"]) and digest(item["others_sha256"])
+         and integer(item["root_dev"]) and integer(item["root_ino"], 1)
+         and type(item["key_present"]) is bool,
+         "N07_KEYFILE_PROOF_INVALID")
+    need((item["key_present"] and type(item["value"]) is bool)
+         or (not item["key_present"] and item["value"] is None),
+         "N07_KEYFILE_PROOF_INVALID")
+    file = item["file"]
+    if file is None:
+        need(item["key_present"] is False, "N07_KEYFILE_PROOF_INVALID")
+        return
+    need(type(file) is dict and set(file) == {
+        "dev", "inode", "uid", "nlink", "size", "mtime_ns", "ctime_ns", "sha256"},
+        "N07_KEYFILE_PROOF_INVALID")
+    need(all(integer(file[field]) for field in (
+             "dev", "uid", "mtime_ns", "ctime_ns"))
+         and integer(file["inode"], 1) and integer(file["nlink"], 1)
+         and file["nlink"] == 1 and integer(file["size"], 1)
+         and file["size"] <= MAX_BYTES and digest(file["sha256"]),
+         "N07_UNSAFE_KEYFILE")
+
+
+def validate_file_sequence(before: dict, enabled: dict, restarted: dict) -> None:
+    """Compare *independent* snapshots; never certify that a GUI caused them.
+
+    Full N07 success additionally requires native pointer/readback, two distinct
+    product sessions, complete cleanup, and reviewed pixel golden acceptance.
+    """
     for item in (before, enabled, restarted):
-        need(type(item) is dict and set(item) == PROOF_KEYS, "N07_KEYFILE_PROOF_INVALID")
-        need(digest(item["storage_digest"]) and digest(item["others_sha256"])
-             and integer(item["root_dev"]) and integer(item["root_ino"], 1)
-             and type(item["key_present"]) is bool,
-             "N07_KEYFILE_PROOF_INVALID")
-        need((item["key_present"] and type(item["value"]) is bool)
-             or (not item["key_present"] and item["value"] is None),
-             "N07_KEYFILE_PROOF_INVALID")
-        file = item["file"]
-        if file is None:
-            need(item["key_present"] is False, "N07_KEYFILE_PROOF_INVALID")
-            continue
-        need(type(file) is dict and set(file) == {
-            "dev", "inode", "uid", "nlink", "size", "mtime_ns", "ctime_ns", "sha256"},
-            "N07_KEYFILE_PROOF_INVALID")
-        need(all(integer(file[field]) for field in (
-                 "dev", "uid", "mtime_ns", "ctime_ns"))
-             and integer(file["inode"], 1) and integer(file["nlink"], 1)
-             and file["nlink"] == 1 and integer(file["size"], 1)
-             and file["size"] <= MAX_BYTES and digest(file["sha256"]),
-             "N07_UNSAFE_KEYFILE")
+        validate_snapshot(item)
     need(len({p["storage_digest"] for p in (before, enabled, restarted)}) == 1,
          "N07_DIFFERENT_STORAGE")
     need(len({(p["root_dev"], p["root_ino"]) for p in (before, enabled, restarted)}) == 1,

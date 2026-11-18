@@ -64,8 +64,10 @@ def file_identity(info):
 class TrustedStorage:
     """A read-only C1 context observer with one explicit prelaunch fixture write."""
 
-    def __init__(self, record: contract.StorageRecord, account: dict):
+    def __init__(self, record: contract.StorageRecord, account: dict, *, settings_lifecycle=False):
         need(type(record) is contract.StorageRecord)
+        need(type(settings_lifecycle) is bool)
+        self.settings_lifecycle = settings_lifecycle
         self.record, self.uid = record, account["uid"]
         self.home = Path(account["passwd_home"])
         need(self.home.is_absolute() and self.uid > 0
@@ -208,7 +210,8 @@ class TrustedStorage:
                                 for i, (_, name, _, identity) in enumerate(self.chain)],
             }
             self.assert_current()
-            self.probe = StorageKeyfileProbe(self.root, self.uid, self.record.sha256(), diagnostic=True)
+            self.probe = StorageKeyfileProbe(self.root, self.uid, self.record.sha256(), diagnostic=True,
+                                             lifecycle=self.settings_lifecycle)
             self._assert_probe_root()
             self.assert_current()
             return self.metadata

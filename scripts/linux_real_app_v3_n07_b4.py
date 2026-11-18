@@ -25,11 +25,11 @@ import linux_real_app_v3_evidence as evidence
 import linux_real_app_v3_n01 as fixture
 from linux_real_app_v3_n07_b4_storage import TrustedStorage, storage_record, need
 from linux_real_app_v3_n07_fingerprint import LiveFingerprintObserver, prepare_fixture
-from linux_real_app_v3_n07_settings import validate_file_sequence
+import linux_real_app_v3_n07_settings_lifecycle as settings_lifecycle
+from linux_real_app_v3_n07_b4_probe import validate_settings
 
 ROOT = Path(__file__).resolve().parents[1]
-PHASES = ("first_before_launch", "first_after_toggle", "first_retired",
-          "second_before_launch", "second_after_observation", "second_retired")
+PHASES = settings_lifecycle.PHASES
 MAX_CONTEXT = 4 * 1024 * 1024
 
 
@@ -65,7 +65,7 @@ class BarrierSupervisor:
         self.artifacts, self.output_dir, self.files = artifacts, output_dir, files
         self.sshd, self.ssh, self.isolation = sshd, ssh, isolation
         self.before, self.build_id, self.runner_hash, self.policy = before, build_id, runner_hash, policy
-        self.storage = TrustedStorage(storage_record(descriptor), accounts["app"])
+        self.storage = TrustedStorage(storage_record(descriptor), accounts["app"], settings_lifecycle=True)
         self.child = None
         self.child_identity = None
         self.observers, self.observer_active = {}, set()
@@ -73,10 +73,11 @@ class BarrierSupervisor:
         self.index = 0
         self.identities = {}
         self.record = {
-            "schema": 1, "revision": "eidolon-i6-n07-b4-supervisor-v1",
+            "schema": 1, "revision": "eidolon-i6-n07-b4-supervisor-v2",
             "run_id": descriptor["run_id"], "source": source,
             "trusted_storage": None, "document": None, "keyfile": {},
             "supplemental_keyfile": {}, "keyfile_diagnostics": {},
+            "settings_revision": settings_lifecycle.REVISION, "settings_observations": {},
             "barriers": [], "fingerprint_observers": {},
             "failures": [], "external_rescue": False, "final_census": None,
         }
@@ -178,6 +179,22 @@ class BarrierSupervisor:
              and diagnostic.get("proof_sha256") == evidence.sha(evidence.canonical(proof)),
              "N07_B4_KEYFILE_DIAGNOSTIC_BINDING")
         self.record["keyfile_diagnostics"][phase] = diagnostic
+
+    def _record_settings(self, phase, proof, observation):
+        names = {"first_before_launch": "before_first_launch", "first_after_toggle": "after_first_toggle",
+                 "second_after_observation": "second_session"}
+        if phase in names:
+            self.record["keyfile"][names[phase]] = proof
+        else:
+            self.record["supplemental_keyfile"][phase] = proof
+        observation["keyfile"] = proof
+        self._keyfile_diagnostic(phase, proof)
+        value = copy.deepcopy(self.storage.probe.last_lifecycle)
+        need(type(value) is dict and value.get("proof_sha256") == evidence.sha(evidence.canonical(proof)),
+             "N07_SETTINGS_SNAPSHOT_BINDING")
+        self.record["settings_observations"][phase] = value
+        observation["settings_observation_sha256"] = evidence.sha(evidence.canonical(value))
+        validate_settings(self.record, complete=False)
 
     def export_session(self, session):
         for role, limit in (("native", fixture.MAX_OUTPUT), ("context", MAX_CONTEXT)):
@@ -302,39 +319,31 @@ class BarrierSupervisor:
         session = request.get("session") if type(request) is dict else None
         observation = {"phase": phase, "session": session, "observed_at_ns": received,
                        "keyfile": None, "census": None, "driver_control": None,
-                       "product_cleanup_verified": False, "document_sha256": None}
+                       "product_cleanup_verified": False, "document_sha256": None,
+                       "settings_observation_sha256": None}
         allowed = False
         try:
             self._request(request)
             if phase == "first_before_launch":
                 self.storage.open_after_inspect(request["context"])
                 proof = self.storage.snapshot()
-                self.record["keyfile"]["before_first_launch"] = proof
-                observation["keyfile"] = proof
-                self._keyfile_diagnostic(phase, proof)
+                self._record_settings(phase, proof, observation)
                 need(proof["key_present"] is False and proof["value"] is None,
                      "N07_INITIAL_KEY_PRESENT")
                 self.storage.create_document_before_launch()
                 self._start_observer(session)
-            elif phase == "second_before_launch":
+            elif phase in ("second_before_launch", "second_before_open"):
                 self.storage.assert_current()
                 proof = self.storage.snapshot()
-                self.record["supplemental_keyfile"][phase] = proof
-                observation["keyfile"] = proof
-                self._keyfile_diagnostic(phase, proof)
+                self._record_settings(phase, proof, observation)
                 need(proof["key_present"] is True and proof["value"] is True,
                      "N07_B4_KEY_NOT_PERSISTED")
-                self._start_observer(session)
+                if phase == "second_before_launch":
+                    self._start_observer(session)
             elif phase in ("first_after_toggle", "second_after_observation"):
                 try:
                     proof = self._snapshot_true()
-                    name = "after_first_toggle" if session == "first" else "second_session"
-                    self.record["keyfile"][name] = proof
-                    observation["keyfile"] = proof
-                    self._keyfile_diagnostic(phase, proof)
-                    values = self.record["keyfile"]
-                    validate_file_sequence(values["before_first_launch"],
-                        values["after_first_toggle"], values.get("second_session", proof))
+                    self._record_settings(phase, proof, observation)
                 except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
                     # Preserve the primary observation failure even if stopping
                     # its worker encounters another failure below.
@@ -349,6 +358,9 @@ class BarrierSupervisor:
                         self.failure(error)
             else:
                 self._retired(session, observation)
+                # This snapshot follows actual product retirement and precedes
+                # the ACK that can authorize another Runtime/return to parent.
+                self._record_settings(phase, self.storage.snapshot(), observation)
             if self.storage.document is not None:
                 observation["document_sha256"] = self.storage.verify_document()["sha256"]
             allowed = not self.record["failures"]
@@ -608,7 +620,7 @@ def main(argv=None):
     os.umask(0o077)
     artifacts = private_artifact_root(args.artifact_root)
     source = evidence.source_snapshot(ROOT)
-    report = {"schema": 1, "revision": "eidolon-i6-n07-b4-collection-v1",
+    report = {"schema": 1, "revision": "eidolon-i6-n07-b4-collection-v2",
               "source": source, "status": "not_run", "reason": "I6_NOT_RUN",
               "reviewed_golden": False, "menu_identity_verified": False,
               "verified_n07_assertions": [], "host_v3_acceptance_passed": False}

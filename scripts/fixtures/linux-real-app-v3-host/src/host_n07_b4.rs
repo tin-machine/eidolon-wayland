@@ -363,6 +363,12 @@ impl Driver {
         }
         let parent = layers[0]["surface"].clone();
         self.n07_second.as_mut().unwrap()["before_open"] = before.clone();
+        // Observe persisted settings while the second app is Ready, before
+        // even taking the Open-dialog baseline. A snapshot after Ctrl+O
+        // cannot establish which settings the restarted app inherited.
+        // Refusal propagates through normal product retirement without
+        // issuing the first keyboard command below.
+        self.n07_b4_barrier("second_before_open")?;
         let mut req = 8000u32;
         let baseline = self.n05_dialog_baseline(&main, "open")?;
         let open_step = self.n05_step("open_shortcut", &main, &mut req, |s, t, e, k, r| {
@@ -441,7 +447,7 @@ fn second_receipt(
     cleanup: Option<&str>,
 ) -> Value {
     let mut native = driver.receipt_n02(run_id, "mousepad_editor", error, cleanup);
-    native["schema"] = json!("eidolon-i6-n07-b4-second-native-v1");
+    native["schema"] = json!("eidolon-i6-n07-b4-second-native-v2");
     native["variant"] = json!("same_storage_restart_collection");
     native["n07_second"] = driver.n07_second.clone().unwrap_or(Value::Null);
     native["n07_assertions_verified"] = json!([]);
@@ -536,7 +542,7 @@ fn summary(
     error: Option<&str>,
 ) -> Value {
     let build: Value = serde_json::from_str(env!("EIDOLON_I6_BUILD_SOURCE")).unwrap();
-    json!({"schema":1,"revision":"eidolon-i6-n07-b4-host-v1",
+    json!({"schema":1,"revision":"eidolon-i6-n07-b4-host-v2",
         "run_id":descriptor.run_id,"source_sha256":build["tree_sha256"],
         "build_source":build,"sessions":sessions,"barriers":barriers,"error":error,
         "reviewed_golden":false,"menu_identity_verified":false,
@@ -824,7 +830,8 @@ mod tests {
     }
 
     #[test]
-    fn refused_barrier_retains_real_negative_ack_without_admitting_next_phase() {
+    fn refused_before_open_retains_real_negative_ack_without_admitting_next_phase() {
+        let request = json!({"schema":1,"phase":"second_before_open"});
         let (left, mut right) = UnixStream::pair().unwrap();
         left.set_nonblocking(true).unwrap();
         let handle = thread::spawn(move || {
@@ -852,7 +859,7 @@ mod tests {
         };
         let started = clock_ns().unwrap();
         assert_eq!(
-            channel.exchange(&request(), || Ok(())),
+            channel.exchange(&request, || Ok(())),
             Err("I6_N07_B4_SUPERVISOR_REFUSED")
         );
         let actual = handle.join().unwrap();
@@ -860,7 +867,7 @@ mod tests {
         assert_eq!(retained, &actual);
         assert!(*received_at >= started && *received_at <= clock_ns().unwrap());
         // A later incomplete exchange must never inherit the earlier reply.
-        assert!(channel.exchange(&request(), || Ok(())).is_err());
+        assert!(channel.exchange(&request, || Ok(())).is_err());
         assert!(channel.received.is_none());
     }
 

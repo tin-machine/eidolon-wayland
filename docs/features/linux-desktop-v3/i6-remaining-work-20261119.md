@@ -1,5 +1,11 @@
 # I6 残件一覧 — 2026-11-19 JST の source 確認記録
 
+**同日追記 — settings 契約 revision の明示承認。** ユーザーが §3.1 の契約変更を承認したため、
+[settings lifecycle v2](i6-n07-settings-lifecycle-v2.md) と7時点の観測を実装する。
+以下の調査基準 SHA／v1 の拒否結果／当時の「未承認・未実装」は履歴として保持する。
+v2 の新規収集・独立再検証を別途要求し、旧 artifact を再解釈しない。
+この承認は Golden、人の画像レビュー、B5、正式 N07/I6 Acceptance を含まない。
+
 この文書は **dated status record** であり、新しい受入れ契約や設計承認ではない。
 I6 は引き続き manual discovery とし、この文書を resolver manifest に登録しない。
 後続変更を読む際は、以下の基準 SHA と現在の source / PR / CI を比較する。

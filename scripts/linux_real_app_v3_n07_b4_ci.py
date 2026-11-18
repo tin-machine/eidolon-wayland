@@ -95,7 +95,7 @@ def export_and_validate(incoming, output, image_file, head, attached, runtime,
              and producer.get("menu_identity_verified") is False
              and producer.get("exit_code") == 0
              and producer.get("status") == "collected", "N07_B4_PRODUCER_DISPOSITION")
-        adversarial_checks(**inputs)
+        report["adversarial"] = adversarial_checks(**inputs)
         candidate = export_bundle(output / "n07-b4-review", **inputs, provenance=provenance)
         validate_bundle(output / "n07-b4-review", candidate["candidate_sha256"])
         report.update(status="collected", reason="N07_B4_UNAPPROVED_COLLECTION",

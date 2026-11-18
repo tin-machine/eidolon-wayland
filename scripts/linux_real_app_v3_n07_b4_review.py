@@ -1,9 +1,11 @@
 """Six actual B4 states in an explicit unapproved candidate revision.
 
-The B3 v1 exporter remains a four-state/single-session contract. This v2 packet
-binds each image to one of two independently audited product sessions and saves
-the exact original native/context bytes. It cannot approve or load a production
-Golden. Reference acquisition and any future Acceptance run remain separate.
+The B3 v1 exporter remains a four-state/single-session contract. The existing
+v2 packet binds six images to the strict settings-v1 collection. A distinct v3
+packet binds the same six-state acquisition to the explicit settings lifecycle
+v2 contract; an old collection is never upgraded by inference. Both retain the
+exact original native/context bytes and cannot approve or load a production
+Golden. Reference acquisition and future Acceptance remain separate.
 """
 from __future__ import annotations
 
@@ -20,6 +22,9 @@ import linux_real_app_v3_n07_pixel as pixel
 import linux_real_app_v3_n07_review as b3
 
 REVISION = "eidolon-i6-n07-review-candidate-v2"
+LIFECYCLE_REVISION = "eidolon-i6-n07-review-candidate-v3"
+SETTINGS_REVISION = "eidolon-i6-n07-settings-lifecycle-v2"
+LIFECYCLE_COLLECTION_REVISION = "eidolon-i6-n07-b4-collection-v2"
 MAX_PACKET_BYTES = 8 * 1024 * 1024
 SESSIONS = ("first", "second")
 CHECKLIST = tuple(item for item in b3.CHECKLIST if not item.startswith("Collect both")) + (
@@ -89,12 +94,36 @@ def _evidence_bytes(inputs, provenance, proposal):
     return result
 
 
+def _candidate_contract(verdict, supervisor):
+    """Select only the revision returned by independent collection validation."""
+    revision = verdict.get("revision")
+    b3.need(revision in (probe.COLLECTION_REVISION, LIFECYCLE_COLLECTION_REVISION),
+            "N07_B4_REVIEW_COLLECTION_REVISION")
+    if revision == probe.COLLECTION_REVISION:
+        b3.need("settings_revision" not in verdict and "settings_evidence" not in verdict
+                and "settings_revision" not in supervisor and "settings_observations" not in supervisor,
+                "N07_B4_REVIEW_SETTINGS_REVISION")
+        return {}
+    b3.need(verdict.get("settings_revision") == SETTINGS_REVISION
+            and supervisor.get("settings_revision") == SETTINGS_REVISION
+            and type(verdict.get("settings_evidence")) is dict
+            and type(supervisor.get("settings_observations")) is dict
+            and supervisor["settings_observations"]
+            and type(supervisor.get("supplemental_keyfile")) is dict,
+            "N07_B4_REVIEW_SETTINGS_REVISION")
+    return {
+        "settings_contract": {"revision": SETTINGS_REVISION,
+                              "evidence": copy.deepcopy(verdict["settings_evidence"])},
+    }
+
+
 def build_candidate(native, supervisor, first, second, environments, fingerprints,
                     contexts, source, *, native_raws, provenance, proposal=None):
     inputs = dict(native=native, supervisor=supervisor, first=first, second=second,
                   environments=environments, fingerprints=fingerprints,
                   contexts=contexts, source=source, native_raws=native_raws)
     verdict = probe.validate_collection(**inputs)
+    settings_contract = _candidate_contract(verdict, supervisor)
     b3._provenance(provenance, source)
     states, extra = b3._observed(first, contexts["first"])
     second_rb = probe.second_readbacks(second)
@@ -119,7 +148,8 @@ def build_candidate(native, supervisor, first, second, environments, fingerprint
     raw_inputs = _evidence_bytes(inputs, provenance, proposal)
     missing = fingerprints["first"]["missing"]
     return {
-        "schema": 2, "revision": REVISION,
+        "schema": 3 if settings_contract else 2,
+        "revision": LIFECYCLE_REVISION if settings_contract else REVISION,
         "status": "diagnostic_only_missing_fingerprint" if missing else "candidate_pending_review",
         "approval": {"status": "not_reviewed", "reviewer": None,
                      "review_commit": None, "approved_sha256": None},
@@ -128,7 +158,7 @@ def build_candidate(native, supervisor, first, second, environments, fingerprint
         "source": copy.deepcopy(source), "origin": copy.deepcopy(provenance),
         "run_id": native["run_id"], "sessions": mapping,
         "provenance_scope": "one_supervisor_two_sequential_product_sessions_exact_saved_bytes",
-        "compatibility": {"prior_revision": b3.REVISION,
+        "compatibility": {"prior_revision": REVISION if settings_contract else b3.REVISION,
             "prior_revision_mutated": False, "production_revision": "eidolon-i6-n07-pixel-v1",
             "production_conversion_performed": False,
             "frame_order_scope": "within_actual_runtime_renderer_only"},
@@ -147,6 +177,7 @@ def build_candidate(native, supervisor, first, second, environments, fingerprint
         "document": copy.deepcopy(supervisor["document"]),
         "storage": copy.deepcopy(supervisor["trusted_storage"]),
         "keyfile_sequence": copy.deepcopy(supervisor["keyfile"]),
+        **settings_contract,
         "popup": {"first_initial": copy.deepcopy(first["n07_probe"]["popup"]),
                   "first_reopened": copy.deepcopy(first["n07_probe"]["b2"]["reopened_popup"]),
                   "second": copy.deepcopy(second["n07_second"]["popup"])},
@@ -225,6 +256,16 @@ def _html(candidate, digest):
         + "'>Mousepad menus.ui</a>. Rendered labels, checkmarks and numerals still require review.</p>",
         "<h2>Canonical candidate observations</h2><p>raw/*.rgba and raw/*.png preserve the original pixels. "
         "aids/* are review aids and are never expected-image inputs.</p>"]
+    if "settings_contract" in candidate:
+        parts.extend([
+            "<h2>Explicit settings lifecycle contract</h2><p>This acquisition uses the versioned "
+            "settings lifecycle predicate. The original strict settings-v1 contract and its failed "
+            "acquisitions remain distinct; no legacy receipt was upgraded. Automatic UI state is "
+            "checked against exact keys, types and product lifecycle evidence.</p>",
+            "<pre>" + e(json.dumps(candidate["settings_contract"], indent=2, sort_keys=True)) + "</pre>",
+            "<p>The exact same-read settings observations and supplemental keyfile snapshots are saved "
+            "in <code>evidence/supervisor.json</code>, covered by the candidate's input digest and "
+            "independently reconstructed during bundle verification.</p>"])
     for name in pixel.STATES:
         state = candidate["states"][name]
         parts.extend(["<section><h3>" + name + "</h3><p>Session <code>" + state["session"]
@@ -288,7 +329,7 @@ def export_bundle(output: Path, *, provenance, proposal=None, **inputs):
 
 def _read_packet(path):
     # Native/context readers retain their original 1/4 MiB limits. Only the
-    # v2 candidate aggregates six contexts and may reach the explicit 8 MiB cap.
+    # six-state candidates aggregate contexts within the explicit 8 MiB cap.
     import os
     import stat
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -351,6 +392,7 @@ def validate_bundle(root: Path, expected_sha256, *, observed_run_id=None,
 
 
 REJECTED_REVISION = "eidolon-i6-n07-b4-rejected-renderer-diagnostics-v1"
+REJECTED_LIFECYCLE_REVISION = "eidolon-i6-n07-b4-rejected-renderer-diagnostics-v2"
 
 
 def _rejection(call):
@@ -365,7 +407,7 @@ def _rejection(call):
 def _rejected_observed(inputs, provenance):
     """Audit the acquired pixels while preserving every rejected disposition.
 
-    This function is deliberately separate from candidate-v2 construction.
+    This function is deliberately separate from candidate construction.
     Neither source normalization nor diagnostic rendering changes native
     error/complete fields or supplies the missing settings/cleanup verdict.
     """
@@ -373,18 +415,21 @@ def _rejected_observed(inputs, provenance):
     rejection = _rejection(lambda: probe.validate_collection(**inputs))
     b3.need(rejection is not None, "N07_B4_DIAGNOSTIC_REQUIRES_REJECTION")
     native, supervisor = inputs["native"], inputs["supervisor"]
+    collection_revision = probe.collection_revision(native, supervisor)
+    lifecycle = collection_revision == LIFECYCLE_COLLECTION_REVISION
+    b3.need(type(inputs.get("second")) is dict
+            and inputs["second"].get("schema") == (probe.SECOND_SCHEMA_V2 if lifecycle else probe.SECOND_SCHEMA),
+            "N07_B4_DIAGNOSTIC_REVISION")
     probe.exact(native, {"schema", "revision", "run_id", "source_sha256", "build_source", "sessions", "barriers",
                          "error", "reviewed_golden", "menu_identity_verified", "verified_n07_assertions",
                          "host_v3_acceptance_passed"})
     probe.exact(supervisor, {"schema", "revision", "run_id", "source", "trusted_storage", "document", "keyfile",
                              "supplemental_keyfile", "barriers", "fingerprint_observers", "failures", "external_rescue",
-                             "final_census"} | ({"keyfile_diagnostics"} if "keyfile_diagnostics" in supervisor else set()))
+                             "final_census"} | ({"keyfile_diagnostics"} if "keyfile_diagnostics" in supervisor else set())
+                | ({"settings_revision", "settings_observations"} if lifecycle else set()))
     b3.need(native["reviewed_golden"] is False and native["menu_identity_verified"] is False
             and native["verified_n07_assertions"] == [] and native["host_v3_acceptance_passed"] is False
-            and native["run_id"] == supervisor["run_id"] and type(native["schema"]) is int and native["schema"] == 1
-            and native["revision"] == probe.NATIVE_REVISION
-            and type(supervisor["schema"]) is int and supervisor["schema"] == 1
-            and supervisor["revision"] == probe.SUPERVISOR_REVISION
+            and native["run_id"] == supervisor["run_id"]
             and native["error"] in (None, "I6_N07_B4_SUPERVISOR_REFUSED")
             and type(supervisor["external_rescue"]) is bool and type(supervisor["failures"]) is list
             and all(type(value) is str and re.fullmatch(r"(?:N07|I6)_[A-Z0-9_]{1,100}", value)
@@ -479,19 +524,25 @@ def _rejected_observed(inputs, provenance):
     for name, state in states.items():
         state["session"] = "first" if name.startswith("first_") else "second"
     keys = supervisor["keyfile"]
-    settings_rejection = _rejection(lambda: probe.settings.validate_file_sequence(
-        keys["before_first_launch"], keys["after_first_toggle"], keys["second_session"]))
+    settings_rejection = _rejection(lambda: probe.validate_settings(supervisor,
+        first=inputs["first"], second=inputs["second"])) if lifecycle else _rejection(
+            lambda: probe.settings.validate_file_sequence(
+                keys["before_first_launch"], keys["after_first_toggle"], keys["second_session"]))
     document = supervisor["document"]
     first_barrier = next(row for row in supervisor["barriers"] if row["request"]["phase"] == "first_before_launch")
     probe._document(document, supervisor["trusted_storage"], first_barrier, inputs["second"])
     return {"rejection": rejection, "settings_rejection": settings_rejection, "states": states,
-            "sessions": sessions, "retirement": retirement}
+            "sessions": sessions, "retirement": retirement,
+            **({"settings_revision": supervisor["settings_revision"]} if lifecycle else {})}
 
 
 def _build_rejected(inputs, provenance):
     observed = _rejected_observed(inputs, provenance)
     raw_inputs = _evidence_bytes(inputs, provenance, None)
-    return {"schema": 1, "revision": REJECTED_REVISION, "status": "diagnostic_only_rejected_collection",
+    lifecycle = observed.get("settings_revision") == SETTINGS_REVISION
+    return {"schema": 2 if lifecycle else 1,
+            "revision": REJECTED_LIFECYCLE_REVISION if lifecycle else REJECTED_REVISION,
+            "status": "diagnostic_only_rejected_collection",
             "candidate_created": False, "full_collection_valid": False,
             "reviewed_golden": False, "menu_identity_verified": False,
             "verified_n07_assertions": [], "host_v3_acceptance_passed": False,
@@ -529,6 +580,10 @@ def _rejected_html(packet, digest):
         "<h2>Source and storage observations</h2><pre>" + esc(json.dumps({key: packet[key] for key in (
             "source", "origin", "sessions", "keyfile", "supplemental_keyfile", "keyfile_diagnostics", "document", "fingerprints")},
             sort_keys=True, indent=2)) + "</pre>"]
+    if "settings_revision" in packet:
+        blocks.append("<h2>Settings contract revision</h2><p><code>" + esc(packet["settings_revision"])
+            + "</code>. Exact same-read lifecycle inputs remain in <code>evidence/supervisor.json</code>. "
+            "This rejected packet does not replace the old strict contract or create review authority.</p>")
     for name in pixel.STATES:
         state = packet["states"][name]
         blocks += ["<section><h2>" + esc(name) + "</h2><img alt='Unapproved actual Renderer ROI' src='raw/" + name +

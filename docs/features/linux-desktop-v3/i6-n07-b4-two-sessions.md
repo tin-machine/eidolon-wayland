@@ -7,6 +7,16 @@
 > A six-state candidate, successful file predicate or green CI does not approve
 > the pixel reference or complete the formal N07 acceptance case.
 
+**2026-11-19 contract revision:** the user explicitly authorized replacing the
+new collector's whole-keyfile / other-settings immutability requirement with
+the bounded [settings lifecycle v2 contract](i6-n07-settings-lifecycle-v2.md).
+It adds seven same-read observations bound to seven genuine lifecycle
+barriers, while retaining the original three canonical observation points.
+The original v1 lifecycle/settings predicate and candidate revisions described
+below remain the interpretation of their historical artifacts and failures.
+They are not silently revalidated as v2, and no new CI or Golden success is
+claimed by this supersession note.
+
 ## 1. Baseline and responsibility
 
 Work starts from main `ee9192d12957a17aaa3d61bd6e8ba1ca86a99d6f`, the squash

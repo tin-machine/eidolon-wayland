@@ -41,6 +41,10 @@ N07 progresses through [A's independent keyfile/pixel contract](i6-n07-a-indepen
 [B1/B2's real pointer/popup/four-state diagnostic](i6-n07-b1-pointer-popup-readback.md)
 and [B3's real-image review packets and observed fingerprint](i6-n07-b3-pixel-review.md),
 then [B4's same-storage two-session collection and independent observations](i6-n07-b4-two-sessions.md).
+The explicitly authorized [N07 settings lifecycle v2 revision](i6-n07-settings-lifecycle-v2.md)
+defines bounded automatic UI-state persistence, seven actual observations,
+and compatibility with the unchanged strict v1 predicate. It remains manually
+discoverable; contract authorization does not establish a successful new acquisition.
 B3/B4 prepare unapproved reference material; actual acquisition evidence,
 independent six-state Golden approval and B5 formal acceptance integration
 remain separate.

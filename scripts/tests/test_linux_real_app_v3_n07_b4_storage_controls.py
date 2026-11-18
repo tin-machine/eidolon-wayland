@@ -141,6 +141,7 @@ class ProbeRootBinding(unittest.TestCase):
         # All probe opens, fstat comparisons and cleanup use actual FDs.
         self.observer = TrustedStorage.__new__(TrustedStorage)
         self.observer.uid, self.observer.record = self.uid, record
+        self.observer.settings_lifecycle = False
         self.observer.home = Path("/home/eidolon-app")
         self.observer.root = self.root
         fd = os.open(self.root, DIR_FLAGS)
@@ -156,8 +157,8 @@ class ProbeRootBinding(unittest.TestCase):
         held = self.observer.chain[-1][2]
         opened = []
 
-        def redirected_probe(_path, uid, digest, *, diagnostic=False):
-            probe = StorageKeyfileProbe(self.foreign, uid, digest, diagnostic=diagnostic)
+        def redirected_probe(_path, uid, digest, *, diagnostic=False, lifecycle=False):
+            probe = StorageKeyfileProbe(self.foreign, uid, digest, diagnostic=diagnostic, lifecycle=lifecycle)
             opened.append(probe.fd)
             return probe
 
