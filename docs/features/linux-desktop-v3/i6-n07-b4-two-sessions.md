@@ -176,7 +176,7 @@ each first-observed intermediate directory FD until the probe closes, and
 rejects replacement or disappearance between observations. Directories that
 are initially absent may first appear through normal GLib persistence; once
 observed, their identity is pinned. Retained FDs prevent inode reuse from
-disguising a replacement. No file bytes are exported.
+disguising a replacement. No raw keyfile bytes are exported.
 
 B4 alone enables an optional `last_diagnostic` inventory from the same
 keyfile read and parse as each canonical snapshot. It records sorted
@@ -225,6 +225,20 @@ changes this run's other-keys digest. If it does, the existing predicate must
 fail and the diagnostic evidence must retain the mismatch. Pre-seeding
 settings, changing schema defaults, omitting geometry keys or moving the
 canonical initial snapshot after launch is not an allowed repair.
+
+GTK 3.24.41 also persists file-chooser UI state: its
+[`unmap` handler](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkfilechooserwidget.c#L4134-L4147)
+calls [`settings_save()`](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkfilechooserwidget.c#L3930-L3955),
+which writes location/display/sort/sidebar/date/type settings and applies the
+delayed changes. The chooser obtains `org.gtk.Settings.FileChooser` through
+[`g_settings_new()`](https://github.com/GNOME/gtk/blob/3.24.41/gtk/gtkfilechooserutils.c#L443-L467).
+The product selects `eidolon-keyfile-v1`; its
+[existing backend](https://github.com/tin-machine/eidolon-wayland/blob/2414766f974d6f9ba9638a959df9c6792f1ac904/scripts/linux/eidolon_settings_backend.c)
+protects only session-restore, autosave-timer and opening-mode, and delegates
+other writes to the same C1 keyfile. These automatic writers give a
+source-derived explanation to investigate, not an observation of this run's
+post-Close/Open keys. This PR changes neither backend routing/protected policy
+nor the strict setting/bytes contract to accommodate them.
 
 ## 5. Renderer, input and session identity
 
@@ -510,6 +524,248 @@ unchanged 240-second timeout, exit 124; the failure stage and reason were
 checked in the logs. Those dependency-installation failures are separate from
 the actual B4 settings refusal and do not establish a Host or Android build
 result for that verification workflow.
+
+#### Third CI acquisition, attempt 1 — 2026-11-18
+
+- PR HEAD: `2414766f974d6f9ba9638a959df9c6792f1ac904`;
+  CI checkout/source: `e645204e7eb34c763f0a6d29eaca1d065fd66947`.
+- L7a run [44308678917](https://github.com/tin-machine/eidolon-wayland/actions/runs/44308678917),
+  attempt 1; B4 job [134816878408](https://github.com/tin-machine/eidolon-wayland/actions/runs/44308678917/job/134816878408).
+- Failed B4 artifact `14429836780`, named
+  `linux-desktop-v3-n07-b4-e645204e7eb34c763f0a6d29eaca1d065fd66947`;
+  ZIP SHA-256
+  `ed588fa10067e11a345692eb82d9bb300f8d373e38d30312a6f00e8d9a19565e`.
+  The saved packet is retained as `evidence/b4-diagnostics-failed`.
+
+The first session acquired the four real B3 states and observed initial key
+absence followed by exact `true` in a 60-byte keyfile after the pointer toggle.
+The same-read diagnostic binds those two snapshots: the initial inventory is
+empty, and the post-toggle inventory contains only
+`org/xfce/mousepad/preferences/view` / `show-line-numbers`. No post-Close key
+inventory or second-session snapshot was obtained in this attempt.
+
+The ordinary first-session Close action ended with the actual terminal reason
+`stop`, while the retained app diagnostic was `APP_WINDOW_UNSUPPORTED`.
+Independent re-reading rejected the full first session with
+`I6_N06_CLOSE_CONTROL_SEQUENCE`; the separate retirement validator rejected
+with `N07_B4_APP_RETIRED`. The native producer reported `error=null` and
+`cleanup_error=null`, with SDK retirement, Registry destruction and zero
+Registry counts, but those fields cannot override the independent semantic
+checks. The raw final process/journal counts are all zero, both locks are
+free, and `external_rescue=false`. These are evidence of resource recovery,
+not proof of the required natural-Close classification.
+
+The trace also places the actual C2 Stop (trace 14) and terminal (trace 15)
+before the Host's explicit Disconnect (observation 80, watermark 18).
+Extending the fixture's later wait would not change that already recorded
+terminal; this packet does not justify a B4 wait/deadline change.
+
+The first retired gate therefore blocked creation of the second Runtime.
+There is no second session or second-session image in this artifact, and no
+candidate was created. Neither the reason classification nor the existing
+oracle was changed to allow it. This failure belongs to the natural-Close
+classification investigation tracked separately in
+[Issue #45](https://github.com/tin-machine/eidolon-wayland/issues/45); no
+root-cause repair is claimed.
+
+The same L7a attempt also retained a separate N06 failure:
+
+- N06 job [134816878544](https://github.com/tin-machine/eidolon-wayland/actions/runs/44308678917/job/134816878544),
+  artifact `14429423238`, ZIP SHA-256
+  `10d49da950b6f678862034bbf86c8a7b340695a9a5bd41aa3311675b318b6e2c`,
+  saved as `evidence/n06-third-failed`.
+- `open_cancel`, `save_as_confirm` and `unsaved_close_cancel` passed their
+  unchanged independent oracles: 8 + 8 + 9 = 25 assertions.
+- `close_confirm` retained terminal reason `stop` on protocol
+  `request_sequence="6"`; the preceding heartbeat was request sequence `"5"`.
+  Its native `error` and `cleanup_error` were null and the final external
+  census was zero, with no external rescue. The full Close Confirm oracle
+  nevertheless rejected it.
+
+This signature is neither the intermittent dialog-detection failure in
+[Issue #50](https://github.com/tin-machine/eidolon-wayland/issues/50) nor the
+earlier `I6_TRACE_OVERFLOW` during Close Confirm cleanup. Both this N06 packet
+and the separate B4 packet remain failure evidence.
+
+In this CI execution the 120 N07 Python tests, 34 Host Rust tests and four
+targeted core tests passed. All five CodeQL language jobs passed. Other L7a
+jobs passed; B4 and N06 were the two failed jobs. A failed-jobs-only retry of
+the same L7a run/SHA completed as attempt 2, recorded below. A same-SHA retry
+does not establish a root-cause fix. Verification run
+[44308679040](https://github.com/tin-machine/eidolon-wayland/actions/runs/44308679040)
+attempts 1 and 2 stopped both Host and Android during APT installation at the
+unchanged 240-second timeout (exit 124). No successful Host or Android build
+result is inferred for that workflow. The separately compiled Host GUI
+fixture tests above did execute and pass.
+
+#### Third CI acquisition, attempt 2 — 2026-11-18
+
+- L7a run [44308678917](https://github.com/tin-machine/eidolon-wayland/actions/runs/44308678917),
+  attempt 2; B4 job [134821619292](https://github.com/tin-machine/eidolon-wayland/actions/runs/44308678917/job/134821619292).
+- Unchanged PR HEAD `2414766f974d6f9ba9638a959df9c6792f1ac904` and
+  checkout/source `e645204e7eb34c763f0a6d29eaca1d065fd66947`.
+- Artifact `14429993143`, named
+  `linux-desktop-v3-n07-b4-e645204e7eb34c763f0a6d29eaca1d065fd66947`;
+  ZIP SHA-256
+  `64dc9e899052f87f33e0632f747ee02270bb786df790395762fad51a883096b4`.
+  The 41-file packet is retained as `evidence/b4-final-attempt2`.
+- Rejected-renderer diagnostic SHA-256
+  `33efe16b600b67aa8250ee0175f1748b7b403ff37c230b36bdec1f78e81e9c6d`.
+  This is a diagnostic digest, not a candidate or Golden approval pin.
+
+This attempt acquired **both actual sessions and all six Renderer states**.
+The first session passed the complete independent session/retirement gate,
+and only then did the retained Registry create the second Runtime. Both
+sessions pass independent product-retirement validation. The acquisition
+still fails the unchanged setting/bytes contract; it does not produce a
+valid six-state candidate.
+
+All identities below were read from this attempt's saved files:
+
+| Identity | First | Second |
+|---|---|---|
+| Acquisition run | `2f66710549f4e52c2011b54d7b056a07` | same acquisition |
+| Runtime | `1` | `2` |
+| Nonce | `e61fc29848f7164e` | `68048f1877480253` |
+| Capture | `a097fb8cd4d408e1069cae19afd6a102dc33fdaf70e7739d2d9eb5220906a56f` | `a8f8ce91588ab0c2bb230404e98ae47f73e6fa2d286a6b089c724f1b0b69b09b` |
+| Application owner | `9d58451861f76d2acf1af1ea9051c0d8` | `23755b104ca827fa3924e21024faf873` |
+| Mousepad PID / start ticks | `87` / `56072` | `132` / `56396` |
+| Main TargetKey: scene / session / window / generation | `1 / 1 / 1 / 1` | `1 / 2 / 1 / 1` |
+| SDK Create / Renderer owner / context epoch | `1 / 1 / 1` | `1 / 2 / 1` |
+
+SDK Create numbers and context epochs are interpreted inside the actual
+Runtime/Renderer ownership scope; equal numbers in different owners do not
+combine their leases. The six observed content frames and readback tickets
+are likewise validated within each session:
+
+| Actual state | Session | content_frame | request_seq / present_seq |
+|---|---|---|---|
+| `first_off_gutter` | first | `"2"` | `105 / 4` |
+| `first_off_checkmark` | first | `"6"` | `109 / 11` |
+| `first_on_gutter` | first | `"11"` | `113 / 17` |
+| `first_on_checkmark` | first | `"14"` | `115 / 21` |
+| `second_on_numbers_1_8` | second | `"13"` | `113 / 18` |
+| `second_on_checkmark` | second | `"16"` | `115 / 22` |
+
+The second numbers state therefore legitimately has a lower frame than the
+last first-session state. No global frame-order expectation is introduced.
+Its actual raw RGBA SHA is
+`41a238dd62a23c9fa19e5ccf6b01df935412bdcaa896170495d0e5e5b09a2228`.
+All six raw RGBA files, lossless PNGs and `review.html` are saved under the
+explicit `eidolon-i6-n07-b4-rejected-renderer-diagnostics-v1` contract.
+`candidate_created=false` and `full_collection_valid=false` remain explicit.
+The saved diagnostic was independently reopened and all eleven diagnostic
+tampering cases were rejected; that limited result is separate from the
+failed full-collection validator.
+An additional independent audit of copied saved files rejected altered PNG
+bytes, altered diagnostic bytes and insertion of a fake `candidate.json`.
+The unchanged production Golden loader still refused the unapproved input.
+
+**Same storage and prepared document.** Both sessions use installation
+`7e481f98e9f384b25643c442065155b3`, installation ID
+`74758230f6f752f87fb73cbd7e3825f2`, profile storage ID
+`33ce9450007f1950e78a26adae4c81eb` and profile binding
+`719633fc5902bfebd4d987b54b9a41f04d3942dd5d083cfc9399c01b456d868d`.
+The canonical storage digest is
+`52517ade9d06cc8ddf976c8cb546a58ef17af9a45cbc4246fe3e6d24d105ce78`;
+all observations bind to retained root device/inode `46 / 5007890`, UID
+`12002`. The root chain and initial/final `owner.json` / `profile.lock`
+identities remain the same. The eight-line document is 49 bytes, SHA-256
+`b661fd5ec2a1556fa30571b229cf67730aee6bb6f5c2e8f9b26e10ae798ec1d9`.
+Its actual creation stamp `560521887809` ns lies inside the first prelaunch
+barrier's observed interval, and its final bytes/stat identity is unchanged.
+
+**Actual persistence observations and changes.** The three canonical
+snapshots and the distinct supplemental snapshot are:
+
+| Observation | Key | File size | Inventory |
+|---|---|---:|---|
+| Canonical before first Launch | absent | no file | 0 sections / 0 keys |
+| Canonical after first toggle | exact `true` | 60 B | 1 section / 1 key |
+| Supplemental before second Launch | exact `true` | 149 B | 2 sections / 5 keys |
+| Canonical second session after Open | exact `true` | 458 B | 3 sections / 17 keys |
+
+The file hashes actually read in this attempt are respectively absent,
+`3c5a0b15841cc7105db2b78c90c400d4019b2e0bd40c5abf77320d66fdf51100`,
+`7c5b223024c9d8c17be0789fb781d21e2d9f5e39aca4c124a841b952202e0309`,
+and `76e7bbf5917fc78e4c8be45091d8c8a230cfb4c7ad970e13247e893e6429bf9a`.
+The other-keys digest is initially and after toggle
+`44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a`,
+then `c37f79d30f7ba05e1214303e7b0dd2e36307e3386b1525ea9b1f1b671fa545e0`
+before the second Launch, and
+`ee758a2cf7b418c52af8260871bcc2000c4f699960f420a625b87fcbd9ac19e9`
+after Open. These are new observations in this attempt even where byte
+hashes happen to match the earlier rejected run.
+
+The same-read inventories now establish which keys appeared. By the
+post-Close/pre-second-Launch snapshot,
+`org/xfce/mousepad/state/window` contains four additional keys:
+`fullscreen`, `height`, `maximized`, `width`. After the second normal Open,
+`org/gtk/settings/file-chooser` contains twelve additional keys:
+`date-format`, `location-mode`, `show-hidden`, `show-size-column`,
+`show-type-column`, `sidebar-width`, `sort-column`, `sort-directories-first`,
+`sort-order`, `type-format`, `window-position`, `window-size`.
+The pre-existing keys' per-value hashes remain stable in the later
+inventory. These exact names are now measured from snapshot bytes; the
+upstream source paths above explain the corresponding normal save behavior.
+The diagnostic inventory exports no plaintext setting values or raw keyfile
+contents; the existing target-key boolean proof remains unchanged.
+
+`second_after_observation` retained `N07_UNEXPECTED_SETTING_CHANGE` and a
+negative ACK. The second native receipt therefore retains
+`I6_N07_B4_SUPERVISOR_REFUSED`; subsequent full-session validation also records
+`I6_N02_RECEIPT_INVALID`. The latter does not replace the original setting
+mismatch. Both `first_retired` and `second_retired` independently report
+`product_cleanup_verified=true`, with zero app/driver/sshd child and journal
+counts and both locks free; the final external census is also all zero.
+The second retired ACK remains negative to preserve the failed acquisition.
+Both native cleanup errors are null, SDK leases retire, Registry counts are
+zero and destroy statuses are zero. `external_rescue=false` throughout.
+
+**Per-session fingerprint.** Both actual processes report matching twelve
+available fields and `observation_errors=[]`: GTK `3.24.41`, Pango `1.52.1`,
+Cairo `1.18.0`, Mesa / `llvmpipe (LLVM 20.1.2, 256 bits)`, locale `C.UTF-8`,
+scale `1`, Mousepad commit `65fbfe0459259f820fcc8b9c4dd454228304842a` and
+Waypipe commit `3ea049b2d33cbf1000714c28b9668f8c244f70bd`. Actual mapped fonts
+are DejaVu Sans and Sans Mono Regular/Bold; inventory SHA is
+`7e30fca4e8a98dbf53de7e3a1139c4b5723e6ab3ac9d8f1dcb18771ed99d5567`,
+fontconfig SHA is
+`5dbef4dca63f6eae112f5005bd26533aad66dddd3faedbc08ac9bf92b3ecad66`,
+and renderer source revision is
+`sha256:50cb0775527d7c6fca659c1a4bd75cfadac1c481ded75a2b3c507a1042644501`.
+`missing=["theme"]` remains; configured Adwaita is not an effective-theme
+measurement. No independent human pixel/menu review occurred.
+
+The same-SHA N06 retry job
+[134821618904](https://github.com/tin-machine/eidolon-wayland/actions/runs/44308678917/job/134821618904)
+reported success for all four variants / 34 assertions. Artifact
+`14429868636` has ZIP SHA-256
+`4f0fa414d3eee2578a2a30c5a19ae375c719165c19cc499d24096ee177daa3e9`.
+Independent rereading of all four native/environment pairs passed the
+unchanged oracles (8 + 8 + 9 + 9 assertions), and revalidation of their saved
+typed Acceptance matched the saved validation reports. Close Confirm now
+records `process_exited` with request sequence `"5"`, retaining the preceding
+heartbeat sequence; its actual app error remains `APP_WINDOW_UNSUPPORTED`.
+Formal I6 still reports `incomplete`. The same-SHA success does not resolve
+Issue #45 or erase attempt 1's Close classification failure; no oracle or
+reason rule changed.
+
+### B4 contract conflict still open
+
+The implemented path has now executed two real sessions on one retained
+storage, acquired all six actual images and independently verified product
+retirement for both sessions. The requested all-other-keys and exact
+restart-bytes invariants nevertheless fail on actual normal Close/Open
+behavior. B4 therefore remains a rejected full collection with a six-image
+diagnostic packet, not a valid candidate or completed Acceptance result.
+Resolving that product/contract conflict requires an explicit later design
+decision; this PR does not preseed settings, change the pinned app/schema or
+backend policy, omit automatic keys or relax the oracle. A valid independently
+reviewed six-state reference is still outstanding before B5 acceptance work.
+`APPROVED_SHA256=None`, `reviewed_golden=false`, `menu_identity_verified=false`,
+`verified_n07_assertions=[]`, N07 **0/13 verified**, and
+`host_v3_acceptance_passed=false` remain unchanged. Quest 3 hardware
+verification is also still incomplete.
 
 ## 8. Remaining B5 and independent-review work
 
