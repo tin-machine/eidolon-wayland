@@ -1,9 +1,9 @@
 # I6 N07-B1 — live pointer, xdg_popup and renderer readback diagnostic
 
 > Implementation checkpoint: **Host diagnostic, not N07 acceptance**.
-> N07/same_storage_restart remains **0/13 verified** until B2's two
-> independent C2 sessions, pointer-operated Line Numbers, reviewed pixel
-> reference and fully independently revalidated typed receipt exist.
+> N07/same_storage_restart remains **0/13 verified** until B3's independent
+> review preparation, separate approved six-state reference, B4's two
+> independent C2 sessions and B5's independently revalidated typed receipt exist.
 > Maintain 28 families / 87 variants / 533 assertions, manifest
 > e2d0d80c35fc5494415a627a7a11d162b127fecc38646535afacf9f08ff40f33
 > and `host_v3_acceptance_passed=false`.
@@ -95,25 +95,27 @@ and `host_v3_acceptance_passed=false` even after a successful probe.
 A failed exploratory click must fail closed rather than silently create
 a golden or a successful typed receipt.
 
-## Boundaries remaining for N07-B2 and golden review
+## Current boundaries after N07-B2
 
-1. Observe real GTK popup trace and **independently calibrate actual menu
-   position**. Confirm `_View`, then use normal pointer to click
-   `Line N_umbers` and verify delivered button source, exact menu popup,
-   capture, epoch, parent chain, configure/ack/grab serial and layer.
-   Read all six N07 ROIs, not B1's two exploration regions.
-2. Independent golden review: pin Mousepad/Waypipe/GTK/Pango/Cairo,
+1. B2 has implemented actual pointer/popup and four real first-session
+   readbacks. B3 prepares independent menu/glyph review, broader diagnostic
+   context and observed fingerprint; see [B3 review preparation](i6-n07-b3-pixel-review.md).
+   The original gutter crop contains no numeral glyphs, so its nonzero pixel
+   contrast cannot establish line-number semantics.
+2. Separate independent golden review: pin Mousepad/Waypipe/GTK/Pango/Cairo,
    font/fontconfig/Mesa/theme/locale/scale, ROI/mask/tolerance and
    accepted SHA in N07-A's `load_reviewed()`. Never use the acceptance
    run's observed pixels as its expected fixture.
-3. New first C1 StorageRecord, independently read key absent, GUI OFF,
+   A complete six-state reference requires additional real reference capture;
+   B3 does not invent the missing second-session states or human approval.
+3. B4: new first C1 StorageRecord, independently read key absent, GUI OFF,
    pointer change ON, GUI ON, persistent key true. Finish normal Close,
    all C2/renderer/SDK/native/Registry cleanup and journal finalizer.
-4. Reuse the **same C1 StorageRecord**, new nonce/capture/Runtime/app owner,
+4. B4: reuse the **same C1 StorageRecord**, new nonce/capture/Runtime/app owner,
    with no forced C2 lock release. Inspect/Launch, open fixed eight-line
    text, prove 1–8 line numbers and checked menu from *actual renderer*,
    independent keyfile true; full second cleanup and origin retirement.
-5. Build an independent N07 acceptance oracle, two-session typed receipt,
+5. B5: build an independent N07 acceptance oracle, two-session typed receipt,
    exporter/revalidator and `linux_real_app_v3_evidence.py` integration.
    Only actual saved evidence may satisfy the 13 frozen assertions.
    Even 13/13 does not make overall I6 complete; Quest remains separate.
@@ -196,9 +198,10 @@ receipt is produced by this stage. Pixel readback remains bound to
 the *first* capture only; `second_on_numbers_1_8` and
 `second_on_checkmark` are expressly forbidden in the B2 record.
 
-B3 must independently review the actual image pixels, refine the menu
-coordinates/ROIs as needed, freeze Mousepad/GTK/Waypipe/fonts/Mesa
-fingerprint and golden SHA; B4 must use a second nonce and same C1
+B3 prepares actual images, observed fingerprint and explicit unapproved
+ROI/mask/tolerance proposals for independent review. A separate actual
+review must approve a complete six-state reference and golden SHA; the
+preparation tool cannot supply that approval. B4 must use a second nonce and same C1
 StorageRecord to test persistence; B5 can only then integrate the
 independent 13-assertion N07 acceptance oracle. Quest 3 Meta SDK
 proof remains a separate I7/H milestone.

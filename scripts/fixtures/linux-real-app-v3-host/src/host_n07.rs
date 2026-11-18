@@ -250,6 +250,7 @@ impl Driver {
         self.exercise_n02("mousepad_editor")?;
         let main = self.n02_readback.as_ref().ok_or("I6_N07_MAIN_MISSING")?["target"].clone();
         let off = self.n07_capture(&main, "before_menu")?;
+        self.n07_capture_review_context(&main, "first_off_context")?;
         let mut req = 7000u32;
         let (epoch, _token) = self.n05_focus(&main, &mut req)?;
         let pointer = self.n07_click(&main, epoch, &mut req)?;

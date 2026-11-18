@@ -5,9 +5,18 @@ FROM ubuntu:24.04
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
+# B3's reference preparation may add explicit typography dependencies. Other
+# diagnostics retain the original package list, including its transitive deps.
+ARG I6_N07_REVIEW_DEPS=0
+
 # Root installs packages only inside this build container. Preserve APT's
 # signature checks and bound both network retries and the complete operation.
-RUN timeout --signal=TERM --kill-after=5s 90s \
+RUN case "$I6_N07_REVIEW_DEPS" in \
+      0) i6_n07_font_packages=() ;; \
+      1) i6_n07_font_packages=(fontconfig fonts-dejavu-core) ;; \
+      *) echo 'Invalid I6_N07_REVIEW_DEPS: expected 0 or 1' >&2; exit 2 ;; \
+    esac \
+    && timeout --signal=TERM --kill-after=5s 90s \
       apt-get -o Acquire::Retries=1 -o Acquire::http::Timeout=10 \
       -o Acquire::https::Timeout=10 -o APT::Update::Error-Mode=any update \
     && DEBIAN_FRONTEND=noninteractive timeout --signal=TERM --kill-after=5s 240s \
@@ -17,6 +26,7 @@ RUN timeout --signal=TERM --kill-after=5s 90s \
       build-essential autoconf automake libtool gettext autopoint xfce4-dev-tools \
       libgtk-3-dev libgtksourceview-4-dev pkg-config dbus ninja-build bison perl \
       patch cmake openssh-server passwd util-linux libegl1 libgles2 \
+      "${i6_n07_font_packages[@]}" \
     && rm -rf /var/lib/apt/lists/*
 
 # Compilation has its own account. The driver and app accounts/HOMEs do not

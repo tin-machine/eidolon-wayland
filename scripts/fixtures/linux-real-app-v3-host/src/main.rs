@@ -7,6 +7,7 @@ mod host_n05;
 mod host_n06;
 mod host_n07;
 mod host_n07_b2;
+mod host_n07_review;
 mod host_sdk;
 use eidolon_core::runtime::Runtime;
 use eidolon_model::{
@@ -275,6 +276,9 @@ struct Driver {
     n05: Option<Value>,
     n06: Option<Value>,
     n07_probe: Option<Value>,
+    // Optional B3 raw review images live in a bounded separate receipt, never
+    // in the frozen four-state probe or a production Golden.
+    n07_review_context: Option<Value>,
 }
 impl Driver {
     fn new(config: &str, secret: Secret) -> Result<Self> {
@@ -310,6 +314,7 @@ impl Driver {
             n05: None,
             n06: None,
             n07_probe: None,
+            n07_review_context: None,
         };
         driver.observe(
             "registry_created",
@@ -657,6 +662,9 @@ fn write_receipt(path: &Path, value: &Value) -> Result<()> {
     if bytes.len() > MAX_RECEIPT {
         return Err("I6_TRACE_OVERFLOW");
     }
+    write_receipt_bytes(path, &bytes)
+}
+fn write_receipt_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -664,7 +672,7 @@ fn write_receipt(path: &Path, value: &Value) -> Result<()> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)
         .map_err(|_| "I6_RECEIPT_INVALID")?;
-    file.write_all(&bytes)
+    file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|_| "I6_RECEIPT_INVALID")?;
     File::open(path.parent().ok_or("I6_RECEIPT_INVALID")?)
@@ -683,6 +691,7 @@ fn run() -> Result<bool> {
     let mut n06_variant: Option<String> = None;
     let mut n06_directory: Option<String> = None;
     let mut n07_probe_variant: Option<String> = None;
+    let mut n07_review_context_output = None;
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         let value = args.next().ok_or("I6_ARGUMENT_INVALID")?;
@@ -771,6 +780,9 @@ fn run() -> Result<bool> {
                 }
                 n07_probe_variant = Some(value);
             }
+            "--n07-review-context-output" if n07_review_context_output.is_none() => {
+                n07_review_context_output = Some(PathBuf::from(value));
+            }
             _ => return Err("I6_ARGUMENT_INVALID"),
         }
     }
@@ -778,6 +790,11 @@ fn run() -> Result<bool> {
         return Err("I6_ARGUMENT_INVALID");
     }
     if n05_variant.is_some() != n05_directory.is_some() {
+        return Err("I6_ARGUMENT_INVALID");
+    }
+    if n07_review_context_output.is_some()
+        && n07_probe_variant.as_deref() != Some(host_n07_b2::VARIANT)
+    {
         return Err("I6_ARGUMENT_INVALID");
     }
     if unsafe { libc::geteuid() } == 0 {
@@ -802,6 +819,9 @@ fn run() -> Result<bool> {
     let config = runtime_config(&descriptor)?;
     eprintln!("I6_RUNNER_STAGE registry_create");
     let mut driver = Driver::new(&config, key)?;
+    if n07_review_context_output.is_some() {
+        driver.n07_review_context = Some(json!({}));
+    }
     eprintln!("I6_RUNNER_STAGE exercise");
     let first = if n07_probe_variant.as_deref() == Some(host_n07_b2::VARIANT) {
         driver.exercise_n07_b2_probe(&descriptor.run_id).err()
@@ -868,7 +888,7 @@ fn run() -> Result<bool> {
         driver.shutdown().err()
     });
     eprintln!("I6_RUNNER_STAGE receipt");
-    let receipt = if n07_probe_variant.as_deref() == Some(host_n07_b2::VARIANT) {
+    let mut receipt = if n07_probe_variant.as_deref() == Some(host_n07_b2::VARIANT) {
         driver.receipt_n07_b2_probe(&descriptor.run_id, first, cleanup)
     } else if n07_probe_variant.is_some() {
         driver.receipt_n07_probe(&descriptor.run_id, first, cleanup)
@@ -893,13 +913,32 @@ fn run() -> Result<bool> {
             _ => return Err("I6_ARGUMENT_INVALID"),
         }
     };
+    // Always attempt product retirement before serializing review pixels. A
+    // sidecar failure must still leave the normal failure/cleanup receipt.
+    let review_error = n07_review_context_output.as_ref().and_then(|path| {
+        match driver.write_n07_review_context(path, &receipt) {
+            Ok(binding) => {
+                receipt["review_context"] = binding;
+                None
+            }
+            Err(error) => {
+                receipt["review_context"] = json!({
+                    "schema":1,"complete":false,"error":error,
+                });
+                if receipt["error"].is_null() {
+                    receipt["error"] = json!(error);
+                }
+                Some(error)
+            }
+        }
+    });
     write_receipt(&output.ok_or("I6_ARGUMENT_INVALID")?, &receipt)?;
     if retirement.is_some() {
         // Product remains unresolved. Freeze that result before the external
         // supervisor's rescue; do not run Drop's Runtime-stop path as success.
         std::process::exit(2);
     }
-    Ok(first.is_none() && cleanup.is_none())
+    Ok(first.is_none() && cleanup.is_none() && review_error.is_none())
 }
 fn main() {
     match run() {
