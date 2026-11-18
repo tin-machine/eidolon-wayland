@@ -260,9 +260,31 @@ def _io_reason(stage, error):
     return "N07_FINGERPRINT_" + stage + "_" + suffix
 
 
+def _session_readbacks(native):
+    """Select a declared native revision, never relabel first-session pixels.
+
+    B3 keeps its original four-state shape. B4's restarted process supplies
+    its own pre-Open baseline and two acquired states under a distinct schema.
+    The observer instance still owns exactly one Mousepad PID/start identity.
+    """
+    if native.get("schema") == "eidolon-i6-n07-b4-second-native-v1":
+        probe = native["n07_second"]
+        need(native.get("variant") == "same_storage_restart_collection",
+             "N07_FINGERPRINT_SESSION_SCHEMA")
+        stages = [probe["before_open"], probe["before_open_confirm"], probe["second_on_numbers_1_8"],
+                  probe["second_on_checkmark"]]
+    else:
+        need(native.get("schema") == "eidolon-i6-n07-b2-native-probe-v1",
+             "N07_FINGERPRINT_SESSION_SCHEMA")
+        probe = native["n07_probe"]
+        stages = [probe["before_menu"], *(probe["b2"][name] for name in (
+            "first_off_checkmark", "first_on_gutter", "first_on_checkmark"))]
+    return probe, [stage["readback"]["receipt"] for stage in stages]
+
+
 def _binding(native, environment, source):
-    probe = native["n07_probe"]
-    receipt = probe["before_menu"]["readback"]["receipt"]
+    probe, receipts = _session_readbacks(native)
+    receipt = receipts[0]
     need(native["run_id"] == environment["run_id"] == probe["run_id"]
          and native["source_sha256"] == environment["source_sha256"] == source["tree_sha256"]
          and native["build_source"]["commit"] == source["commit"]
@@ -285,10 +307,7 @@ def _binding(native, environment, source):
 
 
 def _renderer(native):
-    probe = native["n07_probe"]
-    receipts = [probe["before_menu"]["readback"]["receipt"],
-                *(probe["b2"][name]["readback"]["receipt"] for name in (
-                    "first_off_checkmark", "first_on_gutter", "first_on_checkmark"))]
+    _, receipts = _session_readbacks(native)
     backends = [{key: receipt["backend"][key] for key in ("vendor", "renderer", "version")}
                 for receipt in receipts]
     need(all(value == backends[0] for value in backends), "N07_FINGERPRINT_RENDERER_DRIFT")

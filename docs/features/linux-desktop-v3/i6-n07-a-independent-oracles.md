@@ -80,6 +80,12 @@ Not established yet: **all 13 N07 assertions**, including both GUI states, actua
 
 ### D.1 View メニューの popup は dialog と同一視しない
 
+上表は実装順序を整理した時点の境界である。後続の
+[N07-B4 詳細設計・収集実装](i6-n07-b4-two-sessions.md)では、同一 storage の
+実2セッション、起動前 barrier、独立 keyfile 観測、session 別 fingerprint と
+6状態 candidate の契約を定める。B4 の実測結果と、独立 Golden 承認／B5 の正式
+Acceptance は区別し、上表の未成立 assertion を自動的に成立扱いしない。
+
 Mousepad 固定 upstream の [menus.ui](https://github.com/xfce-mirror/mousepad/blob/65fbfe0459259f820fcc8b9c4dd454228304842a/mousepad/resources/gtk/menus.ui) には _View と Line N_umbers（action は app.preferences.view.show-line-numbers）がある。**メニュー実体を xdg_toplevel と決め打ちしない。** Wayland の [xdg-shell](https://wayland.app/protocols/xdg-shell) では、menu は xdg_popup 等の役割を持ち得る。実 GTK/Waypipe/compositor の protocol trace を先に取り、実際の popup role と生成・破棄を識別する。popup が xdg_popup か、親 surface 内の描画かなどは**実観測**に基づく。
 
 xdg_popup が現れた場合、N05/N06 transient xdg_toplevel admission を機械的に再利用しない。同 capture／NativeOrigin に対応する parent chain、surface/target generation、configure/ack serial（および grab に必要な入力 serial）、layer/content frame と pointer routing を照合する。popup を独立した通常アプリ window として誤採用したり、別 capture の popup を容認しない。popup serial／layer を現行 API が提供しなければ、**通常製品の観測 seam を追加してテストする**。fixture で架空の popup 証拠を追加しない。

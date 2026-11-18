@@ -37,6 +37,12 @@ dialog failure remains [Issue #50](https://github.com/tin-machine/eidolon-waylan
 | B4 | Same StorageRecord, new nonce/capture/Runtime/app owner, two real sessions and independent keyfile observations | Still required; can implement collection before approval, cannot pass pixel assertions without it |
 | B5 | Revalidate both sessions and reviewed pixels; connect typed N07 receipt and all 13 assertions | Still required |
 
+The table records the B3 implementation boundary. The subsequent
+[B4 design and collection increment](i6-n07-b4-two-sessions.md) adds the
+same-storage lifecycle, independent observations and explicit six-state
+candidate revision. It does not rewrite B3's single-session evidence or
+approve either candidate. B5 and independent Golden approval remain separate.
+
 ## 2. Existing real evidence and an important ROI limitation
 
 The original artifact was available and downloaded, not reconstructed:

@@ -135,6 +135,11 @@ class StorageKeyfileProbe:
         self.path = root
         self.uid = uid
         self.storage_digest = storage_digest
+        # Hold the first observed intermediate directory descriptions across
+        # both GUI sessions. Comparing only within one read would allow an
+        # entire settings directory to be replaced between observations.
+        # Open FDs also prevent inode reuse from disguising that replacement.
+        self.directory_fds: dict[tuple[str, ...], tuple[int, tuple]] = {}
         self.fd = os.open(root, DIR_FLAGS)
         try:
             self.root = _directory(self.fd, uid)
@@ -144,6 +149,9 @@ class StorageKeyfileProbe:
             raise
 
     def close(self) -> None:
+        for fd, _ in reversed(tuple(self.directory_fds.values())):
+            os.close(fd)
+        self.directory_fds.clear()
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
@@ -166,12 +174,26 @@ class StorageKeyfileProbe:
         parent = self.fd
         opened = []
         try:
-            for component in COMPONENTS:
+            for index, component in enumerate(COMPONENTS):
+                chain = COMPONENTS[:index + 1]
                 try:
                     child = _child(parent, component, self.uid)
                 except FileNotFoundError:
+                    need(chain not in self.directory_fds, "N07_DIRECTORY_REPLACED")
                     return self._absent()
                 opened.append((parent, component, child))
+                stamp = _identity(os.fstat(child))
+                pinned = self.directory_fds.get(chain)
+                if pinned is None:
+                    # A missing directory may first appear when GLib writes
+                    # the key. Once observed it may never be silently adopted
+                    # again under a new identity. Keyfile replacement itself
+                    # remains permitted for GLib's atomic Close flush.
+                    self.directory_fds[chain] = (os.dup(child), stamp)
+                else:
+                    retained, expected = pinned
+                    need(stamp == expected == _identity(os.fstat(retained)),
+                         "N07_DIRECTORY_REPLACED")
                 parent = child
             try:
                 metadata, contents, _ = _read_keyfile(parent, self.uid)
@@ -213,10 +235,34 @@ def validate_file_sequence(before: dict, enabled: dict, restarted: dict) -> None
     Full N07 success additionally requires native pointer/readback, two distinct
     product sessions, complete cleanup, and reviewed pixel golden acceptance.
     """
+    def integer(value: object, minimum: int = 0) -> bool:
+        return type(value) is int and value >= minimum
+
+    def digest(value: object) -> bool:
+        return type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
     for item in (before, enabled, restarted):
         need(type(item) is dict and set(item) == PROOF_KEYS, "N07_KEYFILE_PROOF_INVALID")
-        need(type(item["storage_digest"]) is str
-             and re.fullmatch(r"[0-9a-f]{64}", item["storage_digest"]) is not None)
+        need(digest(item["storage_digest"]) and digest(item["others_sha256"])
+             and integer(item["root_dev"]) and integer(item["root_ino"], 1)
+             and type(item["key_present"]) is bool,
+             "N07_KEYFILE_PROOF_INVALID")
+        need((item["key_present"] and type(item["value"]) is bool)
+             or (not item["key_present"] and item["value"] is None),
+             "N07_KEYFILE_PROOF_INVALID")
+        file = item["file"]
+        if file is None:
+            need(item["key_present"] is False, "N07_KEYFILE_PROOF_INVALID")
+            continue
+        need(type(file) is dict and set(file) == {
+            "dev", "inode", "uid", "nlink", "size", "mtime_ns", "ctime_ns", "sha256"},
+            "N07_KEYFILE_PROOF_INVALID")
+        need(all(integer(file[field]) for field in (
+                 "dev", "uid", "mtime_ns", "ctime_ns"))
+             and integer(file["inode"], 1) and integer(file["nlink"], 1)
+             and file["nlink"] == 1 and integer(file["size"], 1)
+             and file["size"] <= MAX_BYTES and digest(file["sha256"]),
+             "N07_UNSAFE_KEYFILE")
     need(len({p["storage_digest"] for p in (before, enabled, restarted)}) == 1,
          "N07_DIFFERENT_STORAGE")
     need(len({(p["root_dev"], p["root_ino"]) for p in (before, enabled, restarted)}) == 1,
@@ -228,13 +274,8 @@ def validate_file_sequence(before: dict, enabled: dict, restarted: dict) -> None
          "N07_KEY_NOT_PERSISTED")
     need(len({p["others_sha256"] for p in (before, enabled, restarted)}) == 1,
          "N07_UNEXPECTED_SETTING_CHANGE")
-    for item in (enabled, restarted):
-        file = item["file"]
-        need(type(file) is dict and set(file) == {
-            "dev", "inode", "uid", "nlink", "size", "mtime_ns", "ctime_ns", "sha256"})
-        need(file["nlink"] == 1 and file["size"] > 0
-             and re.fullmatch(r"[0-9a-f]{64}", file["sha256"]) is not None,
-             "N07_UNSAFE_KEYFILE")
+    need(enabled["file"] is not None and restarted["file"] is not None,
+         "N07_UNSAFE_KEYFILE")
     # GLib can atomically replace the keyfile when flushing on normal Close:
     # a changed inode/ctime is not itself a changed user setting. Require exact
     # saved bytes and owner instead of comparing inode/timestamp metadata.
