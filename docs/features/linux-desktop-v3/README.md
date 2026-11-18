@@ -46,6 +46,11 @@ independent six-state Golden approval and B5 formal acceptance integration
 remain separate.
 N07 is still **0/13 verified** and the production Golden pin is unset.
 
+The [I6 remaining-work inventory (2026-11-19 JST)](i6-remaining-work-20261119.md)
+compares all N/F/C families with the PR #52 source baseline, distinguishes
+partial typed-oracle coverage from full acceptance, and records the remaining
+runner, Golden, recovery and I7/H boundaries. It is an unregistered dated status record.
+
 The [I6 detailed design — normal v3 Host acceptance (I3-T20/V11)](../../linux-real-app-v3-i6-detailed-design.md)
 is **proposed**, based on main `0e0df43a2ce4734a00a36f830cc24a80e277bec5` (2026-11-15 JST, after PR #31).
 It defines the real SSH/C2/Waypipe/Mousepad execution path, Host EGL/readback and synthetic SDK boundary,
