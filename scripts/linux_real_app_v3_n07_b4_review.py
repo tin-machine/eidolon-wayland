@@ -350,6 +350,279 @@ def validate_bundle(root: Path, expected_sha256, *, observed_run_id=None,
             "host_v3_acceptance_passed": False, "verified_n07_assertions": []}
 
 
+REJECTED_REVISION = "eidolon-i6-n07-b4-rejected-renderer-diagnostics-v1"
+
+
+def _rejection(call):
+    try:
+        call()
+    except (ValueError, TypeError, KeyError, OverflowError) as error:
+        reason = str(error)
+        return reason if re.fullmatch(r"(?:N07|I6)_[A-Z0-9_]{1,100}", reason) else "N07_B4_DIAGNOSTIC_REJECTED"
+    return None
+
+
+def _rejected_observed(inputs, provenance):
+    """Audit the acquired pixels while preserving every rejected disposition.
+
+    This function is deliberately separate from candidate-v2 construction.
+    Neither source normalization nor diagnostic rendering changes native
+    error/complete fields or supplies the missing settings/cleanup verdict.
+    """
+    b3._provenance(provenance, inputs["source"])
+    rejection = _rejection(lambda: probe.validate_collection(**inputs))
+    b3.need(rejection is not None, "N07_B4_DIAGNOSTIC_REQUIRES_REJECTION")
+    native, supervisor = inputs["native"], inputs["supervisor"]
+    probe.exact(native, {"schema", "revision", "run_id", "source_sha256", "build_source", "sessions", "barriers",
+                         "error", "reviewed_golden", "menu_identity_verified", "verified_n07_assertions",
+                         "host_v3_acceptance_passed"})
+    probe.exact(supervisor, {"schema", "revision", "run_id", "source", "trusted_storage", "document", "keyfile",
+                             "supplemental_keyfile", "barriers", "fingerprint_observers", "failures", "external_rescue",
+                             "final_census"} | ({"keyfile_diagnostics"} if "keyfile_diagnostics" in supervisor else set()))
+    b3.need(native["reviewed_golden"] is False and native["menu_identity_verified"] is False
+            and native["verified_n07_assertions"] == [] and native["host_v3_acceptance_passed"] is False
+            and native["run_id"] == supervisor["run_id"] and type(native["schema"]) is int and native["schema"] == 1
+            and native["revision"] == probe.NATIVE_REVISION
+            and type(supervisor["schema"]) is int and supervisor["schema"] == 1
+            and supervisor["revision"] == probe.SUPERVISOR_REVISION
+            and native["error"] in (None, "I6_N07_B4_SUPERVISOR_REFUSED")
+            and type(supervisor["external_rescue"]) is bool and type(supervisor["failures"]) is list
+            and all(type(value) is str and re.fullmatch(r"(?:N07|I6)_[A-Z0-9_]{1,100}", value)
+                    for value in supervisor["failures"]), "N07_B4_DIAGNOSTIC_PROMOTION")
+    evidence._source(inputs["source"])
+    b3.need(inputs["source"]["dirty"] is False and inputs["source"]["build_features"] == []
+            and native["source_sha256"] == inputs["source"]["tree_sha256"], "N07_B4_SOURCE")
+    probe.same(native["build_source"], {**inputs["source"], "build_features": ["host-acceptance"]}, "N07_B4_SOURCE")
+    probe.same(supervisor["source"], inputs["source"], "N07_B4_SOURCE")
+    b3.need(len(native["sessions"]) == 2, "N07_B4_DIAGNOSTIC_SESSION_MISSING")
+    sessions, retirement = {}, {}
+    for label, summary in zip(SESSIONS, native["sessions"]):
+        n, raw, env = inputs[label], inputs["native_raws"][label], inputs["environments"][label]
+        probe.exact(summary, {"session", "runtime", "owner_id", "native_file", "native_sha256", "native_bytes",
+                              "context_file", "review_context", "error", "cleanup_error", "product_cleanup_complete"})
+        b3.need(type(raw) is bytes and 0 < len(raw) <= probe.MAX_NATIVE_BYTES
+                and summary["session"] == label and summary["native_file"] == label + "-native.json"
+                and summary["native_sha256"] == evidence.sha(raw) and summary["native_bytes"] == len(raw)
+                and n["run_id"] == native["run_id"] and n["runtime"] == summary["runtime"]
+                and n["owner_id"] == summary["owner_id"]
+                and n["host_v3_acceptance_passed"] is False and n["n07_assertions_verified"] == []
+                and type(summary["native_bytes"]) is int and type(summary["product_cleanup_complete"]) is bool
+                and summary["error"] == n["error"] and summary["cleanup_error"] == n["cleanup_error"]
+                and summary["context_file"] == label + "-context.json",
+                "N07_B4_DIAGNOSTIC_NATIVE_BINDING")
+        probe.same(summary["review_context"], n["review_context"], "N07_B4_DIAGNOSTIC_CONTEXT_BINDING")
+        probe.same(evidence.parse(raw, limit=probe.MAX_NATIVE_BYTES), n, "N07_B4_NATIVE_RAW_CHANGED")
+        probe.same(n["build_source"], {**inputs["source"], "build_features": ["host-acceptance"]}, "N07_B4_SOURCE")
+        b3.need(n["source_sha256"] == inputs["source"]["tree_sha256"], "N07_B4_SOURCE")
+        hashes = evidence.source_input_hashes()
+        probe.same({key: n[key] for key in hashes}, hashes, "N07_B4_SOURCE")
+        # N01's environment *shape/source* check permits nonzero observed
+        # counts. It does not declare cleanup; those counts remain displayed.
+        normalized = copy.deepcopy(env)
+        normalized.pop("driver_control")
+        if normalized["revision"] == "eidolon-i6-n07-b4-partial-environment-v1":
+            b3.need(normalized.pop("observation_phase") == "after_driver_exit", "N07_B4_DIAGNOSTIC_ENVIRONMENT")
+        else:
+            b3.need(normalized["revision"] == "eidolon-i6-n07-b4-environment-v1", "N07_B4_DIAGNOSTIC_ENVIRONMENT")
+        normalized["revision"] = probe.n01.ENVIRONMENT_REVISION
+        probe.n01._environment(normalized, n["run_id"], n["owner_id"], n["source_sha256"])
+        _, capture, context, _, _ = probe.n02.transport(n, normalized, "mousepad_editor")
+        owner = evidence.sha((n["run_id"] + ":" + n["runtime"] + ":" + capture["capture_id"]).encode("ascii"))[:32]
+        b3.need(owner == n["owner_id"], "N07_B4_DIAGNOSTIC_OWNER")
+        sessions[label] = {"capture": capture, "context": context.record(),
+                           "runtime": n["runtime"], "owner_id": owner}
+        failure = _rejection(lambda: probe.validate_retirement(n, env, inputs["source"], label))
+        retirement[label] = {"product_cleanup_verified": failure is None, "rejection": failure,
+                             "native_error": n["error"], "cleanup_error": n["cleanup_error"],
+                             "final_census": copy.deepcopy(env["final"])}
+        binding = n["review_context"]
+        context_raw = inputs["contexts"][label]
+        b3.need(type(context_raw) is bytes and 0 < len(context_raw) <= probe.MAX_CONTEXT_BYTES
+                and binding["bytes"] == len(context_raw) and binding["sha256"] == evidence.sha(context_raw),
+                "N07_B4_DIAGNOSTIC_CONTEXT_BINDING")
+    first, second = sessions["first"], sessions["second"]
+    b3.need(first["runtime"] != second["runtime"] and first["owner_id"] != second["owner_id"]
+            and all(first["capture"][key] != second["capture"][key] for key in ("nonce", "capture_id")),
+            "N07_B4_SESSION_REUSED")
+    # The first successful product retirement is the gate for even creating
+    # the actual second Runtime, including in a rejected acquisition.
+    probe.validate_session(inputs["first"], inputs["environments"]["first"], inputs["source"],
+                           "first", inputs["contexts"]["first"])
+    host_gate = [row for row in native["barriers"] if row["request"]["phase"] == "first_retired"]
+    outer_gate = [row for row in supervisor["barriers"] if row["request"]["phase"] == "first_retired"]
+    b3.need(len(host_gate) == len(outer_gate) == 1, "N07_B4_DIAGNOSTIC_GATE_MISSING")
+    a, b = host_gate[0], outer_gate[0]
+    probe.same(a["request"], b["request"])
+    probe.same(a["response"], b["response"])
+    b3.need(a["error"] is None and a["response"]["allow"] is True
+            and b["observation"]["product_cleanup_verified"] is True
+            and a["request_sha256"] == b["request_sha256"] == evidence.sha(evidence.canonical(a["request"]))
+            and b["observation_sha256"] == a["response"]["observation_sha256"]
+            == evidence.sha(evidence.canonical(b["observation"])), "N07_B4_DIAGNOSTIC_GATE_INVALID")
+    probe.same(a["request"]["capture"], first["capture"])
+    probe.same(b["observation"]["census"], inputs["environments"]["first"]["final"])
+    creation = probe.n02.only(probe.n02.ordinal_events(inputs["second"]["observations"], limit=128),
+                              "n07_b4_runtime_created")[1]["data"]
+    b3.need(type(creation["started_at_ns"]) is int and type(a["response_monotonic_ns"]) is int
+            and creation["runtime"] == second["runtime"] and creation["session"] == "second"
+            and creation["started_at_ns"] > a["response_monotonic_ns"], "N07_B4_SECOND_BEFORE_CLEANUP")
+    probe._storage(supervisor["trusted_storage"], sessions, inputs["environments"])
+    probe._keyfile_diagnostics(supervisor)
+    first_states, _ = b3._observed(inputs["first"], inputs["contexts"]["first"])
+    second_rb = probe.second_readbacks(inputs["second"])
+    second_contexts = probe.diagnostic_second_context(inputs["second"], inputs["contexts"]["second"], second_rb)
+    probe._open(inputs["second"], probe.n02.ordinal_events(inputs["second"]["observations"], limit=128))
+    probe._pixel_events(inputs["second"], {**second_rb, **second_contexts})
+    probe._fingerprints(inputs["fingerprints"], {label: inputs[label] for label in SESSIONS},
+                        inputs["environments"], inputs["source"])
+    states = {**first_states, **{name: _state(inputs["second"], name, second_rb[name]) for name in pixel.STATES[4:]}}
+    for name, state in states.items():
+        state["session"] = "first" if name.startswith("first_") else "second"
+    keys = supervisor["keyfile"]
+    settings_rejection = _rejection(lambda: probe.settings.validate_file_sequence(
+        keys["before_first_launch"], keys["after_first_toggle"], keys["second_session"]))
+    document = supervisor["document"]
+    first_barrier = next(row for row in supervisor["barriers"] if row["request"]["phase"] == "first_before_launch")
+    probe._document(document, supervisor["trusted_storage"], first_barrier, inputs["second"])
+    return {"rejection": rejection, "settings_rejection": settings_rejection, "states": states,
+            "sessions": sessions, "retirement": retirement}
+
+
+def _build_rejected(inputs, provenance):
+    observed = _rejected_observed(inputs, provenance)
+    raw_inputs = _evidence_bytes(inputs, provenance, None)
+    return {"schema": 1, "revision": REJECTED_REVISION, "status": "diagnostic_only_rejected_collection",
+            "candidate_created": False, "full_collection_valid": False,
+            "reviewed_golden": False, "menu_identity_verified": False,
+            "verified_n07_assertions": [], "host_v3_acceptance_passed": False,
+            "run_id": inputs["native"]["run_id"], "source": inputs["source"], "origin": provenance,
+            "inputs": {name: {"sha256": evidence.sha(raw), "bytes": len(raw)} for name, raw in sorted(raw_inputs.items())},
+            "keyfile": inputs["supervisor"]["keyfile"], "supplemental_keyfile": inputs["supervisor"]["supplemental_keyfile"],
+            "keyfile_diagnostics": inputs["supervisor"].get("keyfile_diagnostics", {}),
+            "fingerprints": {label: {"missing": inputs["fingerprints"][label]["missing"],
+                                      "values": inputs["fingerprints"][label]["values"]} for label in SESSIONS},
+            "document": inputs["supervisor"]["document"],
+            "external_rescue": inputs["supervisor"]["external_rescue"], **observed}
+
+
+def _rejected_assets(packet):
+    assets = {}
+    for name in pixel.STATES:
+        state = packet["states"][name]
+        width, height = state["rect"]["width"], state["rect"]["height"]
+        rgba = pixel._decode_b64(state["rgba_b64"], width * height * 4)
+        assets["raw/" + name + ".rgba"] = rgba
+        assets["raw/" + name + ".png"] = b3.png(rgba, width, height)
+    return assets
+
+
+def _rejected_html(packet, digest):
+    esc = html.escape
+    blocks = ["<!doctype html><html lang='en'><meta charset='utf-8'><title>Rejected B4 acquisition diagnostics</title>",
+        "<style>body{max-width:1100px;margin:2em auto;font:16px system-ui}section{border:1px solid #aaa;padding:1em;margin:1em 0}img{image-rendering:pixelated;max-width:100%}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>",
+        "<h1>REJECTED B4 acquisition — diagnostic images only</h1>",
+        "<p>No candidate was created. This failed collection cannot be a reference or production Golden. "
+        "Image labels remain unreviewed hypotheses. N07 verified assertions remain empty; Host acceptance remains false.</p>",
+        "<p>Integrity digest: " + esc(digest) + "</p>",
+        "<h2>Observed failure and cleanup</h2><pre>" + esc(json.dumps({key: packet[key] for key in (
+            "rejection", "settings_rejection", "retirement", "external_rescue")}, sort_keys=True, indent=2)) + "</pre>",
+        "<h2>Source and storage observations</h2><pre>" + esc(json.dumps({key: packet[key] for key in (
+            "source", "origin", "sessions", "keyfile", "supplemental_keyfile", "keyfile_diagnostics", "document", "fingerprints")},
+            sort_keys=True, indent=2)) + "</pre>"]
+    for name in pixel.STATES:
+        state = packet["states"][name]
+        blocks += ["<section><h2>" + esc(name) + "</h2><img alt='Unapproved actual Renderer ROI' src='raw/" + name +
+                   ".png' width='" + str(state["rect"]["width"] * 3) + "'><pre>" +
+                   esc(json.dumps({k: v for k, v in state.items() if k != "rgba_b64"}, sort_keys=True, indent=2)) + "</pre></section>"]
+    return ("\n".join(blocks) + "</html>\n").encode("utf-8")
+
+
+def export_rejected_bundle(output: Path, *, provenance, **inputs):
+    packet = _build_rejected(inputs, provenance)
+    raw = evidence.canonical(packet)
+    b3.need(len(raw) <= MAX_PACKET_BYTES, "N07_B4_REVIEW_PACKET_BOUNDS")
+    digest = evidence.sha(raw)
+    output.mkdir(mode=0o700)
+    (output / "evidence").mkdir(mode=0o700)
+    (output / "raw").mkdir(mode=0o700)
+    for name, content in _evidence_bytes(inputs, provenance, None).items():
+        b3.need(type(content) is bytes and 0 < len(content) <= probe.MAX_CONTEXT_BYTES, "N07_B4_REVIEW_INPUT_BOUNDS")
+        b3._write(output / "evidence" / name, content)
+    for name, content in _rejected_assets(packet).items():
+        b3._write(output / name, content)
+    b3._write(output / "diagnostic.json", raw)
+    b3._write(output / "diagnostic.sha256", (digest + "\n").encode("ascii"))
+    b3._write(output / "review.html", _rejected_html(packet, digest))
+    return {"status": packet["status"], "diagnostic_sha256": digest, "candidate_created": False,
+            "full_collection_valid": False, "states": list(pixel.STATES), "rejection": packet["rejection"],
+            "settings_rejection": packet["settings_rejection"], "reviewed_golden": False,
+            "verified_n07_assertions": [], "host_v3_acceptance_passed": False}
+
+
+def validate_rejected_bundle(root: Path, expected_digest):
+    inputs = _load_bundle(root)
+    provenance = inputs.pop("provenance")
+    b3.need(inputs.pop("proposal") is None, "N07_B4_DIAGNOSTIC_PROPOSAL")
+    b3.need(not (root / "candidate.json").exists() and not (root / "candidate.sha256").exists(),
+            "N07_B4_DIAGNOSTIC_PROMOTION")
+    raw = _read_packet(root / "diagnostic.json")
+    b3.need(b3._hex(expected_digest, 64) and evidence.sha(raw) == expected_digest,
+            "N07_B4_DIAGNOSTIC_DIGEST")
+    packet = _build_rejected(inputs, provenance)
+    b3.need(raw == evidence.canonical(packet), "N07_B4_DIAGNOSTIC_CHANGED")
+    b3.need(b3._read(root / "diagnostic.sha256") == (expected_digest + "\n").encode("ascii"),
+            "N07_B4_DIAGNOSTIC_DIGEST")
+    for name, content in _rejected_assets(packet).items():
+        b3.need(b3._read(root / name) == content, "N07_B4_REVIEW_ASSET_CHANGED")
+    b3.need(b3._read(root / "review.html") == _rejected_html(packet, expected_digest), "N07_B4_REVIEW_GUIDE_CHANGED")
+    return {"status": packet["status"], "diagnostic_sha256": expected_digest, "integrity_verified": True,
+            "candidate_created": False, "full_collection_valid": False, "states": list(pixel.STATES),
+            "reviewed_golden": False, "verified_n07_assertions": [], "host_v3_acceptance_passed": False}
+
+
+def adversarial_rejected_checks(*, provenance, **inputs):
+    _build_rejected(inputs, provenance)
+
+    def foreign_context(data):
+        value = evidence.parse(data["contexts"]["second"], limit=probe.MAX_CONTEXT_BYTES)
+        value["capture_id"] = data["first"]["n07_probe"]["capture_id"]
+        raw = evidence.canonical(value)
+        data["contexts"]["second"] = raw
+        data["second"]["review_context"].update(bytes=len(raw), sha256=evidence.sha(raw))
+        data["native"]["sessions"][1]["review_context"] = copy.deepcopy(data["second"]["review_context"])
+
+    def foreign_source(data):
+        hashes = data["second"]["compiled_source_hashes"]
+        hashes[next(iter(hashes))] = "f" * 64
+
+    mutations = (
+        ("first_relabel", lambda d: d["second"]["n07_second"].update(
+            second_on_checkmark=copy.deepcopy(d["first"]["n07_probe"]["b2"]["first_on_checkmark"]))),
+        ("foreign_create", lambda d: d["second"]["n07_second"]["second_on_checkmark"]["readback"]["receipt"].update(create="999999")),
+        ("foreign_renderer", lambda d: d["second"]["n07_second"]["second_on_checkmark"]["readback"]["receipt"].update(renderer_owner=999999)),
+        ("integer_frame", lambda d: d["second"]["n07_second"]["second_on_checkmark"]["readback"]["receipt"].update(content_frame=8)),
+        ("stale_main", lambda d: d["second"]["n07_second"]["post_open_settling"].update(main_content_seq="1")),
+        ("fingerprint_mismatch", lambda d: d["fingerprints"]["second"]["values"].update(gtk_version="0.0.0")),
+        ("cleanup_gate_removed", lambda d: d["supervisor"]["barriers"][2]["observation"].update(product_cleanup_verified=False)),
+        ("capture_reuse", lambda d: d["second"]["n07_second"].update(capture_id=d["first"]["n07_probe"]["capture_id"])),
+        ("foreign_incomplete_context", foreign_context),
+        ("foreign_compiled_source", foreign_source),
+        ("fake_approval", lambda d: d["native"].update(reviewed_golden=True)),
+    )
+    rejected = []
+    for name, mutate in mutations:
+        changed = copy.deepcopy(inputs)
+        mutate(changed)
+        for label, summary in zip(SESSIONS, changed["native"]["sessions"]):
+            raw = evidence.canonical(changed[label])
+            changed["native_raws"][label] = raw
+            summary["native_sha256"], summary["native_bytes"] = evidence.sha(raw), len(raw)
+        b3.need(_rejection(lambda: _build_rejected(changed, provenance)) is not None, "N07_B4_DIAGNOSTIC_MUTATION_ACCEPTED")
+        rejected.append(name)
+    return {"status": "rejected_all", "mutations": rejected, "candidate_created": False,
+            "full_collection_valid": False, "verified_n07_assertions": []}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)

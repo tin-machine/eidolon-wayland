@@ -178,6 +178,17 @@ are initially absent may first appear through normal GLib persistence; once
 observed, their identity is pinned. Retained FDs prevent inode reuse from
 disguising a replacement. No file bytes are exported.
 
+B4 alone enables an optional `last_diagnostic` inventory from the same
+keyfile read and parse as each canonical snapshot. It records sorted
+section/key names and SHA-256 of each parsed UTF-8 value, together with the
+canonical proof SHA and observed file SHA/size. It exports no values or
+keyfile bytes and performs no second read. The inventory is separate from
+the three canonical proofs and cannot change `validate_file_sequence()`.
+It is bounded to 64 sections, 256 keys, 256 safe ASCII characters per name
+and 8192 total name bytes; an inventory outside those limits is explicitly
+unavailable while the original file predicate remains unchanged. A failed
+snapshot clears the diagnostic instead of exposing a stale observation.
+
 Saved proofs also receive strict type/bounds checks: booleans cannot stand
 in for inode/UID/size values, decimal strings cannot stand in for integers,
 hashes must be lowercase SHA-256, and file size remains bounded to 64 KiB.
@@ -292,6 +303,7 @@ eight-line view and menu row.
 | `n07-b4-supervisor.json` | Independent root/storage, canonical and supplemental keyfile snapshots, document, barriers, fingerprint and failure evidence |
 | `n07-b4-validation.json`, `container.json` | Live diagnostic outcome and separate container/source/rescue disposition |
 | `n07-b4-review/` | Explicit v2 candidate, exact raw images, review aids and bounded source evidence |
+| `n07-b4-rejected-review/` | Separate rejected-collection diagnostics, exact six-state images and independently rechecked source evidence; never a candidate |
 
 Each native receipt retains the 1 MiB bound. Each session's context sidecar
 retains a 4 MiB bound. The v2 packet's explicit bound is 8 MiB to accommodate
@@ -319,6 +331,30 @@ The exporter must reopen the saved native, environment, keyfile, fingerprint
 and image evidence and derive its own verdict. A producer's `status=pass`,
 exit code zero or successful first session is insufficient.
 
+Started-session product retirement has a separate saved predicate. It checks
+the original source, transport, SDK targets, Stop/Close finalizer, native
+retirement and independent live-control census without rewriting the native
+exercise error. This predicate cannot admit the second Runtime: the first
+session still needs full session validation and a positive supervisor ACK.
+After a rejected second observation, the Host sends `second_retired` only
+when product cleanup completed; the original acquisition failure takes
+precedence over any later barrier refusal. The supervisor stops its observer
+before census and records cleanup independently of fingerprint finalization.
+An observation error and a later observer-stop error are retained separately.
+
+When all six images were acquired but the collection is rejected, the
+exporter may create a distinct
+`eidolon-i6-n07-b4-rejected-renderer-diagnostics-v1` packet. It rechecks the
+original source/owner/capture, first-session cleanup gate, shared storage,
+document, readback identities, settling, fingerprints and image bytes. The
+saved validator reconstructs this diagnostic from its exact input receipts,
+and semantic mutations are rejected after recomputing envelope hashes. Its
+`diagnostic.json` and `review.html` show the actual failure and cleanup result;
+there is no `candidate.json`. `candidate_created=false`,
+`full_collection_valid=false`, the failing CI exit, unapproved Golden and
+empty formal assertions remain unchanged. This preserves reviewable pixels
+without weakening candidate-v2 or production acceptance.
+
 Required negative checks cover changed storage/root, intermediate-directory
 replacement, reused nonce/capture/Runtime/application owner, premature second
 launch, wrong initial key, unrelated settings changes, changed restart bytes,
@@ -339,8 +375,8 @@ Implementation and actual execution evidence are separate. Record the final
 PR/source revision, local checks, real GUI run/job/artifact, both session
 identities, three keyfile observations, six acquired states, fingerprint
 gaps and complete cleanup results here or in the PR's dated validation record.
-Until that evidence exists, this design does not claim a completed second
-session, GUI capture, successful CI or independent human approval.
+The dated records below distinguish actual session/capture observations from
+a successful full collection and independent human approval.
 
 #### Initial CI acquisition — 2026-11-18
 
@@ -381,7 +417,99 @@ At the same HEAD, all five CodeQL language jobs succeeded. Verification run
 [44302994306](https://github.com/tin-machine/eidolon-wayland/actions/runs/44302994306)
 attempt 1 stopped Host and Android before compilation because APT installation
 exceeded the existing 240-second deadline (exit 124). Only failed jobs were
-requested again at the same SHA; no APT or product deadline was changed.
+requested again at the same SHA. On attempt 2, Host passed and Android again
+stopped during APT installation at the 240-second deadline. No APT or product
+deadline was changed; the retry is not another B4 acquisition.
+
+#### Second CI acquisition — 2026-11-18
+
+- PR HEAD: `76eef9edb87c59d69d65c4805651e3b36a568400`;
+  CI checkout/source: `3f77e23497cf830657f18aab4fdd264b99c8ebd5`.
+- L7a run [44305026733](https://github.com/tin-machine/eidolon-wayland/actions/runs/44305026733),
+  attempt 1; B4 job [134804310406](https://github.com/tin-machine/eidolon-wayland/actions/runs/44305026733/job/134804310406).
+- Failed artifact `14429100165`, named
+  `linux-desktop-v3-n07-b4-3f77e23497cf830657f18aab4fdd264b99c8ebd5`;
+  downloaded ZIP SHA-256
+  `61df2d03b260391e6b670050f462458ba9a74e95b9ade836a280786f7e73543c`.
+  The unmodified extracted packet is retained as `evidence/b4-settings-failed`.
+
+This run passed the previously refused prelaunch storage check and actually
+launched two sequential Mousepad processes. The saved first-session receipt
+passes the strict session validator, including normal Close and complete
+product retirement. The same live Host/Registry created the second Runtime
+after the first retired barrier. The following are observations of this run,
+not fixed expected identities for future acquisitions:
+
+| Identity | First | Second |
+|---|---|---|
+| Acquisition run | `fff9afd2450acab79c1bc52978b38550` | same acquisition |
+| Runtime | `1` | `2` |
+| Nonce | `509d646453f6311e` | `2e19b7729a45d821` |
+| Capture | `4d41760a42241377bc8ccfef44bf01744dbb49df42e40b91f6d9505abd30835e` | `6a7656fbbfab89ef9fe800985d907558a697e6fa9c23c5846c105314c57b1f63` |
+| Application owner | `74b4468d0a8de3ba272b14db099ca44b` | `cb3de916609e9b7f90c5e175e42773ca` |
+| Mousepad PID / start ticks | `87` / `41846` | `132` / `42247` |
+
+All saved keyfile observations bind to canonical storage digest
+`82f7e80cb862c7e1b41a42d684fc7dbaba6a66d65f3281c97a2e235cf2bba1b1`
+and root device/inode `50` / `9490153`, UID `12002`. The supervisor's retained
+record uses installation `ce2a9453e88735c783cf211f2a306333`, installation ID
+`9c627d32d24e02a3471a0e8eba20904c`, profile storage ID
+`52561d80fede0c9d4f368220a4e5f967` and profile binding
+`f527b0165bf69aa10b8f45ce6adfc9316dd761586845d1b9ef4f14d673f62e72`.
+
+| Observation | Line Numbers key | Keyfile bytes | Other-keys digest |
+|---|---|---:|---|
+| Canonical before first Launch | absent; no file | — | `44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a` |
+| Canonical after first toggle | `true` | 60 | `44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a` |
+| Supplemental before second Launch | `true` | 149 | `c37f79d30f7ba05e1214303e7b0dd2e36307e3386b1525ea9b1f1b671fa545e0` |
+| Canonical after second Open/observation | `true` | 458 | `ee758a2cf7b418c52af8260871bcc2000c4f699960f420a625b87fcbd9ac19e9` |
+
+The file SHA-256 changes from
+`3c5a0b15841cc7105db2b78c90c400d4019b2e0bd40c5abf77320d66fdf51100`
+after the toggle, to
+`7c5b223024c9d8c17be0789fb781d21e2d9f5e39aca4c124a841b952202e0309`
+before the second Launch, to
+`76e7bbf5917fc78e4c8be45091d8c8a230cfb4c7ad970e13247e893e6429bf9a`
+after second-session Open. Exact lowercase `true` is preserved, but the
+required other-keys and restart-bytes invariants are not. The strict
+`second_after_observation` barrier therefore refused with
+`N07_UNEXPECTED_SETTING_CHANGE`. This is not an accepted persistence result.
+The old packet has no same-read section/key inventory, so it does not identify
+the changed key names. The geometry-save source analysis remains a hypothesis
+about those changes. The new opt-in bounded diagnostic will observe names and
+value hashes in a later run; nothing is reconstructed into this artifact.
+
+The native/context files contain actual Renderer captures for all six labels:
+`first_off_gutter`, `first_off_checkmark`, `first_on_gutter`,
+`first_on_checkmark`, `second_on_numbers_1_8` and `second_on_checkmark`.
+The second captures follow the normal admitted Open path and do not reuse
+first-session pixels. They are saved evidence of acquisition, not human
+verification of the labels, numerals or checkmark semantics. Both per-process
+fingerprints have `missing=["theme"]` and `observation_errors=[]`.
+**No candidate bundle was created**, and the collection/export gates remain
+failed. The second context contains both captured phases but has
+`complete=false` because the supervisor refusal is retained.
+
+The first session's strict cleanup succeeds. The second native receipt
+records SDK retirement, Registry counts zero, destroy status zero and no
+cleanup error, but the old packet's final external census still records
+`app_process_count=1`. Therefore full second-session external cleanup is not
+verified. Driver/sshd child counts and journal entries are zero, both locks
+are free, and `external_rescue=false`; these do not erase the nonzero app
+count. The correction stops the fingerprint observer before the final census
+and sends a failure-retired barrier after product cleanup, preserving the
+original refusal. A later execution must establish its result; the old census
+is not relabelled as zero.
+
+All other jobs in this L7a run passed. At the same HEAD, CodeQL run
+[44305026724](https://github.com/tin-machine/eidolon-wayland/actions/runs/44305026724)
+passed all language jobs. Verification run
+[44305026749](https://github.com/tin-machine/eidolon-wayland/actions/runs/44305026749)
+attempts 1 and 2 both stopped Host and Android during APT installation at the
+unchanged 240-second timeout, exit 124; the failure stage and reason were
+checked in the logs. Those dependency-installation failures are separate from
+the actual B4 settings refusal and do not establish a Host or Android build
+result for that verification workflow.
 
 ## 8. Remaining B5 and independent-review work
 

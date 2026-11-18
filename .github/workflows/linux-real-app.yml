@@ -532,6 +532,7 @@ jobs:
           name: linux-desktop-v3-n07-b4-${{ github.sha }}
           path: |
             ${{ runner.temp }}/i6-n07-b4/n07-b4-review/
+            ${{ runner.temp }}/i6-n07-b4/n07-b4-rejected-review/
             ${{ runner.temp }}/i6-n07-b4/n07-b4-validation.json
             ${{ runner.temp }}/i6-n07-b4/n07-b4-export.json
             ${{ runner.temp }}/i6-n07-b4/n07-b4-native.json

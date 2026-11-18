@@ -551,6 +551,22 @@ fn document_valid(descriptor: &Descriptor, document: &str) -> bool {
         )
 }
 
+/// Collection failure must not hide a completed product retirement from the
+/// independent supervisor. Observation cannot repair the collection error,
+/// and an incomplete cleanup must never be announced as retired.
+fn observe_second_retirement(
+    collection: Result<()>,
+    product_cleanup_complete: bool,
+    observe: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let retirement = if product_cleanup_complete {
+        observe()
+    } else {
+        Err("I6_N07_B4_SECOND_INCOMPLETE")
+    };
+    collection.and(retirement)
+}
+
 /// New Runtime creation is below the successful complete first-session
 /// receipt and independent supervisor census ACK. No failure can jump it.
 pub(super) fn run(
@@ -664,12 +680,17 @@ pub(super) fn run(
         output,
         second_error,
     )?;
+    let product_cleanup_complete = second_session["product_cleanup_complete"] == true;
     sessions.push(second_session);
-    let final_error = if second_ok {
-        second.n07_b4_barrier("second_retired").err()
+    let collection = if second_ok {
+        Ok(())
     } else {
-        Some(second_error.unwrap_or("I6_N07_B4_SECOND_INCOMPLETE"))
+        Err(second_error.unwrap_or("I6_N07_B4_SECOND_INCOMPLETE"))
     };
+    let final_error = observe_second_retirement(collection, product_cleanup_complete, || {
+        second.n07_b4_barrier("second_retired")
+    })
+    .err();
     let mut barriers = first.n07_b4_barriers.clone();
     barriers.extend(second.n07_b4_barriers.clone());
     write_receipt(
@@ -841,6 +862,29 @@ mod tests {
         // A later incomplete exchange must never inherit the earlier reply.
         assert!(channel.exchange(&request(), || Ok(())).is_err());
         assert!(channel.received.is_none());
+    }
+
+    #[test]
+    fn failed_collection_still_observes_completed_retirement_without_replacing_error() {
+        let mut observations = 0;
+        let original = "I6_N07_B4_SUPERVISOR_REFUSED";
+        let result = observe_second_retirement(Err(original), true, || {
+            observations += 1;
+            Err("I6_N07_B4_BARRIER_EOF")
+        });
+        assert_eq!(observations, 1);
+        assert_eq!(result, Err(original));
+        for collection in [Ok(()), Err(original)] {
+            let result = observe_second_retirement(collection, false, || {
+                panic!("incomplete product retirement must not send retired IPC")
+            });
+            assert_eq!(result, collection.and(Err("I6_N07_B4_SECOND_INCOMPLETE")));
+        }
+        assert_eq!(observe_second_retirement(Ok(()), true, || Ok(())), Ok(()));
+        assert_eq!(
+            observe_second_retirement(Ok(()), true, || Err("I6_N07_B4_BARRIER_EOF")),
+            Err("I6_N07_B4_BARRIER_EOF")
+        );
     }
 
     #[test]

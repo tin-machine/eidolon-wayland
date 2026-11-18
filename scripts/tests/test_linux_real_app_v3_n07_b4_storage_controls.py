@@ -156,8 +156,8 @@ class ProbeRootBinding(unittest.TestCase):
         held = self.observer.chain[-1][2]
         opened = []
 
-        def redirected_probe(_path, uid, digest):
-            probe = StorageKeyfileProbe(self.foreign, uid, digest)
+        def redirected_probe(_path, uid, digest, *, diagnostic=False):
+            probe = StorageKeyfileProbe(self.foreign, uid, digest, diagnostic=diagnostic)
             opened.append(probe.fd)
             return probe
 

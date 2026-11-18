@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 from pathlib import Path
 import shutil
@@ -14,6 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import linux_real_app_v3_n07_settings as settings
+import linux_real_app_v3_evidence as evidence
 
 
 class RetainedStorageObservation(unittest.TestCase):
@@ -26,8 +28,9 @@ class RetainedStorageObservation(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def probe(self):
-        return settings.StorageKeyfileProbe(self.root, os.getuid(), "a" * 64)
+    def probe(self, *, diagnostic=False):
+        return settings.StorageKeyfileProbe(self.root, os.getuid(), "a" * 64,
+                                            diagnostic=diagnostic)
 
     def write_true(self):
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -103,6 +106,75 @@ class RetainedStorageObservation(unittest.TestCase):
         with patch.object(settings.os, "fstat", side_effect=lambda fd: directory_links(fd, 0)):
             with self.assertRaisesRegex(ValueError, "UNSAFE_DIRECTORY"):
                 self.probe()
+
+    def test_opt_in_diagnostic_absence_and_true_bind_exact_snapshot_bytes_without_values(self):
+        with self.probe(diagnostic=True) as probe:
+            absent = probe.snapshot()
+            self.assertEqual(set(absent), settings.PROOF_KEYS)
+            self.assertEqual(probe.last_diagnostic["proof_sha256"], evidence.sha(evidence.canonical(absent)))
+            self.assertEqual(probe.last_diagnostic["status"], "observed")
+            self.assertEqual(probe.last_diagnostic["sections"], [])
+            self.assertIsNone(probe.last_diagnostic["file_sha256"])
+            self.assertIsNone(probe.last_diagnostic["file_size"])
+            self.write_true()
+            raw = self.path.read_bytes() + b"[org/xfce/mousepad/preferences/window]\nlast-path=fixture-private-value\nwidth=1000\n"
+            self.path.write_bytes(raw)
+            read = settings._read_keyfile
+
+            def read_once_then_change(directory, uid):
+                result = read(directory, uid)
+                # A subsequent filesystem state cannot become this read's
+                # diagnostic: both inventories must use the returned bytes.
+                self.path.write_bytes(raw.replace(b"fixture-private-value", b"later-private-value"))
+                return result
+
+            with patch.object(settings, "_read_keyfile", side_effect=read_once_then_change) as actual_read:
+                enabled = probe.snapshot()
+            self.assertEqual(actual_read.call_count, 1)
+            self.assertEqual(set(enabled), settings.PROOF_KEYS)
+            diagnostic = probe.last_diagnostic
+            self.assertEqual(diagnostic["proof_sha256"], evidence.sha(evidence.canonical(enabled)))
+            self.assertEqual(diagnostic["file_sha256"], enabled["file"]["sha256"])
+            self.assertEqual(diagnostic["file_sha256"], settings.sha(raw))
+            self.assertEqual(diagnostic["file_size"], len(raw))
+            self.assertEqual(diagnostic["value_hash"], "sha256_utf8_parsed_value")
+            self.assertEqual(diagnostic["section_count"], 2)
+            self.assertEqual(diagnostic["entry_count"], 3)
+            items = {(section["section"], item["key"]): item["value_sha256"]
+                     for section in diagnostic["sections"] for item in section["keys"]}
+            self.assertEqual(items[(settings.SECTION, settings.KEY)], settings.sha(b"true"))
+            self.assertEqual(items[("org/xfce/mousepad/preferences/window", "last-path")],
+                             settings.sha(b"fixture-private-value"))
+            serialized = json.dumps(diagnostic, sort_keys=True)
+            for value in ("fixture-private-value", "later-private-value", '"1000"', "show-line-numbers=true"):
+                self.assertNotIn(value, serialized)
+            self.assertEqual(diagnostic["sections"], sorted(diagnostic["sections"], key=lambda s: s["section"]))
+
+    def test_diagnostic_is_opt_in_bounded_and_cleared_on_invalid_snapshot(self):
+        self.write_true()
+        with self.probe() as probe:
+            self.assertTrue(probe.snapshot()["value"])
+            self.assertIsNone(probe.last_diagnostic)
+        with self.probe(diagnostic=True) as probe:
+            self.assertTrue(probe.snapshot()["value"])
+            self.assertIsNotNone(probe.last_diagnostic)
+            self.path.write_text(f"[{settings.SECTION}]\n{settings.KEY}=true\n{settings.KEY}=true\n")
+            with self.assertRaisesRegex(ValueError, "KEYFILE_SYNTAX"):
+                probe.snapshot()
+            self.assertIsNone(probe.last_diagnostic)
+            self.path.write_text("[managed]\n" + "".join(
+                f"key-{n}=private-{n}\n" for n in range(settings.MAX_DIAGNOSTIC_ENTRIES + 1)))
+            ordinary = probe.snapshot()
+            self.assertEqual(set(ordinary), settings.PROOF_KEYS)
+            self.assertFalse(ordinary["key_present"])
+            self.assertEqual(probe.last_diagnostic["status"], "unavailable")
+            self.assertEqual(probe.last_diagnostic["reason"], "N07_KEYFILE_DIAGNOSTIC_BOUNDS")
+            self.assertEqual(probe.last_diagnostic["sections"], [])
+            self.assertEqual(probe.last_diagnostic["file_sha256"], ordinary["file"]["sha256"])
+            self.path.write_text("[managed]\nunsafe key=private-value\n")
+            probe.snapshot()
+            self.assertEqual(probe.last_diagnostic["reason"], "N07_KEYFILE_DIAGNOSTIC_NAMES")
+            self.assertEqual(probe.last_diagnostic["sections"], [])
 
     def test_strict_saved_metadata_types_and_bounds(self):
         with self.probe() as probe:

@@ -208,7 +208,7 @@ class TrustedStorage:
                                 for i, (_, name, _, identity) in enumerate(self.chain)],
             }
             self.assert_current()
-            self.probe = StorageKeyfileProbe(self.root, self.uid, self.record.sha256())
+            self.probe = StorageKeyfileProbe(self.root, self.uid, self.record.sha256(), diagnostic=True)
             self._assert_probe_root()
             self.assert_current()
             return self.metadata

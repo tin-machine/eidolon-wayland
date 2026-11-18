@@ -5,6 +5,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import time
@@ -119,6 +120,88 @@ class SupervisorAdmissionTests(unittest.TestCase):
         self.assertEqual(response["request_sha256"], evidence.sha(evidence.canonical(request)))
         self.assertEqual(self.supervisor.record["failures"], ["N07_B4_OWNER_CHANGED"])
         self.assertEqual(event["observation"]["product_cleanup_verified"], False)
+        with self.assertRaisesRegex(ValueError, "FAILURE_LAUNCH_REFUSED"):
+            self.supervisor._request(self.request("second_before_launch"))
+
+    def test_setting_rejection_stops_observer_before_cleanup_census(self):
+        self.supervisor._request(self.request("first_before_launch"))
+        self.supervisor.record["keyfile"]["before_first_launch"] = {"synthetic": "before"}
+        proof = {"synthetic": "after", "key_present": True, "value": True}
+        with patch.object(self.supervisor, "_snapshot_true", return_value=proof), \
+                patch.object(self.supervisor, "_keyfile_diagnostic"), \
+                patch.object(self.supervisor, "_stop_observer") as stopped, \
+                patch.object(live, "validate_file_sequence",
+                             side_effect=ValueError("N07_UNEXPECTED_SETTING_CHANGE")):
+            raw, event = self.supervisor.respond(evidence.canonical(self.request("first_after_toggle")))
+        stopped.assert_called_once_with("first")
+        self.assertFalse(json.loads(raw)["allow"])
+        self.assertEqual(self.supervisor.record["failures"], ["N07_UNEXPECTED_SETTING_CHANGE"])
+        self.assertEqual(self.supervisor.record["keyfile"]["after_first_toggle"], proof)
+        self.assertEqual(event["observation"]["keyfile"], proof)
+        self.assertGreaterEqual(event["observation"]["observed_at_ns"], event["received_at_ns"])
+
+    def test_setting_error_precedes_stop_timeout_and_keeps_negative_ack(self):
+        self.supervisor._request(self.request("first_before_launch"))
+        self.supervisor.record["keyfile"]["before_first_launch"] = {"synthetic": "before"}
+        proof = {"synthetic": "after", "key_present": True, "value": True}
+        with patch.object(self.supervisor, "_snapshot_true", return_value=proof), \
+                patch.object(self.supervisor, "_keyfile_diagnostic"), \
+                patch.object(live, "validate_file_sequence",
+                             side_effect=ValueError("N07_UNEXPECTED_SETTING_CHANGE")), \
+                patch.object(self.supervisor, "_stop_observer",
+                             side_effect=subprocess.TimeoutExpired("synthetic observer", 5)) as stopped:
+            raw, event = self.supervisor.respond(evidence.canonical(self.request("first_after_toggle")))
+        stopped.assert_called_once_with("first")
+        self.assertEqual(self.supervisor.record["failures"], [
+            "N07_UNEXPECTED_SETTING_CHANGE", "N07_B4_OBSERVATION_FAILED"])
+        self.assertFalse(json.loads(raw)["allow"])
+        self.assertEqual(event["observation"]["keyfile"], proof)
+        self.assertFalse(event["observation"]["product_cleanup_verified"])
+        with self.assertRaisesRegex(ValueError, "FAILURE_LAUNCH_REFUSED"):
+            self.supervisor._request(self.request("second_before_launch"))
+
+    def test_retired_cleanup_survives_fingerprint_failure_without_launch_admission(self):
+        self.supervisor._request(self.request("first_before_launch"))
+        self.supervisor.index = 2
+        self.supervisor.source = {"tree_sha256": "1" * 64}
+        native = {"owner_id": "2" * 32, "synthetic": True}
+        self.supervisor.natives["first"] = native
+        counts = {"app_process_count": 0, "driver_child_count": 0, "sshd_child_count": 0,
+                  "journal_entries": 0, "profile_lock_held": False, "journal_lock_held": False}
+        control = {"synthetic": "live retained Host"}
+        order = []
+
+        def fingerprint_failure(*_args):
+            order.append("fingerprint")
+            raise ValueError("N07_FINGERPRINT_FILE_CHANGED")
+
+        observer = SimpleNamespace(finish=Mock(side_effect=fingerprint_failure))
+        self.supervisor.observers["first"] = observer
+        with tempfile.TemporaryDirectory() as tmp:
+            self.supervisor.artifacts = Path(tmp)
+            with patch.object(self.supervisor, "_stop_observer",
+                              side_effect=lambda *_: order.append("observer_stopped")), \
+                    patch.object(self.supervisor, "export_session"), \
+                    patch.object(self.supervisor, "_census",
+                                 side_effect=lambda: (order.append("census") or (counts, control))), \
+                    patch.object(live.fixture, "export_bundle", return_value=({}, {})), \
+                    patch("linux_real_app_v3_n07_b4_probe.validate_retirement",
+                          side_effect=lambda *_: order.append("product_retirement")) as retired, \
+                    patch("linux_real_app_v3_n07_b4_probe.validate_session") as full_session:
+                raw, event = self.supervisor.respond(evidence.canonical(self.request("first_retired")))
+            environment = json.loads((Path(tmp) / "first-environment.json").read_bytes())
+            self.assertEqual(environment["revision"], "eidolon-i6-n07-b4-environment-v1")
+            self.assertEqual(environment["final"], counts)
+            self.assertEqual(environment["driver_control"], control)
+            self.assertFalse((Path(tmp) / "first-fingerprint.json").exists())
+        self.assertEqual(order, ["observer_stopped", "census", "product_retirement", "fingerprint"])
+        retired.assert_called_once_with(native, self.supervisor.environments["first"],
+                                        self.supervisor.source, "first")
+        full_session.assert_not_called()
+        self.assertTrue(event["observation"]["product_cleanup_verified"])
+        self.assertEqual(self.supervisor.record["failures"], ["N07_FINGERPRINT_FILE_CHANGED"])
+        self.assertFalse(json.loads(raw)["allow"])
+        self.assertNotIn("first", self.supervisor.fingerprints)
         with self.assertRaisesRegex(ValueError, "FAILURE_LAUNCH_REFUSED"):
             self.supervisor._request(self.request("second_before_launch"))
 

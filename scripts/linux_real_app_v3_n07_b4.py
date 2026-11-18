@@ -76,7 +76,8 @@ class BarrierSupervisor:
             "schema": 1, "revision": "eidolon-i6-n07-b4-supervisor-v1",
             "run_id": descriptor["run_id"], "source": source,
             "trusted_storage": None, "document": None, "keyfile": {},
-            "supplemental_keyfile": {}, "barriers": [], "fingerprint_observers": {},
+            "supplemental_keyfile": {}, "keyfile_diagnostics": {},
+            "barriers": [], "fingerprint_observers": {},
             "failures": [], "external_rescue": False, "final_census": None,
         }
 
@@ -171,6 +172,13 @@ class BarrierSupervisor:
             need(time.monotonic() < deadline, "N07_B4_KEY_NOT_ENABLED")
             time.sleep(0.025)
 
+    def _keyfile_diagnostic(self, phase, proof):
+        diagnostic = copy.deepcopy(self.storage.probe.last_diagnostic)
+        need(type(diagnostic) is dict
+             and diagnostic.get("proof_sha256") == evidence.sha(evidence.canonical(proof)),
+             "N07_B4_KEYFILE_DIAGNOSTIC_BINDING")
+        self.record["keyfile_diagnostics"][phase] = diagnostic
+
     def export_session(self, session):
         for role, limit in (("native", fixture.MAX_OUTPUT), ("context", MAX_CONTEXT)):
             name = session + "-" + role + ".json"
@@ -211,7 +219,7 @@ class BarrierSupervisor:
         return counts, control
 
     def _retired(self, session, observation):
-        from linux_real_app_v3_n07_b4_probe import validate_session
+        from linux_real_app_v3_n07_b4_probe import validate_session, validate_retirement
         self._stop_observer(session)
         self.export_session(session)
         counts, control = self._census()
@@ -229,15 +237,16 @@ class BarrierSupervisor:
         }
         self.environments[session] = environment
         evidence.write_report(self.artifacts / (session + "-environment.json"), environment)
+        clean_census(counts)
+        validate_retirement(native, environment, self.source, session)
+        observation["product_cleanup_verified"] = True
         # Preserve observations even when exercise or product retirement fails.
         if session in self.observers:
             fingerprint = self.observers[session].finish(native, environment)
             self.fingerprints[session] = fingerprint
             evidence.write_report(self.artifacts / (session + "-fingerprint.json"), fingerprint)
-        clean_census(counts)
         validate_session(native, environment, self.source, session,
                          context_raw=self.contexts.get(session))
-        observation["product_cleanup_verified"] = True
         need(session in self.fingerprints, "N07_B4_FINGERPRINT_MISSING")
         fp = self.fingerprints[session]
         need(fp["missing"] in ([], ["theme"])
@@ -302,6 +311,7 @@ class BarrierSupervisor:
                 proof = self.storage.snapshot()
                 self.record["keyfile"]["before_first_launch"] = proof
                 observation["keyfile"] = proof
+                self._keyfile_diagnostic(phase, proof)
                 need(proof["key_present"] is False and proof["value"] is None,
                      "N07_INITIAL_KEY_PRESENT")
                 self.storage.create_document_before_launch()
@@ -311,26 +321,40 @@ class BarrierSupervisor:
                 proof = self.storage.snapshot()
                 self.record["supplemental_keyfile"][phase] = proof
                 observation["keyfile"] = proof
+                self._keyfile_diagnostic(phase, proof)
                 need(proof["key_present"] is True and proof["value"] is True,
                      "N07_B4_KEY_NOT_PERSISTED")
                 self._start_observer(session)
             elif phase in ("first_after_toggle", "second_after_observation"):
-                proof = self._snapshot_true()
-                name = "after_first_toggle" if session == "first" else "second_session"
-                self.record["keyfile"][name] = proof
-                observation["keyfile"] = proof
-                values = self.record["keyfile"]
-                validate_file_sequence(values["before_first_launch"],
-                    values["after_first_toggle"], values.get("second_session", proof))
-                self._stop_observer(session)
+                try:
+                    proof = self._snapshot_true()
+                    name = "after_first_toggle" if session == "first" else "second_session"
+                    self.record["keyfile"][name] = proof
+                    observation["keyfile"] = proof
+                    self._keyfile_diagnostic(phase, proof)
+                    values = self.record["keyfile"]
+                    validate_file_sequence(values["before_first_launch"],
+                        values["after_first_toggle"], values.get("second_session", proof))
+                except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+                    # Preserve the primary observation failure even if stopping
+                    # its worker encounters another failure below.
+                    self.failure(error)
+                finally:
+                    # An oracle rejection still ends this process-specific
+                    # observation interval before product Stop/census. Never
+                    # count our own still-live observer as an app leak.
+                    try:
+                        self._stop_observer(session)
+                    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+                        self.failure(error)
             else:
                 self._retired(session, observation)
             if self.storage.document is not None:
                 observation["document_sha256"] = self.storage.verify_document()["sha256"]
-            observation["observed_at_ns"] = time.monotonic_ns()
             allowed = not self.record["failures"]
         except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
             self.failure(error)
+        observation["observed_at_ns"] = time.monotonic_ns()
         observation_hash = evidence.sha(evidence.canonical(observation))
         response = {"schema": 1, "phase": phase, "request_sha256": digest,
                     "allow": allowed, "observation_sha256": observation_hash}
@@ -514,6 +538,10 @@ def prepare_and_run(args, artifacts, source, report):
             supervisor.export_session(session)
         native = fixture.read_native_receipt(output_path, accounts["driver"]["uid"], {})
         evidence.write_report(artifacts / "n07-b4-native.json", native)
+        # The Host has exited. A missing observation/retired barrier must not
+        # leave the supervisor's own worker alive in this final product census.
+        for session in tuple(supervisor.observer_active):
+            supervisor._stop_observer(session)
         counts = fixture.settled_census(sshd)
         counts.update(fixture.filesystem_census(dirs["files"], app_home, installation_id, storage_id))
         supervisor.record["final_census"] = counts

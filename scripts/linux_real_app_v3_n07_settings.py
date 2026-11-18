@@ -19,6 +19,10 @@ KEY = "show-line-numbers"
 COMPONENTS = ("config", "glib-2.0", "settings")
 LEAF = "keyfile"
 MAX_BYTES = 65536
+MAX_DIAGNOSTIC_SECTIONS = 64
+MAX_DIAGNOSTIC_ENTRIES = 256
+MAX_DIAGNOSTIC_NAME_BYTES = 8192
+DIAGNOSTIC_REVISION = "eidolon-i6-n07-keyfile-diagnostic-v1"
 READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 PROOF_KEYS = frozenset(("storage_digest", "root_dev", "root_ino", "file",
@@ -97,7 +101,29 @@ def _read_keyfile(fd: int, uid: int) -> tuple[dict, bytes, dict]:
         os.close(handle)
 
 
-def _parse(raw: bytes) -> tuple[bool, bool | None, str]:
+def _diagnostic_inventory(entries: dict) -> dict:
+    """Bounded names/hashes only; never serialize any parsed setting value."""
+    count = sum(len(values) for values in entries.values())
+    result = {"status": "observed", "reason": None, "section_count": len(entries),
+              "entry_count": count, "sections": []}
+    if len(entries) > MAX_DIAGNOSTIC_SECTIONS or count > MAX_DIAGNOSTIC_ENTRIES:
+        result.update(status="unavailable", reason="N07_KEYFILE_DIAGNOSTIC_BOUNDS")
+        return result
+    names = [name for section, values in entries.items() for name in (section, *values)]
+    if any(re.fullmatch(r"[A-Za-z0-9_./-]{1,256}", name) is None for name in names):
+        result.update(status="unavailable", reason="N07_KEYFILE_DIAGNOSTIC_NAMES")
+        return result
+    if sum(len(name) for name in names) > MAX_DIAGNOSTIC_NAME_BYTES:
+        result.update(status="unavailable", reason="N07_KEYFILE_DIAGNOSTIC_BOUNDS")
+        return result
+    result["sections"] = [{"section": section, "keys": [
+        {"key": key, "value_sha256": sha(value.encode("utf-8"))}
+        for key, value in sorted(values.items())]}
+        for section, values in sorted(entries.items())]
+    return result
+
+
+def _parse(raw: bytes, *, diagnostic: dict | None = None) -> tuple[bool, bool | None, str]:
     parser = configparser.ConfigParser(interpolation=None, strict=True,
                                        delimiters=("=",), empty_lines_in_values=False)
     parser.optionxform = str
@@ -112,6 +138,8 @@ def _parse(raw: bytes) -> tuple[bool, bool | None, str]:
     present = KEY in values
     value = values.get(KEY)
     need(not present or value in ("true", "false"), "N07_KEYFILE_TYPE")
+    if diagnostic is not None:
+        diagnostic.update(_diagnostic_inventory(entries))
     if SECTION in entries:
         entries[SECTION].pop(KEY, None)
         if not entries[SECTION]:
@@ -129,15 +157,18 @@ class StorageKeyfileProbe:
     root, not the per-nonce temporary C2 directory, is used for both sessions.
     """
 
-    def __init__(self, root: Path, uid: int, storage_digest: str):
+    def __init__(self, root: Path, uid: int, storage_digest: str, *, diagnostic: bool = False):
         need(isinstance(root, Path) and root.is_absolute()
              and type(uid) is int and uid >= 0
              and type(storage_digest) is str
              and re.fullmatch(r"[0-9a-f]{64}", storage_digest) is not None,
              "N07_STORAGE_BINDING_INVALID")
+        need(type(diagnostic) is bool, "N07_STORAGE_BINDING_INVALID")
         self.path = root
         self.uid = uid
         self.storage_digest = storage_digest
+        self.diagnostic_enabled = diagnostic
+        self.last_diagnostic = None
         # Hold the first observed intermediate directory descriptions across
         # both GUI sessions. Comparing only within one read would allow an
         # entire settings directory to be replaced between observations.
@@ -173,6 +204,16 @@ class StorageKeyfileProbe:
              "N07_ROOT_REPLACED")
 
     def snapshot(self) -> dict:
+        self.last_diagnostic = None
+        try:
+            return self._snapshot()
+        except BaseException:
+            # A failed final path/FD check cannot leave a diagnostic that
+            # looks bound to a successful snapshot.
+            self.last_diagnostic = None
+            raise
+
+    def _snapshot(self) -> dict:
         self._assert_root()
         parent = self.fd
         opened = []
@@ -202,9 +243,10 @@ class StorageKeyfileProbe:
                 metadata, contents, _ = _read_keyfile(parent, self.uid)
             except FileNotFoundError:
                 return self._absent()
-            present, value, other = _parse(contents)
+            inventory = {} if self.diagnostic_enabled else None
+            present, value, other = _parse(contents, diagnostic=inventory)
             self._assert_root()
-            return self._proof(metadata, present, value, other)
+            return self._proof(metadata, present, value, other, inventory=inventory)
         finally:
             try:
                 # The name chain must still identify the same open directories.
@@ -220,11 +262,23 @@ class StorageKeyfileProbe:
                     os.close(child)
 
     def _proof(self, file: dict | None, present: bool,
-               value: bool | None, others: str) -> dict:
-        return {"storage_digest": self.storage_digest,
-                "root_dev": self.root.st_dev, "root_ino": self.root.st_ino,
-                "file": file, "key_present": present, "value": value,
-                "others_sha256": others}
+               value: bool | None, others: str, *, inventory: dict | None = None) -> dict:
+        proof = {"storage_digest": self.storage_digest,
+                 "root_dev": self.root.st_dev, "root_ino": self.root.st_ino,
+                 "file": file, "key_present": present, "value": value,
+                 "others_sha256": others}
+        if self.diagnostic_enabled:
+            self.last_diagnostic = {
+                "schema": 1, "revision": DIAGNOSTIC_REVISION,
+                "source": "same_snapshot_keyfile_bytes",
+                "proof_sha256": sha(json.dumps(proof, sort_keys=True, separators=(",", ":"),
+                                               ensure_ascii=True).encode("utf-8")),
+                "file_sha256": None if file is None else file["sha256"],
+                "file_size": None if file is None else file["size"],
+                "value_hash": "sha256_utf8_parsed_value",
+                **(_diagnostic_inventory({}) if inventory is None else inventory),
+            }
+        return proof
 
     def _absent(self) -> dict:
         # Empty serialized dictionary is the reference for no other keys.

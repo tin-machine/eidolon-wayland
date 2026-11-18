@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import base64
+import re
 from pathlib import PurePosixPath
 from pathlib import Path
 
@@ -523,10 +524,25 @@ def second_readbacks(native):
 
 
 def second_context(native, context_raw, readbacks):
+    need(native.get("error") is None and native.get("cleanup_error") is None
+         and native.get("review_context", {}).get("complete") is True,
+         "N07_B4_CONTEXT_BINDING")
+    return _second_context_values(native, context_raw, readbacks)
+
+
+def diagnostic_second_context(native, context_raw, readbacks):
+    """Same physical ticket joins for a clearly rejected, incomplete sidecar."""
+    need(native.get("error") in (None, "I6_N07_B4_SUPERVISOR_REFUSED")
+         and native.get("cleanup_error") is None, "N07_B4_CONTEXT_BINDING")
+    return _second_context_values(native, context_raw, readbacks)
+
+
+def _second_context_values(native, context_raw, readbacks):
     binding = native.get("review_context")
     exact(binding, {"schema", "sha256", "bytes", "states", "complete"})
     need(type(binding["schema"]) is int and binding["schema"] == 1
-         and binding["complete"] is True
+         and type(binding["complete"]) is bool
+         and binding["complete"] is (native.get("error") is None and native.get("cleanup_error") is None)
          and binding["states"] == list(SECOND_CONTEXT_STATES)
          and type(context_raw) is bytes and 0 < len(context_raw) <= MAX_CONTEXT_BYTES
          and type(binding["bytes"]) is int and binding["bytes"] == len(context_raw)
@@ -539,8 +555,9 @@ def second_context(native, context_raw, readbacks):
     need(type(extra["schema"]) is int and extra["schema"] == 1
          and extra["revision"] == "eidolon-i6-n07-b4-second-review-context-v1"
          and extra["source"] == "host_renderer_review_context"
-         and extra["complete"] is True and extra["error"] is None
-         and extra["cleanup_error"] is None
+         and extra["complete"] is binding["complete"]
+         and extra["error"] == native.get("error")
+         and extra["cleanup_error"] == native.get("cleanup_error")
          and all(extra[k] == native[k] for k in ("run_id", "runtime", "owner_id", "source_sha256"))
          and extra["capture_id"] == p["capture_id"] and extra["target"] == p["main_target"],
          "N07_B4_CONTEXT_ORIGIN")
@@ -626,6 +643,138 @@ def validate_session(native, environment, source, session, context_raw=None):
             "context": context, "runtime": native["runtime"], "owner_id": native["owner_id"],
             "normal_cleanup_verified": True, "actual_app_error": app_error,
             "host_v3_acceptance_passed": False, "verified_n07_assertions": []}
+
+
+def _retirement_binding(native, environment, source, session):
+    """Source/owner admission for cleanup, without rewriting exercise errors."""
+    need(session in ("first", "second") and type(native) is dict
+         and n02.NATIVE_KEYS <= set(native), "N07_B4_RETIREMENT_IDENTITY")
+    need(native["schema"] == ("eidolon-i6-n07-b2-native-probe-v1" if session == "first" else SECOND_SCHEMA)
+         and native["host_v3_acceptance_passed"] is False
+         and native["n07_assertions_verified"] == []
+         and evidence.identity(native["run_id"]) and evidence.identity(native["owner_id"])
+         and contract.decimal(native["runtime"])
+         and type(native["start_count"]) is int and native["start_count"] == 1
+         and native["sdk_retired"] is True and native["cleanup_error"] is None,
+         "N07_B4_RETIREMENT_IDENTITY")
+    # A supervisor refusal is an observation outcome. It remains in the raw
+    # native receipt and cannot make this cleanup result an exercise success.
+    need(native["error"] in (None, "I6_N07_B4_SUPERVISOR_REFUSED"),
+         "N07_B4_RETIREMENT_EXERCISE_ERROR")
+    evidence._source(source)
+    evidence._source(native["build_source"])
+    need(source["dirty"] is False and source["build_features"] == []
+         and native["source_sha256"] == source["tree_sha256"], "N07_B4_SOURCE")
+    same(native["build_source"], {**source, "build_features": ["host-acceptance"]}, "N07_B4_SOURCE")
+    hashes = evidence.source_input_hashes()
+    same({key: native[key] for key in hashes}, hashes, "N07_B4_SOURCE")
+    exact(environment, n01.ENVIRONMENT_FIELDS | {"driver_control"})
+    need(environment["revision"] == "eidolon-i6-n07-b4-environment-v1",
+         "N07_B4_ENVIRONMENT_REVISION")
+    env = copy.deepcopy(environment)
+    control = env.pop("driver_control")
+    _driver_control(control, env["driver"]["uid"], env["final"])
+    env["revision"] = n01.ENVIRONMENT_REVISION
+    n01._environment(env, native["run_id"], native["owner_id"], native["source_sha256"])
+    events, capture, context, _, _ = n02.transport(native, env, "mousepad_editor")
+    expected = evidence.sha((native["run_id"] + ":" + native["runtime"] + ":" +
+                             capture["capture_id"]).encode("ascii"))[:32]
+    need(native["owner_id"] == expected, "N07_B4_RETIREMENT_OWNER")
+    return env, events, n02.ordinal_events(native["observations"], limit=128), capture, context.record()
+
+
+def validate_retirement(native, environment, source, session):
+    """Prove started-session product cleanup separately from GUI success.
+
+    The error field, Stop/Close reason and all original receipt bytes retain
+    their original meaning. This result cannot authorize a second session:
+    the supervisor must still require the existing full session validation.
+    """
+    env, events, observed, capture, context = _retirement_binding(native, environment, source, session)
+    keys = _all_sdk(native)
+    main = native["readback"]["target"]
+    need(evidence.canonical(main) in keys and main["session"] == capture["session"],
+         "N07_B4_RETIREMENT_OWNER")
+    for row in native["sdk_observations"]:
+        need(row["data"]["target"]["session"] == capture["session"]
+             and row["data"]["target"]["scene"] == main["scene"], "N07_B4_RETIREMENT_OWNER")
+    stopped = [row["data"]["record"]["event"]["payload"] for row in native["trace"]["events"]
+               if row["kind"] == "protocol_event" and row["data"]["record"]["event"]["type"] == "stopped"]
+    need(len(stopped) == 1 and all(stopped[0][key] is True for key in (
+        "process_complete", "pipes_eof", "remote_cleaned", "receipt_written")),
+         "N07_B4_RETIREMENT_TERMINAL")
+    reason = stopped[0]["reason"]
+    if reason == "process_exited":
+        app_error = _close(native, observed)
+    else:
+        need(reason == "stop", "N07_B4_RETIREMENT_TERMINAL")
+        n04.validate_control_sequence(native["trace"]["events"])
+        app_error = None
+    _cleanup(native, env, events, observed, app_error)
+    return {"status": "product_retirement_verified", "session": session,
+            "runtime": native["runtime"], "owner_id": native["owner_id"],
+            "capture": capture, "context": context, "native_error": native["error"],
+            "terminal_reason": reason, "actual_app_error": app_error,
+            "product_cleanup_verified": True, "exercise_success_verified": False,
+            "host_v3_acceptance_passed": False, "verified_n07_assertions": []}
+
+
+def _keyfile_diagnostics(supervisor):
+    """Optional same-read key inventory is diagnostic, never an oracle substitute."""
+    values = supervisor.get("keyfile_diagnostics", {})
+    need(type(values) is dict and set(values) <= set(PHASES), "N07_B4_KEYFILE_DIAGNOSTIC")
+    bindings = {"first_before_launch": supervisor["keyfile"].get("before_first_launch"),
+                "first_after_toggle": supervisor["keyfile"].get("after_first_toggle"),
+                "second_before_launch": supervisor["supplemental_keyfile"].get("second_before_launch"),
+                "second_after_observation": supervisor["keyfile"].get("second_session")}
+    for phase, value in values.items():
+        proof = bindings.get(phase)
+        need(type(proof) is dict, "N07_B4_KEYFILE_DIAGNOSTIC")
+        exact(value, {"schema", "revision", "source", "proof_sha256", "file_sha256", "file_size",
+                      "value_hash", "status", "reason", "section_count", "entry_count", "sections"})
+        file = proof["file"]
+        need(type(value["schema"]) is int and value["schema"] == 1
+             and value["revision"] == "eidolon-i6-n07-keyfile-diagnostic-v1"
+             and value["source"] == "same_snapshot_keyfile_bytes"
+             and value["value_hash"] == "sha256_utf8_parsed_value"
+             and value["proof_sha256"] == evidence.sha(evidence.canonical(proof))
+             and value["file_sha256"] == (file["sha256"] if file else None)
+             and value["file_size"] == (file["size"] if file else None), "N07_B4_KEYFILE_DIAGNOSTIC")
+        need(type(value["section_count"]) is int and 0 <= value["section_count"] <= settings.MAX_BYTES
+             and type(value["entry_count"]) is int and 0 <= value["entry_count"] <= settings.MAX_BYTES,
+             "N07_B4_KEYFILE_DIAGNOSTIC")
+        if file is None:
+            need(value["section_count"] == value["entry_count"] == 0 and value["sections"] == []
+                 and value["status"] == "observed", "N07_B4_KEYFILE_DIAGNOSTIC")
+        if value["status"] == "unavailable":
+            need(value["reason"] in ("N07_KEYFILE_DIAGNOSTIC_BOUNDS", "N07_KEYFILE_DIAGNOSTIC_NAMES")
+                 and value["sections"] == [], "N07_B4_KEYFILE_DIAGNOSTIC")
+            continue
+        need(value["status"] == "observed" and value["reason"] is None
+             and type(value["sections"]) is list and len(value["sections"]) == value["section_count"] <= 64,
+             "N07_B4_KEYFILE_DIAGNOSTIC")
+        names, entries, total, target_values = [], 0, 0, []
+        for section in value["sections"]:
+            exact(section, {"section", "keys"})
+            names.append(section["section"])
+            need(type(section["keys"]) is list, "N07_B4_KEYFILE_DIAGNOSTIC")
+            keys = []
+            for item in section["keys"]:
+                exact(item, {"key", "value_sha256"})
+                keys.append(item["key"])
+                need(contract.hexadecimal(item["value_sha256"], 64), "N07_B4_KEYFILE_DIAGNOSTIC")
+                if section["section"] == settings.SECTION and item["key"] == settings.KEY:
+                    target_values.append(item["value_sha256"])
+            for name in [section["section"], *keys]:
+                need(type(name) is str and re.fullmatch(r"[A-Za-z0-9_./-]{1,256}", name) is not None,
+                     "N07_B4_KEYFILE_DIAGNOSTIC")
+                total += len(name)
+            need(keys == sorted(set(keys)), "N07_B4_KEYFILE_DIAGNOSTIC")
+            entries += len(keys)
+        need(names == sorted(set(names)) and entries == value["entry_count"] <= 256 and total <= 8192,
+             "N07_B4_KEYFILE_DIAGNOSTIC")
+        need(target_values == ([evidence.sha(("true" if proof["value"] else "false").encode("ascii"))]
+                               if proof["key_present"] else []), "N07_B4_KEYFILE_DIAGNOSTIC")
 
 
 def _storage(value, sessions, environments):
@@ -847,7 +996,8 @@ def validate_collection(native, supervisor, first, second, environments, fingerp
                    "menu_identity_verified", "verified_n07_assertions", "host_v3_acceptance_passed"})
     exact(supervisor, {"schema", "revision", "run_id", "source", "trusted_storage",
                        "document", "keyfile", "supplemental_keyfile", "barriers",
-                       "fingerprint_observers", "failures", "external_rescue", "final_census"})
+                       "fingerprint_observers", "failures", "external_rescue", "final_census"}
+          | ({"keyfile_diagnostics"} if "keyfile_diagnostics" in supervisor else set()))
     need(type(native["schema"]) is int and native["schema"] == 1
          and native["revision"] == NATIVE_REVISION
          and type(supervisor["schema"]) is int and supervisor["schema"] == 1
@@ -897,6 +1047,7 @@ def validate_collection(native, supervisor, first, second, environments, fingerp
     keyfiles = supervisor["keyfile"]
     settings.validate_file_sequence(keyfiles["before_first_launch"], keyfiles["after_first_toggle"],
                                     keyfiles["second_session"])
+    _keyfile_diagnostics(supervisor)
     for proof in keyfiles.values():
         need(proof["storage_digest"] == storage["storage_digest"]
              and proof["root_dev"] == storage["root_identity"]["dev"]

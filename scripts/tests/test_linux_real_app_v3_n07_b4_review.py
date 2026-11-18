@@ -165,6 +165,45 @@ class ReviewV2Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "N07_GOLDEN_UNREVIEWED"):
             pixel.load_reviewed()
 
+    def test_rejected_packet_preserves_six_images_without_a_candidate(self):
+        inputs, _ = packet_inputs()
+        provenance = inputs.pop("provenance")
+        inputs.pop("proposal")
+        first, _ = b3._observed(inputs["first"], inputs["contexts"]["first"])
+        second = probe.second_readbacks(inputs["second"])
+        states = {**first, **{name: review._state(inputs["second"], name, second[name]) for name in pixel.STATES[4:]}}
+        observed = {"rejection": "N07_B4_COLLECTION_INCOMPLETE", "settings_rejection": "N07_UNEXPECTED_SETTING_CHANGE",
+                    "states": states, "sessions": {"synthetic": True}, "retirement": {"synthetic": True}}
+        inputs["supervisor"].update(supplemental_keyfile={}, external_rescue=False)
+        # This test isolates the preservation layer; real collected inputs
+        # exercise _rejected_observed and semantic mutations unmocked in CI.
+        with tempfile.TemporaryDirectory() as temporary, patch.object(review, "_rejected_observed", return_value=observed):
+            root = Path(temporary) / "rejected"
+            result = review.export_rejected_bundle(root, **inputs, provenance=provenance)
+            checked = review.validate_rejected_bundle(root, result["diagnostic_sha256"])
+            self.assertTrue(checked["integrity_verified"])
+            self.assertFalse(checked["full_collection_valid"])
+            self.assertFalse(checked["candidate_created"])
+            self.assertFalse((root / "candidate.json").exists())
+            self.assertEqual(checked["states"], list(pixel.STATES))
+            for name in pixel.STATES:
+                raw = (root / "raw" / (name + ".rgba")).read_bytes()
+                self.assertEqual(decode_png((root / "raw" / (name + ".png")).read_bytes())[2], raw)
+            for label in ("first", "second"):
+                self.assertEqual((root / "evidence" / (label + "-native.json")).read_bytes(), inputs["native_raws"][label])
+            asset = root / "raw" / "second_on_numbers_1_8.png"
+            asset.write_bytes(asset.read_bytes() + b"changed")
+            with self.assertRaisesRegex(ValueError, "N07_B4_REVIEW_ASSET_CHANGED"):
+                review.validate_rejected_bundle(root, result["diagnostic_sha256"])
+
+    def test_successful_collection_cannot_be_reclassified_as_rejected(self):
+        inputs, _ = packet_inputs()
+        provenance = inputs.pop("provenance")
+        inputs.pop("proposal")
+        with patch.object(probe, "validate_collection", return_value={"status": "collected"}), \
+                self.assertRaisesRegex(ValueError, "N07_B4_DIAGNOSTIC_REQUIRES_REJECTION"):
+            review._rejected_observed(inputs, provenance)
+
 
 if __name__ == "__main__":
     unittest.main()

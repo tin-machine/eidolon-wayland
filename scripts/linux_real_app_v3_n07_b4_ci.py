@@ -36,9 +36,12 @@ def export_and_validate(incoming, output, image_file, head, attached, runtime,
     report = {"schema": 1, "revision": "eidolon-i6-n07-b4-export-v1",
               "status": "rejected", "reason": "N07_B4_INPUT_MISSING",
               "candidate_created": False, "saved_receipts_revalidated": False,
+              "rejected_diagnostic_created": False,
+              "rejected_diagnostic_revalidated": False,
               "reviewed_golden": False, "menu_identity_verified": False,
               "verified_n07_assertions": [], "host_v3_acceptance_passed": False,
               "observations": {}, "export_errors": []}
+    inputs, provenance = None, None
     try:
         image_id = image_file.read_text(encoding="ascii").strip()
         need(re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is not None
@@ -71,6 +74,13 @@ def export_and_validate(incoming, output, image_file, head, attached, runtime,
         from linux_real_app_v3_n07_b4_review import export_bundle, validate_bundle
         inputs = load_collection(output)
         need(evidence.canonical(inputs["source"]) == evidence.canonical(source), "I6_SOURCE_MISMATCH")
+        provenance = {
+            "repository": "tin-machine/eidolon-wayland", "workflow_run_id": ci.get("GITHUB_RUN_ID") or None,
+            "run_attempt": ci.get("GITHUB_RUN_ATTEMPT") or None,
+            "artifact_id": None, "artifact_name": "linux-desktop-v3-n07-b4-" + head,
+            "artifact_archive_sha256": None, "artifact_status": "pending_upload",
+            "source_commit": head, "pr_head": pr_head or None,
+        }
         # Inspect the product and independent observations before requiring
         # process success. The latter cannot replace these actual predicates.
         result = validate_collection(**inputs)
@@ -86,13 +96,6 @@ def export_and_validate(incoming, output, image_file, head, attached, runtime,
              and producer.get("exit_code") == 0
              and producer.get("status") == "collected", "N07_B4_PRODUCER_DISPOSITION")
         adversarial_checks(**inputs)
-        provenance = {
-            "repository": "tin-machine/eidolon-wayland", "workflow_run_id": ci.get("GITHUB_RUN_ID") or None,
-            "run_attempt": ci.get("GITHUB_RUN_ATTEMPT") or None,
-            "artifact_id": None, "artifact_name": "linux-desktop-v3-n07-b4-" + head,
-            "artifact_archive_sha256": None, "artifact_status": "pending_upload",
-            "source_commit": head, "pr_head": pr_head or None,
-        }
         candidate = export_bundle(output / "n07-b4-review", **inputs, provenance=provenance)
         validate_bundle(output / "n07-b4-review", candidate["candidate_sha256"])
         report.update(status="collected", reason="N07_B4_UNAPPROVED_COLLECTION",
@@ -100,6 +103,21 @@ def export_and_validate(incoming, output, image_file, head, attached, runtime,
                       mutations_rejected=True)
     except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError) as error:
         report["reason"] = fixed_reason(error)
+        if inputs is not None and provenance is not None:
+            try:
+                from linux_real_app_v3_n07_b4_review import (
+                    export_rejected_bundle, validate_rejected_bundle, adversarial_rejected_checks)
+                root = output / "n07-b4-rejected-review"
+                diagnostic = export_rejected_bundle(root, **inputs, provenance=provenance)
+                report.update(rejected_diagnostic_created=True, rejected_diagnostic=diagnostic)
+                validate_rejected_bundle(root, diagnostic["diagnostic_sha256"])
+                mutations = adversarial_rejected_checks(**inputs, provenance=provenance)
+                report.update(rejected_diagnostic_revalidated=True,
+                              rejected_diagnostic_mutations=mutations)
+            except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError) as diagnostic_error:
+                report["rejected_diagnostic_error"] = fixed_reason(diagnostic_error)
+        # A readable, independently checked rejected packet never changes the
+        # full collection status, process exit, candidate flag or Golden gate.
     evidence.write_report(output / "n07-b4-export.json", report)
     return report["status"] == "collected"
 
