@@ -288,6 +288,14 @@ GUI本文や入力内容を通常ログに保存せず、固定fixtureのdigest�
 CIでは既存host/AndroidとA0を維持し、通常v3 acceptanceを独立step/jobへ追加する。
 必要package/権限不足によるskipは成功に数えない。実行件数、head SHA、package fingerprint、build-id、run/jobを保存する。
 
+### 11.1 N07 の段階的実装と実機ゲート（2026-11-17 追記）
+
+[I6 N07-A/B 実行順序](features/linux-desktop-v3/i6-n07-a-independent-oracles.md)に、N07-A（独立 keyfile/pixel comparator、PR #46 マージ済み）→ N07-B（通常 pointer/menu/popup の実配送と renderer readback）→ 別レビューの pixel golden 固定 → 同 StorageRecord・新 nonce の2セッションと独立 receipt／CI、の順序を定める。golden のレビューは Host 実装と並行可能だが、未レビューで assertion を成立させない。
+
+**Quest 3 実機確認は N07-B Host 実装の着手条件ではない。** I6 N07 の Host 13/13 がすべて成立しても、I6 全体の 28 family／87 variants／533 assertions を完了したことにはならない。I7/V12 の実 APK／Meta SDK／Android 保存と H の装着・物理入力は、§12／§13 の**別の証拠**で検証する。早期の Quest スモークは非 acceptance の探索に限り、Host の合成 SDK 証拠を流用しない。
+
+N07-B では N06 の xdg_toplevel dialog と View menu の popup を混同しない。実 protocol の role（xdg_popup 等）／parent／serial／layer を調査し、必要なら製品側の read-only 観測 seam を追加する。詳細は上記 N07 設計書 D.1。固定 manifest や N01〜N06 oracle、Issue #45 の扱いは変更しない。
+
 ## 12. I7: Quest 3の自動検証
 
 ### 準備と実行

@@ -1,6 +1,6 @@
 # I6 N07-A — independent keyfile and reviewed-pixel contract (preparation)
 
-> Status: N07-A implementation PR; **NOT N07 acceptance**. No live N07 GUI run, second C2 lease, reviewed pixel golden or typed N07 receipt is present. All 13 frozen N07 assertions are **unverified**. Neither a green unit test nor the file-only / pixel-only predicates below may turn N07 into complete.
+> Status: N07-A **merged** in [PR #46](https://github.com/tin-machine/eidolon-wayland/pull/46) (merge 9aaac53cbb7cde03c549f7cb230cf3268bed4c91); **NOT N07 acceptance**. The merged N07-A contains no live N07 GUI run, second C2 lease, reviewed pixel golden or typed N07 receipt. All 13 frozen N07 assertions remain **unverified** until N07-B product evidence exists. Neither a green unit test nor file-only / pixel-only predicates may turn N07 into complete.
 
 ## Baseline and immutable contract
 
@@ -61,3 +61,38 @@ Full live acceptance uses a new source-bound disposable Docker job with dedicate
 The N07-A tests cover immutable manifest, pre-existing true/false, same storage/root identity, unexpected key changes, keyfile rewrites, symlink, hardlink, duplicate key, invalid boolean, oversized input and root replacement. Pixel tests cover reviewed digest lock, mismatched fingerprint, unreviewed/zero mask, wrong and missing pixels, foreign capture, nonce reuse, self-reference and negative-contrast failure.
 
 Not established yet: **all 13 N07 assertions**, including both GUI states, actual pointer delivery, verified menu popup, key persistence across *real* C2 sessions, product census/retirement, and typed independent acceptance. The separate N07-B implementation/PR must explicitly report them not_run until actual proof exists. N08 can reuse the independent keyfile probe for fresh-storage isolation, but must not reuse a first-session receipt.
+
+## D. N07-B 実装順序と Quest 実機検証の分離（2026-11-17 追記）
+
+本節は上記 C の**実施順序と判定ゲート**を明文化する。新しい N07 variant／assertion を定義せず、[I6 詳細設計](../../linux-real-app-v3-i6-detailed-design.md) §10.2／10.3／11／20 と [統合計画](../../linux-real-app-v3-integration-plan-20261111.md) §11〜13 の責任分界を変更しない。
+
+**結論：N07-B の Host 実装は Quest 3 実機確認を待たずに進める。** I6 の Host R+S と I7/V12 の実 Meta SDK／Android、H の装着・物理操作は独立した証拠である。早期の Quest 試験的スモークは並行してもよいが、Host assertion の根拠に数えず、N07-B のブロッカーにも完了条件にもしない。
+
+| 順序・レビュー境界 | 作業・検証するもの | 進行条件／未成立の扱い |
+| --- | --- | --- |
+| 0. N07-A（完了） | C1 永続 keyfile の read-only FD suboracle、fingerprint／ROI pixel comparator、負例 CI | **比較器の単体成功だけでは N07 0/13。** |
+| 1. N07-B：Host GUI 最小経路 | N05/N06 通常 Registry→Runtime→SSH Controller→C2→Waypipe→Mousepad→native compositor→Host SDK→renderer に乗せ、実 View メニューを pointer で開き Line Numbers を切り替える。popup 実状態を採取する。 | main admission／B1 Ready／current input gate／実 delivered counter／popup origin を実証。Registry ACK だけで pointer assertion を合格にしない。 |
+| 2. N07-B：pixel readback の拡張 | N06 4×4 中央 ROI だけでなく、OFF/ON gutter、View checkmark、第二セッション 1〜8 行が含まれる bounded ROI を実 renderer から取得する。 | ticket／TargetKey／generation／content frame／SDK binding を照合。golden 未確定なら pixel assertion は未成立。 |
+| 3. 別レビュー：golden 固定 | Acceptance 実行とは独立した reference capture と必要なら A0 **read-only** 観測を用い、固定環境・ROI/mask/tolerance・positive/negative contrast をレビューする。 | fixture の人手レビューと SHA lock を source に固定。golden 欠如・未レビュー・fingerprint 差は fail/not_run。Step 1/2 と並行可能。 |
+| 4. N07-B：同 StorageRecord の2セッション | 1st：key absent＋GUI OFF→実 pointer ON→独立 keyfile true→通常 Close と**全 product 回収**。2nd：同 installation/profile storage/binding と C1 root、新 nonce/capture/Runtime/owner で通常 Inspect／Launch、固定8行 file、最初から GUI ON＋key true、通常 Stop／全回収。 | 1st 未回収の C2 lock／lease を強制解除して 2nd を開始しない。2セッションそれぞれ独立 census／finalizer／retirement。 |
+| 5. N07-B：統合 oracle と CI | 保存済み native＋supervisor keyfile＋reviewed pixel＋2回分の product cleanup を専用 oracle で revalidate。typed receipt、正式 linux_real_app_v3_evidence.py 接続、専用 source-bound disposable Docker job、改変テストと N01〜N06 回帰。 | **N07 13/13** が現 head の実証拠で成立した場合のみ **N07/same_storage_restart** を complete。未実装なら not_run/fail。I6 全体は残りの required variants があるため host_v3_acceptance_passed=false。 |
+| 6. I7/V12 → H | Host 実装と区別して実 APK／Android 通常保存／Meta SDK Surface・callback・Scene、Quest 操作、最後に装着して視認性・物理キーボード／コントローラーを検証。 | I7/V12 と H の固有証拠が必要。Host の S を Quest SDK evidence に昇格させない。正式な I7 受け入れの前提条件は統合計画に従う。 |
+
+### D.1 View メニューの popup は dialog と同一視しない
+
+Mousepad 固定 upstream の [menus.ui](https://github.com/xfce-mirror/mousepad/blob/65fbfe0459259f820fcc8b9c4dd454228304842a/mousepad/resources/gtk/menus.ui) には _View と Line N_umbers（action は app.preferences.view.show-line-numbers）がある。**メニュー実体を xdg_toplevel と決め打ちしない。** Wayland の [xdg-shell](https://wayland.app/protocols/xdg-shell) では、menu は xdg_popup 等の役割を持ち得る。実 GTK/Waypipe/compositor の protocol trace を先に取り、実際の popup role と生成・破棄を識別する。popup が xdg_popup か、親 surface 内の描画かなどは**実観測**に基づく。
+
+xdg_popup が現れた場合、N05/N06 transient xdg_toplevel admission を機械的に再利用しない。同 capture／NativeOrigin に対応する parent chain、surface/target generation、configure/ack serial（および grab に必要な入力 serial）、layer/content frame と pointer routing を照合する。popup を独立した通常アプリ window として誤採用したり、別 capture の popup を容認しない。popup serial／layer を現行 API が提供しなければ、**通常製品の観測 seam を追加してテストする**。fixture で架空の popup 証拠を追加しない。
+
+入力は同 capture の current main/popup target、input epoch、focus token の正当性を検証し、**Registry gate を通る** pointer press／release／実配送を計測する。keyboard shortcut の捏造、D-Bus、keyfile 直接変更、GTK3_MODULES 注入による代替成功は禁止。クリック座標と ROI は固定環境・review 済み fixture／独立確認したレイアウトに拘束し、**その acceptance run の observed image を基準値に自動更新しない**。
+
+参考：Wayland [xdg_popup と親 surface／grab](https://wayland-book.com/xdg-shell-in-depth/popups.html) と [Mousepad 固定 menus.ui](https://github.com/xfce-mirror/mousepad/blob/65fbfe0459259f820fcc8b9c4dd454228304842a/mousepad/resources/gtk/menus.ui)。
+
+### D.2 PR 粒度、再利用、ブロッカー
+
+原則は **N07-B の 1 variant／13 assertion を 1 PR で成立**させる。ただし、popup の製品 seam 拡張や golden 独立レビューのため 1 PR ではレビュー困難なら N07-B1（通常 pointer/popup＋readback の具体的コードと負例テスト）→ N07-B2（2セッション＋独立 receipt）に分割してよい。golden fixture は独立したレビュー境界とする。**各実装 PR では詳細設計だけで終わらず、動作するコードとテストを追加する。**
+
+独立 oracle の意味を緩めないため、欠損は失敗・未実施として残し、N01〜N06 の既存 oracle を変更して N07 を通す方法を採らない。N08 以降は keyfile suboracle や popup 観測 seam を再利用できるが、receipt や storage/owner/capture を共有して成功に数えない。Issue [#45](https://github.com/tin-machine/eidolon-wayland/issues/45) の自然 Close／異常終了の分類変更は N07-B に含めない。
+
+**完了判定を二段階に区別**する：N07 自体の Host 13/13 と、I6 全体の 28 family／87 required variants／533 assertions。N07 13/13 が成立しても I6 全体は自動的に complete ではない。Quest/H も独立した未検証フラグを維持する。
+
