@@ -111,6 +111,7 @@ impl Driver {
             Some(vec![checkmark_roi()]),
         )?;
         self.n07_probe.as_mut().unwrap()["b2"]["first_off_checkmark"] = off_check.clone();
+        self.n07_capture_review_context(&target, "first_off_menu_context")?;
         let mut req = 7100u32;
         // The item must be selected on its real popup surface, not a Registry
         // Accepted status on the main toplevel. Preserve the B1 press barrier.
@@ -147,6 +148,7 @@ impl Driver {
         let on =
             self.n07_capture_with_rois(&target, "first_on_gutter", Some(vec![gutter_roi()]))?;
         self.n07_probe.as_mut().unwrap()["b2"]["first_on_gutter"] = on.clone();
+        self.n07_capture_review_context(&target, "first_on_context")?;
         // B1 first_off_gutter is the first ROI of the real before_menu readback.
         if frame(&on)? <= frame(&off)? || hash(&on)? == hash(&off)? {
             return Err("I6_N07_B2_GUTTER_UNCHANGED");
@@ -168,6 +170,7 @@ impl Driver {
         let on_check =
             self.n07_capture_with_rois(&target, "first_on_checkmark", Some(vec![checkmark_roi()]))?;
         self.n07_probe.as_mut().unwrap()["b2"]["first_on_checkmark"] = on_check.clone();
+        self.n07_capture_review_context(&target, "first_on_menu_context")?;
         if frame(&on_check)? <= frame(&off_check)? || hash(&on_check)? == hash(&off_check)? {
             return Err("I6_N07_B2_CHECKMARK_UNCHANGED");
         }

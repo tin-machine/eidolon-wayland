@@ -3,11 +3,15 @@
 set -euo pipefail
 umask 077
 
-if [[ $# != 2 || $1 != --artifact-root ]]; then
-  echo 'usage: check-linux-desktop-v3-n07-b2 --artifact-root ABSOLUTE_EMPTY_DIRECTORY' >&2
+if [[ $# -lt 2 || $# -gt 3 || $1 != --artifact-root || ( $# == 3 && $3 != --prepare-review ) ]]; then
+  echo 'usage: check-linux-desktop-v3-n07-b2 --artifact-root ABSOLUTE_EMPTY_DIRECTORY [--prepare-review]' >&2
   exit 2
 fi
 i6_artifact_root=$2
+i6_review_args=()
+if [[ $# == 3 ]]; then
+  i6_review_args=(--prepare-review)
+fi
 i6_source_root=$(git -C "$(dirname "$0")/../.." rev-parse --show-toplevel)
 python3 - "$i6_artifact_root" "$i6_source_root" <<'PY'
 import os
@@ -45,7 +49,9 @@ for relative in (
     "scripts/linux_real_app_v3_n07_b2.py",
     "scripts/linux_real_app_v3_n07_b2_probe.py",
     "scripts/linux_real_app_v3_n07_b2_ci.py",
-
+    "scripts/linux_real_app_v3_n07_b3_ci.py",
+    "scripts/linux_real_app_v3_n07_review.py",
+    "scripts/linux_real_app_v3_n07_fingerprint.py",
 ):
     path = Path(relative)
     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -118,7 +124,7 @@ i6_container=$(docker create --network none --pids-limit 256 --memory 6g \
   --cpus 4 --entrypoint /usr/bin/python3 "$i6_image" \
   /src/scripts/linux_real_app_v3_n07_b2.py --disposable-container --source-root /src \
   --fixture-root /run/eidolon-i6 --reviewed-package /opt/i6/reviewed-package.json \
-  --runner /opt/i6/eidolon-i6-host --artifact-root /artifacts)
+  --runner /opt/i6/eidolon-i6-host --artifact-root /artifacts "${i6_review_args[@]}")
 if [[ ! $i6_container =~ ^[0-9a-f]{64}$ ]]; then
   echo 'N07-B2 container creation did not return a container ID' >&2
   exit 2
@@ -139,6 +145,16 @@ docker cp "$i6_container:/artifacts/." "$i6_work/export" >/dev/null 2>&1 || true
 # Export only the fixed, bounded, flat JSON receipts and optional n07-b2-native.json
 # diagnostics. Diagnostics cannot satisfy an assertion or a missing receipt.
 # Never copy logs, keys, the fixture root, a profile, or arbitrary recursive data.
+i6_base_failed=0
 python3 "$i6_source_root/scripts/linux_real_app_v3_n07_b2_ci.py" \
   "$i6_work/export" "$i6_artifact_root" "$i6_work/image.id" \
-  "$i6_source_head" "$i6_attach_exit" "$i6_runtime_exit" "$i6_running" "$i6_source_root" "${CI_PR_HEAD:-}"
+  "$i6_source_head" "$i6_attach_exit" "$i6_runtime_exit" "$i6_running" "$i6_source_root" "${CI_PR_HEAD:-}" || i6_base_failed=1
+if [[ ${#i6_review_args[@]} != 0 ]]; then
+  # Always retain bounded B3 diagnostics, including when B2 failed. A review
+  # packet is produced only after both saved product and context audits pass.
+  python3 "$i6_source_root/scripts/linux_real_app_v3_n07_b3_ci.py" \
+    --incoming "$i6_work/export" --output "$i6_artifact_root" \
+    --source-root "$i6_source_root" --source-commit "$i6_source_head" \
+    --pr-head "${CI_PR_HEAD:-}" || i6_base_failed=1
+fi
+exit "$i6_base_failed"

@@ -290,7 +290,7 @@ CIでは既存host/AndroidとA0を維持し、通常v3 acceptanceを独立step/j
 
 ### 11.1 N07 の段階的実装と実機ゲート（2026-11-17 追記）
 
-[I6 N07-A/B 実行順序](features/linux-desktop-v3/i6-n07-a-independent-oracles.md)に、N07-A（独立 keyfile/pixel comparator、PR #46 マージ済み）→ N07-B（通常 pointer/menu/popup の実配送と renderer readback）→ 別レビューの pixel golden 固定 → 同 StorageRecord・新 nonce の2セッションと独立 receipt／CI、の順序を定める。golden のレビューは Host 実装と並行可能だが、未レビューで assertion を成立させない。
+[I6 N07-A/B 実行順序](features/linux-desktop-v3/i6-n07-a-independent-oracles.md)の現在の分担は、N07-A（独立 keyfile/pixel comparator、PR #46）→ B1（pointer/popup、PR #48）→ B2（単一セッション4状態、PR #49）→ [B3（実画像・fingerprint・独立レビュー準備）](features/linux-desktop-v3/i6-n07-b3-pixel-review.md)→ B4（同 StorageRecord・新 nonce の実2セッション）→ B5（独立 typed receipt／正式 N07 oracle）である。#46/#48/#49 はマージ済み。Golden の承認は別工程であり、未取得の第二セッション2状態を含む独立6状態 reference と完全 fingerprint を必要とする。B4 の収集機構で reference を取得する場合も、その後の acceptance run と分離する。未レビューで assertion を成立させない。
 
 **Quest 3 実機確認は N07-B Host 実装の着手条件ではない。** I6 N07 の Host 13/13 がすべて成立しても、I6 全体の 28 family／87 variants／533 assertions を完了したことにはならない。I7/V12 の実 APK／Meta SDK／Android 保存と H の装着・物理入力は、§12／§13 の**別の証拠**で検証する。早期の Quest スモークは非 acceptance の探索に限り、Host の合成 SDK 証拠を流用しない。
 

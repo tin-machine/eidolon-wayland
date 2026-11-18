@@ -37,6 +37,13 @@ Implementation increments: [fixed evidence validator](i6-evidence-validation.md)
 N01 smoke and renderer tests are distinct from full I6 acceptance;
 all 28 families, 87 required variants and 533 assertion references remain required.
 
+N07 progresses through [A's independent keyfile/pixel contract](i6-n07-a-independent-oracles.md),
+[B1/B2's real pointer/popup/four-state diagnostic](i6-n07-b1-pointer-popup-readback.md)
+and [B3's real-image review packets and observed fingerprint](i6-n07-b3-pixel-review.md).
+B3 prepares unapproved reference material; the second-session states, independent
+six-state Golden approval and B4/B5 acceptance integration remain separate.
+N07 is still **0/13 verified** and the production Golden pin is unset.
+
 The [I6 detailed design — normal v3 Host acceptance (I3-T20/V11)](../../linux-real-app-v3-i6-detailed-design.md)
 is **proposed**, based on main `0e0df43a2ce4734a00a36f830cc24a80e277bec5` (2026-11-15 JST, after PR #31).
 It defines the real SSH/C2/Waypipe/Mousepad execution path, Host EGL/readback and synthetic SDK boundary,

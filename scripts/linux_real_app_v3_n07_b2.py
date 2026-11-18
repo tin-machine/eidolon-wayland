@@ -11,6 +11,7 @@ It never verifies N07's 13 assertions or the new-nonce persistence case.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -65,6 +66,12 @@ def prepare_and_run(args, artifacts: Path, source: dict, report: dict) -> None:
                  "I6_SOURCE_DIRTY")
     fixture_root = fixture.fresh_directory(args.fixture_root)
     accounts = fixture.prepare_accounts()
+    review_policy = None
+    if args.prepare_review:
+        from linux_real_app_v3_n07_fingerprint import prepare_fixture
+        # Only the disposable review fixture's typography inputs are fixed.
+        # Never edit the C1 profile or the Line Numbers setting.
+        review_policy = prepare_fixture(disposable=True)
     app_home = Path(accounts["app"]["passwd_home"])
     driver_home = Path(accounts["driver"]["passwd_home"])
     report["stage"] = "prepare_bundle"
@@ -118,18 +125,31 @@ def prepare_and_run(args, artifacts: Path, source: dict, report: dict) -> None:
         fixture.exclusive(
             descriptor_path, evidence.canonical(descriptor),
             uid=fixture.ACCOUNTS["driver"][0], gid=fixture.ACCOUNTS["driver"][0])
-        credential = os.open(
-            fixture_root / "client-key", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         diagnostic = {}
         report["stage"] = "native_runner"
+        review = None
+        if args.prepare_review:
+            from linux_real_app_v3_n07_fingerprint import LiveFingerprintObserver
+            review = LiveFingerprintObserver(
+                app_uid=fixture.ACCOUNTS["app"][0], run_id=run_id,
+                source=source, policy=review_policy)
+        credential = os.open(
+            fixture_root / "client-key", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        runner_args = [
+            args.runner, "--descriptor", descriptor_path,
+            "--credential-fd", str(credential), "--output", output_path,
+            "--n07-probe-variant", "line_numbers_four_rois_probe",
+        ]
+        if review is not None:
+            runner_args.extend([
+                "--n07-review-context-output", driver / "review-context.json",
+            ])
         try:
-            returncode, _ = fixture.run_capture([
-                args.runner, "--descriptor", descriptor_path,
-                "--credential-fd", str(credential),
-                "--output", output_path,
-                "--n07-probe-variant", "line_numbers_four_rois_probe",
-            ], uid=fixture.ACCOUNTS["driver"][0], home=driver_home,
-                seconds=180, pass_fds=(credential,), diagnostic=diagnostic)
+            with review if review is not None else nullcontext():
+                returncode, _ = fixture.run_capture(
+                    runner_args, uid=fixture.ACCOUNTS["driver"][0],
+                    home=driver_home, seconds=180, pass_fds=(credential,),
+                    diagnostic=diagnostic)
         finally:
             os.close(credential)
         report["runner_diagnostic"] = diagnostic
@@ -155,6 +175,45 @@ def prepare_and_run(args, artifacts: Path, source: dict, report: dict) -> None:
             }, "isolation": isolation, "final": counts,
         }
         evidence.write_report(artifacts / "n07-b2-environment.json", environment)
+        if review is not None:
+            # Save cleanup first, even if optional review preparation fails.
+            # Context is a separate bounded diagnostic, not a larger I6 report.
+            report["stage"] = "review_preparation"
+            context_path = driver / "review-context.json"
+            failures = []
+            try:
+                raw = fixture.read_owned(
+                    context_path, fixture.ACCOUNTS["driver"][0],
+                    limit=4 * 1024 * 1024)
+                context = evidence.parse(raw, limit=4 * 1024 * 1024)
+                fixture.need(type(context) is dict and context.get("revision") ==
+                             "eidolon-i6-n07-b3-review-context-v1",
+                             "N07_B3_CONTEXT_INVALID")
+                # Preserve exactly the bytes to which the Rust receipt binds.
+                with (artifacts / "n07-b3-context.json").open("xb") as stream:
+                    stream.write(raw)
+            except (OSError, ValueError, TypeError, KeyError):
+                failures.append("N07_B3_CONTEXT_COLLECTION_FAILED")
+            fingerprint = None
+            try:
+                fingerprint = review.finish(native, environment)
+                evidence.write_report(
+                    artifacts / "n07-b3-fingerprint.json", fingerprint)
+            except (OSError, ValueError, TypeError, KeyError):
+                failures.append("N07_B3_FINGERPRINT_COLLECTION_FAILED")
+            evidence.write_report(artifacts / "n07-b3-collection.json", {
+                "schema": 1, "run_id": run_id,
+                "source_sha256": source["tree_sha256"],
+                "status": "failed" if failures else "collected",
+                "failures": failures, "reviewed_golden": False,
+            })
+            report["review_preparation"] = {
+                "fingerprint_status": fingerprint["status"] if fingerprint else "unavailable",
+                "fingerprint_missing": fingerprint["missing"] if fingerprint else None,
+                "collection_failures": failures,
+                "reviewed_golden": False,
+            }
+            fixture.need(not failures, "N07_B3_COLLECTION_FAILED")
         report["stage"] = "independent_probe_validation"
         measured = evidence.parse(evidence.read_report(
             artifacts / "n07-b2-native.json"))
@@ -188,6 +247,8 @@ def main(argv=None) -> int:
                         default=Path("/opt/i6/reviewed-package.json"))
     parser.add_argument("--runner", type=Path, default=RUNNER)
     parser.add_argument("--artifact-root", type=Path, required=True)
+    parser.add_argument("--prepare-review", action="store_true",
+                        help="Collect bounded B3 review context and fingerprint; never approve a golden")
     args = parser.parse_args(argv)
     old = signal.signal(
         signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))

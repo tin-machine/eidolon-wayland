@@ -16,7 +16,7 @@ RUN timeout --signal=TERM --kill-after=5s 90s \
       ca-certificates curl git python3 python3-pip python3-venv \
       build-essential autoconf automake libtool gettext autopoint xfce4-dev-tools \
       libgtk-3-dev libgtksourceview-4-dev pkg-config dbus ninja-build bison perl \
-      patch cmake openssh-server passwd util-linux libegl1 libgles2 \
+      patch cmake openssh-server passwd util-linux libegl1 libgles2 fontconfig fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Compilation has its own account. The driver and app accounts/HOMEs do not
