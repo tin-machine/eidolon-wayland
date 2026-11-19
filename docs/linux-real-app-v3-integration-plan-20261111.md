@@ -294,6 +294,10 @@ CIでは既存host/AndroidとA0を維持し、通常v3 acceptanceを独立step/j
 
 **Quest 3 実機確認は N07-B Host 実装の着手条件ではない。** I6 N07 の Host 13/13 がすべて成立しても、I6 全体の 28 family／87 variants／533 assertions を完了したことにはならない。I7/V12 の実 APK／Meta SDK／Android 保存と H の装着・物理入力は、§12／§13 の**別の証拠**で検証する。早期の Quest スモークは非 acceptance の探索に限り、Host の合成 SDK 証拠を流用しない。
 
+2026-11-19: #52 マージ後の [早期 Quest スモーク・4項目チェックリスト](features/linux-desktop-v3/quest-early-smoke-20261119.md) と
+[Codex の準備・観測・引き継ぎ](features/linux-desktop-v3/quest-early-smoke-codex-handoff-20261119.md) を追加した。
+人の装着時間を短くするための未実行 runbook であり、I6 / I7 / H の依存関係や正式判定を変更しない。
+
 2026-11-18 の B4 開始時点では B3 の [PR #51](https://github.com/tin-machine/eidolon-wayland/pull/51)
 もマージ済みである。[B4 の詳細設計と収集契約](features/linux-desktop-v3/i6-n07-b4-two-sessions.md)
 は、一つの StorageRecord・C1 root を保持する独立 supervisor と、同じ Registry から
