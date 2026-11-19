@@ -130,6 +130,10 @@ impl Driver {
         self.command("linux_desktop_v3_inspect", 31, Some(&session))?;
         self.wait(45, |s| s["runtime"]["transport"]["state"] == "DesktopReady")?;
         let selection = self.n02_catalog(&session, variant)?;
+        // B4 alone may stop at this read-only observation boundary. The
+        // normal C1 context/profile already exists, but no Launch command or
+        // Mousepad process has been started. Every other driver is unchanged.
+        self.n07_b4_before_launch()?;
         self.n02_command(
             json!({"schema":1,"type":"linux_desktop_v3_launch","request_id":"32",
                    "session":session,"selection":selection.clone()}),

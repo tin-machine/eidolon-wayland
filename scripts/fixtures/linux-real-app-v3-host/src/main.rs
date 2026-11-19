@@ -7,6 +7,7 @@ mod host_n05;
 mod host_n06;
 mod host_n07;
 mod host_n07_b2;
+mod host_n07_b4;
 mod host_n07_review;
 mod host_sdk;
 use eidolon_core::runtime::Runtime;
@@ -279,10 +280,16 @@ struct Driver {
     // Optional B3 raw review images live in a bounded separate receipt, never
     // in the frozen four-state probe or a production Golden.
     n07_review_context: Option<Value>,
+    n07_second: Option<Value>,
+    n07_b4_channel: Option<host_n07_b4::BarrierChannel>,
+    n07_b4_session: Option<(String, String)>,
+    n07_b4_barriers: Vec<Value>,
 }
 impl Driver {
     fn new(config: &str, secret: Secret) -> Result<Self> {
-        let registry = Registry::default();
+        Self::with_registry(config, secret, Registry::default())
+    }
+    fn with_registry(config: &str, secret: Secret, registry: Registry) -> Result<Self> {
         let handle = registry
             .create(config)
             .map_err(|_| "I6_REGISTRY_CREATE_FAILED")?;
@@ -315,6 +322,10 @@ impl Driver {
             n06: None,
             n07_probe: None,
             n07_review_context: None,
+            n07_second: None,
+            n07_b4_channel: None,
+            n07_b4_session: None,
+            n07_b4_barriers: vec![],
         };
         driver.observe(
             "registry_created",
@@ -692,6 +703,9 @@ fn run() -> Result<bool> {
     let mut n06_directory: Option<String> = None;
     let mut n07_probe_variant: Option<String> = None;
     let mut n07_review_context_output = None;
+    let mut n07_b4_fd = None;
+    let mut n07_b4_document = None;
+    let mut n07_b4_output_dir = None;
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         let value = args.next().ok_or("I6_ARGUMENT_INVALID")?;
@@ -783,6 +797,15 @@ fn run() -> Result<bool> {
             "--n07-review-context-output" if n07_review_context_output.is_none() => {
                 n07_review_context_output = Some(PathBuf::from(value));
             }
+            "--n07-b4-fd" if n07_b4_fd.is_none() => {
+                n07_b4_fd = Some(value.parse::<i32>().map_err(|_| "I6_ARGUMENT_INVALID")?);
+            }
+            "--n07-b4-document" if n07_b4_document.is_none() => {
+                n07_b4_document = Some(value);
+            }
+            "--n07-b4-output-dir" if n07_b4_output_dir.is_none() => {
+                n07_b4_output_dir = Some(PathBuf::from(value));
+            }
             _ => return Err("I6_ARGUMENT_INVALID"),
         }
     }
@@ -794,6 +817,19 @@ fn run() -> Result<bool> {
     }
     if n07_review_context_output.is_some()
         && n07_probe_variant.as_deref() != Some(host_n07_b2::VARIANT)
+    {
+        return Err("I6_ARGUMENT_INVALID");
+    }
+    if n07_b4_fd.is_some() != n07_b4_document.is_some()
+        || n07_b4_fd.is_some() != n07_b4_output_dir.is_some()
+        || n07_b4_fd.is_some()
+            && (variant.is_some()
+                || n03_variant.is_some()
+                || n04_variant.is_some()
+                || n05_variant.is_some()
+                || n06_variant.is_some()
+                || n07_probe_variant.is_some()
+                || n07_review_context_output.is_some())
     {
         return Err("I6_ARGUMENT_INVALID");
     }
@@ -817,6 +853,20 @@ fn run() -> Result<bool> {
     eidolon_transport::credentials::decode(&key).map_err(|_| "I6_CREDENTIAL_FAILED")?;
     eprintln!("I6_RUNNER_STAGE configuration");
     let config = runtime_config(&descriptor)?;
+    if let Some(fd) = n07_b4_fd {
+        if fd == credential.unwrap() {
+            return Err("I6_ARGUMENT_INVALID");
+        }
+        return host_n07_b4::run(
+            &descriptor,
+            &config,
+            key,
+            fd,
+            n07_b4_document.as_deref().ok_or("I6_ARGUMENT_INVALID")?,
+            &n07_b4_output_dir.ok_or("I6_ARGUMENT_INVALID")?,
+            &output.ok_or("I6_ARGUMENT_INVALID")?,
+        );
+    }
     eprintln!("I6_RUNNER_STAGE registry_create");
     let mut driver = Driver::new(&config, key)?;
     if n07_review_context_output.is_some() {

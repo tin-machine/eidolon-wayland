@@ -31,6 +31,12 @@ and the [N02 real Launch / typed partial-acceptance bridge](features/linux-deskt
 then [N03 Launch Admission refusals / five-variant Host R/T checkpoint](features/linux-desktop-v3/i6-n03-launch-admission.md).
 Their implementation and measured test results remain distinct from full I6, I7 and Quest/H acceptance.
 
+For N07 follow the [independent keyfile/pixel contract](features/linux-desktop-v3/i6-n07-a-independent-oracles.md),
+[B3 pixel-review preparation](features/linux-desktop-v3/i6-n07-b3-pixel-review.md)
+and [B4 same-storage two-session collection](features/linux-desktop-v3/i6-n07-b4-two-sessions.md).
+Actual collection, independent Golden approval and B5 formal acceptance are
+separate: N07 remains **0/13 verified**, with the production Golden pin unset.
+
 I5 implementation work starts from main `eca71addc58009b4576644da162d56670eebfaf5`, where PR #16 is merged.
 The [I5 detailed design](linux-real-app-v3-i5-detailed-design.md) records the current-source delta, two-stage retirement,
 storage transaction, admission epochs, typed StopReceipt, normal launcher and V09/V10 conditions.

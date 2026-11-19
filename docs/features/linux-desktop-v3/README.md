@@ -39,10 +39,21 @@ all 28 families, 87 required variants and 533 assertion references remain requir
 
 N07 progresses through [A's independent keyfile/pixel contract](i6-n07-a-independent-oracles.md),
 [B1/B2's real pointer/popup/four-state diagnostic](i6-n07-b1-pointer-popup-readback.md)
-and [B3's real-image review packets and observed fingerprint](i6-n07-b3-pixel-review.md).
-B3 prepares unapproved reference material; the second-session states, independent
-six-state Golden approval and B4/B5 acceptance integration remain separate.
+and [B3's real-image review packets and observed fingerprint](i6-n07-b3-pixel-review.md),
+then [B4's same-storage two-session collection and independent observations](i6-n07-b4-two-sessions.md).
+The explicitly authorized [N07 settings lifecycle v2 revision](i6-n07-settings-lifecycle-v2.md)
+defines bounded automatic UI-state persistence, seven actual observations,
+and compatibility with the unchanged strict v1 predicate. It remains manually
+discoverable; contract authorization does not establish a successful new acquisition.
+B3/B4 prepare unapproved reference material; actual acquisition evidence,
+independent six-state Golden approval and B5 formal acceptance integration
+remain separate.
 N07 is still **0/13 verified** and the production Golden pin is unset.
+
+The [I6 remaining-work inventory (2026-11-19 JST)](i6-remaining-work-20261119.md)
+compares all N/F/C families with the PR #52 source baseline, distinguishes
+partial typed-oracle coverage from full acceptance, and records the remaining
+runner, Golden, recovery and I7/H boundaries. It is an unregistered dated status record.
 
 The [I6 detailed design — normal v3 Host acceptance (I3-T20/V11)](../../linux-real-app-v3-i6-detailed-design.md)
 is **proposed**, based on main `0e0df43a2ce4734a00a36f830cc24a80e277bec5` (2026-11-15 JST, after PR #31).

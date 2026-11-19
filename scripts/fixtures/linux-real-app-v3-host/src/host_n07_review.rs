@@ -28,7 +28,7 @@ const PHASES: [&str; 4] = [
 /// 512x256 pixels. Each tile is bounded by the existing 32768-pixel review
 /// limit and all four together stay below the renderer's 1-MiB request cap.
 /// The full label and nearby text are diagnostic context, not Golden masks.
-fn review_rois() -> Vec<HostReadbackRoi> {
+pub(super) fn review_rois() -> Vec<HostReadbackRoi> {
     [(0, 0), (256, 0), (0, 128), (256, 128)]
         .into_iter()
         .enumerate()
@@ -215,13 +215,59 @@ impl Driver {
         parent: &Value,
         rois: Vec<HostReadbackRoi>,
     ) -> Result<Value> {
+        self.n07_capture_settled_main(target, epoch, baseline, parent, rois, false)
+    }
+
+    pub(super) fn n07_capture_settled_post_open(
+        &mut self,
+        target: &Value,
+        epoch: u64,
+        baseline: &Value,
+        parent: &Value,
+        rois: Vec<HostReadbackRoi>,
+    ) -> Result<Value> {
+        self.n07_capture_settled_main(target, epoch, baseline, parent, rois, true)
+    }
+
+    fn n07_settling_record(&mut self, second: bool) -> Result<&mut Value> {
+        if second {
+            self.n07_second
+                .as_mut()
+                .ok_or("I6_N07_REVIEW_CONTEXT_INVALID")
+        } else {
+            self.n07_probe
+                .as_mut()
+                .map(|probe| &mut probe["b2"])
+                .ok_or("I6_N07_REVIEW_CONTEXT_INVALID")
+        }
+    }
+
+    fn n07_capture_settled_main(
+        &mut self,
+        target: &Value,
+        epoch: u64,
+        baseline: &Value,
+        parent: &Value,
+        rois: Vec<HostReadbackRoi>,
+        second: bool,
+    ) -> Result<Value> {
+        let phase = if second {
+            "second_on_numbers_1_8"
+        } else {
+            "first_on_gutter"
+        };
+        let proof_name = if second {
+            "post_open_settling"
+        } else {
+            "post_popup_settling"
+        };
         let old = main_content(baseline, parent)?;
         let start = Instant::now();
         let mut quiet = QuietMainContent::default();
         let mut sampled = None;
         let mut last = None;
         let mut samples = Vec::new();
-        self.n07_probe.as_mut().unwrap()["b2"]["post_popup_settling"] = json!({
+        self.n07_settling_record(second)?[proof_name] = json!({
             "schema":1,"source":"normal_sdk_renderer_main_content_sequence",
             "parent_surface":parent,"baseline_content_frame":old.frame.to_string(),
             "baseline_main_content_seq":old.sequence.to_string(),
@@ -250,11 +296,10 @@ impl Driver {
                 if samples.len() >= MAX_SETTLE_SAMPLES {
                     return Err("I6_N07_REVIEW_MAIN_SETTLING_SAMPLE_LIMIT");
                 }
-                let stage =
-                    self.n07_capture_with_rois(target, "first_on_gutter", Some(rois.clone()))?;
+                let stage = self.n07_capture_with_rois(target, phase, Some(rois.clone()))?;
                 // A timeout/identity failure retains the most recent actual
                 // pixels beside pending settling metadata and normal cleanup.
-                self.n07_probe.as_mut().unwrap()["b2"]["first_on_gutter"] = stage.clone();
+                self.n07_settling_record(second)?[phase] = stage.clone();
                 same_main_capture(baseline, &stage, parent)?;
                 let mark = main_content(&stage, parent)?;
                 if last.is_some_and(|previous: MainContent| {
@@ -269,15 +314,14 @@ impl Driver {
                     "request_seq":stage["readback"]["receipt"]["request_seq"],
                     "elapsed_ms":elapsed.as_millis() as u64,
                 }));
-                self.n07_probe.as_mut().unwrap()["b2"]["post_popup_settling"]["samples"] =
-                    json!(samples);
+                self.n07_settling_record(second)?[proof_name]["samples"] = json!(samples);
                 sampled = Some(mark.frame);
                 last = Some(mark);
                 if elapsed >= SETTLE_BUDGET {
                     return Err("I6_N07_REVIEW_MAIN_SETTLING_TIMEOUT");
                 }
                 if quiet.observe(old, mark, elapsed) {
-                    let proof = &mut self.n07_probe.as_mut().unwrap()["b2"]["post_popup_settling"];
+                    let proof = &mut self.n07_settling_record(second)?[proof_name];
                     proof["status"] = json!("settled");
                     proof["content_frame"] = json!(mark.frame.to_string());
                     proof["main_content_seq"] = json!(mark.sequence.to_string());

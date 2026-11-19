@@ -508,6 +508,50 @@ jobs:
           retention-days: 14
 
 
+  v3_n07_b4:
+    needs: scope
+    if: ${{ needs.scope.outputs.mousepad == 'true' }}
+    name: N07-B4 same-storage two sessions / independent keyfile / six ROIs (NOT acceptance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: N07 contracts, two-session barriers and hostile saved-evidence tests
+        run: python3 -m unittest discover -s scripts/tests -p 'test_linux_real_app_v3_n07*.py' -v
+      - name: Disposable two-session product collection and separate saved-evidence audit
+        env:
+          CI_PR_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        run: bash scripts/ci/check-linux-desktop-v3-n07-b4 --artifact-root "$RUNNER_TEMP/i6-n07-b4"
+      - name: Preserve unapproved six-state candidates and partial failure diagnostics
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ always() }}
+        with:
+          name: linux-desktop-v3-n07-b4-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/i6-n07-b4/n07-b4-review/
+            ${{ runner.temp }}/i6-n07-b4/n07-b4-rejected-review/
+            ${{ runner.temp }}/i6-n07-b4/n07-b4-validation.json
+            ${{ runner.temp }}/i6-n07-b4/n07-b4-export.json
+            ${{ runner.temp }}/i6-n07-b4/n07-b4-native.json
+            ${{ runner.temp }}/i6-n07-b4/n07-b4-supervisor.json
+            ${{ runner.temp }}/i6-n07-b4/first-native.json
+            ${{ runner.temp }}/i6-n07-b4/first-environment.json
+            ${{ runner.temp }}/i6-n07-b4/first-fingerprint.json
+            ${{ runner.temp }}/i6-n07-b4/first-fingerprint-diagnostic.json
+            ${{ runner.temp }}/i6-n07-b4/first-context.json
+            ${{ runner.temp }}/i6-n07-b4/second-native.json
+            ${{ runner.temp }}/i6-n07-b4/second-environment.json
+            ${{ runner.temp }}/i6-n07-b4/second-fingerprint.json
+            ${{ runner.temp }}/i6-n07-b4/second-fingerprint-diagnostic.json
+            ${{ runner.temp }}/i6-n07-b4/second-context.json
+            ${{ runner.temp }}/i6-n07-b4/container.json
+          if-no-files-found: warn
+          retention-days: 14
+
+
   v3_n03:
     needs: scope
     if: ${{ needs.scope.outputs.mousepad == 'true' }}

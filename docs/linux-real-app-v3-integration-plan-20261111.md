@@ -294,6 +294,13 @@ CIでは既存host/AndroidとA0を維持し、通常v3 acceptanceを独立step/j
 
 **Quest 3 実機確認は N07-B Host 実装の着手条件ではない。** I6 N07 の Host 13/13 がすべて成立しても、I6 全体の 28 family／87 variants／533 assertions を完了したことにはならない。I7/V12 の実 APK／Meta SDK／Android 保存と H の装着・物理入力は、§12／§13 の**別の証拠**で検証する。早期の Quest スモークは非 acceptance の探索に限り、Host の合成 SDK 証拠を流用しない。
 
+2026-11-18 の B4 開始時点では B3 の [PR #51](https://github.com/tin-machine/eidolon-wayland/pull/51)
+もマージ済みである。[B4 の詳細設計と収集契約](features/linux-desktop-v3/i6-n07-b4-two-sessions.md)
+は、一つの StorageRecord・C1 root を保持する独立 supervisor と、同じ Registry から
+順に生成する二つの Runtime を扱う。起動前／回収完了 barrier、三時点の keyfile、
+session 別 fingerprint、明示的 v2 の6状態候補を記録する。実収集が成功しても
+`APPROVED_SHA256=None`、N07 **0/13 verified** を維持し、正式 typed receipt 接続は B5 に残す。
+
 N07-B では N06 の xdg_toplevel dialog と View menu の popup を混同しない。実 protocol の role（xdg_popup 等）／parent／serial／layer を調査し、必要なら製品側の read-only 観測 seam を追加する。詳細は上記 N07 設計書 D.1。固定 manifest や N01〜N06 oracle、Issue #45 の扱いは変更しない。
 
 ## 12. I7: Quest 3の自動検証

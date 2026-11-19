@@ -25,6 +25,14 @@ fn ascii_key(byte: u8) -> Result<(i32, i32, bool)> {
             29 + (byte - b'a') as i32,
             false,
         )),
+        // The fixed C1 Documents directory has an uppercase D. B4 reuses
+        // this ordinary physical-key path instead of renaming the directory
+        // or bypassing the admitted file chooser.
+        b'A'..=b'Z' => Ok((
+            letter_scan[(byte - b'A') as usize],
+            29 + (byte - b'A') as i32,
+            true,
+        )),
         b'0' => Ok((11, 7, false)),
         b'1'..=b'9' => Ok((
             byte as i32 - b'1' as i32 + 2,
@@ -541,6 +549,10 @@ mod tests {
             assert!(ascii_key(*b).is_ok());
         }
         assert_eq!(ascii_key(b'_').unwrap(), (12, 69, true));
+        assert_eq!(ascii_key(b'D').unwrap(), (32, 32, true));
+        for byte in b"/Documents/n07-eight-lines.txt" {
+            assert!(ascii_key(*byte).is_ok());
+        }
         assert_eq!(ascii_key(b'0').unwrap(), (11, 7, false));
         assert_eq!(ascii_key(b'9').unwrap(), (10, 16, false));
         assert!(ascii_key(0xff).is_err());

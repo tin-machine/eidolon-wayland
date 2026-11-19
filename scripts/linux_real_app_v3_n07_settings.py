@@ -19,6 +19,10 @@ KEY = "show-line-numbers"
 COMPONENTS = ("config", "glib-2.0", "settings")
 LEAF = "keyfile"
 MAX_BYTES = 65536
+MAX_DIAGNOSTIC_SECTIONS = 64
+MAX_DIAGNOSTIC_ENTRIES = 256
+MAX_DIAGNOSTIC_NAME_BYTES = 8192
+DIAGNOSTIC_REVISION = "eidolon-i6-n07-keyfile-diagnostic-v1"
 READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | getattr(os, "O_NONBLOCK", 0)
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 PROOF_KEYS = frozenset(("storage_digest", "root_dev", "root_ino", "file",
@@ -44,8 +48,11 @@ def _identity(info: os.stat_result) -> tuple:
 
 def _directory(fd: int, uid: int) -> os.stat_result:
     info = os.fstat(fd)
+    # Match C1's directory contract: overlay/union filesystems can expose
+    # st_nlink == 1 for a valid linked directory. This is separate from the
+    # exact nlink == 1 requirement for regular keyfile/control files.
     need(stat.S_ISDIR(info.st_mode) and info.st_uid == uid
-         and not info.st_mode & 0o022 and info.st_nlink >= 2,
+         and not info.st_mode & 0o022 and info.st_nlink > 0,
          "N07_UNSAFE_DIRECTORY")
     return info
 
@@ -94,7 +101,29 @@ def _read_keyfile(fd: int, uid: int) -> tuple[dict, bytes, dict]:
         os.close(handle)
 
 
-def _parse(raw: bytes) -> tuple[bool, bool | None, str]:
+def _diagnostic_inventory(entries: dict) -> dict:
+    """Bounded names/hashes only; never serialize any parsed setting value."""
+    count = sum(len(values) for values in entries.values())
+    result = {"status": "observed", "reason": None, "section_count": len(entries),
+              "entry_count": count, "sections": []}
+    if len(entries) > MAX_DIAGNOSTIC_SECTIONS or count > MAX_DIAGNOSTIC_ENTRIES:
+        result.update(status="unavailable", reason="N07_KEYFILE_DIAGNOSTIC_BOUNDS")
+        return result
+    names = [name for section, values in entries.items() for name in (section, *values)]
+    if any(re.fullmatch(r"[A-Za-z0-9_./-]{1,256}", name) is None for name in names):
+        result.update(status="unavailable", reason="N07_KEYFILE_DIAGNOSTIC_NAMES")
+        return result
+    if sum(len(name) for name in names) > MAX_DIAGNOSTIC_NAME_BYTES:
+        result.update(status="unavailable", reason="N07_KEYFILE_DIAGNOSTIC_BOUNDS")
+        return result
+    result["sections"] = [{"section": section, "keys": [
+        {"key": key, "value_sha256": sha(value.encode("utf-8"))}
+        for key, value in sorted(values.items())]}
+        for section, values in sorted(entries.items())]
+    return result
+
+
+def _parse(raw: bytes, *, diagnostic: dict | None = None) -> tuple[bool, bool | None, str]:
     parser = configparser.ConfigParser(interpolation=None, strict=True,
                                        delimiters=("=",), empty_lines_in_values=False)
     parser.optionxform = str
@@ -109,6 +138,8 @@ def _parse(raw: bytes) -> tuple[bool, bool | None, str]:
     present = KEY in values
     value = values.get(KEY)
     need(not present or value in ("true", "false"), "N07_KEYFILE_TYPE")
+    if diagnostic is not None:
+        diagnostic.update(_diagnostic_inventory(entries))
     if SECTION in entries:
         entries[SECTION].pop(KEY, None)
         if not entries[SECTION]:
@@ -126,15 +157,26 @@ class StorageKeyfileProbe:
     root, not the per-nonce temporary C2 directory, is used for both sessions.
     """
 
-    def __init__(self, root: Path, uid: int, storage_digest: str):
+    def __init__(self, root: Path, uid: int, storage_digest: str, *, diagnostic: bool = False,
+                 lifecycle: bool = False):
         need(isinstance(root, Path) and root.is_absolute()
              and type(uid) is int and uid >= 0
              and type(storage_digest) is str
              and re.fullmatch(r"[0-9a-f]{64}", storage_digest) is not None,
              "N07_STORAGE_BINDING_INVALID")
+        need(type(diagnostic) is bool and type(lifecycle) is bool, "N07_STORAGE_BINDING_INVALID")
         self.path = root
         self.uid = uid
         self.storage_digest = storage_digest
+        self.diagnostic_enabled = diagnostic
+        self.last_diagnostic = None
+        self.lifecycle_enabled = lifecycle
+        self.last_lifecycle = None
+        # Hold the first observed intermediate directory descriptions across
+        # both GUI sessions. Comparing only within one read would allow an
+        # entire settings directory to be replaced between observations.
+        # Open FDs also prevent inode reuse from disguising that replacement.
+        self.directory_fds: dict[tuple[str, ...], tuple[int, tuple]] = {}
         self.fd = os.open(root, DIR_FLAGS)
         try:
             self.root = _directory(self.fd, uid)
@@ -144,6 +186,9 @@ class StorageKeyfileProbe:
             raise
 
     def close(self) -> None:
+        for fd, _ in reversed(tuple(self.directory_fds.values())):
+            os.close(fd)
+        self.directory_fds.clear()
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
@@ -162,24 +207,51 @@ class StorageKeyfileProbe:
              "N07_ROOT_REPLACED")
 
     def snapshot(self) -> dict:
+        self.last_diagnostic = None
+        self.last_lifecycle = None
+        try:
+            return self._snapshot()
+        except BaseException:
+            # A failed final path/FD check cannot leave a diagnostic that
+            # looks bound to a successful snapshot.
+            self.last_diagnostic = None
+            self.last_lifecycle = None
+            raise
+
+    def _snapshot(self) -> dict:
         self._assert_root()
         parent = self.fd
         opened = []
         try:
-            for component in COMPONENTS:
+            for index, component in enumerate(COMPONENTS):
+                chain = COMPONENTS[:index + 1]
                 try:
                     child = _child(parent, component, self.uid)
                 except FileNotFoundError:
+                    need(chain not in self.directory_fds, "N07_DIRECTORY_REPLACED")
                     return self._absent()
                 opened.append((parent, component, child))
+                stamp = _identity(os.fstat(child))
+                pinned = self.directory_fds.get(chain)
+                if pinned is None:
+                    # A missing directory may first appear when GLib writes
+                    # the key. Once observed it may never be silently adopted
+                    # again under a new identity. Keyfile replacement itself
+                    # remains permitted for GLib's atomic Close flush.
+                    self.directory_fds[chain] = (os.dup(child), stamp)
+                else:
+                    retained, expected = pinned
+                    need(stamp == expected == _identity(os.fstat(retained)),
+                         "N07_DIRECTORY_REPLACED")
                 parent = child
             try:
                 metadata, contents, _ = _read_keyfile(parent, self.uid)
             except FileNotFoundError:
                 return self._absent()
-            present, value, other = _parse(contents)
+            inventory = {} if self.diagnostic_enabled else None
+            present, value, other = _parse(contents, diagnostic=inventory)
             self._assert_root()
-            return self._proof(metadata, present, value, other)
+            return self._proof(metadata, present, value, other, inventory=inventory, raw=contents)
         finally:
             try:
                 # The name chain must still identify the same open directories.
@@ -195,16 +267,63 @@ class StorageKeyfileProbe:
                     os.close(child)
 
     def _proof(self, file: dict | None, present: bool,
-               value: bool | None, others: str) -> dict:
-        return {"storage_digest": self.storage_digest,
-                "root_dev": self.root.st_dev, "root_ino": self.root.st_ino,
-                "file": file, "key_present": present, "value": value,
-                "others_sha256": others}
+               value: bool | None, others: str, *, inventory: dict | None = None,
+               raw: bytes | None = None) -> dict:
+        proof = {"storage_digest": self.storage_digest,
+                 "root_dev": self.root.st_dev, "root_ino": self.root.st_ino,
+                 "file": file, "key_present": present, "value": value,
+                 "others_sha256": others}
+        if self.diagnostic_enabled:
+            self.last_diagnostic = {
+                "schema": 1, "revision": DIAGNOSTIC_REVISION,
+                "source": "same_snapshot_keyfile_bytes",
+                "proof_sha256": sha(json.dumps(proof, sort_keys=True, separators=(",", ":"),
+                                               ensure_ascii=True).encode("utf-8")),
+                "file_sha256": None if file is None else file["sha256"],
+                "file_size": None if file is None else file["size"],
+                "value_hash": "sha256_utf8_parsed_value",
+                **(_diagnostic_inventory({}) if inventory is None else inventory),
+            }
+        if self.lifecycle_enabled:
+            from linux_real_app_v3_n07_settings_lifecycle import observe_snapshot
+            self.last_lifecycle = observe_snapshot(proof, raw)
+        return proof
 
     def _absent(self) -> dict:
         # Empty serialized dictionary is the reference for no other keys.
         self._assert_root()
         return self._proof(None, False, None, sha(b"{}"))
+
+
+def validate_snapshot(item: dict) -> None:
+    """The unchanged v1 proof shape and metadata checks, shared with v2."""
+    def integer(value: object, minimum: int = 0) -> bool:
+        return type(value) is int and value >= minimum
+
+    def digest(value: object) -> bool:
+        return type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+    need(type(item) is dict and set(item) == PROOF_KEYS, "N07_KEYFILE_PROOF_INVALID")
+    need(digest(item["storage_digest"]) and digest(item["others_sha256"])
+         and integer(item["root_dev"]) and integer(item["root_ino"], 1)
+         and type(item["key_present"]) is bool,
+         "N07_KEYFILE_PROOF_INVALID")
+    need((item["key_present"] and type(item["value"]) is bool)
+         or (not item["key_present"] and item["value"] is None),
+         "N07_KEYFILE_PROOF_INVALID")
+    file = item["file"]
+    if file is None:
+        need(item["key_present"] is False, "N07_KEYFILE_PROOF_INVALID")
+        return
+    need(type(file) is dict and set(file) == {
+        "dev", "inode", "uid", "nlink", "size", "mtime_ns", "ctime_ns", "sha256"},
+        "N07_KEYFILE_PROOF_INVALID")
+    need(all(integer(file[field]) for field in (
+             "dev", "uid", "mtime_ns", "ctime_ns"))
+         and integer(file["inode"], 1) and integer(file["nlink"], 1)
+         and file["nlink"] == 1 and integer(file["size"], 1)
+         and file["size"] <= MAX_BYTES and digest(file["sha256"]),
+         "N07_UNSAFE_KEYFILE")
 
 
 def validate_file_sequence(before: dict, enabled: dict, restarted: dict) -> None:
@@ -214,9 +333,7 @@ def validate_file_sequence(before: dict, enabled: dict, restarted: dict) -> None
     product sessions, complete cleanup, and reviewed pixel golden acceptance.
     """
     for item in (before, enabled, restarted):
-        need(type(item) is dict and set(item) == PROOF_KEYS, "N07_KEYFILE_PROOF_INVALID")
-        need(type(item["storage_digest"]) is str
-             and re.fullmatch(r"[0-9a-f]{64}", item["storage_digest"]) is not None)
+        validate_snapshot(item)
     need(len({p["storage_digest"] for p in (before, enabled, restarted)}) == 1,
          "N07_DIFFERENT_STORAGE")
     need(len({(p["root_dev"], p["root_ino"]) for p in (before, enabled, restarted)}) == 1,
@@ -228,13 +345,8 @@ def validate_file_sequence(before: dict, enabled: dict, restarted: dict) -> None
          "N07_KEY_NOT_PERSISTED")
     need(len({p["others_sha256"] for p in (before, enabled, restarted)}) == 1,
          "N07_UNEXPECTED_SETTING_CHANGE")
-    for item in (enabled, restarted):
-        file = item["file"]
-        need(type(file) is dict and set(file) == {
-            "dev", "inode", "uid", "nlink", "size", "mtime_ns", "ctime_ns", "sha256"})
-        need(file["nlink"] == 1 and file["size"] > 0
-             and re.fullmatch(r"[0-9a-f]{64}", file["sha256"]) is not None,
-             "N07_UNSAFE_KEYFILE")
+    need(enabled["file"] is not None and restarted["file"] is not None,
+         "N07_UNSAFE_KEYFILE")
     # GLib can atomically replace the keyfile when flushing on normal Close:
     # a changed inode/ctime is not itself a changed user setting. Require exact
     # saved bytes and owner instead of comparing inode/timestamp metadata.
