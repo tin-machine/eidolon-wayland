@@ -24,6 +24,10 @@ Eidolon Wayland aims to operate Linux GUI applications as independently controll
 
 ## What is implemented now?
 
+PR #36 merge後の実source解析に基づく小さいLLM向けの実装候補は、
+[C2 Waypipe起動prefix共通化の詳細設計](c2-waypipe-launch-refactor-design-20261115.md)を参照。
+socket検査と固定argvの重複を対象とするproposed文書であり、製品変更や受入の完了記録ではない。
+
 For I6, follow the [evidence validator increment](features/linux-desktop-v3/i6-evidence-validation.md)
 and [N01 real SSH / Inspect-only increment](features/linux-desktop-v3/i6-n01-inspect-only.md),
 followed by the [real Host EGL / bounded readback / retirement increment](features/linux-desktop-v3/i6-host-egl-readback.md)
