@@ -50,8 +50,14 @@ with zipfile.ZipFile(bundle, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
     for name in ['scripts/pairing.py', 'scripts/termux/eidolon-pair',
                  'scripts/termux/eidolon-session.py', 'scripts/termux/eidolon-gui.py', 'scripts/termux/eidolon_gui_owner.py',
                  'scripts/termux/eidolon-start', 'scripts/termux/eidolon-japanese', 'scripts/termux-bootstrap.sh',
-                 'docs/usage.md', 'docs/termux-wayland-tools.md', 'docs/extensions-nx01-nx08-20261107.md', 'THIRD_PARTY_NOTICES.md']:
+                 'THIRD_PARTY_NOTICES.md']:
         archive.write(source / name, name)
+    for document in ('docs/guides/usage.md',
+                     'docs/features/termux/termux-wayland-tools.md',
+                     'docs/evidence/integration/extensions-nx01-nx08-20261107.md'):
+        archive.write(source / document, document)
+        # Keep paths used by existing offline release readers.
+        archive.write(source / document, 'docs/' + Path(document).name)
 (output / 'termux-tools.sha256').write_text(hashlib.sha256(bundle.read_bytes()).hexdigest() + '  ' + bundle.name + '\n')
 PY
 printf 'Unsigned APK: %s\n' "$run_dir/eidolon-release-unsigned.apk"

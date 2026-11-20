@@ -7,7 +7,7 @@ system rulesからの初期化を挟まず、contextのdefault includeを無効�
 `0004-keymap-fd-nul-android.patch`は旧client向けのkeymap FDにも末尾NULを含める。
 Androidではclientごとのunsealed memfdコピーを使い、`/tmp`やprocess環境変数へ依存しない。
 新client向けのsealed FDと非Androidの一時file経路は維持する。
-[検出したwire失敗と再現](../../../docs/keyboard-checks.md)を参照する。
+[検出したwire失敗と再現](../../../docs/features/input/keyboard-checks.md)を参照する。
 
 `0002-android-egl-library.patch`はAndroidだけEGLの公開library名`libEGL.so`を使う。
 その他のtargetでは上流の`libEGL.so.1`を維持する。EGL function/extensionの動作は変えない。

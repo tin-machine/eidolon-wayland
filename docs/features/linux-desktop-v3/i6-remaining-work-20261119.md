@@ -8,12 +8,14 @@ v2 の新規収集・独立再検証を別途要求し、旧 artifact を再解�
 
 この文書は **dated status record** であり、新しい受入れ契約や設計承認ではない。
 I6 は引き続き manual discovery とし、この文書を resolver manifest に登録しない。
+
+**調査後の状態。** PR #52 は main の 10216ef にマージされた。B4 は2セッションの収集機構。正式 N07 は Golden 未承認のため 0/13 verified で、B5 が残る。表の「1 / 13」は必須 variant 数 / assertion 参照数を指す。[B4 マージ後の記録](i6-n07-b4-two-sessions.md)
 後続変更を読む際は、以下の基準 SHA と現在の source / PR / CI を比較する。
 
 | 調査基準 | 値 |
 | --- | --- |
 | 最新 main | `ee9192d12957a17aaa3d61bd6e8ba1ca86a99d6f` |
-| 調査対象 | [PR #52](https://github.com/tin-machine/eidolon-wayland/pull/52)、Open / Draft / 未マージ |
+| 調査対象 | [PR #52](https://github.com/tin-machine/eidolon-wayland/pull/52)、調査時は Open / Draft |
 | 調査した PR HEAD | `d6f9ff852ae4185460e884cb61b0a5858bb7b38b` |
 | 同 HEAD の CI checkout/source | `6065e2e1bfd6453587336c2669930af782638b51` |
 | 固定 profile | `i6-host-v1` / `eidolon-i6-host-acceptance-v1` |
@@ -62,7 +64,7 @@ artifact kind と typed receipt dispatch である。基準 source が受理す�
 
 ## 2. 正常系・互換系 N01〜N11
 
-以下の必要観測は [I6 詳細設計 §11.1](../../linux-real-app-v3-i6-detailed-design.md) と
+以下の必要観測は [I6 詳細設計 §11.1](linux-real-app-v3-i6-detailed-design.md) と
 [固定 manifest](../../../scripts/fixtures/linux-desktop-v3-acceptance/cases-v1.json) に対応する。
 
 | Family | Variants / assertions | 内容 | 現状・残件 |
@@ -109,7 +111,7 @@ N11 の旧 source / journal 互換性は、同一署名の旧 APK からの upda
 [profile snapshot](../../../scripts/linux_real_app_wayland.py) は `state/window` を通常設定に含め、
 [A0 evidence validator](../../../scripts/linux_real_app_evidence.py) は起動後の
 `preferences_count >= 4` を要求する。
-[正常 Close / restart の記録](../../linux-real-app-a0-restart-20261109.md) も通常 window geometry の保存・保持を明記している。
+[正常 Close / restart の記録](linux-real-app-a0-restart-20261109.md) も通常 window geometry の保存・保持を明記している。
 そのため、B4 を通す目的だけで backend の保存領域を分離しても、既存設定契約への影響を避けられない。
 
 将来の設計候補は、**明示的な revision を持つ settings suboracle** である。
@@ -144,7 +146,7 @@ typed N07 receipt を [正式 evidence validator](../../../scripts/linux_real_ap
 ## 4. 故障・回復系 F01〜F12
 
 既存の C2 / Runtime / SDK 回収実装や unit tests は再利用できるが、
-[I6 詳細設計 §11.2〜12](../../linux-real-app-v3-i6-detailed-design.md) の
+[I6 詳細設計 §11.2〜12](linux-real-app-v3-i6-detailed-design.md) の
 以下を正式 I6 の source-bound 実ケース / oracle として接続する作業が残る。
 
 | Family | Variants / assertions | 必要な故障・回復観測 |
@@ -221,13 +223,13 @@ C04 は到達先の native gate まで必要で、gate 自体を mock した結�
   [B3](i6-n07-b3-pixel-review.md) / [B4 の失敗履歴](i6-n07-b4-two-sessions.md) として保持する。
   #50 の Dialog 欠落や設定不変条件違反へ同一視せず、再発時の artifact を分けて診断する。
 - 基準 HEAD の Android / foundation は、APT install の既存240秒期限・exit124で停止した。
-  [CI APT/DNS runbook](../../ci-apt-dns-reliability-20261112.md) の実行環境問題として扱い、
+  [CI APT/DNS runbook](../../development/ci/ci-apt-dns-reliability-20261112.md) の実行環境問題として扱い、
   I6 oracle / product deadline を緩和する理由にしない。build / GUI 検査前に停止した job の成功を主張しない。
 
 ## 8. I7 / H と分離する項目
 
-[統合計画 §11.1〜13](../../linux-real-app-v3-integration-plan-20261111.md) と
-[I6 詳細設計 §20](../../linux-real-app-v3-i6-detailed-design.md) に従い、以下を別ゲートに残す。
+[統合計画 §11.1〜13](linux-real-app-v3-integration-plan-20261111.md) と
+[I6 詳細設計 §20](linux-real-app-v3-i6-detailed-design.md) に従い、以下を別ゲートに残す。
 
 | 後続 gate | 必要な追加証拠 |
 | --- | --- |

@@ -37,7 +37,7 @@ related_sources:
 
 GLが戻らない場合は`RENDER_STALLED`とし、そのruntimeを再利用しない。操作UIは状況を表示し、アプリ再起動での回復を案内する。stop timeoutを握り潰して新GL threadを繰り返し作る実装は禁止。R03/I05で再現した時点で設計gateへ戻す。
 
-AndroidではSDK 0.15.0の[TID別GPU計測FD保持](../gpu-fd-investigation.md)を避けるため、process内にGL executorを1本だけ保持する。
+AndroidではSDK 0.15.0の[TID別GPU計測FD保持](../evidence/experiments/gpu-fd-investigation.md)を避けるため、process内にGL executorを1本だけ保持する。
 同時に貸し出すjobは1件で、runtime停止時はtexture・context・Surface・NativeWindow・queue・画像・theme・runtime参照をすべて返す。
 返却完了後にだけ`render.is_finished`を真にする。idleはchannel待機で、GL資源を保持せずtimerで起床しない。
 `render.workers`はruntimeのGL job数、`render.executor`はprocess共用threadの実数・active_jobs・completed_jobs・TID・故障状態を記録する。
@@ -116,12 +116,12 @@ release前にdebug用exported Activity/receiver、ADB pairing入口、固定fixt
 
 `THIRD_PARTY_NOTICES.md`と`native/deps.lock.json`、Cargo.lockを対応させる。Waypipe/依存libraryのLICENSE、必要な配布元・patch・source提供条件を確認し、APK内と配布説明へ含める。署名用keystoreの作成/保管はrepo外とし、秘密値をCIログへ出さない。
 
-debugとreleaseでversion、API34/arm64、Surface/SSH/Waypipe/入力の最低一回の実機smokeを行う。新規profile→二枚→切断→再起動→接続の手順、依存導入、復旧と既知制限を`docs/usage.md`へ書く。release APK作成までが本taskの範囲で、ストア公開・外部配信は別作業。
+debugとreleaseでversion、API34/arm64、Surface/SSH/Waypipe/入力の最低一回の実機smokeを行う。新規profile→二枚→切断→再起動→接続の手順、依存導入、復旧と既知制限を`docs/guides/usage.md`へ書く。release APK作成までが本taskの範囲で、ストア公開・外部配信は別作業。
 
 <a id="checks"></a>
 ## 検証コマンドとcase契約
 
-実行scriptの実装状況は[進捗記録](../progress.md)を確認する。B02で`build-native`・`check-native-package`とnative版を検査する`quest-smoke`、B03で`quest-check --case runtime`を追加した。その他caseと`check-host`（C01）は対応taskで作成する。作成taskより前には実行せず`not_run`を残す。正確なcommand、作成task、判定対象は[tasks.json](tasks.json)の`checks`が正本。
+実行scriptの実装状況は[進捗記録](../evidence/progress.md)を確認する。B02で`build-native`・`check-native-package`とnative版を検査する`quest-smoke`、B03で`quest-check --case runtime`を追加した。その他caseと`check-host`（C01）は対応taskで作成する。作成taskより前には実行せず`not_run`を残す。正確なcommand、作成task、判定対象は[tasks.json](tasks.json)の`checks`が正本。
 
 `quest-check`はB03で作る。引数は`--serial DEVICE --case NAME --timeout SECONDS`。対象同定を既存quest-smokeと共有し、private作業directoryへrun nonce、build SHA、case、開始/終了、結果JSONと連続logcatを保存する。stdoutには秘密や端末識別子のない要約だけを出す。caseは下表の固定enum、未登録/未実装はexit 2。case名から任意shellを組み立てない。
 
@@ -159,7 +159,7 @@ C02のreleaseには上記debug入口を含めない。release smokeは通常UI�
 
 ## 結果と試行錯誤の記録
 
-実装者は`docs/progress.md`へtask ID、source commit/content digest、check ID、結果、private artifact相対path、次のactionを記す。公開可能な再利用知見はrepo文書/適切なHugo記事へ、homecluster固有の非公開知見はrunbookへ残す。rawログは毎回設定を読み直した作業rootのtask directory、0700/0600を基本とする。
+実装者は`docs/evidence/progress.md`へtask ID、source commit/content digest、check ID、結果、private artifact相対path、次のactionを記す。公開可能な再利用知見はrepo文書/適切なHugo記事へ、homecluster固有の非公開知見はrunbookへ残す。rawログは毎回設定を読み直した作業rootのtask directory、0700/0600を基本とする。
 
 結果値は`pass / fail / not_run / needs_design`。task statusは`planned / in_progress / blocked / done`。必要なcheckがすべてpassになるまでdoneにしない。HMD確認未実施なら自動部分passでも該当check全体はnot_runとし、内訳を残す。
 

@@ -22,7 +22,7 @@ P3の大きな移植をW01〜W05へ分割する。最初にprotocolだけを成�
 
 Smithay `=0.7.0`、`default-features=false`、最初は`wayland_frontend`/`desktop`だけ。DRM/GBM/udev/libinput/libseat/Xwayland/winitを有効にしない。crate sourceで`xkbcommon 0.8.0`依存がoptionalでないことを確認したため、native libxkbcommonを工程に含める。
 
-[独立probe](../native-preflight-20261104.md)ではlibxkbcommon 1.8.1をstatic linkし、QuestのAPK内でDisplay・wl_shm global・自己完結keymapの初期化が通った。[固定sourceとbuild条件](../../probes/native-deps/deps.lock.json)を初期候補として再利用する。SHM buffer処理、SIGBUS/ART共存、SmithayのEGL adapterは未確認であり、この初期化結果だけでW01〜W03を完了にしない。
+[独立probe](../development/build/native-preflight-20261104.md)ではlibxkbcommon 1.8.1をstatic linkし、QuestのAPK内でDisplay・wl_shm global・自己完結keymapの初期化が通った。[固定sourceとbuild条件](../../probes/native-deps/deps.lock.json)を初期候補として再利用する。SHM buffer処理、SIGBUS/ART共存、SmithayのEGL adapterは未確認であり、この初期化結果だけでW01〜W03を完了にしない。
 
 1. NDK 27.3/API 34/arm64用sysrootを唯一のtarget環境としてlibxkbcommonをcross buildする。hostのpkg-config pathをtargetへ流さない。
 2. upstream source版、URL、SHA-256、license、patch、Meson options、NDK情報を`deps.lock.json`へ記録する。libxkbcommon等の未選定版を勝手にlatestへ追従させず、このgateの結果として固定する。
@@ -107,7 +107,7 @@ archive SHA-256: `2d4093903d444fda39c9b7db0a0b826f450a64d4302a03c9c9e3dbe480e8bb
 
 APK buildは`build_c=true, build_rs=false, with_dmabuf=disabled, with_video=disabled, with_vaapi=disabled, with_lz4=enabled, with_zstd=enabled`を起点にする。libwayland/liblz4/zstd/spawn互換の実依存もdeps.lockへ固定する。Termux prefixへのpatchをAPKへそのまま使わず、socket/runtime pathは明示引数・環境へ移す。`libandroid-spawn`が必要かはtarget側link/execで確かめる。
 
-[W04の実装調査](../waypipe-build-checks.md)では、C版のlibwayland/scanner依存はsecurity-contextだけだった。
+[W04の実装調査](../features/wayland/waypipe-build-checks.md)では、C版のlibwayland/scanner依存はsecurity-contextだけだった。
 今回は`with_secctx=disabled`を追加し、その拡張をcompositorで広告しない。liblz4 1.10.0/Zstd 1.5.7をstatic linkし、
 API34のlibcのspawnを使う。必須librt探索だけをAndroid用の固定patchで外す。APK側clientの実行・停止を実機で検査し、
 remote側の版/features照合と実転送はW05で行う。
@@ -131,7 +131,7 @@ Termux側のインストール済み版が0.11.3と違えば、黙って混在�
 
 footの基準候補は固定Termux recipeで確認した1.28.0。導入版・package revision・font/terminfo依存を記録し、異なる版を使う場合はその配布sourceの必須global判定を読み直す。既知の起動必須globalはW02で用意する。fixture成功だけでfoot起動成功と推定しない。
 
-[Build49の実機検査](../waypipe-forwarded-shm-checks.md)では、固定起動引数へ
+[Build49の実機検査](../features/wayland/waypipe-forwarded-shm-checks.md)では、固定起動引数へ
 `--override=tweak.max-shm-pool-size-mb=0`を追加した。foot既定の512MiB仮想SHM pool最適化を無効にし、
 compositorの64MiB/client上限は維持する。利用者の設定fileは書き換えない。
 100frame/hashと実footのbuffer受信・所有資源の停止をnative scopeで確認した。
@@ -147,7 +147,7 @@ T02の認証済み接続を再利用し、journalで採番されたSessionIdへc
 5. remote launcherがTermux側Waypipe serverと固定appを起動する。最初はSHM pattern fixture、次にfootを選ぶ。
 
 同じSessionIdでDisplayを再作成してwindow/surface IDを再利用しない。
-[Termuxの固定版・font・producerの準備記録](../termux-wayland-tools.md)を使い、forward成功前にremote appを開始しない。
+[Termuxの固定版・font・producerの準備記録](../features/termux/termux-wayland-tools.md)を使い、forward成功前にremote appを開始しない。
 
 remote launcherが使うargv:
 

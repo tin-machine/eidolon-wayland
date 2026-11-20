@@ -1,6 +1,6 @@
 # Spatial Anchor — D6 feature index
 
-The [Spatial Anchor × Linux / SA0 design](../../spatial-anchor-linux-design-20261111.md) is registered as **`architecture / proposed`** at the D6 review baseline `443d5f740053efc0c55914ed4c556118e54d4220`.
+The [Spatial Anchor × Linux / SA0 design](spatial-anchor-linux-design-20261111.md) is registered as **`architecture / proposed`** at the D6 review baseline `443d5f740053efc0c55914ed4c556118e54d4220`.
 
 ```sh
 python3 scripts/docs.py context --feature spatial-anchor --task SA0

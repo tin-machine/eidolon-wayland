@@ -18,7 +18,7 @@ related_sources:
 <a id="b01"></a>
 ## B01 — Rust workspaceと版情報の契約
 
-作成: root `Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml`、`native/model/`、`native/android/`、`docs/progress.md`。
+作成: root `Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml`、`native/model/`、`native/android/`、`docs/evidence/progress.md`。
 
 1. toolchainは1.95.0、edition 2024、Android targetは`aarch64-linux-android`。必要なtargetとrustfmt/clippyを明示して導入する。
 2. `eidolon-model`は通常library、`eidolon-android`は`cdylib`、lib名`eidolon_native`。JNI依存は`=0.22.4`。生成済みCargo.lockをcommitする。
@@ -50,7 +50,7 @@ Gradleのdebug sourceSetは`app/build/generated/jniLibs/debug`を参照し、`me
 
 native taskのinputs: Cargo.lock、全workspace source、toolchain、NDK版/API/ABI/profile、source digest、APK versionCode。outputs: 対象ABIのsoとmetadata。入力digestは対象ファイル内容から作り、Git dirtyの有無だけで同一視しない。BuildConfigの版情報も同じ入力から生成する。
 
-実装時の版往復試験で、Cargoが別package版の同名cdylibをfreshと判定することを再現した。target cacheはNDK版・workspace版で分ける。さらにcargo-ndk 4.1.2の`-o`はmtime比較で古いcacheのcopyを省略するため、実装scriptでは`-o`を使わず検査済み成果物を生成先へ無条件copyする。生成直後とAPK内の両方で埋込みJSONを照合し、元の版へ戻す場合も検査する。[試行記録](../progress.md)を参照。
+実装時の版往復試験で、Cargoが別package版の同名cdylibをfreshと判定することを再現した。target cacheはNDK版・workspace版で分ける。さらにcargo-ndk 4.1.2の`-o`はmtime比較で古いcacheのcopyを省略するため、実装scriptでは`-o`を使わず検査済み成果物を生成先へ無条件copyする。生成直後とAPK内の両方で埋込みJSONを照合し、元の版へ戻す場合も検査する。[試行記録](../evidence/progress.md)を参照。
 
 検証順:
 
@@ -90,9 +90,9 @@ runtime configは`{"schema":1}`を基礎とし、H01でApplication由来の`path
 4. runtimeは`filesDir/rt/<nonce>/`、0700、socket pathはUTF-8で103 byte以下。既存directoryを上書きせずexclusive作成する。
 5. stdout/stderrを同時にdrainし、socket echo→終了→wait/reap→自分のdirectoryだけcleanup→再起動を10回確認する。
 
-[Androidの実行制約](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)と、[Wawonaの配置例](../phase-3-rust-compositor-waypipe.md#apk側helperの実行確認をphase-01へ前倒しする)を区別する。[独立probe](../native-preflight-20261104.md)ではAPK内のCommandから同じUIDで起動し、echo/終了を10回確認した。製品runtimeへの統合とWaypipe binary自体は後続で検証する。`run-as`やADB shellからの起動だけでは合格にしない。失敗時はloader、exec制約、ABI、依存不足を分け、Waypipe統合を待つ。
+[Androidの実行制約](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)と、[Wawonaの配置例](../features/initial-phases/phase-3-rust-compositor-waypipe.md#apk側helperの実行確認をphase-01へ前倒しする)を区別する。[独立probe](../development/build/native-preflight-20261104.md)ではAPK内のCommandから同じUIDで起動し、echo/終了を10回確認した。製品runtimeへの統合とWaypipe binary自体は後続で検証する。`run-as`やADB shellからの起動だけでは合格にしない。失敗時はloader、exec制約、ABI、依存不足を分け、Waypipe統合を待つ。
 
-H01の[製品統合結果](../progress.md)では、Application由来の`RuntimeConfig.paths`を使い、`helper_probe` commandを専用I/O workerで処理する。coreは停止flagとworker完了を監督し、資源回収前にStoppedを返さない。commandにはnonceだけを渡す。host/Questで実行・途中停止・回収に成功したが、Waypipe本体は引き続きW04で扱う。
+H01の[製品統合結果](../evidence/progress.md)では、Application由来の`RuntimeConfig.paths`を使い、`helper_probe` commandを専用I/O workerで処理する。coreは停止flagとworker完了を監督し、資源回収前にStoppedを返さない。commandにはnonceだけを渡す。host/Questで実行・途中停止・回収に成功したが、Waypipe本体は引き続きW04で扱う。
 
 <a id="r01"></a>
 ## R01 — SDK Surfaceと入力callbackの契約を実機で確定

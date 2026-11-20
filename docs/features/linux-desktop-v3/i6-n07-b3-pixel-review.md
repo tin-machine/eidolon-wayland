@@ -19,8 +19,8 @@ registered documentation task.
 
 The [N07-A contract](i6-n07-a-independent-oracles.md),
 [B1/B2 implementation](i6-n07-b1-pointer-popup-readback.md),
-[I6 design §10](../../linux-real-app-v3-i6-detailed-design.md) and
-[integration plan §11](../../linux-real-app-v3-integration-plan-20261111.md)
+[I6 design §10](linux-real-app-v3-i6-detailed-design.md) and
+[integration plan §11](linux-real-app-v3-integration-plan-20261111.md)
 remain authoritative. The manifest is unchanged: **28 families / 87 variants /
 533 assertions**, SHA-256
 `e2d0d80c35fc5494415a627a7a11d162b127fecc38646535afacf9f08ff40f33`.

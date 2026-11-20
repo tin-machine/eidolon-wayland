@@ -198,6 +198,7 @@ class LinuxDesktopV3RegistryTests(unittest.TestCase):
             "b1-contract", "b1-presentation", "b1-storage-identity",
             "b2-bundle", "c1-profile", "c2-helper", "e1-storage",
             "integration-plan", "i2", "i4",
+            "i2-initial-prompt-history", "quest-recovery-usability",
         }
         actual = {
             docid.removeprefix("linux-desktop-v3-")
@@ -265,7 +266,7 @@ class AdditionalFeatureRegistryTests(unittest.TestCase):
 
     def test_curated_features_and_proposed_status_are_explicit(self):
         expected = {"curved-workspace": 10, "spatial-anchor": 1,
-                    "android-ime": 6, "initial-phases": 9}
+                    "android-ime": 6, "initial-phases": 10}
         for feature, count in expected.items():
             with self.subTest(feature=feature):
                 self.assertIn(feature, self.manifests)

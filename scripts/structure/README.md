@@ -2,9 +2,9 @@
 
 回収・設定保存のレビューで確認した関係を、source、不変条件、負例を含むテストへ結ぶ。
 homecluster の graph、queue、DB、設定には依存しない。Python 標準ライブラリと Git だけを使う。
-[レビューと適用判断](../../docs/source-structure-retirement-review-20261115.md)がこの試行の基準である。
-続報の[監視範囲・所有境界・追加3問](../../docs/source-structure-watch-ownership-20261115.md)、
-[IME 終了証拠の接続案](../../docs/source-structure-ime-retirement-contract-20261115.md)も参照する。
+[レビューと適用判断](../../docs/development/source-structure/source-structure-retirement-review-20261115.md)がこの試行の基準である。
+続報の[監視範囲・所有境界・追加3問](../../docs/development/source-structure/source-structure-watch-ownership-20261115.md)、
+[IME 終了証拠の接続案](../../docs/development/source-structure/source-structure-ime-retirement-contract-20261115.md)も参照する。
 
 ## 使い方
 

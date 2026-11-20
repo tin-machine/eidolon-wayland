@@ -54,7 +54,7 @@ scripts/quest-check --serial "$EIDOLON_QUEST_SERIAL" --case helper
 
 runnerは導入APK/current source digest/build_info/case/nonce/frame/回収条件/MainActivity復帰を照合する。過去の成功やswap成功をHMD視認と混同しない。
 
-最終Build17でも全5ケースがpass。queue満杯の非表示pauseとGL_CONTEXT_LOST分類のhost検査を含む。FD287〜288、20再生成のheap45,450,392→46,601,672 bytes。描画中製品runtimeの停止・回収8ms。Build17のsource/APK hashとrun名は[進捗](../progress.md)を参照する。
+最終Build17でも全5ケースがpass。queue満杯の非表示pauseとGL_CONTEXT_LOST分類のhost検査を含む。FD287〜288、20再生成のheap45,450,392→46,601,672 bytes。描画中製品runtimeの停止・回収8ms。Build17のsource/APK hashとrun名は[進捗](../evidence/progress.md)を参照する。
 
 ## 連続Activity再生成で見つかったSDK所有物の寿命
 

@@ -1,6 +1,6 @@
 # I6 Host acceptance 固定 case manifest
 
-この directory は [I6 詳細設計](../../../docs/linux-real-app-v3-i6-detailed-design.md) §2、§11–15 の
+この directory は [I6 詳細設計](../../../docs/features/linux-desktop-v3/linux-real-app-v3-i6-detailed-design.md) §2、§11–15 の
 標準 profile `i6-host-v1` を実行前に固定する。`cases-v1.json` の全 row、全 assertion は必須であり、
 `required` / optional / 実行後の期待値選択は設けない。各 row は `(case_id, variant)` で一意とする。
 manifest の bytes を SHA-256 で pin し、変更する場合は実行前にレビューする。

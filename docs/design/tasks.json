@@ -96,7 +96,7 @@
     },
     "release-smoke": {
       "kind": "manual",
-      "command": "manual: docs/usage.mdの通常UIによるrelease受入れを実施",
+      "command": "manual: docs/guides/usage.mdの通常UIによるrelease受入れを実施",
       "available_after": "C02",
       "success": "ADB用診断入口を使わず新規pairing、表示、入力、切断、再起動をQuest/HMDで確認する"
     },
@@ -289,7 +289,7 @@
         ".gitignore",
         "native/model/",
         "native/android/",
-        "docs/progress.md",
+        "docs/evidence/progress.md",
         "scripts/native-build-inputs",
         "scripts/native_build.py"
       ],
@@ -1314,11 +1314,11 @@
       "spec": "docs/design/phase-6.md#l03",
       "files": [
         "scripts/quest-check",
-        "docs/progress.md",
-        "docs/phase-0-reproduction.md",
+        "docs/evidence/progress.md",
+        "docs/development/build/phase-0-reproduction.md",
         "scripts/quest-observe",
         "scripts/observation.py",
-        "docs/usage.md"
+        "docs/guides/usage.md"
       ],
       "steps": [
         "Menu/sleep/Activity/rebootを別caseとして記録する",
@@ -1351,7 +1351,7 @@
       "files": [
         "scripts/quest-check",
         "native/fixtures/",
-        "docs/progress.md",
+        "docs/evidence/progress.md",
         "docs/benchmarks.md",
         "scripts/quest-observe",
         "scripts/observation.py"
@@ -1394,7 +1394,7 @@
         "android/app/build.gradle.kts",
         "android/app/src/main/AndroidManifest.xml",
         "THIRD_PARTY_NOTICES.md",
-        "docs/usage.md",
+        "docs/guides/usage.md",
         "android/app/src/main/java/io/github/tinmachine/eidolon/ConnectionProfile.kt",
         "android/app/src/main/java/io/github/tinmachine/eidolon/ConnectionSettings.kt"
       ],

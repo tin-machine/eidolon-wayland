@@ -22,9 +22,12 @@ class ReleaseToolsTests(unittest.TestCase):
             target=out/'eidolon-termux-tools.zip'
             with zipfile.ZipFile(target) as archive:
                 files={name:archive.read('scripts/termux/'+name) for name in FILES};dependency_pins(files)
-                for name in ('scripts/termux/eidolon-pair','scripts/pairing.py','scripts/termux/eidolon-start','scripts/termux-bootstrap.sh','docs/termux-wayland-tools.md','THIRD_PARTY_NOTICES.md'):
+                for name in ('scripts/termux/eidolon-pair','scripts/pairing.py','scripts/termux/eidolon-start','scripts/termux-bootstrap.sh','docs/features/termux/termux-wayland-tools.md','THIRD_PARTY_NOTICES.md'):
                     self.assertIn(name,archive.namelist())
-                usage=archive.read('docs/usage.md').decode()
+                for path in ('guides/usage.md', 'features/termux/termux-wayland-tools.md',
+                             'evidence/integration/extensions-nx01-nx08-20261107.md'):
+                    self.assertEqual(archive.read('docs/'+path), archive.read('docs/'+Path(path).name))
+                usage=archive.read('docs/guides/usage.md').decode()
                 positions=[usage.index('install -m 700 scripts/termux/'+name) for name in ('eidolon_gui_owner.py','eidolon-gui.py','eidolon-session.py')]
                 self.assertEqual(positions,sorted(positions))
                 self.assertNotIn('scripts/tests/', '\n'.join(archive.namelist()))
