@@ -5,7 +5,7 @@ type: architecture
 design_status: proposed
 feature: spatial-anchor
 created: "2026-11-11"
-last_reviewed: "2026-11-13"
+last_reviewed: "2026-11-21"
 baseline_commit: "443d5f740053efc0c55914ed4c556118e54d4220"
 depends_on: []
 related_sources:
@@ -23,7 +23,9 @@ Target: **Meta Quest 3 / Meta Horizon OS / Meta Spatial SDK 0.15.0**
 > Linuxアプリ、SSH、Wayland surface、SDK Entity、Activity、Questの再起動を越えて、空間デスクトップの配置を復元できる構造を目指す。
 
 この文書は設計と段階的な検証計画を固定するためのものであり、Spatial Anchorを製品経路へ有効化する実装ではない。
-最初の実装工程 **SA0** は通常workspaceを変更せず、Anchor APIの実機成立性だけを隔離して確認する。
+最初の実装工程 **SA0** は既存の `:probe` で独立して行う。2026-11-21 の見直しで、最初の PR、SA0 の実機合格、製品への統合を別の到達点とした。以下の調査基準・CI結果は当時の記録である。
+
+最初に[HUD 計画](../quest-status-hud/quest-status-hud-plan-20261120.md)の透明な静止パネルで入力透過を試し、次に SA0、製品側では既存ランチャーから起動した Mousepad 一枚の配置復元へ進む。HUD は起動時の視点を基準に配置し、Anchor の解決中・利用不可の間も使用できる。HUD と Anchor の実装・テストは独立して進められる。
 
 ---
 
@@ -45,8 +47,8 @@ Quest 3のpassthrough MR空間で、次を自然に扱えることを目標と�
 
 1. **Linux application lifetime と Spatial Placement lifetime を分離する。**
 2. **RustをWorkspace/Placementの正本にする。**
-3. **Meta SDKのruntime objectはKotlinが所有し、永続identityだけをRustへ返す。**
-4. **Anchorが未解決・tracking不明・geometry未確認の間は入力を許可しない。**
+3. **Activity 側の SDK 所有者が runtime object を管理し、製品の Rust モデルには永続 ID と操作結果を渡す。**
+4. **Anchor が未解決、追跡不明、または表示位置の検証中は、その配置への入力を止める。**
 5. **既存のnative/SDK/remote回収保証をSpatial Anchorのために弱めない。**
 
 ---
@@ -287,7 +289,7 @@ Anchor UUID
 
 Anchor handle / XrSpace
     current XR sessionのruntime object
-    Kotlinのみ保持
+    Activity 側の SDK 所有者とその API 呼び出しの範囲で使用
     永続化禁止
 ~~~
 
@@ -317,6 +319,7 @@ Anchorそのものを恒久移動する操作として扱わない。
 
 ~~~text
 new anchor create
+    -> pending UUID を永続化
     -> persist new anchor
     -> Workspace durable commit
     -> binding revision切替
@@ -329,12 +332,7 @@ old anchorを先にeraseしてはいけない。
 
 ### 4.5 権限
 
-OpenXR Spatial Anchor APIはAndroid manifestのUSE_ANCHOR_APIを前提とする。
-
-baselineのandroid/app/src/main/AndroidManifest.xmlにはUSE_ANCHOR_APIはまだ存在しない。
-
-またMetaはScene/spatial dataへのアクセスについてruntime spatial data permissionを別途説明している。
-Horizon OSの権限モデルは変化し得るため、SA0ではmanifest宣言だけでなく実Quest上のpermission stateと実際のerror codeを記録する。
+端末内の Anchor 一個を扱う SA0 は `:probe` の manifest に `com.oculus.permission.USE_ANCHOR_API` を宣言するところから始める。実際の許可状態と API の結果を記録する。Room/Scene 取得やクラウド共有の権限は、それらを使う機能を導入する段階で検討する。製品 APK への権限追加は製品統合時に判断する。[Meta の開発者向け設定](https://developers.meta.com/vr/documentation/native/android/openxr-spatial-anchors-developer-setup/)
 
 ### 4.6 persistence/discoveryの代表的failure
 
@@ -375,8 +373,9 @@ Horizon OSの権限モデルは変化し得るため、SA0ではmanifest宣言�
 | anchor大量作成時性能 | 固定maximumなしの記載と性能保証を混同しない |
 | SDK 0.15.0の正確なKotlin create/persist呼出し形 | SA0でAAR/compile/runtimeにより確定 |
 
-特にSpatial SDK 0.15.0のcreate/persist操作の正確なKotlin signatureは、古いSpatial SDK referenceやOpenXRの関数名から推測して固定しない。
-**SA0実装時に0.15.0 AARと公式referenceを正本としてcompile検証する。**
+0.15.0 の AAR では `Scene.discoverSpaces`、`setSpaceComponentStatus`、`getAnchorPose` と OpenXR の instance/session/proc-address 取得、必要な拡張を登録する入口を確認した。任意の Anchor の create/persist/erase を一通り行う Kotlin API と、SDK が受け取る非同期完了をアプリへ渡す経路は未確認である。[SDK 0.15.0 の Scene API](https://developers.meta.com/vr/reference/spatial-sdk/v0.15.0/com_meta_spatial_runtime_scene/)
+
+SA0 の最初の試験では、端末が提供する拡張、実際の session で有効な拡張、操作の完了を正しい要求に対応付けられる経路を確かめる。SDK が所有する instance に二つ目の `xrPollEvent` ループを作ると、Activity 側の lifecycle event を先に消費し得る。SDK の通知経路、または実機で有効な拡張が提供する完了待ちを利用する。どちらも確認できない場合、独自 session を所有する OpenXR サンプルで端末機能だけを試し、SDK 統合は未解決と記録する。
 
 ---
 
@@ -489,7 +488,7 @@ Rust側へAnchor runtime ownershipを追加すると、
 
 したがって推奨しない。
 
-**Anchorの意味・policyはRust、Meta Anchor APIのruntime操作はKotlin**を基本とする。
+製品の配置 policy は Rust、SDK session の寿命は Activity が所有する。SDK が公開する操作に薄い native 呼び出しが必要なら、probe 内で試してよい。実装言語や専用 adapter の有無を最初の判定条件にせず、session・event・handle の所有者を一つに保つ。
 
 ---
 
@@ -497,7 +496,7 @@ Rust側へAnchor runtime ownershipを追加すると、
 
 ### 7.1 新しいID
 
-最低限、次を導入する。
+一枚の復元に使う ID は PlacementId とする。複数の Workspace や一つの配置の再固定が必要になった時点で、次のモデルへ拡張できる。
 
 ~~~text
 WorkspaceId
@@ -508,7 +507,7 @@ AnchorBindingId
 これらはruntimeのpositive i64 IDと同じ採番方式に必ずしも揃える必要はない。
 永続性・merge・backup・将来のexportを考えるなら、UUID等のcollision-resistant IDも比較対象にする。
 
-SA1で型を固定する。
+SA1 で型を決めるのは、実際に保存して読み戻す識別子だけとする。
 
 ### 7.2 モデル案
 
@@ -614,10 +613,10 @@ tracking/reference spaceの再構成後に以前のworld座標が同じ現実位
 1. UUIDでAnchor resolveを開始する。
 2. localizationを待つ。
 3. insufficient viewならユーザーへ「周囲を見回す」案内を出す。
-4. dark/bright/permission/rate limit等は原因別に表示・再試行する。
+4. 最初は SDK が識別できた原因と再試行の可否を返す。照明など原因別の案内は実機で区別できたものから追加する。
 5. 解決中は対象Placementをinteractiveにしない。
 6. 解決不能ならRecovery UIへ移す。
-7. ユーザーが明示した場合だけ「現在位置へ一時表示」を許可する。
+7. 後続の「現在位置へ一時表示」はユーザー操作で開始する。
 8. 恒久変更は「ここへ再固定」操作で新Anchorを作る。
 
 ### 8.3 Bring Here / Return
@@ -793,9 +792,7 @@ Workspace "Coding"
 
 ### 推奨
 
-本番は**案C Hybrid / Zone Anchor**。
-
-ただしSA0では一切このmodelを実装せず、Anchor 1個だけでAPI成立性を確認する。
+SA0 と Mousepad 一枚の復元には Anchor 一個で足りる。複数の場所を扱う段階で、共有する窓の距離と使い方を見て案Cを検討する。
 
 ---
 
@@ -969,9 +966,14 @@ sequenceDiagram
 
     UI->>Core: commit permanent placement
     Core->>KA: create new anchor
-    KA->>Meta: create + make storable/persist
-    Meta-->>KA: new UUID persisted
+    KA->>Meta: create
+    Meta-->>KA: new UUID
     KA-->>Core: new UUID
+    Core->>Store: durable pending UUID (keep old binding)
+    Core->>KA: persist new UUID
+    KA->>Meta: persist
+    Meta-->>KA: persisted
+    KA-->>Core: persistence confirmed
     Core->>Store: write new binding revision + fsync
     Store-->>Core: durable
     Core->>Core: switch active binding
@@ -990,7 +992,7 @@ failure時の原則:
 
 ## 16. JNI command/result案
 
-SA0ではRustへ接続しないが、後続の境界案を固定しておく。
+以下は製品統合で必要になった操作の候補である。SA0 や一枚の復元に全 command/result の実装を要求せず、使う操作だけを追加する。
 
 ### Rust -> Kotlin
 
@@ -1072,7 +1074,7 @@ AnchorErased {
 ~~~
 
 Anchor runtime handleはJNI payloadへ出さないことを第一候補とする。
-必要になった場合もopaque runtime tokenとしてKotlin ownershipを維持する。
+製品側との対応付けには必要に応じて opaque token を使い、実 handle の所有は Activity 側に保つ。
 
 ---
 
@@ -1115,19 +1117,9 @@ remote側へ必要なのは従来どおりWindow/Wayland/resize/input情報だ�
 
 Anchor UUIDやphysical-space poseはユーザーの空間を示すデータとして保守的に扱う。
 
-通常diagnosticsでは第一候補として、
+SA0 の追跡には端末内の専用ファイル一つで足りる。完全な UUID は再発見・消去のためアプリ専用の `noBackupFilesDir` に保持する。通常ログと共有する結果には case ID、phase、成否、SDK が返したエラーを使う。同じ試験の操作は case ID で対応付けられるため、UUID のハッシュ、暗号鍵の管理、新しい共有ログ基盤は初期実装の前提にしない。
 
-- binding id
-- UUIDのhashまたはredacted form
-- state
-- error category
-- latency
-- SceneEpoch
-- revision
-
-だけを保存し、absolute room poseは保存しない。
-
-SA0の明示的debug artifactでは検証に必要なpose差分を保存してよいが、通常product diagnosticsへ自動昇格させない。
+通常診断や SSH peer には部屋の絶対座標や生 UUID を渡さない。位置の調査に必要な場合だけ、手元の検証記録に同一基準での相対差や固定物を写した画面を残す。リポジトリに載せる結果は匿名の判定とする。
 
 ### 18.3 input safety
 
@@ -1147,7 +1139,7 @@ Anchor stateが次の場合、対象Windowをinteractiveにしない。
 
 自動的に別場所へ恒久再配置しない。
 
-ユーザーへ、
+一枚の製品試験は既存メニューに未解決の表示と「再試行」を置き、通常の終了操作へ戻れればよい。Anchor 待ちによる入力停止は該当窓に限り、ランチャーと HUD は独立して利用できる。恒久的な再配置を導入する段階で次の操作を区別する。
 
 - 再localizeを待つ
 - 周囲を見回す
@@ -1228,7 +1220,7 @@ Hide WorkspaceとStop Applicationsを別操作にする。
 | SpatialPanelAdapter.kt | resolved pose適用、input gate、geometry ACK |
 | 新規 SpatialAnchorAdapter.kt | Meta Anchor API隔離 |
 | NativeSessionHost.kt | SceneEpoch/lifecycle/result routing |
-| AndroidManifest.xml | SA0でUSE_ANCHOR_API等必要permissionを隔離追加 |
+| android/probe/src/main/AndroidManifest.xml | SA0 のローカル Anchor 用権限 |
 | Quest debug checks | persistence/relocalization/reboot evidence |
 | diagnostics | Anchor state/error、redacted identity |
 
@@ -1238,66 +1230,19 @@ Hide WorkspaceとStop Applicationsを別操作にする。
 
 ### SA0 — Anchor API feasibility probe
 
-**今回最初に実装すべき範囲。**
+既存の `:probe`（`io.github.tinmachine.eidolon.probe`）で §5 の SDK 完了経路を試し、§22〜25 に沿って一個のローカル Anchor を検証する。probe と製品は別パッケージであり、製品統合では製品側で新しく作成して再発見する。
 
-通常Workspaceを1行も変更しない。
-Linux window、SSH、Waypipeとも接続しない。
+### SA1 — 一枚の配置を識別する
 
-検証するもの:
+安定した PlacementId 一つと Anchor UUID の対応を保存する。既存の起動要求または明示的な窓選択で、開いた窓に結び付ける。既存 SavedPlacement の app_id・slot は候補を指す情報として使える。セッション識別子を app_id に含む検証用 GTK デモや同一アプリの別窓もあるため、app_id の一致だけで以前の窓を選ばない。§7 の全 ID 型、複数ホスト用 matcher、汎用 transaction は対応機能を実装するときに足す。モデルと Fake は実機試験を待つ間も進められる。
 
-1. Anchorを現在のQuest空間へ1個作る。
-2. runtimeからUUIDを取得する。
-3. Storable/persistenceを成立させる。
-4. UUIDをdebug専用storageへ保存する。
-5. runtime Anchor objectを破棄またはScene/Activityを再生成する。
-6. UUIDからAnchorを再発見する。
-7. localized poseを取得する。
-8. creation時poseとの差と状態を記録する。
-9. app process/Activity境界を越えて再発見する。
-10. Quest reboot後に同じUUIDを再発見する。
-11. 可能ならpower off/onも別caseで確認する。
-12. eraseする。
-13. erase後に同UUIDを再発見できないことを確認する。
-14. debug resourceが全て回収されたことを確認する。
+### SA2 — 配置の目印（任意）
 
-SA0はWorkspace schemaを変更しない。
+probe の目印を再利用して pose の適用を切り分ける。独立した製品診断パネルの実装・PR は任意とし、同じ確認を SA3 に含めてよい。視点を基準に置くステータス HUD はこの目印から独立する。
 
-### SA1 — Durable identity model
+### SA3 — Mousepad 一枚の復元
 
-- WorkspaceId
-- PlacementId
-- AnchorBindingId
-- Anchor UUID型
-- binding revision
-- state machine
-- serialization
-- stale callback rules
-
-Fake backendだけでhost test可能にする。
-
-### SA2 — Diagnostic panel restore
-
-Linux appではなく固定diagnostic panel一枚をAnchorへbind。
-
-- Activity recreation
-- SceneEpoch change
-- resolve
-- geometry verify
-- input gate
-
-を確認する。
-
-### SA3 — foot一枚
-
-実Wayland window一枚へPlacementIdをbind。
-
-- Linux app exit
-- SSH disconnect
-- reconnect
-- relaunch
-- same Anchor restore
-
-を確認する。
+既存ランチャーから起動した Mousepad の一枚を明示的に PlacementId へ結び付ける。Linux アプリ終了または SSH 切断後、再接続・再起動した窓を同じ場所へ復元し、現在の描画と hit-test が一致してから入力する。製品パッケージで作成した Anchor を使う。端末やパッケージをまたぐ UUID の受け渡しを前提にしない。
 
 ### SA4 — permanent move / rebind
 
@@ -1338,33 +1283,16 @@ SA0は「Spatial AnchorがAPI上存在する」ことを確認する試験では
 次の実用上重要なlifecycleをQuest 3実機で証明する。
 
 ~~~text
-create
-  -> persist
-  -> save UUID
-  -> Activity/runtime boundary
-  -> discover
-  -> localize
-  -> Quest reboot
-  -> discover
-  -> localize
-  -> erase
-  -> prove absent
+create → UUID を durable pending として記録 → persist の完了確認
+  → Activity 再生成 → discover/localize
+  → アプリプロセス再起動 → discover/localize
+  → Quest 再起動 → discover/localize
+  → erase 完了 → 同じ UUID の照会が正常に完了して該当なし
 ~~~
 
-### 22.2 SA0で追加してよいもの
+### 22.2 SA0 の実装場所
 
-第一候補:
-
-- android/app/src/main/AndroidManifest.xml
-  - Anchor APIに必要なpermission
-- 新規 SpatialAnchorAdapter.kt
-  - debug専用でもよい
-- debug/instrumentation専用Anchor controller
-- noBackupFilesDirまたは専用debug storageのUUID record
-- quest-checkの新しいisolated case
-- JUnit/Fake unit test
-- debug diagnostics fields
-- SA0実機手順文書
+既存の `android/probe` に必要な権限と一つの試験入口を追加する。試験の起動・再開・消去は既存 Activity の明示操作で始められればよい。専用 instrumentation、quest-check サブコマンド、独立した adapter クラスは繰り返し実行で必要になったときに追加する。
 
 ### 22.3 SA0で変更しないもの
 
@@ -1387,7 +1315,7 @@ create
 - production default settings
 - same app_id ambiguous policy
 
-必要なdebug hookは既存product stateを変えない形にする。
+probe で完結する試験は製品の設定、Linux セッション、入力経路から独立させる。
 
 ### 22.4 SA0のstorage
 
@@ -1415,64 +1343,28 @@ stateの例:
 }
 ~~~
 
-SA0 artifactとして必要ならUUIDを保持する。
-通常diagnosticsへの露出は別途redactionする。
+この例は persist 完了後の記録。persist を要求する前に同じ UUID と `phase=pending` を原子的に書き、永続化の完了を確認してから SDK を呼ぶ。書き込みに失敗したら先に進まない。
 
 ### 22.5 SA0の中断耐性
 
 Quest rebootを跨ぐため、1回のinstrumentation processだけで完結させない。
 
-caseをphase化する。
+| 中断・境界 | 再開時の動作 |
+| --- | --- |
+| prepare | create で得た UUID と `pending` を端末内に永続化してから persist を要求する。対応する完了結果を受けて `persisted` に更新する。 |
+| pending のまま終了 | 保存の完了が不明な同じ UUID を先に照会する。再発見できればその UUID で再開する。元の要求が終了し、良好な追跡・権限のもとで端末内の保存先への照会が正常に該当なしと返ったら、その試行を未保存として終了できる。要求がまだ処理中か判別できない場合や照会失敗時は記録を保つ。 |
+| Activity ／ プロセス ／ Quest の再起動 | それぞれ別に同じ UUID の発見と位置を確認する。装着し直して同じ scene に復帰しただけなら sleep/resume の結果とする。Quest の再起動は使用中の Linux セッションを通常終了し、回収待ちがないことを確認して装着試験の最後にまとめる。 |
+| erase | 対象 UUID だけを消去する。消去結果と、その後に同じ部屋・有効な追跡と権限で行った UUID 照会の正常終了・該当なしを別々に確認する。途中終了・タイムアウト・権限エラーでは記録を保って再試行する。消去完了の通知を失った場合は、後日の正常な不在確認を清掃結果として記録し、元の操作完了は未観測とする。 |
 
-~~~text
-prepare
-  create/persist UUID
-  save durable SA0 state
-  request operator reboot boundary
+### 22.6 SA0 で残す証拠
 
-resume
-  read saved UUID
-  discover/localize
-  record pose/state
+一件の記録に build・SDK/OS、権限、case ID、試した操作と境界、SDK の成否、同一 UUID の発見・位置確定・消去後の照会結果を残す。操作時間や詳細な component 状態は障害の切り分けに必要な場合に加える。ADB の再接続は端末に再び到達できたことだけを示す。
 
-erase
-  erase persisted anchor
-  verify discovery no longer returns it
-  delete SA0 state
-~~~
-
-reboot自体をADBから自動実行するかは実機環境に合わせる。
-自動rebootを採用する場合でも、adb reconnectを「Anchor成功」と同一視しない。
-
-### 22.6 SA0で記録する証拠
-
-最低限:
-
-- Eidolon build/source commit
-- Spatial SDK version
-- Quest model
-- Horizon OS/build version
-- permission state
-- case id
-- operation
-- UUID
-- SDK/OpenXR error category
-- operation start/end elapsed time
-- activity/process identity
-- SceneEpoch相当のdebug epoch
-- anchor discovered count
-- locatable/storable status
-- pose
-- creation -> rediscovery pose delta
-- reboot boundary marker
-- erase result
-- post-erase discovery result
-
-HMD内の「同じ場所に見える」は最後に手動観測として別記録する。
+`LOCAL_FLOOR` の原点は recenter や再起動で変わり得る。座標差を測るなら同一参照空間内に限定する。境界を越えた位置の合否は机の角など同じ固定物に対する目印の位置・向きを装着して見比べ、分かる場合は Quest 画面でも記録する。数値での許容差は基準を再現できた段階で決める。
 
 ### 22.7 SA0 failure taxonomy
 
-最低限、次を別々に保存する。
+初版は権限不足、正常な照会で該当なし、追跡未確定、その他の失敗・タイムアウトを見分けられればよい。SDK の元の結果を保ち、以下の詳細分類は端末で識別できたものから追加する。
 
 ~~~text
 PERMISSION_DENIED
@@ -1509,12 +1401,16 @@ sequenceDiagram
     Test->>Adapter: create at test pose
     Adapter->>Meta: create anchor
     Meta-->>Adapter: runtime anchor + UUID
-    Adapter->>Meta: enable persistence/storable
-    Meta-->>Adapter: persisted
     Adapter-->>Test: UUID + pose
-    Test->>Disk: fsync UUID + phase=persisted
+    Test->>Disk: durable UUID + phase=pending
+    Test->>Adapter: persist recorded UUID
+    Adapter->>Meta: enable storable as required and persist
+    Meta-->>Adapter: persist completion
+    Adapter-->>Test: persisted
+    Test->>Disk: update phase=persisted
 
-    Test->>OS: Activity/process boundary
+    loop Activity recreation, then app process restart
+    Test->>OS: cross selected boundary
     OS-->>Test: new runtime
     Test->>Disk: read UUID
     Test->>Adapter: discover UUID
@@ -1523,9 +1419,10 @@ sequenceDiagram
     Adapter->>Meta: locate
     Meta-->>Adapter: localized pose
     Adapter-->>Test: resolved
+    end
     Test->>Disk: phase=pre_reboot_verified
 
-    Note over OS: Quest reboot / power cycle
+    Note over OS: Quest reboot (power cycle is a separate optional case)
 
     Test->>Disk: read UUID after reboot
     Test->>Adapter: discover UUID
@@ -1539,8 +1436,8 @@ sequenceDiagram
     Meta-->>Adapter: erased
     Test->>Adapter: discover UUID again
     Adapter->>Meta: discover
-    Meta-->>Adapter: absent
-    Adapter-->>Test: not found
+    Meta-->>Adapter: discovery completed, no matching UUID
+    Adapter-->>Test: confirmed absent
     Test->>Disk: remove SA0 state
 ~~~
 
@@ -1551,7 +1448,7 @@ sequenceDiagram
 ### 24.1 host / Rust後続
 
 SA0はRust Workspaceへ触れない。
-SA1以降で次をhost CIへ追加する。
+SA1 以降は実装した操作に対応する項目から host CI へ追加する。複数窓、multi-host、rebind、Bring Here はそれぞれの導入時に検証する。
 
 - runtime IDを永続serializationしない。
 - Anchor runtime handleを永続serializationしない。
@@ -1574,7 +1471,7 @@ SA1以降で次をhost CIへ追加する。
 
 ### 24.2 Kotlin JVM/Fake backend
 
-SpatialAnchorAdapterのbackend boundaryを薄く作り、Fakeで次をdeterministicにする。
+初版の Fake は pending を残した中断、旧 scene の遅延完了、消去確認時の照会失敗を優先する。以下は実装した操作に応じて追加するケースである。
 
 - create success/failure
 - persistence success/failure
@@ -1597,15 +1494,16 @@ Meta SDK runtimeそのものの成功をJVM fake successへ読み替えない。
 
 ### SA0必須
 
+- [ ] SDK が所有する session で必要な拡張が有効になり、他の event 消費者を増やさずに自分の要求の完了を受け取れる。
 - [ ] Anchorを1個作成できる。
 - [ ] UUIDを取得できる。
-- [ ] persist成功を確認できる。
-- [ ] UUIDをdurable SA0 stateへ保存できる。
+- [ ] persist 要求前に UUID を durable pending として保存できる。
+- [ ] 同じ要求の persist 完了を確認して記録できる。
 - [ ] Activity recreation後に再発見できる。
 - [ ] app process境界後に再発見できる。
 - [ ] Quest reboot後に同UUIDを再発見できる。
 - [ ] reboot後にlocalizeできる。
-- [ ] pose deltaを記録できる。
+- [ ] 同じ部屋の固定物を基準に、再起動の前後で位置・向きが復元されることを装着して確認できる。
 - [ ] eraseできる。
 - [ ] erase後に同UUIDがdiscoverされないことを確認できる。
 - [ ] case終了後にSA0専用state/resourceを回収できる。
@@ -1645,61 +1543,9 @@ Meta SDK runtimeそのものの成功をJVM fake successへ読み替えない。
 
 ## 26. 最初のPRの具体的なスコープ
 
-最初のPR名候補:
+最初の PR は既存 probe で、権限・有効な拡張・要求と非同期完了の対応を確認するところまででよい。可能なら一個を作成し、取得した runtime resource を同じ所有者で解放する。完了経路が未確認なら、その事実と試した方式を結果に残す。永続化を試す変更は §22 の pending 記録と消去・再試行を一緒に導入する。
 
-> **SA0: Meta Spatial Anchor lifecycle probe**
-
-### 目的
-
-Meta Spatial SDK 0.15.0 + Quest 3で、Eidolonが依存する最小Anchor lifecycleを、製品Workspaceから完全に隔離した状態で実測する。
-
-### PRへ含める
-
-- USE_ANCHOR_API等、実際に0.15.0/Questで必要と確認したpermission。
-- SpatialAnchorAdapter.kt。
-- debug/instrumentation専用入口。
-- Anchor 1個のcreate。
-- UUID取得。
-- storable/persist。
-- UUID durable save。
-- Activity/process境界後のdiscover/localize。
-- Quest rebootを跨ぐresume case。
-- erase。
-- post-erase not-found確認。
-- error taxonomy。
-- raw evidence artifact。
-- JVM/Fake unit test。
-- Quest用runbook/check入口。
-- resource cleanup。
-- 実測結果document。
-
-### PRへ含めない
-
-- SavedPlacement変更。
-- Workspace schema変更。
-- PlacementId。
-- AnchorBindingId。
-- WindowId binding。
-- Linux app。
-- SSH。
-- Waypipe。
-- launcher。
-- auto restore。
-- normal UI。
-- permanent move。
-- multi-anchor。
-- Hybrid/Zone。
-- product settings migration。
-
-### SA0の合格条件
-
-単にcreate APIがsuccessを返すことではない。
-
-**create -> persist -> durable UUID -> Activity/process boundary -> discover/localize -> Quest reboot -> discover/localize -> erase -> absent**
-
-までが同一UUIDの証拠付きで成立すること。
-
-この条件が成立してからSA1でRust modelを固定する。
+次に同じパッケージで保存・再発見・消去を通す。専用テスト基盤、全エラーの模擬試験、複数部屋、再インストール試験は初回 PR の条件から外す。§25 の必須項目は最後の実機試験でまとめて確認できる。途中成果は確認した操作ごとに記録し、**SA0 合格**は同一 UUID で Activity・プロセス・Quest の各境界、固定物に対する位置、消去後の正常な不在確認がそろった時点とする。
 
 ---
 
@@ -1756,7 +1602,7 @@ flowchart TB
 - Quest側WorkspaceがMR空間を所有する。
 - Linux hostはwindowを供給する。
 - Meta Anchor UUIDはremoteへ渡さない。
-- Anchor runtime handleはKotlinを出ない。
+- Anchor runtime handleの寿命はSDK側の一つの所有者が管理する。
 - WindowIdはPlacementの永続identityにならない。
 - SDK Entity/Surfaceが消えてもPlacement/Anchor UUIDは残る。
 - Anchorが消えても既存window/resource回収は完了できる。
@@ -1923,4 +1769,4 @@ SceneEpoch / Entity / SurfaceGeneration
 
 最初の一歩は製品Workspaceへ手を入れることではない。
 
-**SA0でQuest 3上のAnchor lifecycleそのものを、create -> persist -> restart -> rediscover -> reboot -> rediscover -> eraseまで実測し、その結果を根拠としてSA1の永続モデルを固定する。**
+**まず probe で SDK の完了経路を確かめる。SA1 の一枚用モデルとテストは並行して進め、保存・復元・消去の実機結果を反映してから Mousepad に適用する。**
