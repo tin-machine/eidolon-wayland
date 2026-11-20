@@ -14,7 +14,8 @@ related_sources:
 ---
 # Eidolon Wayland — Spatial Anchor × Linux 設計・SA0検証計画
 
-Status: **Design / SA0 proposed**  
+Status: **製品設計は提案段階。SA0 の端末内 Anchor 一個の実機結果は §22.6 と §25。**
+
 Date: **2026-11-11**  
 Repository baseline: **main 08673e21d610ef9285039bc47d69811b39668ff6**  
 Target: **Meta Quest 3 / Meta Horizon OS / Meta Spatial SDK 0.15.0**
@@ -358,10 +359,10 @@ old anchorを先にeraseしてはいけない。
 | 項目 | 現時点の扱い |
 | --- | --- |
 | sessionを越えたlocal persistence | Quest 3 の検証 APK で、保存後にプロセスを終了し、新しい session で同じ UUID を再発見した（§22.5）。 |
-| device restart / power off後のpersistence | 現在のMeta persistence仕様上成立 |
+| Quest 本体再起動 ／ 電源オフ・オン | Quest 3 本体再起動後は同じ Anchor を再発見し、固定物との位置・向きを装着して照合した（§22.6）。電源オフ・オンは未検証。 |
 | UUIDを指定した再発見 | Quest 3 の検証 APK で追跡状態と位置・向きの取得を確認した（§22.5）。 |
-| Activity recreation後の再resolve | 設計上可能、Eidolon実機未検証 |
-| Eidolon process kill後の再resolve | Quest実機未検証 |
+| Activity 再生成後の再発見 | 検証 APK の同一プロセス内で Activity を再生成し、同じ UUID の追跡を確認した（§22.6）。 |
+| 製品 Eidolon のプロセス終了後の配置復元 | 検証 APK では同じ UUID の再発見を確認した。製品の Linux 窓との結び付けは未検証。 |
 | Quest sleep/resume | Quest実機未検証 |
 | 部屋の家具配置変更 | localization品質をQuest実機検証 |
 | 照明条件変化 | Quest実機検証 |
@@ -1357,13 +1358,23 @@ Quest rebootを跨ぐため、1回のinstrumentation processだけで完結さ�
 
 2026-11-21 の Quest 3 実測（Spatial SDK 0.15.0、検証 APK `probe.7`）。既定の session では保存用の二つの EXT 拡張は列挙されたが、コマンドを取得できなかった。明示的に有効にすると `LOCAL_ANCHORS` が利用できた。一個を保存し、通常の記録に UUID を書き込む直前で検証アプリを強制終了した。再起動後、保存前後の一覧の差分から得られた新規候補は **0 件**だった。検証用に別途控えた UUID を渡すと `LOADED / TRACKING` で位置・向きを取得し、同じ UUID を消去できた。消去後の照会は `NOT_FOUND / STOPPED` で、検証用の記録も回収した。
 
-製品側は保存完了時に UUID を直ちに端末内に記録する。記録前に終了して個体を特定できない場合は pending を保持し、自動消去や重複保存を避ける。今回の試験では UUID を失った状態からの自動回収は未達。次の装着試験では Activity 再生成を単独で確認し、Quest 再起動の前後で同じ固定物に対する目印の位置・向きを比較する。
+製品側は保存完了時に UUID を直ちに端末内に記録する。記録前に終了して個体を特定できない場合は pending を保持し、自動消去や重複保存を避ける。今回の試験では UUID を失った状態からの自動回収は未達。装着試験の結果は §22.6 に記す。
 
 ### 22.6 SA0 で残す証拠
 
 一件の記録に build・SDK/OS、権限、case ID、試した操作と境界、SDK の成否、同一 UUID の発見・位置確定・消去後の照会結果を残す。操作時間や詳細な component 状態は障害の切り分けに必要な場合に加える。ADB の再接続は端末に再び到達できたことだけを示す。
 
 `LOCAL_FLOOR` の原点は recenter や再起動で変わり得る。座標差を測るなら同一参照空間内に限定する。境界を越えた位置の合否は机の角など同じ固定物に対する目印の位置・向きを装着して見比べ、分かる場合は Quest 画面でも記録する。数値での許容差は基準を再現できた段階で決める。
+
+**2026-11-21 の装着試験**（Quest 3、Android 14 / API 34、Meta Spatial SDK 0.15.0、独立した debug APK）。通常の保存処理で得た一個の UUID を、以下の試験を通して使った。検証 APK はローカルビルドで、該当する製品コードの導入は別工程である。
+
+| 境界・操作 | 実測結果 |
+| --- | --- |
+| Activity 再生成 | `probe.8` で `Activity.recreate()` を実行した。新旧 Activity の ID が異なること、元の ID が保存状態に引き継がれたこと、PID が同一であることを確認した。再生成前後とも保存済み UUID は `LOADED / TRACKING` で有効な姿勢を返した。平面の目印はこの版では目視できなかった。 |
+| プロセス・Quest 本体再起動 | `probe.9` の立体の十字を表示し、Quest を一度再起動した。起動 ID の変化と、同じ UUID が新しいプロセスで `LOADED / TRACKING` に戻ったことを確認した。 |
+| 固定物との照合 | 装着者と再起動前後のステレオキャプチャで、固定したモニターの左下寄りに同じ十字があり、黄色の先端が上、水色が右にあることを確認した。位置の誤差は数値計測していない。 |
+| 追跡が未確定のとき | 再起動後に Activity 再生成を追加で試した回の一つは、最初の照会が `LOADED / PAUSED` で、有効な姿勢は取得できなかった。目印を描画せず未確定として終了した。 |
+| 終了時の消去 | 同じ UUID を消去し、別プロセスからの照会で `NOT_FOUND / STOPPED` を受け取ってアプリ専用の記録を削除した。 |
 
 ### 22.7 SA0 failure taxonomy
 
@@ -1497,20 +1508,22 @@ Meta SDK runtimeそのものの成功をJVM fake successへ読み替えない。
 
 ### SA0必須
 
+2026-11-21、Quest 3 一台・同じ部屋・一個の端末内 Anchor で確認した範囲。中断時に UUID を失ったケースの自動回収は §22.5 の残課題。
+
 - [x] SDK が所有する session で必要な拡張が有効になり、他の event 消費者を増やさずに自分の要求の完了を受け取れる。
 - [x] Anchorを1個作成できる。
 - [x] UUIDを取得できる。
 - [x] persist 要求前に操作 ID を durable pending として保存できる。
 - [x] 同じ要求の persist 完了と成功時の永続 UUID を記録できる。
-- [ ] Activity recreation後に再発見できる。
+- [x] Activity recreation後に再発見できる。
 - [x] app process境界後に再発見できる。
-- [ ] Quest reboot後に同UUIDを再発見できる。
-- [ ] reboot後にlocalizeできる。
-- [ ] 同じ部屋の固定物を基準に、再起動の前後で位置・向きが復元されることを装着して確認できる。
+- [x] Quest reboot後に同UUIDを再発見できる。
+- [x] reboot後にlocalizeできる。
+- [x] 同じ部屋の固定物を基準に、再起動の前後で位置・向きが復元されることを装着して確認できる。
 - [x] eraseできる。
 - [x] erase後に同UUIDがdiscoverされないことを確認できる。
 - [x] case終了後にSA0専用state/resourceを回収できる。
-- [ ] failureを成功へ読み替えない。
+- [x] failureを成功へ読み替えない。
 
 ### SA0追加探索
 
