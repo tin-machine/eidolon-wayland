@@ -12,6 +12,10 @@ last_reviewed: "2026-11-20"
 
 **Status: proposed / unregistered / documentation only.** 本書の追加は、計測機能の実装、Questでの計測成功、SLI/SLO承認、I6/I7/Hの受入れ完了を意味しない。実装時は最新main、対象SDK/Horizon OS、観測権限、現行コードを再調査する。初回実機手順は[runbook](performance-observability-quest-runbook-20261120.md)。
 
+通常作業中の簡潔な表示は、別の[常設ステータスHUD計画](../../features/quest-status-hud/quest-status-hud-plan-20261120.md)で扱う。
+初期HUDは既存CPU/RAM/熱とdraw＋swap統計を利用し、RTTや入力応答などの新規レイテンシー計測は見送る。
+HUDのCPU/RAM色はユーザー指定の表示閾値で、本書のSLI/SLOや性能受入れ条件を変更しない。
+
 ## 1. 目的・前提と既存契約
 
 最終目標は、Quest 3のMR空間で、別Linuxホスト上の複数のGUIアプリを独立したウィンドウとして快適に扱うこと。性能を「軽そう」という推測でなく、**空間描画の安定性、リモート内容の鮮度、入力応答、資源消費と回収**の独立した証拠で評価する。
