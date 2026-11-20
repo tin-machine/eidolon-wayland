@@ -27,7 +27,7 @@ The digest of all *other* keys/sections must be identical in all three snapshots
 
 ## B. Independently reviewed pixel golden
 
-scripts/linux_real_app_v3_n07_pixel.py defines a strictly bounded, source-pinned pixel comparator. The expected fixture path is fixed to scripts/fixtures/linux-desktop-v3-acceptance/n07-pixel-golden-v1.json. **No such reference fixture is committed in N07-A.** The production APPROVED_SHA256 lock is deliberately unset. load_reviewed() must fail N07_GOLDEN_UNREVIEWED, and a future N07 job must leave affected assertions not_run/fail until a distinct, human-reviewed reference and its exact SHA are committed in a separate review.
+scripts/linux_real_app_v3_n07_pixel.py defines a strictly bounded, source-pinned pixel comparator. The expected fixture path is fixed to scripts/fixtures/linux-desktop-v3-acceptance/n07-pixel-golden-v1.json. **No such reference fixture is committed in N07-A.** The production APPROVED_SHA256 lock is deliberately unset. load_reviewed() must fail N07_GOLDEN_UNREVIEWED, and a future N07 job must leave affected assertions not_run/fail until a distinct, human-reviewed reference and its exact SHA are approved and pinned. The reference review and B5 may share a PR when the reference capture, approval record, and subsequent Acceptance run each have their own provenance.
 
 The reference is built independently of the acceptance run (for example an A0 *read-only* observer plus separately reviewed reference images). It must record origin review run, review commit and reviewer. Approval metadata inside an unpinned JSON file is insufficient; the exact fixture digest is pinned in source only after review. Runtime observations may **never** supply the expected image or override the production pin.
 
@@ -64,7 +64,7 @@ Not established yet: **all 13 N07 assertions**, including both GUI states, actua
 
 ## D. N07-B 実装順序と Quest 実機検証の分離（2026-11-17 追記）
 
-本節は上記 C の**実施順序と判定ゲート**を明文化する。新しい N07 variant／assertion を定義せず、[I6 詳細設計](../../linux-real-app-v3-i6-detailed-design.md) §10.2／10.3／11／20 と [統合計画](../../linux-real-app-v3-integration-plan-20261111.md) §11〜13 の責任分界を変更しない。
+本節は上記 C の**実施順序と判定ゲート**を明文化する。新しい N07 variant／assertion を定義せず、[I6 詳細設計](linux-real-app-v3-i6-detailed-design.md) §10.2／10.3／11／20 と [統合計画](linux-real-app-v3-integration-plan-20261111.md) §11〜13 の責任分界を変更しない。
 
 **結論：N07-B の Host 実装は Quest 3 実機確認を待たずに進める。** I6 の Host R+S と I7/V12 の実 Meta SDK／Android、H の装着・物理操作は独立した証拠である。早期の Quest 試験的スモークは並行してもよいが、Host assertion の根拠に数えず、N07-B のブロッカーにも完了条件にもしない。
 
@@ -74,7 +74,7 @@ Not established yet: **all 13 N07 assertions**, including both GUI states, actua
 | 1. N07-B1：Host GUI 最小経路 | 通常 Registry→Runtime→SSH Controller→C2→Waypipe→Mousepad→native compositor→Host SDK→renderer に乗せ、実 View メニューと popup／pointer 配送を採取する。 | 実装済み診断。Registry ACK だけで pointer assertion を合格にしない。 |
 | 2. N07-B2：単一セッション4状態 | 実 pointer で Line Numbers 候補位置を操作し、OFF/ON gutter／View checkmark の4 ROI を取得する。 | PR #49 マージ済み。SDK／Renderer／popup を照合した診断であり、第二セッション・意味確認・Golden は含まない。 |
 | 3. N07-B3：独立レビュー準備 | 実 receipt から画像・補助 context・fingerprint・ROI/mask/tolerance 候補・出所資料を生成し、改変を検証する。 | [B3 詳細](i6-n07-b3-pixel-review.md)。実際の承認は別工程。4状態を6状態へ複製しない。完全 fingerprint と独立6状態 reference が揃った後のみ人手レビュー／SHA lock を行う。 |
-| 4. N07-B4：同 StorageRecord の2セッション | 1st：key absent＋GUI OFF→実 pointer ON→独立 keyfile true→通常 Close と**全 product 回収**。2nd：同 installation/profile storage/binding と C1 root、新 nonce/capture/Runtime/owner で通常 Inspect／Launch、固定8行 file、最初から GUI ON＋key true、通常 Stop／全回収。 | 未実装。B4 の収集機構は未取得2状態の独立 reference 取得にも利用できるが、reference run と acceptance run は分離する。Golden 未承認なら pixel assertion は未成立。 |
+| 4. N07-B4：同 StorageRecord の2セッション | 1st：key absent＋GUI OFF→実 pointer ON→独立 keyfile true→通常 Close と**全 product 回収**。2nd：同 installation/profile storage/binding と C1 root、新 nonce/capture/Runtime/owner で通常 Inspect／Launch、固定8行 file、最初から GUI ON＋key true、通常 Stop／全回収。 | B4 の収集機構は 10216ef（PR #52）でマージ済み。未取得2状態の独立 reference 取得にも利用できるが、reference run と acceptance run は分離する。Golden 未承認なら pixel assertion は未成立。 |
 | 5. N07-B5：統合 oracle と CI | 保存済み native＋supervisor keyfile＋reviewed pixel＋2回分の product cleanup を専用 oracle で revalidate。typed receipt と正式 linux_real_app_v3_evidence.py を接続する。 | 未実装。**N07 13/13** が現 head の実証拠で成立した場合のみ **N07/same_storage_restart** を complete。I6 全体は host_v3_acceptance_passed=false のまま。 |
 | 6. I7/V12 → H | Host 実装と区別して実 APK／Android 通常保存／Meta SDK Surface・callback・Scene、Quest 操作、最後に装着して視認性・物理キーボード／コントローラーを検証。 | I7/V12 と H の固有証拠が必要。Host の S を Quest SDK evidence に昇格させない。正式な I7 受け入れの前提条件は統合計画に従う。 |
 

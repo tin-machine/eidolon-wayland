@@ -17,7 +17,7 @@ N01 の environment_disposal 成功 receipt は別の残件で `not_yet` のま�
 当時の open PR #35（Python Deep 解析）も本単位の依存ではなかった。その後 #35 の merge
 `97dfdbbc13e00227b8285d09b0e880cdc6b6b130` も取り込み、C2 修正開始時の最新 main と一致することを確認した。
 
-文書は移動していなかった。[入口](../../README.md)と Git 履歴を確認し、
+文書は移動していなかった。[入口](../../overview/README.md)と Git 履歴を確認し、
 I2 と I4 の resolver context を**別々に取得**した。両者の proposed／drift=check_required を
 実装承認へ読み替えていない。I6 は引き続き manual discovery とする。
 
@@ -174,7 +174,7 @@ Rust公式配布への通常の直接HTTP確認も約5秒でtimeoutした。既�
 したがって、ローカルのPython拒否検査と、CI containerの実Rust／SSH結果は分けて記録する。
 
 最終head、実施件数、実SSHの結果、CI状態はPR本文に記載する。
-[既存のCI scope](../../ci-change-scope-20261113.md)と必須checkを維持し、
+[既存のCI scope](../../development/ci/ci-change-scope-20261113.md)と必須checkを維持し、
 追加jobは `N01 real SSH / Inspect-only (partial I6)` と命名する。正式 `v3_acceptance` jobの成功とは呼ばない。
 
 後続は通常Launchと実EGL/readback、GUI／設定永続化、故障注入／v2互換、残りrequired集合のoracleである。
@@ -243,7 +243,7 @@ settings backend の拒否条件、product deadline／lease、frozen v2、固定
 
 ### Source の更新順
 
-[統合計画 §2](../../linux-real-app-v3-integration-plan-20261111.md) に従い、C2 本体と対応回帰を
+[統合計画 §2](linux-real-app-v3-integration-plan-20261111.md) に従い、C2 本体と対応回帰を
 先に commit `b32eaf18bf0613e928c036a884fc19aac38a68b3` として確定し、後続 commit の
 `scripts/linux-desktop-v3-sources.json` で `integration.c2_commit` をその実 SHA へ更新する。
 C1 基点と15 source／generated の集合は変更しない。inventory 自身も15 sourceの一つであり、

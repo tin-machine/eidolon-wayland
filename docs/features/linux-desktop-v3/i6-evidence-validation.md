@@ -2,7 +2,7 @@
 
 2026-11-15（日本時間）。本実装の開始点は main
 `74b1b2d22fc8fa10d978e7533e08e4565366efed`（PR #32 merge後）。
-[I6 詳細設計](../../linux-real-app-v3-i6-detailed-design.md) の調査baseline
+[I6 詳細設計](linux-real-app-v3-i6-detailed-design.md) の調査baseline
 `0e0df43a2ce4734a00a36f830cc24a80e277bec5` は過去の観測として維持する。
 
 **今回利用できるのは、I6 reportの構造・参照・所有相関・artifact整合性を独立に検査する機能である。**
@@ -269,7 +269,7 @@ sshd/Mousepadが存在することから、固定版、実接続、実C1 HOME/�
 通常desktop/HOME/profile/Documents/settingsや共有ADBにはfaultを注入していない。
 これらを環境skip成功にせず、後続の必要な実装単位で設計書§21の最小実験を行う。
 
-CIは既存の[change-scope policy](../../ci-change-scope-20261113.md)を維持する。
+CIは既存の[change-scope policy](../../development/ci/ci-change-scope-20261113.md)を維持する。
 `scripts/**` の変更なのでHost/Android/GIO/Mousepadの既存routing対象であり、Python検査はHost discoveryへ入る。
 docs-onlyの重いbuildを増やさず、required checks、Documentation integrity、CodeQL、trusted-base classifierを弱めない。
 このPRで正式 `Normal v3 Host acceptance (I3-T20/V11)` jobを有効化しない。
@@ -295,7 +295,7 @@ NoLocalAllocationを空配列やprocess exitに置き換えず、origin未割当
 ```text
 tin-machine/eidolon-wayland のI6開発を継続してください。
 今回までの証拠・判定基盤PRがmerge済みか実際に確認し、必ず最新mainを取得してください。
-AGENTS.md、docs/README.md、docs/features/linux-desktop-v3/README.mdから現在の文書配置を確認し、
+AGENTS.md、docs/overview/README.md、docs/features/linux-desktop-v3/README.mdから現在の文書配置を確認し、
 移動済み文書はGit履歴と入口から追跡してください。古いpathへ作り直さないでください。
 I6詳細設計と docs/features/linux-desktop-v3/i6-evidence-validation.md、固定manifestを読み、
 I2/I4 contextを別々に取得してください。I6はmanual discoveryです。

@@ -35,9 +35,9 @@ it is not copied or cherry-picked into a second implementation.
 The [N07-A keyfile and pixel contracts](i6-n07-a-independent-oracles.md),
 [B1/B2 pointer/popup/readback](i6-n07-b1-pointer-popup-readback.md),
 [B3 review preparation](i6-n07-b3-pixel-review.md),
-[I6 detailed design](../../linux-real-app-v3-i6-detailed-design.md),
-[C1 persistent-profile ownership](../../linux-real-app-c1-handoff-20261110.md)
-and [C2 remote-helper retirement](../../linux-real-app-c2-helper-20261110.md)
+[I6 detailed design](linux-real-app-v3-i6-detailed-design.md),
+[C1 persistent-profile ownership](linux-real-app-c1-handoff-20261110.md)
+and [C2 remote-helper retirement](linux-real-app-c2-helper-20261110.md)
 remain applicable. I6 is still manually discoverable; this document does not
 register a new resolver task or declare its design accepted.
 
@@ -788,8 +788,7 @@ verification is also still incomplete.
 
 1. Independently review the six-state reference's GUI semantics, menu identity,
    numeric glyphs, masks, tolerance and complete effective environment.
-2. Supply an actual reviewed reference and source pin in a separate approval
-   change. Neither B4 code review nor its candidate hash performs this step.
+2. Review the reference and record the reviewer, source pin, and decision before collecting Acceptance evidence. The review and B5 implementation may use the same PR if the approval identifies the exact independent reference. A B4 candidate hash carries collection provenance.
 3. In B5, execute a distinct Acceptance run and join the two product sessions,
    keyfile observations, approved pixels and cleanup into the typed N07 receipt.
 4. Connect that receipt to the unchanged formal evidence validator only when

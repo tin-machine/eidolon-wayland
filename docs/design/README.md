@@ -19,17 +19,17 @@ related_sources:
 2026-11-06の追加依頼: [テーマ・独立アニメーション・作業負荷](theme-animation.md)をPhase 6完了より先に実装する。
 元の31タスクの受入条件は維持し、追加分TH00〜TH05の進捗を同文書で管理する。
 
-これは製品実装前の契約であり、Phase 1〜6全体の実機成功記録ではない。Phase 0の[実測記録](../phase-0-troubleshooting-20261104.md)に加え、独立debug APKによる[Native事前検証](../native-preflight-20261104.md)がある。そこに記載された部分的な成立確認を再利用し、31タスクの残る受入条件を省略しない。
+これは製品実装前の契約であり、Phase 1〜6全体の実機成功記録ではない。Phase 0の[実測記録](../development/build/phase-0-troubleshooting-20261104.md)に加え、独立debug APKによる[Native事前検証](../development/build/native-preflight-20261104.md)がある。そこに記載された部分的な成立確認を再利用し、31タスクの残る受入条件を省略しない。
 
 ## 読む順序
 
-次の拡張は[Termuxの必要時起動・Linux GUI・ウィンドウ装飾と操作の計画](../next-phase-termux-startup-linux-gui-plan-20261107.md)にまとめた。
+次の拡張は[Termuxの必要時起動・Linux GUI・ウィンドウ装飾と操作の計画](../features/termux/next-phase-termux-startup-linux-gui-plan-20261107.md)にまとめた。
 2026-11-07時点では相談段階で、実装開始待ち。既存taskの受入れ条件と状態は変更しない。
-同日の追加要望で、[次期拡張の実装順](../next-phase-termux-startup-linux-gui-plan-20261107.md#implementation-order)を概算コスト順へ改訂した。
-入力停止理由の表示と[foot内のかな漢字変換](../japanese-input-plan-20261107.md)を加え、本文の節番号と着手順を分ける。
-[Quest全体のメトリクス・IP取得の調査](../quest-device-metrics-plan-20261107.md)も同計画の補足として参照する。
-[左下のアプリランチャー・file指定・設定fileの計画](../application-launcher-plan-20261107.md)も相談段階の拡張として参照する。
-[Ubuntu等のremote Linux GUI拡張案](../remote-linux-gui-plan-20261107.md)では、接続先profile・Linux helper・LAN性能の検証方針を扱う。
+同日の追加要望で、[次期拡張の実装順](../features/termux/next-phase-termux-startup-linux-gui-plan-20261107.md#implementation-order)を概算コスト順へ改訂した。
+入力停止理由の表示と[foot内のかな漢字変換](../features/android-ime/japanese-input-plan-20261107.md)を加え、本文の節番号と着手順を分ける。
+[Quest全体のメトリクス・IP取得の調査](../development/performance/quest-device-metrics-plan-20261107.md)も同計画の補足として参照する。
+[左下のアプリランチャー・file指定・設定fileの計画](../features/launcher/application-launcher-plan-20261107.md)も相談段階の拡張として参照する。
+[Ubuntu等のremote Linux GUI拡張案](../features/remote-linux/remote-linux-gui-plan-20261107.md)では、接続先profile・Linux helper・LAN性能の検証方針を扱う。
 
 1. 本書で到達点とタスク順を確認する。
 2. [共通契約](contracts.md)で識別子・thread・JNI・エラー・上限を読む。
@@ -117,7 +117,7 @@ docs/design/tasks.jsonのB01から、一つのタスクずつ実装してくだ�
 
 同じ会話ならモデル選択で利用可能なSolへ切り替える。CLIでは`/model`が入口である。[公式Models](https://learn.chatgpt.com/docs/models)はUI/CLIの選択方法を説明している。世代・利用可否はaccount/clientによって異なるので、設計書に特定のSol IDや料金を固定しない。今回確認したローカルCLIは0.155.1で、モデル設定自体は変更していない。
 
-別会話でもこのrepositoryだけで再開できる。実装者は[進捗記録](../progress.md)にtask ID、commit、検証結果、残件を更新する。会話の記憶を完了証拠にしない。`tasks.json`は設計時すべて`planned`で開始し、実装検証に合わせてstatusを更新する。
+別会話でもこのrepositoryだけで再開できる。実装者は[進捗記録](../evidence/progress.md)にtask ID、commit、検証結果、残件を更新する。会話の記憶を完了証拠にしない。`tasks.json`は設計時すべて`planned`で開始し、実装検証に合わせてstatusを更新する。
 
 2026-11-04の実装開始後、ユーザーはHMD視認・物理入力の確認を最終段階にまとめると指定した。自動部分の成立を確認したtaskから後続実装・ADB試験を進めてよい。手動部分が残るcheck全体は`not_run`、taskは`in_progress`として残し、最終受入れまで`done`へ変更しない。
 

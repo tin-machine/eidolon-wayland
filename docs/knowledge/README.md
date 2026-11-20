@@ -2,7 +2,7 @@
 
 Status: **D1/D2 inventory/contracts, D3 resolver, D4 docs CI, D5 Linux Desktop v3 and D6 curated feature migration**  
 Snapshot commit: `78e760a5e3d15d8e7002229948d665260c4f1484` (2026-11-13 JST)  
-Parent design: [LLM-first Documentation Knowledge Architecture](../documentation-knowledge-base-design-20261113.md)
+Parent design: [LLM-first Documentation Knowledge Architecture](documentation-knowledge-base-design-20261113.md)
 
 ## D1 — Complete read-only inventory
 
@@ -13,9 +13,9 @@ Parent design: [LLM-first Documentation Knowledge Architecture](../documentation
 - `candidate_type`: heuristic document purpose, including `unclassified`; **not confirmed type**.
 - `registration_status`: all `unregistered` until D5+ review applies a managed ID and validates its references.
 
-The snapshot includes 3 Curved Workspace fixture JSON files and `docs/design/tasks.json`; it is not restricted to Markdown. No files are moved or edited. The historical `docs/documentation-knowledge-base-design-20261113.md` has a provisional Front Matter ID but is still `unregistered` in this D1 registry; registering requires a reviewed manifest/ID graph.
+The snapshot includes 3 Curved Workspace fixture JSON files and `docs/design/tasks.json`; it is not restricted to Markdown. No files are moved or edited. The historical `docs/knowledge/documentation-knowledge-base-design-20261113.md` has a provisional Front Matter ID but is still `unregistered` in this D1 registry; registering requires a reviewed manifest/ID graph.
 
-The original directory layout is **not** an authority ranking. For current tasks use [the documentation entry](../README.md). Candidate sorting does **not** indicate `accepted`, `implemented`, or `verified`.
+The original directory layout is **not** an authority ranking. For current tasks use [the documentation entry](../overview/README.md). Candidate sorting does **not** indicate `accepted`, `implemented`, or `verified`.
 
 Do not treat this dated snapshot as live state. A later inventory refresh may regenerate/compare the Git inventory using `git ls-tree -r --name-only <commit> docs/` (or equivalent) and flag additions, deletions, and renames.
 
@@ -25,16 +25,16 @@ These are **candidates** for a future reviewer to reconcile with current source 
 
 | Proposed stable ID | Existing path | Review requirement |
 | --- | --- | --- |
-| `docs-knowledge-architecture-20261113` | `docs/documentation-knowledge-base-design-20261113.md` | Existing Front Matter; proposed system design, not an accepted contract |
-| `eidolon-system-architecture` | `docs/architecture.md` | Review stale phase-specific assertions before claiming current architecture |
+| `docs-knowledge-architecture-20261113` | `docs/knowledge/documentation-knowledge-base-design-20261113.md` | Existing Front Matter; proposed system design, not an accepted contract |
+| `eidolon-system-architecture` | `docs/architecture/architecture.md` | Review stale phase-specific assertions before claiming current architecture |
 | `initial-phase-contracts` | `docs/design/contracts.md` | Must preserve `scripts/check-design` behavior |
 | `initial-phase-task-index` | `docs/design/tasks.json` | Task JSON is not YAML Front Matter; support as registered structured source if needed |
-| `linux-desktop-v3-integration-plan` | `docs/linux-real-app-v3-integration-plan-20261111.md` | Baseline/source drift and status review |
-| `linux-desktop-v3-b1-contract` | `docs/linux-real-app-b1-contract-20261110.md` | Confirm contract precedence with other B1 docs |
-| `linux-desktop-v3-i2` | `docs/linux-real-app-v3-i2-detailed-design.md` | Review against merged I2 implementations before acceptance |
-| `linux-desktop-v3-i4` | `docs/linux-real-app-v3-i4-detailed-design.md` | Review against current I3/I4 PR and B1 observation API |
+| `linux-desktop-v3-integration-plan` | `docs/features/linux-desktop-v3/linux-real-app-v3-integration-plan-20261111.md` | Baseline/source drift and status review |
+| `linux-desktop-v3-b1-contract` | `docs/features/linux-desktop-v3/linux-real-app-b1-contract-20261110.md` | Confirm contract precedence with other B1 docs |
+| `linux-desktop-v3-i2` | `docs/features/linux-desktop-v3/linux-real-app-v3-i2-detailed-design.md` | Review against merged I2 implementations before acceptance |
+| `linux-desktop-v3-i4` | `docs/features/linux-desktop-v3/linux-real-app-v3-i4-detailed-design.md` | Review against current I3/I4 PR and B1 observation API |
 | `workspace-curved-design-index` | `docs/curved-workspace/README.md` | Preserve fixtures and explicit 01–08 reading order |
-| `workspace-spatial-anchor-sa0` | `docs/spatial-anchor-linux-design-20261111.md` | SA0 is an observation-only proposal, not Quest-proven |
+| `workspace-spatial-anchor-sa0` | `docs/features/spatial-anchor/spatial-anchor-linux-design-20261111.md` | SA0 is an observation-only proposal, not Quest-proven |
 
 The complete inventory remains the CSV; these **ten seed IDs do not imply that remaining files should be ignored**. Other documents receive stable IDs only when reviewed during feature migration.
 
@@ -108,7 +108,7 @@ A document is not an accepted contract just because it appears in the inventory 
 
 1. Preserve `docs/design/tasks.json`, all spec anchors, and [`scripts/check-design`](../../scripts/check-design); they are **already consumed by CI**.
 2. Do not move `docs/curved-workspace/fixtures/*.json` or other fixtures without reviewing test inputs.
-3. [CI change scope](../ci-change-scope-20261113.md) treats explicit `docs/features/<feature>/manifest.yaml` as docs-only because an unconditional documentation CI job validates it. JSON fixture/schema, other YAML, and root `AGENTS.md` remain conservative full-build inputs. **No workflow path-ignore filter or broad YAML/JSON exemption.**
+3. [CI change scope](../development/ci/ci-change-scope-20261113.md) treats explicit `docs/features/<feature>/manifest.yaml` as docs-only because an unconditional documentation CI job validates it. JSON fixture/schema, other YAML, and root `AGENTS.md` remain conservative full-build inputs. **No workflow path-ignore filter or broad YAML/JSON exemption.**
 4. Do not assert that historic GitHub `/blob/main/docs/old-path` URLs redirect after renames. Retain a small stub when link consumers need compatibility.
 5. Historical probe/acceptance records retain original experiment/build/commit identity. Host tests never substitute for Quest/HMD acceptance.
 6. D3 provides deterministic dependency discovery (topological order + ID tie-break), explicit unknown IDs, machine-readable output, and bounded context. Unregistered legacy documents remain outside automatic resolution until D5.

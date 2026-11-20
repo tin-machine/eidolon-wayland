@@ -3,7 +3,7 @@
 Status: **implementation checkpoint / independently verifiable partial I6**. Baseline:
 `main` at `995bf219f0e9d03f53c539bfc956f7db720a668b` (PR #39).
 The open C2 Waypipe refactor PR #38 is **not** an implementation dependency.
-Primary requirements: [I6 detailed design](../../linux-real-app-v3-i6-detailed-design.md),
+Primary requirements: [I6 detailed design](linux-real-app-v3-i6-detailed-design.md),
 [fixed cases-v1.json](../../../scripts/fixtures/linux-desktop-v3-acceptance/cases-v1.json),
 [N01 Inspect-only](i6-n01-inspect-only.md), [N02 typed acceptance](i6-n02-typed-acceptance.md).
 

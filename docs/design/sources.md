@@ -12,7 +12,7 @@ related_sources:
 ---
 # 根拠・固定版・未確定事項
 
-確認日: 2026-11-04。API/配布sourceの確認は、その組合せがQuestで動いた証拠ではない。実機済みの基準は[Phase 0記録](../phase-0-troubleshooting-20261104.md)。今回の設計調査ではAPK更新、端末設定変更、Rust実装を行っていない。
+確認日: 2026-11-04。API/配布sourceの確認は、その組合せがQuestで動いた証拠ではない。実機済みの基準は[Phase 0記録](../development/build/phase-0-troubleshooting-20261104.md)。今回の設計調査ではAPK更新、端末設定変更、Rust実装を行っていない。
 
 ## APIと採用判断
 

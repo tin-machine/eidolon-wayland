@@ -14,7 +14,7 @@ class ClassifierTests(unittest.TestCase):
 
     def test_docs_only(self):
         self.assert_jobs(["README.md", ".github/SECURITY.md",
-                          "docs/architecture.md", "docs/oss-publication-github-security-settings-20261113.md"], [])
+                          "docs/architecture/architecture.md", "docs/development/release/oss-publication-github-security-settings-20261113.md"], [])
 
     def test_feature_manifests_are_docs_only(self):
         self.assert_jobs(["docs/features/linux-desktop-v3/manifest.yaml"], [])
@@ -99,7 +99,7 @@ class ClassifierTests(unittest.TestCase):
                 self.assert_jobs([path], ci_scope.ALL)
 
     def test_mixed_docs_and_android(self):
-        self.assert_jobs(["docs/usage.md", "android/app/build.gradle.kts"], ["android"])
+        self.assert_jobs(["docs/guides/usage.md", "android/app/build.gradle.kts"], ["android"])
 
     def test_unknown_and_unsafe_paths_are_full(self):
         for path in (".gitattributes", "docs/future.json", "/absolute", "../escape"):

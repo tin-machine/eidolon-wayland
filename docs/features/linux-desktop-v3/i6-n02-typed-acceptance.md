@@ -1,6 +1,6 @@
 # I6 N02: 通常 Host Launch の型付き証拠と formal validator
 
-2026-11-16。参照: [I6 詳細設計](../../linux-real-app-v3-i6-detailed-design.md) §11/§13–15、
+2026-11-16。参照: [I6 詳細設計](linux-real-app-v3-i6-detailed-design.md) §11/§13–15、
 [証拠 validator 第1単位](i6-evidence-validation.md) および
 [N01 Inspect-only](i6-n01-inspect-only.md)。
 

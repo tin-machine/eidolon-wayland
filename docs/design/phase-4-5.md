@@ -31,11 +31,11 @@ R03/W03の成功が前提。`native/render/src/compositor.rs`にAndroid EGL adap
 
 gate: host画像変換test、Questで既知snapshot→四隅/文字代替pattern→resize/再生成。GlesRendererとAndroid EGLの適合が失敗した場合は原因とpatch範囲を記録し、別rendererへの変更をD01の設計差分としてレビューする。無検証のfallbackを完成扱いにしない。
 
-[D01の実装・検証記録](../owned-image-render-checks.md)では、Android公開名libEGL.soへの固定patchと
+[D01の実装・検証記録](../features/wayland/owned-image-render-checks.md)では、Android公開名libEGL.soへの固定patchと
 外部EGLContext/NativeWindow adapterを使う。公式minimal exampleと同じFlipped180をwindow framebufferの出力に適用し、
 ImageReader上の実GPUでtransform/scale/alpha/clipとSurface再生成を検査した。
 fixture自体はsynthetic visibilityによるnative scopeである。
-通常SDKパネルへの接続・停止後UI復帰は[D02のBuild63検証](../foot-render-checks.md)で成功し、HMD視認は最終段階に残す。
+通常SDKパネルへの接続・停止後UI復帰は[D02のBuild63検証](../features/wayland/foot-render-checks.md)で成功し、HMD視認は最終段階に残す。
 
 <a id="d02"></a>
 ## D02 — foot一枚の表示PoC
@@ -67,7 +67,7 @@ SDK UV → 左上原点の正規化UV → panel pixel座標
 
 Build66で共通Viewport/model変換と実SDK quadの5点校正が成功した。
 SDK 0.15.0のUVは左上原点で、合成入力のchanged/state/stopも確認した。
-物理入力とWayland配送の未確認を分け、[試行・再現記録](../ray-coordinate-checks.md)へ残す。
+物理入力とWayland配送の未確認を分け、[試行・再現記録](../features/input/ray-coordinate-checks.md)へ残す。
 
 <a id="i02"></a>
 ## I02 — 物理キーボード
@@ -110,7 +110,7 @@ MVP判定: foot一枚で英数字/修飾キー、クリック、scroll、logical
 <a id="i05"></a>
 ## I05 — 二枚のwindowとlayer割当
 
-2026-11-07の次期要件は[最大九枚・グループ化の計画](../next-phase-termux-startup-linux-gui-plan-20261107.md)第7節を参照する。
+2026-11-07の次期要件は[最大九枚・グループ化の計画](../features/termux/next-phase-termux-startup-linux-gui-plan-20261107.md)第7節を参照する。
 以下は現行の二枚構成の契約・受入れであり、九枚対応やグループアニメーションの実装完了を意味しない。
 
 coreに`logical_windows`と`visible_windows`を分離する。表示上限2、論理上限8。新しい三枚目はwindow一覧へ保持し、ユーザーが表示対象を切り替える。使用中の入力captureはfocus/表示切替前に解除する。

@@ -8,7 +8,7 @@ PR #34 の検証済み head は `a329da7f64ef3fff0fb9e50f9b841b350521fb3b`。
 既存 checkout と検証 worktree を保存し、専用 clone／branch で実装する。
 
 **この単位は renderer backend の T 証拠を成立させる。通常 v3 Launch や N02 の合格ではない。**
-[I6 詳細設計](../../linux-real-app-v3-i6-detailed-design.md) §7.2、§7.3、§9.1、§13、§21 を
+[I6 詳細設計](linux-real-app-v3-i6-detailed-design.md) §7.2、§7.3、§9.1、§13、§21 を
 現 source の所有境界へ接続した。詳細設計の proposed 状態、I6 の manual discovery、
 I2／I4 の別々の resolver context と check_required 警告は維持する。
 第1・第2単位の履歴は [evidence validation](i6-evidence-validation.md) と

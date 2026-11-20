@@ -123,7 +123,7 @@ A1/A2受入れ前の通常機能とはしない。reset・非表示・停止で�
 enqueueのACCEPTEDとcommand_completeの配送完了を区別し、拒否された確定を再送しない。
 text-inputのwire serialと編集内容の世代は別に扱う。geometry-only更新ではrevisionを保ち、
 同revisionの既知serial区間だけを受理し、最新serialでdoneを送る。本文を新しいtargetへ付け替えない。
-詳細と検証範囲は[IME実装記録](../android-ime-implementation-20261107.md)を参照する。
+詳細と検証範囲は[IME実装記録](../features/android-ime/android-ime-implementation-20261107.md)を参照する。
 
 I06では`set_pose(target,pose)`、`pose_applied(target,pose_command?,pose)`、
 `set_background(background)`、`background_applied(scene,background_command?,background)`、
@@ -160,7 +160,7 @@ ackまで同じ行を保持し、同windowの次世代はdestroy ack後に生成
 createの成功ackは実present後、destroyの成功ackはnative detachとSDK Entity破棄後に送る。
 `nativeAttachSurface`は診断用、`nativeAttachWindowSurface`はmapped windowの希望tupleを検査する通常用とする。
 通常`start_app`はtarget-driven callback、debug `app_probe`はvirtual callbackで、同Displayで混在させない。
-詳細と受入範囲は[foot描画検査](../foot-render-checks.md)を参照する。
+詳細と受入範囲は[foot描画検査](../features/wayland/foot-render-checks.md)を参照する。
 
 T01で追加するcredential専用JNIは通常command/診断と分離する:
 
