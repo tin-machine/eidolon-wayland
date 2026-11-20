@@ -26,9 +26,10 @@ LX00–LX07 は本書内の作業 ID であり、managed manifest / resolver に
 | R3 | アイコンをつかんで置きたい場所へ取り出す | 選択と初期配置を結ぶ drag-out 起動。通常のクリック起動も使用できる |
 | R4 | 円／六角形などの見た目はテーマで変更 | 共通の操作・起動モデルへ異なる skin を適用する。形ごとに起動処理を複製しない |
 | R5 | 複数の UI 案を実装して比較 | 同一 APK 内でプリセットを切替。Codex の印象で一案だけ実装して完了にしない |
-| R6 | 使いやすいもののみ残す | 実機結果と利用者の選択を記録し、不採用コード・設定分岐を削除。保存設定を移行する |
+| R6 | 利用者が残す UI を選ぶ | 同一 APK で試した後、用途に応じて複数案を残せる。廃止する案があれば保存設定を移行する |
 | R7 | どのホストのアプリか分かる | 全アプリ・お気に入り・空間の起動ボタン・drag 中・起動中・起動後の窓で、同じ接続先の文字ラベルを保つ |
-| R8 | 好きな場所のボタンと全アプリの両方から選べる | お気に入りの有無に依存しない「すべてのアプリ」を必須にする。設定した各ホストの公開 catalog 全体へ到達できるよう、一覧取得 backend も段階的に実装する |
+| R8 | 好きな場所のボタンと全アプリの両方から選べる | お気に入りの有無に依存しない「すべてのアプリ」を必須にする。最初は Ubuntu Desktop 1 台の実メニューの全項目を検索・選択できる。複数ホストの統合はその後に加える |
+| R9 | 同じ Ubuntu で複数のアプリを開く | まず異なる 2 アプリを同時に表示し、個別に入力・終了・回収できる。ウィンドウの追加とアプリの追加を区別する |
 
 「ハンドジェスチャー」は手首を返す、pinch する等の入力動作を指す。
 ここでの UI は **手首近くで利用者へ向く円盤状のラジアルメニュー** と定義する。
@@ -47,9 +48,11 @@ LX00–LX07 は本書内の作業 ID であり、managed manifest / resolver に
 | Linux 入力 | trigger / B・Y / thumbstick 等を click / scroll へ変換 | shell 操作と Linux 入力の排他、古い release の失効 |
 | 物理キーボード | Ctrl+Space の IME 切替、panelTextInput による Linux 配送停止、accepted key-up tail の消費 | 召喚・検索の焦点移譲と戻り先の生存確認 |
 | theme | format_version 1/2、未知 field を拒否。window 装飾と v2 controls が対象 | launcher/shell appearance の新 schema と Android への適用経路 |
-| catalog と接続先 | Termux は登録 catalog のページ表示。remote v3 は固定 GTK デモと Mousepad の二項目。LauncherUi は一つの snapshot、remote profile 保存先は一つ | 複数の設定済みホストを識別する registry、ホスト別 snapshot、可変 catalog の取得。全件の導線と件数・未取得状態 |
-| v3 起動 | runtime / capture / session / catalog revision / entry ID を照合。通常 GUI lease は一つ | host/backend/profile binding を保持した selection、drag-out の起動要求と正規 main window を対応付ける receipt / coordinator |
+| catalog と接続先 | Termux は登録 catalog のページ表示。remote v3 は固定 GTK デモと Mousepad の二項目。LauncherUi は一つの snapshot、remote profile 保存先は一つ | まず 1 台の可変 catalog を全件選択可能にする。複数 host の registry と横断検索は後続 |
+| v3 起動 | runtime / capture / session / catalog revision / entry ID を照合。通常 GUI lease は一つ | 同一 host の各起動に lease・回収記録・窓を対応付け、入力と Stop の対象を識別する。drag-out では同じ対応を再利用する |
 | 窓配置 | 対象 identity、generation、geometry の既存 gate がある | 新規 main の初期配置 intent を既存経路へ接続 |
+
+開発中の実機用作業版には、Ubuntu の Desktop Entry を SSH で取得し、一覧を開いたときと手動更新時に読み直す実装がある。GTK と Qt/KDE の項目を取得した記録もある。LX00 でこの差分を main と突き合わせ、利用できる列挙・表示・テストを先に取り込む。作業版の件数は固定の期待値にしない。
 
 主な source:
 
@@ -76,12 +79,11 @@ LX00–LX07 は本書内の作業 ID であり、managed manifest / resolver に
 
 現行 theme v2 の controls は固定ウィンドウ操作部の配置設定であり、launcher skin ではない。
 ソース AndroidManifest に handtracking 宣言が見えないことだけで最終 APK の対応を断定せず、
-LX00 で merged manifest と実際の入力を確認する。
+素手入力を追加する段階で merged manifest と実際の入力を確認する。
 
 ## 3. 既存契約との境界
 
-- **Linux Desktop v3 の一 GUI 契約を維持**する。比較のために同時起動、catalog の再使用、
-  session/capture の省略、lease/Stop/Recover の意味変更を行わない。
+- 固定 v3 の単一起動は旧クライアント／ヘルパーの互換条件とする。新しい組み合わせでは、同一ホストで複数アプリの起動を受け付ける能力を明示する。各起動の所有、入力先、個別 Stop/Recover の条件は §6.5 に従う。
 - Termux と remote Linux の起動定義・権限・利用可能状態は既存 backend が所有する。
   メニューやテーマへ自由な command / argv / host を移さない。
 - 一覧の host filter と実際の接続先を別状態にする。表示対象を変える操作で接続・切断・Stop を実行しない。
@@ -99,8 +101,7 @@ LX00 で merged manifest と実際の入力を確認する。
 
 ## 4. 比較する三つのプリセット
 
-全案で、手首 quick menu、ホスト表示付きの全アプリ一覧・お気に入り、空間へ置ける起動ボタン、
-クリック／drag-out 起動、設定状態、起動 admission を共有する。
+全案で同じ全アプリ一覧・選択・通常起動を使う。手首 quick menu、配置ボタン、drag-out は実装した段階で三案に共通で提供する。初回は controller の ray/trigger と組み込みの円形表示で比較できる。
 比較する主な差は **詳細一覧の呼び出しと配置**。同時に複数案を反応させず、一案だけを有効にする。
 
 | ID | 表示名 | 手首からの操作 | 詳細一覧の位置 | 再び呼び出す時 |
@@ -123,7 +124,7 @@ P3 の「棚を固定する」と「個別の起動ボタンを好きな場所�
 ### 比較軸を増やしすぎない
 
 1. 同じ入力方式・同じ circle skin で P0/P1/P2/P3 を比較する。
-2. 残った一～二案で circle / hexagon を比較する。
+2. 利用者が残したい案で circle / hexagon を比較する。
 3. 必要な場合だけ hands / controller の差を再確認する。
 
 P0 が同じ input mode に対応することを確認できない場合は、その mode の baseline を未成立とする。
@@ -164,7 +165,7 @@ controller の P0 を参考として残しても、hands の三案と同条件�
 - menu を支える anchor hand と、選択する ray/hand/controller の source identity は別に捕捉する。
   非利き手に表示し、利き手で選ぶ操作を単一 source と見なさず、各入力の失効を照合する。
 - Meta 推奨の非利き手 palm-up index pinch 等を候補に、対象 SDK の提供イベント、OS の予約 gesture、
-  既定 locomotion との競合を LX00 で確認して最初の binding を決める。
+  既定 locomotion との競合を素手入力の実装時に確認して最初の binding を決める。
 - 初期 hands 選択は安定した hand ray＋明示 pinch、controller は ray＋trigger を第一候補にする。
   直接 touch と thumbstick 方向選択は、対応が確認できた場合の入力 adapter とし、三案の比較軸へ混ぜない。
 - 召喚に使った pinch／button を、そのまま最初の項目選択に再利用しない。neutral へ戻ってから再 arm する。
@@ -220,7 +221,7 @@ P3 の位置は初版ではセッション内で保持する。再起動時は�
 
 「お気に入り」と「すべてのアプリ」を、共通 panel の常に見える切替として用意する。
 **全アプリは、お気に入り登録や配置済みボタンの存在を前提にしない基本経路**とする。
-手首の「アプリ」、既存 ControlPanel、割当てた keyboard/controller 入口のいずれからも到達できる。
+最初は既存 ControlPanel から controller で到達できる。手首・キーボードの入口も実装時に同じ一覧を開く。
 初回・お気に入りゼロ件・ボタン削除後も入口を維持し、検索を開始するためのアプリ登録も不要とする。
 
 | 場所 | 必須の表示と操作 |
@@ -232,8 +233,10 @@ P3 の位置は初版ではセッション内で保持する。再起動時は�
 
 「すべて」は、**設定済みホストの backend が公開する全 catalog entry**を指す。
 お気に入り、先頭の数件、現在画面の一ページ、起動確認済みの項目だけを「全アプリ」と呼ばない。
-起動不可／未検証の公開項目も理由付きで表示する。ネットワーク上の未知ホスト、未登録の実行ファイル、
-権限外の directory を勝手に探索する範囲ではない。remote の Desktop Entry discovery は §6.4 の必須依存とする。
+全項目で選択して詳細を開ける。未検証でも対応する起動方法なら「起動を試す」を使える。Terminal 必須など既知の非対応では詳細に理由を示し、起動操作だけを無効にする。ネットワーク上の未知ホスト、未登録の実行ファイル、
+権限外の directory を勝手に探索する範囲ではない。remote の Desktop Entry discovery は §6.4 に従う。
+
+最初の 1 台では host 名、取得結果、更新操作を表示する。以下のホスト横断フィルターとホスト別 cache は、接続先を複数登録できる段階で追加する。
 
 - host scope は「すべてのホスト」と「一つの host」を明示的に切り替え、active な接続先とは別に表示する。
   検索語は scope 内の app 名・host alias を対象とする。同名 app を統合せず、host ごとの別 entry とする。
@@ -245,7 +248,7 @@ P3 の位置は初版ではセッション内で保持する。再起動時は�
   全ホスト表示でも「2/3 ホストを取得」のように coverage を示し、未読 directory や取得失敗をゼロ件へ変換しない。
   表示する数値は実際の取得結果から算出し、サンプルの値を製品へ固定しない。
 - stale/offline の cache は閲覧・検索できても、現在の起動許可ではない。最後の取得時点と理由を示し、
-  新しい catalog／admission を確認してから選択を確定する。通信復帰だけで予約起動しない。
+  項目を選んで詳細を読める。起動の確定時に新しい catalog／admission を確認する。通信復帰だけで予約起動しない。
 - 現行 catalog の固定範囲や、新しい discovery に未対応の host はその能力を表示する。
   「固定二項目の一覧」と「host のアプリメニューを自動取得済み」を同じ完了状態にしない。
 
@@ -294,33 +297,25 @@ host の削除・実 target の置換は、お気に入り／起動ボタンの�
 remote v3 の二項目は固定契約で、任意のアプリを一覧化する実装としては使えない。
 Termux の既存ページ表示も全アプリ導線へ接続し、現在ページだけで検索を終えない。
 
-実装は次の三段階を既存 LX に含める。UI 比較を先行できるが、段階1だけで R8 完了とはしない。
+1. **Ubuntu Desktop 1 台の全アプリを選ぶ（R8）。** 認証済み SSH で Ubuntu のアプリメニューに表示される Desktop Entry を取得する。GTK・Qt/KDE とも個別登録は不要。ランチャーを開くたびに再取得し、「更新」でも同じ取得処理を使う。取得中の旧一覧と最新結果を区別し、応答の前後で選択先が別のアプリに変わらないようにする。
+2. **同じホストで起動を試す。** Desktop Entry ID と起動定義を Ubuntu 側で再照合する。対応する未検証項目も試せる。起動失敗・既知の非対応は項目ごとに理由を示す。全アプリの動作確認や起動成功率を、一覧の公開条件にしない。
+3. **同じホストで複数アプリを使う（R9）。** §6.5 の個別起動と回収を実装する。複数の SSH 接続先の登録・移行、ホスト横断検索、offline cache は、別の増分として後から加える。host binding は最初の 1 台から保持する。
 
-1. **現行 catalog を使う共通 UI（LX00/LX01/LX02）。** 既存の host 身元を表示モデルへ通し、
-   全アプリ／お気に入り／配置ボタンと同一 selection の境界を作る。固定二項目で実起動をつなぎ、
-   多数項目・複数 host の試験 fixture は明示して UI と入力競合の確認に使う。
-2. **実 catalog と複数ホスト登録（LX01/LX03）。** 登録 host ID、profile binding、backend、host 別 snapshot を定義し、
-   既存一 profile の移行、ホスト追加／改名／削除と cache の失効を実装する。
-   remote は [B1 §3.1](../linux-desktop-v3/linux-real-app-b1-contract-20261110.md#31-ssh-接続先のアプリを自動検出するカタログ拡張案)と
-   [統合計画 §10.1](../linux-desktop-v3/linux-real-app-v3-integration-plan-20261111.md#101-linux-アプリの自動検出と選択起動)の
-   認証済み SSH・Desktop Entry ID による可変 catalog を接続する。新しい契約版、互換性、表示条件、
-   追加／削除／変更、読み取り失敗と全ページの取得を同じ変更で検証する。
-   読み取り専用の一覧取得は起動 admission と分け、live な session を切り替えず取得できる経路を設計する。
-   その経路が未成立なら理由付きで未取得とし、裏で既存接続を切断して取得しない。
-3. **実 host への選択起動と配置（LX03/LX05）。** 明示した target で Desktop Entry ID を再解決し、
-   保存した command/path のコピーに依存せず、通常の所有・回収・main identity へ接続する。
-   対応外の Terminal／D-Bus 起動等は削除せず理由付き無効とし、未検証と起動確認済みを分ける。
-   複数 host の閲覧は同時 remote GUI 起動の許可ではない。現在の一 GUI と切替手順を保つ。
+R8 の初回受入では、同じ利用者・デスクトップ環境でホストが公開する ID の集合と、一覧の全ページから選べる ID の集合を照合する。お気に入りゼロでも、末尾・未検証・起動非対応の項目を選んで詳細を開けること、ホスト側の追加・削除が次に開いた時に反映されることを確認する。読み取り失敗は取得失敗または部分取得として扱い、欠落した一覧を全件取得済みにしない。複数ホスト導入時は同名項目・取得範囲・接続先を追加確認する。
 
-R8 の実装完了には、設定した複数 host の**実 catalog**で、お気に入り外・別ページ・同名 app を選べること、
-partial/offline を正しく表示すること、選択した host へ通常の起動経路がつながることが必要。
-fixture や固定二項目での早期 UI 確認と、この完了条件・Quest 受入を別々に報告する。
+### 6.5 同じホストでの複数アプリ同時起動
+
+最初の受入例は、Mousepad を開いたまま別の GUI アプリを起動し、二つの独立した main が操作できること。ダイアログ 2 枚や同じアプリの既存窓の再表示は、この確認に数えない。初回の検証数は 2 とし、製品の上限は利用できるウィンドウ・描画資源に応じて扱う。
+
+- 新しい能力を両端で確認した接続で、起動ごとに所有記録・lease・main と子窓の対応を追跡する。既存の session/capture と回収手順を再利用し、二件目の起動が一件目の catalog claim や journal を上書きしないようにする。旧方式では従来の単一起動と旧記録の Recover を維持する。
+- ウィンドウを指して入力先を切り替える。片方の終了・失敗・個別 Stop/Recover の対象はその起動が所有する資源に限る。共有接続を使う場合は他の起動が使用中の間は維持する。明示的なホスト全体の切断は対象の全起動を扱う。
+- 接続切れやアプリ再起動の後も、残った所有記録を起動ごとに再照合する。受入では B の終了後も A に入力できること、A の終了後に両方の資源が回収されたことを確認する。自動試験で B の起動失敗・旧 callback・再接続時の回収も確認する。
 
 ## 7. Drag-out でアプリ選択と配置を結ぶ
 
 ### 7.1 利用者の操作
 
-アイコンをクリックすると既存の通常起動、つかんで棚の外へ引き出すと配置プレビューを開始する。
+全アプリでは項目をクリックして詳細を開き、「起動」または「起動を試す」を選ぶ。配置済みの起動ボタンではクリックで直接起動できる。棚のアイコンに ray を向けるとアプリ名と操作説明を表示し、hover だけでは起動しない。対応する項目をつかんで棚の外へ引き出すと配置プレビューを開始する。
 click と drag の境界は製品側のしきい値で判定し、同じ release で両方を発火しない。
 プレビュー中は window の輪郭・向き・アプリ名・host badge を示し、まだ remote を起動しない。
 有効な位置で明示 release した時だけ起動を一度要求する。
@@ -347,7 +342,7 @@ LX01/LX05 で既存起動経路へ対応付けを追加する。下記は提案�
 同じ app_id／title の窓、最初に出現した窓、現在 focus の窓を推測で動かさない。
 dialog/popup を main に見立てず、main の drop pose で子 surface の位置を上書きしない。
 scene 再生成や対象 generation 変更後へ古い placement intent を持ち越さない。
-初版の pending drag-out Launch は既存一 GUI 契約に合わせて最大一件とする。
+一つの controller が同時につかむアイコンは一つでよい。確定後の起動と配置は要求ごとに追跡し、既に開いている窓と次の起動を区別する。
 
 enqueue 成功が不確実な場合も既存 catalog claim の意味を保つ。
 タイムアウトや配置失敗を理由に catalog を巻き戻したり、自動で再 Launch したりしない。
@@ -362,7 +357,7 @@ enqueue 成功が不確実な場合も既存 catalog claim の意味を保つ。
 | submit 後に一覧を閉じる・theme を変える | 起動を未実行へ戻さない。再送／暗黙 Stop をしない。適用不能な placement だけを失効 |
 | app 起動失敗 | 実際の失敗状態と既存 Recover/再確認への入口を示す |
 | app は起動、配置だけ失敗 | 既定の安全な表示・既存窓操作へ戻し、配置失敗を明示。他窓へ適用しない |
-| pending 中に次の起動を要求 | 既存 admission で拒否し理由を示す。見えない起動キューを増やさない |
+| pending 中に次の起動を要求 | 別の明示操作は対応能力・空き資源に応じて受理する。上限なら理由を示し、同じ操作の再送を防ぐ |
 
 ## 8. 入力の所有と復帰経路
 
@@ -379,7 +374,7 @@ Linux 入力や Launch を直接呼ぶ複数経路を作らない。
 
 既存 Ctrl+Space は IME 用なので流用しない。召喚 shortcut は既存 binding を調べて割当て、
 設定で変更可能にする。コントローラーと物理 keyboard の fallback を、素手の能力検証と独立に用意する。
-**既存 ControlPanel から「標準の起動 UI に戻す」「ランチャーを呼び戻す」を使用できること**を各実装 PR の条件とする。
+新しい UI を利用者へ渡す時点で、既存 ControlPanel からランチャーを呼び戻し、標準 UI に戻れることを確認する。
 復帰するために新しい手首 gesture の成功を要求しない。
 
 ## 9. テーマと操作の責務
@@ -400,6 +395,8 @@ Linux 入力や Launch を直接呼ぶ複数経路を作らない。
 一般的な任意 3D mesh の取り込みは初版の前提とせず、検証できる shape enum と既存の許可済み素材から始める。
 
 ### 9.2 schema と適用経路
+
+初回比較には組み込み skin を使う。以下の外部テーマ形式と保存処理は、ランチャー用のテーマをインポートする機能を実装する段階で扱う。
 
 1. 共通の typed LauncherAppearance（仮称）を定義し、組み込み circle / hexagon skin を同じ model で描画する。
 2. **theme format_version 3 の追加を提案**する。launcher/shell appearance を明示的に versioning し、
@@ -464,39 +461,17 @@ debug の比較ログは operation/epoch/preset/skin の匿名 ID と時刻を�
 
 ## 11. Codex の実装順と PR 単位
 
-以下は予定。全て未実装であり、HMD 合格を表す checkmark は付けない。
-独立にできる実装・自動検証は先へ進める。HMD が使えない部分は未確認として残し、
-偽の手 pose や UI fixture を実機成功の代用にしない。
-
-| 作業 | 内容 | 完了条件／次へ渡すもの |
+| 順序 | 作業 | その段階で確認する結果 |
 | --- | --- | --- |
-| LX00 | SDK 能力・入力競合・既存起動 identity・catalog/host の現状調査と最小 probe | 固定 SDK・merged manifest・手入力／OS 競合と Launch receipt の接続点を記録し、未確認を列挙。単一 remote profile・固定 v3 catalog・Termux ページの限界を確認し、§6.4 の backend 差分を確定 |
-| LX01 | 共通 action/state、input owner、preset/fallback、host registry/snapshot と shortcut identity、配置 intent、typed appearance 境界 | host/profile binding と一時的 selection を分離。一操作一 dispatch、古い host 選択の失効、既存一 profile の移行方針。P0 と fake backend 境界試験が使える |
-| LX02 | 手首 radial と P1 の縦の接続 | 実設定 ON/OFF、空間固定一覧、host badge、独立した全アプリ入口、ボタン配置を現行 catalog へ接続。早期実機比較が可能。複数 host と discovery は未完なら明記 |
-| LX03 | P2/P3、全アプリ検索・ページ、複数 host registry、可変 catalog 取得／選択起動の接続 | 同じ APK で三案を切替。panel 多重生成なし、既存入口へ復帰。実 host 別 catalog の全件到達、未取得/partial/stale/offline、同名 app、登録移行を確認。固定二項目／fixture だけで R8 を完了にしない |
-| LX04 | theme v3 / appearance 経路と circle・hexagon | v1/v2/OFF/不正 import の互換、同じ意味の二形状、host badge の可読性、適用 receipt と保存、hit 領域の検証 |
-| LX05 | host を保った drag-out と正規起動・main 配置の接続 | ghost → pending →対応 main の chrome に同じ host を保持。別 host 選択・古い binding・取消・配置失敗・one-GUI 拒否を検証。ボタン配置と起動を混同しない |
-| LX06 | Quest 比較と必要な修正 | 記録シートへ実測。採用／限定採用／不採用／未評価／能力未成立を区別。根拠と利用者の選択を記録 |
-| LX07 | 不採用案の削除と設定移行 | 不要 view/policy/assets/flag を削除。古い preset から採用案へ移行。再起動・復帰・通常起動を確認 |
+| 1（LX00/LX01） | 実機用作業版の列挙を照合・再利用し、既存 ControlPanel に現ホストの「すべてのアプリ」を接続 | §6.4 の全件選択と再取得。実装できた単位で渡せる |
+| 2（LX01） | 同じホストで異なる 2 アプリを開く | §6.5 の個別入力・停止・回収。旧単一方式の互換試験 |
+| 3（LX02/LX03） | 共通の一覧に P1・P2・P3 の呼び出しと配置を接続 | 同じ APK で利用者が三案を切り替えて試せる。controller、組み込み circle、既存 ControlPanel への復帰で比較を始める |
+| 4（LX05/LX06） | 選んで置く drag-out と配置ボタンを追加し、使う操作をまとめて Quest で比較 | 指したアプリと開いた窓の対応、取消、二重配送の防止。利用者が残したい方式と理由を記録 |
+| 後続（LX04/LX07） | 必要に応じて hexagon・外部テーマ、素手入力、複数ホストの登録・移行と横断検索を追加。利用者が不要と決めた案を整理 | 各機能を提供する時点で固有の互換・実機試験を行う。廃止する保存済み設定があれば移行する |
 
-推奨 PR のまとめ方:
+この順序は依存関係に応じて分けられる。共通一覧が用意できれば、複数起動の実装中にも三案の UI を作れる。UI 比較には同一の実データ・入力方式を使い、共通部分の受入は一度でよい。SDK の hands 調査、複数ホスト環境、外部テーマ形式、詳細な時間計測を初回比較の前提にしない。
 
-1. **共通基盤 PR: LX00/LX01**。SDK と receipt の不明点を先に潰し、実装境界を固定する。
-2. **最初の操作 PR: LX02**。手首から P1 を開き、設定と通常起動を使うところまでつなぐ。
-3. **比較可能な実装 PR 群: LX03/LX04/LX05**。同一 APK で三案・二 skin・drag-out を使える状態にする。
-   LX03 の可変 catalog 契約／一覧取得と複数 profile の移行は、外観から独立してレビューできる backend 差分にする。
-   theme と drag-out も変更量に応じて分ける。見た目の案ごとの別 branch/APK 運用を必須にしない。
-4. **評価・修正 PR: LX06**。観測ログ、短い評価、必要な修正、採用判断をまとめる。
-5. **整理 PR: LX07**。判断に沿って不採用実装を削除し、採用 UI と設定移行を製品へ残す。
-
-LX03 の UI と LX04 は LX01 の共通契約確定後に並行可能。
-§6.4 段階2の catalog／複数 host 基盤を LX03 の完了依存とし、段階3の実起動確認を LX03/LX05 で共有する。
-LX05 は正規 identity の接続点を先に固定し、UI fixture の成功だけで backend 依存を解消しない。
-早期の P1/P2/P3 比較は現行一 host で先行できるが、R7/R8 の受入を未実施のまま最終採用を確定しない。
-後から theme と Launch を共通化するために UI 三案を作り直す順番を避ける。
-利用者に実機操作を依頼する前に、Codex が build・必要な自動試験・切替手順・観測箇所を用意する。
-
-### LX00 で確認する SDK の具体的な論点
+### 素手入力を追加する時に確認する SDK の論点
 
 固定版 0.15.0 の公式 VRFeature reference は inputSystemType=INTERACTION_SDK と
 handMicrogestureLocomotion=true を既定値として記載する。
@@ -528,7 +503,7 @@ controller 代替が動いても、hands の受入欄を合格にしない。
 | live／cleanup pending の host 削除・実 target 置換 | 回収と保存の gate を維持。必要な target 情報と Recover を残し、通常のボタン削除と混同しない | model/native/integration |
 | お気に入りゼロ、解除、二ページ以上の catalog、検索 | 全アプリ入口と末尾まで到達可。先頭ページ外・非お気に入りを検索できる | model/integration + Quest |
 | offline/stale/未取得/partial、一部 directory 読取失敗 | coverage と理由を区別。未取得をゼロ件、cache を現行 launch 権限にしない | backend/integration |
-| remote discovery の追加・削除・非表示条件・起動非対応項目 | 実 catalog の更新を反映。公開される無効項目は理由付き表示、未知 protocol の偽 fallback なし | Host/integration |
+| remote discovery の追加・削除・非表示条件・起動非対応項目 | 実 catalog の更新を反映。起動非対応の項目も選択でき、詳細に理由を表示、未知 protocol の偽 fallback なし | Host/integration |
 | アイコンを shortcut として置く／削除する | app の Launch/削除なし。通常 drag-out と mode・preview を区別 | model + Quest |
 | 受理不明、別 root/generation、dialog 先着 | 自動再 Launch なし、誤った配置なし | native/integration |
 | app 成功・配置失敗 | 起動と配置の結果を区別し既存操作で復帰 | integration + Quest |
@@ -540,28 +515,20 @@ controller 代替が動いても、hands の受入欄を合格にしない。
 Host/JVM 試験合格、Android build 合格、Quest 入力合格、利用者による使いやすさの判断は別項目。
 スクリーンショットだけで手入力・tracking-loss・入力漏れの合格を認定しない。
 見た目確認用の模擬 catalog を使うなら「UI fixture」と明示し、実アプリ起動の成功件数に混ぜない。
-実起動の比較は現在利用できる Mousepad 等で行い、次の試行は正常終了・回収・再確認後に開始する。
+実起動は利用できる代表アプリで確認する。新方式では一つ目の窓を残して二つ目を開き、旧固定 v3 の回帰だけは従来どおり回収後に次の起動へ進む。
 
 ## 13. 比較と採用・削除
 
 具体的なタスク、記録欄、判断欄は[評価手順](spatial-launcher-evaluation-20261121.md)に置く。
 
-最初は同じ skin / host / app で三案を短く触り、残った一～二案だけを再評価する。
+最初は同じ skin / host / app で三案を短く触り、利用者が希望する案を再評価する。
 UI の選択時間と SSH／アプリ起動時間を分け、ネットワークの揺れを操作方式の優劣へ混ぜない。
 速度、誤選択、腕の負担、キーボードから手を離す回数、メニュー探索、起動後の置き直しを記録する。
 個人内の少数試行なので、統計的な優越や一般ユーザーへの効果を断定しない。
 
-**採用前の必須条件**は、意図しない起動／設定変更なし、Linux 入力漏れなし、確実な cancel/復帰、
-一 GUI 契約維持、正しい main への配置、host の誤認・振替なし、実 catalog 全件への独立した導線、
-theme 互換と lifecycle 回収。
-これを満たさない案は、好みや短い操作時間を理由に採用しない。修正後に問題の場面だけ再確認する。
-HMD 未確認・SDK 能力未成立は「使いにくいので不採用」と区別する。
+初回の採用判断では、利用者自身が P1/P2/P3 を試し、意図しない起動・入力漏れがなく、取り消して既存 UI に戻れることを確認する。配置、複数ホスト、外部テーマなどの機能試験はその機能を提供する段階で行う。実機未確認の操作には「未評価」を残す。
 
-採用は一つの標準 preset を基本とし、異なる入力環境で明確な価値がある場合のみ補助案を残す。
-利用者の選択と理由を記録した後、Codex が LX07 を行う。
-不採用の view、policy、専用 assets、feature flag、設定項目、専用テストを削除し、
-共通 action / Launch / cancel の回帰テストと採用判断の記録を残す。
-実験用コードをすべて experimental のまま無期限に残さない。
+利用者が好む方式を標準にする。用途に応じて複数案を設定に残せる。LX07 で削除するのは、利用者が試して不要と判断した案だけとする。共通 action / Launch / cancel の回帰テストと採用判断の記録を残す。
 
 保存された廃止 preset ID は versioned migration で採用 preset に移行する。
 お気に入りと配置ボタンの target identity、catalog 定義、接続先、theme、利き手、非関連設定を保持する。
@@ -570,19 +537,7 @@ HMD 未確認・SDK 能力未成立は「使いにくいので不採用」と区
 
 ## 14. Codex への最初の実装依頼
 
-次のセッションでは LX00/LX01 から開始する。依頼文の例:
-
-> 最新 main と AGENTS.md、docs/features/launcher/README.md を確認し、
-> spatial-launcher-experiment-plan-20261121.md の LX00/LX01 を実装してください。
-> 手首ラジアル、P1/P2/P3、テーマ、drag-out、配置ボタン、全アプリが共有する入力所有・action・selection・placement intent の境界を作り、
-> 固定 Meta Spatial SDK の実 artifact と merged manifest で利用可能な手入力を確認してください。
-> 既存 v3 の一 GUI 契約と起動 identity、theme 互換を保ち、P0/ControlPanel の復帰入口を維持してください。
-> host badge、host/backend/profile binding、全ページの coverage を共通 model に含め、
-> 単一 remote profile・固定二項目 catalog から §6.4 の複数 host／Desktop Entry discovery へ移す依存を具体化してください。
-> 全アプリをお気に入りや現在ページの別名として実装せず、別 host の選択で live v3 を暗黙切断しないでください。
-> 新 UI の外観を三つ独立に複製せず、後で三案を同一 APK で比較できる構造にしてください。
-> 必要な境界試験、commit、push、PR 作成まで進め、コード／Host・JVM／Android／Quest の検証状態を分けて報告してください。
-> Quest が未接続でも独立にできる実装と自動検証を進め、未確認の SDK 動作や実機結果は成功と記載しないでください。
+まず §6.4 の単一ホストの実一覧を通常メニューへ接続し、再取得、全ページ、未検証・非対応項目の選択を確認する。次に §6.5 の個別所有と停止を実装し、Mousepad を開いたまま二つ目を使えるようにする。同じ一覧を P1/P2/P3 から使い、同一 APK での利用者比較まで三案を保持する。自動試験、Android ビルド、Quest で確認できた結果を分けて報告する。
 
 ## 15. 参考事例と一次資料
 
