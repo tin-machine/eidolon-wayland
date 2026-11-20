@@ -9,8 +9,13 @@
 - 同じ APK で P1/summon、P2/pull、P3/pinned、比較用 P0/legacy を切り替える設定。
 - 同じ操作を保つ circle / hexagon skin。最初の操作比較には circle を使用。
 - 手入力が使えない時の controller/keyboard/既存 ControlPanel の復帰入口。
-- 現在の入力 mode、preset、skin、適用待ち／起動中／起動不可を確認できる表示。
-- 実際に利用可能な一つの app と接続先。未対応の app を並べて実起動の比較を行わない。
+- 現在の入力 mode、preset、skin、適用待ち／起動中／起動不可、app の host badge を確認できる表示。
+- 初期の操作比較には実際に利用可能な一つの app と接続先。未対応 app を実起動の成功として扱わない。
+- R7/R8 の最終確認には複数の設定済み host と実 catalog。二 host の同名 app、お気に入り外、
+  ページをまたぐ項目、未検証／起動非対応項目、未取得／offline／stale／partial を区別できる条件を用意する。
+  未対応環境は未実施とし、実接続のない host を利用者に設定済みと見せない。
+- UI fixture は実 catalog と明確に分ける。固定二項目の現行 v3 や fixture だけで
+  Desktop Entry discovery・複数 profile registry・全アプリ経路の実装完了を報告しない。
 - 境界試験の結果、既知の制約、実行した build/commit、gesture binding と pose/target の初期値。
 - 匿名の operation ID と単調増加時刻による比較ログ。検索文字、profile、認証情報、実 host 名は記録しない。
 
@@ -31,14 +36,20 @@ preset 固有の差分と修正したリスクに絞って追加確認する。
 | G03 | shell 操作が Linux の click/scroll/key に重複しない | 未記入 | 未確認 |
 | G04 | 詳細一覧が手を下げた後も空間に残り、繰り返し召喚で増殖しない | 未記入 | 未確認 |
 | G05 | menu/preset/skin が使えなくても既存入口から復帰できる | 未記入 | 未確認 |
-| G06 | drag-out は対応する main だけへ配置し、選択確定前の起動・submit 前 cancel 後の起動・二重起動・自動再 Launch がない | 未記入 | 未確認 |
-| G07 | v3 一 GUI 制約、起動状態、通常 Stop/回収と再確認の順番を維持する | 未記入 | 未確認 |
+| G06 | drag-out は対応する host の main だけへ配置し、ghost／pending／window chrome に同じ host を保つ。選択確定前の起動・submit 前 cancel 後の起動・二重起動・自動再 Launch がない | 未記入 | 未確認 |
+| G07 | v3 一 GUI 制約、通常 Stop/回収と再確認を維持。別 host の選択／filter 変更で live 接続を暗黙に停止・切断・再接続しない | 未記入 | 未確認 |
 | G08 | circle/hexagon の角・隙間・背景で隣の action を誤選択しない | 未記入 | 未確認 |
-| G09 | theme OFF/v1/v2/不正 import、切替中の古い release でも正常 skin と復帰入口が残る | 未記入 | 未確認 |
+| G09 | theme OFF/v1/v2/不正 import、切替中の古い release でも正常 skin と復帰入口が残る。両形状と OFF で文字の host badge が読める | 未記入 | 未確認 |
 | G10 | scene 再生成後に capture/listener/preview/pending placement が残らない | 未記入 | 未確認 |
+| G11 | 同名 app・alias 改名・host filter／profile 交代でも、捕捉した host/backend/profile binding と app identity を別 target へ振り替えない | 未記入 | 未確認 |
+| G12 | お気に入りゼロ・解除・配置ボタン削除後も全アプリへ到達し、実 catalog の末尾／別ページ／非お気に入りを閲覧・検索・選択できる | 未記入 | 未確認 |
+| G13 | scope と host 別 coverage、未取得/offline/stale/partial/非対応の理由が分かる。cache や未取得を現在の起動許可・ゼロ件にしない | 未記入 | 未確認 |
 
 実機で未確認の機能は「未評価」、手入力 API/宣言/経路が未成立なら「能力未成立」と記録する。
 controller で成功したことを hands の成功として転記しない。
+G11–G13 は共通 catalog/host 基盤の受入として一度まとめ、preset 固有の表示差分だけを追加確認する。
+可変 catalog と複数 host の backend が未実装でも初期比較は可能だが、R7/R8 を「合格」へ繰り上げない。
+[サンプル画像](spatial-launcher-ui-samples-20261121.md)は設計資料であり、この表の実装・実機証拠には使わない。
 
 ## 3. 二回に分ける短い比較
 
@@ -46,7 +57,7 @@ controller で成功したことを hands の成功として転記しない。
 
 15～20分を目安とする。これは予定であり上限を守るために不明な結果を合格にしない。
 実際の起動・回収が長い場合は分割し、未実施の行を残す。
-この時間は UX の比較一回分の目安であり、G01–G10 の機能受入全体を含む見積もりではない。
+この時間は UX の比較一回分の目安であり、G01–G13 の機能受入全体や catalog/host の追加確認を含む見積もりではない。
 
 1. P0 の現在の使い方を一度確認する。
 2. P1/P2/P3 を同じ circle skin と同じ input mode で順に試す。
@@ -65,14 +76,29 @@ controller の参考 baseline と hands の試行を、同条件の時間比較�
 | Task | 操作 | 見る点 |
 | --- | --- | --- |
 | T01 | 手首から同じ表示設定を ON、OFF へ戻す | 誤起動、現在値と pending、Linux への漏れ |
-| T02 | 一覧を開き、対象 app をクリック起動 | 探しやすさ、選択時間、意図した app、起動中表示 |
-| T03 | 正常終了・回収・再確認後、同じ app を drag-out で指定位置へ起動 | click との混同、輪郭、drop と実際の位置、置き直し |
+| T02 | 「すべてのアプリ」を開き、お気に入りにない対象 app をクリック起動 | scope、app と host の識別、探しやすさ、選択時間、起動中表示 |
+| T03 | 正常終了・回収・再確認後、同じ app を drag-out で指定位置へ起動 | click／ボタン配置との混同、host badge の連続性、drop と実際の位置、置き直し |
 | T04 | 一覧を開き、手を下げて頭を動かし、閉じて再召喚 | world 固定、見失い、P1/P2/P3 の違い、腕の負担 |
 | T05 | 物理 keyboard で作業中に共通検索を開き、cancel して作業へ戻る | 手を離す回数、検索入力の漏れ、元 target への focus 復帰 |
 
 T02/T03 は現在の一 GUI 契約を守り、同時起動で時間を短縮しない。
 必要な接続・Inspect・正常回収・再確認を待つ。手入力を試していないなら T01–T04 の input mode を hands と記録しない。
 検索が未実装の build では T05 を未実施にし、比較可能な最終 build の完成条件から除外しない。
+
+### 全アプリと複数 host の共通確認
+
+次の T06/T07 は原則として共通基盤に一回実施し、各 preset の時間比較へ混ぜない。
+バックエンド未完成の初期 build では UI fixture による表示確認と実動作の未実施を分けて記録する。
+
+| Task | 操作 | 見る点 |
+| --- | --- | --- |
+| T06 | 同名 app がある二 host を全ホスト表示で探す。scope を一 host へ変え、先頭ページ外の非お気に入りを検索。片方が offline／未取得の表示も確認する | host の識別、検索範囲、末尾までの到達、未取得とゼロ件の違い。表示だけの切替が接続を変えない |
+| T07 | 全アプリから起動ボタンを好きな位置へ置く。ボタンから対象 host を確認して通常起動し、正常回収後にお気に入り解除／ボタン削除して全アプリで再発見する | 配置時に起動しない、app と host が固定される、削除しても catalog から消えない、全アプリ入口を失わない |
+
+同名 app や alias 改名、古い click/drop、profile 置換、live v3 中の別 host 選択は、
+Codex が境界試験で誤起動・暗黙切断を先に検証する。利用者は理由表示と復帰手順を確認する。
+実 host が一つしかない場合、二 host の fixture は UI 理解の確認に限り、実 host 選択起動の欄は未実施を残す。
+片方の offline を試すために作業中の session を強制切断せず、非 active host や回収後の状態を使う。
 
 ## 4. 測定の境界
 
@@ -82,9 +108,9 @@ T02/T03 は現在の一 GUI 契約を守り、同時起動で時間を短縮し�
 | 選択時間 | 詳細 panel が操作可能 → click または drop の選択確定 |
 | app 起動時間 | 正規 Launch 受理 → 実 window の初回表示。UI の選択時間と分離 |
 | 配置時間 | 対応 main が配置可能 → pose 適用 receipt。初回表示と同じ成功条件にしない |
-| 操作ミス | 誤選択、意図しない召喚、取消、二重 dispatch を別件数にする |
+| 操作ミス | 誤選択、host の取り違え、意図しない召喚、取消、二重 dispatch を別件数にする |
 | 身体・作業の中断 | 手を keyboard から離す、menu を探す、窓を置き直す回数を手動記録でよい |
-| 主観 | 読みやすさ、腕の負担、位置の分かりやすさ、普段使いたいかを短い言葉で記録 |
+| 主観 | 読みやすさ、腕の負担、位置の分かりやすさ、どの host の app か迷った箇所、全アプリへの入口を見つけられたかを記録 |
 
 clock domain が違う時刻を無補正で差し引かない。client の単調増加 clock で観測した境界を基本とし、
 remote の timestamp を使う場合は同期の方法と誤差を別記する。
@@ -105,6 +131,9 @@ remote の timestamp を使う場合は同期の方法と誤差を別記する�
 | preset / skin / theme version | 未記入 |
 | gesture binding・初期寸法・しきい値 | 未記入 |
 | app / 接続先の公開可能な alias | 未記入 |
+| catalog の実データ／fixture、固定／自動検出、protocol と取得時点 | 未記入 |
+| host scope、host 数、取得済み／総件数、未取得／partial／stale の有無 | 未記入 |
+| お気に入り／配置ボタン／全アプリ、対象のページ・登録状態 | 未記入 |
 | 比較順・練習の有無 | 未記入 |
 | 自動試験・Android build の根拠 | 未記入 |
 | 既知の不具合／未対応 | 未記入 |
@@ -135,9 +164,10 @@ LX07 の確認:
 
 - 採用した標準 preset と、残す補助案の用途が明記されている。
 - 不採用の view/policy/assets/flag/設定項目・専用テストを削除した。
-- 共通の起動・取消・入力所有・theme 互換の回帰確認を維持した。
+- 共通の起動・取消・入力所有・host binding・全 catalog 到達・theme 互換の回帰確認を維持した。
 - 廃止 preset を保存した状態を採用案へ移行できる。
-- お気に入り、接続先、theme、利き手、その他の設定を保持する。
+- お気に入り／配置ボタンの target identity、接続先、theme、利き手、その他の設定を保持する。
+- 全アプリを共通の基本入口として残し、プリセット整理で削除しない。R7/R8 の backend 依存・実データ受入の未完を隠さない。
 - migration 失敗や unknown preset でも、既存 ControlPanel から復帰できる。
 - 初期状態・保存状態からの起動、通常 click 起動、採用案の drag-out、pause/resume を確認した。
 - この判断記録と実装 PR の参照を残し、将来また全案を再実装する前提にしない。
