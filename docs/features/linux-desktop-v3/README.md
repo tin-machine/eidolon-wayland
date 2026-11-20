@@ -29,6 +29,18 @@ I5 remains unregistered. Read its explicit source dependencies and separate I2/I
 See the [I5 implementation verification and handoff](../../linux-desktop-v3-i5-validation-20261114.md) for local V09/V10 coverage, environment limits, and the separate I6/I7/H acceptance boundary.
 The document does not establish product acceptance or Quest evidence.
 
+### Performance Observability (cross-cutting / unregistered proposed plan)
+
+[Quest 3 / Android / Rust / Linux Host performance observability plan](../../performance-observability-plan-20261120.md)
+and [Quest collection runbook](../../performance-observability-quest-runbook-20261120.md)
+define P0–P6: OVR/Meta metrics, Perfetto/native tracing, Host→Quest clock-aware
+input/update correlation, dialog load in a single session, future multi-app load, GPU investigation, thermal
+soak and optional SLI/SLO/CI regression. This is **not a v3 resolver task**, does
+not expand the current single-GUI-app v3 contract, and provides **no new Host,
+Quest, HMD or N07 Golden acceptance evidence**. Reuse the existing
+`quest-observe` and `FrameTiming` measurements without upgrading
+CPU draw+swap wall time to GPU/photons.
+
 ### I6 Host acceptance design (manual discovery)
 
 Implementation increments: [fixed evidence validator](i6-evidence-validation.md) and
