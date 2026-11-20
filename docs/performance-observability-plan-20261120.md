@@ -27,12 +27,11 @@ last_reviewed: "2026-11-20"
 ## 2. ボトルネックのモデルと責任境界
 
 ```text
-Quest input --> Android/SDK --> JNI/Rust input --> SSH/Waypipe --> Linux seat
-                                                                      |
-Quest HMD <-- XR compositor <-- SDK Surface / EGL swap <-- Rust GL <-- Wayland commit
-                                           ^                             ^
-                                           |          transport/Rust      |
-                                           +---- receive/queue/copy -----+
+Quest: Android/SDK input → JNI/Rust → Wayland seat
+                                      ↓ Waypipe / SSH
+Host:                         GUI input → surface commit
+                                               ↓ Waypipe / SSH
+Quest:           compositor → render queue → EGL swap → SDK Surface → XR compositor
 ```
 
 上記は**論理的な観測点**であり、WaypipeとEidolonの各転送段階を1本のシリアル処理と断定しない。各イベントの「enqueue/dequeue、処理開始/完了、拒否/破棄、surface generation、ownership barrier」を分け、並行実行・backpressure・GPU非同期処理を表現する。
@@ -77,7 +76,7 @@ Quest HMD <-- XR compositor <-- SDK Surface / EGL swap <-- Rust GL <-- Wayland c
 
 ## 4. 相関IDと時刻の契約案
 
-**既存のv3 protocol/golden/journal/StorageRecordを変更しない設計を優先。** デバッグ/観測側の追加識別子で表現できるかを先に確認する。どうしてもwire変更が必要な場合は互換性・versioning・v2/v3 dispatchを**別PR**で設計レビューする。
+**既存のv3 protocol/golden/journal/StorageRecordを変更しない設計を優先。** デバッグ/観測側の追加識別子で表現できるかを先に確認する。どうしてもwire変更が必要な場合は互換性・版選択・旧 v2/v3 の dispatch を変更箇所のテストと一緒にレビューする。
 
 - `run_id`、`session_epoch`（新nonce/世代と区別）、`window_id`、`surface_generation`、`content_update_id`（更新sequence）、`input_event_id`（内容を含まない相関用）。IDは再起動・recreateで誤結合しない範囲と寿命を持たせる。
 - event schema案：`schema_version`, `run_id`, `source`, `source_clock`, `monotonic_ns`, `session_epoch`, `window_id`, `generation`, `event_type`, `correlation_id`, `duration_ns?`, `outcome`, `drop_reason?`, `bytes?`。実際の定数名は実装PRで固定。
@@ -99,7 +98,7 @@ Quest HMD <-- XR compositor <-- SDK Surface / EGL swap <-- Rust GL <-- Wayland c
 
 ### 単一v3アプリ（早期に実施可能）
 
-同一APK/build・Host build・Mousepad config・同一StorageRecordで次を比較。起動、接続、入力、Close→retirement→再起動を分けて記録する。
+同一ビルド内のシナリオ比較では APK・Host build と Mousepad の設定・保存領域をそろえる。修正前後は §7 の A/B 条件で比較する。起動、接続、入力、Close→retirement→再起動を分けて記録する。
 
 | シナリオ | 運用 | 重視する指標 |
 | --- | --- | --- |
@@ -112,7 +111,9 @@ Quest HMD <-- XR compositor <-- SDK Surface / EGL swap <-- Rust GL <-- Wayland c
 
 これらは**性能測定**であってI6の28 families / 87 variantsやQuestの物理受入れを自動で満たさない。ホストで作ったfixtureのpixel成功はHMD視認を証明しない。
 
-### 多ウィンドウ（v3の複数起動契約成立後にのみ実施）
+### 多ウィンドウと複数セッション
+
+現行の1セッションでも、本文だけの場合と「開く」ダイアログを加えた場合で描画・入力・回収を比較できる。独立アプリの同時起動数を増やす試験は、その数をサポートした段階で追加する。
 
 独立GUIアプリ数`1 / 2 / 4 / 8 / 16`を**段階的な負荷の仮説値**として使う。SDK layer/compositor制限やGPUメモリ、製品の起動上限を超えて強制実行しない。上限未満で観測できる範囲を正式な試験行とする。
 
@@ -126,7 +127,7 @@ Quest HMD <-- XR compositor <-- SDK Surface / EGL swap <-- Rust GL <-- Wayland c
 
 ## 7. 成果物・エビデンス・判定
 
-全runに次のデータを対応付ける（proposed schema。既存形式を無条件に置換しない）。
+障害切り分けでは、対象ビルド・操作・症状・観測元を既存の作業記録に残す。以下は再現可能なベースラインや比較結果を保存するときの構成例。各 run に用いた採取元だけを収録する。
 
 ```text
 private-artifact-root/<run_id>/
@@ -142,7 +143,7 @@ private-artifact-root/<run_id>/
 
 - 原則ローカルの**非公開**artifactへ保存。`git add` / public Actions artifact / release APKへの生ログ同梱を禁止。画面画素、スクリーンショット、キー内容、clipboard、ファイル/ウィンドウタイトル、private IP、host key・SSH・storage情報は採取しない。画像やraw traceが必要な検証時は別の明示的許可と秘密情報の確認を必須とする。
 - 個別window ID等は低cardinalityのrun内相関に限定し、無期限のPrometheus labelにしない。集計用seriesはbounded。`event_dropped`、`sampling_ratio`、時計`epsilon`、取得失敗、ツールoverheadを記録する。
-- **比較の成立条件:** same scenario、version/feature fingerprint一致、clock uncertaintyが結論を覆さない、run数・観測カバレッジ十分、採取経路の復旧完了。満たさない場合は`inconclusive`。実際のp99が改善してもコンテンツの欠落・遅れや画質劣化が増えれば不合格。
+- **比較の成立条件:** A/B で変更する要因（修正ビルド、計測 on/off 等）を定め、両側の版と条件を記録する。その他のワークロード・端末設定・採取条件をそろえ、指標に必要なサンプル数と欠測率を確認する。別時計をまたぐ指標では同期の不確かさも評価する。満たさない場合は`inconclusive`。実際のp99が改善してもコンテンツの欠落・遅れや画質劣化が増えれば不合格。
 - Performance regressionをCI required checkへ直結する前に、再現性、ノイズ、機器排他、測定の侵襲性を検証する。shared runnerでの模擬テストはprotocol/統計/閾値ロジックのみ。
 
 ## 8. 実装PR単位・依存順・Definition of Done
@@ -152,12 +153,12 @@ private-artifact-root/<run_id>/
 | **P0** Quest metrics baseline | OVR Basic HUD+CSV、Meta Performance Analyzerの使い方、現行quest-observeとの同条件サンプル、run fingerprint | **Quest operator実測**または明示`blocked/not_run`、取得可能metrics表、削除/復旧手順 |
 | **P1** Android/native/Perfetto | Kotlin/Rustのbounded trace spans、Perfetto取得、既存draw/swapとの対照、symbolized native CPU flamegraphの実現性 | on/off overhead比較、debug/release差、GL single-executor維持 |
 | **P2** Host↔Quest correlation | ID/世代設計、イベント採取、時計offset・drift・不確かさ、input/update latency分析 | 同一host/Quest内span検査、cross-host ambiguous/clock skew/drop負例、未表示を成功にしない |
-| **P3** windows scalability | 実現可能なwindow数でidle/partial/all-update比較、layer/visibility/active区別 | v3複数アプリ正式対応が前提。未対応の16窓を受入れ目標にしない |
+| **P3** windows scalability | 実現可能なwindow数でidle/partial/all-update比較、layer/visibility/active区別 | 単一セッションの親窓・ダイアログから開始。独立アプリの比較は製品が対応する同時起動数で実施 |
 | **P4** GPU deep dive | OVR Advanced/ovrgpuprofiler/AGI実機capability probe、GPU timer/fence候補、ボトルネック報告 | unsupportedはskipではなく`unsupported`。CPU swap時間との混同を否定 |
 | **P5** soak/thermal/leak | 5/30/120分時間帯別比較、熱/クロック/メモリ/FDと回収試験 | 既存quest-observeとPhase 6 L03/L04を併用。長時間・HMD結果は独立 |
 | **P6 (optional)** SLO/trigger/CI | 実測に基づくSLI/SLO提案、異常時boundedリングバッファ保存、性能退行アラート/実機ラボCI | ノイズ/overhead/clock/failureを統計的に評価するまでrequiredにしない |
 
-**進め方:** P0→P1→P2を優先。P5はP0の時点でも取り掛かれる。P3は複数v3アプリの製品契約後。P4はP0/P1でGPU疑義が確認できたとき。P6は十分なデータ後。各PRは測定/fixture/validatorの差を小さくし、別途確認可能な結果と失敗・復旧を残す。
+通常のベースライン収集は P0 から始める。無応答や停止失敗はその場で終了記録・UI スレッド・回収状態を調べ、必要な P1 計測だけを追加できる。P2 の時計校正は Host と Quest をまたぐ遅延を公表するときに行う。P5 の長時間試験は熱・リークを調べるとき、P4 は GPU 待ちを示す観測が得られたときに選ぶ。P6 の閾値・CI 化は再現性を確認した後に判断する。
 
 ## 9. 使用ツールと一次情報
 

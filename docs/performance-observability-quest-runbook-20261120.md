@@ -2,13 +2,15 @@
 
 **Status: proposed / not executed / manual discovery.** この手順は性能計測のためのoperator文書であり、Questでの採取完了やI6/I7/H acceptanceを主張しない。[設計とSLI](performance-observability-plan-20261120.md)を先に読む。既存の[開発環境/ADB](development-automation-and-debugging.md)、[通常の利用・観測](usage.md)、[Phase 6](design/phase-6.md)を優先する。
 
-## 0. まず記録するもの（再現性）
+## 0. 障害の初動と比較条件
+
+単発の障害はビルド・操作・症状を手掛かりに、失われやすい記録から採取する。再現比較を行う段階で以下の環境条件を記録する。
 
 - **Quest:** HMD型番、Horizon OS build、Android API level、GPU/CPU、refresh rate、battery/AC、室温、MR/passthrough、Guardian・装着/可視、睡眠/復帰、Wi-Fi接続。
 - **Eidolon:** Git SHA / APK versionCode、debug/release/profileable設定、Spatial SDK版、Host Git SHA、Waypipe版、Mousepad 0.6.3設定/StorageRecordの同一性。ただしpath・鍵・設定本文は保存しない。
 - **計測:** OVR Metrics Tool版、選択したBasic/Advancedのmetric一覧、Perfetto/Android Profilerの有無、採取時のADB経路、開始/終了時刻、warm-up、run id、サンプル欠損・工具による負荷。
-- 同じrunと呼べるのは**同じ実行構成と測定条件**の場合だけ。電池・熱・Wi-Fiやfocus/Guardianが変われば条件を分ける。
-- アプリがまだQuestで通常起動・実入力・正常終了できない場合、**先に通常v3の機能smoke/受入れを進める**。性能テストのために偽の成功証拠を作らない。
+- A/B 比較では変更対象と両側のビルドを記録し、その他の条件をそろえる。電池・熱・Wi-Fi や focus/Guardian の変化は時刻とともに記録する。
+- **無応答・停止失敗の初動**では、再起動前に取得できる Android の ANR・終了記録、対象プロセス、UI スレッドのスタック、Eidolon の回収状態を確認する。既に起動し直した場合は旧プロセスの記録を照合する。採取時のスタックは原因候補として記録する。正常に動く操作区間が取れたら、その区間を P0 のベースラインに使う。
 
 ## 1. P0: OVR Metrics Tool + 既存のQuest観測
 
@@ -16,21 +18,21 @@
 2. 原則**OVR Basic preset**を選択。少なくともFPS、stale frames、App GPU Time、CPU/GPU utilization、CPU/GPU level、battery/thermal情報のうち**実際に取得できた項目**を記録する。Compositor GPU Time等の名前は表示/CSVと公式定義を照合し、未提供なら`unsupported`。
 3. OVRの**Metrics Recording/Report Mode**で、同じQuest runのCSVを後からexportする。HUDだけを見た場合はCSV収集済みと扱わない。撮影/画面キャプチャには内容露出の危険があるため、初期はグラフと数値だけを扱う。
 4. 既存`quest-observe`の構成と用途を確認し、同条件の**別プロセスのADB採取**として可能な範囲で実行する。測定負荷/干渉を避けるため、OVRのみのrunとOVR+quest-observeのrunを比較する。
-5. 測定後にOVRのrecording/HUDをoffに戻し、CSVを**公開Git外**のアクセス制限されたartifactsへ保存する。ADB接続切れは欠測であり、製品sessionが切れた証拠ではない。
+5. 開始時の OVR recording/HUD 設定を控え、測定後にその状態へ戻し、CSVを**公開Git外**のアクセス制限されたartifactsへ保存する。ADB接続切れは欠測であり、製品sessionが切れた証拠ではない。
 
 既存operatorの**コマンド形**（新規ツールを実装したという意味ではない）：
 
 ```sh
 # 既存のQuest側プロセスが動作中で、ADB対象が確定していること
 scripts/quest-observe --serial "$EIDOLON_QUEST_SERIAL" \
-  --scenario power-lifecycle --condition '給電・1 Mousepad・静止' --duration 1800
+  --scenario power-lifecycle --condition '給電・1 Mousepad・静止・短時間診断' --duration 60 --interval 10
 
 # 既存のsoakケースは長時間計測用。通常の製品接続/入力は別途行う
 scripts/quest-observe --serial "$EIDOLON_QUEST_SERIAL" \
   --scenario soak --condition '給電・1 Mousepad・編集条件' --duration 7200
 ```
 
-`quest-observe`は**30/120分の時系列**を採取する既存スクリプト。remote appの自動起動・物理入力・OVR CSV取得は行わない。`environment.json` / `samples.jsonl` / summaryの`acceptance: not_run`は実装済みの意味を維持する。最初のP0短時間実験では`--duration`を縮めてもよいが、短縮runを30分/2時間達成と記録しない。
+`quest-observe`は**30/120分の時系列**を採取する既存スクリプト。remote appの自動起動・物理入力・OVR CSV取得は行わない。`environment.json` / `samples.jsonl` / summaryの`acceptance: not_run`は実装済みの意味を維持する。短時間例は採取器の動作確認用。終了コードが 0 でも端末が途中で応答しなくなるとサンプルに欠測が残る。`result.json` の `sampling_complete`、`complete_samples`、`same_process`、`diagnostics_advancing` と各サンプルの `errors` を確認して比較できる区間を決める。
 
 ## 2. P1: PerfettoとCPUボトルネックの診断
 
@@ -59,13 +61,13 @@ run/session generation
 - latencyを`software_submit`と`display_photon`に明確に分ける。後者は必要になった時に外部の高速度カメラ/センサ等で取得し、HMDレンズ・撮影位置の校正を含める。
 - `p99`の低下だけでは合格にしない。表示変化の検出、miss/drop、持続backpressureの増加を合わせて評価する。
 
-## 4. P3/P4: 多窓とGPUの詳細（製品対応後）
+## 4. P3/P4: 窓数と GPU の調査
 
 - **v3単一アプリの制約がある間に独立アプリ2/4/8/16を合格と宣言しない。** 制限緩和後も、Quest layer上限・アプリpanelとシステム消費・同時可視数・GPU memoryを先に実測する。
-- 1窓→実現可能な枚数へ段階的に増やす。**全静止／1窓のみ高頻度更新／全窓高頻度更新**をそれぞれ測る。visibleとactiveを必ず分離。
+- 1セッションでは本文だけの状態と親窓＋ダイアログを今から比較できる。複数セッションは対応済みの数まで段階的に増やす。**全静止／1窓のみ高頻度更新／全窓高頻度更新**をそれぞれ測る。visibleとactiveを必ず分離。
 - P0/P1でGPU仮説が支持されたときだけ、OVR Advancedやovrgpuprofilerの有効化、Android GPU Inspectorの**実機互換性check**、GLES timer queries/fencesを検討する。QuestでAGI frame captureが使えるとは限らない。
 - 同じ場面でCPU swap time、GPU App Time、Compositor Time、stale/dropped、Host更新遅延を突き合わせる。描画最適化による画質/入力/回収への副作用を確認する。
-- **将来の最適化候補**：dirty region、frame coalescing、visibility-aware scheduling。原則として性能baselineを取得してから別設計・別PR。
+- **将来の最適化候補**：dirty region、frame coalescing、visibility-aware scheduling。変更単位で前後を比較し、入力・画質・回収への影響を記録する。
 
 ## 5. P5: 長時間/熱と復旧
 

@@ -34,7 +34,7 @@ The document does not establish product acceptance or Quest evidence.
 [Quest 3 / Android / Rust / Linux Host performance observability plan](../../performance-observability-plan-20261120.md)
 and [Quest collection runbook](../../performance-observability-quest-runbook-20261120.md)
 define P0–P6: OVR/Meta metrics, Perfetto/native tracing, Host→Quest clock-aware
-input/update correlation, future multi-window scale, GPU investigation, thermal
+input/update correlation, dialog load in a single session, future multi-app load, GPU investigation, thermal
 soak and optional SLI/SLO/CI regression. This is **not a v3 resolver task**, does
 not expand the current single-GUI-app v3 contract, and provides **no new Host,
 Quest, HMD or N07 Golden acceptance evidence**. Reuse the existing
