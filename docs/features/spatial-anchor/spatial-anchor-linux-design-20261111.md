@@ -1376,6 +1376,17 @@ Quest rebootを跨ぐため、1回のinstrumentation processだけで完結さ�
 | 追跡が未確定のとき | 再起動後に Activity 再生成を追加で試した回の一つは、最初の照会が `LOADED / PAUSED` で、有効な姿勢は取得できなかった。目印を描画せず未確定として終了した。 |
 | 終了時の消去 | 同じ UUID を消去し、別プロセスからの照会で `NOT_FOUND / STOPPED` を受け取ってアプリ専用の記録を削除した。 |
 
+検証を再実行する場合は `android` で `./gradlew :probe:assembleDebug` を実行し、APK を対象の Quest にインストールする。検証 Activity は ADB shell から、次のように起動する。
+
+~~~bash
+adb shell am start -a android.intent.action.MAIN -c com.oculus.intent.category.VR \
+  -n io.github.tinmachine.eidolon.probe/.AnchorProbeActivity \
+  --es run_nonce sa0-check --es extensions persistence --es trial_action save
+adb logcat -d -s EidolonAnchorProbe:I
+~~~
+
+各段階で結果を記録し、段階の間は `adb shell am force-stop io.github.tinmachine.eidolon.probe` で検証プロセスを終了する。通常経路は `save`、同じプロセスで Activity を作り直す `visual_recreate`、本体起動後に表示する `visual`、`erase`、`absent` の順で試す。拡張の確認では `extensions` を `advertised` または `persistence_caps` とし、`trial_action` は省略する。各段階に別の `run_nonce` を指定して結果を識別する。
+
 ### 22.7 SA0 failure taxonomy
 
 初版は権限不足、正常な照会で該当なし、追跡未確定、その他の失敗・タイムアウトを見分けられればよい。SDK の元の結果を保ち、以下の詳細分類は端末で識別できたものから追加する。

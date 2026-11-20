@@ -5,3 +5,7 @@ mod android;
 mod compositor;
 #[cfg(feature = "ssh")]
 mod transport;
+#[cfg(target_os = "android")]
+mod anchor;
+#[cfg(target_os = "android")]
+mod ext_anchor;
