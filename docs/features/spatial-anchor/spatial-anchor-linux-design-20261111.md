@@ -319,9 +319,9 @@ Anchorそのものを恒久移動する操作として扱わない。
 
 ~~~text
 new anchor create
-    -> pending UUID を永続化
+    -> 新しい保存操作の ID と pending を永続化
     -> persist new anchor
-    -> Workspace durable commit
+    -> 成功した永続 UUID と Workspace を durable commit
     -> binding revision切替
     -> old anchor erase
 ~~~
@@ -357,9 +357,9 @@ old anchorを先にeraseしてはいけない。
 
 | 項目 | 現時点の扱い |
 | --- | --- |
-| sessionを越えたlocal persistence | 公式仕様上成立 |
+| sessionを越えたlocal persistence | Quest 3 の検証 APK で、保存後にプロセスを終了し、新しい session で同じ UUID を再発見した（§22.5）。 |
 | device restart / power off後のpersistence | 現在のMeta persistence仕様上成立 |
-| UUIDを指定した再発見 | API上成立 |
+| UUIDを指定した再発見 | Quest 3 の検証 APK で追跡状態と位置・向きの取得を確認した（§22.5）。 |
 | Activity recreation後の再resolve | 設計上可能、Eidolon実機未検証 |
 | Eidolon process kill後の再resolve | Quest実機未検証 |
 | Quest sleep/resume | Quest実機未検証 |
@@ -967,13 +967,12 @@ sequenceDiagram
     UI->>Core: commit permanent placement
     Core->>KA: create new anchor
     KA->>Meta: create
-    Meta-->>KA: new UUID
-    KA-->>Core: new UUID
-    Core->>Store: durable pending UUID (keep old binding)
-    Core->>KA: persist new UUID
+    Meta-->>KA: runtime entity
+    Core->>Store: durable pending operation ID (keep old binding)
+    Core->>KA: persist new entity
     KA->>Meta: persist
     Meta-->>KA: persisted
-    KA-->>Core: persistence confirmed
+    KA-->>Core: persistence confirmed and persistent UUID
     Core->>Store: write new binding revision + fsync
     Store-->>Core: durable
     Core->>Core: switch active binding
@@ -1283,11 +1282,11 @@ SA0は「Spatial AnchorがAPI上存在する」ことを確認する試験では
 次の実用上重要なlifecycleをQuest 3実機で証明する。
 
 ~~~text
-create → UUID を durable pending として記録 → persist の完了確認
+create → 操作 ID と pending を記録 → persist の完了確認 → 永続 UUID を記録
   → Activity 再生成 → discover/localize
   → アプリプロセス再起動 → discover/localize
   → Quest 再起動 → discover/localize
-  → erase 完了 → 同じ UUID の照会が正常に完了して該当なし
+  → erase 完了 → 同じ UUID の不在を確認（EXT のフィルターは NOT_FOUND）
 ~~~
 
 ### 22.2 SA0 の実装場所
@@ -1343,7 +1342,7 @@ stateの例:
 }
 ~~~
 
-この例は persist 完了後の記録。persist を要求する前に同じ UUID と `phase=pending` を原子的に書き、永続化の完了を確認してから SDK を呼ぶ。書き込みに失敗したら先に進まない。
+この例は persist 完了後の記録。保存要求の前にアプリが発行した操作 ID と `phase=pending` を端末内に記録する。OpenXR EXT 経路では `futureResult` と `persistResult` の双方が成功したときに得た `persistUuid` を記録する。作成時点の entity ID は XR セッション内だけで扱う。[保存の完了結果](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrPersistSpatialEntityCompletionEXT.html)
 
 ### 22.5 SA0の中断耐性
 
@@ -1351,10 +1350,14 @@ Quest rebootを跨ぐため、1回のinstrumentation processだけで完結さ�
 
 | 中断・境界 | 再開時の動作 |
 | --- | --- |
-| prepare | create で得た UUID と `pending` を端末内に永続化してから persist を要求する。対応する完了結果を受けて `persisted` に更新する。 |
-| pending のまま終了 | 保存の完了が不明な同じ UUID を先に照会する。再発見できればその UUID で再開する。元の要求が終了し、良好な追跡・権限のもとで端末内の保存先への照会が正常に該当なしと返ったら、その試行を未保存として終了できる。要求がまだ処理中か判別できない場合や照会失敗時は記録を保つ。 |
+| prepare | 同じ端末・ユーザー・検証アプリの書き込み可能な LOCAL_ANCHORS を確認し、操作 ID を記録してから一個だけ保存する。二つの成功結果と永続 UUID がそろえば保存済みへ更新する。 |
+| pending のまま終了 | UUID を取得・記録する前にプロセスが終了する場合がある。隔離試験では保存前後のアプリ専用 Anchor 一覧の差分で候補を調べ、故障注入用の独立した正解記録で候補を照合する。特定できない場合は pending を保つ。製品で自動回収するには、その Anchor が自分の保存操作に属することを示す根拠が要る。 |
 | Activity ／ プロセス ／ Quest の再起動 | それぞれ別に同じ UUID の発見と位置を確認する。装着し直して同じ scene に復帰しただけなら sleep/resume の結果とする。Quest の再起動は使用中の Linux セッションを通常終了し、回収待ちがないことを確認して装着試験の最後にまとめる。 |
-| erase | 対象 UUID だけを消去する。消去結果と、その後に同じ部屋・有効な追跡と権限で行った UUID 照会の正常終了・該当なしを別々に確認する。途中終了・タイムアウト・権限エラーでは記録を保って再試行する。消去完了の通知を失った場合は、後日の正常な不在確認を清掃結果として記録し、元の操作完了は未観測とする。 |
+| erase | 対象 UUID だけを消去する。消去結果と、その後の同じ UUID の照会結果を別々に確認する。EXT の UUID フィルターでは NOT_FOUND が不在の証拠になる。空の結果は未判定として再試行する。途中終了・タイムアウト・権限エラーでは記録を保って再試行する。消去完了の通知を失った場合は、後日の正常な不在確認を清掃結果として記録し、元の操作完了は未観測とする。[UUID フィルターの仕様](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrSpatialDiscoveryPersistenceUuidFilterEXT.html) |
+
+2026-11-21 の Quest 3 実測（Spatial SDK 0.15.0、検証 APK `probe.7`）。既定の session では保存用の二つの EXT 拡張は列挙されたが、コマンドを取得できなかった。明示的に有効にすると `LOCAL_ANCHORS` が利用できた。一個を保存し、通常の記録に UUID を書き込む直前で検証アプリを強制終了した。再起動後、保存前後の一覧の差分から得られた新規候補は **0 件**だった。検証用に別途控えた UUID を渡すと `LOADED / TRACKING` で位置・向きを取得し、同じ UUID を消去できた。消去後の照会は `NOT_FOUND / STOPPED` で、検証用の記録も回収した。
+
+製品側は保存完了時に UUID を直ちに端末内に記録する。記録前に終了して個体を特定できない場合は pending を保持し、自動消去や重複保存を避ける。今回の試験では UUID を失った状態からの自動回収は未達。次の装着試験では Activity 再生成を単独で確認し、Quest 再起動の前後で同じ固定物に対する目印の位置・向きを比較する。
 
 ### 22.6 SA0 で残す証拠
 
@@ -1400,14 +1403,14 @@ sequenceDiagram
 
     Test->>Adapter: create at test pose
     Adapter->>Meta: create anchor
-    Meta-->>Adapter: runtime anchor + UUID
-    Adapter-->>Test: UUID + pose
-    Test->>Disk: durable UUID + phase=pending
-    Test->>Adapter: persist recorded UUID
+    Meta-->>Adapter: runtime anchor
+    Adapter-->>Test: created
+    Test->>Disk: durable operation ID + phase=pending
+    Test->>Adapter: persist created anchor
     Adapter->>Meta: enable storable as required and persist
     Meta-->>Adapter: persist completion
-    Adapter-->>Test: persisted
-    Test->>Disk: update phase=persisted
+    Adapter-->>Test: persist succeeded with persistent UUID
+    Test->>Disk: write UUID + phase=persisted
 
     loop Activity recreation, then app process restart
     Test->>OS: cross selected boundary
@@ -1436,7 +1439,7 @@ sequenceDiagram
     Meta-->>Adapter: erased
     Test->>Adapter: discover UUID again
     Adapter->>Meta: discover
-    Meta-->>Adapter: discovery completed, no matching UUID
+    Meta-->>Adapter: NOT_FOUND for the requested UUID (EXT)
     Adapter-->>Test: confirmed absent
     Test->>Disk: remove SA0 state
 ~~~
@@ -1494,19 +1497,19 @@ Meta SDK runtimeそのものの成功をJVM fake successへ読み替えない。
 
 ### SA0必須
 
-- [ ] SDK が所有する session で必要な拡張が有効になり、他の event 消費者を増やさずに自分の要求の完了を受け取れる。
-- [ ] Anchorを1個作成できる。
-- [ ] UUIDを取得できる。
-- [ ] persist 要求前に UUID を durable pending として保存できる。
-- [ ] 同じ要求の persist 完了を確認して記録できる。
+- [x] SDK が所有する session で必要な拡張が有効になり、他の event 消費者を増やさずに自分の要求の完了を受け取れる。
+- [x] Anchorを1個作成できる。
+- [x] UUIDを取得できる。
+- [x] persist 要求前に操作 ID を durable pending として保存できる。
+- [x] 同じ要求の persist 完了と成功時の永続 UUID を記録できる。
 - [ ] Activity recreation後に再発見できる。
-- [ ] app process境界後に再発見できる。
+- [x] app process境界後に再発見できる。
 - [ ] Quest reboot後に同UUIDを再発見できる。
 - [ ] reboot後にlocalizeできる。
 - [ ] 同じ部屋の固定物を基準に、再起動の前後で位置・向きが復元されることを装着して確認できる。
-- [ ] eraseできる。
-- [ ] erase後に同UUIDがdiscoverされないことを確認できる。
-- [ ] case終了後にSA0専用state/resourceを回収できる。
+- [x] eraseできる。
+- [x] erase後に同UUIDがdiscoverされないことを確認できる。
+- [x] case終了後にSA0専用state/resourceを回収できる。
 - [ ] failureを成功へ読み替えない。
 
 ### SA0追加探索
