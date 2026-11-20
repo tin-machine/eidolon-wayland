@@ -20,6 +20,15 @@
 
 ## Use with the deterministic resolver
 
+### Early Quest smoke (manual discovery; non-acceptance)
+
+After PR #52, the [Quest 3 / Mousepad early-smoke checklist](quest-early-smoke-20261119.md)
+defines four short wearer checks with preparation, diagnostics and cleanup delegated to Codex.
+The [Codex operator notes and next-session prompt](quest-early-smoke-codex-handoff-20261119.md)
+identify current normal UI / bounded diagnostics, unavailable v3 automation, and owner-specific cleanup.
+These are unregistered runbooks, **not executed on a device at their 2026-11-19 creation baseline**. They do not add an I6 case,
+complete I7/H, approve Golden, or change the D5 historical statements below.
+
 ### I5 implementation design (manual discovery)
 
 The [I5 detailed design](../../linux-real-app-v3-i5-detailed-design.md) compares main
