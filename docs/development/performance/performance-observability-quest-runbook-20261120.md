@@ -1,6 +1,6 @@
 # Quest 3 Performance Observability — 実機採取Runbook（初期案）
 
-**Status: proposed / not executed / manual discovery.** この手順は性能計測のためのoperator文書であり、Questでの採取完了やI6/I7/H acceptanceを主張しない。[設計とSLI](performance-observability-plan-20261120.md)を先に読む。既存の[開発環境/ADB](../development-automation-and-debugging.md)、[通常の利用・観測](../../guides/usage.md)、[Phase 6](../../design/phase-6.md)を優先する。
+**状態:** §2 の待機時 CPU 計測は Quest 3 で実行済み。ほかのシナリオの実施状況は各記録で確認する。[設計とSLI](performance-observability-plan-20261120.md)、[Quest 開発前チェック](../quest-development-preflight.md)、[開発環境/ADB](../development-automation-and-debugging.md)、[通常の利用・観測](../../guides/usage.md)を参照。
 
 ## 0. 障害の初動と比較条件
 
@@ -36,11 +36,83 @@ scripts/quest-observe --serial "$EIDOLON_QUEST_SERIAL" \
 
 ## 2. P1: PerfettoとCPUボトルネックの診断
 
-- Kotlin・Rustの計測点は、先に実装PRで明示的な計測spanを追加してから利用する。現行APKに独自`trace_event_id`があると仮定しない。
+### 待機時 CPU を繰り返し測る
+
+1. 同じ Quest、Eidolon ビルド、表示 Hz、給電と熱状態で、Eidolon にフォーカスを戻す。HUD を一時的に非表示にし、操作を止めて安定してから測る。基準は「Linux 窓なし」と「検証用の Linux 窓1枚を表示して静止」。接続中のホスト数と窓の装飾設定も記録する。
+2. UI・ランチャー・SDK 連携や回収の変更前後、または操作に反応しない・カクつく事象を再現できたときは、同じ条件の30秒トレースを採る。各 run の FPS、前フレーム再利用、GPU 時間も記録する。定期的に傾向を見るときは [既存の低頻度採取](#1-p0-ovr-metrics-tool--既存のquest観測)を使い、スケジューリングトレースや関数サンプルは原因を調べたい区間だけ採る。
+3. Perfetto で Eidolon の CPU 実行時間をスレッド別に集計し、上位のスレッドで実行・実行待ち・スリープの並びを見る。Sleep と短い実行を周期的に繰り返す場合は、その周期を実装と突き合わせる。CPU 上の実行時間の合計を計測秒数で割ると、平均で何コア分使ったか分かる。
+4. 原因候補が絞れたら、同じ場面で Simpleperf を別 run として15秒採る。`simpleperf report --sort comm,dso,symbol --children` でスレッド・ライブラリ・関数を確認する。呼び出し元に子関数の時間も含まれる行は重複する。時間を使ったライブラリや呼び出し経路をきっかけにソースを調べる。
+5. 計測後に検証用の窓を閉じ、回収完了を確認し、HUD を元に戻す。比較用にビルド・条件と結果を残す。生のトレースは非公開の作業ディレクトリに保存する。
+
+Wi-Fi ADB を所有する Ubuntu Desktop で、実機を確認してから実行する。`EIDOLON_QUEST_SERIAL` は確認済みの Wi-Fi ADB 対象、`EIDOLON_PROFILE_DIR` は非公開の採取先、`EIDOLON_ANDROID_NDK` はインストール済みの NDK ルートとする。まず窓なしで実行し、窓1枚の場合は出力名を分けて採る。
+
+```bash
+scripts/quest-observe --serial "$EIDOLON_QUEST_SERIAL" --scenario power-lifecycle \
+  --duration 60 --interval 5 --condition '90 Hz・給電・HUD 非表示・窓なし' \
+  --artifact-root "$EIDOLON_PROFILE_DIR"
+```
+
+上の集計で CPU に変化があったときは、以下を同じ場面で順に実行する。
+
+```bash
+umask 077
+mkdir -p "$EIDOLON_PROFILE_DIR"
+metavr -d "$EIDOLON_QUEST_SERIAL" perf capture --mode cpu \
+  --app io.github.tinmachine.eidolon --duration 30000 \
+  --output "$EIDOLON_PROFILE_DIR/idle"
+
+ANDROID_SERIAL="$EIDOLON_QUEST_SERIAL" python3 "$EIDOLON_ANDROID_NDK/simpleperf/app_profiler.py" \
+  --disable_adb_root --ndk_path "$EIDOLON_ANDROID_NDK" --app io.github.tinmachine.eidolon \
+  -nb -o "$EIDOLON_PROFILE_DIR/idle.perf.data" -r '-e task-clock:u -f 199 -g --duration 15'
+
+"$EIDOLON_ANDROID_NDK/simpleperf/bin/linux/x86_64/simpleperf" report \
+  -i "$EIDOLON_PROFILE_DIR/idle.perf.data" --sort comm,dso,symbol --children
+```
+
+`task-clock:u` はユーザー空間の CPU サンプル。OS 上の実行・待機は Perfetto で見る。Rust のシンボルが足りないときは同じビルドの未 strip ライブラリを用意し、`app_profiler.py -lib` でシンボルを補う。その場合は `-nb` を外し、非公開の作業ディレクトリで実行する。[Perfetto のスケジューリング解析](https://perfetto.dev/docs/data-sources/cpu-scheduling)・[Meta の Simpleperf 手順](https://developers.meta.com/vr/documentation/spatial-sdk/ts-simpleperf/)
+
+Perfetto の SQL クエリで上位を一覧にできる。収録全体の平均なので、操作を含む計測では UI で対象区間を選んで集計する。
+
+```sql
+SELECT t.name AS thread, t.tid,
+       ROUND(1.0 * SUM(s.dur) / (trace_end() - trace_start()), 3) AS cpu_cores
+FROM sched AS s
+JOIN thread AS t USING (utid)
+JOIN process AS p USING (upid)
+WHERE p.name = 'io.github.tinmachine.eidolon' AND s.dur > 0
+GROUP BY s.utid
+ORDER BY cpu_cores DESC;
+```
+
+- Kotlin・Rust 内の特定処理とスケジューリングを時刻で照合する場合は、その処理に計測 span を追加してから採る。スレッド別 CPU 時間は上の手順で既存 APK から採れる。
 - PerfettoはQuest OS権限が許す方法（MVDH提供、Android system tracing、profileable app）で、**短時間・期限付き**取得。UIでスレッドのrunnable/blockedとCPU周波数、Kotlin/JNI/native、render、GC、EGL swapを重ねる。
 - Trace APIが見えない場合は、app profileable設定・trace category・native/Java instrumentation・OS制限を区別して報告。特権化/root化によって無理に突破しない。
 - CPU hot pathの詳細が必要であれば、debug symbolを別保管してsimpleperfで調査する。symbol uploadおよびAPK配布ライセンス・メモリ挙動は別レビュー。
 - GPUの処理時間として`frame_timing.total_us`（CPU draw+swap wall time）を再ラベルしない。GPU timer/fenceやOVRを併記。
+
+### Quest 3 の初回計測
+
+対象は 0.1.111 の開発 APK（`3f7bee9`、main の `1af1cfe` と同じソースツリー）。Wi-Fi ADB、給電、90 Hz、Eidolon にフォーカス、HUD 非表示。窓1枚の条件では Ubuntu のランチャーに掲載されている Dolphin を起動して操作を止めた。CPU の基準値は Perfetto を止めた状態で、約25秒間のスレッド別 `/proc` CPU 時間の差分から取得した。
+
+| 平均 CPU 使用量・描画指標 | 窓なし | Dolphin 1窓・静止 |
+| --- | --- | --- |
+| Eidolon プロセス全体 | 約0.96コア | 約1.27コア |
+| ホスト処理 `eidolon-host` | 0.38コア | 0.47コア |
+| Android のメインスレッド | 0.16コア | 0.19コア |
+| 窓の状態取得 `eidolon-panel-snapshot` | 0.11コア | 0.12コア |
+| Rust の `eidolon-core` 2本の合計 | 0.06コア | 0.16コア |
+| トレース区間の平均 FPS / 表示 Hz | 90.52 / 90 | 90.56 / 90 |
+| トレース区間の前フレーム再利用 / GPU 時間平均 | 4回 / 0.92 ms | 6回 / 3.03 ms |
+
+30秒指定の Perfetto は両方で一部のチャンクを取りこぼした。保存されていたデータの時刻幅は約27秒で、CPU 上位の順位は `/proc` と一致した。FPS・再利用・GPU の各値は、この時間帯の Meta ランタイム報告を時刻で照合した。Perfetto の影響を避けて CPU の基準値を比較するときは、同条件の `/proc` 計測を使う。短いスパイクや起床回数まで比較するときは、Perfetto の Stats で欠測を確認して採取時間やバッファを調整する。
+
+15秒の Simpleperf では、窓なしで `NativeSessionHost.tick` の配下が全ユーザー空間 CPU サンプルの約40%。その内側には `nativeSnapshot` での全状態の JSON 生成、Android 側の JSON 解析、`linuxConfigured` からの保存設定の結び付け確認が見つかった。別スレッドの `SpatialPanelAdapter.poll` の配下も約12%で、こちらも動いている runtime の全状態を取得していた。呼び出し配下の割合なので、これらを合算して削減量には使わない。
+
+### 計測から見つかった簡素化候補
+
+1. **保存設定の組み合わせを確認するタイミングを絞る。** `linuxConfigured` は保存プロファイルとストレージ記録の結び付けを同じ状態のまま繰り返し計算していた。読み込み・保存・切り替え時に確認した結果を世代と一緒に保持し、待機中の表示更新で使う。実際の接続・起動・保存で使う対象の照合は、その操作の時点で行う。最初はこの変更だけを比較する。[現行の呼び出し](../../../android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt)・[保存設定の照合](../../../android/app/src/main/java/io/github/tinmachine/eidolon/LinuxDesktopV3ConfigRepository.kt)
+2. **毎回必要な窓の状態と詳細診断の粒度を見直す。** ホスト処理は16 ms、パネル側は処理完了後32 msの間隔で、同じ runtime の全状態をそれぞれ取得する。窓の生成・変更・回収を示す世代付きの小さな状態を先に読み、詳細の再取得は状態変化や診断出力に合わせる案を試す。SDK の回収がホスト側の待機中も進むよう、パネルから独立して読めることと、所有者・世代の照合を受入条件にする。[パネル側のポーリング](../../../android/app/src/main/java/io/github/tinmachine/eidolon/SpatialPanelAdapter.kt)
+3. 変更前後で、窓なし／1窓静止の CPU と FPS・再利用回数を比較し、入力、窓の作成と回収、再接続も通す。削減幅はこの比較で判定する。
 
 ## 3. P2: Host → Questフレームと入力相関
 
