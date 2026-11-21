@@ -1268,6 +1268,7 @@ mod tests {
             presentation_paused: false,
             player_clock_ms: None,
             content_frame,
+            content_updates: u64::from(content_frame.is_some()),
             role: eidolon_render::RenderMode::Windows,
             canvas: None,
             content_size: None,
