@@ -26,12 +26,20 @@ internal data class LauncherCapacity(
         const val MAX_APPS = 20
         val workspaces = 2..(MAX_APPS + 1)
 
+        fun appOccupiesRuntime(snapshot: JSONObject?): Boolean {
+            val app = snapshot?.optJSONObject("app") ?: return false
+            val state = app.optString("state")
+            val reclamation = snapshot.optJSONObject("reclamation")
+            return state.isNotEmpty() && state != "stopped" ||
+                reclamation?.optBoolean("local_cleanup_pending") == true ||
+                reclamation?.optBoolean("remote_cleanup_pending") == true
+        }
+
         fun linuxApps(primary: JSONObject, launching: Boolean): Int {
-            val state = primary.optJSONObject("app")?.optString("state")
             val transport = primary.optJSONObject("transport")
             val cleanup = primary.optBoolean("desktop_v3_finalizer_pending") ||
                 transport?.optBoolean("desktop_pending") == true || transport?.optString("state") == "CleanupPending"
-            return if (launching || cleanup || !state.isNullOrEmpty() && state != "stopped") 1 else 0
+            return if (launching || cleanup || appOccupiesRuntime(primary)) 1 else 0
         }
 
         fun terminalApps(windows: JSONArray?, primaryOccupied: Boolean, beforeAdd: Set<String>?): Int {

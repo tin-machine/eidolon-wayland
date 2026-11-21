@@ -59,7 +59,18 @@ class LauncherCapacityTest {
         primary.put("desktop_v3_finalizer_pending", true)
         assertEquals(1, LauncherCapacity.linuxApps(primary, false))
         primary.put("desktop_v3_finalizer_pending", false)
+        val reclamation = JSONObject()
+        primary.put("reclamation", reclamation)
+        for (key in listOf("local_cleanup_pending", "remote_cleanup_pending")) {
+            reclamation.put(key, true)
+            assertEquals(1, LauncherCapacity.linuxApps(primary, false))
+            assertTrue(LauncherCapacity.appOccupiesRuntime(primary))
+            reclamation.put(key, false)
+        }
         assertEquals(0, LauncherCapacity.linuxApps(primary, false))
+        primary.remove("app")
+        reclamation.put("remote_cleanup_pending", true) // Initial journal scan on a browsing connection.
+        assertFalse(LauncherCapacity.appOccupiesRuntime(primary))
     }
 
     @Test fun dialogsDoNotConsumeOrReleaseAPendingTerminalReservation() {

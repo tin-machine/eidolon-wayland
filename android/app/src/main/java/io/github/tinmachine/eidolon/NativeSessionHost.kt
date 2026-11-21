@@ -117,7 +117,7 @@ object NativeSessionHost {
         } else {
             val windows = primary.optJSONObject("app")?.optJSONArray("windows")
             LauncherCapacity.terminalApps(windows, terminalOpen != null || termuxShelf.borrowed && termuxShelf.occupiesApp ||
-                !state.isNullOrEmpty() && state != "stopped", terminalAdding?.windows)
+                LauncherCapacity.appOccupiesRuntime(primary), terminalAdding?.windows)
         }
         val ubuntuNeedsWorkspace = if (ubuntuPrimary) linuxV3Active() && state == "running" else companionLinux.occupiesApp
         return LauncherCapacity.observe(main, !termuxShelf.borrowed && termuxShelf.occupiesApp,

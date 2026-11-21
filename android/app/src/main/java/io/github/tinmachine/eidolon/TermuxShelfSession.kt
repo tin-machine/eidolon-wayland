@@ -38,7 +38,7 @@ internal class TermuxShelfSession(
     private var presentedApp = false
     private var stoppingApp = false
     val occupiesApp get() = handle != 0L && (slot > 0 || stoppingApp || presentedApp || launchRequest != null ||
-        snapshot?.optJSONObject("app")?.optString("state") in setOf("running", "starting", "stopping"))
+        LauncherCapacity.appOccupiesRuntime(snapshot))
     fun accepts(expected: LauncherUi, id: String) = expected.runtime == handle && expected.session == view.session &&
         expected.revision == view.revision && view.connected && !view.busy && !view.menuRefreshFailed && view.entries.any { it.id == id && it.available }
     fun openApp(primary: Long, expected: LauncherUi, id: String, scene: Long, xr: String, visible: Boolean) {
