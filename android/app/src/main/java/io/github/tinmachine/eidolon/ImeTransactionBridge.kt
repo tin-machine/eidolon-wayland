@@ -18,7 +18,12 @@ data class ImeNativeTarget(
 }
 
 /** editRevision must come from the native owner, never be inferred from serial or cached text. */
-data class ImeBridgeSnapshot(val target: ImeNativeTarget, val editRevision: Long, val lastSequence: Long?)
+data class ImeBridgeSnapshot(
+    val target: ImeNativeTarget,
+    val editRevision: Long,
+    val lastSequence: Long?,
+    val compositionRevision: Long = editRevision,
+)
 
 class ImeNativeTransaction internal constructor(
     val target: ImeNativeTarget,
@@ -112,8 +117,8 @@ class ImeEditorBinding internal constructor(
 /**
  * Private transport adapter. Backend adoption and NativeSessionHost/JNI enablement belong to the owner.
  * One UI owner serializes calls. ACCEPTED only acknowledges enqueue; acknowledge() handles delivery.
- * Queued payloads keep their original serial/edit revision. Only the native owner can decide whether
- * an older serial is geometry-only; a rejection cancels the binding and is never retried.
+ * Queued payloads keep their original serial and revision. Native classifies which revisions can share
+ * an active composition. A rejection cancels the binding and is never retried.
  */
 class ImeTransactionBridge(
     private val enqueue: (ImeNativeTransaction, ImeBridgeReceipt) -> ImeEnqueueResult,
@@ -121,7 +126,10 @@ class ImeTransactionBridge(
     private val maxPendingAcks: Int = 32,
 ) {
     init { require(maxPendingAcks in 1..64) }
-    private class Active(val handle: ImeEditorBinding, var snapshot: ImeBridgeSnapshot, var sourceSequence: Long = 0)
+    private class Active(val handle: ImeEditorBinding, var snapshot: ImeBridgeSnapshot) {
+        var sourceSequence = 0L
+        var hasPreedit = false
+    }
     private var active: Active? = null
     private var nextBinding = 0L
     private var nativeIdentity: ImeNativeTarget? = null
@@ -140,7 +148,8 @@ class ImeTransactionBridge(
     fun bind(editorGeneration: Long, snapshot: ImeBridgeSnapshot): ImeEditorBinding? {
         val nativeSequenceFloor = snapshot.lastSequence
         if (nativeSequenceFloor == null) { failBinding(ImeBridgeFailure.UNKNOWN_SEQUENCE_FLOOR); return null }
-        if (editorGeneration <= 0 || !snapshot.target.valid() || snapshot.editRevision <= 0 || nativeSequenceFloor < 0 || nextBinding == Long.MAX_VALUE) {
+        if (editorGeneration <= 0 || !snapshot.target.valid() || snapshot.compositionRevision !in 1..snapshot.editRevision ||
+            nativeSequenceFloor < 0 || nextBinding == Long.MAX_VALUE) {
             failBinding(ImeBridgeFailure.INVALID_BINDING)
             return null
         }
@@ -160,9 +169,16 @@ class ImeTransactionBridge(
         val current = active ?: return false
         val reason = when {
             snapshot == null -> ImeBridgeFailure.TARGET_UNAVAILABLE
-            !snapshot.target.valid() || snapshot.editRevision <= 0 || snapshot.lastSequence == null || snapshot.lastSequence < 0 -> ImeBridgeFailure.INVALID_BINDING
+            !snapshot.target.valid() || snapshot.compositionRevision !in 1..snapshot.editRevision ||
+                snapshot.lastSequence == null || snapshot.lastSequence < 0 -> ImeBridgeFailure.INVALID_BINDING
             snapshot.target.identity() != current.snapshot.target.identity() -> ImeBridgeFailure.TARGET_CHANGED
-            snapshot.editRevision != current.snapshot.editRevision -> ImeBridgeFailure.EDIT_STATE_CHANGED
+            snapshot.editRevision < current.snapshot.editRevision ||
+                snapshot.compositionRevision < current.snapshot.compositionRevision -> ImeBridgeFailure.EDIT_STATE_CHANGED
+            // A cursor move or Enter can change the client state with IME mode still on.
+            // An idle editor can use the new snapshot for the same activation. Never
+            // rebase a live composition or any transaction awaiting native delivery.
+            snapshot.compositionRevision != current.snapshot.compositionRevision &&
+                (current.hasPreedit || pending.isNotEmpty()) -> ImeBridgeFailure.EDIT_STATE_CHANGED
             else -> null
         }
         if (reason != null) { dropActive(reason); return false }
@@ -190,6 +206,7 @@ class ImeTransactionBridge(
         // Reserve before enqueue to allow an immediate ACK; pending stores metadata only.
         pending[receipt.nativeSequence] = receipt
         current.sourceSequence = transaction.sequence
+        current.hasPreedit = transaction.preedit?.text?.isNotEmpty() == true
         val result = try { enqueue(payload, receipt) } catch (_: Exception) { ImeEnqueueResult.UNAVAILABLE }
         if (result == ImeEnqueueResult.ACCEPTED) enqueued++
         if (active !== current) return false

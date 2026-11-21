@@ -32,6 +32,22 @@ def fixed_context():
 
 
 class PureBoundaryTests(unittest.TestCase):
+    def test_retained_directory_observes_new_and_removed_entries(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with profile.scan_current_directory(fd) as entries:
+                    self.assertEqual(list(entries), [])
+                os.fsync(fd)
+                for name in ("first", "second"):
+                    (root / name).touch()
+                    with profile.scan_current_directory(fd) as entries:
+                        self.assertEqual({entry.name for entry in entries}, {name})
+                    (root / name).unlink()
+            finally:
+                os.close(fd)
+
     def test_existing_golden_owner_is_consumed_without_extra_fields(self):
         owner = profile.storage_owner(fixed_context())
         self.assertEqual(owner.canonical(), RECORDS["owner"]["canonical_utf8"].encode())

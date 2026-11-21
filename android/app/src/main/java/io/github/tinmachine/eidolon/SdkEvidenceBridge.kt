@@ -216,6 +216,24 @@ internal class SdkEvidenceBridge {
         block(requireNotNull(records[id]))
     }
 
+    fun retirementBlockers(id: Lease): List<String> = synchronized(lock) {
+        val record = records[id] ?: return@synchronized emptyList()
+        buildList {
+            if (!record.sealed) add("admission_open")
+            if (!record.registrationResolved) add("registration")
+            if (record.failed) add("sdk_failure")
+            if (record.callbacks > 0) add("callbacks")
+            if (record.producers > 0) add("producers")
+            if (record.bindingRegistered && !record.rendererDetached) add("renderer")
+            if (record.entities.values.any { !it.destroyRequested }) add("destroy_request")
+            if (record.entities.values.any { it.destroyRequested && it.deleteObservedAt == null }) add("entity_delete")
+            if (record.entities.values.any { it.deleteObservedAt != null }) add("entity_delete_fence")
+            if (record.hadEntities && !record.auxiliaryDisposed) add("auxiliary")
+            if (record.lateCleanupAfterPass != null) add("cleanup_fence")
+            if (record.readyToRelease() && record.bindingRegistered && !record.bindingReleased) add("native_release")
+        }
+    }
+
     /** Empty is valid only for a sealed scope whose every producer reserved. */
     fun runtimeProgress(runtime: Long): Progress = synchronized(lock) {
         val own = records.values.filter { it.lease.runtime == runtime }

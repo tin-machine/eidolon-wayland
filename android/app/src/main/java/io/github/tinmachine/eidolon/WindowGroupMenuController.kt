@@ -17,6 +17,7 @@ internal class WindowGroupMenuController(private val parent:Entity,private val l
     private var view:WindowMenuView?=null
     private var initialized=false
     private var sdkFailures=0L
+    val hoverLabel get() = view?.hoverLabel()
     val phase get()=capture.phase
     val reason get()=capture.reason
     val request get()=capture.request

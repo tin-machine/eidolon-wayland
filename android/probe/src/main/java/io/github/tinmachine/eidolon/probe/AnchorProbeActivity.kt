@@ -116,10 +116,23 @@ class AnchorProbeActivity : AppSystemActivity() {
         } else finishCase(outcome)
     }
 
+    private var startupProbe: JSONObject? = null
+
     override fun registerRequiredOpenXRExtensions(): List<String> {
+        val anchorExtensions = listOf(
+            "XR_EXT_future", "XR_EXT_spatial_entity", "XR_EXT_spatial_anchor", "XR_EXT_spatial_persistence",
+            "XR_EXT_spatial_persistence_operations", "XR_KHR_convert_timespec_time",
+        )
         val extra = when (intent.getStringExtra("extensions")) {
-            "persistence_caps", "persistence" -> listOf("XR_EXT_future", "XR_EXT_spatial_entity", "XR_EXT_spatial_anchor",
-                "XR_EXT_spatial_persistence", "XR_EXT_spatial_persistence_operations", "XR_KHR_convert_timespec_time")
+            "persistence_caps", "persistence" -> anchorExtensions
+            "preflight" -> {
+                val observed = JSONObject(NativeProbe.startupExtensions(applicationContext))
+                val extensions = observed.optJSONArray("extensions")
+                val names = extensions?.let { (0 until it.length()).map { index -> it.getString(index) }.toSet() }
+                val missing = anchorExtensions.filter { names?.contains(it) != true }
+                startupProbe = JSONObject().put("missing", JSONArray(missing)).put("error", observed.optString("error"))
+                if (missing.isEmpty()) anchorExtensions else emptyList()
+            }
             else -> emptyList()
         }
         return (super.registerRequiredOpenXRExtensions() + extra).distinct()
@@ -180,6 +193,12 @@ class AnchorProbeActivity : AppSystemActivity() {
                     scene.getOpenXrGetInstanceProcAddrHandle(), requestId, command, uuid)) },
                 { phase, details -> record(phase, details) }, ::trialFinished, if (visual) ::showMarker else null)
             trial!!.start()
+            return
+        }
+        if (intent.getStringExtra("extensions") == "preflight") {
+            startupProbe?.let { record("startup_preflight", it) }
+            val local = capabilities.optJSONObject("persistence_scopes")?.optBoolean("local_anchors") == true
+            finishCase(if (local) "preflight_local_store_available" else "preflight_local_store_unavailable")
             return
         }
         if (intent.getStringExtra("extensions") in setOf("advertised", "persistence_caps")) {

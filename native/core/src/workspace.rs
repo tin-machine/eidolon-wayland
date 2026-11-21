@@ -229,6 +229,22 @@ impl Controller {
             .ok_or("STALE")?;
         window.placement.request(request, pose)
     }
+    /// The initial positioning request applies once, before a panel is created.
+    pub fn set_initial_dialog_pose(
+        &mut self,
+        target: TargetKey,
+        request: CommandSeq,
+        pose: PanelPose,
+    ) -> Result<(), &'static str> {
+        let initial = self.windows.iter().any(|window| {
+            window.placement.accepts(target) && window.placement.pose_command.is_none()
+        });
+        if !initial {
+            return Err("STALE");
+        }
+        self.set_pose(target, request, pose)
+    }
+
     pub fn pose_applied(
         &mut self,
         target: TargetKey,
@@ -369,6 +385,26 @@ mod tests {
         c.scene(Some(SceneEpoch::new(2).unwrap()));
         c.sync(session(), &windows, &panels);
         assert!(c.snapshot().windows.iter().all(|w| w.slot.is_none()));
+    }
+    #[test]
+    fn initial_dialog_pose_applies_once_and_does_not_move_the_parent() {
+        let mut workspace = Controller::load(None);
+        workspace.scene(Some(scene()));
+        let parent = window(1);
+        let dialog = window(2);
+        let parent_panel = panel(&parent, 0, 1);
+        let dialog_panel = panel(&dialog, 1, 2);
+        let mut arc = PanelPose::at_slot(1);
+        arc.position_m[0] = 1.0;
+        let request = CommandSeq::new(5).unwrap();
+        workspace.sync(session(), &[parent, dialog], &[parent_panel, dialog_panel.clone()]);
+        workspace.set_initial_dialog_pose(dialog_panel.target, request, arc).unwrap();
+        assert!(workspace.set_initial_dialog_pose(
+            dialog_panel.target, CommandSeq::new(6).unwrap(), PanelPose::at_slot(1),
+        ).is_err());
+        let state = workspace.snapshot();
+        assert_eq!(state.windows[0].placement.pose, PanelPose::at_slot(0));
+        assert_eq!(state.windows[1].placement.pose, arc);
     }
     #[test]
     fn duplicate_app_keeps_existing_pose_and_stale_target_cannot_move_live_window() {

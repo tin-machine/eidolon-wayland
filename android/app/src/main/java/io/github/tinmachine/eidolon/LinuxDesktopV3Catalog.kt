@@ -9,17 +9,18 @@ class LinuxDesktopV3Catalog private constructor(
     val capture: String,
     val revision: String,
     private val scope: String,
+    val entries: List<LauncherEntry>,
+    val installedAvailable: Boolean,
 ) {
-    val entries: List<LauncherEntry> get() = FIXED_ENTRIES.map {
-        LauncherEntry(it.getValue("id"), it.getValue("label"), it.getValue("icon"), true, null)
-    }
+    fun current(runtime: Long, session: String, capture: String): Boolean =
+        this.runtime == runtime && this.session == session && this.capture == capture
 
     fun accepts(runtime: Long, session: String, capture: String, revision: String, id: String): Boolean =
-        this.runtime == runtime && this.session == session && this.capture == capture &&
-            this.revision == revision && id in APP_IDS
+        current(runtime, session, capture) && this.revision == revision &&
+            entries.any { it.id == id && it.available }
 
     fun selection(id: String): JSONObject {
-        require(id in APP_IDS) { "DESKTOP_CATALOG_INVALID" }
+        require(entries.any { it.id == id && it.available }) { "DESKTOP_CATALOG_INVALID" }
         return JSONObject().put("scope", scope).put("revision", revision).put("app_id", id)
     }
 
@@ -30,7 +31,6 @@ class LinuxDesktopV3Catalog private constructor(
         const val REVISION = "eidolon-linux-desktop-v3"
         const val DEMO_ID = "gtk3-desktop"
         const val EDITOR_ID = "mousepad-editor-v1"
-        private val APP_IDS = setOf(DEMO_ID, EDITOR_ID)
         private val FIXED_ENTRIES = listOf(
             mapOf("id" to DEMO_ID, "label" to "Linux アプリ", "mode" to "gui", "icon" to "builtin:script"),
             mapOf("id" to EDITOR_ID, "label" to "Mousepad", "mode" to "gui", "icon" to "builtin:editor"),
@@ -39,7 +39,8 @@ class LinuxDesktopV3Catalog private constructor(
             "arbitrary_exec", "terminal", "instance_limit")
 
         /** Parse original descriptor bytes; JSONObject round-trips must not hide duplicate keys. */
-        fun decode(runtime: Long, session: String, capture: String, raw: ByteArray): LinuxDesktopV3Catalog = try {
+        fun decode(runtime: Long, session: String, capture: String, raw: ByteArray,
+            installed: List<*>? = null, editorAvailable: Boolean = true): LinuxDesktopV3Catalog = try {
             require(runtime > 0 && positiveDecimal(session) && LinuxStorageIdentity.hex(capture, 64))
             val value = LinuxStorageJson.parse(raw) as? Map<*, *> ?: error("DESKTOP_CATALOG_INVALID")
             require(value.keys == FIELDS && value["schema"] == 1L && value["namespace"] == "linux-desktop" &&
@@ -50,8 +51,35 @@ class LinuxDesktopV3Catalog private constructor(
             val scope = value["scope"] as? String ?: error("DESKTOP_CATALOG_INVALID")
             val revision = value["revision"] as? String ?: error("DESKTOP_CATALOG_INVALID")
             require(LinuxStorageIdentity.hex(scope, 64) && LinuxStorageIdentity.hex(revision, 64))
-            LinuxDesktopV3Catalog(runtime, session, capture, revision, scope)
+            val fixed = FIXED_ENTRIES.filter { editorAvailable || it.getValue("id") != EDITOR_ID }.map {
+                LauncherEntry(it.getValue("id"), it.getValue("label"), it.getValue("icon"), true, null)
+            }
+            LinuxDesktopV3Catalog(runtime, session, capture, revision, scope, fixed + decodeInstalled(installed),
+                installedAvailable = installed != null)
         } catch (_: Exception) { throw IllegalArgumentException("DESKTOP_CATALOG_INVALID") }
+
+        private val installedFields = setOf("id", "name", "revision", "disabled_reason")
+        private val disabledReasons = setOf("terminal_required", "dbus_activation_required",
+            "executable_unavailable", "exec_format_unsupported", "workdir_unavailable")
+
+        internal fun decodeInstalled(installed: List<*>?): List<LauncherEntry> {
+            if (installed == null) return emptyList()
+            require(installed.size <= 1024)
+            val desktopIds = mutableSetOf<String>()
+            val revisions = mutableSetOf<String>()
+            return installed.map { value ->
+                val row = value as? Map<*, *> ?: error("DESKTOP_CATALOG_INVALID")
+                require(row.keys == installedFields)
+                val desktopId = row["id"] as? String ?: error("DESKTOP_CATALOG_INVALID")
+                val label = row["name"] as? String ?: error("DESKTOP_CATALOG_INVALID")
+                val revision = row["revision"] as? String ?: error("DESKTOP_CATALOG_INVALID")
+                val reason = row["disabled_reason"]
+                require(desktopId.endsWith(".desktop") && desktopIds.add(desktopId) &&
+                    label.isNotBlank() && LinuxStorageIdentity.hex(revision, 64) && revisions.add(revision) &&
+                    (reason == null || reason is String && reason in disabledReasons))
+                LauncherEntry("desktop-entry:$revision", label, "", reason == null, reason as String?)
+            }.sortedBy { it.label.lowercase() }
+        }
 
         internal fun positiveDecimal(value: String): Boolean =
             value.matches(Regex("[1-9][0-9]{0,18}")) && value.toLongOrNull() != null

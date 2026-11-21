@@ -41,8 +41,34 @@ pub struct ReclamationHandoff {
     pub deferred: DeferredReclamation,
     pub authority: ReclamationAuthority,
     pub no_local_allocation: Option<super::runtime::NoLocalAllocation>,
+    durable_local: Option<LocalReclaimed>,
 }
 impl ReclamationHandoff {
+    pub fn take_durable_local_retirement(&mut self) -> Option<LocalReclaimed> {
+        self.durable_local.take()
+    }
+
+    pub(crate) fn bind_durable_local_retirement(
+        &mut self,
+        files: &std::path::Path,
+        current_boot: Option<u32>,
+    ) -> Result<(), &'static str> {
+        if !self.deferred.journal.local_retired() {
+            if current_boot.is_some_and(|current| self.deferred.journal.predates_android_boot(current)) {
+                super::local_directory::retire_after_reboot(files, &self.authority.key.context)?;
+            } else if self.deferred.journal.local_launch_was_blocked() {
+                super::local_directory::require_absent(files, &self.authority.key.context)?;
+            } else {
+                return Err("DESKTOP_LOCAL_RETIREMENT_PENDING");
+            }
+        }
+        self.durable_local = Some(LocalReclaimed {
+            key: self.authority.key.clone(),
+            generation: self.authority.generation,
+        });
+        Ok(())
+    }
+
     /// Keep publication bound to the new I/O generation while checking local
     /// retirement against the original live capture. The pre-existing I/O
     /// lock and complete journal must both name that exact captured owner.
@@ -116,6 +142,7 @@ impl DeferredReclamation {
         };
         Ok(ReclamationHandoff {
             no_local_allocation: None,
+            durable_local: None,
             authority: ReclamationAuthority {
                 key: key.clone(),
                 generation,
@@ -233,6 +260,130 @@ mod tests {
             generation: 7,
             local,
         }
+    }
+
+    #[test]
+    fn reboot_recovery_requires_an_advanced_boot_and_the_original_directory() {
+        use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::net::UnixListener;
+
+        let files = Temp::new();
+        let binding = binding();
+        let parent = files.0.join("rt");
+        let directory = parent.join(binding.context().nonce().as_str());
+        std::fs::DirBuilder::new().mode(0o700).recursive(true).create(&directory).unwrap();
+        super::super::local_directory::mark(&directory, binding.context()).unwrap();
+        let marker = directory.join(".desktop-v3-owner");
+        let original = std::fs::read_to_string(&marker).unwrap();
+        let mut parts = original.trim_end().split(':');
+        let scope = parts.next().unwrap();
+        let device = parts.next().unwrap().parse::<u64>().unwrap();
+        let inode = parts.next().unwrap();
+        std::fs::write(marker, format!("{scope}:{}:{inode}\n", device ^ 1)).unwrap();
+        drop(UnixListener::bind(directory.join("w")).unwrap());
+        let mut journal = Journal::reserve_inspection(&files.0, &binding, Some(4)).unwrap();
+        journal.prepared(BOOT).unwrap();
+        journal.open_local_launch().unwrap();
+        journal.finish(complete()).unwrap();
+        let mut handoff = DeferredReclamation::from_complete(journal, &binding, 7).unwrap();
+        for boot in [None, Some(3), Some(4)] {
+            assert!(handoff.bind_durable_local_retirement(&files.0, boot).is_err());
+            assert!(handoff.take_durable_local_retirement().is_none());
+            assert!(directory.join("w").exists());
+        }
+        let unknown = directory.join("unrelated");
+        std::fs::write(&unknown, b"keep").unwrap();
+        assert!(handoff.bind_durable_local_retirement(&files.0, Some(5)).is_err());
+        assert!(directory.join("w").exists());
+        assert!(unknown.exists());
+        std::fs::remove_file(unknown).unwrap();
+        handoff.bind_durable_local_retirement(&files.0, Some(5)).unwrap();
+        let local = handoff.take_durable_local_retirement().unwrap();
+        assert!(!directory.exists());
+        finalize_reclaimed(&mut handoff.deferred, &local).unwrap();
+        assert!(super::super::journal::pending(&files.0).unwrap().is_none());
+    }
+
+    #[test]
+    fn cold_inspection_recovery_keeps_unexpected_files_and_retries_same_boot() {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let files = Temp::new();
+        let binding = binding();
+        let mut journal = Journal::reserve_inspection(&files.0, &binding, Some(4)).unwrap();
+        journal.prepared(BOOT).unwrap();
+        assert!(journal.advance(super::super::journal::Stage::ForwardRequested).is_err());
+        journal.finish(complete()).unwrap();
+        let mut handoff = DeferredReclamation::from_complete(journal, &binding, 7).unwrap();
+
+        let directory = files.0.join("rt").join(binding.context().nonce().as_str());
+        std::fs::DirBuilder::new().mode(0o700).recursive(true).create(&directory).unwrap();
+        let unexpected = directory.join("unrelated");
+        std::fs::write(&unexpected, b"keep").unwrap();
+        assert!(handoff.bind_durable_local_retirement(&files.0, Some(4)).is_err());
+        assert!(handoff.take_durable_local_retirement().is_none());
+        assert_eq!(std::fs::read(&unexpected).unwrap(), b"keep");
+        assert!(super::super::journal::pending(&files.0).unwrap().is_some());
+
+        std::fs::remove_file(unexpected).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+        handoff.bind_durable_local_retirement(&files.0, Some(4)).unwrap();
+        let local = handoff.take_durable_local_retirement().unwrap();
+        finalize_reclaimed(&mut handoff.deferred, &local).unwrap();
+        assert!(super::super::journal::pending(&files.0).unwrap().is_none());
+    }
+
+    #[test]
+    fn process_death_releases_inspection_owner_without_a_reboot() {
+        use super::super::{io_fence::IoGenerationFence, owner::test_support::{profile, request, storage}};
+        use eidolon_model::ids::SessionId;
+        use std::{process::{Command, Stdio}, thread, time::{Duration, Instant}};
+
+        const CHILD_FILES: &str = "EIDOLON_TEST_INSPECTION_OWNER_FILES";
+        let binding = binding();
+        if let Some(path) = std::env::var_os(CHILD_FILES) {
+            let files = std::path::PathBuf::from(path);
+            let _fence = IoGenerationFence::acquire(&files, binding.session(), 1).unwrap();
+            let mut journal = Journal::reserve_inspection(&files, &binding, Some(4)).unwrap();
+            journal.prepared(BOOT).unwrap();
+            journal.finish(complete()).unwrap();
+            std::fs::write(files.join("ready"), b"ready").unwrap();
+            thread::sleep(Duration::from_secs(30));
+            return;
+        }
+
+        let files = Temp::new();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "linux_desktop::v3::reclamation::tests::process_death_releases_inspection_owner_without_a_reboot"])
+            .env(CHILD_FILES, &files.0)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let ready = files.0.join("ready");
+        while !ready.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let next = SessionId::new(binding.session().get() + 1).unwrap();
+        let fenced_while_live = matches!(IoGenerationFence::acquire(&files.0, next, 2),
+            Err("DESKTOP_PREVIOUS_CONNECTION_PENDING"));
+        let killed = child.kill();
+        let status = child.wait().unwrap();
+        killed.unwrap();
+        assert!(ready.exists() && fenced_while_live && !status.success());
+
+        let mut fence = IoGenerationFence::acquire(&files.0, next, 2).unwrap();
+        let previous = fence.take_previous().unwrap();
+        let profile = profile();
+        let storage = storage();
+        let (journal, captured) = Journal::matching(&request(&files.0, &profile, binding.pins(), &storage))
+            .unwrap().unwrap();
+        assert!(previous.matches(next, &captured, journal.source_hashes()));
+        let mut handoff = DeferredReclamation::from_complete(journal, &captured, 2).unwrap();
+        handoff.bind_durable_local_retirement(&files.0, Some(4)).unwrap();
+        let local = handoff.take_durable_local_retirement().unwrap();
+        finalize_reclaimed(&mut handoff.deferred, &local).unwrap();
+        assert!(super::super::journal::pending(&files.0).unwrap().is_none());
     }
 
     #[test]

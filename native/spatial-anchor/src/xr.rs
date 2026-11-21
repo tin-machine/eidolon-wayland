@@ -1,9 +1,3 @@
-// OpenXR function lookup for the live Spatial SDK session.
-use jni::{
-    EnvUnowned,
-    objects::{JClass, JString},
-    sys::jlong,
-};
 use openxr_sys::{self as xr, Handle, pfn};
 use serde_json::{Value, json};
 use std::{ffi::CStr, ptr};
@@ -41,4 +35,4 @@ fn check(op: &str, result: xr::Result) -> Result<(), String> {
     }
 }
 
-mod persistence;
+pub(crate) mod persistence;

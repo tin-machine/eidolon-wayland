@@ -159,7 +159,7 @@ pub async fn recover_remote<H: client::Handler>(
             &expected_boot,
         )
         .map_err(|e| e.0)?;
-        let command = owner::command(&binding, &bootstrap)?;
+        let command = owner::recovery_command(&binding, &bootstrap, journal.source_hashes())?;
         let mut channel = tokio::select! { biased;
             _ = cancel.cancelled() => return Err("CANCELLED"),
             result = timeout(Duration::from_secs(5), client.channel_open_session()) => result,

@@ -41,6 +41,7 @@ impl Fixture {
             paths: Some(RuntimePaths {
                 files_dir: files.to_str().unwrap().into(),
                 native_library_dir: "/unused-diagnostic-connect-fixture".into(),
+                android_boot_count: None,
             }),
             ..Default::default()
         };

@@ -143,6 +143,7 @@ fn runtime_owner_keeps_snapshot_responsive_and_stops_helper_before_destroy() {
         schema: 1,
         paths: Some(RuntimePaths {
             native_library_dir: fixture.0.join("lib").to_str().unwrap().into(),
+            android_boot_count: None,
             files_dir: fixture.files().to_str().unwrap().into(),
         }),
         ..Default::default()

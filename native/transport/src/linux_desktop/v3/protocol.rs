@@ -197,7 +197,14 @@ pub fn parse_event(raw: &[u8], binding: &Binding, evidence: &ExpectedEvidence) -
             }
         }
         "catalog" => {
-            fields(payload, &["descriptor", "evidence"])?;
+            if let Some(available) = payload.get("editor_available") {
+                fields(payload, &["descriptor", "evidence", "editor_available"])?;
+                if available != &Value::Bool(false) {
+                    return Err("DESKTOP_V3_PROTOCOL_INVALID");
+                }
+            } else {
+                fields(payload, &["descriptor", "evidence"])?;
+            }
             contract::validate_catalog(
                 &canonical(&payload["descriptor"])?,
                 binding.context(),

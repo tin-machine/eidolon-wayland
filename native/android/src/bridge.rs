@@ -71,6 +71,92 @@ fn secret_bytes(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeAnchorScope<'a>(
+    mut env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    instance: jlong,
+    proc_addr: jlong,
+) -> jni::sys::jboolean {
+    env.with_env(|_| {
+        // The handles are obtained together from the Activity's live Scene.
+        let info = unsafe { eidolon_spatial_anchor::inspect(instance as u64, proc_addr as usize) };
+        Ok::<_, jni::errors::Error>(
+            info["persistence_scopes"]["local_anchors"].as_bool() == Some(true),
+        )
+    })
+    .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeAnchorStep<'a>(
+    mut env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    instance: jlong,
+    session: jlong,
+    proc_addr: jlong,
+    owner: JString<'a>,
+    command: JString<'a>,
+    uuid: JString<'a>,
+    pose_json: JString<'a>,
+) -> JString<'a> {
+    env.with_env(|env| {
+        let owner = owner.try_to_string(env)?;
+        let command = command.try_to_string(env)?;
+        let uuid = uuid.try_to_string(env)?;
+        let pose = bounded_json(env, &pose_json)?
+            .and_then(|json| {
+                serde_json::from_str::<eidolon_model::workspace::PanelPose>(&json).ok()
+            })
+            .filter(|pose| pose.valid())
+            .map(|pose| {
+                let [x, y, z] = pose.position_m;
+                let [qx, qy, qz, qw] = pose.rotation_xyzw;
+                [x, y, z, qx, qy, qz, qw]
+            });
+        let result = if command == "save" && pose.is_none() {
+            serde_json::json!({"stage":"error","error":"invalid_panel_pose"})
+        } else {
+            // This runs on the owning Activity thread while the SDK session is live.
+            unsafe {
+                eidolon_spatial_anchor::panel_step(
+                    (instance as u64, session as u64, proc_addr as usize),
+                    &owner,
+                    &command,
+                    &uuid,
+                    pose,
+                )
+            }
+        };
+        JString::from_str(env, result.to_string())
+    })
+    .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+/// This optional capability is checked before an Eidolon Runtime exists.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeAnchorRequiredExtensions<
+    'a,
+>(
+    mut env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    context: JObject<'a>,
+) -> JString<'a> {
+    env.with_env(|env| {
+        let vm = env.get_java_vm()?;
+        // MainActivity passes its application Context before starting the Spatial SDK.
+        let advertised = unsafe {
+            eidolon_spatial_anchor::startup_extensions(vm.get_raw().cast(), context.as_raw().cast())
+        };
+        let required = advertised
+            .as_deref()
+            .map(eidolon_spatial_anchor::required_if_advertised)
+            .unwrap_or_default();
+        JString::from_str(env, serde_json::json!(required).to_string())
+    })
+    .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeGenerateIdentity<'a>(
     mut env: EnvUnowned<'a>,
     _: JClass<'a>,

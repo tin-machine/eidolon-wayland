@@ -6,6 +6,7 @@ import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -26,6 +27,7 @@ import org.json.JSONObject
 
 /** 通常/固定検査で共用するPresentation IME owner。入力本文は診断へ出さない。 */
 object TerminalImeController {
+    private const val TAG = "EidolonIme"
     private val ui = Handler(Looper.getMainLooper())
     private val panelId = View.generateViewId()
     private var activity = WeakReference<MainActivity>(null)
@@ -122,6 +124,7 @@ object TerminalImeController {
         private var upSubmitted = false
         private var tapFailed = false
         private var closedEditorFixture = false
+        private var lastLoggedState: String? = null
 
         fun create(context: Context): View = LinearLayout(context).apply {
             closedEditorFixture=probe?.verifyEditor?.invoke(context) ?: true
@@ -316,7 +319,20 @@ object TerminalImeController {
             } catch (_: Exception) {reason="controller_failure";stop("controller_failure",false);ui.postDelayed(this,100)}
         }
         fun publish() {
-            val probe=probe ?: return
+            val probe=probe ?: run {
+                if (BuildConfig.DEBUG) {
+                    val view = editor
+                    val state = "phase=$phase reason=$reason failure=${lastMetadata?.failure} " +
+                        "tap=${downSubmitted && upSubmitted} tapFailed=$tapFailed " +
+                        "viewFocus=${view?.hasFocus() == true} windowFocus=${view?.hasWindowFocus() == true} " +
+                        "connectionActive=${view?.metadata()?.active == true}"
+                    if (state != lastLoggedState) {
+                        lastLoggedState = state
+                        Log.i(TAG, state)
+                    }
+                }
+                return
+            }
             probe.publish(debugReport().put("case","ime-terminal").put("nonce",probe.nonce))
         }
         fun debugReport():JSONObject {

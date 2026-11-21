@@ -23,6 +23,10 @@ class LinuxRuntimeConfigurationTest {
     @Test fun normalNoneV2AndV3UseExclusiveFieldsAndSameProfileCapture() {
         val none = JSONObject(LinuxRuntimeConfiguration.build(base()))
         assertFalse(none.has("linux_profile_v2"))
+        val discovery = JSONObject(LinuxRuntimeConfiguration.build(base(), profile()))
+        assertTrue(discovery.has("linux_profile_v2"))
+        assertFalse(discovery.has("linux_desktop_pins"))
+        assertFalse(discovery.has("linux_desktop_v3"))
         val old = JSONObject(LinuxRuntimeConfiguration.build(base(), profile(), v2Pins = pins()))
         assertTrue(old.has("linux_desktop_pins"))
         assertFalse(old.has("linux_desktop_v3"))
@@ -41,7 +45,6 @@ class LinuxRuntimeConfigurationTest {
             { LinuxRuntimeConfiguration.build(base(), profile(), storage = storage()) },
             { LinuxRuntimeConfiguration.build(base(), configuration = config(), storage = storage()) },
             { LinuxRuntimeConfiguration.build(base(), profile(), configuration = config()) },
-            { LinuxRuntimeConfiguration.build(base(), profile()) },
             { LinuxRuntimeConfiguration.build(base(), v2Pins = pins()) },
             { LinuxRuntimeConfiguration.build(base().put("linux_desktop_pins", pins().json()), profile(), configuration = config(), storage = storage()) },
             { LinuxRuntimeConfiguration.build(base().put("installation", "b".repeat(32)), profile(), configuration = config(), storage = storage()) },

@@ -60,6 +60,39 @@ struct TextInput {
     surrounding_fresh: bool,
 }
 
+struct ImeFeedback {
+    before: ImeSurrounding,
+    document: ImeSurrounding,
+    with_preedit: Option<ImeSurrounding>,
+    clears_preedit: bool,
+}
+
+impl ImeFeedback {
+    fn accepts(&self, surrounding: &ImeSurrounding) -> bool {
+        surrounding == &self.document
+            || self.with_preedit.as_ref() == Some(surrounding)
+            || self.clears_preedit && surrounding == &self.before
+    }
+}
+
+fn replace_selection(
+    document: &ImeSurrounding,
+    replacement: &str,
+    cursor_begin: usize,
+    cursor_end: usize,
+) -> Option<ImeSurrounding> {
+    let start = document.cursor.min(document.anchor) as usize;
+    let end = document.cursor.max(document.anchor) as usize;
+    let mut text = document.text.clone();
+    text.replace_range(start..end, replacement);
+    let surrounding = ImeSurrounding {
+        text,
+        cursor: (start + cursor_end) as u32,
+        anchor: (start + cursor_begin) as u32,
+    };
+    surrounding.valid().then_some(surrounding)
+}
+
 #[derive(Default)]
 pub(super) struct ImeState {
     backend_enabled: bool,
@@ -69,6 +102,9 @@ pub(super) struct ImeState {
     activation: u64,
     edit_revision: u64,
     revision_serial: u32,
+    composition_revision: u64,
+    composition_serial: u32,
+    feedback: Option<ImeFeedback>,
     exhausted: bool,
     sequence: u64,
     preedit: bool,
@@ -84,22 +120,49 @@ impl ImeState {
         }
         self.sequence = 0;
         self.preedit = false;
-        self.advance_edit_revision();
+        self.advance_edit_revision(false);
         self.report.resets += 1;
     }
 
-    fn advance_edit_revision(&mut self) {
+    fn advance_edit_revision(&mut self, own_feedback: bool) {
         if let Some(next) = self.edit_revision.checked_add(1) {
             self.edit_revision = next;
         } else {
             self.exhausted = true;
         }
         self.revision_serial = self.active().map_or(0, |input| input.serial);
+        if !own_feedback {
+            self.composition_revision = self.edit_revision;
+            self.composition_serial = self.revision_serial;
+            self.feedback = None;
+        }
     }
 
     fn accepts_serial(&self, serial: u32) -> bool {
         self.active()
             .is_some_and(|active| serial_in_revision(self.revision_serial, active.serial, serial))
+    }
+
+    fn expect_feedback(&self, active: &TextInput, transaction: &ImeTransaction) -> Option<ImeFeedback> {
+        if transaction.delete_before != 0 || transaction.delete_after != 0 {
+            return None;
+        }
+        let before = self.feedback.as_ref().map(|old| old.document.clone())
+            .or_else(|| active.current.surrounding.clone())
+            .unwrap_or(ImeSurrounding { text: String::new(), cursor: 0, anchor: 0 });
+        let document = match &transaction.commit {
+            Some(text) => replace_selection(&before, text, text.len(), text.len())?,
+            None => before.clone(),
+        };
+        let with_preedit = match &transaction.preedit {
+            Some(preedit) if !preedit.text.is_empty() => {
+                let end = usize::try_from(preedit.cursor_end).unwrap_or(preedit.text.len());
+                let begin = usize::try_from(preedit.cursor_begin).unwrap_or(end);
+                Some(replace_selection(&document, &preedit.text, begin, end)?)
+            }
+            _ => None,
+        };
+        Some(ImeFeedback { before, document, with_preedit, clears_preedit: self.preedit })
     }
 
     fn active(&self) -> Option<&TextInput> {
@@ -173,6 +236,7 @@ impl ProtocolState {
                 serial: active.serial,
             },
             edit_revision: self.ime.edit_revision,
+            composition_revision: self.ime.composition_revision,
             last_sequence: self.ime.sequence,
             surrounding: active
                 .surrounding_fresh
@@ -199,6 +263,13 @@ impl ProtocolState {
         let active = self.ime.active().ok_or("STALE")?;
         let resource = active.resource.clone();
         let serial = active.serial;
+        let changes_text = transaction.commit.is_some()
+            || transaction.preedit.is_some()
+            || transaction.delete_before != 0
+            || transaction.delete_after != 0;
+        if changes_text {
+            self.ime.feedback = self.ime.expect_feedback(active, transaction);
+        }
         // この点より前にprotocol eventを送らない。順序・UTF/range失敗で部分送信しない。
         if transaction.delete_before != 0 || transaction.delete_after != 0 {
             resource.delete_surrounding_text(transaction.delete_before, transaction.delete_after);
@@ -220,10 +291,7 @@ impl ProtocolState {
             .as_ref()
             .is_some_and(|p| !p.text.is_empty());
         // クライアントが新しい周辺snapshotをcommitするまで編集済み文字を再利用しない。
-        if (transaction.commit.is_some()
-            || transaction.delete_before != 0
-            || transaction.delete_after != 0
-            || transaction.preedit.is_some())
+        if changes_text
             && let Some(instance) = self
                 .ime
                 .instances
@@ -246,13 +314,22 @@ impl ProtocolState {
         }
         let snapshot = self.ime_snapshot(input_epoch).ok_or("NOT_READY")?;
         // wire done serialは常に適用時の最新値。payload自体は変更・再送しない。
-        // 同じ編集revisionの既知serial区間だけを許し、geometry更新との競合を避ける。
+        // Absolute deletion offsets always require the current edit revision.
+        // Text-only edits can cross feedback from this input method within the same activation.
         let mut identity = transaction.target;
         identity.serial = snapshot.target.serial;
+        let current_revision = transaction.edit_revision == snapshot.edit_revision
+            && self.ime.accepts_serial(transaction.target.serial);
+        let composition_revision = transaction.delete_before == 0
+            && transaction.delete_after == 0
+            && (snapshot.composition_revision..snapshot.edit_revision)
+                .contains(&transaction.edit_revision)
+            && serial_in_revision(
+                self.ime.composition_serial, snapshot.target.serial, transaction.target.serial,
+            );
         if identity != snapshot.target
-            || transaction.edit_revision != snapshot.edit_revision
+            || !(current_revision || composition_revision)
             || transaction.sequence <= snapshot.last_sequence
-            || !self.ime.accepts_serial(transaction.target.serial)
         {
             return Err("STALE");
         }
@@ -449,10 +526,15 @@ fn text_input_request(
         }
         zwp_text_input_v3::Request::Commit => {
             let enabled = input.pending_enabled.take();
+            let changed_content_type = input.pending.content_hint != input.current.content_hint
+                || input.pending.content_purpose != input.current.content_purpose;
+            let external = input.pending.change_cause == zwp_text_input_v3::ChangeCause::Other as u32;
             let semantic_change = input.pending.surrounding != input.current.surrounding
-                || input.pending.content_hint != input.current.content_hint
-                || input.pending.content_purpose != input.current.content_purpose
-                || input.pending.change_cause == 1;
+                || changed_content_type || external;
+            let own_feedback = !changed_content_type && !external && input.pending_surrounding
+                && state.ime.feedback.as_ref().is_some_and(|feedback| {
+                    input.pending.surrounding.as_ref().is_some_and(|data| feedback.accepts(data))
+                });
             if state
                 .ime
                 .active
@@ -483,14 +565,15 @@ fn text_input_request(
                 state.ime.instances[index].surrounding_fresh = false;
             } else if state.ime.active.as_ref() != Some(&resource.id()) {
                 return;
-            } else if semantic_change
-                || state.ime.instances[index]
-                    .serial
-                    .wrapping_sub(state.ime.revision_serial)
-                    >= SERIAL_HALF_RANGE
-            {
+            } else if state.ime.instances[index].serial.wrapping_sub(state.ime.composition_serial)
+                >= SERIAL_HALF_RANGE {
                 // 2^31を越すserial区間は比較が曖昧になるため、geometryだけでも失効。
-                state.ime.advance_edit_revision();
+                state.ime.advance_edit_revision(false);
+            } else if semantic_change {
+                state.ime.advance_edit_revision(own_feedback);
+            }
+            if own_feedback && let Some(feedback) = &mut state.ime.feedback {
+                feedback.clears_preedit = false;
             }
             let input = &mut state.ime.instances[index];
             input.current = input.pending.clone();
@@ -521,6 +604,7 @@ impl ProtocolState {
         {
             input.serial = serial;
             self.ime.revision_serial = serial;
+            self.ime.composition_serial = serial;
         }
     }
 }

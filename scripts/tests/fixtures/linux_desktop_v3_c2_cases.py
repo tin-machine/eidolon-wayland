@@ -108,6 +108,51 @@ class RealC2Cases(unittest.TestCase):
         self.assertEqual(value["process_evidence"], "unknown")
         self.assertTrue((paths.session / "barrier.json").exists())
 
+    def fail_initial_profile_validation(self, change_reservation=False):
+        import eidolon_linux_desktop_session_v3 as session
+
+        validate = profile_api.ProfileHandle.validate
+        attempts = []
+
+        def fail_once(handle):
+            if not attempts:
+                attempts.append(handle)
+                if change_reservation:
+                    barrier, = (self.home / core.STATE_DIR).glob("s-*/barrier.json")
+                    barrier.write_bytes(b"{}\n")
+                raise profile_api.ProfileError()
+            return validate(handle)
+
+        bootstrap = C.Bootstrap("serve", self.binding.context, self.binding.pins)
+        with mock.patch.object(profile_api.ProfileHandle, "validate", fail_once), \
+                mock.patch.object(core, "boot_id", return_value=ORIGIN), \
+                mock.patch.object(session.Emitter, "send") as send:
+            self.assertEqual(session.serve(bootstrap, None, SOURCES), 1)
+            send.assert_not_called()
+        handle, = attempts
+        return handle
+
+    def test_before_prepared_live_handle_recovers_on_same_boot(self):
+        handle = self.fail_initial_profile_validation()
+        self.assertTrue(handle.closed)
+        for _ in range(2):
+            status, value = self.recover(current=ORIGIN)
+            self.assertEqual(status, 0)
+            self.assertEqual(value["process_evidence"], "receipt")
+            self.assertTrue(value["process_complete"] and value["pipes_eof"])
+            self.assertTrue(value["remote_cleaned"] and value["receipt_written"])
+
+    def test_before_prepared_changed_reservation_stays_pending(self):
+        handle = self.fail_initial_profile_validation(change_reservation=True)
+        self.assertFalse(handle.closed)
+        # The live owner still holds the state flock. A different Recover
+        # cannot claim its session or convert the failed check to a receipt.
+        status, value = self.recover(current=ORIGIN)
+        self.assertEqual(status, 1)
+        self.assertEqual(value["process_evidence"], "unknown")
+        self.assertFalse(value["remote_cleaned"])
+        self.assertFalse(list((self.home / core.STATE_DIR).glob("r-*.json")))
+
     def test_partial_proof_write_keeps_origin_and_is_retryable(self):
         paths = self.abandoned_session()
         original = core._write_new

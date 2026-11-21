@@ -313,7 +313,7 @@ class ImeSessionConnectionTest {
         assertTrue(h.connection.submit(ImeEditTransaction(1, 1, "fixture", null)))
         val payload = (h.sent.last().second as ImeSessionCommand.Transaction).payload
         assertEquals(8L, payload.target.serial)
-        val changed = h.nextFrame.privateSnapshot.snapshot!!.copy(editRevision = 2)
+        val changed = h.nextFrame.privateSnapshot.snapshot!!.copy(editRevision = 2, compositionRevision = 2)
         h.observe(h.nextFrame.copy(privateSnapshot = ImeDecodedSnapshot(true, changed)))
         assertEquals(ImeSessionPhase.CLOSING, h.connection.metadata().phase)
         assertFalse(h.connection.submit(ImeEditTransaction(1, 2, "fixture", null)))

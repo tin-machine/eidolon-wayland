@@ -32,6 +32,7 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
     private val ui=Handler(Looper.getMainLooper())
     private val buttons=mutableListOf<Button>()
     private val starts=WindowMoveStarts()
+    private val hover=WindowControlHover()
     private val unadopted=mutableListOf<Entity>()
     private var closing=false
     private var disposed=false
@@ -62,27 +63,42 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
         try {
             val first=layout.positions(width,height).first();val side=if(layout.anchor.endsWith("right")) 1 else -1
             val vertical=if(layout.anchor.startsWith("top")) 1 else -1
-            val x=first.x-side*(layout.diameter/2+.025+.21);val y=first.y+vertical*.12
-            val pose=getAbsoluteTransform(parent)
-            val menuHeight=.32*rows.size/3
+            val menuHeight = .105 * rows.size
+            val x = first.x - side * (layout.diameter / 2 + .025 + MENU_WIDTH / 2)
+            val y = first.y + vertical * (layout.diameter / 2 + .025 + menuHeight / 2)
+            val pose = getAbsoluteTransform(parent)
             val image=pixelSlot.bitmap.also {bitmap=it}
             val canvas=Canvas(image);canvas.drawColor(Color.TRANSPARENT,android.graphics.PorterDuff.Mode.CLEAR);val paint=Paint(Paint.ANTI_ALIAS_FLAG)
-            paint.color=0xf4fbe8f2.toInt();canvas.drawRoundRect(0f,0f,WIDTH.toFloat(),HEIGHT.toFloat(),30f,30f,paint)
+            paint.color=0xee24364b.toInt();canvas.drawRoundRect(0f,0f,WIDTH.toFloat(),HEIGHT.toFloat(),30f,30f,paint)
             for((index,row) in rows.withIndex()) {
-                paint.color=if(row.enabled) 0xff27354b.toInt() else 0xff8b8790.toInt();paint.textSize=37f;paint.textAlign=Paint.Align.LEFT
+                paint.color=if(row.enabled) 0xfffff0cf.toInt() else 0xffabb4c0.toInt();paint.textSize=44f;paint.textAlign=Paint.Align.LEFT
                 val baseline=(index+.5f)*HEIGHT/rows.size-(paint.fontMetrics.ascent+paint.fontMetrics.descent)/2f
                 canvas.drawText(row.label,155f,baseline,paint)
                 val py=y+(.5-(index+.5)/rows.size)*menuHeight
-                fun entity(uri:String,collision:MeshCollision,scale:Vector3,z:Float=-.058f):Entity {
+                fun entity(uri:String,collision:MeshCollision,scale:Vector3,z:Float):Entity {
                     val e=createEntity { Entity.create(listOf(Mesh(Uri.parse(uri),collision),TransformParent(parent),Transform(Pose()),Scale(Vector3(1f)))) };entityCreates++;unadopted.add(e)
                     setAbsoluteTransform(e,pose*Pose(Vector3((x-.15).toFloat(),py.toFloat(),z)));setAbsoluteScale(e,scale)
                     return e
                 }
-                val root=entity(WindowControlMeshes.OUTLINE,if(row.enabled) MeshCollision.LineTest else MeshCollision.NoCollision,Vector3(.08f,.08f,.02f))
+                val d = .09f
+                val rootZ = -.064f
+                val root = entity(WindowControlMeshes.OUTLINE,
+                    if (row.enabled) MeshCollision.LineTest else MeshCollision.NoCollision,
+                    Vector3(d, d, d * .25f), rootZ)
                 var face:Entity?=null;var icon:Entity?=null
                 try {
-                    face=entity(when(row.action) {"larger"->WindowControlMeshes.FOCUS;"smaller"->WindowControlMeshes.CLOSE;else->WindowControlMeshes.MOVE},MeshCollision.NoCollision,Vector3(.069f,.069f,.018f),-.059f)
-                    icon=entity(when(row.action) {"larger"->WindowControlMeshes.SIZE_UP_ICON;"smaller"->WindowControlMeshes.SIZE_DOWN_ICON;"recenter"->WindowControlMeshes.FOCUS_ICON;else->WindowControlMeshes.MENU_BACK_ICON},MeshCollision.NoCollision,Vector3(.08f,.08f,.02f),-.070f)
+                    face = entity(when (row.action) {
+                        "larger" -> WindowControlMeshes.FOCUS
+                        "smaller" -> WindowControlMeshes.CLOSE
+                        else -> WindowControlMeshes.MOVE
+                    }, MeshCollision.NoCollision, Vector3(d * .86f, d * .86f, d * .2375f),
+                        rootZ - d * .0125f)
+                    icon = entity(when (row.action) {
+                        "larger" -> WindowControlMeshes.SIZE_UP_ICON
+                        "smaller" -> WindowControlMeshes.SIZE_DOWN_ICON
+                        "recenter" -> WindowControlMeshes.FOCUS_ICON
+                        else -> WindowControlMeshes.MENU_BACK_ICON
+                    }, MeshCollision.NoCollision, Vector3(d, d, d * .25f), rootZ - d * .14f)
                     val b=Button(row.action,root,face,icon,row.enabled);buttons.add(b);unadopted.removeAll(b.owned)
                     observe(root, { !closing && live() && buttons.contains(b) }) { value,error ->
                         if(error!=null || value==null) {failures++;sdkScope?.failed()}
@@ -97,24 +113,33 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
             texture=SceneTexture(WIDTH,HEIGHT,1,SamplerConfig(),Color.valueOf(Color.TRANSPARENT)).also {textureCreates++}
             material=SceneMaterial(checkNotNull(texture),AlphaMode.PREMULTIPLIED,SceneMaterial.UNLIT_SHADER).also {materialCreates++}
             checkNotNull(material).apply {setUnlit(true);setSidedness(MaterialSidedness.DOUBLE_SIDED);setDepthWrite(DepthWrite.DISABLE)}
-            mesh=SceneMesh.meshWithMaterials(floatArrayOf(-.5f,.5f,0f,.5f,.5f,0f,.5f,-.5f,0f,-.5f,-.5f,0f),
+            val halfWidth = MENU_WIDTH.toFloat() / 2
+            val halfHeight = menuHeight.toFloat() / 2
+            // Use physical dimensions in the quad so SDK transforms leave the panel and hit rows aligned.
+            mesh = SceneMesh.meshWithMaterials(
+                floatArrayOf(-halfWidth, halfHeight, 0f, halfWidth, halfHeight, 0f,
+                    halfWidth, -halfHeight, 0f, -halfWidth, -halfHeight, 0f),
                 floatArrayOf(0f,0f,-1f,0f,0f,-1f,0f,0f,-1f,0f,0f,-1f),floatArrayOf(0f,0f,1f,0f,1f,1f,0f,1f),IntArray(4){Color.WHITE},
                 intArrayOf(0,1,2,0,2,3),intArrayOf(0,6),arrayOf(checkNotNull(material)),true).also {meshCreates++}
             label=createEntity { Entity.create(listOf(TransformParent(parent),Transform(Pose()),Scale(Vector3(1f)),Hittable(MeshCollision.NoCollision),Visible(true))) }.also {entityCreates++}
-            setAbsoluteTransform(checkNotNull(label),pose*Pose(Vector3(x.toFloat(),y.toFloat(),-.055f)));setAbsoluteScale(checkNotNull(label),Vector3(.42f,menuHeight.toFloat(),1f))
+            setAbsoluteTransform(checkNotNull(label), pose * Pose(Vector3(x.toFloat(), y.toFloat(), -.055f)))
+            setAbsoluteScale(checkNotNull(label), Vector3(1f))
             obj=SceneObject(sdk,checkNotNull(mesh),"eidolon-window-menu",checkNotNull(label)).also {objectCreates++}
-            val actual=getAbsoluteTransform(checkNotNull(label));checkNotNull(obj).apply {setPosition(actual.t);setRotationQuat(actual.q);setScale(getAbsoluteScale(checkNotNull(label)));setIsVisible(true)}
-            lastPose=actual.copy()
-            objects.addSceneObject(checkNotNull(label),CompletableFuture.completedFuture(checkNotNull(obj)))
-            val buffer=pixelSlot.buffer.also {pixels=it};buffer.clear();image.copyPixelsToBuffer(buffer);buffer.rewind()
-            checkNotNull(texture).update(buffer,WIDTH,HEIGHT,image.rowBytes)
+            objects.addSceneObject(checkNotNull(label), CompletableFuture.completedFuture(checkNotNull(obj)))
+            update()
+            checkNotNull(obj).setIsVisible(true)
+            val buffer = pixelSlot.buffer.also { pixels = it }
+            buffer.clear()
+            image.copyPixelsToBuffer(buffer)
+            buffer.rewind()
+            checkNotNull(texture).update(buffer, WIDTH, HEIGHT, image.rowBytes)
         } catch(failure:Exception) {closing=true;throw failure}
     }
     fun update() {
         if(closing || !live()) return
         val entity=checkNotNull(label);val pose=getAbsoluteTransform(entity)
         if(lastPose?.isApproximatelyEqual(pose,.00001f,.00001f)!=true) {
-            checkNotNull(obj).apply {setPosition(pose.t);setRotationQuat(pose.q);setScale(getAbsoluteScale(entity))};lastPose=pose.copy()
+            checkNotNull(obj).apply {setPosition(pose.t);setRotationQuat(pose.q)};lastPose=pose.copy()
         }
     }
     private fun listener(button:Button)=object:InputListener {
@@ -134,9 +159,41 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
             };return true
         }
         override fun onDragMove(receiver:SceneObject,hitInfo:HitInfo,sourceOfInput:Entity,buttonState:Int) {post {button.press.move(sourceOfInput.id,listOf(hitInfo.point.x.toDouble(),hitInfo.point.y.toDouble(),hitInfo.point.z.toDouble()),.024)}}
-        override fun onHoverStop(receiver:SceneObject,sourceOfInput:Entity) {post {button.press.cancel(sourceOfInput.id)}}
-        override fun stopInput(receiver:SceneObject,sourceOfInput:Entity,downTime:Long) {post {button.press.cancel(sourceOfInput.id)}}
-        override fun onPointerEvent(receiver:SceneObject,hitInfo:HitInfo,type:Int,sourceOfInput:Entity,scrollInfo:Vector2,semanticType:Int) {if(type==PointerEventType.Cancel.id || type==PointerEventType.Unhover.id) post {button.press.cancel(sourceOfInput.id)}}
+        override fun onHoverStart(receiver: SceneObject, sourceOfInput: Entity) =
+            beginHover(button, sourceOfInput.id)
+
+        override fun onHoverStop(receiver: SceneObject, sourceOfInput: Entity) =
+            endHover(button, sourceOfInput.id)
+
+        override fun stopInput(receiver: SceneObject, sourceOfInput: Entity, downTime: Long) =
+            endHover(button, sourceOfInput.id)
+
+        override fun onPointerEvent(receiver: SceneObject, hitInfo: HitInfo, type: Int,
+            sourceOfInput: Entity, scrollInfo: Vector2, semanticType: Int
+        ) {
+            if (type == PointerEventType.Hover.id) beginHover(button, sourceOfInput.id)
+            if (type == PointerEventType.Cancel.id || type == PointerEventType.Unhover.id) endHover(button, sourceOfInput.id)
+        }
+    }
+    private fun beginHover(button: Button, source: Long) = post {
+        if (!closing && live() && button.enabled) hover.enter(source, button.name)
+    }
+
+    private fun endHover(button: Button, source: Long) = post {
+        hover.leave(source, button.name)
+        button.press.cancel(source)
+    }
+
+    fun hoverLabel(): String? = if (closing || !live()) null else when (hover.action()) {
+        "larger" -> "窓の表示を大きく"
+        "smaller" -> "窓の表示を小さく"
+        "recenter" -> "窓を正面に移す"
+        "group" -> "窓をまとめる"
+        "collapse" -> "まとめた窓を重ねる"
+        "expand" -> "まとめた窓を展開"
+        "next_front" -> "前面の窓を切り替え"
+        "back" -> "窓の操作を閉じる"
+        else -> null
     }
     fun metadata()=JSONObject().put("closing",closing).put("disposed",disposed).put("buttons",buttons.size).put("listeners_ready",buttons.count {it.listener!=null})
         .put("label_ready",obj?.handle?.let {it!=0L}==true).put("failures",failures).put("label_non_hit",true)
@@ -144,6 +201,7 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
     override fun close() {
         if(disposed) return
         closing=true
+        hover.clear()
         try {
             for(b in buttons) {
                 if(ownsInput()) for((source,state) in b.sources.values.toList()) runCatching {sdk.onNoIntersectionInput(source,state,0)}
@@ -172,6 +230,7 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
         }
     }
     companion object {
+        private const val MENU_WIDTH = .42
         private const val WIDTH=512;private const val HEIGHT=256
         private class PixelSlot {
             val bitmap=Bitmap.createBitmap(WIDTH,HEIGHT,Bitmap.Config.ARGB_8888)

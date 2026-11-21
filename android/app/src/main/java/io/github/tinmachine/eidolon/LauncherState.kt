@@ -11,6 +11,8 @@ data class LauncherUi(
     val message: String = "ターミナルを開くとアプリ一覧を読み込めます",
     val linux: Boolean = false, val canConnect: Boolean = false, val canInspect: Boolean = false,
     val canRecover: Boolean = false, val canStop: Boolean = false, val running: Boolean = false,
+    val canRefresh: Boolean = false,
+    val canDiscover: Boolean = false,
     val runtime: Long = 0, val capture: String = "", val v3: Boolean = false,
     val phase: String = "catalog_waiting", val firstFailure: String? = null, val cleanupFailure: String? = null,
 ) {

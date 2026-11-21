@@ -1,7 +1,7 @@
 //! One authenticated v3 helper, one Inspect, at most one Start. It owns the
 //! remote half of the lifecycle; local/SDK retirement happens on a separate
 //! thread after this SSH actor and its I/O generation are gone.
-use super::{Launch, RunCapture};
+use super::{CatalogCommand, RunCapture};
 use crate::{
     forward,
     linux_desktop::v3::{
@@ -121,16 +121,33 @@ pub struct RunOutcome {
 pub struct Inspection<'a> {
     pub capture: Arc<RunCapture>,
     pub files: &'a Path,
+    pub android_boot_count: Option<u32>,
+}
+
+fn catalog_selections(
+    owner: &owner::Owner,
+    installed: Option<&[v3::installed::InstalledApp]>,
+) -> Result<Vec<Selection>, &'static str> {
+    let mut selections = vec![owner.selection("gtk3-desktop")?];
+    if owner.editor_available() {
+        selections.push(owner.selection("mousepad-editor-v1")?);
+    }
+    if let Some(installed) = installed {
+        for id in installed.iter().filter_map(v3::installed::InstalledApp::selection_id) {
+            selections.push(owner.selection(&id)?);
+        }
+    }
+    Ok(selections)
 }
 
 pub async fn serve<H: client::Handler>(
     client: &client::Handle<H>,
     router: &Arc<forward::Router>,
     request: Inspection<'_>,
-    mut launches: mpsc::Receiver<Launch>,
+    mut commands: mpsc::Receiver<CatalogCommand>,
     cancel: &CancellationToken,
     publish: impl Fn(&TransportSnapshot),
-    catalog: impl Fn(&[Selection; 2]),
+    catalog: impl Fn(CommandSeq, &[Selection], Option<&[v3::installed::InstalledApp]>),
 ) -> RunOutcome {
     let binding = request.capture.binding();
     let generation = request.capture.generation;
@@ -149,6 +166,12 @@ pub async fn serve<H: client::Handler>(
         if cancel.is_cancelled() {
             return Err("CANCELLED");
         }
+        // Discovery has no session or journal side effects. Fixed entries
+        // remain available if the remote GIO installation cannot list apps.
+        let installed = v3::installed::discover(client, cancel).await.ok();
+        if cancel.is_cancelled() {
+            return Err("CANCELLED");
+        }
         // A partial journal reserve, including an fsync failure, remains
         // potentially pending. Mark uncertainty BEFORE trying the operation.
         owner = Some(
@@ -159,7 +182,7 @@ pub async fn serve<H: client::Handler>(
                 cancel.clone(),
                 || {
                     report.transport.journal_pending = true;
-                    journal = Some(Journal::reserve(request.files, binding)?);
+                    journal = Some(Journal::reserve_inspection(request.files, binding, request.android_boot_count)?);
                     report.journal_stage = Some(Stage::Reserved);
                     #[cfg(feature = "host-acceptance")]
                     request.capture.observe("journal_reserved", serde_json::json!({"stage":"reserved"}));
@@ -201,15 +224,15 @@ pub async fn serve<H: client::Handler>(
         // The catalog is fully checked against B1/E1 source evidence by Owner.
         // Both fixed entries share this one live catalog and one-shot gate.
         // A two-entry launcher does not permit a second concurrent GUI lease.
-        let selections = [
-            active.selection("gtk3-desktop")?,
-            active.selection("mousepad-editor-v1")?,
-        ];
+        let mut selections = catalog_selections(active, installed.as_deref())?;
+        // No reader can reserve a launch (and allocate a local Waypipe
+        // session or SDK resources) until the first catalog is published.
+        journal.as_mut().unwrap().open_local_launch()?;
         report.transport.phase = TransportPhase::Catalog;
         #[cfg(feature = "host-acceptance")]
         request.capture.observe("catalog_published", serde_json::json!({"selections":selections.iter().map(|selection|selection.record()).collect::<Vec<_>>()}));
         publish(&report);
-        catalog(&selections);
+        catalog(request.capture.inspect_request, &selections, installed.as_deref());
 
         let mut launch = loop {
             if active.phase() != Phase::Catalog || active.report().terminal_event {
@@ -221,8 +244,18 @@ pub async fn serve<H: client::Handler>(
                 }
                 return Err("DESKTOP_CATALOG_UNAVAILABLE");
             }
-            match active.next_launch(&mut launches).await? {
-                OwnerTurn::Launch(value) => break value,
+            match active.next_launch(&mut commands).await? {
+                OwnerTurn::Launch(CatalogCommand::Start(value)) => break value,
+                OwnerTurn::Launch(CatalogCommand::Refresh(request_id)) => {
+                    active.renew_catalog().await?;
+                    let installed = v3::installed::discover(client, cancel).await.ok();
+                    if cancel.is_cancelled() {
+                        return Err("CANCELLED");
+                    }
+                    active.renew_catalog().await?;
+                    selections = catalog_selections(active, installed.as_deref())?;
+                    catalog(request_id, &selections, installed.as_deref());
+                }
                 OwnerTurn::Events(_events) => {
                     report.terminal_observed |= active.report().terminal_event;
                     report.terminal_reason = active.report().stop_reason;

@@ -195,10 +195,15 @@ impl Launch {
     }
 }
 
+pub enum CatalogCommand {
+    Start(Box<Launch>),
+    Refresh(CommandSeq),
+}
+
 pub struct LaunchAdmission {
     capture: Arc<RunCapture>,
     gate: Arc<Gate>,
-    sender: mpsc::Sender<Launch>,
+    sender: mpsc::Sender<CatalogCommand>,
 }
 impl LaunchAdmission {
     pub(crate) fn capture(&self) -> Arc<RunCapture> {
@@ -209,7 +214,7 @@ impl LaunchAdmission {
     }
     pub fn new(
         capture: RunCapture,
-        sender: mpsc::Sender<Launch>,
+        sender: mpsc::Sender<CatalogCommand>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
@@ -221,6 +226,10 @@ impl LaunchAdmission {
             sender,
         }
     }
+    pub(crate) fn refresh(&self, request: CommandSeq) -> bool {
+        self.gate_open() && self.sender.try_send(CatalogCommand::Refresh(request)).is_ok()
+    }
+
     pub fn reserve(
         &self,
         runtime: RuntimeHandle,
@@ -275,10 +284,10 @@ impl LaunchAdmission {
             .compare_exchange(RESERVED, QUEUED, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| "DESKTOP_CATALOG_STALE")?;
         self.sender
-            .try_send(Launch {
+            .try_send(CatalogCommand::Start(Box::new(Launch {
                 permit,
                 local_socket: socket.to_owned(),
-            })
+            })))
             .map_err(|e| match e {
                 mpsc::error::TrySendError::Full(_) => "DESKTOP_COMMANDS_FULL",
                 mpsc::error::TrySendError::Closed(_) => "DESKTOP_COMMANDS_CLOSED",
@@ -307,7 +316,7 @@ mod tests {
 
     fn setup() -> (
         LaunchAdmission,
-        mpsc::Receiver<Launch>,
+        mpsc::Receiver<CatalogCommand>,
         CancellationToken,
         Selection,
     ) {
@@ -455,7 +464,7 @@ mod tests {
             permit: reserve(&other, &other_selection),
             local_socket: PathBuf::from("/tmp/eidolon-v3-other.sock"),
         };
-        assert!(admission.sender.try_send(foreign).is_ok());
+        assert!(admission.sender.try_send(CatalogCommand::Start(Box::new(foreign))).is_ok());
         let permit = reserve(&admission, &selection);
         assert!(matches!(
             admission.enqueue(permit, Path::new("/tmp/eidolon-v3-test.sock")),
@@ -485,7 +494,9 @@ mod tests {
         admission
             .enqueue(permit, Path::new("/tmp/eidolon-v3-test.sock"))
             .unwrap();
-        let mut launch = rx.recv().await.unwrap();
+        let CatalogCommand::Start(mut launch) = rx.recv().await.unwrap() else {
+            panic!("expected Start");
+        };
         assert!(!cancel.is_cancelled());
         assert!(
             admission

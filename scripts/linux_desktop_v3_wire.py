@@ -97,10 +97,13 @@ class ExpectedEvidence:
                  "DESKTOP_V3_EVIDENCE_STALE")
 
 
-def catalog_payload(binding, evidence):
+def catalog_payload(binding, evidence, *, editor_available=True):
     _require(type(binding) is Binding and type(evidence) is ExpectedEvidence)
     evidence.matches_binding(binding)
-    return {"descriptor": C.catalog_descriptor(binding.context, binding.pins), "evidence": evidence.record()}
+    payload = {"descriptor": C.catalog_descriptor(binding.context, binding.pins), "evidence": evidence.record()}
+    if not editor_available:
+        payload["editor_available"] = False
+    return payload
 
 
 def _envelope(value, binding, fields):
@@ -143,7 +146,11 @@ def parse_event(raw, binding, evidence):
         _require(type(payload["lease_ms"]) is int and payload["lease_ms"] == LEASE_MS and
                  valid_boot(payload["boot_id"]) and valid_socket(payload["remote_socket"], binding.context.record()["nonce"]))
     elif kind == "catalog":
-        _fields(payload, ("descriptor", "evidence"))
+        if type(payload) is dict and "editor_available" in payload:
+            _fields(payload, ("descriptor", "evidence", "editor_available"))
+            _require(payload["editor_available"] is False)
+        else:
+            _fields(payload, ("descriptor", "evidence"))
         C.validate_catalog(C.canonical_json(payload["descriptor"]), binding.context, binding.pins)
         _require(type(evidence) is ExpectedEvidence)
         evidence.matches_binding(binding)

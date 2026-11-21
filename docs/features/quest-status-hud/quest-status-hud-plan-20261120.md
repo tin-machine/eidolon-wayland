@@ -248,6 +248,8 @@ window/sessionの終了とは別にHUDの所有を保ち、Activity/sceneの終�
 
 [Spatial Anchor の SA0](../spatial-anchor/spatial-anchor-linux-design-20261111.md) は独立した probe で行う。製品の HUD は視点を基準とし、机・壁に固定する Mousepad 一枚の配置復元とは別に試験できる。
 
+実装版では設定パネルの「HUD を表示」で静止 HUD を有効にできる。「HUD を置き直す」はその時点の視点から右下に配置する。CPU、描画処理 p95、Quest RAM 空きと OS 熱の表示は既存の収集結果を使う。Quest での視認性、入力透過、負荷の比較は実機確認表で判定する。
+
 ## 9. 受入れ・実機確認
 
 ### 実装時に必要な自動検証

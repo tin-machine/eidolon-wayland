@@ -81,13 +81,47 @@ class ImeTransactionBridgeTest {
         assertEquals(51L, f.payloads.last().sequence)
     }
 
-    @Test fun semanticChangeInvalidatesEvenWithTheSameActivation() {
+    @Test fun idleEditorUsesTheNewRevisionForTheSameActivation() {
         val f = Fixture()
         val binding = f.bridge.bind(1, snapshot())!!
+        assertTrue(f.bridge.updateSnapshot(snapshot(serial = 11, edit = 8)))
+        assertTrue(binding.submit(transaction()))
+        assertEquals(8L, f.payloads.single().editRevision)
+    }
+
+    @Test fun semanticChangeInvalidatesPendingDeliveryEvenWithTheSameActivation() {
+        val f = Fixture()
+        val binding = f.bridge.bind(1, snapshot())!!
+        assertTrue(binding.submit(transaction()))
         assertFalse(f.bridge.updateSnapshot(snapshot(serial = 11, edit = 8)))
         assertEquals(ImeBridgeFailure.EDIT_STATE_CHANGED, f.invalidated.single())
-        assertFalse(binding.submit(transaction()))
-        assertTrue(f.payloads.isEmpty())
+        assertFalse(binding.submit(transaction(sequence = 2)))
+        assertEquals(1, f.payloads.size)
+    }
+
+    @Test fun semanticChangeInvalidatesAcknowledgedPreedit() {
+        val f = Fixture()
+        val binding = f.bridge.bind(1, snapshot())!!
+        val draft = ImeEditTransaction(1, 1, null, ImePreedit("に", 3, 3))
+        assertTrue(binding.submit(draft))
+        assertTrue(f.bridge.acknowledge(f.receipts.single(), ImeDeliveryResult.APPLIED))
+        assertFalse(f.bridge.updateSnapshot(snapshot(serial = 11, edit = 8, floor = 1)))
+        assertEquals(ImeBridgeFailure.EDIT_STATE_CHANGED, f.invalidated.single())
+    }
+
+    @Test fun clientFeedbackKeepsCompositionAndOldPayloadWhileNextEditUsesFreshRevision() {
+        val f = Fixture()
+        val binding = f.bridge.bind(1, snapshot())!!
+        assertTrue(binding.submit(transaction()))
+        val queued = f.payloads.single().toPayloadJson()
+        val feedback = snapshot(serial = 11, edit = 8, floor = 1).copy(compositionRevision = 7)
+        assertTrue(f.bridge.updateSnapshot(feedback))
+        assertTrue(f.bridge.acknowledge(f.receipts.single(), ImeDeliveryResult.APPLIED))
+        assertTrue(binding.submit(transaction(sequence = 2)))
+        assertEquals(queued, f.payloads.first().toPayloadJson())
+        assertEquals(8L, f.payloads.last().editRevision)
+        assertEquals(11L, f.payloads.last().target.serial)
+        assertTrue(f.invalidated.isEmpty())
     }
 
     @Test fun everyNativeOwnershipChangeAndMissingTargetInvalidates() {

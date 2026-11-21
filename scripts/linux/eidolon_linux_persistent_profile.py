@@ -8,6 +8,7 @@ See docs/linux-real-app-c1-handoff-20261110.md for the lifetime and failure API.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 import errno
 import fcntl
@@ -325,10 +326,23 @@ def _read_owner(root, fd, uid, expected_owner, *, expected=None):
     return _stamp(after)
 
 
+@contextmanager
+def scan_current_directory(directory_fd):
+    # OverlayFS can retain an earlier listing on the open file description.
+    # Open "." relative to the owned fd; dup() would share the cached listing.
+    scan_fd = os.open(".", _DIRECTORY_FLAGS, dir_fd=directory_fd)
+    try:
+        _require(os.path.samestat(os.fstat(scan_fd), os.fstat(directory_fd)))
+        with os.scandir(scan_fd) as entries:
+            yield entries
+    finally:
+        os.close(scan_fd)
+
+
 def _fixed_entries(root):
     names = set()
     # Only the fixed envelope, never traversal of settings, Documents or state.
-    with os.scandir(root.fd) as entries:
+    with scan_current_directory(root.fd) as entries:
         for entry in entries:
             _require(entry.name in _ENTRIES and entry.name not in names)
             names.add(entry.name)

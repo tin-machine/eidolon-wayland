@@ -73,6 +73,26 @@ class LinuxDesktopV3CatalogTest {
         assertThrows(IllegalArgumentException::class.java) { decode(token = "") }
     }
 
+    @Test fun refreshedInstalledEntriesRejectChangedAndDisabledSelections() {
+        val descriptor = raw.toByteArray(Charsets.UTF_8)
+        val first = "1".repeat(64)
+        val changed = "2".repeat(64)
+        val terminal = "3".repeat(64)
+        fun row(id: String, name: String, revision: String, reason: String? = null) = mapOf(
+            "id" to id, "name" to name, "revision" to revision, "disabled_reason" to reason
+        )
+        val old = LinuxDesktopV3Catalog.decode(11, "7", capture, descriptor,
+            installed = listOf(row("org.kde.kwrite.desktop", "KWrite", first)), editorAvailable = false)
+        val refreshed = LinuxDesktopV3Catalog.decode(11, "7", capture, descriptor,
+            installed = listOf(row("org.kde.kwrite.desktop", "KWrite", changed),
+                row("terminal.desktop", "Terminal", terminal, "terminal_required")), editorAvailable = false)
+        assertEquals(listOf("Linux アプリ", "KWrite", "Terminal"), refreshed.entries.map { it.label })
+        assertTrue(old.accepts(11, "7", capture, old.revision, "desktop-entry:$first"))
+        assertFalse(refreshed.accepts(11, "7", capture, old.revision, "desktop-entry:$first"))
+        assertFalse(refreshed.accepts(11, "7", capture, refreshed.revision, "desktop-entry:$terminal"))
+        assertEquals("desktop-entry:$changed", refreshed.selection("desktop-entry:$changed").getString("app_id"))
+    }
+
     @Test fun singleFlightPersistsAcrossDecodeAndTimeoutUntilActualRuntimeDestruction() {
         val admission = LinuxDesktopV3LaunchAdmission()
         val first = decode()

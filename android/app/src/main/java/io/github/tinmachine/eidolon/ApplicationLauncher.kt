@@ -72,6 +72,8 @@ fun LauncherSettings(modifier: Modifier=Modifier) {
     var path by remember {mutableStateOf(state.path)}
     var form by remember {mutableStateOf(LauncherForm())}
     var fileMode by remember {mutableStateOf(false)}
+    var appQuery by remember(state.revision) { mutableStateOf("") }
+    var appPage by remember(state.revision, appQuery) { mutableStateOf(0) }
     LaunchedEffect(state.path) {path=state.path}
     Column(modifier.fillMaxWidth().background(Color(0xFF182B38)).padding(12.dp).verticalScroll(rememberScrollState()),
         verticalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -86,18 +88,39 @@ fun LauncherSettings(modifier: Modifier=Modifier) {
         }
         if(state.linux) {
             Text("接続先: ${NativeSessionHost.connectionTarget.value}",color=Color.White)
-            Text(if(state.v3) "固定GTKデモとMousepadを選べます。一度に起動するアプリは一つです。"
+            Text(if(state.v3) "一度に起動できるアプリは一つです。"
                 else "利用対象は固定GTKデモです。起動後は自動終了しません。",color=Color.White)
             Text("停止・切断、または通信やスリープでleaseが失効すると、未保存の作業も終了します。再接続・再起動は明示操作が必要です。",color=Color(0xFFFFD59E))
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 Button(enabled=state.canConnect,onClick={NativeSessionHost.connect()}) {Text("Linuxへ接続")}
-                Button(enabled=state.canInspect,onClick={NativeSessionHost.inspectLinuxDesktop()}) {Text("アプリを確認")}
+                Button(enabled = state.canInspect || state.canRefresh || state.canDiscover, onClick = { NativeSessionHost.inspectLinuxDesktop() }) {
+                    Text(if (state.canRefresh) "一覧を更新" else "アプリを確認")
+                }
                 if(state.canRecover) Button(onClick={NativeSessionHost.recoverLinuxDesktop()}) {Text("前回の回収")}
             }
-            for(entry in state.entries) {
-                Button(enabled=state.connected && entry.available && !state.busy,onClick={
-                    focus.clearFocus(force=true);launch(state,entry.id)
-                }) {Text("${icon(entry.icon)} ${entry.label}を起動")}
+            if (state.entries.size > 8) LauncherField("アプリ名で絞り込む", appQuery, { appQuery = it })
+            val matching = state.entries.filter { it.label.contains(appQuery.trim(), ignoreCase = true) }
+            val offset = appPage * 8
+            for (entry in matching.drop(offset).take(8)) {
+                Button(enabled = state.connected && entry.available && !state.busy, onClick = {
+                    focus.clearFocus(force = true)
+                    launch(state, entry.id)
+                }) { Text("${icon(entry.icon)} ${entry.label}を起動") }
+                val reason = when (entry.error) {
+                    "terminal_required" -> "端末が必要"
+                    "dbus_activation_required" -> "D-Bus による起動が必要"
+                    "executable_unavailable" -> "実行ファイルが見つかりません"
+                    "exec_format_unsupported" -> "起動コマンドの形式が未対応"
+                    "workdir_unavailable" -> "作業ディレクトリを開けません"
+                    else -> null
+                }
+                reason?.let { Text(it, color = Color(0xFFFFD59E)) }
+            }
+            if (matching.size > 8) Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Button(enabled = appPage > 0, onClick = { appPage-- }) { Text("前へ") }
+                Text("${offset + 1}–${minOf(offset + 8, matching.size)} / ${matching.size}", color = Color.White)
+                Button(enabled = offset + 8 < matching.size, onClick = { appPage++ }) { Text("次へ") }
             }
             Button(enabled=state.canStop,onClick={NativeSessionHost.disconnect()}) {Text("停止・切断")}
             Text("アプリのCloseで終了した後も、接続・確認・起動をもう一度選んでください。",color=Color.White)

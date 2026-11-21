@@ -3,6 +3,31 @@ use super::*;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 #[test]
+fn started_journal_requests_same_boot_remote_confirmation_only_until_complete() {
+    let dir = Temp::new();
+    let binding = binding();
+    let mut journal = Journal::reserve_inspection(&dir.0, &binding, Some(7)).unwrap();
+    journal.prepared(BOOT).unwrap();
+    journal.open_local_launch().unwrap();
+    journal.advance(Stage::ForwardRequested).unwrap();
+    journal.advance(Stage::StartRequested).unwrap();
+    journal.advance(Stage::Started).unwrap();
+
+    let previous = pending(&dir.0).unwrap().unwrap();
+    assert!(previous.needs_remote_confirmation_on_same_boot(Some(7)));
+    assert!(!previous.needs_remote_confirmation_on_same_boot(Some(8)));
+    assert!(!previous.needs_remote_confirmation_on_same_boot(None));
+    assert!(!previous.has_durable_local_proof(Some(7)));
+
+    journal.finish(complete()).unwrap();
+    let previous = pending(&dir.0).unwrap().unwrap();
+    assert!(!previous.needs_remote_confirmation_on_same_boot(Some(7)));
+    assert!(!previous.has_durable_local_proof(Some(7)));
+    assert!(previous.needs_android_reboot(Some(7)));
+    assert!(previous.has_durable_local_proof(Some(8)));
+}
+
+#[test]
 fn integrated_sources_can_reserve_but_not_claim_cleanup_or_a_second_owner() {
     let dir = Temp::new();
     let mut journal = Journal::reserve(&dir.0, &binding()).unwrap();
@@ -17,7 +42,7 @@ fn integrated_sources_can_reserve_but_not_claim_cleanup_or_a_second_owner() {
 #[test]
 fn strict_versioned_record_rejects_duplicate_shape_and_source_replacement() {
     let dir = Temp::new();
-    let journal = Journal::reserve_record(&dir.0, &binding()).unwrap();
+    let journal = Journal::reserve_record(&dir.0, &binding(), None).unwrap();
     let good = journal.bytes.clone();
     assert!(Record::parse(&good).is_ok());
     let raw = String::from_utf8(good.clone()).unwrap();
@@ -58,9 +83,9 @@ fn strict_versioned_record_rejects_duplicate_shape_and_source_replacement() {
 fn exclusive_reservation_state_transitions_and_every_cleanup_proof() {
     let dir = Temp::new();
     let binding = binding();
-    let mut journal = Journal::reserve_record(&dir.0, &binding).unwrap();
+    let mut journal = Journal::reserve_record(&dir.0, &binding, None).unwrap();
     assert!(matches!(
-        Journal::reserve_record(&dir.0, &binding),
+        Journal::reserve_record(&dir.0, &binding, None),
         Err("DESKTOP_V3_JOURNAL_BUSY")
     ));
     assert!(journal.advance(Stage::StartRequested).is_err());
@@ -70,7 +95,7 @@ fn exclusive_reservation_state_transitions_and_every_cleanup_proof() {
     let path = journal.path.clone();
     drop(journal);
     assert!(matches!(
-        Journal::reserve_record(&dir.0, &binding),
+        Journal::reserve_record(&dir.0, &binding, None),
         Err("DESKTOP_CLEANUP_PENDING")
     ));
     let profile = profile();
@@ -109,7 +134,7 @@ fn saved_profile_ids_pins_and_boot_cannot_be_replaced_during_recovery() {
     let binding = binding();
     let profile = profile();
     let storage = storage();
-    let mut journal = Journal::reserve_record(&dir.0, &binding).unwrap();
+    let mut journal = Journal::reserve_record(&dir.0, &binding, None).unwrap();
     journal.prepared(BOOT).unwrap();
     let original = journal.bytes.clone();
     let path = journal.path.clone();
@@ -139,7 +164,7 @@ fn saved_profile_ids_pins_and_boot_cannot_be_replaced_during_recovery() {
 #[test]
 fn unknown_boot_and_nonmatching_file_identity_keep_pending() {
     let dir = Temp::new();
-    let mut journal = Journal::reserve_record(&dir.0, &binding()).unwrap();
+    let mut journal = Journal::reserve_record(&dir.0, &binding(), None).unwrap();
     journal.finish(Cleanup::default()).unwrap();
     assert!(journal.clear().is_err());
     journal.recovered_boot(BOOT).unwrap();
@@ -163,7 +188,7 @@ fn v2_pending_is_a_barrier_and_is_never_rewritten_as_v3_clean() {
     let original = std::fs::read(&path).unwrap();
     assert_eq!(check_v2_barrier(&dir.0), Err("RECOVERY_REQUIRED"));
     assert!(Journal::reserve(&dir.0, &binding()).is_err());
-    assert!(Journal::reserve_record(&dir.0, &binding()).is_err());
+    assert!(Journal::reserve_record(&dir.0, &binding(), None).is_err());
     assert_eq!(std::fs::read(path).unwrap(), original);
     assert!(!dir.0.join(DIRECTORY).exists());
 }
@@ -174,7 +199,7 @@ fn links_and_malformed_pending_are_errors_not_empty_state() {
     symlink(&outside.0, dir.0.join(DIRECTORY)).unwrap();
     assert!(pending(&dir.0).is_err());
     std::fs::remove_file(dir.0.join(DIRECTORY)).unwrap();
-    let journal = Journal::reserve_record(&dir.0, &binding()).unwrap();
+    let journal = Journal::reserve_record(&dir.0, &binding(), None).unwrap();
     let path = journal.path.clone();
     drop(journal);
     std::fs::write(&path, b"{}").unwrap();
@@ -184,7 +209,7 @@ fn links_and_malformed_pending_are_errors_not_empty_state() {
 #[test]
 fn fifo_pending_and_lock_are_rejected_without_blocking() {
     let dir = Temp::new();
-    let journal = Journal::reserve_record(&dir.0, &binding()).unwrap();
+    let journal = Journal::reserve_record(&dir.0, &binding(), None).unwrap();
     let path = journal.path.clone();
     drop(journal);
     std::fs::remove_file(&path).unwrap();
@@ -196,7 +221,7 @@ fn fifo_pending_and_lock_are_rejected_without_blocking() {
     std::fs::remove_file(&lock_path).unwrap();
     let lock_c = std::ffi::CString::new(lock_path.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(lock_c.as_ptr(), 0o600) }, 0);
-    assert!(Journal::reserve_record(&dir.0, &binding()).is_err());
+    assert!(Journal::reserve_record(&dir.0, &binding(), None).is_err());
 }
 
 #[test]
@@ -204,7 +229,7 @@ fn recovery_dispatch_selects_captured_journal_and_rejects_cross_version() {
     use crate::linux_desktop::dispatch::{Version, captured_version, validate_recovery_selection};
     let dir = Temp::new();
     assert_eq!(captured_version(&dir.0).unwrap(), None);
-    let journal = Journal::reserve_record(&dir.0, &binding()).unwrap();
+    let journal = Journal::reserve_record(&dir.0, &binding(), None).unwrap();
     drop(journal);
     assert_eq!(captured_version(&dir.0).unwrap(), Some(Version::V3));
     assert_eq!(

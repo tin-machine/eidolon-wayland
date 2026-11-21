@@ -77,17 +77,23 @@ impl NativeOrigin {
             "APP_ORIGIN_UNKNOWN",
         )
     }
-    /// B1's canonical fixed main-window app_id for this validated origin.
-    /// Demo identity is bound to the captured nonce, never a remote UI hint.
+    /// Built-in applications additionally require their known window markers.
     pub fn main_app_id(&self) -> String {
         match self.app_id {
             AppId::Editor => "mousepad".into(),
+            AppId::DesktopEntry(_) => String::new(),
             AppId::Demo => format!(
                 "io.github.tinmachine.eidolon.linuxdesktop.r{}{}",
                 self.nonce.as_str(),
                 self.nonce.as_str()
             ),
         }
+    }
+
+    /// Desktop entries are identified by their selected fingerprint and dedicated
+    /// Waypipe origin. The toolkit controls the optional xdg_toplevel app_id.
+    pub fn main_app_id_matches(&self, app_id: Option<&str>) -> bool {
+        matches!(self.app_id, AppId::DesktopEntry(_)) || app_id == Some(self.main_app_id().as_str())
     }
 }
 
@@ -557,7 +563,7 @@ fn topology(windows: &[Window], main: WindowId, origin: &NativeOrigin) -> bool {
         if window.role == Role::Main {
             if window.window != main
                 || !matches!(window.parent, Parent::None {})
-                || window.app_id.as_deref() != Some(origin.main_app_id().as_str())
+                || !origin.main_app_id_matches(window.app_id.as_deref())
             {
                 return false;
             }
@@ -798,7 +804,7 @@ impl Startup {
         if roots.len() > 1
             || roots.iter().any(|w| {
                 !matches!(w.parent, Parent::None {})
-                    || w.app_id.as_deref() != Some(self.origin.main_app_id().as_str())
+                    || !self.origin.main_app_id_matches(w.app_id.as_deref())
                     || self.before.contains(&w.window)
             })
         {

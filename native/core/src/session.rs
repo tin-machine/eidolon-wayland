@@ -178,6 +178,9 @@ impl Session {
             current.startup_allocation_absent = false;
             current.directory = Some(directory);
             let path = &current.directory.as_ref().unwrap().path;
+            if let Some((context, _)) = current.v3_capture.as_ref() {
+                eidolon_transport::linux_desktop::v3::local_directory::mark(path, context)?;
+            }
             before_bind(path);
             current.listener =
                 Some(UnixListener::bind(path.join("w")).map_err(|_| "LOCAL_SOCKET_FAILED")?);
@@ -191,7 +194,7 @@ impl Session {
             let mut protocol = ProtocolState::new_with_budget(
                 &current.display.as_ref().unwrap().handle(),
                 current.session(),
-                pixels,
+                pixels.for_owner(),
             );
             // Bind before a worker or first dispatch can accept a client.
             // The retained capture already exists if any setup step fails.
@@ -394,6 +397,7 @@ impl Session {
             return Err("APP_ORIGIN_UNKNOWN");
         }
         self.v3_history.as_mut().ok_or("NOT_READY")?.started();
+        self.report.state = "running";
         Ok(())
     }
 

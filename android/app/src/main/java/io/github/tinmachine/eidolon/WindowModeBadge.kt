@@ -15,10 +15,13 @@ import org.json.JSONObject
 
 /** One directly owned quad/texture. Mode updates upload pixels without replacing any SDK object. */
 class WindowModeBadge(parent:Entity,layout:WindowControlLayout,width:Double,height:Double,private val sdk:Scene,
-    private val objects:SceneObjectSystem,private val live:()->Boolean,private val sdkScope:SdkResourceScope?=null):AutoCloseable {
+    private val objects:SceneObjectSystem,private val live:()->Boolean,private val sdkScope:SdkResourceScope?=null,
+    anchorControl:Boolean=false):AutoCloseable {
     private var closeRequested=false
     private var disposed=false
     private var mode=WindowMode.PREPARING
+    private var label=mode.label
+    private var tooltip:String?=null
     private var lastPose:Pose?=null
     private var lastVisible:Boolean?=null
     private var failures=0L
@@ -40,37 +43,44 @@ class WindowModeBadge(parent:Entity,layout:WindowControlLayout,width:Double,heig
             material=SceneMaterial(checkNotNull(texture),AlphaMode.PREMULTIPLIED,SceneMaterial.UNLIT_SHADER).also {materialCreates++}
             checkNotNull(material).apply {setUnlit(true);setSidedness(MaterialSidedness.DOUBLE_SIDED);setDepthWrite(DepthWrite.DISABLE)}
             mesh=createMesh(checkNotNull(material)).also {meshCreates++}
-            val positions=layout.positions(width,height)
+            val positions=layout.positions(width,height,anchorControl)
             val vertical=if(layout.anchor.startsWith("top")) 1 else -1
             val x=positions.map {it.x}.average();val y=positions.first().y+vertical*(layout.diameter/2+.047)
             entity=createEntity { Entity.create(listOf(TransformParent(parent),Transform(Pose()),Scale(Vector3(1f)),Hittable(MeshCollision.NoCollision),Visible(true))) }.also {entityCreates++}
             setAbsoluteTransform(checkNotNull(entity),getAbsoluteTransform(parent)*Pose(Vector3(x.toFloat(),y.toFloat(),-.035f)))
-            setAbsoluteScale(checkNotNull(entity),Vector3(.42f,.064f,1f))
+            // Keep the Entity and SceneObject scales at 1. The SDK applies both to the mesh.
+            setAbsoluteScale(checkNotNull(entity),Vector3(1f))
             obj=SceneObject(sdk,checkNotNull(mesh),"eidolon-window-mode",checkNotNull(entity)).also {objectCreates++}
             objects.addSceneObject(checkNotNull(entity),CompletableFuture.completedFuture(checkNotNull(obj)))
             update(mode,true,true)
         } catch(error:Exception) {runCatching {close()};throw error}
     }
-    fun update(value:WindowMode,visible:Boolean,force:Boolean=false) {
+    fun update(value:WindowMode,visible:Boolean,force:Boolean=false,tooltip:String?=null) {
         if(closeRequested || !live()) return
         val e=checkNotNull(entity);val sceneObject=checkNotNull(obj)
         val pose=getAbsoluteTransform(e)
         if(lastPose?.isApproximatelyEqual(pose,.00001f,.00001f)!=true) {
-            sceneObject.setPosition(pose.t);sceneObject.setRotationQuat(pose.q);sceneObject.setScale(getAbsoluteScale(e));lastPose=pose.copy()
+            sceneObject.setPosition(pose.t)
+            sceneObject.setRotationQuat(pose.q)
+            lastPose=pose.copy()
         }
         if(lastVisible!=visible) {sceneObject.setIsVisible(visible);lastVisible=visible}
-        if(!force && value==mode) return
         mode=value
+        val nextLabel = tooltip ?: value.label
+        val redraw = force || label != nextLabel || this.tooltip != tooltip
+        label = nextLabel
+        this.tooltip = tooltip
+        if (!redraw) return
         val canvas=Canvas(slot.bitmap);canvas.drawColor(Color.TRANSPARENT,android.graphics.PorterDuff.Mode.CLEAR)
         val paint=slot.paint
-        paint.color=0xee24364b.toInt();canvas.drawRoundRect(0f,0f,WIDTH.toFloat(),HEIGHT.toFloat(),22f,22f,paint)
+        paint.color=(if (tooltip == null) 0xee24364b else 0xf5152231).toInt();canvas.drawRoundRect(0f,0f,WIDTH.toFloat(),HEIGHT.toFloat(),22f,22f,paint)
         paint.color=0xfffff0cf.toInt();paint.textSize=38f;paint.textAlign=Paint.Align.CENTER
         val baseline=HEIGHT/2f-(paint.fontMetrics.ascent+paint.fontMetrics.descent)/2f
-        canvas.drawText(value.label,WIDTH/2f,baseline,paint)
+        canvas.drawText(label,WIDTH/2f,baseline,paint)
         slot.buffer.clear();slot.bitmap.copyPixelsToBuffer(slot.buffer);slot.buffer.rewind()
         checkNotNull(texture).update(slot.buffer,WIDTH,HEIGHT,slot.bitmap.rowBytes);updates++;textureUpdates++
     }
-    fun metadata()=JSONObject().put("entity",entity?.id?.toString() ?: JSONObject.NULL).put("mode",mode.name).put("label",mode.label)
+    fun metadata()=JSONObject().put("entity",entity?.id?.toString() ?: JSONObject.NULL).put("mode",mode.name).put("label",label).put("tooltip",tooltip ?: JSONObject.NULL)
         .put("visible",lastVisible ?: false).put("object_ready",!closeRequested && obj?.handle?.let {it!=0L}==true).put("non_hit",true).put("updates",updates).put("failures",failures)
     override fun close() {
         if(disposed) return
@@ -118,7 +128,7 @@ class WindowModeBadge(parent:Entity,layout:WindowControlLayout,width:Double,heig
                 .put("rgba_bytes_per_texture",WIDTH*HEIGHT*4).put("mip_levels",1).put("extra_android_displays",0).put("extra_surfaces",0)
         }
         private fun createMesh(material:SceneMaterial):SceneMesh=SceneMesh.meshWithMaterials(
-            floatArrayOf(-.5f,.5f,0f,.5f,.5f,0f,.5f,-.5f,0f,-.5f,-.5f,0f),
+            floatArrayOf(-.21f,.032f,0f,.21f,.032f,0f,.21f,-.032f,0f,-.21f,-.032f,0f),
             floatArrayOf(0f,0f,-1f,0f,0f,-1f,0f,0f,-1f,0f,0f,-1f),floatArrayOf(0f,0f,1f,0f,1f,1f,0f,1f),
             IntArray(4){Color.WHITE},intArrayOf(0,1,2,0,2,3),intArrayOf(0,6),arrayOf(material),true)
     }

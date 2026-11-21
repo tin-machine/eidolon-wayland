@@ -439,6 +439,7 @@ async fn catalog_mailbox_is_bounded_scoped_and_separate_from_diagnostics() {
 #[derive(Clone, Copy)]
 enum Mode {
     Quiet,
+    DesktopDiscovery,
     Flood,
     Hang,
     Exit,
@@ -511,6 +512,23 @@ impl server::Handler for Fixture {
     ) -> Result<(), Self::Error> {
         if data != exec::COMMAND.as_bytes() {
             self.non_probe_execs.fetch_add(1, Ordering::AcqRel);
+            if matches!(self.mode, Mode::DesktopDiscovery)
+                && data.starts_with(b"exec /usr/bin/python3 -I -B -c ")
+            {
+                session.channel_success(id)?;
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let payload = serde_json::json!({"schema":1,"entries":[{
+                        "id":"org.kde.kwrite.desktop","name":"KWrite",
+                        "revision":"a".repeat(64),"disabled_reason":null
+                    }]});
+                    let _ = handle.data(id, format!("{payload}\n").into_bytes()).await;
+                    let _ = handle.eof(id).await;
+                    let _ = handle.exit_status_request(id, 0).await;
+                    let _ = handle.close(id).await;
+                });
+                return Ok(());
+            }
             let value = self.audit.lock().unwrap().clone();
             if data
                 == launcher::command("cleanup", "ffffffffffffffff")
@@ -637,6 +655,54 @@ fn request(n: i64) -> CommandSeq {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discovery_uses_only_authenticated_read_without_overwriting_pending_recovery() {
+    use crate::linux_desktop::v3::{Binding, Context, Pins, journal::Journal};
+    let (address, profile, key, server_state, server) = fixture(Mode::DesktopDiscovery).await;
+    let profile = eidolon_model::connection_profile::Profile::parse(
+        &serde_json::json!({
+            "schema":2,"installation":profile.installation,"profile_id":"remote-linux","revision":"1",
+            "display_name":"Linux","backend":"linux_ssh","host":address.ip().to_string(),
+            "port":address.port(),"username":profile.username,"host_key":profile.host_key
+        }).to_string(),
+        &profile.installation,
+    ).unwrap();
+    let root = JournalRoot::new();
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
+    )).unwrap();
+    let raw = |id| {
+        fixture["records"].as_array().unwrap().iter().find(|record| record["id"] == id)
+            .unwrap()["raw"].as_str().unwrap().as_bytes()
+    };
+    let binding = Binding::from_captured(
+        Context::parse(raw("context")).unwrap(), Pins::parse(raw("pins")).unwrap(),
+    ).unwrap();
+    drop(Journal::reserve(&root.0, &binding).unwrap());
+    let journal_path = root.0.join("linux-desktop-v3-state/pending.json");
+    let original = std::fs::read(&journal_path).unwrap();
+    let controller = Controller::start_with_root(Some(root.0.clone())).unwrap();
+    wait(&controller, |snapshot| snapshot.journal_ready).await;
+    assert_eq!(controller.snapshot().state, State::CleanupPending);
+    assert_eq!(controller.discover_desktop(&profile, request(1)), Status::Accepted);
+    wait(&controller, |s| s.state == State::AwaitingCredential).await;
+    let scope = controller.credential_scope().unwrap();
+    assert_eq!(scope.profile_id, "remote-linux");
+    assert_eq!(controller.provide_for(scope.session, request(1), &scope.binding, key),
+        Status::Accepted);
+    wait(&controller, |s| s.state == State::CleanupPending && s.owned_connections == 0).await;
+    let result = serde_json::to_value(controller.catalog_ui()).unwrap();
+    assert_eq!(result["desktop_preview"]["pending"], false);
+    assert_eq!(result["desktop_preview"]["entries"][0]["id"], "org.kde.kwrite.desktop");
+    assert!(result["desktop_v3"].is_null());
+    assert_eq!(server_state.execs.load(Ordering::Acquire), 0);
+    assert_eq!(server_state.non_probe_execs.load(Ordering::Acquire), 1);
+    assert_eq!(std::fs::read(&journal_path).unwrap(), original);
+    assert!(controller.reclamation_snapshot().1.remote_cleanup_pending);
+    stop(&controller).await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn twenty_peer_disconnects_reclaim_workers_and_require_explicit_pinned_reconnect() {
     let (address, profile, key, fixture, server) = fixture(Mode::Quiet).await;
     let pin = profile.host_key.clone();
@@ -702,7 +768,7 @@ async fn cancel_before_session_allocation_and_old_request_cannot_cancel_reconnec
     let (address, profile, key, state, server) = fixture(Mode::Flood).await;
     let (release, gate) = std::sync::mpsc::channel();
     let controller =
-        Controller::start_at_with_hook(address, Deadlines::default(), None, move || {
+        Controller::start_at_with_hook(address, Deadlines::default(), None, None, move || {
             gate.recv_timeout(Duration::from_secs(4)).unwrap();
         })
         .unwrap();

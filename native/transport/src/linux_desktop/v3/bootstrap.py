@@ -107,6 +107,12 @@ require(stat.S_IMODE(root.stat().st_mode) == 0o700)
 bundle = root / build_id
 directory(bundle)
 require(stat.S_IMODE(bundle.stat().st_mode) == 0o500)
+if inventory_raw is None:
+    require(argv[0] == "recover")
+    inventory_bytes = read(bundle / "linux-desktop-v3-sources.json", 262144)
+    require(hashlib.sha256(inventory_bytes).hexdigest() == source_hashes["linux-desktop-v3-sources.json"])
+    inventory_raw = inventory_bytes.decode("utf-8")
+inventory = decode(inventory_raw)
 require(set(inventory) == {"schema", "protocol_revision", "integration", "sources", "generated"})
 require(type(inventory["schema"]) is int and inventory["schema"] == 1)
 require(inventory["protocol_revision"] == "eidolon-linux-desktop-v3")

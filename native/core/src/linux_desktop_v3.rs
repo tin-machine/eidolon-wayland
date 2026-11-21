@@ -205,7 +205,7 @@ impl WindowHistory {
                     || (old.sample.life == Life::Destroyed && sample.life != Life::Destroyed)
                     || (old.role == Some(Role::Main)
                         && (!matches!(sample.parent, Parent::None {})
-                            || sample.app_id.as_deref() != Some(self.main_app_id().as_str())))
+                            || !self.origin.main_app_id_matches(sample.app_id.as_deref())))
                     || (old.role == Some(Role::Dialog) && matches!(sample.parent, Parent::None {}))
             }) {
                 return Err("APP_WINDOW_UNSUPPORTED");
@@ -257,12 +257,6 @@ impl WindowHistory {
             return Err("APP_WINDOW_UNSUPPORTED");
         }
         Ok(())
-    }
-
-    fn main_app_id(&self) -> String {
-        // B1 is the single authority for the verified origin's fixed main ID.
-        // Do not reinterpret remote app_id, title, PID or source-level labels.
-        self.origin.main_app_id()
     }
 
     fn chain_to_main(&self, id: WindowId, main: WindowId) -> bool {
@@ -322,7 +316,6 @@ impl WindowHistory {
         if active > 9 {
             return Err("APP_WINDOW_UNSUPPORTED");
         }
-        let main_app = self.main_app_id();
         // Any second explicit root (even with a forged app_id) is unsupported.
         let all_roots: Vec<_> = self
             .entries
@@ -337,7 +330,7 @@ impl WindowHistory {
             .copied()
             .filter(|id| {
                 self.entries.get(id).is_some_and(|e| {
-                    e.sample.app_id.as_deref() == Some(main_app.as_str())
+                    self.origin.main_app_id_matches(e.sample.app_id.as_deref())
                         && !self.before.contains(id)
                 })
             })

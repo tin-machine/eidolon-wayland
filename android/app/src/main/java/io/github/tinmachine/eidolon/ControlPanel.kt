@@ -14,7 +14,17 @@ import android.os.Build
 import android.util.Log
 
 @Composable
-fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: () -> Unit) {
+fun ControlPanel(
+    chooseTheme: () -> Unit,
+    allowTermux: () -> Unit,
+    openTermux: () -> Unit,
+    mouseEnabled: Boolean,
+    toggleMouse: () -> Unit,
+    hudEnabled: () -> Boolean,
+    toggleHud: () -> Unit,
+    recenterHud: () -> Unit,
+    anchorControls: @Composable (restoring: Boolean) -> Unit,
+) {
     var clicks by remember { mutableIntStateOf(0) }
     var details by remember { mutableStateOf(false) }
     val input=NativeSessionHost.inputStatus.value
@@ -39,26 +49,32 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
                 else -> Unit
             }
         }
-        Button(enabled=TerminalImeController.activeState.value || NativeSessionHost.imeAvailable.value,
-            onClick={TerminalImeController.toggle()}) {
-            Text(if(TerminalImeController.activeState.value) "IME入力を終了 · Ctrl+Space" else "IME入力 · Ctrl+Space")
+        val visible=NativeSessionHost.windowChoices.value.filter {it.slot!=null}
+        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            Button(enabled=TerminalImeController.activeState.value || NativeSessionHost.imeAvailable.value,
+                onClick={TerminalImeController.toggle()}) {
+                Text(if(TerminalImeController.activeState.value) "IME入力を終了 · Ctrl+Space" else "IME入力 · Ctrl+Space")
+            }
+            Button(onClick=toggleMouse) {
+                Text(if (mouseEnabled) "マウス ON · Ctrl+Alt+M" else "マウス OFF · Ctrl+Alt+M")
+            }
         }
         if(!linux && NativeSessionHost.termuxHelp.value) Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(onClick=allowTermux) {Text("Termux連携を許可")}
             Button(onClick=openTermux) {Text("Termuxを開く")}
         }
-        val visible=NativeSessionHost.windowChoices.value.filter {it.slot!=null}
         if(visible.isNotEmpty()) Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             for(window in visible) Button(enabled=!NativeSessionHost.layoutEditing.value,onClick={NativeSessionHost.focusTerminal(window)}) {
                 Text("窓 ${window.window} へ入力")
             }
         }
+        anchorControls(true)
         if(!details) {
             Text(device.summary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
             Text(device.networkSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall,maxLines=2,
                 overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             Text("接続先: ${NativeSessionHost.connectionTarget.value} · ${NativeSessionHost.connectionSummary.value}",color=Color.White,style=MaterialTheme.typography.bodySmall,maxLines=2)
-            if(linux) Text(if(launcher.v3) "固定GTKデモ / Mousepad · 切断・lease失効で未保存の作業も終了します"
+            if(linux) Text(if(launcher.v3) "Linuxアプリ · 切断や通信が途絶えると未保存の作業も終了します"
                 else "固定GTKデモ · 切断・lease失効で未保存の作業も終了します",color=Color(0xFFFFD59E),style=MaterialTheme.typography.bodySmall)
         }
         if(NativeSessionHost.launcherExpanded.value) LauncherSettings(Modifier.weight(1f))
@@ -114,6 +130,10 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
                 Button(onClick={NativeSessionHost.setKeyboardLayout("us")}) { Text("US配列") }
                 Button(onClick={NativeSessionHost.setKeyboardLayout("jis")}) { Text("JIS配列") }
             }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = toggleHud) { Text(if (hudEnabled()) "HUD を非表示" else "HUD を表示") }
+                if (hudEnabled()) Button(onClick = recenterHud) { Text("HUD を置き直す") }
+            }
             Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={if(NativeSessionHost.layoutEditing.value) NativeSessionHost.finishLayoutEditing() else NativeSessionHost.setLayoutEditing(true)}) {
                 Text(if(NativeSessionHost.layoutEditing.value) "配置を確定して入力へ戻る" else "配置を編集")
             }
@@ -132,6 +152,7 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
                     Button(onClick={NativeSessionHost.nudgePose(yaw=15.0)}) { Text("角度 +15°") }
                 }
             }
+            anchorControls(false)
             Text(NativeSessionHost.layoutSummary.value,color=Color.White)
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={NativeSessionHost.resizeTerminal(800,600)}) { Text("800×600") }
@@ -151,6 +172,23 @@ fun ControlPanel(chooseTheme: () -> Unit, allowTermux: () -> Unit, openTermux: (
                 Log.i("EidolonPhase0", "panel_click count=$clicks version=${BuildConfig.VERSION_CODE}")
             }) { Text("確認 / Verify ($clicks)") }
             Button(onClick = { NativeSessionHost.requestSnapshot() }) { Text("診断を保存 / Snapshot") }
+        }
+    }
+}
+
+@Composable
+internal fun MousepadAnchorControls(anchor: MousepadAnchor, restoring: Boolean) {
+    val state = anchor.ui.value
+    if (state.restoring != restoring) return
+    if (state.message.isNotEmpty()) Text(state.message, color = Color.White)
+    if (state.canSave) Button(onClick = anchor::save) { Text("Mousepad を現在の位置に固定") }
+    if (state.canRemove) Button(onClick = anchor::remove) { Text("Mousepad の固定を解除") }
+    if (state.canRetry || state.canUseTemporaryPosition) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (state.canRetry) Button(onClick = anchor::retry) { Text("固定位置を再検索") }
+            if (state.canUseTemporaryPosition) {
+                Button(onClick = anchor::useTemporaryPosition) { Text("今回は現在の位置で操作") }
+            }
         }
     }
 }
