@@ -11,6 +11,7 @@ Eidolon Wayland aims to operate Linux GUI applications as independently controll
 | Purpose | Current authoritative entry / evidence |
 | --- | --- |
 | Project overview and actual high-level state | [Repository README](../../README.md) |
+| Before starting development with Quest hardware | [Quest development preflight](../development/quest-development-preflight.md): inspect the selected device, apply missing keep-awake settings, verify, and restore or hand off; host-only work remains independent |
 | Cross-cutting architecture (historical baselines may be embedded) | [Architecture](../architecture/architecture.md) |
 | Initial Phase 0–6 implementation contract | [D6 feature index](../features/initial-phases/README.md), [Design README](../design/README.md), [contracts](../design/contracts.md), [tasks.json](../design/tasks.json) |
 | Linux Desktop v3 (D5 registered graph; designs proposed) | [Feature index](../features/linux-desktop-v3/README.md), [integration plan](../features/linux-desktop-v3/linux-real-app-v3-integration-plan-20261111.md), [I2](../features/linux-desktop-v3/linux-real-app-v3-i2-detailed-design.md), [I3 proposal (unregistered)](../features/linux-desktop-v3/linux-real-app-v3-i3-detailed-design.md), [I4](../features/linux-desktop-v3/linux-real-app-v3-i4-detailed-design.md) |
