@@ -585,6 +585,15 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeImeU
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeWaitForUiChange(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    previous: jlong,
+) -> jlong {
+    eidolon_core::ui_changes::wait(previous, std::time::Duration::from_secs(1))
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativePoll<'a>(
     mut env: EnvUnowned<'a>,
     _: JClass<'a>,

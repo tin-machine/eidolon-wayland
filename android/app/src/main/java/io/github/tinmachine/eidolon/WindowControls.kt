@@ -19,6 +19,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
     private val revision: Long,private val move:WindowMoveController,private val sdkScope:SdkResourceScope?=null,
     private val pin: ((NativeSessionHost.WindowControlTicket) -> Boolean)? = null,
     initiallyPinned: Boolean = false,
+    private val hoverChanged: () -> Unit,
     private val menu:(NativeSessionHost.WindowControlTicket)->Boolean) : AutoCloseable {
     private val ui=Handler(Looper.getMainLooper())
     private var closed=false
@@ -140,11 +141,18 @@ class WindowControls(private val parent: Entity, private val target: String, pri
         }
     }
     private fun beginHover(button: Button, source: Long) = post {
-        if (!closed && enabled && visible && (!menuOnly || button.action == "menu") && live())
+        if (!closed && enabled && visible && (!menuOnly || button.action == "menu") && live()) {
+            val previous = hover.action()
             hover.enter(source, button.action)
+            if (previous != hover.action()) hoverChanged()
+        }
     }
 
-    private fun endHover(button: Button, source: Long) = post { hover.leave(source, button.action) }
+    private fun endHover(button: Button, source: Long) = post {
+        val previous = hover.action()
+        hover.leave(source, button.action)
+        if (previous != hover.action()) hoverChanged()
+    }
 
     private fun pinFace() = if (pinned) WindowControlMeshes.PIN_ACTIVE else WindowControlMeshes.MENU
 

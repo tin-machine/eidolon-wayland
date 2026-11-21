@@ -67,6 +67,7 @@ internal class MousepadAnchor(context: Context, private val owner: Long) {
     private var resolved: AnchorWindow? = null
     private var request: Request? = null
     private var applying: Applying? = null
+    val needsPolling get() = request != null || applying != null
     private var attempts = 0
     private var retryAt = 0L
     private var nativePollAt = 0L

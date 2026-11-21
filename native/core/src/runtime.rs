@@ -538,6 +538,7 @@ impl Shared {
             self.snapshot.error = Some(code);
             self.snapshot.state = RuntimeState::Failed;
             self.terminal.push_back(Event::Failure { error: code });
+            crate::ui_changes::publish();
         }
     }
     fn emit(&mut self, event: Event) {
@@ -545,6 +546,7 @@ impl Shared {
             self.fail("RESOURCE_LIMIT");
         } else {
             self.events.push_back(event);
+            crate::ui_changes::publish();
         }
     }
 }
@@ -972,6 +974,8 @@ impl Runtime {
                     ready_hook();
                     let mut detach_count = 0;
                     let mut last_credential = None;
+                    let mut last_progress = None;
+                    let mut presented = Vec::new();
                     let mut last_transport = (None, eidolon_transport::session::State::Idle, None);
                     loop {
                         if last_workspace_save.elapsed() >= Duration::from_millis(250)
@@ -1003,7 +1007,7 @@ impl Runtime {
                             .unwrap_or_else(|e| e.into_inner())
                             .snapshot
                             .theme = themes.report();
-                        let ssh = io.snapshot();
+                        let (ssh, reclaim) = io.reclamation_snapshot();
                         if !stopping.load(Ordering::Acquire)
                             && pending_app.as_ref().is_none_or(|(session, nonce, _, _, _)| slots.can_begin(*session, nonce))
                             && let Some((session, nonce, mode, virtual_clock, linux)) = pending_app.take()
@@ -1403,6 +1407,30 @@ impl Runtime {
                             if ssh.error == Some("JNI_FAILURE") {
                                 shared.fail("JNI_FAILURE");
                             }
+                            // Compare owner-visible transitions on the cuts already taken by this worker.
+                            // Omit animation clocks, frame counts, pointer motion and workload samples.
+                            let progress = (
+                                (ssh.catalog_progress, ssh.journal_ready, ssh.desktop_pending, ssh.desktop_reboot_needed,
+                                    reclaim.pending_operations, reclaim.remote_cleanup_pending,
+                                    reclaim.recovery_connect_allowed, reclaim.recovery_command_allowed),
+                                ssh.desktop_v3_transport.as_ref().map(|t| (t.inspect_request, t.launch_request,
+                                    t.transport.phase, t.terminal_observed, t.io_retired, t.cleanup_pending)),
+                                shared.snapshot.app.as_ref().map(|a| (a.session, a.state, a.ready, a.windows.len(),
+                                    a.input.focus_window, a.input.focus_token, a.error)),
+                                (shared.snapshot.desktop_v3_presentation.clone(), shared.snapshot.desktop_v3_finalizer_pending,
+                                    shared.snapshot.desktop_v3_pending_targets, shared.sdk_bindings.len(), render.theme_revision),
+                            );
+                            let targets = render.targets.iter().map(|target| (target.key, target.frames > 0,
+                                target.content_frame.is_some(), target.presentation_paused));
+                            if presented.iter().copied().ne(targets.clone()) {
+                                presented.clear();
+                                presented.extend(targets);
+                                crate::ui_changes::publish();
+                            }
+                            if last_progress.as_ref() != Some(&progress) {
+                                last_progress = Some(progress);
+                                crate::ui_changes::publish();
+                            }
                             let current = (ssh.session, ssh.state, ssh.error);
                             if current != last_transport {
                                 shared.emit(Event::SessionState {
@@ -1639,7 +1667,11 @@ impl Runtime {
                         }
                         if let Err(code) = state.sync_v3_targets(&gl)
                             && code != "DESKTOP_LOCAL_RETIREMENT_PENDING" { state.fail(code); }
-                        state.snapshot.panels = state.panels.snapshot();
+                        let plans = state.panels.snapshot();
+                        if plans != state.snapshot.panels {
+                            state.snapshot.panels = plans;
+                            crate::ui_changes::publish();
+                        }
                         state.snapshot.workspace = state.workspace.snapshot();
                         groups.sync(&mut state,&gl,&io,clock.elapsed(),&resetting);
                         if resetting.swap(false, Ordering::AcqRel) {
@@ -3018,6 +3050,7 @@ impl Runtime {
                 state.snapshot.window_groups=Default::default();
                 state.clear_credentials();
                 state.terminal.push_back(Event::Stopped);
+                crate::ui_changes::publish();
             })?;
         Ok(Self {
             handle: runtime_handle,
@@ -3389,6 +3422,7 @@ impl Runtime {
             self.stop.store(true, Ordering::Release);
             if state.snapshot.state != RuntimeState::Stopped {
                 state.snapshot.state = RuntimeState::Stopping;
+                crate::ui_changes::publish();
             }
             state.clear_credentials();
             state.ime_ui = None;
@@ -3747,6 +3781,9 @@ impl Runtime {
                 .or_else(|| state.terminal.pop_front())
                 .unwrap();
             events.push(next);
+        }
+        if !state.events.is_empty() || !state.terminal.is_empty() {
+            crate::ui_changes::publish();
         }
         Ok(events)
     }

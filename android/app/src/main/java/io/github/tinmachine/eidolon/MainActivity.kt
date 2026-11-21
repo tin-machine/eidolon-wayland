@@ -51,7 +51,7 @@ class MainActivity : AppSystemActivity() {
     private val keyboard: PhysicalKeyboard by lazy {
         PhysicalKeyboard(this, onOpenLauncher = { spatialLauncher.open() }) { TerminalImeController.toggle() }
     }
-    private val mouse by lazy { PhysicalMouse(nativePanels) }
+    private val mouse by lazy { PhysicalMouse(applicationContext, nativePanels) }
     private val openDetails = mutableIntStateOf(0)
     private var handExtensions = emptySet<String>()
     private val spatialLauncher: SpatialLauncher by lazy {
@@ -264,8 +264,14 @@ class MainActivity : AppSystemActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean =
         (ownsScene() && (mouse.key(event) || keyboard.dispatch(event))) || super.dispatchKeyEvent(event)
 
+    override fun onPointerCaptureChanged(hasCapture: Boolean) {
+        super.onPointerCaptureChanged(hasCapture)
+        mouse.focusChanged()
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        mouse.focusChanged()
         if (!hasFocus && ownsScene() && !TerminalImeController.deferActivityFocusLoss()) {
             keyboard.resetShortcutState()
             TerminalImeController.externalLoss()

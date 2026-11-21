@@ -8,7 +8,7 @@ use eidolon_model::{
 };
 use serde::Serialize;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PanelCommand {
     pub command_seq: CommandSeq,
     pub action: Action,
