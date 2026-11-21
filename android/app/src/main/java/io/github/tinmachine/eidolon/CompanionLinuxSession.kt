@@ -163,7 +163,7 @@ internal class CompanionLinuxSession(
                 }
             }
         }
-        val state = JSONObject(NativeBridge.nativeSnapshot(current))
+        val state = JSONObject(NativeBridge.nativeUiSnapshot(current, false))
         val runtime = state.optJSONObject("runtime") ?: return
         snapshot = runtime
         if (retired) {

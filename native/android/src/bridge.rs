@@ -554,6 +554,17 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeSnap
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeUiSnapshot<'a>(
+    mut env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    handle: jlong,
+    panel: jni::sys::jboolean,
+) -> JString<'a> {
+    env.with_env(|env| JString::from_str(env, global().ui_snapshot(handle, panel).to_string()))
+        .resolve_with::<BridgePolicy, _>(|| handle)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeCatalogUi<'a>(
     mut env: EnvUnowned<'a>,
     _: JClass<'a>,

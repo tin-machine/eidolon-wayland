@@ -590,7 +590,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                     var parseNs = 0L
                     val snapshots = handles.associateWith {
                         val beforeRead = SystemClock.elapsedRealtimeNanos()
-                        val bytes = NativeBridge.nativeSnapshot(it)
+                        val bytes = NativeBridge.nativeUiSnapshot(it, true)
                         val beforeParse = SystemClock.elapsedRealtimeNanos()
                         val snapshot = JSONObject(bytes)
                         readNs += beforeParse - beforeRead
