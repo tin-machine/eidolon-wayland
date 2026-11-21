@@ -50,7 +50,9 @@ object NativeSessionHost {
     private val probeRecovery = ProbeRuntimeRecovery()
     private val debugSdkLease = DebugSdkRuntimeLease()
     private val runtimeAdmission = RuntimeAdmission()
-    private val productWorker = DebugSdkProductExecutor(debugSdkLease, worker, runtimeAdmission)
+    private val productWorker = DebugSdkProductExecutor(debugSdkLease, { command ->
+        worker.execute { try { command.run() } finally { requestTick() } }
+    }, runtimeAdmission)
     private var debugSdkCapture: ProbeCredentialCapture? = null
     @Volatile private var debugSdkFailure: String? = null
     @Volatile private var debugSdkMode = "pattern"
@@ -262,7 +264,7 @@ object NativeSessionHost {
     private val keyboardCount = AtomicReference<Int?>(null)
     val deviceMetrics = mutableStateOf(DeviceMetricsSnapshot())
     private val latestMetrics = AtomicReference(DeviceMetricsSnapshot())
-    fun setKeyboardCount(value: Int?) { keyboardCount.set(value) }
+    fun setKeyboardCount(value: Int?) { if (keyboardCount.getAndSet(value) != value) requestTick() }
     internal val hudDraw = mutableStateOf<HudDrawSample?>(null)
     private val hudTimingConfig = java.util.concurrent.atomic.AtomicLong()
     private val hudTiming = QuestHudTiming()
@@ -1296,7 +1298,22 @@ object NativeSessionHost {
         } else if (inspectAfterShelfConnect && !connectPending && view.firstFailure != null) inspectAfterShelfConnect = false
     }
 
-    init { worker.scheduleAtFixedRate({ safely { tick() } }, 0, 16, TimeUnit.MILLISECONDS) }
+    private val tickQueued = AtomicBoolean(false)
+    private fun requestTick(delayMs: Long = 0) {
+        if (!tickQueued.compareAndSet(false, true)) return
+        worker.schedule({
+            tickQueued.set(false)
+            safely { tick() }
+            if (pendingInputFocus != null || imeRawBlocked.get() || settingsSave.active || pendingDisconnect != null)
+                requestTick(32)
+        }, delayMs, TimeUnit.MILLISECONDS)
+    }
+
+    init {
+        RuntimeUiChanges.subscribe { requestTick() }
+        // Reconcile durable state, Android-only deadlines and diagnostics even after a missed wake.
+        worker.scheduleWithFixedDelay({ requestTick() }, 0, 1, TimeUnit.SECONDS)
+    }
 
     fun initialize(context: Context) {
         val application = context.applicationContext
@@ -1320,6 +1337,7 @@ object NativeSessionHost {
             }
             if(settingsSave.active) {refreshLinuxConnection("元の保存要求と回収処理を継続しています。");return@safely}
             if (handle == 0L && NativeBridge.status.ready) {
+                RuntimeUiChanges.start()
                 if (credentials == null) credentials = CredentialStore(application)
                 identity = checkNotNull(credentials).ensureIdentity()
                 profiles = JSONArray()
@@ -1583,7 +1601,7 @@ object NativeSessionHost {
         if(windowOperation.get()!=null || source==0L || panelTextInputs.isNotEmpty()) return@serial null
         val control=beginWindowControl(target,runtime,revision) ?: return@serial null
         val owner=WindowOperationTicket(control,source,"move")
-        if(windowOperation.compareAndSet(null,owner)) WindowMoveTicket(owner) else null
+        if(windowOperation.compareAndSet(null,owner)) WindowMoveTicket(owner).also { RuntimeUiChanges.invalidate() } else null
     }
     fun windowOperationCurrent(ticket:WindowOperationTicket):Boolean = inputIntents.serial {
         windowOperation.get()===ticket && ticket.control.runtime==handle && ticket.control.intent==inputIntents.get() &&
@@ -1609,7 +1627,7 @@ object NativeSessionHost {
         check(Looper.myLooper()==Looper.getMainLooper())
         if(windowOperation.get()!=null || control.runtime!=handle || control.intent!=inputIntents.get() || panelTextInputs.isNotEmpty() ||
             editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || debugSdkLease.blocksProduct()) return@serial null
-        WindowOperationTicket(control,0,"menu").takeIf {windowOperation.compareAndSet(null,it)}
+        WindowOperationTicket(control,0,"menu").takeIf {windowOperation.compareAndSet(null,it)}?.also { RuntimeUiChanges.invalidate() }
     }
     fun windowOperationAndroidReleased(ticket:WindowOperationTicket)=windowOperationCurrent(ticket) && !imeRawBlocked.get()
     fun windowOperationPhase(ticket:WindowOperationTicket,phase:String):Boolean = inputIntents.serial {
@@ -3018,6 +3036,28 @@ object NativeSessionHost {
         }
     }
 
+    private data class PanelValues(
+        val ime: Boolean, val keyboard: String, val input: InputStatus, val observing: Boolean,
+        val theme: ThemeUi?, val workspace: String, val windows: List<WindowChoice>,
+        val layoutEnabled: Boolean, val layout: String,
+    )
+    private var lastPanelValues: PanelValues? = null
+    private fun publishPanel(values: PanelValues) {
+        if (lastPanelValues == values) return
+        lastPanelValues = values
+        ui.post {
+            imeAvailable.value = values.ime
+            keyboardSummary.value = values.keyboard
+            inputStatus.value = values.input
+            workloadObservation.value = values.observing
+            values.theme?.let { themeUi.value = it }
+            workspaceSummary.value = values.workspace
+            windowChoices.value = values.windows
+            layoutAvailable.value = values.layoutEnabled
+            layoutSummary.value = values.layout
+        }
+    }
+
     private fun tick() {
         if (handle == 0L) {
             pumpSettingsSave()
@@ -3212,10 +3252,8 @@ object NativeSessionHost {
         val eligibleIme=keyboardFocus?.let {f-> f.runtime == handle && strictImeSdkTarget(JSONObject(f.target))?.let {ImeTargetEligibility.allows(runtime,it)} == true}==true &&
             !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && !editing.get() && panelTextInputs.isEmpty() && !BuildHooks.imeProbeActive()
         if (publishDiagnostics) sampleHudTiming(runtime)
-        ui.post {imeAvailable.value=eligibleIme}
         pumpIme(runtime, imeCompletions)
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else if(selectedProfileId==LinuxConnectionProfile.ID) "Linuxアプリへ入力" else "ターミナルへ入力"
-        ui.post { keyboardSummary.value = keyboardLabel }
         val inputConditions=InputConditions(runtime.getBoolean("activity_visible"),runtime.getString("xr_state")=="FOCUSED",
             runtime.getString("state")=="Ready",if(terminalOpen?.startupWaiting==true) "StartingTermux" else runtime.getJSONObject("transport").getString("state"),editing.get(),keyboardCount.get(),
             (runtime.optJSONObject("app")?.optJSONArray("windows")?.length() ?: 0)>0,inputTargets.isNotEmpty(),
@@ -3237,7 +3275,6 @@ object NativeSessionHost {
             }
             else imeInputMessage ?: InputStatus.from(inputConditions)
         } else InputStatus.from(inputConditions)
-        ui.post {inputStatus.value=status}
         if (publishDiagnostics) store?.updateInterface(JSONObject().put("input_reason",status.reason).put("input_action",status.action.name)
             .put("editing",editing.get()).put("keyboard_count",keyboardCount.get() ?: JSONObject.NULL)
             .put("focus_window",focusedWindow ?: JSONObject.NULL).put("device",latestMetrics.get().json())
@@ -3247,8 +3284,7 @@ object NativeSessionHost {
             .put("termux_start",JSONObject().put("requests",termuxRequests).put("successes",termuxSuccesses).put("failures",termuxFailures)))
         val workspace=runtime.getJSONObject("workspace");val storage=workspace.getJSONObject("storage")
         val observing=workspace.getBoolean("workload_observation")
-        ui.post { workloadObservation.value=observing }
-        runtime.optJSONObject("theme")?.let { theme ->
+        val displayedTheme = runtime.optJSONObject("theme")?.let { theme ->
             val label = when (theme.getString("selection")) { "builtin" -> "Cyan Orbit"; "imported" -> "読み込んだテーマ"; else -> "装飾なし" }
             val loading = theme.getBoolean("loading")
             val message = themeImportMessage ?: when {
@@ -3259,13 +3295,12 @@ object NativeSessionHost {
                 theme.getJSONObject("storage").getBoolean("pending") -> "$label · 保存中"
                 else -> label
             }
-            val value = ThemeUi(if (loading) theme.getString("requested") else theme.getString("selection"),
+            ThemeUi(if (loading) theme.getString("requested") else theme.getString("selection"),
                 theme.getBoolean("reduced_motion"), theme.getBoolean("imported_available"), loading, message)
-            ui.post { themeUi.value = value }
         }
         val background=if(workspace.getString("background")=="passthrough") "現実" else "単色"
         val saveStatus=when { !storage.isNull("error") -> "保存できません（${storage.getString("error")}）";workspace.getBoolean("pending_save")->"保存中";else->"保存済み" }
-        ui.post { workspaceSummary.value="背景: $background · キー配列: ${workspace.getString("keyboard_layout").uppercase()} · $saveStatus" }
+        val workspaceLabel = "背景: $background · キー配列: ${workspace.getString("keyboard_layout").uppercase()} · $saveStatus"
         val selected=selectedTarget(runtime)
         val appWindows=runtime.optJSONObject("app")?.optJSONArray("windows")
         val selectedWindow=appWindows?.let { windows -> (0 until windows.length()).map { windows.getJSONObject(it) }.firstOrNull { it.optString("window")==selected?.optString("window") } }
@@ -3278,7 +3313,6 @@ object NativeSessionHost {
                 if (linuxV3Active() && currentApp.optString("mode") == "linux_desktop") handle else 0L,
                 plan?.optJSONObject("target")?.toString(), runtime.getJSONObject("render").optLong("theme_revision",0))
         } } ?: emptyList()
-        ui.post { windowChoices.value=choices }
         terminalAdding?.let { operation ->
             val receipt=runtime.getJSONObject("transport").optJSONObject("app_forward")?.optJSONObject("remote")?.optJSONObject("last_terminal")
             val owned=runtime.optJSONObject("window_launch")?.takeIf {it.optString("session")==operation.session && it.optString("request_id")==operation.request}
@@ -3300,7 +3334,7 @@ object NativeSessionHost {
             val status=when(resize?.optString("phase")) { "timed_out"->" · サイズ変更に応答がありません"; "adjusted"->" · アプリ側でサイズ調整"; "queued","awaiting_ack","awaiting_commit"->" · 変更中";else->"" }
             "ウィンドウ ${selected?.optString("window")}: ${logical.getInt("width")}×${logical.getInt("height")}$status"
         }
-        ui.post { layoutAvailable.value=logical!=null; layoutSummary.value=label }
+        publishPanel(PanelValues(eligibleIme, keyboardLabel, status, observing, displayedTheme, workspaceLabel, choices, logical != null, label))
         val transport = snapshot.getJSONObject("runtime").getJSONObject("transport")
         terminalOpen?.let { operation ->
             val now=SystemClock.elapsedRealtime()

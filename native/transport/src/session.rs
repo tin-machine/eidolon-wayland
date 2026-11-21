@@ -59,6 +59,9 @@ pub enum State {
 }
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Snapshot {
+    // Wake the UI when its authenticated catalog/preview completes without copying the catalog.
+    #[serde(skip)]
+    pub catalog_progress: (Option<CommandSeq>, bool, Option<(CommandSeq, bool)>),
     pub state: State,
     pub session: Option<SessionId>,
     pub profile_id: Option<String>,
@@ -831,6 +834,8 @@ impl Controller {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let mut report = shared.report.clone();
+        report.catalog_progress = (shared.catalog.request_id, shared.catalog.pending,
+            shared.catalog.desktop_preview.as_ref().map(|preview| (preview.request_id, preview.pending)));
         if let Some(router) = &shared.router {
             report.forward = router.report();
         }

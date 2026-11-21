@@ -1,5 +1,7 @@
 package io.github.tinmachine.eidolon
 
+import android.content.Context
+import android.hardware.input.InputManager
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -41,7 +43,18 @@ internal class MouseWorkspace(initialPose: Pose) {
 }
 
 /** Owns one mouse ray and cursor in the current XR scene. */
-class PhysicalMouse(private val panels: SpatialPanelAdapter) {
+class PhysicalMouse(context: Context, private val panels: SpatialPanelAdapter) {
+    private val devices = context.getSystemService(InputManager::class.java)
+    private var listening = false
+    private var mousePresent = false
+    private val deviceListener = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(id: Int) = refreshDevices()
+        override fun onInputDeviceChanged(id: Int) = refreshDevices()
+        override fun onInputDeviceRemoved(id: Int) {
+            if (capture?.device == id) stopCapture()
+            refreshDevices()
+        }
+    }
     val enabled = mutableStateOf(true)
     private val ui = Handler(Looper.getMainLooper())
     private val hosts = mutableListOf<WeakReference<View>>()
@@ -63,6 +76,7 @@ class PhysicalMouse(private val panels: SpatialPanelAdapter) {
     fun track(view: View) {
         hosts.removeAll { it.get() == null || it.get() === view }
         hosts.add(WeakReference(view))
+        focusChanged()
     }
 
     fun setFocusedScene(value: Scene?) {
@@ -73,18 +87,42 @@ class PhysicalMouse(private val panels: SpatialPanelAdapter) {
         if (scene === value) return
         stopCapture()
         scene = value
-        ui.removeCallbacks(maintain)
-        if (value != null && enabled.value) ui.post(maintain)
+        updateListening()
     }
 
     fun toggle() {
         enabled.value = !enabled.value
         if (!enabled.value) {
-            ui.removeCallbacks(maintain)
             stopCapture()
             workspace = null
             workspaceScene = null
-        } else if (scene != null) {
+        }
+        updateListening()
+    }
+
+    private fun updateListening() {
+        ui.removeCallbacks(maintain)
+        val needed = scene != null && enabled.value
+        if (needed != listening) {
+            listening = needed
+            if (needed) devices.registerInputDeviceListener(deviceListener, ui)
+            else devices.unregisterInputDeviceListener(deviceListener)
+        }
+        if (needed) refreshDevices()
+    }
+
+    private fun refreshDevices() {
+        if (!listening) return
+        mousePresent = devices.inputDeviceIds.any { id ->
+            devices.getInputDevice(id)?.let { !it.isVirtual && it.supportsSource(InputDevice.SOURCE_MOUSE) } == true
+        }
+        if (!mousePresent) stopCapture()
+        focusChanged()
+    }
+
+    fun focusChanged() {
+        ui.removeCallbacks(maintain)
+        if (listening && mousePresent) {
             retryAfter = 0L
             ui.post(maintain)
         }
@@ -107,15 +145,13 @@ class PhysicalMouse(private val panels: SpatialPanelAdapter) {
     private val maintain = object : Runnable {
         override fun run() {
             val currentScene = scene ?: return
-            if (!enabled.value) return
+            if (!enabled.value || !mousePresent) return
             val now = SystemClock.uptimeMillis()
             val current = capture
             if (current == null) {
                 if (now >= retryAfter) {
                     retryAfter = now + 1000
-                    if (InputDevice.getDeviceIds().any { id ->
-                            InputDevice.getDevice(id)?.let { !it.isVirtual && it.supportsSource(InputDevice.SOURCE_MOUSE) } == true
-                        }) startCapture(currentScene, now)
+                    startCapture(currentScene, now)
                 }
             } else if (!current.view.isAttachedToWindow || !current.view.hasWindowFocus() || !current.view.isFocused ||
                 (!current.view.hasPointerCapture() && now - current.requestedAt >= 800) ||
@@ -126,7 +162,13 @@ class PhysicalMouse(private val panels: SpatialPanelAdapter) {
                 val hit = placeCursor(current)
                 if (current.hovered != hit?.entity?.id) dispatch(current, hit, 0)
             }
-            ui.postDelayed(this, if (capture?.view?.hasPointerCapture() == true) 33 else 150)
+            // A stationary cursor still needs hit testing when another window moves beneath it.
+            val delay = when {
+                capture?.view?.hasPointerCapture() == true -> 33L
+                capture != null -> 150L
+                else -> 1000L
+            }
+            ui.postDelayed(this, delay)
         }
     }
 

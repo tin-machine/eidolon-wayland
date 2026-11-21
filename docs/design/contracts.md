@@ -94,7 +94,7 @@ external fun nativeDestroy(handle: Long): Int
 - `nativeCreate`はconfig検査後にregistryへ登録しthreadを起動、handleを返す。初期化完了は別event。失敗時は例外と0、半端なhandleを残さない。
 - `nativeCommand`はschema v1の小さいJSON。command全体16 KiB、未知field/tag、無効ID、NaN/Infinity、過大寸法を拒否する。
 - `nativeAttachSurface`内で`ANativeWindow`参照を取得する。enqueue失敗時はその参照を直ちに解放する。Java local refとJNI環境を保存しない。
-- `nativePoll`は1回最大64件/64 KiB。UIが16 msを目安にpollするが、実際のSDK操作threadはR01で確認する。pollは待機しない。
+- `nativePoll`は1回最大64件/64 KiB。runtime が通知した変更をまとめて worker で読む。poll 自体は待機せず、残りがあれば再通知する。ホストと SDK パネルは独立して現在状態を照合し、通常は約1秒ごとにも再確認する。入力・解放など期限の短い進行中の操作には短い確認周期を使える。
 - `nativeRequestStop`はatomic停止flagを立てて戻る。`nativeDestroy`はStopped後のregistry回収、停止中はBUSY。二重destroyは安全な結果を返す。
 - 初期化を含む各入口は`jni 0.22.4`の`EnvUnowned`→`with_env`とErrorPolicyを使う。panicをFFI境界の外へunwindさせない。通常の失敗は安定code、unexpected panicはruntimeをFailedへ移し再利用しない。
 

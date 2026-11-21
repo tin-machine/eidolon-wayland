@@ -69,6 +69,15 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
     private var callbacks = 0
     private var lastPublish = 0L
     private var snapshotInFlight = false
+    private var changedDuringRead = false
+    private val wakePosted = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val wake: () -> Unit = {
+        if (wakePosted.compareAndSet(false, true)) ui.post {
+            wakePosted.set(false)
+            if (snapshotInFlight) changedDuringRead = true
+            else { ui.removeCallbacks(poll); ui.post(poll) }
+        }
+    }
     private var snapshotSamples = 0L
     private var snapshotReadMaxNs = 0L
     private var snapshotParseMaxNs = 0L
@@ -147,7 +156,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         val work = {
             val current = owner.binding
             if (!closed && runtimeScene === owner.sdkScene && bindings[current.allocation] === current &&
-                !current.retire && !current.destroy) action(current)
+                !current.retire && !current.destroy) { action(current); wake() }
         }
         owner.binding.scope?.post(work) ?: ui.post { work() }
     }
@@ -198,6 +207,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         deletionFence = SdkSceneDeletionFence(adapterOwner, epoch, sdkScene,
             checkNotNull(EntityContext.getDataModel()), evidence)
         deletionSystem.active = deletionFence
+        RuntimeUiChanges.subscribe(wake)
         event("scene_ready")
         ui.removeCallbacks(poll)
         ui.post(poll)
@@ -205,6 +215,8 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
     fun close() {
         if(closed) return
         closed = true
+        RuntimeUiChanges.unsubscribe(wake)
+        wake()
         bindings.values.forEach { current ->
             beginRetirement(current)
             runCatching { if(current.role=="windows" && canUseSdk(current)) {
@@ -238,6 +250,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         val current = binding ?: return false
         if (current.retire) return false
         beginRetirement(current); current.destroy = true
+        wake()
         event("recreate", current.entity.id)
         return true
     }
@@ -575,7 +588,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         current.destroyCommand?.let { NativeSessionHost.ackPanel(it, current.handle) }
     }
     private fun sameKey(a: JSONObject, b: JSONObject): Boolean = listOf("session", "window", "scene", "generation").all { a.optString(it) == b.optString(it) }
-    private val poll = object : Runnable {
+    private val poll: Runnable = object : Runnable {
         override fun run() {
             if (snapshotInFlight || closed && bindings.isEmpty() && cancelledReservations.isEmpty()) return
             val handle = NativeSessionHost.currentHandle()
@@ -617,7 +630,13 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                     } finally {
                         ui.removeCallbacks(this)
                         if (!closed || bindings.isNotEmpty() || cancelledReservations.isNotEmpty()) {
-                            ui.postDelayed(this, 32)
+                            val active = cancelledReservations.isNotEmpty() || mousepadAnchor?.needsPolling == true ||
+                                bindings.values.any { it.retire || it.destroy || !it.attached || it.anchorDeferred ||
+                                    it.editing || it.wasGrabbed || it.poseRequest != null || it.move?.phase != null ||
+                                    it.menu?.phase != null || (it.group as? WindowGroupPresentation.Owned)?.phase in
+                                        setOf("animating", "settling") }
+                            ui.postDelayed(this, when { changedDuringRead -> 0L; active -> 32L; else -> 1000L })
+                            changedDuringRead = false
                         }
                     }
                 }
@@ -850,7 +869,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                         anchor.toggleForWindow(AnchorWindow.from(current.handle, current.key))
                 } else null
                 val createControls={WindowControls(current.entity,controlTarget,current.handle,checkNotNull(runtimeScene),checkNotNull(objects),
-                    live,config,width,height,revision,move,current.scope,pin,initiallyPinned = pinned == true) {ticket -> current.menu?.open(ticket)==true}}
+                    live,config,width,height,revision,move,current.scope,pin,initiallyPinned = pinned == true, hoverChanged = wake) {ticket -> current.menu?.open(ticket)==true}}
                 current.controls=current.scope?.produce(createControls) ?: createControls()
                 val createBadge={WindowModeBadge(current.entity,config,width,height,checkNotNull(runtimeScene),checkNotNull(objects),live,current.scope,hasPin)}
                 current.modeBadge=current.scope?.produce(createBadge) ?: createBadge()

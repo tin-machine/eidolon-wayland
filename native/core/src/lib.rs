@@ -13,6 +13,7 @@ pub mod startup_observation;
 pub mod theme;
 mod theme_store;
 pub(crate) mod v3_retirement;
+pub mod ui_changes;
 pub mod waypipe;
 pub mod window_slots;
 pub mod workload;
