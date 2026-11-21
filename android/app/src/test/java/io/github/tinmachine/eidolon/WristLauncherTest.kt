@@ -4,6 +4,30 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WristLauncherTest {
+    @Test fun inputSourceProbesStopAtTheFirstUsablePair() {
+        val hands = WristInput.HANDS
+        val controllers = WristInput.CONTROLLERS
+        fun check(mode: WristInput, previous: WristInput?, ready: Set<WristInput>, vararg expected: WristInput) {
+            val probes = mutableListOf<WristInput>()
+            val selected = selectTrackedWristInput(mode, previous) {
+                probes.add(it)
+                it in ready
+            }
+            assertEquals(expected.toList(), probes)
+            assertEquals(expected.firstOrNull { it in ready }, selected)
+        }
+        val both = setOf(hands, controllers)
+        check(WristInput.AUTO, null, both, controllers)
+        check(WristInput.AUTO, hands, both, hands)
+        check(WristInput.AUTO, controllers, both, controllers)
+        check(WristInput.AUTO, controllers, setOf(hands), controllers, hands)
+        check(WristInput.AUTO, hands, setOf(controllers), hands, controllers)
+        check(WristInput.AUTO, null, emptySet(), controllers, hands)
+        check(WristInput.OFF, hands, both)
+        check(hands, controllers, setOf(controllers), hands)
+        check(controllers, hands, setOf(hands), controllers)
+    }
+
     @Test fun poseNeedsDwellAndExitBeforeReopening() {
         val visibility = WristVisibility()
         assertFalse(visibility.update(WristVisibility.ENTER, 0, false))

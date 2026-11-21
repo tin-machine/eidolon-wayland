@@ -8,6 +8,18 @@ internal enum class WristInput(val title: String) {
     AUTO("自動"), HANDS("素手"), CONTROLLERS("コントローラー"), OFF("手首表示オフ"),
 }
 
+/** Probe the preferred source first and fall back within this same input tick. */
+internal inline fun selectTrackedWristInput(
+    mode: WristInput, previous: WristInput?, available: (WristInput) -> Boolean,
+): WristInput? {
+    if (mode == WristInput.OFF) return null
+    if (mode != WristInput.AUTO) return mode.takeIf(available)
+    val first = if (previous == WristInput.HANDS) WristInput.HANDS else WristInput.CONTROLLERS
+    if (available(first)) return first
+    val other = if (first == WristInput.HANDS) WristInput.CONTROLLERS else WristInput.HANDS
+    return other.takeIf(available)
+}
+
 internal enum class WristSkin(val title: String) {
     CIRCLE("円形"), HEXAGON("六角形");
 

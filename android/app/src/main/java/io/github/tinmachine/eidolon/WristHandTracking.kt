@@ -35,6 +35,7 @@ internal class WristHandTracking : AutoCloseable {
             failed = true
             return Pair(null, null)
         }
+        if (output[0] != 1f && output[16] != 1f) return Pair(null, null)
         // The raw joints share LOCAL_FLOOR with MainActivity. View origin can move with locomotion.
         val origin = scene.getViewOrigin()
         val yaw = scene.getViewSceneRotation()
