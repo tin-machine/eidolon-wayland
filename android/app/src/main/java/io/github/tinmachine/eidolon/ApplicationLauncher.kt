@@ -4,8 +4,6 @@ package io.github.tinmachine.eidolon
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -113,7 +111,6 @@ fun LauncherSettings(
     toggleFix: (() -> Unit)? = null,
     fixed: Boolean = false,
     anchorStatus: String = "",
-    dragTitle: ((Float, Float) -> Unit)? = null,
     placeApp: ((LauncherUi, LauncherEntry, Boolean) -> Unit)? = null,
     launcherControls: (@Composable () -> Unit)? = null,
     openConnectionSettings: (() -> Unit)? = null,
@@ -143,12 +140,7 @@ fun LauncherSettings(
             val wide = maxWidth >= 620.dp
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(modifier = Modifier.weight(1f).pointerInput(dragTitle != null, fixed) {
-                        if (dragTitle != null && !fixed) detectDragGestures { change, delta ->
-                            change.consume()
-                            dragTitle(delta.x.toDp().value / 540f, -delta.y.toDp().value / 540f)
-                        }
-                    }, enabled = placeShelf != null || finishShelf != null,
+                    TextButton(modifier = Modifier.weight(1f), enabled = placeShelf != null || finishShelf != null,
                         onClick = { (placeShelf ?: finishShelf)?.invoke() }) {
                         Text(if (finishShelf != null) "アプリランチャー · つかんで移動" else "アプリランチャー", color = candy)
                     }
@@ -169,7 +161,7 @@ fun LauncherSettings(
                                 Text(hostName(source) + " の接続を閉じる")
                             }
                             if (source.linux && state.canRecover) TextButton(onClick = NativeSessionHost::recoverLinuxDesktop) { Text("前回の回収") }
-                            if (source.linux && state.companionCleanup) TextButton(onClick = NativeSessionHost::recoverCompanion) { Text("2本目を回収") }
+                            if (source.linux && state.companionCleanup) TextButton(onClick = NativeSessionHost::recoverCompanion) { Text("追加アプリを回収") }
                         }
                         if (!NativeSessionHost.launcherUi.value.linux) TermuxLauncherFiles(NativeSessionHost.launcherUi.value)
                     }
@@ -180,6 +172,7 @@ fun LauncherSettings(
                             if (!wide) Row { ShelfTabs(favoritesOnly) { favoritesOnly = it } }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 LauncherField("アプリ名・ホスト名で検索", query, { query = it }, Modifier.weight(1f))
+                                Text("起動枠 ${NativeSessionHost.launcherAppCount.intValue}/${NativeSessionHost.MAX_APPS}", color = candy)
                                 TextButton(onClick = NativeSessionHost::refreshLauncherMenu) { Text("更新") }
                             }
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -258,10 +251,12 @@ private fun ShelfAppCard(source: LauncherSource, entry: LauncherEntry, state: La
     var messageAtClick by remember { mutableStateOf("") }
     var notice by remember(state.runtime, state.session, state.revision, entry.id) { mutableStateOf<String?>(null) }
     val favorite = launcherFavoriteKey(source, entry)
-    val live = state.connected && !state.menuRefreshFailed && !state.busy && entry.available &&
+    val atLimit = NativeSessionHost.launcherAppCount.intValue >= NativeSessionHost.MAX_APPS
+    val live = !atLimit && state.connected && !state.menuRefreshFailed && !state.busy && entry.available &&
         state.entries.any { it.id == entry.id && it.available }
     OutlinedCard(onClick = {
         if (live) { messageAtClick = state.message; notice = "起動を要求しました"; NativeSessionHost.launchShelfApp(source, state, entry) }
+        else if (atLimit) notice = "同時起動は20アプリまでです。アプリを閉じてください。"
         else notice = launchUnavailableReason(entry.error) ?: if (entry.error != null) LauncherMessages.error(entry.error) else state.message
     }, colors = CardDefaults.outlinedCardColors(containerColor = Color(0xFF402E48)), border = BorderStroke(1.dp, Color(0xFFA987A5))) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -278,8 +273,9 @@ private fun ShelfAppCard(source: LauncherSource, entry: LauncherEntry, state: La
             TextButton(onClick = { NativeSessionHost.toggleLauncherFavorite(favorite); menu = false }) {
                 Text(if (favorite in NativeSessionHost.launcherFavorites) "お気に入りを解除" else "お気に入りに追加")
             }
-            if (place != null && state.v3 && state.runtime == NativeSessionHost.launcherUi.value.runtime) {
-                TextButton(enabled = live, onClick = { place(state, entry, false); menu = false }) { Text("引き出して起動") }
+            if (place != null) {
+                if (state.v3 && state.runtime == NativeSessionHost.launcherUi.value.runtime)
+                    TextButton(enabled = live, onClick = { place(state, entry, false); menu = false }) { Text("引き出して起動") }
                 TextButton(onClick = { place(state, entry, true); menu = false }) { Text("起動ボタンを置く") }
             }
         }

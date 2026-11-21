@@ -163,7 +163,7 @@ pub async fn recover_remote<H: client::Handler>(
             &binding,
             &bootstrap,
             journal.source_hashes(),
-            request.files.ends_with("eidolon-workspace-2"),
+            eidolon_model::limits::workspace_number(request.files),
         )?;
         let mut channel = tokio::select! { biased;
             _ = cancel.cancelled() => return Err("CANCELLED"),

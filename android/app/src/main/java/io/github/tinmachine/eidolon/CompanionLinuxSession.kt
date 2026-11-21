@@ -5,6 +5,7 @@ import org.json.JSONObject
 
 /** One independently recoverable Linux app on the same saved SSH profile. Host-worker only. */
 internal class CompanionLinuxSession(
+    val slot: Int,
     private val nextRequest: () -> String,
     private val provide: (Long, LinuxCredentialCapture, JSONObject) -> Boolean,
 ) {
@@ -28,12 +29,13 @@ internal class CompanionLinuxSession(
     private var inspectSent = false
     private var deadline = 0L
     private var stopping = false
-    private var recoveryTried = false
+    private val recoveryRetry = DesktopRecoveryRetry()
     private var retired = false
     private var launchSent = false
     private var wasRunning = false
     private var onLaunch: ((Long, String, String) -> Unit)? = null
 
+    val occupiesApp get() = handle != 0L && (!browsing || selection != null || launchSent || stopping)
     var browsing = false
         private set
     var shelf = LauncherUi(linux = true)
@@ -73,10 +75,10 @@ internal class CompanionLinuxSession(
         scene: Long, xr: String, visible: Boolean, launched: ((Long, String, String) -> Unit)? = null,
     ): Boolean {
         if (handle != 0L) return false
-        val created = NativeBridge.nativeCreateCompanion(primary)
+        val created = NativeBridge.nativeCreateCompanion(primary, slot)
         if (created <= 0L) {
-            message = if (created == -NativeBridge.BUSY.toLong()) "2本目の描画処理がまだ回収中です。"
-                else "2本目のウィンドウの準備に失敗しました。接続と回収の状態を確認してください。"
+            message = if (created == -NativeBridge.BUSY.toLong()) "追加アプリの描画処理がまだ回収中です。"
+                else "追加アプリのウィンドウの準備に失敗しました。接続と回収の状態を確認してください。"
             return false
         }
         handle = created
@@ -87,7 +89,7 @@ internal class CompanionLinuxSession(
         pending = true
         lastRejection = null
         deadline = SystemClock.elapsedRealtime() + 30_000
-        message = if (app == null) "2本目のアプリの回収を確認中" else "2本目のアプリを準備中"
+        message = if (app == null) "追加アプリの回収を確認中" else "追加アプリを準備中"
         if (scene > 0) sceneCommand("scene_ready", "scene", scene.toString())
         sceneCommand("set_xr_state", "state", xr, scene)
         sceneCommand("set_activity_state", "visible", visible, scene)
@@ -110,7 +112,7 @@ internal class CompanionLinuxSession(
     }
 
     fun retryRecovery() {
-        recoveryTried = false
+        recoveryRetry.reset()
         deadline = SystemClock.elapsedRealtime() + 30_000
     }
 
@@ -138,18 +140,19 @@ internal class CompanionLinuxSession(
                     val supplied = provide(current, it, event)
                     credentials?.close()
                     credentials = null
-                    if (!supplied) fail("2本目の SSH 認証要求と保存済みの鍵を照合できませんでした。")
+                    if (!supplied) fail("追加アプリの SSH 認証要求と保存済みの鍵を照合できませんでした。")
                 }
                 "command_complete" -> request?.takeIf { id == it.id }?.let { queued ->
                     request = null
                     val code = event.getString("code")
-                    if (code != "ACCEPTED" && !stopping) {
+                    if (code != "ACCEPTED" && !stopping &&
+                        snapshot?.optJSONObject("transport")?.optBoolean("desktop_pending") != true) {
                         lastRejection = "${queued.type}:$code"
                         fail(when (queued.type) {
-                            "connect" -> "2本目の SSH 接続を開始できませんでした。"
-                            "linux_desktop_v3_inspect" -> "2本目のアプリ一覧の取得を開始できませんでした。"
-                            "linux_desktop_v3_launch" -> "2本目のアプリの起動を受け付けられませんでした。"
-                            else -> "2本目の回収を確認できませんでした。"
+                            "connect" -> "追加アプリの SSH 接続を開始できませんでした。"
+                            "linux_desktop_v3_inspect" -> "追加アプリ一覧の取得を開始できませんでした。"
+                            "linux_desktop_v3_launch" -> "追加アプリの起動を受け付けられませんでした。"
+                            else -> "追加アプリの回収を確認できませんでした。"
                         })
                     }
                 }
@@ -178,7 +181,7 @@ internal class CompanionLinuxSession(
                 wasRunning = false
                 stopping = false
                 launchSent = false
-                recoveryTried = false
+                recoveryRetry.reset()
                 pending = false
             }
             return
@@ -188,13 +191,13 @@ internal class CompanionLinuxSession(
         val status = LinuxDesktopV3Status.observe(current, session, runtime)
         if (status.ready && !stopping) {
             if (!wasRunning) message = null
-            if (browsing && !wasRunning) shelf = shelf.copy(busy = false, running = true, message = "起動しました", entries = shelf.entries.map { it.copy(available = false) })
+            if (browsing && !wasRunning) shelf = shelf.copy(busy = false, running = true, message = "起動しました")
             wasRunning = true
             pending = false
         }
         if (pending && SystemClock.elapsedRealtime() >= deadline) {
             request = null
-            fail("2本目のアプリの起動を期限内に確認できませんでした。")
+            fail("追加アプリの起動を期限内に確認できませんでした。")
         }
         if (request != null || runtime.optString("state") == "Starting") return
         val phase = transport.optString("state")
@@ -207,21 +210,21 @@ internal class CompanionLinuxSession(
                     ?: LinuxDesktopMessages.error(transport.optString("error"))
                 if (failure != null) fail(failure)
             }
-            if (recoveryTried) return
+            stop()
+            val now = SystemClock.elapsedRealtime()
             when {
-                reclamation?.optBoolean("recovery_command_allowed") == true -> {
+                reclamation?.optBoolean("recovery_command_allowed") == true && recoveryRetry.admit(false, now) -> {
                     command("linux_desktop_v3_recover", JSONObject().put("session", session))
-                    recoveryTried = request != null
                 }
-                reclamation?.optBoolean("recovery_connect_allowed") == true -> connect()
+                reclamation?.optBoolean("recovery_connect_allowed") == true && recoveryRetry.admit(true, now) -> connect()
                 transport.optBoolean("desktop_reboot_needed") -> {
                     pending = false
-                    message = "2本目の回収は Quest の再起動後に続きます。"
+                    message = "追加アプリの回収は Quest の再起動後に続きます。"
                 }
             }
             return
         }
-        if (wasRunning && !status.ready && owned == 0) stopping = true
+        if (launchSent && !status.ready && (owned == 0 || transport.optJSONObject("desktop_v3_transport")?.optBoolean("terminal_observed") == true)) stop()
         if (stopping || !browsing && selection == null && !launchSent) {
             if (stopping && owned == 1) {
                 if (session.toLongOrNull() != null) command("disconnect", JSONObject().put("session", session))
@@ -235,7 +238,7 @@ internal class CompanionLinuxSession(
         when (phase) {
             "Idle", "Disconnected", "Failed" -> {
                 if (initialConnectSent) fail(LinuxDesktopMessages.error(transport.optString("error"))
-                    ?: "2本目の接続が終了しました。")
+                    ?: "追加アプリの接続が終了しました。")
                 else initialConnectSent = connect()
             }
             "ProbeReady" -> if (!inspectSent) {
@@ -287,7 +290,7 @@ internal class CompanionLinuxSession(
         val app = selection ?: return
         val value = readCatalog(runtime, session) ?: return
         if (!value.accepts(runtime, session, capture, value.revision, app)) {
-            fail("2本目の接続で対象アプリの起動条件を確認できませんでした。")
+            fail("追加アプリの接続で対象アプリの起動条件を確認できませんでした。")
             return
         }
         val id = nextRequest()
@@ -300,7 +303,7 @@ internal class CompanionLinuxSession(
         }
     }
 
-    private fun fail(reason: String = "2本目の起動または回収を確認できません。") {
+    private fun fail(reason: String = "追加アプリの起動または回収を確認できません。") {
         if (!stopping) message = reason
         if (browsing) shelf = shelf.copy(busy = false, firstFailure = "NOT_READY", message = reason, menuRefreshFailed = true)
         pending = false

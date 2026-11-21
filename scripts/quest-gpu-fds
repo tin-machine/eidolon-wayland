@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""debug APKでSDKなし/空SDK sceneのGPU FD比較。対象アプリを再起動する。"""
+"""debug APKでSDKなし/空SDK sceneのGPU FD比較。Quest 開発 preflight で装着・スリープ状態を準備してから実行する。対象アプリを再起動する。"""
 import argparse
 import datetime
 import json
@@ -31,7 +31,6 @@ instrument = None
 instrument_log = None
 app_log = None
 log_stream = None
-prox = False
 started = False
 try:
     result['device'] = device.validate()
@@ -40,17 +39,22 @@ try:
     live = device.adb('shell', 'pidof ' + PACKAGE + ' || true').strip()
     if live:
         raw = json.loads(device.adb('exec-out', 'run-as', PACKAGE, 'cat', 'no_backup/diagnostics/latest.json'))
-        if str(raw.get('process_id')) == live:
-            state = raw.get('runtime', {}).get('runtime', {})
-            if state.get('transport', {}).get('owned_connections', 0) or (state.get('app') or {}).get('state') == 'running':
-                raise RuntimeError('先に製品UIでSSH切断してください')
+        if str(raw.get('process_id')) != live:
+            raise RuntimeError('現在の製品プロセスの診断を確認してください')
+        snapshot = raw['runtime']
+        state = snapshot['runtime']
+        transport = state['transport']
+        reclamation = state['reclamation']
+        if (snapshot['registry']['runtimes'] > 1 or transport['owned_connections'] or
+                transport['state'] not in ('Idle', 'Disconnected') or
+                (state.get('app') or {}).get('state') not in (None, 'stopped') or
+                reclamation['local_cleanup_pending'] or reclamation['remote_cleanup_pending']):
+            raise RuntimeError('先に製品UIでSSH切断し、回収完了を確認してください')
     if args.pause_boundary:
         guardian = device.adb('shell', 'getprop', 'debug.oculus.guardian_pause').strip()
         device.adb('shell', 'setprop', 'debug.oculus.guardian_pause', '1')
     app_log = (run / 'app.log').open('w')
     log_stream = device.start_log(uid, app_log)
-    prox = True
-    device.adb('shell', 'am', 'broadcast', '-a', 'com.oculus.vrpowermanager.prox_close')
     device.adb('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP')
     for mode in ['platform', 'sdk']:
         nonce = secrets.token_hex(16)
@@ -99,7 +103,6 @@ finally:
     actions = [('stop_probe', ('shell', 'am', 'force-stop', PACKAGE))] if started else []
     if guardian is not None:
         actions.append(('restore_guardian', ('shell', shlex.join(['setprop', 'debug.oculus.guardian_pause', guardian]))))
-    if prox: actions.append(('restore_proximity', ('shell', 'am', 'broadcast', '-a', 'com.oculus.vrpowermanager.prox_far')))
     if started: actions.append(('restore_product_ui', ('shell', 'am', 'start', '-W', '-n', PACKAGE + '/.MainActivity')))
     for name, command in actions:
         try:

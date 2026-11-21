@@ -56,7 +56,7 @@ pub struct Controller {
     scene: Option<SceneEpoch>,
     background_command: Option<CommandSeq>,
     applied_background: Option<AppliedBackground>,
-    horizontal_offset: f32,
+    initial_offset: [f32; 2],
 }
 impl Controller {
     pub fn load(root: Option<&Path>) -> Self {
@@ -68,11 +68,11 @@ impl Controller {
             scene: None,
             background_command: None,
             applied_background: None,
-            horizontal_offset: 0.,
+            initial_offset: [0., 0.],
         }
     }
-    pub fn set_horizontal_offset(&mut self, meters: f32) {
-        self.horizontal_offset = meters;
+    pub fn set_initial_offset(&mut self, meters: [f32; 2]) {
+        self.initial_offset = meters;
     }
     pub fn snapshot(&self) -> Report {
         Report {
@@ -190,7 +190,8 @@ impl Controller {
                     let pose = saved.as_ref().map_or_else(
                         || {
                             let mut pose = PanelPose::at_slot(slot);
-                            pose.position_m[0] += self.horizontal_offset;
+                            pose.position_m[0] += self.initial_offset[0];
+                            pose.position_m[1] += self.initial_offset[1];
                             pose
                         },
                         |s| s.pose,

@@ -471,9 +471,14 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeCrea
     _: EnvUnowned<'a>,
     _: JClass<'a>,
     primary: jlong,
+    slot: jint,
 ) -> jlong {
     use std::panic::{AssertUnwindSafe, catch_unwind};
-    match catch_unwind(AssertUnwindSafe(|| global().create_companion(primary))) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        u8::try_from(slot)
+            .map_err(|_| Status::InvalidArgument)
+            .and_then(|number| global().create_companion(primary, number))
+    })) {
         Ok(Ok(handle)) => handle,
         Ok(Err(status)) => -i64::from(status as i32),
         Err(_) => -i64::from(Status::Failed as i32),
@@ -485,9 +490,14 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeCrea
     _: EnvUnowned<'a>,
     _: JClass<'a>,
     primary: jlong,
+    slot: jint,
 ) -> jlong {
     use std::panic::{AssertUnwindSafe, catch_unwind};
-    match catch_unwind(AssertUnwindSafe(|| global().create_termux(primary))) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        u8::try_from(slot)
+            .map_err(|_| Status::InvalidArgument)
+            .and_then(|number| global().create_termux(primary, number))
+    })) {
         Ok(Ok(handle)) => handle,
         Ok(Err(status)) => -i64::from(status as i32),
         Err(_) => -i64::from(Status::Failed as i32),

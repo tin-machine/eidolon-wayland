@@ -67,19 +67,21 @@ impl Executor {
 
     #[cfg(any(target_os = "android", test))]
     pub(crate) fn for_slot(slot: super::ExecutorSlot) -> io::Result<Arc<Self>> {
-        static PRIMARY: std::sync::OnceLock<Mutex<Option<Arc<Executor>>>> =
-            std::sync::OnceLock::new();
-        static COMPANION: std::sync::OnceLock<Mutex<Option<Arc<Executor>>>> =
-            std::sync::OnceLock::new();
-        static TERMUX: std::sync::OnceLock<Mutex<Option<Arc<Executor>>>> =
-            std::sync::OnceLock::new();
-        let executor = match slot {
-            super::ExecutorSlot::Termux => &TERMUX,
-            super::ExecutorSlot::Primary => &PRIMARY,
-            super::ExecutorSlot::Companion => &COMPANION,
+        type Slot = Mutex<Option<Arc<Executor>>>;
+        const COUNT: usize = eidolon_model::limits::LAST_WORKSPACE as usize + 1;
+        static EXECUTORS: std::sync::OnceLock<[Slot; COUNT]> = std::sync::OnceLock::new();
+        let index = match slot {
+            super::ExecutorSlot::Primary => 0,
+            super::ExecutorSlot::Termux => 1,
+            super::ExecutorSlot::Companion(n @ 2..=eidolon_model::limits::LAST_WORKSPACE) => {
+                usize::from(n)
+            }
+            super::ExecutorSlot::Companion(_) => {
+                return Err(io::Error::other("Invalid workspace slot"));
+            }
         };
-        let mut executor = executor
-            .get_or_init(|| Mutex::new(None))
+        let mut executor = EXECUTORS.get_or_init(|| std::array::from_fn(|_| Mutex::new(None)))
+            [index]
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if executor.is_none() {

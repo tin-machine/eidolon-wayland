@@ -215,7 +215,7 @@ import linux_desktop_v3_bundle as validator
 captured = contract.Pins.parse(contract.canonical_json(pins))
 verified_bundle = validator.validate_bundle(home, captured, source_hashes, inventory_raw.encode("utf-8"))
 import eidolon_linux_desktop_session_v3 as helper
-if workspace_slot == 2:
+if workspace_slot > 1:
     raise SystemExit(helper.main(argv, verified_bundle=verified_bundle, source_hashes=source_hashes,
                                  workspace_slot=workspace_slot))
 raise SystemExit(helper.main(argv, verified_bundle=verified_bundle, source_hashes=source_hashes))

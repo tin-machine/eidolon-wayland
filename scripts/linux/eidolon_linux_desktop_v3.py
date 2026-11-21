@@ -17,7 +17,6 @@ import linux_desktop_v3_wire as W
 from eidolon_linux_persistent_profile import JournalBarrier, ProfileIdentity, scan_current_directory, storage_owner
 
 STATE_DIR = ".eidolon-desktop-v3"
-COMPANION_STATE_DIR = ".eidolon-desktop-v3b"
 LEASE_MS = W.LEASE_MS
 LEASE_SECONDS = LEASE_MS / 1000.0
 OUTPUT_RATE_BYTES_PER_SEC = 1024 * 1024
@@ -250,8 +249,8 @@ def _lock_state(state_fd):
 
 
 def workspace_state_dir(slot):
-    require(type(slot) is int and slot in (1, 2))
-    return COMPANION_STATE_DIR if slot == 2 else STATE_DIR
+    require(type(slot) is int and 1 <= slot <= 21)
+    return STATE_DIR if slot == 1 else STATE_DIR + chr(ord("a") + slot - 1)
 
 
 def prepare_session(context, *, workspace_slot=1):

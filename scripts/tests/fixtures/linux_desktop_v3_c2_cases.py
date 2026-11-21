@@ -86,6 +86,34 @@ class RealC2Cases(unittest.TestCase):
     def test_recover_repeated_unknown_boot_preserves_evidence(self):
         self.assert_boot_recovered("-")
 
+    def test_twenty_workspaces_hold_distinct_sessions_and_recover_after_host_restart(self):
+        held, bound = [], []
+        try:
+            for slot in range(1, 21):
+                with mock.patch.object(core, "boot_id", return_value=ORIGIN):
+                    paths, barrier, *fds = core.prepare_session(self.binding.context, workspace_slot=slot)
+                held.extend(fds)
+                barrier.before_acquire()
+                self.assertTrue(W.valid_socket(str(paths.wayland_socket), self.binding.context.record()["nonce"]))
+                bound.append(paths)
+            self.assertEqual(len({p.session for p in bound}), 20)
+            for fd in held:
+                os.close(fd)
+            held.clear()
+            for slot in range(20, 0, -1):
+                with mock.patch.object(core, "boot_id", return_value=CURRENT):
+                    result, status = core.recovery_receipt(self.binding, SOURCES, ORIGIN, workspace_slot=slot)
+                self.assertEqual(status, 0)
+                self.assertEqual(W.parse_receipt(result, self.binding, SOURCES, ORIGIN, status)["process_evidence"], "boot_changed")
+                self.assertFalse(bound[slot - 1].session.exists())
+                if slot > 1:
+                    self.assertTrue(bound[slot - 2].session.exists())
+            with self.assertRaises(core.HelperError):
+                core.workspace_state_dir(22)
+        finally:
+            for fd in held:
+                os.close(fd)
+
     def test_workspace_recovery_completes_in_only_the_matching_slot(self):
         primary, barrier1, *first = self.prepare()
         files = [*first]
