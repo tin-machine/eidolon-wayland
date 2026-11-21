@@ -1304,7 +1304,9 @@ object NativeSessionHost {
         worker.schedule({
             tickQueued.set(false)
             safely { tick() }
-            if (pendingInputFocus != null || imeRawBlocked.get() || settingsSave.active || pendingDisconnect != null)
+            // Input hand-offs have sub-second deadlines. Connection and save recovery
+            // receive native progress and the watchdog even when waiting for user action.
+            if (pendingInputFocus != null || imeRawBlocked.get())
                 requestTick(32)
         }, delayMs, TimeUnit.MILLISECONDS)
     }
