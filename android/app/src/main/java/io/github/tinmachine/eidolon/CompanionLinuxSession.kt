@@ -35,7 +35,8 @@ internal class CompanionLinuxSession(
     private var wasRunning = false
     private var onLaunch: ((Long, String, String) -> Unit)? = null
 
-    val occupiesApp get() = handle != 0L && (!browsing || selection != null || launchSent || stopping)
+    var occupiesApp = false
+        private set
     var browsing = false
         private set
     var shelf = LauncherUi(linux = true)
@@ -43,7 +44,7 @@ internal class CompanionLinuxSession(
     private var shownCatalog: LinuxDesktopV3Catalog? = null
 
     fun browse(primary: Long, profile: ConnectionProfileV2.Value, capture: String, scene: Long, xr: String, visible: Boolean) {
-        if (handle == 0L && !begin(primary, profile, capture, null, scene, xr, visible)) {
+        if (handle == 0L && !begin(primary, profile, capture, null, scene, xr, visible, forBrowsing = true)) {
             shelf = LauncherUi(linux = true, firstFailure = "NOT_READY", message = message ?: "Ubuntu に接続できません")
             return
         }
@@ -63,6 +64,7 @@ internal class CompanionLinuxSession(
         val catalog = shownCatalog ?: return
         if (!browsing || stopping || launchSent || request != null ||
             !catalog.accepts(handle, expected.session, expected.capture, expected.revision, id)) return
+        occupiesApp = true
         selection = id
         pending = true
         deadline = SystemClock.elapsedRealtime() + 30000
@@ -73,6 +75,7 @@ internal class CompanionLinuxSession(
     fun begin(
         primary: Long, profile: ConnectionProfileV2.Value, capture: String, app: String?,
         scene: Long, xr: String, visible: Boolean, launched: ((Long, String, String) -> Unit)? = null,
+        forBrowsing: Boolean = false,
     ): Boolean {
         if (handle != 0L) return false
         val created = NativeBridge.nativeCreateCompanion(primary, slot)
@@ -82,6 +85,7 @@ internal class CompanionLinuxSession(
             return false
         }
         handle = created
+        occupiesApp = !forBrowsing
         this.profile = profile
         this.capture = capture
         selection = app
@@ -166,6 +170,7 @@ internal class CompanionLinuxSession(
                 shownCatalog = null
                 shelf = LauncherUi(linux = true, message = message ?: "Ubuntu は未接続です")
                 handle = 0
+                occupiesApp = false
                 snapshot = null
                 credentials?.close()
                 credentials = null

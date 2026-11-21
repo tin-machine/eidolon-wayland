@@ -6,6 +6,25 @@ homecluster の graph、queue、DB、設定には依存しない。Python 標準
 続報の[監視範囲・所有境界・追加3問](../../docs/development/source-structure/source-structure-watch-ownership-20261115.md)、
 [IME 終了証拠の接続案](../../docs/development/source-structure/source-structure-ime-retirement-contract-20261115.md)も参照する。
 
+## 複数アプリの終了と枠の再利用
+
+同じ CLI の `--scope multi-app-retirement` で[複数アプリの契約索引](multi-app-retirement.json)を選ぶ。従来の設定保存・終了処理は既定の `retirement-settings` で確認する。各 scope はそれぞれのレビュー時点からソースとテストの鮮度を検査する。
+
+Dolphin と KWrite が動いている状態で Dolphin を閉じるときは、Dolphin を起動した runtime に応じて次をたどる。
+
+| どの所有者を確認するか | 起点と確認内容 |
+| --- | --- |
+| Ubuntu のプロセス | `linux.cleanup` からプロセス終了、出力の EOF、同じ枠の回収記録へ。ホスト再起動時は `linux.receipt` で元の記録と起動 ID を照合する。 |
+| Quest の主 runtime | `primary.proof` で対象の終了と回収結果を確認。主 runtime は残りのアプリを管理し続ける。 |
+| Quest の追加 runtime | `app.exit` → `app.stop` → `app.destroy`。JNI と Rust は同じ handle の終了を待ち、`registry.remove` でその番号だけを解放する。KWrite の枠は稼働を続ける。 |
+| ランチャーと Termux | `capacity.rule` はカード表示と起動直前の両方に使う。`termux.destroy` は独立した Termux runtime の終了を扱う。 |
+
+```sh
+python3 scripts/structure.py check --scope multi-app-retirement --profile android-product
+python3 scripts/structure.py slice --scope multi-app-retirement --profile android-product --node app.destroy --hops 2 --max-bytes 32000
+python3 scripts/structure.py slice --scope multi-app-retirement --profile host-model --node registry.remove
+```
+
 ## 使い方
 
 repository root から実行する。サービス接続、ビルド、テスト実行、source 編集は行わない。

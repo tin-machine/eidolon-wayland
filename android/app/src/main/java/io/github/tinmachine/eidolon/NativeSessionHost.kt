@@ -89,10 +89,9 @@ object NativeSessionHost {
     )
     private val launcherPlacements = ConcurrentHashMap<Long, LauncherPlacement>()
     private val placementEpoch = java.util.concurrent.atomic.AtomicLong()
-    internal const val MAX_APPS = 20
-    internal val launcherAppCount = androidx.compose.runtime.mutableIntStateOf(0)
-    private val workspaceSlots = 2..MAX_APPS + 1
-    private val linuxSessions = workspaceSlots.map { number ->
+    internal val launcherCapacity = mutableStateOf(LauncherCapacity())
+    private var publishedCapacity = launcherCapacity.value
+    private val linuxSessions = LauncherCapacity.workspaces.map { number ->
         CompanionLinuxSession(number, { requests.incrementAndGet().toString() }) { runtime, capture, event ->
             runCatching { provideLinuxCredential(runtime, capture, event) == NativeBridge.ACCEPTED }.getOrDefault(false)
         }
@@ -106,38 +105,37 @@ object NativeSessionHost {
             else if (value.firstFailure != null) ui.post { launcherPlacementMessage.value = value.message } },
         { action -> worker.execute(action) })
     private val termuxShelf = termuxSession(0)
-    private val additionalTermux = workspaceSlots.map(::termuxSession)
+    private val additionalTermux = LauncherCapacity.workspaces.map(::termuxSession)
     private var inspectAfterShelfConnect = false
     private var refreshShelfAfterAppExit = false
     private fun hasLinuxCompanion() = linuxSessions.any { it.handle > 0 }
-    private fun freeSlot() = workspaceSlots.firstOrNull { number ->
-        (number != 2 || selectedProfileId == LinuxConnectionProfile.ID) && linuxSessions[number - 2].handle == 0L && additionalTermux[number - 2].handle == 0L
-    }
-    private fun usedAppCount(primary: JSONObject): Int {
-        val app = primary.optJSONObject("app")
-        val main = when {
-            selectedProfileId != LinuxConnectionProfile.ID -> {
-                val windows = app?.optJSONArray("windows")
-                val roots = if (windows == null) 0 else (0 until windows.length()).count { i ->
-                    windows.getJSONObject(i).isNull("parent")
-                }
-                val pendingWindow = terminalAdding?.let { addition ->
-                    windows != null && (0 until windows.length()).all { windows.getJSONObject(it).optString("window") in addition.windows }
-                } == true
-                maxOf(roots, if (termuxShelf.borrowed && termuxShelf.occupiesApp || terminalOpen != null) 1 else 0) +
-                    if (pendingWindow) 1 else 0
-            }
-            app?.optString("state") in setOf("running","starting","stopping") || linuxAction?.kind == "launch" ||
-                primary.optJSONObject("transport")?.optString("state") == "CleanupPending" -> 1
-            else -> 0
+    private fun capacityFor(primary: JSONObject): LauncherCapacity {
+        val ubuntuPrimary = selectedProfileId == LinuxConnectionProfile.ID
+        val state = primary.optJSONObject("app")?.optString("state")
+        val main = if (ubuntuPrimary) {
+            LauncherCapacity.linuxApps(primary, linuxAction?.kind == "launch")
+        } else {
+            val windows = primary.optJSONObject("app")?.optJSONArray("windows")
+            LauncherCapacity.terminalApps(windows, terminalOpen != null || termuxShelf.borrowed && termuxShelf.occupiesApp ||
+                LauncherCapacity.appOccupiesRuntime(primary), terminalAdding?.windows)
         }
-        return main + linuxSessions.count { it.occupiesApp } + additionalTermux.count { it.handle > 0 } +
-            if (!termuxShelf.borrowed && termuxShelf.occupiesApp) 1 else 0
+        val ubuntuNeedsWorkspace = if (ubuntuPrimary) linuxV3Active() && state == "running" else companionLinux.occupiesApp
+        return LauncherCapacity.observe(main, !termuxShelf.borrowed && termuxShelf.occupiesApp,
+            ubuntuPrimary, ubuntuNeedsWorkspace, termuxShelf.occupiesApp) { number ->
+            val linux = linuxSessions[number - 2]
+            when {
+                linux.occupiesApp || additionalTermux[number - 2].handle != 0L -> LauncherCapacity.Workspace.APP
+                linux.handle != 0L -> LauncherCapacity.Workspace.BROWSING
+                else -> LauncherCapacity.Workspace.FREE
+            }
+        }
     }
-    private fun hasLaunchCapacity(primary: JSONObject): Boolean {
-        if (usedAppCount(primary) < MAX_APPS) return true
-        ui.post { launcherPlacementMessage.value = "同時起動は20アプリまでです。アプリを閉じてください。" }
-        return false
+
+    private fun admitLaunch(primary: JSONObject, source: LauncherSource? = null): LauncherCapacity? {
+        val capacity = capacityFor(primary)
+        val reason = capacity.refusal(source) ?: return capacity
+        ui.post { launcherPlacementMessage.value = reason }
+        return null
     }
     internal fun termuxRuntime(): Long = termuxShelf.handle.takeUnless { it == handle } ?: 0L
     internal fun otherWorkspaceRuntimes() = (linuxSessions.map { it.handle } +
@@ -184,20 +182,21 @@ object NativeSessionHost {
     }
     internal fun launchShelfApp(source: LauncherSource, state: LauncherUi, entry: LauncherEntry) {
         if (source == LauncherSource.TERMUX) productWorker.execute { safely {
-            if (handle == 0L || !runtimeAdmission.open() || !termuxShelf.accepts(state, entry.id) ||
-                !hasLaunchCapacity(snapshot().getJSONObject("runtime"))) return@safely
+            if (handle == 0L || !runtimeAdmission.open() || !termuxShelf.accepts(state, entry.id)) return@safely
+            val capacity = admitLaunch(snapshot().getJSONObject("runtime"), source) ?: return@safely
             if (termuxShelf.occupiesApp) {
-                val number = freeSlot() ?: return@safely
+                val number = capacity.nextWorkspace ?: return@safely
                 additionalTermux[number - 2].openApp(handle, state, entry.id, currentSceneEpoch(), xrState.get(), activityVisible.get())
             } else termuxShelf.launch(state, entry.id)
         } }
         else if (state.runtime != 0L && state.runtime == companionLinux.handle)
             productWorker.execute { safely {
-                if (handle == 0L || !runtimeAdmission.open() || !hasLaunchCapacity(snapshot().getJSONObject("runtime"))) return@safely
+                if (handle == 0L || !runtimeAdmission.open()) return@safely
+                val capacity = admitLaunch(snapshot().getJSONObject("runtime"), source) ?: return@safely
                 if (!companionLinux.occupiesApp) companionLinux.selectApp(state, entry.id)
                 else if (state.session == companionLinux.shelf.session && state.revision == companionLinux.shelf.revision &&
                     state.capture == runtimeSettingsCapture && companionLinux.shelf.entries.any { it.id == entry.id && it.available }) {
-                    val number = freeSlot() ?: return@safely
+                    val number = capacity.nextWorkspace ?: return@safely
                     linuxSessions[number - 2].begin(handle, linuxProfile ?: return@safely, state.capture, entry.id,
                         currentSceneEpoch(), xrState.get(), activityVisible.get())
                 }
@@ -420,8 +419,11 @@ object NativeSessionHost {
         } else launcherUpdate(launcherState.copy(message="操作を開始できません（$code）"))
     }
     private fun pumpCatalog(runtime: JSONObject) {
-        val appCount = usedAppCount(runtime)
-        if (appCount != launcherAppCount.intValue) ui.post { launcherAppCount.intValue = appCount }
+        val capacity = capacityFor(runtime)
+        if (publishedCapacity != capacity) {
+            publishedCapacity = capacity
+            ui.post { launcherCapacity.value = capacity }
+        }
         if(!runtimeAdmission.open()) return // Preserve the saving/recovery UI and do not queue automatic catalog work.
         if(selectedProfileId==LinuxConnectionProfile.ID) { pumpLinuxCatalog(runtime); return }
         val transport=runtime.getJSONObject("transport")
@@ -548,7 +550,7 @@ object NativeSessionHost {
         productWorker.execute { safely {
             if(handle==0L || selectedProfileId!="termux-local" || terminalAdding!=null || terminalOpen!=null || pendingDisconnect!=null) return@safely
             val runtime=snapshot().getJSONObject("runtime");val app=runtime.optJSONObject("app")
-            if (!hasLaunchCapacity(runtime)) return@safely
+            admitLaunch(runtime) ?: return@safely
             if(app?.optString("session")!=expectedSession || runtime.getJSONObject("transport").optString("session")!=expectedSession ||
                 app.optString("state")!="running" || app.optString("mode")!="foot") {
                 launcherUpdate(launcherState.copy(message="接続後に一覧を再読込してください"));return@safely
@@ -937,6 +939,9 @@ object NativeSessionHost {
         }
         val catalog=linuxCatalog
         val runtime=snapshot().getJSONObject("runtime");val transport=runtime.getJSONObject("transport")
+        if (admitLaunch(runtime, LauncherSource.UBUNTU) == null) {
+            requested?.invoke("", NativeBridge.NOT_READY); return@safely
+        }
         if(catalog?.accepts(session,revision,id)!=true || transport.optString("session")!=session ||
             transport.optString("profile_id")!=LinuxConnectionProfile.ID || transport.optString("state")!="DesktopReady" ||
             (runtime.optJSONObject("app")?.optString("state") ?: "stopped")!="stopped") {
@@ -1054,8 +1059,8 @@ object NativeSessionHost {
         if (placement != null && (placementScene != currentSceneEpoch() || xrState.get() != "FOCUSED" ||
                 placementEpochAtClick != placementEpoch.get())) return@safely
         val catalog=linuxV3Catalog
-        val primarySnapshot = snapshot().optJSONObject("runtime")
-        if (primarySnapshot == null || !hasLaunchCapacity(primarySnapshot)) return@safely
+        val primarySnapshot = snapshot().optJSONObject("runtime") ?: return@safely
+        val capacity = admitLaunch(primarySnapshot, LauncherSource.UBUNTU) ?: return@safely
         val liveApp = primarySnapshot.optJSONObject("app")?.optString("state") == "running"
         if (liveApp && handle == expectedRuntime && selectedProfileId == LinuxConnectionProfile.ID &&
             linuxV3Active() && pendingDisconnect == null && linuxAction == null &&
@@ -1069,7 +1074,7 @@ object NativeSessionHost {
                         SystemClock.elapsedRealtime() + 30_000, placementEpochAtClick))
                 }
             }
-            val number = freeSlot() ?: return@safely
+            val number = capacity.nextWorkspace ?: return@safely
             if (linuxSessions[number - 2].begin(handle, profile, capture, id, currentSceneEpoch(), xrState.get(),
                     activityVisible.get(), launched)) releasePanelTextFocus()
             else linuxMessage = "追加アプリの起動枠を準備できません。"
@@ -1269,7 +1274,7 @@ object NativeSessionHost {
         val eligible = if (available) selection?.entries?.filter { it.available }?.mapTo(mutableSetOf()) { it.id }
             else null
         val installed = linuxPreviewEntries ?: selection?.entries.orEmpty().filter { it.desktopId != null }
-        val canLaunchCompanion = appActive && view.ready && configured && !busy && freeSlot() != null && usedAppCount(runtime) < MAX_APPS
+        val canLaunchCompanion = appActive && view.ready && configured && !busy && capacityFor(runtime).nextWorkspace != null
         val rows = (selection?.entries.orEmpty().filter { it.desktopId == null } + installed)
             .map { it.copy(available = eligible?.contains(it.id) == true || canLaunchCompanion && it.error == null) }
         val value=LauncherUi(session=session,connected=selection!=null || canLaunchCompanion,busy=busy,revision=selection?.revision ?: "",
@@ -1429,7 +1434,7 @@ object NativeSessionHost {
         releasePanelTextFocus()
         if (handle == 0L || selectedProfileId!="termux-local" || terminalOpen != null || pendingDisconnect != null || connectPending) return@safely
         val runtime = snapshot().getJSONObject("runtime")
-        if (!hasLaunchCapacity(runtime)) return@safely
+        admitLaunch(runtime) ?: return@safely
         val transport = runtime.getJSONObject("transport")
         val app = runtime.optJSONObject("app")
         if (app != null && app.optString("session") == transport.optString("session") && app.isNull("error") && app.optString("state") != "stopped") {

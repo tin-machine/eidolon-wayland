@@ -342,6 +342,56 @@ mod tests {
         assert_eq!(registry.request_stop(0), Status::InvalidArgument);
     }
     #[test]
+    fn destroying_one_numbered_runtime_preserves_peer_and_allows_slot_reuse() {
+        let root = std::env::temp_dir().join(format!(
+            "eidolon-registry-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap();
+        let registry = Registry::default();
+        let config = json!({
+            "schema":1, "installation":"a".repeat(32),
+            "paths":{"native_library_dir":root,"files_dir":root},
+            "profiles":[{"schema":1,"profile_id":"termux-local","installation":"a".repeat(32),
+                         "username":"fixture","host_key":"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH"}]
+        });
+        let primary = registry.create(&config.to_string()).unwrap();
+        let first = registry.create_termux(primary, 2).unwrap();
+        let peer = registry.create_termux(primary, 3).unwrap();
+        let stop_and_destroy = |id| {
+            assert_eq!(registry.request_stop(id), Status::Accepted);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match registry.destroy(id) {
+                    Status::Accepted => break,
+                    Status::Busy if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(1))
+                    }
+                    other => panic!("unexpected destroy status {other:?}"),
+                }
+            }
+        };
+        assert_eq!(registry.destroy(first), Status::Busy);
+        assert_eq!(registry.create_termux(primary, 2), Err(Status::Busy));
+        stop_and_destroy(first);
+        assert_eq!(registry.snapshot(peer)["code"], 0);
+        assert_eq!(registry.create_termux(primary, 3), Err(Status::Busy));
+        let next = registry.create_termux(primary, 2).unwrap();
+        assert_ne!(first, next);
+        assert_eq!(registry.destroy(first), Status::Stale);
+        stop_and_destroy(next);
+        stop_and_destroy(peer);
+        stop_and_destroy(primary);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn storage_receipt_requires_the_last_live_snapshot_and_actual_destroy_result() {
         let registry = Registry::default();
         let id = registry.create(r#"{"schema":1}"#).unwrap();

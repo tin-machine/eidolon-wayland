@@ -203,6 +203,20 @@ class StructureTests(unittest.TestCase):
         with self.assertRaisesRegex(structure.StructureError, "symlink"):
             self.build()
 
+    def test_multi_app_scope_is_independent_and_cannot_reuse_the_settings_artifact(self):
+        other = {**self.registry, "scope": "multi-app-retirement"}
+        self.write(structure.SCOPES["multi-app-retirement"], json.dumps(other))
+        cli = ["python3", str(REPO / "scripts/structure.py"), "--root", str(self.root)]
+        args = ["--scope", "multi-app-retirement", "--profile", "host-model"]
+        graph = json.loads(subprocess.check_output([*cli, "build", *args]))
+        self.assertEqual(graph["scope"], "multi-app-retirement")
+        self.assertEqual(graph["status"], "ok")
+        artifact = self.root / "settings-graph.json"
+        artifact.write_bytes(structure.encoded(self.build("host-model")))
+        result = subprocess.run([*cli, "verify", *args, str(artifact)], capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("stale or modified", json.loads(result.stderr)["message"])
+
     def test_cli_unknown_profile_is_nonzero_and_has_no_artifact(self):
         result = subprocess.run(["python3", str(REPO / "scripts/structure.py"), "--root", str(self.root),
                                  "build", "--profile", "typo"], capture_output=True)
