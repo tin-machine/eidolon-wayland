@@ -36,7 +36,8 @@ internal class TermuxShelfSession(
     }
     private var queuedApp: Pair<String, String>? = null
     private var presentedApp = false
-    val occupiesApp get() = handle != 0L && (slot > 0 || presentedApp || launchRequest != null ||
+    private var stoppingApp = false
+    val occupiesApp get() = handle != 0L && (slot > 0 || stoppingApp || presentedApp || launchRequest != null ||
         snapshot?.optJSONObject("app")?.optString("state") in setOf("running", "starting", "stopping"))
     fun accepts(expected: LauncherUi, id: String) = expected.runtime == handle && expected.session == view.session &&
         expected.revision == view.revision && view.connected && !view.busy && !view.menuRefreshFailed && view.entries.any { it.id == id && it.available }
@@ -112,6 +113,7 @@ internal class TermuxShelfSession(
         if (handle == 0L) return
         helper?.let(TermuxStarter::cancel)
         helper = null
+        stoppingApp = occupiesApp
         stopping = true
         wantMenu = false
         request = null
@@ -238,7 +240,7 @@ internal class TermuxShelfSession(
 
     private fun clear() {
         queuedApp = null; presentedApp = false; launchRequest = null; wantMenu = false; request = null
-        handle = 0; borrowed = false; snapshot = null; retiring = false; stopping = false
+        handle = 0; stoppingApp = false; borrowed = false; snapshot = null; retiring = false; stopping = false
         connectSent = null; update(LauncherUi(message = "Termux は未接続です"))
     }
 }
