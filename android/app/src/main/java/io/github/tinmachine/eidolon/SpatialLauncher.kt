@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.os.Trace
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.FlowRow
@@ -158,7 +159,7 @@ internal class SpatialLauncher(
                     if (shelfWasGrabbed && !grabbed) finishShelfMove()
                     shelfWasGrabbed = grabbed
                 }
-                updateWrist()
+                traceWrist("Eidolon.wrist.update") { updateWrist() }
                 reportedInputError = false
             } catch (e: RuntimeException) {
                 if (!reportedInputError) android.util.Log.w("EidolonWrist", e.javaClass.simpleName)
@@ -166,7 +167,8 @@ internal class SpatialLauncher(
                 wristStatus.value = "手首の入力を確認できません"
                 runCatching { resetWrist() }
             }
-            handler.postDelayed(this, 25)
+            val searching = actualInput == null && placement.value == null && !movingShelf.value && !shelfAnchor.busy
+            handler.postDelayed(this, if (searching) 75L else 25L)
         }
     }
 
@@ -562,28 +564,35 @@ internal class SpatialLauncher(
         return if (norm in .9f..1.1f) Pose(pose.t, pose.q.normalize()) else null
     }
 
+    private inline fun <T> traceWrist(section: String, block: () -> T): T {
+        if (!Trace.isEnabled()) return block()
+        Trace.beginSection(section)
+        return try { block() } finally { Trace.endSection() }
+    }
+
     private fun updateWrist() {
         val sdk = scene ?: return
-        val view = viewer() ?: run { resetWrist(); return }
         val menuSide = side.value
         val selectedInput = input.value
-        val canSampleHands = selectedInput in setOf(WristInput.AUTO, WristInput.HANDS) &&
-            "XR_FB_hand_tracking_aim" in handsExtensions() && "XR_EXT_hand_tracking" in handsExtensions()
-        val pair = if (canSampleHands) hands.sample(sdk, "XR_EXT_hand_tracking_data_source" in handsExtensions()) else null
-        val supportHand = pair?.get(menuSide)
-        val selectHand = pair?.get(menuSide.opposite)
-        val supportController = if (selectedInput in setOf(WristInput.AUTO, WristInput.CONTROLLERS) ||
-            selectedInput == WristInput.OFF && placement.value != null)
-            controller(menuSide.left) else null
-        val selectController = if (supportController != null) controller(menuSide.opposite.left) else null
-        val handReady = supportHand != null && selectHand?.aim != null
-        val controllerReady = supportController != null && selectController != null
-        val next = when {
-            actualInput == WristInput.HANDS && handReady -> WristInput.HANDS
-            actualInput == WristInput.CONTROLLERS && controllerReady -> WristInput.CONTROLLERS
-            controllerReady -> WristInput.CONTROLLERS
-            handReady -> WristInput.HANDS
-            else -> null
+        val extensions = handsExtensions()
+        val canSampleHands = "XR_FB_hand_tracking_aim" in extensions && "XR_EXT_hand_tracking" in extensions
+        // With the wrist off, the shelf can still provide a controller placement handle.
+        val mode = if (selectedInput == WristInput.OFF && placement.value != null) WristInput.CONTROLLERS else selectedInput
+        var handPair: WristHandTracking.Pair? = null
+        var supportController: Pose? = null
+        val next = selectTrackedWristInput(mode, actualInput) { source ->
+            if (source == WristInput.CONTROLLERS) {
+                traceWrist("Eidolon.wrist.controllers") {
+                    supportController = controller(menuSide.left)
+                    supportController != null && controller(menuSide.opposite.left) != null
+                }
+            } else {
+                canSampleHands && traceWrist("Eidolon.wrist.hands") {
+                    val pair = hands.sample(sdk, "XR_EXT_hand_tracking_data_source" in extensions)
+                    handPair = pair
+                    pair.get(menuSide) != null && pair.get(menuSide.opposite)?.aim != null
+                }
+            }
         }
         if (next != actualInput) {
             if (handleOrigin != null || handDragOrigin != null) cancelAppPlacement()
@@ -599,8 +608,9 @@ internal class SpatialLauncher(
             else -> "両手を追跡できる位置で呼び出してください"
         }
         if (next == null) return
+        val view = viewer() ?: run { resetWrist(); return }
         val handMode = next == WristInput.HANDS
-        val support = if (handMode) checkNotNull(supportHand).palm else checkNotNull(supportController)
+        val support = if (handMode) checkNotNull(handPair?.get(menuSide)).palm else checkNotNull(supportController)
         val relativeUp = if (handMode) Vector3(0f, -1f, 0f) else configuredUp() ?: Vector3(0f, 1f, 0f)
         val trackedPosition = support.t + Vector3(0f, .14f, .025f)
         val menuPose = Pose(trackedPosition, view.q)
@@ -633,7 +643,7 @@ internal class SpatialLauncher(
         if (home != null) updateHandle(home, handMode)
         else clearHandle()
         if (handMode) {
-            val hand = checkNotNull(selectHand)
+            val hand = checkNotNull(handPair?.get(menuSide.opposite))
             updateHandInput(sdk, checkNotNull(hand.aim), hand.pinching, view)
         }
     }
@@ -715,7 +725,8 @@ internal class SpatialLauncher(
     private fun updateHandInput(sdk: Scene, aim: Pose, pinching: Boolean, view: Pose) {
         val ownsPinch = press.held || handDragOrigin != null
         if (ownsPinch) WristInputOwnership.handTailUntil = SystemClock.elapsedRealtime() + 100L
-        val hit = sdk.lineSegmentIntersect(aim.t, aim * Vector3(0f, 0f, 8f))
+        // A pinch that began while the menu was hidden still has to reach neutral.
+        val hit = if (wrist != null || handle != null) sdk.lineSegmentIntersect(aim.t, aim * Vector3(0f, 0f, 8f)) else null
         val target = if (wrist?.id != null && wrist?.id == hit?.entity?.id) hit?.point?.let(::targetAt) else null
         hover.value = target
         if (pinching && !handPinching && handNeutral) {
