@@ -183,7 +183,7 @@ pub async fn serve<H: client::Handler>(
                 binding,
                 request.capture.evidence(),
                 cancel.clone(),
-                request.files.ends_with("eidolon-workspace-2"),
+                eidolon_model::limits::workspace_number(request.files),
                 || {
                     report.transport.journal_pending = true;
                     journal = Some(Journal::reserve_inspection(request.files, binding, request.android_boot_count)?);
@@ -208,11 +208,7 @@ pub async fn serve<H: client::Handler>(
         if active.phase() != Phase::Prepared {
             return Err("DESKTOP_CATALOG_UNAVAILABLE");
         }
-        let state_dir = if request.files.ends_with("eidolon-workspace-2") {
-            ".eidolon-desktop-v3b"
-        } else {
-            ".eidolon-desktop-v3"
-        };
+        let state_dir = eidolon_model::limits::remote_workspace_dir(eidolon_model::limits::workspace_number(request.files));
         let socket_suffix = format!("/{state_dir}/s-{}/p", binding.nonce());
         if active.remote_socket().is_none_or(|path| !path.ends_with(&socket_suffix)) {
             return Err("DESKTOP_V3_PROTOCOL_INVALID");

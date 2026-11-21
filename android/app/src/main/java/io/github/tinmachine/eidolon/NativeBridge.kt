@@ -22,8 +22,8 @@ object NativeBridge {
     @JvmStatic external fun nativeBuildInfo(): String
     @JvmStatic external fun nativeCreate(configJson: String): Long
     /** 正のハンドル、または負のStatusコード。 */
-    @JvmStatic external fun nativeCreateCompanion(primary: Long): Long
-    @JvmStatic external fun nativeCreateTermux(primary: Long): Long
+    @JvmStatic external fun nativeCreateCompanion(primary: Long, slot: Int): Long
+    @JvmStatic external fun nativeCreateTermux(primary: Long, slot: Int): Long
     @JvmStatic external fun nativeCommand(handle: Long, commandJson: String): Int
     @JvmStatic external fun nativeGenerateIdentity(): ByteArray
     @JvmStatic external fun nativePublicKey(privateKey: ByteArray): String

@@ -18,7 +18,7 @@ struct Entries {
     runtimes: HashMap<i64, Arc<Runtime>>,
     primary: Option<(i64, RuntimeConfig)>,
     termux: Option<i64>,
-    companion: Option<i64>,
+    companions: HashMap<u8, i64>,
 }
 pub struct Registry(Mutex<Entries>);
 impl Default for Registry {
@@ -28,7 +28,7 @@ impl Default for Registry {
             runtimes: HashMap::new(),
             primary: None,
             termux: None,
-            companion: None,
+            companions: HashMap::new(),
         }))
     }
 }
@@ -44,9 +44,12 @@ impl Registry {
         Ok(id)
     }
 
-    pub fn create_companion(&self, primary: i64) -> Result<i64, Status> {
+    pub fn create_companion(&self, primary: i64, number: u8) -> Result<i64, Status> {
         let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if entries.companion.is_some() {
+        if !(2..=eidolon_model::limits::LAST_WORKSPACE).contains(&number) {
+            return Err(Status::InvalidArgument);
+        }
+        if entries.companions.contains_key(&number) {
             return Err(Status::Busy);
         }
         let (id, config) = entries.primary.as_ref().ok_or(Status::NotReady)?;
@@ -62,10 +65,11 @@ impl Registry {
                 .as_bytes(),
         )
         .map_err(|_| Status::InvalidArgument)?;
+        let workspace = format!("eidolon-workspace-{number}");
         let mut record = binding.record();
         let storage = &mut record["storage"];
         let derived = digest(&json!({
-            "domain": "eidolon-workspace-2",
+            "domain": workspace,
             "installation": storage["installation_id"],
             "profile_storage": storage["profile_storage_id"],
         }))
@@ -78,15 +82,18 @@ impl Registry {
         config.debug_probe_profile_v2 = None;
         config.debug_linux_shm_pins = None;
         config.debug_linux_gtk_pins = None;
-        Self::isolate_paths(&mut config, "eidolon-workspace-2")?;
+        Self::isolate_paths(&mut config, &workspace)?;
         let handle = Self::insert(&mut entries, config, Runtime::start_companion_registered)?;
-        entries.companion = Some(handle);
+        entries.companions.insert(number, handle);
         Ok(handle)
     }
 
-    pub fn create_termux(&self, primary: i64) -> Result<i64, Status> {
+    pub fn create_termux(&self, primary: i64, number: u8) -> Result<i64, Status> {
         let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if entries.termux.is_some() {
+        if number != 0 && !(2..=eidolon_model::limits::LAST_WORKSPACE).contains(&number) {
+            return Err(Status::InvalidArgument);
+        }
+        if (number == 0 && entries.termux.is_some()) || entries.companions.contains_key(&number) {
             return Err(Status::Busy);
         }
         let (id, config) = entries.primary.as_ref().ok_or(Status::NotReady)?;
@@ -104,9 +111,17 @@ impl Registry {
         config.debug_probe_profile_v2 = None;
         config.debug_linux_shm_pins = None;
         config.debug_linux_gtk_pins = None;
-        Self::isolate_paths(&mut config, "eidolon-termux")?;
-        let handle = Self::insert(&mut entries, config, Runtime::start_termux_registered)?;
-        entries.termux = Some(handle);
+        let handle = if number == 0 {
+            Self::isolate_paths(&mut config, "eidolon-termux")?;
+            let handle = Self::insert(&mut entries, config, Runtime::start_termux_registered)?;
+            entries.termux = Some(handle);
+            handle
+        } else {
+            Self::isolate_paths(&mut config, &format!("eidolon-workspace-{number}"))?;
+            let handle = Self::insert(&mut entries, config, Runtime::start_companion_registered)?;
+            entries.companions.insert(number, handle);
+            handle
+        };
         Ok(handle)
     }
 
@@ -203,9 +218,7 @@ impl Registry {
             if entries.termux == Some(id) {
                 entries.termux = None;
             }
-            if entries.companion == Some(id) {
-                entries.companion = None;
-            }
+            entries.companions.retain(|_, handle| *handle != id);
             if is_primary {
                 entries.primary = None;
             }

@@ -15,6 +15,12 @@ data class LinuxDesktopV3View(
 object LinuxDesktopV3Status {
     fun observe(runtime: Long, session: String, snapshot: JSONObject, previousFirstFailure: String? = null): LinuxDesktopV3View {
         val transport = snapshot.optJSONObject("transport")
+        val retired = snapshot.optJSONObject("reclamation")
+        if (transport?.optString("state") == "Disconnected" && transport.opt("desktop_pending") == false &&
+            retired?.opt("runtime") == runtime.toString() && retired.opt("origin_retired") == true &&
+            retired.opt("local_cleanup_pending") == false && retired.opt("remote_cleanup_pending") == false) {
+            return LinuxDesktopV3View("retired", "アプリと接続の終了を確認しました")
+        }
         val report = transport?.optJSONObject("desktop_v3_transport")?.takeIf {
             runtime > 0 && LinuxDesktopV3Catalog.positiveDecimal(session) &&
                 transport.opt("session") == session && it.opt("session") == session &&
@@ -46,7 +52,7 @@ object LinuxDesktopV3Status {
             "awaiting_main" -> "対象アプリのメインウィンドウを待っています"
             "awaiting_sdk" -> "ウィンドウの表示準備中です。SDKと描画の確認を待っています"
             "stopping" -> "アプリと転送処理を停止しています"
-            "pending" -> "前回の回収が未完了です。利用可能な回収操作を確認してください"
+            "pending" -> "終了処理中です。接続先が応答すると自動で回収を続けます"
             else -> if (transportPhase == "catalog") "固定アプリを確認しました。選択すると起動します"
                 else "接続先の固定アプリ一覧を確認してください"
         }, first, cleanup)

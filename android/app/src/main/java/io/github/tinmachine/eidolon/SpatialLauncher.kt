@@ -73,6 +73,7 @@ internal class SpatialLauncher(
     private val preset = mutableStateOf(LauncherPreset.entries.firstOrNull {
         it.name == preferences.getString("preset", null)
     } ?: LauncherPreset.SUMMON)
+    private var shelfWasGrabbed = false
     private val movingShelf = mutableStateOf(false)
     private var scene: Scene? = null
     private val visibility = WristVisibility()
@@ -152,6 +153,11 @@ internal class SpatialLauncher(
                     explicitlyPinned = true
                     showShelf(restored)
                 } }
+                if (movingShelf.value) {
+                    val grabbed = shelf?.getComponent<Grabbable>()?.isGrabbed == true
+                    if (shelfWasGrabbed && !grabbed) finishShelfMove()
+                    shelfWasGrabbed = grabbed
+                }
                 updateWrist()
                 reportedInputError = false
             } catch (e: RuntimeException) {
@@ -184,12 +190,6 @@ internal class SpatialLauncher(
                                 } else {
                                     if (movingShelf.value) finishShelfMove()
                                     shelf?.let { shelfAnchor.save(getAbsoluteTransform(it)) }
-                                }
-                            },
-                            dragTitle = { dx, dy ->
-                                if (!shelfAnchor.fixed.value && !shelfAnchor.busy) shelf?.let { panel ->
-                                    val moved = getAbsoluteTransform(panel) * Pose(Vector3(dx, dy, 0f))
-                                    if (validDrop(moved)) { panel.setComponent(Transform(moved)); pinnedPose = moved }
                                 }
                             },
                             placeApp = ::beginAppPlacement,
@@ -530,6 +530,7 @@ internal class SpatialLauncher(
         val entity = shelf ?: return
         poseBeforeMove = getAbsoluteTransform(entity)
         entity.setComponent(Grabbable(true, GrabbableType.FACE, false, .45f, 3f))
+        shelfWasGrabbed = false
         movingShelf.value = true
     }
 
@@ -546,6 +547,7 @@ internal class SpatialLauncher(
             panel.setComponent(Grabbable(false))
         }
         poseBeforeMove = null
+        shelfWasGrabbed = false
         movingShelf.value = false
     }
 

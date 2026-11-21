@@ -23,6 +23,18 @@ class LinuxDesktopV3StatusTest {
     private fun presentation(value: JSONObject) = value.getJSONObject("desktop_v3_presentation")
     private fun view(value: JSONObject) = LinuxDesktopV3Status.observe(11, "7", value)
 
+    @Test fun aRetiredOwnerSupersedesHistoricalPresentationButNotLiveCleanup() {
+        val snapshot = ready()
+        snapshot.getJSONObject("transport").put("state","Disconnected").put("desktop_pending",false)
+        val cleanup = JSONObject().put("runtime","11").put("origin_retired",true)
+            .put("local_cleanup_pending",false).put("remote_cleanup_pending",false)
+        snapshot.put("reclamation",cleanup)
+        snapshot.getJSONObject("desktop_v3_presentation").put("state","pending")
+        assertEquals("retired", LinuxDesktopV3Status.observe(11,"7",snapshot,"APP_WINDOW_UNSUPPORTED").phase)
+        cleanup.put("local_cleanup_pending",true)
+        assertEquals("pending", LinuxDesktopV3Status.observe(11,"7",snapshot).phase)
+    }
+
     @Test fun nativeReadyIsDistinctFromAcceptedCatalogAndWaitingStates() {
         assertTrue(view(ready()).ready)
         assertEquals("ready", view(ready()).phase)

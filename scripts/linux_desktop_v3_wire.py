@@ -51,7 +51,7 @@ def valid_sources(value):
 def valid_socket(value, nonce):
     if type(value) is not str:
         return False
-    tails = ("/.eidolon-desktop-v3/s-" + nonce + "/p", "/.eidolon-desktop-v3b/s-" + nonce + "/p")
+    tails = (f"/.eidolon-desktop-v3{suffix}/s-{nonce}/p" for suffix in ("", *"bcdefghijklmnopqrstu"))
     return (any(value.endswith(tail) and len(value) - len(tail) > 1 for tail in tails)
             and len(value.encode()) <= 103 and value.startswith("/") and
             not value.startswith("/data/data/com.termux/") and

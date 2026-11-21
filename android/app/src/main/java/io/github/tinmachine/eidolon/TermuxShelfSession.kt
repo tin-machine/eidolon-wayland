@@ -7,6 +7,7 @@ import java.util.UUID
 
 /** Worker-owned session. Browsing only opens an authenticated catalogue channel. */
 internal class TermuxShelfSession(
+    val slot: Int,
     private val nextId: () -> String,
     private val publish: (LauncherUi) -> Unit,
     private val dispatch: (() -> Unit) -> Unit,
@@ -33,8 +34,21 @@ internal class TermuxShelfSession(
     private fun update(value: LauncherUi) {
         if (view != value) { view = value; publish(value) }
     }
+    private var queuedApp: Pair<String, String>? = null
+    private var presentedApp = false
+    val occupiesApp get() = handle != 0L && (slot > 0 || presentedApp || launchRequest != null ||
+        snapshot?.optJSONObject("app")?.optString("state") in setOf("running", "starting", "stopping"))
+    fun accepts(expected: LauncherUi, id: String) = expected.runtime == handle && expected.session == view.session &&
+        expected.revision == view.revision && view.connected && !view.busy && !view.menuRefreshFailed && view.entries.any { it.id == id && it.available }
+    fun openApp(primary: Long, expected: LauncherUi, id: String, scene: Long, xr: String, visible: Boolean) {
+        if (handle != 0L) return
+        open(primary, false, expected.path, scene, xr, visible)
+        if (handle != 0L) queuedApp = id to expected.revision
+    }
+
     fun unavailable(reason: String) = update(LauncherUi(message = reason, firstFailure = "TERMUX_UNAVAILABLE"))
     private fun fail(reason: String) {
+        if (slot > 0) stop()
         wantMenu = false
         request = null
         launchRequest = null
@@ -43,7 +57,7 @@ internal class TermuxShelfSession(
     fun open(primary: Long, usePrimary: Boolean, settingsPath: String, scene: Long, xr: String, visible: Boolean) {
         if (stopping || helper != null) return
         if (handle == 0L) {
-            val newHandle = if (usePrimary) primary else NativeBridge.nativeCreateTermux(primary)
+            val newHandle = if (usePrimary) primary else NativeBridge.nativeCreateTermux(primary, slot)
             if (newHandle <= 0L) { unavailable("Termux のペアリング設定を確認してください"); return }
             borrowed = usePrimary
             handle = newHandle
@@ -133,6 +147,11 @@ internal class TermuxShelfSession(
         val tx = state.getJSONObject("transport")
         val phase = tx.optString("state")
         val session = tx.optString("session")
+        val running = state.optJSONObject("app")?.optString("state")
+        if (presentedApp && (running in setOf(null, "stopped") || phase in setOf("Failed", "Disconnected"))) {
+            presentedApp = false
+            if (slot > 0) stop()
+        }
         if (stopping) {
             if (borrowed) { clear(); return }
             if (tx.optInt("owned_connections") == 0 && phase in setOf("Idle", "Failed", "Disconnected", "CleanupPending")) {
@@ -194,10 +213,15 @@ internal class TermuxShelfSession(
                     catalogComplete = true, message = "Termux のアプリ一覧を取得しました"))
             }
         }
+        queuedApp?.takeIf { view.connected && !view.busy && !wantMenu && request == null }?.let { (id, revision) ->
+            queuedApp = null
+            if (revision != view.revision || !accepts(view, id)) fail("Termux の一覧が変わりました。更新してください")
+            else launch(view, id)
+        }
         if (launchRequest != null) {
             val app = state.optJSONObject("app")
             if ((app?.optJSONArray("windows")?.length() ?: 0) > initialWindows) {
-                launchRequest = null; update(view.copy(busy = false, message = "起動しました"))
+                launchRequest = null; presentedApp = true; update(view.copy(busy = false, message = "起動しました"))
             } else if (app != null && !app.isNull("error")) fail("起動できません（${app.optString("error")}）")
         }
     }
@@ -213,6 +237,7 @@ internal class TermuxShelfSession(
     }
 
     private fun clear() {
+        queuedApp = null; presentedApp = false; launchRequest = null; wantMenu = false; request = null
         handle = 0; borrowed = false; snapshot = null; retiring = false; stopping = false
         connectSent = null; update(LauncherUi(message = "Termux は未接続です"))
     }

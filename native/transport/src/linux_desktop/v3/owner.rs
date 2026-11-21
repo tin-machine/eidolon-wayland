@@ -22,13 +22,13 @@ const BOOTSTRAP: &str = include_str!("bootstrap.py");
 /// Construct a reviewable fixed command from B1's typed 14/15 vector. This pure
 /// function grants no execution authority: open/recover require source closure.
 pub fn command(binding: &Binding, bootstrap: &Bootstrap) -> Result<String, &'static str> {
-    command_in_slot(binding, bootstrap, false)
+    command_in_slot(binding, bootstrap, 1)
 }
 
 fn command_in_slot(
     binding: &Binding,
     bootstrap: &Bootstrap,
-    companion: bool,
+    workspace: u8,
 ) -> Result<String, &'static str> {
     let hashes = sources::current_hashes();
     sources::validate_hashes(&hashes)?;
@@ -37,7 +37,7 @@ fn command_in_slot(
         bootstrap,
         &hashes,
         Some(sources::inventory_bytes()),
-        companion,
+        workspace,
     )
 }
 
@@ -45,13 +45,13 @@ pub(super) fn recovery_command(
     binding: &Binding,
     bootstrap: &Bootstrap,
     hashes: &sources::SourceHashes,
-    companion: bool,
+    workspace: u8,
 ) -> Result<String, &'static str> {
     if bootstrap.vector().first().map(String::as_str) != Some("recover") {
         return Err("DESKTOP_BINDING_INVALID");
     }
     sources::validate_recovery_hashes(hashes)?;
-    command_for_sources(binding, bootstrap, hashes, None, companion)
+    command_for_sources(binding, bootstrap, hashes, None, workspace)
 }
 
 fn command_for_sources(
@@ -59,7 +59,7 @@ fn command_for_sources(
     bootstrap: &Bootstrap,
     hashes: &sources::SourceHashes,
     inventory: Option<&[u8]>,
-    companion: bool,
+    workspace: u8,
 ) -> Result<String, &'static str> {
     bootstrap
         .matches(binding.context(), binding.pins())
@@ -90,7 +90,7 @@ fn command_for_sources(
         inventory,
         literal(&binding.pins().build_id())?,
         literal(&args)?,
-        if companion { 2 } else { 1 },
+        workspace,
         BOOTSTRAP
     );
     Ok(format!(
@@ -176,7 +176,7 @@ impl Owner {
         binding: &Binding,
         evidence: &ExpectedEvidence,
         cancel: CancellationToken,
-        companion: bool,
+        workspace: u8,
         before_exec: impl FnOnce() -> Result<(), &'static str>,
     ) -> Result<Self, &'static str> {
         sources::require_complete()?;
@@ -185,7 +185,7 @@ impl Owner {
         let text = command_in_slot(
             binding,
             &Bootstrap::serve(binding.context().clone(), binding.pins().clone()),
-            companion,
+            workspace,
         )?;
         let channel = tokio::select! {biased;
             _=cancel.cancelled()=>return Err("CANCELLED"),

@@ -719,10 +719,20 @@ impl Runtime {
         config: RuntimeConfig,
         handle: eidolon_model::ids::RuntimeHandle,
     ) -> std::io::Result<Self> {
+        let number = config
+            .paths
+            .as_ref()
+            .map(|paths| {
+                eidolon_model::limits::workspace_number(std::path::Path::new(&paths.files_dir))
+            })
+            .unwrap_or(1);
+        if number < 2 {
+            return Err(std::io::Error::other("Invalid workspace slot"));
+        }
         Self::start_owned_with_hook(
             config,
             handle,
-            eidolon_render::ExecutorSlot::Companion,
+            eidolon_render::ExecutorSlot::Companion(number),
             || {},
         )
     }
@@ -926,10 +936,15 @@ impl Runtime {
                 let mut workspace = crate::workspace::Controller::load(
                     config.preferences_dir.as_deref().map(std::path::Path::new),
                 );
-                workspace.set_horizontal_offset(match render_slot {
-                    eidolon_render::ExecutorSlot::Primary => 0.,
-                    eidolon_render::ExecutorSlot::Companion => 1.8,
-                    eidolon_render::ExecutorSlot::Termux => -1.8,
+                workspace.set_initial_offset(match render_slot {
+                    eidolon_render::ExecutorSlot::Primary => [0., 0.],
+                    eidolon_render::ExecutorSlot::Companion(2) => [1.8, 0.],
+                    eidolon_render::ExecutorSlot::Companion(n) => {
+                        let i = n - 3;
+                        let y = [1., -1., 2., -2., 3., -3., 4.][usize::from(i / 3)];
+                        [(f32::from(i % 3) - 1.) * 1.8, y]
+                    }
+                    eidolon_render::ExecutorSlot::Termux => [-1.8, 0.],
                 });
                 if config.preferences_dir.is_none() {
                     workspace.set_keyboard_layout(config.keyboard_layout);

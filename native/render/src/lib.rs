@@ -271,7 +271,7 @@ struct Active {
 pub enum ExecutorSlot {
     Termux,
     Primary,
-    Companion,
+    Companion(u8),
 }
 
 impl Controller {
@@ -1712,9 +1712,25 @@ mod tests {
     }
 
     #[test]
+    fn twenty_numbered_owners_have_distinct_reusable_render_executors() {
+        let mut jobs = Vec::new();
+        for n in 2..=eidolon_model::limits::LAST_WORKSPACE {
+            let slot = ExecutorSlot::Companion(n);
+            let executor = executor::Executor::for_slot(slot).unwrap();
+            assert!(jobs.iter().all(|other| !Arc::ptr_eq(&executor, other)));
+            assert!(Arc::ptr_eq(
+                &executor,
+                &executor::Executor::for_slot(slot).unwrap()
+            ));
+            jobs.push(executor);
+        }
+        assert!(executor::Executor::for_slot(ExecutorSlot::Companion(22)).is_err());
+    }
+
+    #[test]
     fn two_workspace_slots_draw_independently_and_one_can_stop() {
         let primary = executor::Executor::for_slot(ExecutorSlot::Primary).unwrap();
-        let companion = executor::Executor::for_slot(ExecutorSlot::Companion).unwrap();
+        let companion = executor::Executor::for_slot(ExecutorSlot::Companion(2)).unwrap();
         let first = Controller::start_on(Default::default(), Some(primary.clone())).unwrap();
         let second = Controller::start_on(Default::default(), Some(companion.clone())).unwrap();
         wait(|| primary.snapshot().tid > 0 && companion.snapshot().tid > 0);

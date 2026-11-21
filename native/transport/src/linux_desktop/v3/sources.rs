@@ -206,6 +206,7 @@ pub(super) fn validate_recovery_hashes(hashes: &SourceHashes) -> Result<(), &'st
     const PRE_WORKDIR_CHECK: &str =
         "cf89c96a3ca32cb70bfb481eb7dccc2be0f228bd569592b653a05f7660ad78d4";
     const PRE_COMPANION: &str = "282ac4114508c809734ed72214b3ff2b910164f0c4c40fa10186264924532abb";
+    const TWO_WORKSPACES: &str = "40bcb8e2fd291c6769482b17cbd17ec281a3009eff258f19afd14c5bcf8182f6";
     if validate_hashes(hashes).is_ok() {
         return Ok(());
     }
@@ -213,7 +214,7 @@ pub(super) fn validate_recovery_hashes(hashes: &SourceHashes) -> Result<(), &'st
     super::source_map(&value)?;
     if !matches!(
         eidolon_model::linux_desktop_v3::digest(&value).as_deref(),
-        Ok(PRE_CATALOG | PRE_WORKDIR_CHECK | PRE_COMPANION)
+        Ok(PRE_CATALOG | PRE_WORKDIR_CHECK | PRE_COMPANION | TWO_WORKSPACES)
     ) {
         return Err("APP_V3_SOURCE_CHANGED");
     }
@@ -287,6 +288,16 @@ mod tests {
     #[test]
     fn old_installed_entries_sources_are_admitted_only_for_recovery() {
         let mut old = current_hashes();
+        old.insert(
+            "linux_desktop_v3_wire.py".into(),
+            "9f4296f9e66de88d3470744849048f8e31716bc73d4431e57465dd5464a076ee".into(),
+        );
+        old.insert(
+            "eidolon_linux_desktop_v3.py".into(),
+            "b3b726670a718085a9b5aaf6968f32a6d9866a1ffcaa5c3bbd27a15c6400be6d".into(),
+        );
+        assert!(validate_hashes(&old).is_err());
+        validate_recovery_hashes(&old).unwrap();
         for (name, digest) in [
             (
                 "eidolon_linux_persistent_profile.py",

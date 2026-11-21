@@ -114,12 +114,14 @@ fn valid_socket(value: &str, nonce: &str) -> bool {
     let Some(base) = value.strip_suffix(&suffix) else {
         return false;
     };
-    let Some(home) = base
-        .strip_suffix("/.eidolon-desktop-v3")
-        .or_else(|| base.strip_suffix("/.eidolon-desktop-v3b"))
-    else {
+    let Some((home, directory)) = base.rsplit_once('/') else {
         return false;
     };
+    if !(1..=eidolon_model::limits::LAST_WORKSPACE)
+        .any(|n| eidolon_model::limits::remote_workspace_dir(n) == directory)
+    {
+        return false;
+    }
     value.len() <= 103
         && home.len() > 1
         && value.starts_with('/')

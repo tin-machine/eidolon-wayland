@@ -5,6 +5,28 @@ pub const UI_COMMANDS: usize = 128;
 pub const POLL_EVENTS: usize = 64;
 pub const POLL_BYTES: usize = 64 * 1024;
 pub const DIAGNOSTIC_BYTES: usize = 1024 * 1024;
+/// Active launcher applications across hosts. Runtime slots 2..=21 also cover a catalog-only primary.
+pub const LAUNCHER_APPS: u8 = 20;
+pub const LAST_WORKSPACE: u8 = LAUNCHER_APPS + 1;
+
+pub fn workspace_number(files: &std::path::Path) -> u8 {
+    files
+        .file_name()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("eidolon-workspace-"))
+        .and_then(|s| s.parse().ok())
+        .filter(|n| (2..=LAST_WORKSPACE).contains(n))
+        .unwrap_or(1)
+}
+
+pub fn remote_workspace_dir(number: u8) -> String {
+    if number == 1 {
+        ".eidolon-desktop-v3".into()
+    } else {
+        format!(".eidolon-desktop-v3{}", char::from(b'a' + number - 1))
+    }
+}
+
 pub const TOPLEVELS: usize = crate::window_slots::CAPACITY;
 pub const VISIBLE_PANELS: usize = crate::window_slots::CAPACITY;
 pub const SDK_BINDINGS: usize = crate::window_slots::CAPACITY;
