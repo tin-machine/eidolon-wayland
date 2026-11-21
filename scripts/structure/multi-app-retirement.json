@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "scope": "multi-app-retirement",
-  "reviewed_revision": "ad137e34d224e78bfaf4f0851cf4b7984755edbd",
+  "reviewed_revision": "2c6a256910e58bdaae9632ac29fb616739142f4c",
   "domains": [
     "android-model",
     "android-adapter",
@@ -277,6 +277,20 @@
       "file": "registry",
       "anchor": "fn destroying_one_numbered_runtime_preserves_peer_and_allows_slot_reuse() {",
       "domain": "native",
+      "role": "test"
+    },
+    {
+      "id": "capacity.owned",
+      "file": "LauncherCapacity",
+      "anchor": "fun appOccupiesRuntime(snapshot: JSONObject?): Boolean {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "test.cleanup-count",
+      "file": "LauncherCapacityTest",
+      "anchor": "@Test fun primaryReservationLastsThroughLocalAndRemoteCleanup() {",
+      "domain": "android-model",
       "role": "test"
     }
   ],
@@ -600,6 +614,21 @@
         "test.capacity"
       ],
       "test_scope": "判定モデルは JVM テストで実行。Android の worker 配送はソース照合。"
+    },
+    {
+      "id": "usage-through-cleanup",
+      "from": "capacity.admit",
+      "to": "capacity.owned",
+      "relation": "requires",
+      "invariant": "主アプリの窓が消えても、その記録にローカル・リモートの回収待ちが残る間は一枠を保持する。",
+      "evidence": [
+        "capacity.admit",
+        "capacity.owned"
+      ],
+      "tests": [
+        "test.cleanup-count"
+      ],
+      "test_scope": "JVM で runtime の状態・回収フラグを変化させて使用数を検証。"
     }
   ],
   "unknowns": [
