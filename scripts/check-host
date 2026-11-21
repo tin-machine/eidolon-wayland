@@ -13,7 +13,8 @@ from host_checks import check_members, rust_test_count
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {"model": ["eidolon-model"], "theme": ["eidolon-theme"], "render": ["eidolon-render"], "lifecycle": ["eidolon-core", "eidolon-android", "eidolon-helper-fixture"],
-          "transport": ["eidolon-transport"], "compositor": ["eidolon-core", "eidolon-shm-fixture"], "input": ["eidolon-model", "eidolon-core"]}
+          "transport": ["eidolon-transport"], "compositor": ["eidolon-core", "eidolon-shm-fixture"], "input": ["eidolon-model", "eidolon-core"],
+          "spatial-anchor": ["eidolon-spatial-anchor"]}
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--suite", required=True, choices=[*SUITES, "all"])
 args = parser.parse_args()
