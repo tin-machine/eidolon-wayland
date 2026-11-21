@@ -37,6 +37,7 @@ object NativeBridge {
         surface: android.view.Surface, widthPx: Int, heightPx: Int): Int
     @JvmStatic external fun nativePoll(handle: Long, maxEvents: Int): String
     @JvmStatic external fun nativeSnapshot(handle: Long): String
+    @JvmStatic external fun nativeUiSnapshot(handle: Long, panel: Boolean): String
     @JvmStatic external fun nativeCatalogUi(handle: Long): String
     /** 本文を含むUI専用。DiagnosticsStore・logへ渡さない。 */
     @JvmStatic external fun nativeImeUi(handle: Long): String

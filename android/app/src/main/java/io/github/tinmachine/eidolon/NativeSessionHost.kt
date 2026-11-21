@@ -71,8 +71,8 @@ object NativeSessionHost {
     private var settingsCompletedEpoch = -1L
     private var settingsProgressStamp: String? = null
     private var lastSaveSnapshot: JSONObject? = null
-    private var linuxProfile: ConnectionProfileV2.Value? = null
-    private var linuxSavedPins: LinuxDesktopPinsRepository.Saved? = null
+    private val linuxProfile get() = linuxSettings?.profile
+    private val linuxSavedPins get() = linuxSettings?.v2Pins
     private var linuxCredentialCapture: LinuxCredentialCapture? = null
     private var linuxCatalog: LinuxDesktopCatalog? = null
     private var automaticRecoveryScope: Pair<Long, String>? = null
@@ -268,7 +268,6 @@ object NativeSessionHost {
     private val hudTiming = QuestHudTiming()
     private val hudContent = HudContentRate()
     private var hudTimingGeneration = -1L
-    private var hudTimingLast = -1L
 
     internal fun setHudTimingActive(owner: Long, scene: Long, active: Boolean) {
         inputIntents.serial {
@@ -286,12 +285,9 @@ object NativeSessionHost {
             hudTimingGeneration = config
             hudTiming.reset()
             hudContent.reset()
-            hudTimingLast = -1
         }
         if (config and 1L == 0L) return
         val now = SystemClock.elapsedRealtime()
-        if (hudTimingLast >= 0 && now - hudTimingLast in 0..999) return
-        hudTimingLast = now
         val reading = hudTiming.sample(handle, runtime, now)
         val focus = keyboardFocus
         val focusedRuntime = focus?.runtime ?: 0L
@@ -657,15 +653,9 @@ object NativeSessionHost {
         }) }
 
     private fun linuxV3Active() = linuxSettings?.backend==LinuxDesktopBackend.V3 && linuxSettings?.ready==true
-    private fun linuxConfigured():Boolean = linuxIdentity!=null && linuxProfile?.let {
-        LinuxConnectionProfile.endpointSupport(it)==LinuxConnectionProfile.EndpointSupport.IPV4
-    }==true && (if(linuxV3Active()) linuxSettings?.v3Configuration?.forProfile(linuxProfile,linuxSettings?.storageRecord)!=null
-        else linuxPins()!=null && linuxSettings?.ready==true)
-    private fun reloadLinuxSettings():LinuxDesktopSettingsRepository.Snapshot {
-        val value=checkNotNull(linuxSettingsStore).load()
-        linuxSettings=value;linuxProfile=value.profile;linuxSavedPins=value.v2Pins
-        return value
-    }
+    private fun linuxConfigured() = linuxIdentity != null && linuxSettings?.let { it.ready && it.ipv4Endpoint } == true
+    private fun reloadLinuxSettings(): LinuxDesktopSettingsRepository.Snapshot =
+        checkNotNull(linuxSettingsStore).load().also { linuxSettings = it }
     private fun invalidateRuntimeInput() {
         resetInput();invalidateImeConnection();pendingInputFocus=null
         keyboardFocus=null;inputTargets=emptyMap();groupInputGate.set(WindowGroupInputGate.unavailable())
@@ -731,7 +721,7 @@ object NativeSessionHost {
         require(reread.ready && reread.captureToken==saved.captureToken && reread.intentToken==saved.intentToken) {"SETTINGS_READBACK_INVALID"}
         // Includes profile, paths, storage, escaping and debug additions. Still inside the closed epoch.
         runtimeConfigFor(reread)
-        linuxSettings=reread;linuxProfile=reread.profile;linuxSavedPins=reread.v2Pins
+        linuxSettings=reread
     }
     fun resumeLinuxSettings(expectedCaptureToken:String) {
         val requestedOwner=runtimeAdmission.activeOwner()
@@ -873,7 +863,7 @@ object NativeSessionHost {
             LinuxConnectionProfile.propose(draft,checkNotNull(identity).installation,linuxProfile)
             require(confirmed) {"PIN_CONFIRMATION_REQUIRED"}
             stopRuntime()
-            linuxProfile=checkNotNull(linuxProfileStore).save(draft,expectedBinding.ifEmpty {null},confirmed)
+            checkNotNull(linuxProfileStore).save(draft,expectedBinding.ifEmpty {null},confirmed)
             reloadLinuxSettings()
             linuxCatalog=null
             refreshLinuxConnection("接続先を保存しました。転送用ファイルの確認情報も、この接続先に対して確認・保存してください。")
@@ -896,7 +886,7 @@ object NativeSessionHost {
             require(profile.binding()==expectedBinding) {"PROFILE_CHANGED"}
             LinuxDesktopPins.parse(raw);require(confirmed) {"PIN_CONFIRMATION_REQUIRED"}
             stopRuntime()
-            linuxSavedPins=checkNotNull(linuxPinsStore).save(profile,raw,expectedToken.ifEmpty {null},confirmed)
+            checkNotNull(linuxPinsStore).save(profile,raw,expectedToken.ifEmpty {null},confirmed)
             reloadLinuxSettings()
             linuxCatalog=null
             refreshLinuxConnection("転送用ファイルの確認情報を保存しました。明示的に接続して、利用できるアプリを確認できます。")
@@ -994,7 +984,7 @@ object NativeSessionHost {
             }
         }
         val busy=connectPending || pendingDisconnect!=null || linuxAction!=null
-        val configured=linuxIdentity!=null && linuxProfile?.let {LinuxConnectionProfile.endpointSupport(it)==LinuxConnectionProfile.EndpointSupport.IPV4}==true && linuxPins()!=null
+        val configured=linuxConfigured()
         val canConnect=configured && ConnectionAdmission.canConnectLinux(runtime,busy)
         val canInspect=!busy && owned==1 && phase=="ProbeReady" && !pending
         val canRecover=!busy && owned==1 && phase=="CleanupPending" && pending && !appActive && transport.isNull("desktop")
@@ -1233,7 +1223,7 @@ object NativeSessionHost {
         val canRefresh = !busy && !appActive && phase == "DesktopReady" &&
             linuxV3Catalog?.let(linuxV3LaunchAdmission::canClaim) == true
         val canDiscover = !busy && !canInspect && !canRefresh && linuxIdentity != null &&
-            linuxProfile?.let(LinuxConnectionProfile::endpointSupport) == LinuxConnectionProfile.EndpointSupport.IPV4 &&
+            linuxSettings?.ipv4Endpoint == true &&
             (transport.optInt("owned_connections") == 0 && phase in setOf("Idle", "Disconnected", "Failed", "CleanupPending") ||
                 configured && transport.optInt("owned_connections") == 1 && phase in setOf("DesktopReady", "CleanupPending"))
         val canRecover=if(settingsSave.active) settingsSave.operation?.canRecover==true
@@ -1340,8 +1330,7 @@ object NativeSessionHost {
                             java.io.File(application.noBackupFilesDir, "credentials-remote-linux"))
                     }
                     linuxIdentity = null
-                    linuxProfile = null
-                    linuxSavedPins = null
+                    linuxSettings = null
                     linuxIdentity=checkNotNull(linuxCredentials).ensureIdentity()
                     if(linuxProfileStore==null) linuxProfileStore=LinuxProfileStore(application,checkNotNull(identity).installation)
                     if(linuxPinsStore==null) linuxPinsStore=LinuxDesktopPinsStore(application)
@@ -2663,7 +2652,7 @@ object NativeSessionHost {
                 refreshLinuxConnection("保存した設定の組が不一致です。旧所有者の回収証拠がないため接続と保存再開を停止しています。")
                 return
             }
-            linuxSettings=loaded;linuxProfile=loaded.profile;linuxSavedPins=loaded.v2Pins
+            linuxSettings=loaded
         }
         handle = NativeBridge.nativeCreate(runtimeConfigJson())
         everAllocatedRuntime=everAllocatedRuntime || handle>0L
@@ -3135,7 +3124,9 @@ object NativeSessionHost {
             }
         }
         pumpDisconnect()
-        val snapshot = snapshot()
+        val now = SystemClock.elapsedRealtime()
+        val publishDiagnostics = now - lastWrite >= 1000
+        val snapshot = if (publishDiagnostics) snapshot() else JSONObject(NativeBridge.nativeUiSnapshot(handle, false))
         val runtime = snapshot.getJSONObject("runtime")
         pumpCatalog(runtime)
         inputIntents.serial {
@@ -3220,7 +3211,7 @@ object NativeSessionHost {
         }
         val eligibleIme=keyboardFocus?.let {f-> f.runtime == handle && strictImeSdkTarget(JSONObject(f.target))?.let {ImeTargetEligibility.allows(runtime,it)} == true}==true &&
             !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && !editing.get() && panelTextInputs.isEmpty() && !BuildHooks.imeProbeActive()
-        sampleHudTiming(runtime)
+        if (publishDiagnostics) sampleHudTiming(runtime)
         ui.post {imeAvailable.value=eligibleIme}
         pumpIme(runtime, imeCompletions)
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else if(selectedProfileId==LinuxConnectionProfile.ID) "Linuxアプリへ入力" else "ターミナルへ入力"
@@ -3247,7 +3238,7 @@ object NativeSessionHost {
             else imeInputMessage ?: InputStatus.from(inputConditions)
         } else InputStatus.from(inputConditions)
         ui.post {inputStatus.value=status}
-        store?.updateInterface(JSONObject().put("input_reason",status.reason).put("input_action",status.action.name)
+        if (publishDiagnostics) store?.updateInterface(JSONObject().put("input_reason",status.reason).put("input_action",status.action.name)
             .put("editing",editing.get()).put("keyboard_count",keyboardCount.get() ?: JSONObject.NULL)
             .put("focus_window",focusedWindow ?: JSONObject.NULL).put("device",latestMetrics.get().json())
             .put("keyboard_ingress",KeyboardIngress.json())
@@ -3397,13 +3388,12 @@ object NativeSessionHost {
         if(editable!=connectionEditable) {connectionEditable=editable;ui.post {
             connectionUi.value=connectionUi.value.copy(canSave=editable);linuxConnectionUi.value=linuxConnectionUi.value.copy(canSave=settingsCanSave())
         }}
-        val now = SystemClock.elapsedRealtime()
         if (next != state) {
             state = next
             Log.i(TAG, "runtime_state=$next")
             ui.post { summary.value = next }
         }
-        if (now - lastWrite >= 1000) { store?.publishRuntime(snapshot); lastWrite = now }
+        if (publishDiagnostics) { store?.publishRuntime(snapshot); lastWrite = now }
         pumpSettingsSave()
     }
     private fun safely(action: () -> Unit) {

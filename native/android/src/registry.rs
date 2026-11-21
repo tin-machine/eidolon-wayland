@@ -235,6 +235,16 @@ impl Registry {
             Err(status) => json!({"schema":1,"code":status as i32,"registry":self.counts()}),
         }
     }
+    pub fn ui_snapshot(&self, id: i64, panel: bool) -> Value {
+        match self.guarded(id, Runtime::snapshot) {
+            Ok(snapshot) => {
+                let mut envelope = json!({"schema":1,"code":0,"handle":id.to_string()});
+                envelope["runtime"] = crate::ui_snapshot::project(&snapshot, panel);
+                envelope
+            }
+            Err(status) => json!({"schema":1,"code":status as i32}),
+        }
+    }
     pub fn poll(&self, id: i64, max: i32) -> Value {
         match self.guarded(id, |runtime| runtime.poll(max as usize)) {
             Ok(Ok(events)) => json!({"schema":1,"code":0,"events":events}),

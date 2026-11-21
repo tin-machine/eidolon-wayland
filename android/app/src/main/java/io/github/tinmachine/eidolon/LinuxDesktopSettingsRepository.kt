@@ -24,7 +24,9 @@ class LinuxDesktopSettingsRepository internal constructor(
         /** Exact durable settings intent identity; never an old Runtime's retirement authority. */
         val intentToken: String? = null,
     ) {
-        val ready: Boolean get() = status in setOf(Status.LEGACY_V2, Status.READY_V2, Status.READY_V3)
+        // classify() has already matched this immutable profile, storage and backend files.
+        val ready = status == Status.LEGACY_V2 || status == Status.READY_V2 || status == Status.READY_V3
+        val ipv4Endpoint = profile?.let(LinuxConnectionProfile::endpointSupport) == LinuxConnectionProfile.EndpointSupport.IPV4
         fun activeRawConfig(): String? = if (!ready) null else when (backend) {
             LinuxDesktopBackend.V2 -> v2Pins?.pins?.json()
             LinuxDesktopBackend.V3 -> v3Configuration?.configuration?.json()

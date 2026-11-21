@@ -141,7 +141,7 @@ internal class TermuxShelfSession(
                 }
             }
         }
-        val state = primarySnapshot ?: JSONObject(NativeBridge.nativeSnapshot(owner)).optJSONObject("runtime") ?: return
+        val state = primarySnapshot ?: JSONObject(NativeBridge.nativeUiSnapshot(owner, false)).optJSONObject("runtime") ?: return
         snapshot = state
         if (retiring) {
             if (NativeBridge.nativeDestroy(owner) == NativeBridge.ACCEPTED) clear()
