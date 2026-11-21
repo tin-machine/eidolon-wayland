@@ -67,20 +67,21 @@ timeout 15s adb -s "$quest_serial" shell settings get global stay_on_while_plugg
 
 `get-state=device`と対象機種を確認する。既存の実機checkerはQuest 3/API 34以上を要求している。`unauthorized`、`offline`、対象の取り違え、読取失敗は正常値として処理しない。
 
-`metavr`が導入済みなら、その版・対応オプション・近接センサー状態も確認する。
+以前の撮影などに使用したローカルの Meta VR CLI も確認する。共有ホストの PATH にない場合でも、既知の導入先から同じ版を利用できる。以下の `metavr` はその実行コマンドを表す。
 
 ```bash
 metavr --version
 metavr device proximity --help
+metavr device proximity disable --help
 (
 set -eC
 umask 077
-timeout 15s metavr -d "$quest_serial" device proximity --status \
+timeout 15s metavr -d "$quest_serial" device proximity status \
   > "$quest_run_dir/proximity-before.txt"
 )
 ```
 
-`--status`の出力形式・JSONキー・期限の表示を推測しない。採用版のhelpと実出力を読み、期限や所有者が出力されなければ開発セッション記録で補う。取得不能は`unknown`であり「センサー有効」「overrideなし」とは判定しない。[CLI reference][cli]
+状態照会の出力形式・JSONキー・期限の表示を推測しない。採用版のhelpと実出力を読み、期限や所有者が出力されなければ開発セッション記録で補う。取得不能は`unknown`であり「センサー有効」「overrideなし」とは判定しない。[CLI reference][cli]
 
 確認の境界:
 
@@ -104,8 +105,8 @@ timeout 15s metavr -d "$quest_serial" device proximity --status \
 ```bash
 # 2時間。7200000ミリ秒 = 2時間
 timeout 15s metavr -d "$quest_serial" device proximity \
-  --disable --duration-ms 7200000
-timeout 15s metavr -d "$quest_serial" device proximity --status \
+  disable --duration-ms 7200000
+timeout 15s metavr -d "$quest_serial" device proximity status \
   > "$quest_run_dir/proximity-after.txt"
 ```
 
@@ -160,7 +161,7 @@ timeout 15s adb -s "$quest_serial" shell dumpsys battery > "$quest_run_dir/batte
 
 `dumpsys power` の `mWakefulness`、`mLastSleepReason`、`mIsPowered`、`mStayOn` と、`dumpsys battery` の AC/USB/Wireless 給電を照合する。必要に応じて `settings get system screen_off_timeout`、`settings get secure sleep_timeout` を読み取る。タイムアウト延長や省電力設定の一括変更は不要。直前の sleep 理由だけで原因を特定しない。ADB 接続を維持したまま `Asleep` であれば、4.1〜4.3 の対象・所有条件を確かめて装着状態を再設定し、4.5 の間隔で電源と接続を再読取する。
 
-2026-11-21 の Quest 3（API 34）では、Wi-Fi ADB が応答し、AC 給電、`stay_on_while_plugged_in=15`、`mStayOn=true`、画面タイムアウト 86400000 ms、sleep timeout −1 で `Asleep` だった。Meta VR CLI がない Ubuntu Desktop から既存の開発用 `prox_close` を送り、約1秒後と45秒後に Wi-Fi ADB と `Awake` を確認した。給電設定の変更はなかった。装着状態と長時間維持は未確認。
+2026-11-21 の Quest 3（API 34）では、Wi-Fi ADB が応答し、AC 給電、`stay_on_while_plugged_in=15`、`mStayOn=true`、画面タイムアウト 86400000 ms、sleep timeout −1 で `Asleep` だった。Ubuntu Desktop から既存の開発用 `prox_close` を送り、約1秒後と45秒後に Wi-Fi ADB と `Awake` を確認した。続いて撮影に使っていた Meta VR CLI 1.10.0 の `device proximity status` で override 有効を読み取った。この版の help は `status`・`disable --duration-ms`・`enable` をサブコマンドとして案内する。給電設定の変更はなかった。装着状態、設定前のセンサー状態、長時間維持は未確認。
 
 インストールには ADB 到達性、UI 操作・スクリーンショットにはさらに Eidolon の前景復帰と現在の XR focus を確認する。[Activity と XR の観測手順](development-automation-and-debugging.md)を使う。画面が点灯しても XR focus が戻らない場合は OS ダイアログ、ロック、装着・追跡状態を個別に確認する。
 
@@ -245,8 +246,8 @@ test "$quest_stayon_restored" = "$quest_stayon_before"
 
 ```bash
 # CLI経路で、自分が通常状態から変更した場合
-timeout 15s metavr -d "$quest_serial" device proximity --enable
-timeout 15s metavr -d "$quest_serial" device proximity --status
+timeout 15s metavr -d "$quest_serial" device proximity enable
+timeout 15s metavr -d "$quest_serial" device proximity status
 
 # ADB経路で、自分が通常状態から変更した場合（上のCLI経路と選択する）
 timeout 15s adb -s "$quest_serial" shell am broadcast \
