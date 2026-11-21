@@ -37,6 +37,7 @@ internal class CompanionLinuxSession(
 
     var occupiesApp = false
         private set
+    val recovering get() = handle != 0L && (stopping && occupiesApp || LauncherCapacity.recoveryPending(snapshot))
     var browsing = false
         private set
     var shelf = LauncherUi(linux = true)

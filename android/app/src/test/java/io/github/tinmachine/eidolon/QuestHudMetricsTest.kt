@@ -9,12 +9,25 @@ class QuestHudMetricsTest {
     @Test fun xrReportUsesMeasuredNumeratorAndOriginalTimestamp() {
         val wall = 1_700_000_000_500L
         val line = "1700000000.125  1254  1270 I VrApi   : FPS=45/90,Prd=21ms"
-        assertEquals(QuestFpsSample(45, 625), QuestXrFrameRate.parse(line, wall - 500, wall, 1000))
+        assertEquals(QuestFrameSample(45, 625, null, null), QuestXrFrameRate.parse(line, wall - 500, wall, 1000))
         assertNull(QuestXrFrameRate.parse(line, wall, wall, 1000))
         assertNull(QuestXrFrameRate.parse(line, 0, wall + 3_000, 4000))
         assertNull(QuestXrFrameRate.parse(line, 0, wall - 500, 1000))
         assertNull(QuestXrFrameRate.parse(line.replace("VrApi", "Other"), 0, wall, 1000))
         assertNull(QuestXrFrameRate.parse(line.replace("45/90", "90"), 0, wall, 1000))
+    }
+
+    @Test fun xrReportReadsExactStaleAndGpuFieldsAndKeepsMissingValuesIndependent() {
+        val wall = 1_700_000_000_500L
+        val prefix = "1700000000.500  1254  1270 I VrApi: FPS=92/90"
+        fun read(fields: String) = QuestXrFrameRate.parse(prefix + fields, wall, wall, 900)
+        assertEquals(QuestFrameSample(92, 900, 3, 1.42),
+            read(",Stale=3,Stale2/5/10/max=6/1/0/10,TW=2.01ms,App=1.42ms"))
+        assertEquals(QuestFrameSample(92, 900, 0, 0.0), read(",App=0.00ms,Stale=0"))
+        assertEquals(QuestFrameSample(92, 900, null, 1.42), read(",Stale2/5/10/max=6/1/0/10,App=1.42ms"))
+        assertEquals(QuestFrameSample(92, 900, 2, null), read(",Stale=2,TW=2.01ms,App=NaNms"))
+        assertEquals(QuestFrameSample(92, 900, null, null), read(",Stale=-1,App=-10ms"))
+        assertEquals(QuestFrameSample(92, 900, null, null), read(",Stale=oops,App=1234us"))
     }
 
     @Test fun focusedUpdatesIgnoreDecorationAndRestartOnOwnerChangeOrGap() {

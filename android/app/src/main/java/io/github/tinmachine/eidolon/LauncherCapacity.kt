@@ -9,6 +9,7 @@ internal data class LauncherCapacity(
     val nextWorkspace: Int? = null,
     private val ubuntuNeedsWorkspace: Boolean = false,
     private val termuxNeedsWorkspace: Boolean = false,
+    val recovering: Int = 0,
 ) {
     enum class Workspace { FREE, BROWSING, APP }
 
@@ -40,6 +41,22 @@ internal data class LauncherCapacity(
             val cleanup = primary.optBoolean("desktop_v3_finalizer_pending") ||
                 transport?.optBoolean("desktop_pending") == true || transport?.optString("state") == "CleanupPending"
             return if (launching || cleanup || appOccupiesRuntime(primary)) 1 else 0
+        }
+
+        fun recoveryPending(snapshot: JSONObject?): Boolean {
+            if (snapshot == null) return false
+            val transport = snapshot.optJSONObject("transport")
+            val phase = transport?.optString("state")
+            val app = snapshot.optJSONObject("app")?.optString("state")
+            if (phase == "CleanupPending" || phase == "Recovering" || app == "stopping" ||
+                snapshot.optBoolean("desktop_v3_finalizer_pending")) return true
+
+            // A live app also owns resources and may have a journal to recover later.
+            if (app != "stopped") return false
+            val reclamation = snapshot.optJSONObject("reclamation")
+            return transport?.optBoolean("desktop_pending") == true ||
+                reclamation?.optBoolean("local_cleanup_pending") == true ||
+                reclamation?.optBoolean("remote_cleanup_pending") == true
         }
 
         fun terminalApps(windows: JSONArray?, primaryOccupied: Boolean, beforeAdd: Set<String>?): Int {

@@ -61,7 +61,7 @@ internal class QuestStatusHud(context: Context, private val owner: Long) {
     private val visible = mutableStateOf(false)
     private var fpsSource: QuestXrFrameRate? = null
     private data class Snapshot(val at: Long, val device: DeviceMetricsSnapshot,
-        val window: HudDrawSample?, val fps: Int?, val hz: Float?)
+        val window: HudDrawSample?, val xr: QuestFrameSample?, val hz: Float?, val capacity: LauncherCapacity)
     private val snapshot = mutableStateOf<Snapshot?>(null)
     private val refresh = object : Runnable {
         override fun run() {
@@ -71,7 +71,8 @@ internal class QuestStatusHud(context: Context, private val owner: Long) {
             val now = SystemClock.elapsedRealtime()
             val window = NativeSessionHost.hudDraw.value?.takeIf { it.at >= activeSince && now - it.at in 0..2_500 }
             val hz = current.getConfirmedFrameRate().takeIf { it.isFinite() && it > 0 }
-            snapshot.value = Snapshot(now, NativeSessionHost.deviceMetrics.value, window, fpsSource?.fps(now), hz)
+            snapshot.value = Snapshot(now, NativeSessionHost.deviceMetrics.value, window,
+                fpsSource?.sample(now), hz, NativeSessionHost.launcherCapacity.value)
             handler.postDelayed(this, 1_000)
         }
     }
@@ -220,14 +221,20 @@ internal class QuestStatusHud(context: Context, private val owner: Long) {
                 }
             }
             Column(Modifier.weight(.57f).fillMaxHeight(), verticalArrangement = Arrangement.Center) {
-                val fps = sample.fps?.toString() ?: "—"
+                val fps = sample.xr?.fps?.toString() ?: "—"
                 val hz = sample.hz?.let { String.format(Locale.ROOT, "%.0f", it) } ?: "—"
                 HudLine("Eidolon FPS", "$fps fps / $hz Hz")
+                val stale = sample.xr?.stale?.toString() ?: "—"
+                HudLine("前フレーム再利用", "$stale 回")
+                val gpu = sample.xr?.gpuMs?.let { String.format(Locale.ROOT, "%.1f", it) } ?: "—"
+                val budget = sample.hz?.let { String.format(Locale.ROOT, "%.1f", 1000.0 / it) } ?: "—"
+                HudLine("Eidolon GPU", "$gpu / $budget ms")
                 val rate = sample.window?.contentHz?.let { String.format(Locale.ROOT, "%.1f", it) } ?: "—"
                 HudLine("選択窓の更新", "$rate 回/秒")
                 for (index in labels.indices) {
                     HudLine(labels[index], readings[index].value, colors[index])
                 }
+                HudLine("起動枠", "${sample.capacity.used} / ${LauncherCapacity.MAX_APPS} · 回収待ち ${sample.capacity.recovering}")
                 Text(hudBattery(metrics, activeSince, now) + "  ·  " + hudThermal(metrics, activeSince, now),
                     color = Color.White, fontSize = 13.sp)
             }
@@ -236,7 +243,7 @@ internal class QuestStatusHud(context: Context, private val owner: Long) {
 
     @Composable
     private fun HudLine(label: String, value: String, color: Color = Color.White) {
-        Row(Modifier.fillMaxWidth().height(30.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(Modifier.fillMaxWidth().height(24.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(label, color = color, fontSize = 15.sp, maxLines = 1)
             Text(value, color = color, fontSize = 15.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
         }
