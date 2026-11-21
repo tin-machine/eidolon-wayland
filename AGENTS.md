@@ -4,6 +4,7 @@ This repository implements an experimental spatial Wayland desktop for Quest 3. 
 
 ## Before implementing
 - Follow the user's requested scope; inspect current Git state, affected source, and relevant tests first. Do not assume an open PR is merged.
+- Before the first Quest operation in a task, follow the [Quest development preflight](docs/development/quest-development-preflight.md) on the host that owns the confirmed Wi-Fi ADB route. Documentation and host-only work can proceed independently.
 - Start with [docs/overview/README.md](docs/overview/README.md) for documentation discovery. Read only the relevant feature contracts and their prerequisites; avoid loading all of `docs/`.
 - For initial Phase 0–6 work, [docs/design/README.md](docs/design/README.md), [docs/design/contracts.md](docs/design/contracts.md), and [docs/design/tasks.json](docs/design/tasks.json) **retain their existing authority**. D6 adds a [read-only Phase task index](docs/features/initial-phases/README.md) for 31 task IDs; it does not override statuses, spec anchors, or acceptance checks.
 - For Linux Desktop v3, begin with [the integration plan](docs/features/linux-desktop-v3/linux-real-app-v3-integration-plan-20261111.md), then the relevant B1/B2/C1/C2/E1/I2/I4 specifications. Verify actual merged implementation against current source.
@@ -12,6 +13,15 @@ This repository implements an experimental spatial Wayland desktop for Quest 3. 
 - D6 registered indices: [Curved Workspace CW00–CW25](docs/features/curved-workspace/README.md), [Spatial Anchor SA0](docs/features/spatial-anchor/README.md), [Android IME/probes](docs/features/android-ime/README.md), [Phase 0–6 B/T/W/D/I/L/C tasks](docs/features/initial-phases/README.md). Read the originals and current source; a probe runbook is not successful Quest test evidence. Preserve Curved Workspace fixture bytes and Phase task IDs, dependencies, statuses, spec anchors, and checks when updating file references.
 - [docs/knowledge/inventory-20261113.csv](docs/knowledge/inventory-20261113.csv) contains **candidates only**. An inventory row does not grant authority, acceptance, implementation, or verification.
 - Historical design baselines and CI logs are not proof about the current HEAD. Check changes in the affected source and report unverified work honestly.
+
+## Quest development sessions
+
+- On an already authorized development headset, identify the physical device, select an explicit ADB transport, and establish exclusive session ownership before changing settings. USB serial and Wi-Fi IP:port may identify the same headset. Do not select an arbitrary connected device.
+- Inspect proximity, awake state, external power, the original `stay_on_while_plugged_in` value, and any existing keep-awake owner/expiry. Apply missing temporary development settings autonomously within the authorized task, then verify the result. Prefer an installed, supported `metavr` timed proximity override for new sessions; the runbook documents the ADB fallback. Installing another tool is not a prerequisite.
+- Reuse sufficient existing settings. Preserve the existing instruction to keep the headset awake across individual tests during continued development; do not shorten another session's override or automatically run `automation_disable` after each test. Treat unknown state as unknown, not as an unset option. Never use a historical record as the current restoration baseline.
+- Record changes, ownership, expiry, and restoration/handoff outside tracked source. Recheck before the next device operation after reconnect, reboot, expiry, or a long build. When ADB works but the headset sleeps, read wakefulness, last sleep reason, and actual power source. For UI tests, also verify that the Eidolon Activity and XR session regained focus.
+- Keep normal sleep / physical wear / lifecycle tests separate from the development keep-awake profile. Use the runbook's explicit transition and restore only owned changes; do not add product wake locks, disable boundaries/dialogs, or apply persistent testing settings as a default preflight.
+- At development-session end, restore owned settings to their recorded baseline or honor an explicit continued-development handoff. A disconnected device or failed cleanup remains `restoration_pending`, not restored. Missing hardware, unresolved target/ownership, or inability to establish and verify the required device mode blocks dependent device work only; continue independent implementation, host tests, and documentation while reporting the limitation.
 
 ## Safety and compatibility
 - Respect process ownership, credentials/host-key pinning, resource cleanup, and the v2/v3 compatibility boundaries. Do not invent an SDK API or a successful Quest run.
