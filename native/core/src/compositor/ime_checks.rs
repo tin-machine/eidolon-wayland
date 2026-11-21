@@ -1009,6 +1009,63 @@ mod tests {
     }
 
     #[test]
+    fn text_input_v3_keeps_exact_own_feedback_across_preedit_and_commit() -> Result<()> {
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let stop = AtomicBool::new(false);
+        let mut display = Display::<ProtocolState>::new().map_err(|_| "DISPLAY_CREATE")?;
+        let mut state = ProtocolState::new(&display.handle(), SessionId::new(1).unwrap());
+        state.configure_keyboard(KeyboardLayout::Us)?;
+        state.set_ime_backend_enabled(true);
+        let mut peer = Peer::connect(&mut display, &mut state, &stop)?;
+        let input = peer.inputs[0];
+        focus(&mut state)?;
+        peer.sync(&mut display, &mut state, &stop)?;
+        peer.enable(input)?;
+        peer.sync(&mut display, &mut state, &stop)?;
+        let before = snapshot(&state)?;
+        let mut preedit = transaction(&before, 1, None);
+        preedit.preedit = Some(ImePreedit {
+            text: "継続".into(),
+            cursor_begin: 6,
+            cursor_end: 6,
+        });
+        state.apply_ime(5, &preedit)?;
+        peer.sync(&mut display, &mut state, &stop)?;
+        peer.surrounding(input, "継続".as_bytes(), 6, 6)?;
+        peer.send(input, 7, vec![])?;
+        peer.sync(&mut display, &mut state, &stop)?;
+        let feedback = snapshot(&state)?;
+        assert!(feedback.edit_revision > before.edit_revision);
+        assert_eq!(feedback.composition_revision, before.composition_revision);
+        let mut deletion = transaction(&before, 2, None);
+        deletion.delete_before = 3;
+        assert_eq!(state.apply_ime(5, &deletion), Err("STALE"));
+        state.apply_ime(5, &transaction(&before, 2, Some("確定")))?;
+        let events = peer.sync(&mut display, &mut state, &stop)?;
+        assert!(events.iter().any(|event| event.object == input
+            && event.opcode == 3
+            && read_string(&event.body, 0).is_ok_and(|(text, _)| text == "確定")));
+        for text in ["", "確定"] {
+            peer.surrounding(input, text.as_bytes(), text.len() as u32, text.len() as u32)?;
+            peer.send(input, 7, vec![])?;
+            peer.sync(&mut display, &mut state, &stop)?;
+            assert_eq!(
+                snapshot(&state)?.composition_revision,
+                before.composition_revision
+            );
+        }
+        peer.surrounding(input, "任意の編集".as_bytes(), 0, 0)?;
+        peer.send(input, 7, vec![])?;
+        peer.sync(&mut display, &mut state, &stop)?;
+        assert_eq!(
+            state.apply_ime(5, &transaction(&before, 3, Some("古い入力"))),
+            Err("STALE")
+        );
+        drop(peer);
+        cleanup(&mut display, &mut state)
+    }
+
+    #[test]
     fn cancelled_fixture_still_closes_local_client_and_resources() {
         let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
         let report = run(Arc::new(AtomicBool::new(true)));

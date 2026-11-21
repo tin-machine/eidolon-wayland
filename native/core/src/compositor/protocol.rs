@@ -133,6 +133,8 @@ pub use popup::PopupReport;
 pub use snapshot::WindowReport;
 
 pub struct ProtocolState {
+    pub(crate) memfd_owner: crate::session_memfds::Owner,
+    keymap_lease: Option<crate::session_memfds::FileLease>,
     display_handle: DisplayHandle,
     compositor: CompositorState,
     shell: XdgShellState,
@@ -271,6 +273,8 @@ impl ProtocolState {
             pixel_budget,
             pools: PoolBudget::default(),
             pool_leases: HashMap::new(),
+            memfd_owner: Default::default(),
+            keymap_lease: None,
             release_queue: HashMap::new(),
             buffer_uses: HashMap::new(),
             data_devices: HashMap::new(),
@@ -823,7 +827,8 @@ impl Dispatch<WlShm, ()> for ProtocolState {
                 return;
             };
             let weak = Arc::downgrade(&lease);
-            match ShmPoolUserData::new_with_drop_guard(fd, size, Box::new(lease)) {
+            let file = state.memfd_owner.track(std::os::fd::AsFd::as_fd(&fd), true);
+            match ShmPoolUserData::new_with_drop_guard(fd, size, Box::new((lease, file))) {
                 Ok(data) => {
                     let pool = data_init.init(id, data);
                     state.pool_leases.insert(pool.id(), weak);

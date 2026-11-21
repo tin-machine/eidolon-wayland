@@ -102,7 +102,7 @@ import androidx.compose.runtime.LaunchedEffect
             else -> "Linux Desktopの版は未設定です"
         },color=Color.White)
         Row {
-            Button(enabled=state.canSave,onClick={editingBackend=LinuxDesktopBackend.V3}) {Text("v3 / Mousepadの設定")}
+            Button(enabled=state.canSave,onClick={editingBackend=LinuxDesktopBackend.V3}) {Text("v3 / Linuxアプリの設定")}
             Button(enabled=state.canSave,onClick={editingBackend=LinuxDesktopBackend.V2}) {Text("v2 / 固定GTKの設定")}
         }
         if(state.canResume) Button(onClick={NativeSessionHost.resumeLinuxSettings(state.settingsCapture)}) {Text("元の設定保存を再開")}
@@ -139,7 +139,7 @@ import androidx.compose.runtime.LaunchedEffect
         }
         if(editingBackend==LinuxDesktopBackend.V3) {
             Text("3. Linux Desktop v3の設定を読み込みます",color=Color.White)
-            Text("固定builderの --print-config で出力したJSONを貼り付けてください。接続先と転送用ファイルをまとめて保存します。",color=Color.White)
+            Text("対象の Ubuntu アカウント向けに出力した v3 設定 JSON を貼り付けてください。接続先と転送用ファイルをまとめて保存します。",color=Color.White)
             ConnectionField(v3,{v3=it},"v3設定JSON",state.canSave,false)
             Text("${v3Bytes} / ${LinuxDesktopV3Config.MAX_BYTES} bytes · ${if(validV3) "形式と照合値を確認しました" else "設定JSONを確認してください"}",color=Color.White)
             Row {

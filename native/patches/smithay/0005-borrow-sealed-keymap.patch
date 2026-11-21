@@ -1,0 +1,30 @@
+--- a/src/input/keyboard/mod.rs
++++ b/src/input/keyboard/mod.rs
+@@ -684,6 +684,13 @@
+ }
+ 
+ impl<D: SeatHandler + 'static> KeyboardHandle<D> {
++
++    /// Let the compositor identify the retained keymap while holding the keyboard's keymap lock.
++    #[cfg(feature = "wayland_frontend")]
++    pub fn with_sealed_keymap_fd<T>(&self, visit: impl FnOnce(Option<std::os::fd::BorrowedFd<'_>>) -> T) -> T {
++        visit(self.arc.keymap.lock().unwrap().sealed_fd())
++    }
++
+     /// Create a keyboard handler from a set of RMLVO rules
+     pub(crate) fn new(xkb_config: XkbConfig<'_>, repeat_delay: i32, repeat_rate: i32) -> Result<Self, Error> {
+         Self::new_with_source(KeymapSource::Names(xkb_config), repeat_delay, repeat_rate)
+--- a/src/input/keyboard/keymap_file.rs
++++ b/src/input/keyboard/keymap_file.rs
+@@ -28,6 +28,11 @@
+ }
+ 
+ impl KeymapFile {
++
++    pub(super) fn sealed_fd(&self) -> Option<BorrowedFd<'_>> {
++        self.sealed.as_ref().map(AsFd::as_fd)
++    }
++
+     /// Turn the keymap into a string using KEYMAP_FORMAT_TEXT_V1, create a sealed file for it, and store the string
+     pub fn new(keymap: &Keymap) -> Self {
+         let name = c"smithay-keymap";

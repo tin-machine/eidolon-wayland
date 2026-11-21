@@ -68,6 +68,7 @@ pub struct ConnectionProfile {
 pub struct RuntimePaths {
     pub native_library_dir: String,
     pub files_dir: String,
+    pub android_boot_count: Option<u32>,
 }
 impl RuntimeConfig {
     pub fn parse(json: &str) -> Result<Self, Status> {
@@ -110,7 +111,7 @@ impl RuntimeConfig {
         let selected_v2 = self.linux_desktop_pins.is_some();
         let selected_v3 = self.linux_desktop_v3.is_some();
         if (selected_v2 && selected_v3)
-            || self.linux_profile_v2.is_some() != (selected_v2 || selected_v3)
+            || ((selected_v2 || selected_v3) && self.linux_profile_v2.is_none())
             || self
                 .linux_desktop_pins
                 .as_ref()
@@ -391,6 +392,14 @@ pub enum Command {
         target: crate::surface::TargetKey,
         pose: crate::workspace::PanelPose,
     },
+    SetInitialDialogPose {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        create_command: CommandSeq,
+        parent: crate::ids::WindowId,
+        pose: crate::workspace::PanelPose,
+    },
     SetPoseControl {
         schema: u32,
         request_id: CommandSeq,
@@ -467,6 +476,10 @@ pub enum Command {
         schema: u32,
         request_id: CommandSeq,
         session: crate::ids::SessionId,
+    },
+    LinuxDesktopDiscover {
+        schema: u32,
+        request_id: CommandSeq,
     },
     LinuxDesktopV3Inspect {
         schema: u32,
@@ -635,6 +648,8 @@ pub enum Command {
         session: crate::ids::SessionId,
         nonce: String,
         mode: AppMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selection: Option<crate::catalog::ShelfStart>,
     },
     ForwardProbe {
         schema: u32,
@@ -754,6 +769,7 @@ impl Command {
             | Self::ApplyThemeImport { schema, .. }
             | Self::CancelThemeImport { schema, .. }
             | Self::SetPose { schema, .. }
+            | Self::SetInitialDialogPose { schema, .. }
             | Self::SetPoseControl { schema, .. }
             | Self::WindowGroup { schema, .. }
             | Self::WindowGroupApplied { schema, .. }
@@ -766,6 +782,7 @@ impl Command {
             | Self::LinuxDesktopInspect { schema, .. }
             | Self::LinuxDesktopLaunch { schema, .. }
             | Self::LinuxDesktopRecover { schema, .. }
+            | Self::LinuxDesktopDiscover { schema, .. }
             | Self::LinuxDesktopV3Inspect { schema, .. }
             | Self::LinuxDesktopV3Launch { schema, .. }
             | Self::LinuxDesktopV3Recover { schema, .. }
@@ -905,6 +922,7 @@ impl Command {
                 return Err(Status::InvalidArgument);
             }
             Self::SetPose { pose, .. }
+            | Self::SetInitialDialogPose { pose, .. }
             | Self::SetPoseControl { pose, .. }
             | Self::WindowGroupApplied { pose, .. }
             | Self::PoseApplied { pose, .. }
@@ -962,6 +980,7 @@ impl Command {
             | Self::ApplyThemeImport { request_id, .. }
             | Self::CancelThemeImport { request_id, .. }
             | Self::SetPose { request_id, .. }
+            | Self::SetInitialDialogPose { request_id, .. }
             | Self::SetPoseControl { request_id, .. }
             | Self::WindowGroup { request_id, .. }
             | Self::WindowGroupApplied { request_id, .. }
@@ -974,6 +993,7 @@ impl Command {
             | Self::LinuxDesktopInspect { request_id, .. }
             | Self::LinuxDesktopLaunch { request_id, .. }
             | Self::LinuxDesktopRecover { request_id, .. }
+            | Self::LinuxDesktopDiscover { request_id, .. }
             | Self::LinuxDesktopV3Inspect { request_id, .. }
             | Self::LinuxDesktopV3Launch { request_id, .. }
             | Self::LinuxDesktopV3Recover { request_id, .. }
@@ -1474,7 +1494,7 @@ mod tests {
         assert_eq!(AppMode::LinuxDesktop.linux_gtk_case(), None);
     }
     #[test]
-    fn normal_linux_config_requires_pair_and_keeps_probe_namespace_independent() {
+    fn normal_linux_config_accepts_discovery_profile_and_keeps_probe_namespace_independent() {
         let host_key =
             include_str!("../../../android/app/src/test/resources/connection-profiles-v2.tsv")
                 .lines()
@@ -1500,7 +1520,7 @@ mod tests {
         assert!(config.validate().is_err());
         config.linux_profile_v2 = Some(profile.to_string());
         config.linux_desktop_pins = None;
-        assert!(config.validate().is_err());
+        assert!(config.validate().is_ok());
         config.linux_profile_v2 = None;
         config.linux_desktop_pins = Some("{}".into());
         assert!(config.validate().is_err());

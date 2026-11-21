@@ -92,7 +92,7 @@ object WindowGroupsCase {
                     .put("pose",placement?.optJSONObject("applied_pose")?.let {same(it.getJSONObject("target"),key) && PanelPoseCodec.near(it.getJSONObject("pose"),placement.getJSONObject("pose"))}==true)
                     .put("physical",window?.getJSONObject("sizing")?.let {it.optJSONObject("applied_physical_size_m")?.toString()==it.getJSONObject("physical_size_m").toString()}==true)
                     .put("controls",c!=null && c.optBoolean("enabled") && c.optLong("failures")==0L &&
-                        rows(c.getJSONArray("buttons")).let {it.size==4 && it.all {button->button.optBoolean("ready") && same(button.getJSONObject("target"),key)}})
+                        rows(c.getJSONArray("buttons")).let {it.size==3 && it.all {button->button.optBoolean("ready") && same(button.getJSONObject("target"),key)}})
                     .put("mode",b.optJSONObject("mode_badge")?.optBoolean("object_ready")==true)
                     .put("input_target",NativeSessionHost.inputTarget(key.toString())!=null)
             }

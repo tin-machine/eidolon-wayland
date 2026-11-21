@@ -677,6 +677,7 @@ dependencies = [
  "eidolon-core",
  "eidolon-model",
  "eidolon-render",
+ "eidolon-spatial-anchor",
  "eidolon-transport",
  "jni",
  "serde_json",
@@ -747,6 +748,15 @@ dependencies = [
  "sha2 0.11.1",
  "wayland-client",
  "wayland-protocols",
+]
+
+[[package]]
+name = "eidolon-spatial-anchor"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "openxr-sys",
+ "serde_json",
 ]
 
 [[package]]
@@ -1511,6 +1521,15 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "openxr-sys"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "febb5d50cee7b964b69d5b7a810ed9620fc64f41382ffefe05434754c7a48877"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "p256"

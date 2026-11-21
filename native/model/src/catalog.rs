@@ -100,6 +100,9 @@ impl Definition {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    Shelf {
+        path: String,
+    },
     Save {
         path: String,
         expected_revision: Option<String>,
@@ -128,7 +131,7 @@ impl Operation {
                     && expected_revision.as_ref().is_none_or(|v| hash(v))
                     && definition.valid()
             }
-            Self::Reload { path } => text(path, 1024),
+            Self::Shelf { path } | Self::Reload { path } => text(path, 1024),
             Self::Page { revision, offset } => {
                 hash(revision) && *offset <= 64 && offset.is_multiple_of(8)
             }
@@ -295,5 +298,20 @@ mod tests {
             }
             .valid()
         );
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShelfStart {
+    pub path: String,
+    pub builtin: bool,
+    pub revision: String,
+    pub id: String,
+}
+
+impl ShelfStart {
+    pub fn valid(&self) -> bool {
+        text(&self.path, 1024) && hash(&self.revision) && id(&self.id)
     }
 }

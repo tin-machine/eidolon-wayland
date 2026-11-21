@@ -13,7 +13,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 
-/** Visible custom editor for the terminal-capability probe; no production delivery is connected. */
+/** Android IME editor shared by the normal input path and the diagnostic probe. */
 class ImeEditorView(
     context: Context,
     onTransaction: (ImeEditTransaction) -> Boolean = { true },
@@ -39,6 +39,7 @@ class ImeEditorView(
     }
     private var connection: ImeInputConnection? = null
     private var permanentlyClosed = false
+    private var keyboardShowPending = false
     private val inputMethod get() = context.getSystemService(InputMethodManager::class.java)
 
     init {
@@ -68,6 +69,7 @@ class ImeEditorView(
         // Retire before any synchronous IMM callback: restartInput must receive null,
         // and a delayed framework callback must never open another generation.
         permanentlyClosed = true
+        keyboardShowPending = false
         editor.reset("close")
         connection = null
         val imm = runCatching { inputMethod }.getOrNull()
@@ -97,6 +99,7 @@ class ImeEditorView(
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
         windowFocusChanged(hasWindowFocus)
+        if (hasWindowFocus) showKeyboardAfterFocus()
     }
 
     override fun onCheckIsTextEditor() = !permanentlyClosed
@@ -111,7 +114,10 @@ class ImeEditorView(
         outAttrs.initialSelStart = 0
         outAttrs.initialSelEnd = 0
         outAttrs.contentMimeTypes = null
-        return ImeInputConnection(this, editor, generation, ::editorChanged, ::forwardUnhandledKey, onEditorAction, { canEditGeneration(generation) }).also { connection = it }
+        return ImeInputConnection(this, editor, generation, ::editorChanged, ::forwardUnhandledKey, onEditorAction, { canEditGeneration(generation) }).also {
+            connection = it
+            showKeyboardAfterFocus()
+        }
     }
 
     private fun editorChanged() {
@@ -125,6 +131,7 @@ class ImeEditorView(
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: android.graphics.Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
         if (!gainFocus) {
+            keyboardShowPending = false
             editor.reset("focus_lost")
             connection = null
             invalidate()
@@ -132,6 +139,7 @@ class ImeEditorView(
     }
 
     override fun onDetachedFromWindow() {
+        keyboardShowPending = false
         editor.reset("close")
         connection = null
         super.onDetachedFromWindow()
@@ -149,9 +157,20 @@ class ImeEditorView(
     override fun performClick(): Boolean {
         if (permanentlyClosed) return false
         super.performClick()
+        keyboardShowPending = true
         requestFocus()
-        inputMethod?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+        showKeyboardAfterFocus()
         return true
+    }
+
+    private fun showKeyboardAfterFocus() {
+        if (!keyboardShowPending) return
+        post {
+            if (!keyboardShowPending || permanentlyClosed || !isAttachedToWindow || !hasFocus() || !hasWindowFocus()) return@post
+            // The click explicitly requests IME input. On a Presentation the window
+            // can gain focus after the click, so recheck here before requesting it.
+            if (inputMethod?.showSoftInput(this, 0) == true) keyboardShowPending = false
+        }
     }
 
     private fun forwardUnhandledKey(event: KeyEvent): Boolean {

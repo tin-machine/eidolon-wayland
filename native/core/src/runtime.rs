@@ -25,6 +25,7 @@ struct Shared {
     diagnostic_sdk_bindings: Vec<eidolon_model::surface::TargetKey>,
     sdk_evidence: crate::sdk_evidence::Ledger,
     v3_retirement: Option<crate::v3_retirement::Owner>,
+    mousepad_anchor_main: Option<(eidolon_model::ids::SessionId, eidolon_model::ids::WindowId)>,
     v3_finalizer_workers: usize,
     v3_recovery_local_proven: bool,
     last_scene: Option<eidolon_model::ids::SceneEpoch>,
@@ -103,6 +104,8 @@ impl Shared {
             NativeAckFact, NativeCreateIdentity, NativeFrameFact, NativePanelFact, NativeSdkFact,
             Observation, PresentationState, Role,
         };
+        // Record authenticated adoption before exposing the corresponding Panel Create.
+        self.mousepad_anchor_main = None;
         let origin = current.v3_origin().cloned().ok_or("APP_ORIGIN_UNKNOWN")?;
         let transport = transport.desktop_v3_transport.as_ref().filter(|proof| {
             proof.session == origin.session() && proof.launch_request == Some(origin.request())
@@ -195,7 +198,12 @@ impl Shared {
                 self.snapshot.scene,
                 self.snapshot.xr_state == XrState::Focused,
             )
-            .transport(started.then_some(origin), terminal, closing, closing)
+            .transport(
+                started.then_some(origin.clone()),
+                terminal,
+                closing,
+                closing,
+            )
             .windows(cut.global_window_count, cut.windows)
             .current_create(create)
             .panel(panel_fact)
@@ -234,6 +242,17 @@ impl Shared {
             result.presentation.state,
             PresentationState::Stopping | PresentationState::Pending
         );
+        if !stop
+            && !closing
+            && started
+            && cut.admission_open
+            && origin.app_id() == eidolon_model::linux_desktop_v3::AppId::Editor
+        {
+            self.mousepad_anchor_main = result
+                .presentation
+                .main
+                .map(|main| (origin.session(), main));
+        }
         self.snapshot.desktop_v3_presentation = Some(result.presentation);
         self.snapshot.desktop_v3_sdk_target = result.sdk_target;
         Ok(stop)
@@ -372,6 +391,54 @@ impl Shared {
                     && app.gui_windows.contains(&target.window)
             })
             && self.v3_target_ready(target, render)
+    }
+
+    fn mousepad_anchor_preparing_target(
+        &self,
+        panels: &[crate::panels::PanelCommand],
+    ) -> Option<crate::diagnostics::AnchorPlacementTarget> {
+        let (session, window) = self.mousepad_anchor_main?;
+        let owner = self.v3_retirement.as_ref()?;
+        if owner.is_sealed() || owner.origin().session() != session {
+            return None;
+        }
+        let panel = panels.iter().find(|panel| {
+            panel.action == eidolon_model::commands::PanelAction::Create
+                && panel.error.is_none()
+                && panel.target.session == session
+                && panel.target.window == window
+                && Some(panel.target.scene) == self.snapshot.scene
+        })?;
+        Some(crate::diagnostics::AnchorPlacementTarget {
+            placement: eidolon_model::workspace::PlacementId::MousepadMain,
+            target: panel.target,
+        })
+    }
+
+    fn mousepad_anchor_target(
+        &self,
+        render: &eidolon_render::Snapshot,
+        transport: &eidolon_transport::session::Snapshot,
+    ) -> Option<crate::diagnostics::AnchorPlacementTarget> {
+        use eidolon_model::linux_desktop_v3::{AppId, presentation::PresentationState};
+
+        let origin = self.v3_retirement.as_ref()?.origin();
+        if origin.app_id() != AppId::Editor {
+            return None;
+        }
+        let presentation = self.snapshot.desktop_v3_presentation.as_ref()?;
+        let target = self.snapshot.desktop_v3_sdk_target.as_ref()?.target;
+        if presentation.state != PresentationState::Ready
+            || presentation.main != Some(target.window)
+            || origin.session() != target.session
+            || !self.v3_input_target_current(target, render, transport)
+        {
+            return None;
+        }
+        Some(crate::diagnostics::AnchorPlacementTarget {
+            placement: eidolon_model::workspace::PlacementId::MousepadMain,
+            target,
+        })
     }
 
     /// Record every native Create before exposing its plan to Android. Retired
@@ -646,7 +713,24 @@ impl Runtime {
         config: RuntimeConfig,
         handle: eidolon_model::ids::RuntimeHandle,
     ) -> std::io::Result<Self> {
-        Self::start_owned_with_hook(config, handle, || {})
+        Self::start_owned_with_hook(config, handle, eidolon_render::ExecutorSlot::Primary, || {})
+    }
+    pub fn start_companion_registered(
+        config: RuntimeConfig,
+        handle: eidolon_model::ids::RuntimeHandle,
+    ) -> std::io::Result<Self> {
+        Self::start_owned_with_hook(
+            config,
+            handle,
+            eidolon_render::ExecutorSlot::Companion,
+            || {},
+        )
+    }
+    pub fn start_termux_registered(
+        config: RuntimeConfig,
+        handle: eidolon_model::ids::RuntimeHandle,
+    ) -> std::io::Result<Self> {
+        Self::start_owned_with_hook(config, handle, eidolon_render::ExecutorSlot::Termux, || {})
     }
     fn start_with_hook(
         config: RuntimeConfig,
@@ -659,11 +743,17 @@ impl Runtime {
             .map_err(|_| std::io::Error::other("ID_EXHAUSTED"))?;
         let handle = eidolon_model::ids::RuntimeHandle::new(value)
             .map_err(|_| std::io::Error::other("ID_EXHAUSTED"))?;
-        Self::start_owned_with_hook(config, handle, ready_hook)
+        Self::start_owned_with_hook(
+            config,
+            handle,
+            eidolon_render::ExecutorSlot::Primary,
+            ready_hook,
+        )
     }
     fn start_owned_with_hook(
         config: RuntimeConfig,
         runtime_handle: eidolon_model::ids::RuntimeHandle,
+        render_slot: eidolon_render::ExecutorSlot,
         ready_hook: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<Self> {
         let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "CONFIG_INVALID");
@@ -746,14 +836,23 @@ impl Runtime {
             .map_err(|_| invalid())?;
             profiles.insert(profile.profile_id.clone(), profile);
         }
-        let transport = Arc::new(eidolon_transport::session::Controller::start_with_root(
-            config
-                .paths
-                .as_ref()
-                .map(|paths| std::path::PathBuf::from(&paths.files_dir)),
-        )?);
+        let transport = Arc::new(
+            eidolon_transport::session::Controller::start_with_local_boot(
+                config
+                    .paths
+                    .as_ref()
+                    .map(|paths| std::path::PathBuf::from(&paths.files_dir)),
+                config
+                    .paths
+                    .as_ref()
+                    .and_then(|paths| paths.android_boot_count),
+            )?,
+        );
         let io = transport.clone();
-        let render = Arc::new(eidolon_render::Controller::start()?);
+        let render = Arc::new(eidolon_render::Controller::start_in_slot(
+            Default::default(),
+            render_slot,
+        )?);
         let gl = render.clone();
         let shared = Arc::new(Mutex::new(Shared {
             ime_ui: None,
@@ -762,6 +861,7 @@ impl Runtime {
             diagnostic_sdk_bindings: vec![],
             sdk_evidence: Default::default(),
             v3_retirement: None,
+            mousepad_anchor_main: None,
             v3_finalizer_workers: 0,
             v3_recovery_local_proven: false,
             last_scene: None,
@@ -814,6 +914,7 @@ impl Runtime {
                     String,
                     Vec<eidolon_model::ids::WindowId>,
                 )> = None;
+                let mut shelf_start: Option<(String, eidolon_model::catalog::ShelfStart)> = None;
                 let mut pending_app: Option<(
                     eidolon_model::ids::SessionId,
                     String,
@@ -825,6 +926,11 @@ impl Runtime {
                 let mut workspace = crate::workspace::Controller::load(
                     config.preferences_dir.as_deref().map(std::path::Path::new),
                 );
+                workspace.set_horizontal_offset(match render_slot {
+                    eidolon_render::ExecutorSlot::Primary => 0.,
+                    eidolon_render::ExecutorSlot::Companion => 1.8,
+                    eidolon_render::ExecutorSlot::Termux => -1.8,
+                });
                 if config.preferences_dir.is_none() {
                     workspace.set_keyboard_layout(config.keyboard_layout);
                 }
@@ -1197,11 +1303,12 @@ impl Runtime {
                                     }else{Status::NotReady}}
                                     #[cfg(not(any(test, feature = "debug-fixtures")))]
                                     {Status::InvalidArgument}
-                                }else{io.start_app(
+                                }else{io.start_selected_app(
                                     current.session(),
                                     &current.socket().unwrap(),
                                     current.nonce(),
                                     current.mode(),
+                                    shelf_start.take().and_then(|(owner, selection)| (owner == current.nonce()).then_some(selection)),
                                 )};
                                 if code == Status::Accepted {
                                     current.forward_started();
@@ -1696,6 +1803,15 @@ impl Runtime {
                                     }
                                 }
 
+                                Command::LinuxDesktopDiscover { request_id, .. } => {
+                                    let app_allows_discovery = !app_busy
+                                        || app.as_ref().is_some_and(crate::session::Session::is_v3);
+                                    if !app_allows_discovery || helper.is_some() || dependencies.is_some() || compositor.is_some() {
+                                        Status::Busy
+                                    } else if let Some(profile) = desktop_profile.as_ref() {
+                                        io.discover_desktop(profile, *request_id)
+                                    } else { Status::NotReady }
+                                }
                                 Command::LinuxDesktopV3Inspect { session, request_id, .. } => {
                                     if native_busy || helper.is_some() || dependencies.is_some() || compositor.is_some() {
                                         Status::Busy
@@ -1771,6 +1887,8 @@ impl Runtime {
                                                         origin, clock.elapsed().as_millis() as u64, vec![]
                                                     ) {
                                                         Ok(observer) => {
+                                                            state.snapshot.desktop_v3_presentation = observer.snapshot().ok();
+                                                            state.snapshot.desktop_v3_sdk_target = None;
                                                             v3_observer = Some(observer);
                                                             v3_pending = Some(permit);
                                                             app_linux = false;
@@ -2366,6 +2484,11 @@ impl Runtime {
                                     {
                                         Status::Busy
                                     } else {
+                                        shelf_start = match &command {
+                                            Command::StartApp { selection: Some(choice), .. } =>
+                                                Some((nonce.clone(), choice.clone())),
+                                            _ => None,
+                                        };
                                         pending_app =
                                             Some((*session, nonce.clone(), *mode, virtual_clock, false));
                                         state.snapshot.app = Some(crate::session::Report {
@@ -2713,6 +2836,7 @@ impl Runtime {
                                 }
                                 Command::ResetInput { .. } => Status::Accepted,
                                 Command::RegisterSdkBinding { .. }
+                                | Command::SetInitialDialogPose { .. }
                                 | Command::SdkBindingEvidence { .. }
                                 | Command::SceneClosing { .. }
                                 | Command::ReleaseSdkBinding { .. } => unreachable!(
@@ -2914,6 +3038,59 @@ impl Runtime {
             self.worker.thread().unpark();
         }
         let mut state = self.lock();
+        if let Command::SetInitialDialogPose {
+            request_id,
+            target,
+            create_command,
+            parent,
+            pose,
+            ..
+        } = &command
+        {
+            use eidolon_model::{commands::PanelAction, window::WindowLife};
+            let app_matches = state.snapshot.app.as_ref().is_some_and(|app| {
+                app.session == Some(target.session)
+                    && app.gui_windows.contains(&target.window)
+                    && app.gui_windows.contains(parent)
+                    && app.windows.iter().any(|window| {
+                        window.window == target.window
+                            && window.parent == Some(*parent)
+                            && window.life == WindowLife::Mapped
+                    })
+            });
+            let current_create = state.panels.snapshot().iter().any(|plan| {
+                plan.target == *target
+                    && plan.command_seq == *create_command
+                    && plan.action == PanelAction::Create
+                    && !plan.applied
+                    && plan.error.is_none()
+            });
+            if self.stop.load(Ordering::Acquire)
+                || state.snapshot.state != RuntimeState::Ready
+                || state.snapshot.scene != Some(target.scene)
+                || state.snapshot.xr_state != XrState::Focused
+                || !state.snapshot.activity_visible
+                || !app_matches
+                || !current_create
+                || state.sdk_bindings.contains(target)
+                || !state.v3_retirement.as_ref().is_some_and(|owner| {
+                    !owner.is_sealed() && owner.owns_target(*target, *create_command)
+                })
+            {
+                return Status::NotReady;
+            }
+            if state
+                .workspace
+                .set_initial_dialog_pose(*target, *request_id, *pose)
+                .is_err()
+            {
+                return Status::Stale;
+            }
+            state.snapshot.workspace = state.workspace.snapshot();
+            state.snapshot.commands_accepted += 1;
+            state.snapshot.commands_processed += 1;
+            return Status::Accepted;
+        }
         if let Command::SdkBindingEvidence {
             target,
             create_command,
@@ -3306,7 +3483,14 @@ impl Runtime {
                     .is_some_and(|owner| owner.is_sealed()))
                 || (state.v3_retirement.is_none()
                     && (transport_reclamation.no_local_allocation_proven
+                        || transport_reclamation.durable_v3_local_proven
                         || transport_reclamation.v2_capture_proven)));
+        // Remote-only Recover still takes the old I/O fence and matches the
+        // exact journal. Its Complete result cannot release the local SDK gate.
+        let recovery_allowed = local_recovery_proven
+            || (origin_resources_retired
+                && !native_origin_pending
+                && transport_reclamation.v3_remote_only_recovery);
         let add = |values: &[usize]| {
             values
                 .iter()
@@ -3347,10 +3531,10 @@ impl Runtime {
         let reclamation = crate::diagnostics::RuntimeReclamationSnapshot {
             runtime: self.handle,
             origin_retired,
-            recovery_connect_allowed: local_recovery_proven
+            recovery_connect_allowed: recovery_allowed
                 && !self.stop.load(Ordering::Acquire)
                 && transport_reclamation.recovery_connect_allowed,
-            recovery_command_allowed: local_recovery_proven
+            recovery_command_allowed: recovery_allowed
                 && !self.stop.load(Ordering::Acquire)
                 && transport_reclamation.recovery_command_allowed,
             connections: transport.owned_connections,
@@ -3379,6 +3563,16 @@ impl Runtime {
             shutdown,
             reclamation: Some(reclamation),
             app_sdk_bindings: state.app_sdk_bindings(),
+            anchor_preparing_target: if self.stop.load(Ordering::Acquire) {
+                None
+            } else {
+                state.mousepad_anchor_preparing_target(&panels)
+            },
+            anchor_placement_target: if self.stop.load(Ordering::Acquire) {
+                None
+            } else {
+                state.mousepad_anchor_target(&render, &transport)
+            },
             transport,
             render,
             commands_pending: state.commands.len(),
@@ -3785,7 +3979,7 @@ mod tests {
         entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         let private: eidolon_model::ime::ImeSnapshot = serde_json::from_value(serde_json::json!({
             "target":{"session":"1","window":"2","surface":"3","focus_token":"4",
-                "input_epoch":0,"activation":1,"serial":1},"edit_revision":1,"last_sequence":0,
+                "input_epoch":0,"activation":1,"serial":1},"edit_revision":1,"composition_revision":0,"last_sequence":0,
             "surrounding":{"text":"private-ime-fixture","cursor":0,"anchor":0},
             "content_hint":0,"content_purpose":0,"cursor_rectangle":null,"change_cause":0
         }))
@@ -4359,6 +4553,7 @@ mod tests {
             paths: Some(eidolon_model::commands::RuntimePaths {
                 files_dir: parent.to_str().unwrap().into(),
                 native_library_dir: "/unused-native-dependency-fixture".into(),
+                android_boot_count: None,
             }),
             ..Default::default()
         })
@@ -4657,6 +4852,18 @@ mod tests {
             target = panel.target;
             create = panel.command_seq;
             assert!(panel.v3_evidence_required);
+            state.mousepad_anchor_main = Some((origin.session(), window));
+            let mut panels = state.panels.snapshot();
+            assert!(!panels[0].applied);
+            assert_eq!(
+                state
+                    .mousepad_anchor_preparing_target(&panels)
+                    .unwrap()
+                    .target,
+                target
+            );
+            panels[0].target.window = eidolon_model::ids::WindowId::new(2).unwrap();
+            assert!(state.mousepad_anchor_preparing_target(&panels).is_none());
         }
         let registration = |target, adapter| Command::RegisterSdkBinding {
             schema: 1,
@@ -4715,6 +4922,16 @@ mod tests {
                 cleanup_pending: false,
                 fallback_used: false,
             });
+            state.snapshot.desktop_v3_sdk_target =
+                Some(eidolon_model::linux_desktop_v3::report::SdkTarget {
+                    runtime: origin.runtime(),
+                    target,
+                    create_command: create,
+                    action: eidolon_model::linux_desktop_v3::report::SdkAction::Create,
+                    acknowledged: true,
+                    binding_present: true,
+                    renderer_frame_seen: true,
+                });
             let mut render = eidolon_render::Snapshot {
                 mode: eidolon_render::RenderMode::Windows,
                 targets: vec![eidolon_render::TargetReport {
@@ -4781,12 +4998,32 @@ mod tests {
                 Status::Accepted
             );
             assert!(state.v3_input_target_current(target, &render, &transport));
+            let anchored = state.mousepad_anchor_target(&render, &transport).unwrap();
+            assert_eq!(anchored.target, target);
+            assert_eq!(
+                anchored.placement,
+                eidolon_model::workspace::PlacementId::MousepadMain
+            );
+            state
+                .snapshot
+                .desktop_v3_presentation
+                .as_mut()
+                .unwrap()
+                .main = Some(foreign.window);
+            assert!(state.mousepad_anchor_target(&render, &transport).is_none());
+            state
+                .snapshot
+                .desktop_v3_presentation
+                .as_mut()
+                .unwrap()
+                .main = Some(target.window);
             transport
                 .desktop_v3_transport
                 .as_mut()
                 .unwrap()
                 .terminal_observed = true;
             assert!(!state.v3_input_target_current(target, &render, &transport));
+            assert!(state.mousepad_anchor_target(&render, &transport).is_none());
             transport
                 .desktop_v3_transport
                 .as_mut()
@@ -4922,6 +5159,7 @@ mod host_readback_tests {
         let runtime = Runtime::start_owned_with_hook(
             RuntimeConfig::default(),
             RuntimeHandle::new(42).unwrap(),
+            eidolon_render::ExecutorSlot::Primary,
             move || {
                 entered_tx.send(()).unwrap();
                 release_rx.recv().unwrap();

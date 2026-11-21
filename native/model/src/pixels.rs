@@ -19,9 +19,12 @@ struct Counter {
     limit: usize,
 }
 
-/// session内のcache/pending/renderすべてで同じbudgetを共有する。
+/// A common allocation limit with optional accounting for one owner.
 #[derive(Clone)]
-pub struct PixelBudget(Arc<Counter>);
+pub struct PixelBudget {
+    total: Arc<Counter>,
+    owner_used: Option<Arc<AtomicUsize>>,
+}
 
 impl Default for PixelBudget {
     fn default() -> Self {
@@ -31,24 +34,50 @@ impl Default for PixelBudget {
 
 impl PixelBudget {
     fn with_limit(limit: usize) -> Self {
-        Self(Arc::new(Counter {
-            used: AtomicUsize::new(0),
-            limit,
-        }))
+        Self {
+            total: Arc::new(Counter {
+                used: AtomicUsize::new(0),
+                limit,
+            }),
+            owner_used: None,
+        }
+    }
+
+    /// Track this owner's images through their last reference while charging
+    /// the same global limit as the theme and other owners.
+    pub fn for_owner(&self) -> Self {
+        Self {
+            total: self.total.clone(),
+            owner_used: Some(Arc::new(AtomicUsize::new(0))),
+        }
     }
 
     pub fn used_bytes(&self) -> usize {
-        self.0.used.load(Ordering::Acquire)
+        self.owner_used
+            .as_deref()
+            .unwrap_or(&self.total.used)
+            .load(Ordering::Acquire)
     }
 
     fn charge(&self, bytes: usize) -> Result<(), PixelError> {
-        self.0
+        self.total
             .used
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(bytes).filter(|next| *next <= self.0.limit)
+                used.checked_add(bytes)
+                    .filter(|next| *next <= self.total.limit)
             })
-            .map(|_| ())
-            .map_err(|_| PixelError::ResourceLimit)
+            .map_err(|_| PixelError::ResourceLimit)?;
+        if let Some(used) = self.owner_used.as_deref() {
+            used.fetch_add(bytes, Ordering::AcqRel);
+        }
+        Ok(())
+    }
+
+    fn release(&self, bytes: usize) {
+        if let Some(used) = self.owner_used.as_deref() {
+            used.fetch_sub(bytes, Ordering::AcqRel);
+        }
+        self.total.used.fetch_sub(bytes, Ordering::AcqRel);
     }
 
     pub fn allocate(&self, width_px: u32, height_px: u32) -> Result<OwnedRgba, PixelError> {
@@ -133,13 +162,36 @@ impl Drop for OwnedRgba {
         // GL等のconsumer threadが最後の参照を落とす場合も、実allocationを
         // 解放してからprotocol ownerの次の割当に予算を返す。
         drop(std::mem::take(&mut self.pixels));
-        self.budget.0.used.fetch_sub(self.charged, Ordering::AcqRel);
+        self.budget.release(self.charged);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_retires_with_theme_pixels_still_charged_to_the_shared_limit() {
+        let shared = PixelBudget::with_limit(32);
+        let theme = shared.allocate(2, 2).unwrap();
+        let session = shared.for_owner();
+        let image = Arc::new(session.allocate(2, 2).unwrap());
+        let renderer = image.clone();
+
+        assert_eq!(shared.used_bytes(), 32);
+        assert_eq!(session.used_bytes(), 16);
+        assert!(matches!(
+            session.allocate(1, 1),
+            Err(PixelError::ResourceLimit)
+        ));
+        drop(image);
+        assert_eq!(session.used_bytes(), 16);
+        drop(renderer);
+        assert_eq!(session.used_bytes(), 0);
+        assert_eq!(shared.used_bytes(), 16);
+        drop(theme);
+        assert_eq!(shared.used_bytes(), 0);
+    }
 
     #[test]
     fn snapshots_share_one_charge_until_the_last_consumer_drops() {

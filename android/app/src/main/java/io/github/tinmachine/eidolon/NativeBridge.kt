@@ -1,5 +1,6 @@
 package io.github.tinmachine.eidolon
 
+import android.content.Context
 import org.json.JSONObject
 
 /** JNI入口。未実装の入口は呼ばず、版整合が取れた時だけnative readyとする。 */
@@ -10,8 +11,19 @@ object NativeBridge {
     const val INVALID_ARGUMENT = 3
     const val NOT_READY = 4
     const val FAILED = 5
+    @JvmStatic external fun nativeAnchorScope(instance: Long, procAddr: Long): Boolean
+    @JvmStatic external fun nativeAnchorStep(
+        instance: Long, session: Long, procAddr: Long, owner: String, command: String, uuid: String, poseJson: String,
+    ): String
+    @JvmStatic external fun nativeAnchorRequiredExtensions(application: Context): String
+    @JvmStatic external fun nativeSampleHands(instance: Long, session: Long, procAddr: Long,
+        unobstructed: Boolean, output: FloatArray): Boolean
+    @JvmStatic external fun nativeCloseHands(instance: Long, session: Long)
     @JvmStatic external fun nativeBuildInfo(): String
     @JvmStatic external fun nativeCreate(configJson: String): Long
+    /** 正のハンドル、または負のStatusコード。 */
+    @JvmStatic external fun nativeCreateCompanion(primary: Long): Long
+    @JvmStatic external fun nativeCreateTermux(primary: Long): Long
     @JvmStatic external fun nativeCommand(handle: Long, commandJson: String): Int
     @JvmStatic external fun nativeGenerateIdentity(): ByteArray
     @JvmStatic external fun nativePublicKey(privateKey: ByteArray): String

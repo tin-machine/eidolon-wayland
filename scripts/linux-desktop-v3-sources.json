@@ -7,6 +7,7 @@
   },
   "sources": {
     "eidolon-linux-session.py": "scripts/linux/eidolon-linux-session.py",
+    "eidolon_desktop_entries.py": "scripts/linux/eidolon_desktop_entries.py",
     "eidolon_linux_desktop_session_v3.py": "scripts/linux/eidolon_linux_desktop_session_v3.py",
     "eidolon_linux_desktop_v3.py": "scripts/linux/eidolon_linux_desktop_v3.py",
     "eidolon_linux_process_owner.py": "scripts/linux/eidolon_linux_process_owner.py",

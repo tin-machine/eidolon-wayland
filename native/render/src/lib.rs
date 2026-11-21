@@ -267,6 +267,13 @@ struct Active {
     needs_redraw: bool,
 }
 
+#[derive(Clone, Copy)]
+pub enum ExecutorSlot {
+    Termux,
+    Primary,
+    Companion,
+}
+
 impl Controller {
     pub fn start() -> std::io::Result<Self> {
         Self::start_with_budget(Default::default())
@@ -275,8 +282,14 @@ impl Controller {
         self.pixels.clone()
     }
     pub fn start_with_budget(pixels: eidolon_model::pixels::PixelBudget) -> std::io::Result<Self> {
+        Self::start_in_slot(pixels, ExecutorSlot::Primary)
+    }
+    pub fn start_in_slot(
+        pixels: eidolon_model::pixels::PixelBudget,
+        #[cfg_attr(not(target_os = "android"), allow(unused_variables))] slot: ExecutorSlot,
+    ) -> std::io::Result<Self> {
         #[cfg(target_os = "android")]
-        let executor = Some(executor::Executor::global()?);
+        let executor = Some(executor::Executor::for_slot(slot)?);
         #[cfg(not(target_os = "android"))]
         let executor = None;
         Self::start_on(pixels, executor)
@@ -1696,6 +1709,49 @@ mod tests {
         let report = executor.snapshot();
         assert_eq!((report.threads, report.active_jobs), (1, 0));
         assert!(!report.failed);
+    }
+
+    #[test]
+    fn two_workspace_slots_draw_independently_and_one_can_stop() {
+        let primary = executor::Executor::for_slot(ExecutorSlot::Primary).unwrap();
+        let companion = executor::Executor::for_slot(ExecutorSlot::Companion).unwrap();
+        let first = Controller::start_on(Default::default(), Some(primary.clone())).unwrap();
+        let second = Controller::start_on(Default::default(), Some(companion.clone())).unwrap();
+        wait(|| primary.snapshot().tid > 0 && companion.snapshot().tid > 0);
+        assert_ne!(primary.snapshot().tid, companion.snapshot().tid);
+        assert_eq!(primary.snapshot().active_jobs, 1);
+        assert_eq!(companion.snapshot().active_jobs, 1);
+        let key = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        for renderer in [&first, &second] {
+            renderer.use_windows();
+            renderer.set_visible(true);
+            assert_eq!(
+                renderer.windows(key.session, &[key.window]),
+                Status::Accepted
+            );
+            let (image, probes) = fixtures::make(0, 1, key, 64, 64).unwrap();
+            assert_eq!(renderer.submit(image, probes), Status::Accepted);
+            assert_eq!(
+                renderer.attach_window(key, PlatformWindow::default(), 64, 64),
+                Status::Accepted,
+            );
+        }
+        wait(|| {
+            [&first, &second].iter().all(|renderer| {
+                renderer
+                    .snapshot()
+                    .targets
+                    .iter()
+                    .any(|target| target.key == key && target.frames > 0)
+            })
+        });
+        second.request_stop();
+        wait(|| second.is_finished());
+        assert!(!first.is_finished());
+        assert_eq!(primary.snapshot().active_jobs, 1);
+        assert_eq!(companion.snapshot().active_jobs, 0);
+        first.request_stop();
+        wait(|| first.is_finished());
     }
 
     #[test]

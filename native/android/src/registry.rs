@@ -2,17 +2,23 @@ use eidolon_core::runtime::Runtime;
 use eidolon_model::{
     commands::{Command, RuntimeConfig},
     ids::RuntimeHandle,
+    linux_desktop_v3::{canonical_json, configuration::RuntimeBinding, digest},
     state::Status,
 };
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
+    os::unix::fs::{DirBuilderExt, MetadataExt},
+    path::Path,
     sync::{Arc, Mutex, OnceLock},
 };
 
 struct Entries {
     next: Option<i64>,
     runtimes: HashMap<i64, Arc<Runtime>>,
+    primary: Option<(i64, RuntimeConfig)>,
+    termux: Option<i64>,
+    companion: Option<i64>,
 }
 pub struct Registry(Mutex<Entries>);
 impl Default for Registry {
@@ -20,6 +26,9 @@ impl Default for Registry {
         Self(Mutex::new(Entries {
             next: Some(1),
             runtimes: HashMap::new(),
+            primary: None,
+            termux: None,
+            companion: None,
         }))
     }
 }
@@ -30,17 +39,119 @@ impl Registry {
         if !entries.runtimes.is_empty() {
             return Err(Status::Busy);
         }
+        let id = Self::insert(&mut entries, config.clone(), Runtime::start_registered)?;
+        entries.primary = Some((id, config));
+        Ok(id)
+    }
+
+    pub fn create_companion(&self, primary: i64) -> Result<i64, Status> {
+        let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if entries.companion.is_some() {
+            return Err(Status::Busy);
+        }
+        let (id, config) = entries.primary.as_ref().ok_or(Status::NotReady)?;
+        if *id != primary {
+            return Err(Status::Stale);
+        }
+        let mut config = config.clone();
+        let binding = RuntimeBinding::parse(
+            config
+                .linux_desktop_v3
+                .as_deref()
+                .ok_or(Status::NotReady)?
+                .as_bytes(),
+        )
+        .map_err(|_| Status::InvalidArgument)?;
+        let mut record = binding.record();
+        let storage = &mut record["storage"];
+        let derived = digest(&json!({
+            "domain": "eidolon-workspace-2",
+            "installation": storage["installation_id"],
+            "profile_storage": storage["profile_storage_id"],
+        }))
+        .map_err(|_| Status::InvalidArgument)?;
+        storage["profile_storage_id"] = json!(&derived[..32]);
+        let bytes = canonical_json(&record).map_err(|_| Status::InvalidArgument)?;
+        config.linux_desktop_v3 =
+            Some(String::from_utf8(bytes).map_err(|_| Status::InvalidArgument)?);
+        config.profiles.clear();
+        config.debug_probe_profile_v2 = None;
+        config.debug_linux_shm_pins = None;
+        config.debug_linux_gtk_pins = None;
+        Self::isolate_paths(&mut config, "eidolon-workspace-2")?;
+        let handle = Self::insert(&mut entries, config, Runtime::start_companion_registered)?;
+        entries.companion = Some(handle);
+        Ok(handle)
+    }
+
+    pub fn create_termux(&self, primary: i64) -> Result<i64, Status> {
+        let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if entries.termux.is_some() {
+            return Err(Status::Busy);
+        }
+        let (id, config) = entries.primary.as_ref().ok_or(Status::NotReady)?;
+        if *id != primary {
+            return Err(Status::Stale);
+        }
+        let mut config = config.clone();
+        config.profiles.retain(|p| p.profile_id == "termux-local");
+        if config.profiles.len() != 1 {
+            return Err(Status::NotReady);
+        }
+        config.linux_desktop_v3 = None;
+        config.linux_profile_v2 = None;
+        config.linux_desktop_pins = None;
+        config.debug_probe_profile_v2 = None;
+        config.debug_linux_shm_pins = None;
+        config.debug_linux_gtk_pins = None;
+        Self::isolate_paths(&mut config, "eidolon-termux")?;
+        let handle = Self::insert(&mut entries, config, Runtime::start_termux_registered)?;
+        entries.termux = Some(handle);
+        Ok(handle)
+    }
+
+    fn isolate_paths(config: &mut RuntimeConfig, name: &str) -> Result<(), Status> {
+        let paths = config.paths.as_mut().ok_or(Status::NotReady)?;
+        let directory = Path::new(&paths.files_dir).join(name);
+        match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err(Status::Failed),
+        }
+        let parent = std::fs::symlink_metadata(&paths.files_dir).map_err(|_| Status::Failed)?;
+        let metadata = std::fs::symlink_metadata(&directory).map_err(|_| Status::Failed)?;
+        if !parent.is_dir()
+            || !metadata.is_dir()
+            || metadata.uid() != parent.uid()
+            || metadata.mode() & 0o777 != 0o700
+        {
+            return Err(Status::Failed);
+        }
+        paths.files_dir = directory.to_str().ok_or(Status::InvalidArgument)?.into();
+        config.preferences_dir = None;
+        config.validate()?;
+        Ok(())
+    }
+
+    fn insert(
+        entries: &mut Entries,
+        config: RuntimeConfig,
+        start: fn(RuntimeConfig, RuntimeHandle) -> std::io::Result<Runtime>,
+    ) -> Result<i64, Status> {
         let id = entries.next.ok_or(Status::Failed)?;
         entries.next = id.checked_add(1);
         let runtime = Arc::new(
-            Runtime::start_registered(config, RuntimeHandle::new(id).map_err(|_| Status::Failed)?)
-                .map_err(|error| {
+            start(config, RuntimeHandle::new(id).map_err(|_| Status::Failed)?).map_err(
+                |error| {
                     if error.kind() == std::io::ErrorKind::InvalidInput {
                         Status::InvalidArgument
+                    } else if error.kind() == std::io::ErrorKind::WouldBlock {
+                        Status::Busy
                     } else {
                         Status::Failed
                     }
-                })?,
+                },
+            )?,
         );
         entries.runtimes.insert(id, runtime);
         Ok(id)
@@ -79,13 +190,25 @@ impl Registry {
         if !runtime.can_destroy() {
             return Status::Busy;
         }
-        let removed = self
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .runtimes
-            .remove(&id);
+        let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let is_primary = entries
+            .primary
+            .as_ref()
+            .is_some_and(|(primary, _)| *primary == id);
+        if is_primary && entries.runtimes.len() > 1 {
+            return Status::Busy;
+        }
+        let removed = entries.runtimes.remove(&id);
         if removed.is_some() {
+            if entries.termux == Some(id) {
+                entries.termux = None;
+            }
+            if entries.companion == Some(id) {
+                entries.companion = None;
+            }
+            if is_primary {
+                entries.primary = None;
+            }
             Status::Accepted
         } else {
             Status::Stale

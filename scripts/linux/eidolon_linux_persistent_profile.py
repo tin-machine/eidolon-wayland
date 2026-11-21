@@ -8,6 +8,7 @@ See docs/linux-real-app-c1-handoff-20261110.md for the lifetime and failure API.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 import errno
 import fcntl
@@ -325,19 +326,32 @@ def _read_owner(root, fd, uid, expected_owner, *, expected=None):
     return _stamp(after)
 
 
+@contextmanager
+def scan_current_directory(directory_fd):
+    # OverlayFS can retain an earlier listing on the open file description.
+    # Open "." relative to the owned fd; dup() would share the cached listing.
+    scan_fd = os.open(".", _DIRECTORY_FLAGS, dir_fd=directory_fd)
+    try:
+        _require(os.path.samestat(os.fstat(scan_fd), os.fstat(directory_fd)))
+        with os.scandir(scan_fd) as entries:
+            yield entries
+    finally:
+        os.close(scan_fd)
+
+
 def _fixed_entries(root):
     names = set()
     # Only the fixed envelope, never traversal of settings, Documents or state.
-    with os.scandir(root.fd) as entries:
+    with scan_current_directory(root.fd) as entries:
         for entry in entries:
             _require(entry.name in _ENTRIES and entry.name not in names)
             names.add(entry.name)
     _require(names == _ENTRIES)
 
 
-def _flock(fd):
+def _flock(fd, *, shared=False):
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
     except OSError as error:
         if error.errno in (errno.EACCES, errno.EAGAIN):
             raise ProfileError("APP_STATE_BUSY") from None
@@ -355,7 +369,7 @@ def _write_all(fd, raw):
 class PersistentProfileRepository:
     """Fixed passwd-HOME repository. No configurable root, migration or erase."""
 
-    def acquire(self, context, *, process_owner, barrier, expected_identity=None):
+    def acquire(self, context, *, process_owner, barrier, expected_identity=None, share_home=False):
         nodes, lock_fd, owner_fd, handle = [], None, None, None
         try:
             _require(type(context) is contract.Context)
@@ -375,9 +389,9 @@ class PersistentProfileRepository:
             # A nested HOME is itself replaceable by its UID. Hold the first
             # UID-owned ancestor below the root-owned trusted chain as well.
             # Unsupported directory flock/fsync filesystems fail closed.
-            _flock(anchor.fd)
+            _flock(anchor.fd, shared=share_home)
             if anchor is not home_node:
-                _flock(home_node.fd)
+                _flock(home_node.fd, shared=share_home)
             _validate_directories(nodes, uid)
             _require(expected_identity is None or home_node.identity == expected_identity.home)
             parent = home_node

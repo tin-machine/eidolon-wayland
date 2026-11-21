@@ -1,5 +1,5 @@
 [workspace]
-members = ["native/model", "native/core", "native/render", "native/transport", "native/android", "native/fixtures/helper-probe", "native/fixtures/shm-client", "native/theme"]
+members = ["native/model", "native/core", "native/render", "native/transport", "native/android", "native/fixtures/helper-probe", "native/fixtures/shm-client", "native/theme", "native/spatial-anchor"]
 default-members = ["native/model"]
 exclude = ["probes/native", "native/generated/smithay"]
 resolver = "3"

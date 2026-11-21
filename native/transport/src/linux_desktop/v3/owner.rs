@@ -22,6 +22,45 @@ const BOOTSTRAP: &str = include_str!("bootstrap.py");
 /// Construct a reviewable fixed command from B1's typed 14/15 vector. This pure
 /// function grants no execution authority: open/recover require source closure.
 pub fn command(binding: &Binding, bootstrap: &Bootstrap) -> Result<String, &'static str> {
+    command_in_slot(binding, bootstrap, false)
+}
+
+fn command_in_slot(
+    binding: &Binding,
+    bootstrap: &Bootstrap,
+    companion: bool,
+) -> Result<String, &'static str> {
+    let hashes = sources::current_hashes();
+    sources::validate_hashes(&hashes)?;
+    command_for_sources(
+        binding,
+        bootstrap,
+        &hashes,
+        Some(sources::inventory_bytes()),
+        companion,
+    )
+}
+
+pub(super) fn recovery_command(
+    binding: &Binding,
+    bootstrap: &Bootstrap,
+    hashes: &sources::SourceHashes,
+    companion: bool,
+) -> Result<String, &'static str> {
+    if bootstrap.vector().first().map(String::as_str) != Some("recover") {
+        return Err("DESKTOP_BINDING_INVALID");
+    }
+    sources::validate_recovery_hashes(hashes)?;
+    command_for_sources(binding, bootstrap, hashes, None, companion)
+}
+
+fn command_for_sources(
+    binding: &Binding,
+    bootstrap: &Bootstrap,
+    hashes: &sources::SourceHashes,
+    inventory: Option<&[u8]>,
+    companion: bool,
+) -> Result<String, &'static str> {
     bootstrap
         .matches(binding.context(), binding.pins())
         .map_err(|e| e.0)?;
@@ -30,22 +69,28 @@ pub fn command(binding: &Binding, bootstrap: &Bootstrap) -> Result<String, &'sta
         .map_err(|e| e.0)?
         .matches(binding.context(), binding.pins())
         .map_err(|e| e.0)?;
-    let hashes = sources::current_hashes();
-    sources::validate_hashes(&hashes)?;
-    let inventory =
-        std::str::from_utf8(sources::inventory_bytes()).map_err(|_| "DESKTOP_V3_SOURCE_INVALID")?;
+    let inventory = inventory
+        .map(std::str::from_utf8)
+        .transpose()
+        .map_err(|_| "DESKTOP_V3_SOURCE_INVALID")?;
+    let inventory = inventory
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|_| "DESKTOP_V3_SOURCE_INVALID")?
+        .unwrap_or_else(|| "None".into());
     let literal = |value: &str| serde_json::to_string(value).map_err(|_| "DESKTOP_BINDING_INVALID");
     let pins =
         serde_json::to_string(&binding.pins().record()).map_err(|_| "DESKTOP_BINDING_INVALID")?;
-    let hashes = serde_json::to_string(&hashes).map_err(|_| "DESKTOP_BINDING_INVALID")?;
+    let hashes = serde_json::to_string(hashes).map_err(|_| "DESKTOP_BINDING_INVALID")?;
     let source = format!(
-        "import json\nexpected_uid={}\npins=json.loads({})\nsource_hashes=json.loads({})\ninventory_raw={}\ninventory=json.loads(inventory_raw)\nbuild_id={}\nargv=json.loads({})\n{}",
+        "import json\nexpected_uid={}\npins=json.loads({})\nsource_hashes=json.loads({})\ninventory_raw={}\nbuild_id={}\nargv=json.loads({})\nworkspace_slot={}\n{}",
         binding.uid(),
         literal(&pins)?,
         literal(&hashes)?,
-        literal(inventory)?,
+        inventory,
         literal(&binding.pins().build_id())?,
         literal(&args)?,
+        if companion { 2 } else { 1 },
         BOOTSTRAP
     );
     Ok(format!(
@@ -120,6 +165,7 @@ pub struct Owner {
     frames: FrameDecoder,
     boot_id: Option<String>,
     remote_socket: Option<String>,
+    editor_available: bool,
     report: RemoteReport,
     #[cfg(feature = "host-acceptance")]
     host_capture: Option<std::sync::Arc<super::runtime::RunCapture>>,
@@ -130,14 +176,16 @@ impl Owner {
         binding: &Binding,
         evidence: &ExpectedEvidence,
         cancel: CancellationToken,
+        companion: bool,
         before_exec: impl FnOnce() -> Result<(), &'static str>,
     ) -> Result<Self, &'static str> {
         sources::require_complete()?;
         sources::validate_hashes(&evidence.source_hashes())?;
         let protocol = Protocol::new(binding.clone(), evidence.clone())?;
-        let text = command(
+        let text = command_in_slot(
             binding,
             &Bootstrap::serve(binding.context().clone(), binding.pins().clone()),
+            companion,
         )?;
         let channel = tokio::select! {biased;
             _=cancel.cancelled()=>return Err("CANCELLED"),
@@ -182,6 +230,7 @@ impl Owner {
             frames: FrameDecoder::default(),
             boot_id: None,
             remote_socket: None,
+            editor_available: true,
             report: RemoteReport::default(),
             #[cfg(feature = "host-acceptance")]
             host_capture: None,
@@ -190,6 +239,10 @@ impl Owner {
     pub fn phase(&self) -> Phase {
         self.protocol.phase()
     }
+    pub(super) fn editor_available(&self) -> bool {
+        self.editor_available
+    }
+
     pub fn selection(&self, app_id: &str) -> Result<Selection, &'static str> {
         if self.stopping {
             return Err("CANCELLED");
@@ -373,6 +426,9 @@ impl Owner {
             } => {
                 self.boot_id = Some(boot_id);
                 self.remote_socket = Some(remote_socket);
+            }
+            Event::Catalog(payload) => {
+                self.editor_available = payload.get("editor_available").is_none()
             }
             Event::Started { .. } => self.report.started = true,
             Event::Stopped {

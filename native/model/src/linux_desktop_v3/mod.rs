@@ -104,14 +104,52 @@ macro_rules! string_enum {
     };
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppId {
-    #[serde(rename = "gtk3-desktop")]
     Demo,
-    #[serde(rename = "mousepad-editor-v1")]
     Editor,
+    DesktopEntry([u8; 64]),
 }
-string_enum!(AppId, { Demo => "gtk3-desktop", Editor => "mousepad-editor-v1" });
+
+impl AppId {
+    pub const DESKTOP_ENTRY_PREFIX: &str = "desktop-entry:";
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "gtk3-desktop" => Some(Self::Demo),
+            "mousepad-editor-v1" => Some(Self::Editor),
+            value => {
+                let hash = value.strip_prefix(Self::DESKTOP_ENTRY_PREFIX)?;
+                hex(hash, 64).then(|| Self::DesktopEntry(hash.as_bytes().try_into().unwrap()))
+            }
+        }
+    }
+}
+
+impl Serialize for AppId {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::Demo => serializer.serialize_str("gtk3-desktop"),
+            Self::Editor => serializer.serialize_str("mousepad-editor-v1"),
+            Self::DesktopEntry(hash) => {
+                let hash = std::str::from_utf8(hash).map_err(serde::ser::Error::custom)?;
+                serializer.collect_str(&format_args!("{}{hash}", Self::DESKTOP_ENTRY_PREFIX))
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AppId {
+    fn deserialize<D: de::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Self::parse(&String::deserialize(deserializer)?)
+            .ok_or_else(|| de::Error::custom("invalid application selection"))
+    }
+}
 
 fn decode<T: de::DeserializeOwned>(raw: &[u8], limit: usize) -> Result<T> {
     serde_json::from_value(parse_json(raw, limit)?).map_err(|_| Error("CONTRACT_INVALID"))

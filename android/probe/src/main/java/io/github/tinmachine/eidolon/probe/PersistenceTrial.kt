@@ -147,7 +147,7 @@ internal class PersistenceTrial(
                     check(!witness.baseFile.exists() && !journal.baseFile.exists())
                     finish("absence_verified")
                 } else if (action == "lookup" && loaded == "LOADED" && tracking == "TRACKING" && row.getBoolean("pose_valid")) {
-                    showLocatedPose?.invoke(row.getJSONArray("stage_pose"))
+                    showLocatedPose?.invoke(row.getJSONArray("pose"))
                     finish("located")
                 } else { finish("unresolved") }
             }

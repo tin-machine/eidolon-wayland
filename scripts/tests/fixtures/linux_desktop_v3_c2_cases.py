@@ -86,6 +86,31 @@ class RealC2Cases(unittest.TestCase):
     def test_recover_repeated_unknown_boot_preserves_evidence(self):
         self.assert_boot_recovered("-")
 
+    def test_workspace_recovery_completes_in_only_the_matching_slot(self):
+        primary, barrier1, *first = self.prepare()
+        files = [*first]
+        try:
+            with mock.patch.object(core, "boot_id", return_value=ORIGIN):
+                companion, barrier2, *second = core.prepare_session(self.binding.context, workspace_slot=2)
+            files += second
+            barrier1.before_acquire()
+            barrier2.before_acquire()
+            self.assertNotEqual(primary.session, companion.session)
+            self.assertTrue(W.valid_socket(str(companion.wayland_socket), self.binding.context.record()["nonce"]))
+            for fd in second:
+                os.close(fd)
+                files.remove(fd)
+            with mock.patch.object(core, "boot_id", return_value=CURRENT):
+                result, status = core.recovery_receipt(self.binding, SOURCES, ORIGIN, workspace_slot=2)
+            self.assertEqual(status, 0)
+            self.assertEqual(W.parse_receipt(result, self.binding, SOURCES, ORIGIN, status)["process_evidence"],
+                             "boot_changed")
+            self.assertTrue(primary.session.is_dir())
+            self.assertFalse(companion.session.exists())
+        finally:
+            for fd in files:
+                os.close(fd)
+
     def test_existing_receipt_with_explicit_expected_boot_can_be_retried(self):
         paths, _, hfd, sfd, fd = self.prepare()
         hfd, sfd = core._remove_session(paths, (hfd, sfd, fd))
@@ -107,6 +132,51 @@ class RealC2Cases(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(value["process_evidence"], "unknown")
         self.assertTrue((paths.session / "barrier.json").exists())
+
+    def fail_initial_profile_validation(self, change_reservation=False):
+        import eidolon_linux_desktop_session_v3 as session
+
+        validate = profile_api.ProfileHandle.validate
+        attempts = []
+
+        def fail_once(handle):
+            if not attempts:
+                attempts.append(handle)
+                if change_reservation:
+                    barrier, = (self.home / core.STATE_DIR).glob("s-*/barrier.json")
+                    barrier.write_bytes(b"{}\n")
+                raise profile_api.ProfileError()
+            return validate(handle)
+
+        bootstrap = C.Bootstrap("serve", self.binding.context, self.binding.pins)
+        with mock.patch.object(profile_api.ProfileHandle, "validate", fail_once), \
+                mock.patch.object(core, "boot_id", return_value=ORIGIN), \
+                mock.patch.object(session.Emitter, "send") as send:
+            self.assertEqual(session.serve(bootstrap, None, SOURCES), 1)
+            send.assert_not_called()
+        handle, = attempts
+        return handle
+
+    def test_before_prepared_live_handle_recovers_on_same_boot(self):
+        handle = self.fail_initial_profile_validation()
+        self.assertTrue(handle.closed)
+        for _ in range(2):
+            status, value = self.recover(current=ORIGIN)
+            self.assertEqual(status, 0)
+            self.assertEqual(value["process_evidence"], "receipt")
+            self.assertTrue(value["process_complete"] and value["pipes_eof"])
+            self.assertTrue(value["remote_cleaned"] and value["receipt_written"])
+
+    def test_before_prepared_changed_reservation_stays_pending(self):
+        handle = self.fail_initial_profile_validation(change_reservation=True)
+        self.assertFalse(handle.closed)
+        # The live owner still holds the state flock. A different Recover
+        # cannot claim its session or convert the failed check to a receipt.
+        status, value = self.recover(current=ORIGIN)
+        self.assertEqual(status, 1)
+        self.assertEqual(value["process_evidence"], "unknown")
+        self.assertFalse(value["remote_cleaned"])
+        self.assertFalse(list((self.home / core.STATE_DIR).glob("r-*.json")))
 
     def test_partial_proof_write_keeps_origin_and_is_retryable(self):
         paths = self.abandoned_session()

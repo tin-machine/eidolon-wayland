@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <item name="quest_status_hud" type="id" />
     <item name="native_panel" type="id" />
     <item name="decoration_panel" type="id" />
     <item name="phase0_panel" type="id" />

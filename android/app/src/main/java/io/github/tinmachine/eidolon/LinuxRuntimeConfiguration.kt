@@ -13,14 +13,14 @@ object LinuxRuntimeConfiguration {
         configuration: LinuxDesktopV3Config? = null, storage: LinuxStorageRecord? = null): String {
         require(desktopFields.none { base.has(it) }) { "DESKTOP_CONFIGURATION_MISMATCH" }
         require(!(v2Pins != null && configuration != null) && (configuration != null) == (storage != null) &&
-            (profile != null) == (v2Pins != null || configuration != null)) { "DESKTOP_CONFIGURATION_MISMATCH" }
+            (profile != null || (v2Pins == null && configuration == null))) { "DESKTOP_CONFIGURATION_MISMATCH" }
         val result = JSONObject(base.toString())
         if (profile != null) {
             val installation = result.getString("installation")
             LinuxStorageIdentity.checkedProfile(installation, profile)
             result.put("linux_profile_v2", ConnectionProfileV2Codec.encode(profile).toString(Charsets.UTF_8))
             if (v2Pins != null) result.put("linux_desktop_pins", v2Pins.json())
-            else result.put("linux_desktop_v3", v3Binding(profile, checkNotNull(configuration), checkNotNull(storage)))
+            if (configuration != null) result.put("linux_desktop_v3", v3Binding(profile, configuration, checkNotNull(storage)))
         }
         return bounded(result.toString())
     }

@@ -26,6 +26,7 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
     private var lastPhase="IDLE";private var lastReason="idle";private var lastRequest:String?=null
     private var opened=0L;private var completed=0L;private var cancelled=0L;private var rejected=0L
     val phase get()=groupMenu?.menuPhase ?: recenter?.phase?.let {WindowSizeCapture.Phase.valueOf(it.name)} ?: capture?.phase
+    val hoverLabel get() = groupMenu?.hoverLabel ?: view?.hoverLabel()
     val recentering get()=recenter!=null
     val groupMenuActive get()=groupMenu!=null
     fun open(control:NativeSessionHost.WindowControlTicket):Boolean {

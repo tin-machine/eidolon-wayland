@@ -172,7 +172,7 @@ object WindowSlotsCase {
                 checkGate("controls_revision", controls?.optLong("revision", -1) == render.getLong("theme_revision"))
                 checkGate("controls_no_failure", controls?.optLong("failures", -1) == 0L)
                 checkGate("control_entities", controls?.optInt("entities", -1) == 12)
-                checkGate("buttons_ready_target", controls != null && target != null && list(controls.optJSONArray("buttons")).let { buttons -> buttons.size == 4 && buttons.all { it.optBoolean("ready") && same(it.getJSONObject("target"), target) } })
+                checkGate("buttons_ready_target", controls != null && target != null && list(controls.optJSONArray("buttons")).let { buttons -> buttons.size == 3 && buttons.all { it.optBoolean("ready") && same(it.getJSONObject("target"), target) } })
                 checkGate("mode_present", badge != null)
                 checkGate("mode_object_ready", badge?.optBoolean("object_ready") == true)
                 checkGate("mode_no_failure", badge?.optLong("failures", -1) == 0L)

@@ -26,6 +26,29 @@ pub fn command(mode: &str, nonce: &str) -> Result<String, &'static str> {
     }
     Ok(format!("'{PYTHON}' '{SCRIPT_PATH}' '{mode}' '{nonce}'"))
 }
+pub(crate) async fn shelf<H: russh::client::Handler>(
+    client: &russh::client::Handle<H>,
+    path: &str,
+    cancel: &CancellationToken,
+) -> Result<serde_json::Value, &'static str> {
+    const SOURCE: &str = include_str!("../../../scripts/termux/eidolon-shelf.py");
+    let encoded: String = path.bytes().map(|b| format!("{b:02x}")).collect();
+    let command = format!(
+        "exec {PYTHON} -I -B -c '{}' {encoded} {}",
+        SOURCE.replace(char::from(39), "'\\''"),
+        script_hash()
+    );
+    let read = async {
+        let channel = client
+            .channel_open_session()
+            .await
+            .map_err(|_| "SSH_IO_FAILED")?;
+        crate::exec::json_bounded(channel, command, 512 * 1024).await
+    };
+    tokio::select! { _ = cancel.cancelled() => Err("CANCELLED"),
+        result = timeout(Duration::from_secs(8), read) => result.map_err(|_| "CATALOG_TIMEOUT")?,
+    }
+}
 pub fn remote_path(nonce: &str) -> Result<String, &'static str> {
     if !valid_nonce(nonce) {
         return Err("INVALID_ARGUMENT");

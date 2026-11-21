@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -30,6 +31,7 @@ import com.meta.spatial.toolkit.QuadShapeOptions
 import com.meta.spatial.toolkit.Transform
 import com.meta.spatial.toolkit.UIPanelSettings
 import com.meta.spatial.vr.VRFeature
+import org.json.JSONArray
 
 /** XR診断パネル。nativeとAPKの版整合をここでも表示する。 */
 class MainActivity : AppSystemActivity() {
@@ -43,12 +45,44 @@ class MainActivity : AppSystemActivity() {
     private var xrScene: com.meta.spatial.runtime.Scene?=null
     private var observedXr="IDLE"
     private fun ownsScene(): Boolean = !isDestroyed && NativeSessionHost.ownsActivityScene(activityOwner,sceneEpoch)
-    private val nativePanels by lazy { SpatialPanelAdapter() }
-    private val keyboard by lazy { PhysicalKeyboard(this) { TerminalImeController.toggle() } }
+    private val hud by lazy { QuestStatusHud(applicationContext, activityOwner) }
+    private val mousepadAnchor by lazy { MousepadAnchor(applicationContext, activityOwner) }
+    private val nativePanels by lazy { SpatialPanelAdapter(mousepadAnchor = mousepadAnchor) }
+    private val keyboard: PhysicalKeyboard by lazy {
+        PhysicalKeyboard(this, onOpenLauncher = { spatialLauncher.open() }) { TerminalImeController.toggle() }
+    }
+    private val mouse by lazy { PhysicalMouse(nativePanels) }
+    private val openDetails = mutableIntStateOf(0)
+    private var handExtensions = emptySet<String>()
+    private val spatialLauncher: SpatialLauncher by lazy {
+        SpatialLauncher(applicationContext, ::ownsScene, { view, window ->
+            mouse.track(view)
+            PanelKeyboardBridge(view, window) { event ->
+                ownsScene() && (mouse.key(event) || keyboard.dispatch(event, "spatial-launcher"))
+            }
+        }, { handExtensions }) { openDetails.intValue += 1 }
+    }
     private var themePickerToken: String? = null
 
     override fun registerFeatures(): List<SpatialFeature> =
         listOf(VRFeature(this), ComposeFeature())
+
+    override fun registerRequiredOpenXRExtensions(): List<String> {
+        val defaults = super.registerRequiredOpenXRExtensions()
+        if (!NativeBridge.status.ready) return defaults
+        val anchorExtensions = try {
+            val extensions = JSONArray(NativeBridge.nativeAnchorRequiredExtensions(applicationContext))
+            List(extensions.length()) { extensions.getString(it) }
+        } catch (_: Exception) {
+            emptyList()
+        } catch (_: LinkageError) {
+            emptyList()
+        }
+        handExtensions = (defaults + anchorExtensions).filter { it.contains("hand_tracking") }.toSet()
+        Log.i("EidolonWrist", "joint_extension=${"XR_EXT_hand_tracking" in handExtensions} " +
+            "aim_extension=${"XR_FB_hand_tracking_aim" in handExtensions}")
+        return (defaults + anchorExtensions).distinct()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,6 +91,7 @@ class MainActivity : AppSystemActivity() {
         val native = NativeBridge.status
         NativeSessionHost.initialize(applicationContext)
         nativePanels.initialize(this)
+        mouse.track(window.decorView)
         if (native.ready) {
             Log.i(TAG, "native_ready version=${BuildConfig.VERSION_CODE} info=${native.info}")
         } else {
@@ -80,7 +115,7 @@ class MainActivity : AppSystemActivity() {
         if (panel == null) {
             panel = Entity.create(listOf(
                 Panel(R.id.phase0_panel),
-                Transform(Pose(Vector3(-1.45f, 1.4f, 1.4f))),
+                Transform(Pose(Vector3(CONTROL_X, CONTROL_Y, CONTROL_Z))),
             ))
         }
         if(launcher==null) {
@@ -88,7 +123,12 @@ class MainActivity : AppSystemActivity() {
                 Panel(R.id.terminal_launcher_panel),Transform(Pose(Vector3(-.80f,1.05f,1.75f))),
             ))
         }
+        mousepadAnchor.bind(scene, epoch)
         nativePanels.sceneReady(epoch, scene)
+        spatialLauncher.bind(scene)
+        hud.bind(scene, epoch)
+        hud.setActive(resumed && observedXr in setOf("VISIBLE", "FOCUSED"))
+        refreshMouseScene()
         TerminalImeController.sceneReady {scene}
         BuildHooks.sceneReady(nativePanels,{scene},{recreate()})
         Log.i(TAG, "scene_ready version=${BuildConfig.VERSION_CODE} panel=${panel?.id}")
@@ -102,7 +142,13 @@ class MainActivity : AppSystemActivity() {
                 ComposeView(context).apply {
                     setContent {
                         MaterialTheme {
-                            ControlPanel(::chooseTheme,::allowTermux,::openTermux)
+                            ControlPanel(
+                                ::chooseTheme, ::allowTermux, ::openTermux, mouse.enabled.value,
+                                { if (ownsScene()) mouse.toggle() },
+                                { hud.enabled.value }, hud::toggle, hud::recenter,
+                                launcherControls = { spatialLauncher.Presets() },
+                                openDetailsRequest = openDetails.intValue,
+                            ) { restoring -> MousepadAnchorControls(mousepadAnchor, restoring) }
                         }
                     }
                 }
@@ -116,7 +162,8 @@ class MainActivity : AppSystemActivity() {
             },
             panelSetupWithComposeView = { view, obj, _ -> view.post {
                 if(ownsScene()) obj.display?.presentation?.window?.let { window ->
-                    keyboardPanels.add(PanelKeyboardBridge(view,window) {event -> ownsScene() && keyboard.dispatch(event,"control")})
+                    mouse.track(view)
+                    keyboardPanels.add(PanelKeyboardBridge(view,window) {event -> ownsScene() && (mouse.key(event) || keyboard.dispatch(event,"control"))})
                 }
             } },
         ),
@@ -124,18 +171,19 @@ class MainActivity : AppSystemActivity() {
             R.id.terminal_launcher_panel,
             composeViewCreator={_,context -> ComposeView(context).apply {setContent {
                 MaterialTheme {
-                    LauncherStrip()
+                    LauncherStrip(spatialLauncher::open)
                 }
             }}},
             settingsCreator={UIPanelSettings(shape=QuadShapeOptions(width=1.05f,height=.22f),
                 display=DpPerMeterDisplayOptions(),style=PanelStyleOptions(themeResourceId=R.style.EidolonTheme))},
             panelSetupWithComposeView = { view, obj, _ -> view.post {
                 if(ownsScene()) obj.display?.presentation?.window?.let { window ->
-                    keyboardPanels.add(PanelKeyboardBridge(view,window) {event -> ownsScene() && keyboard.dispatch(event,"launcher")})
+                    mouse.track(view)
+                    keyboardPanels.add(PanelKeyboardBridge(view,window) {event -> ownsScene() && (mouse.key(event) || keyboard.dispatch(event,"launcher"))})
                 }
             } },
         ),
-    ) + nativePanels.registration + nativePanels.decorationRegistration + TerminalImeController.registrations() + BuildHooks.additionalPanels()
+    ) + hud.registration + spatialLauncher.registrations + nativePanels.registration + nativePanels.decorationRegistration + TerminalImeController.registrations() + BuildHooks.additionalPanels()
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -190,13 +238,18 @@ class MainActivity : AppSystemActivity() {
         super.onResume()
         deviceMetrics.start()
         resumed=true
+        hud.setActive(ownsScene() && observedXr in setOf("VISIBLE", "FOCUSED"))
         if(ownsScene()) {keyboard.resume();NativeSessionHost.setActivityVisible(true,sceneEpoch,activityOwner)}
+        refreshMouseScene()
         Log.i(TAG, "activity_resumed version=${BuildConfig.VERSION_CODE}")
     }
 
     override fun onPause() {
         deviceMetrics.stop()
         resumed=false
+        hud.setActive(false)
+        spatialLauncher.setActive(false)
+        mouse.setFocusedScene(null)
         val current=ownsScene()
         if(current) TerminalImeController.pause()
         keyboard.pause(resetInput=current)
@@ -208,7 +261,8 @@ class MainActivity : AppSystemActivity() {
     fun dispatchImePanelKey(event: KeyEvent, source: String): Boolean = ownsScene() && keyboard.dispatch(event,source)
     fun resetImeShortcut() { keyboard.resetShortcutState() }
 
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean = (ownsScene() && keyboard.dispatch(event)) || super.dispatchKeyEvent(event)
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean =
+        (ownsScene() && (mouse.key(event) || keyboard.dispatch(event))) || super.dispatchKeyEvent(event)
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
@@ -228,12 +282,24 @@ class MainActivity : AppSystemActivity() {
             else -> "IDLE"
         }
         if(!ownsScene()) return
+        hud.setActive(resumed && observedXr in setOf("VISIBLE", "FOCUSED"))
         Log.i(TAG, "xr_state=$state version=${BuildConfig.VERSION_CODE}")
         if(state != SessionState.FOCUSED) { keyboard.resetShortcutState();TerminalImeController.externalLoss() }
         NativeSessionHost.setXrState(observedXr,sceneEpoch,activityOwner)
+        refreshMouseScene()
+    }
+
+    private fun refreshMouseScene() {
+        val focused = ownsScene() && resumed && observedXr == "FOCUSED"
+        mouse.setFocusedScene(xrScene.takeIf { focused })
+        spatialLauncher.setActive(focused)
     }
 
     override fun onSpatialShutdown() {
+        mousepadAnchor.close()
+        hud.close()
+        spatialLauncher.close()
+        mouse.setFocusedScene(null)
         NativeSessionHost.sceneClosing(activityOwner,sceneEpoch)
         xrScene=null;observedXr="IDLE"
         TerminalImeController.sceneClosing(this)
@@ -247,5 +313,11 @@ class MainActivity : AppSystemActivity() {
         super.onSpatialShutdown()
     }
 
-    companion object { private const val TAG = "EidolonPhase0"; private const val THEME_PICKER = 4201 }
+    companion object {
+        internal const val CONTROL_X = -1.45f
+        internal const val CONTROL_Y = 1.4f
+        internal const val CONTROL_Z = 1.4f
+        private const val TAG = "EidolonPhase0"
+        private const val THEME_PICKER = 4201
+    }
 }

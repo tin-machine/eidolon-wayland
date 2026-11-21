@@ -66,6 +66,8 @@ impl ProtocolState {
             ._seat
             .add_keyboard_from_string(text.to_owned(), 600, 25)
             .map_err(|_| "KEYMAP_INVALID")?;
+        self.keymap_lease = keyboard
+            .with_sealed_keymap_fd(|fd| fd.and_then(|fd| self.memfd_owner.track(fd, false)));
         let (paths, wire_keymap_sha256) = keyboard.with_xkb_state(self, |context| {
             let xkb = context.xkb().lock().unwrap();
             // SAFETY: context参照/追加refをclosureから持ち出さず、同じownerで個数だけ読む。
@@ -107,6 +109,8 @@ impl ProtocolState {
         keyboard
             .set_keymap_from_string(self, text.to_owned())
             .map_err(|_| "KEYMAP_INVALID")?;
+        self.keymap_lease = keyboard
+            .with_sealed_keymap_fd(|fd| fd.and_then(|fd| self.memfd_owner.track(fd, false)));
         let (paths, wire) = keyboard.with_xkb_state(self, |context| {
             let xkb = context.xkb().lock().unwrap();
             // SAFETY: pinned Contextを同じowner/closure内だけ参照する。

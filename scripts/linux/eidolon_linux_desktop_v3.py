@@ -14,9 +14,10 @@ from xml.sax.saxutils import escape as xml_escape
 
 import linux_desktop_v3_contract as C
 import linux_desktop_v3_wire as W
-from eidolon_linux_persistent_profile import JournalBarrier, ProfileIdentity, storage_owner
+from eidolon_linux_persistent_profile import JournalBarrier, ProfileIdentity, scan_current_directory, storage_owner
 
 STATE_DIR = ".eidolon-desktop-v3"
+COMPANION_STATE_DIR = ".eidolon-desktop-v3b"
 LEASE_MS = W.LEASE_MS
 LEASE_SECONDS = LEASE_MS / 1000.0
 OUTPUT_RATE_BYTES_PER_SEC = 1024 * 1024
@@ -248,7 +249,12 @@ def _lock_state(state_fd):
         raise HelperError("APP_STATE_RECOVERY_REQUIRED", "process_ownership") from None
 
 
-def prepare_session(context):
+def workspace_state_dir(slot):
+    require(type(slot) is int and slot in (1, 2))
+    return COMPANION_STATE_DIR if slot == 2 else STATE_DIR
+
+
+def prepare_session(context, *, workspace_slot=1):
     value = context.record()
     uid = value["uid"]
     home = account_home(uid)
@@ -256,7 +262,8 @@ def prepare_session(context):
     state_fd = None
     session_fd = None
     try:
-        state_fd = _ensure_dir(home_fd, STATE_DIR, uid)
+        state_dir = workspace_state_dir(workspace_slot)
+        state_fd = _ensure_dir(home_fd, state_dir, uid)
         _lock_state(state_fd)
         count = 0
         with os.scandir(state_fd) as entries:
@@ -281,8 +288,8 @@ def prepare_session(context):
         for child_name in ("runtime", "cache", "tmp"):
             child = _ensure_dir(session_fd, child_name, uid)
             os.close(child)
-        base = home / STATE_DIR / name
-        paths = SessionPaths(home, home / STATE_DIR, base, base / "runtime", base / "cache",
+        base = home / state_dir / name
+        paths = SessionPaths(home, home / state_dir, base, base / "runtime", base / "cache",
                              base / "tmp", base / "b", base / "p", base / "bus.conf")
         require(W.valid_socket(str(paths.wayland_socket), value["nonce"]),
                 "APP_STATE_INVALID", "protocol")
@@ -342,8 +349,8 @@ def launch_environment(profile, paths, bundle, bus_address=None):
     env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
            **profile.environment(), "XDG_CACHE_HOME": str(paths.cache), "TMPDIR": str(paths.tmp),
            "XDG_RUNTIME_DIR": str(paths.runtime), "GDK_BACKEND": "wayland",
-           "GDK_GL": "disable", "GDK_RENDERING": "image", "GIO_USE_VFS": "local",
-           "GTK_USE_PORTAL": "0", "NO_AT_BRIDGE": "1", "GTK_IM_MODULE": "gtk-im-context-simple",
+           "QT_QPA_PLATFORM": "wayland", "GDK_GL": "disable", "GDK_RENDERING": "image", "GIO_USE_VFS": "local",
+           "GTK_USE_PORTAL": "0", "NO_AT_BRIDGE": "1", "GTK_IM_MODULE": "wayland",
            "GSETTINGS_BACKEND": "eidolon-keyfile-v1",
            "GIO_EXTRA_MODULES": str(bundle.directory / "gio")}
     if bus_address is not None:
@@ -469,6 +476,10 @@ def run_settings_probe(owner, profile, drain, env, bundle, synthetic=True):
 
 
 def launch_mousepad(owner, profile, drain, env, paths):
+    return launch_wayland_app(owner, profile, drain, env, paths, FIXED_APP)
+
+
+def launch_wayland_app(owner, profile, drain, env, paths, argv, cwd=None):
     try:
         forwarded = paths.wayland_socket.lstat()
     except FileNotFoundError:
@@ -477,8 +488,8 @@ def launch_mousepad(owner, profile, drain, env, paths):
             "APP_STATE_INVALID", "start")
     waypipe = paths.home / ".local/lib/eidolon-linux/waypipe"
     command = [str(waypipe), *FIXED_WAYPIPE_ARGS, "--socket", str(paths.wayland_socket),
-               "--display", str(paths.runtime / "w"), "server", "--", *FIXED_APP]
-    return spawn_tracked(owner, profile, drain, command, env, cwd=str(profile.paths.documents))
+               "--display", str(paths.runtime / "w"), "server", "--", *argv]
+    return spawn_tracked(owner, profile, drain, command, env, cwd=cwd or str(profile.paths.documents))
 
 
 def cleanup_owner(owner, drain, profile, deadline_seconds=5.0):
@@ -539,7 +550,7 @@ def _remove_tree_at(parent_fd, name, uid, budget, depth=0):
 def _remove_session(paths, fds):
     home_fd, state_fd, session_fd = fds
     uid = os.getuid()
-    with os.scandir(session_fd) as entries:
+    with scan_current_directory(session_fd) as entries:
         names = {entry.name for entry in entries}
     require(names <= _SESSION_CONTENTS, "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")
     budget = [1024, 32 * 1024 * 1024]
@@ -702,15 +713,16 @@ def _recover_remove_session(state_fd, session_name, uid):
     os.fsync(state_fd)
 
 
-def recovery_receipt(binding, source_hashes, expected_boot):
+def recovery_receipt(binding, source_hashes, expected_boot, *, workspace_slot=1):
     uid = binding.context.record()["uid"]
     home = account_home(uid)
     current = boot_id()
     home_fd = _open_dir(home, uid)
     state_fd = None
     try:
+        state_dir = workspace_state_dir(workspace_slot)
         try:
-            state_fd = os.open(STATE_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            state_fd = os.open(state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                                dir_fd=home_fd)
         except FileNotFoundError:
             value = receipt(binding, source_hashes, expected_boot, None, current, "unknown", "pending",
@@ -719,7 +731,7 @@ def recovery_receipt(binding, source_hashes, expected_boot):
             W.parse_receipt(raw, binding, source_hashes, expected_boot, 1)
             return raw, 1
         info = os.fstat(state_fd)
-        named = os.stat(STATE_DIR, dir_fd=home_fd, follow_symlinks=False)
+        named = os.stat(state_dir, dir_fd=home_fd, follow_symlinks=False)
         require(stat.S_ISDIR(info.st_mode) and info.st_uid == uid and
                 stat.S_IMODE(info.st_mode) == 0o700 and _id(info) == _id(named),
                 "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")

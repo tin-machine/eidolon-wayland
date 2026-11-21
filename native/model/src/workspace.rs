@@ -148,6 +148,14 @@ impl SavedPlacement {
                 .is_none_or(|size| crate::resize::logical_size(size.width, size.height).is_ok())
     }
 }
+/// Durable identity of the first anchored placement. Wayland IDs and launch request
+/// IDs are assigned again each time and stay outside this record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementId {
+    MousepadMain,
+}
+
 fn default_observation() -> bool {
     true
 }

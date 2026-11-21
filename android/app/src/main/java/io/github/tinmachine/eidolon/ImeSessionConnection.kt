@@ -22,9 +22,12 @@ object ImePrivateSnapshot {
             imeInteger(target["input_epoch"]) ?: return invalid(), imeInteger(target["activation"]) ?: return invalid(),
             imeInteger(target["serial"]) ?: return invalid())
         val revision = imeInteger(ime["edit_revision"]) ?: return invalid()
+        val composition = if (ime.containsKey("composition_revision")) {
+            imeInteger(ime["composition_revision"]) ?: return invalid()
+        } else revision
         val sequence = imeInteger(ime["last_sequence"]) ?: return invalid()
-        if (!parsed.valid() || revision <= 0 || sequence < 0) return invalid()
-        return ImeDecodedSnapshot(true, ImeBridgeSnapshot(parsed, revision, sequence))
+        if (!parsed.valid() || composition !in 1..revision || sequence < 0) return invalid()
+        return ImeDecodedSnapshot(true, ImeBridgeSnapshot(parsed, revision, sequence, composition))
     }
 }
 
@@ -42,7 +45,7 @@ enum class ImeSessionPhase { IDLE, ENABLING, NEEDS_RESET, RESETTING, NEEDS_FOCUS
 data class ImeSessionMetadata(val phase: ImeSessionPhase, val editorGeneration: Long?, val pendingAcks: Int,
     val enqueued: Long, val applied: Long, val rawBlocked: Boolean, val failure: String?)
 
-/** UI owner for one explicitly selected terminal; no payload or surrounding text is retained in ACK maps. */
+/** UI owner for one explicitly selected text-input target. ACK maps contain delivery metadata. */
 class ImeSessionConnection(
     val runtime: Long,
     val target: ImeSdkTarget,
@@ -234,7 +237,8 @@ class ImeSessionConnection(
         phase = ImeSessionPhase.CLOSING
         failure = reason.takeIf { it in setOf("closed", "bridge_invalidated", "reset_rejected", "target_unavailable", "invalid_snapshot",
             "ack_timeout", "control_rejected", "focus_changed", "snapshot_target_changed", "binding_rejected", "ack_limit",
-            "request_collision", "enqueue_rejected", "key_rejected") } ?: "closed"
+            "request_collision", "enqueue_rejected", "key_rejected", "android_editor_focus_lost",
+            "android_editor_creation_failed", "input_reset") } ?: "closed"
         clearBinding(); generation = null; pending.clear()
         cleanupEpoch = frame.epoch; deadline = clock() + timeoutMillis
         onClosed()

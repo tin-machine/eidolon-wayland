@@ -195,7 +195,8 @@ class Fixture:
         self.process_owners = []
         self.counter = 0
 
-    def start(self, *, context=None, journal_name=None, barrier_class=TestJournal, expected_identity=None, initial="quiet"):
+    def start(self, *, context=None, journal_name=None, barrier_class=TestJournal, expected_identity=None,
+              initial="quiet", share_home=False):
         context = context or self.context
         owner_value = json.loads(RECORDS["owner"]["raw"])
         owner_value.update({key: context.record()[key] for key in ("uid", "installation_id", "profile_storage_id")})
@@ -207,7 +208,7 @@ class Fixture:
         self.process_owners.append(process_owner)
         try:
             handle = P.PersistentProfileRepository().acquire(context, process_owner=process_owner,
-                barrier=barrier, expected_identity=expected_identity)
+                barrier=barrier, expected_identity=expected_identity, share_home=share_home)
         except BaseException:
             process_owner.finish()
             raise
@@ -614,12 +615,13 @@ def missing_known(f):
     require((detached / "Documents/original").read_bytes() == b"preserve original tree", "old incarnation changed")
 
 
-def hold(f, name, compete=False):
+def hold(f, name, compete=False, *, shared_profile=None):
     if compete:
         emit({"event": "prepared"})
         require(read_line(sys.stdin) == "go\n", "missing creation barrier")
     try:
-        owner, _, handle = f.start(journal_name=name)
+        context = None if shared_profile is None else values(profile_storage_id=shared_profile)[0]
+        owner, _, handle = f.start(journal_name=name, context=context, share_home=shared_profile is not None)
     except P.ProfileError as error:
         emit({"event": "denied", "reason": str(error)})
         return
@@ -688,6 +690,8 @@ def main():
             missing_known(f)
         elif case in {"hold", "compete"}:
             hold(f, sys.argv[3], compete=case == "compete")
+        elif case.startswith("shared:"):
+            hold(f, sys.argv[3], shared_profile=case.split(":", 1)[1])
         else:
             raise AssertionError("unknown fixture case")
         emit({"case": case, "result": "passed", "details": result})

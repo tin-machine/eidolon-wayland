@@ -67,6 +67,8 @@ pub struct ImeSnapshot {
     pub target: ImeTarget,
     /// 編集内容・選択・属性・外部編集の世代。geometry-only commitでは変えない。
     pub edit_revision: u64,
+    /// Same-activation input-method feedback may advance edit_revision within this range.
+    pub composition_revision: u64,
     /// activation内で最後に適用したsequence。adapterの採番開始値に使う。
     pub last_sequence: u64,
     /// Noneは未提供。空文書とは異なる。

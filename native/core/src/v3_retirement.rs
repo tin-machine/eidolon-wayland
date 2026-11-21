@@ -406,6 +406,7 @@ impl Owner {
 struct Finalization {
     handoff: Option<ReclamationHandoff>,
     proof: Option<OriginRetirementProof>,
+    local_persisted: bool,
     local: Option<LocalReclaimed>,
     receipt: Option<FinalizedReclamation>,
     done: bool,
@@ -423,7 +424,7 @@ pub(crate) struct Finalizer {
 impl Finalizer {
     pub(crate) fn accept_handoff(
         &mut self,
-        handoff: ReclamationHandoff,
+        mut handoff: ReclamationHandoff,
     ) -> Result<(), &'static str> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.handoff.is_some() {
@@ -437,10 +438,11 @@ impl Finalizer {
             .as_ref()
             .map(|gate| handoff.authority.confirm(gate))
             .transpose();
+        let durable_local = handoff.take_durable_local_retirement();
         state.handoff = Some(handoff);
         match local {
             Ok(local) => {
-                state.local = local;
+                state.local = local.or(durable_local);
                 Ok(())
             }
             Err(error) => {
@@ -499,13 +501,17 @@ impl Finalizer {
             {
                 state.proof = Some(proof);
             }
-            if state.done
-                || state.handoff.is_none()
-                || state.retry_after.is_some_and(|t| Instant::now() < t)
-            {
+            if state.done || state.retry_after.is_some_and(|t| Instant::now() < t) {
                 return;
             }
-            if state.local.is_none() {
+            if state.handoff.is_none() {
+                if state.local_persisted
+                    || state.proof.is_none()
+                    || !transport.v3_local_persist_ready()
+                {
+                    return;
+                }
+            } else if state.local.is_none() {
                 let Some(proof) = state.proof.as_ref() else {
                     return;
                 };
@@ -530,6 +536,11 @@ impl Finalizer {
             .spawn(move || {
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if state.handoff.is_none() {
+                        transport.persist_v3_local_retirement(state.proof.as_ref().unwrap())?;
+                        state.local_persisted = true;
+                        return Ok(());
+                    }
                     if state.receipt.is_none() {
                         let Finalization { handoff, local, .. } = &mut *state;
                         let receipt = finalize_reclaimed(

@@ -32,6 +32,22 @@ def fixed_context():
 
 
 class PureBoundaryTests(unittest.TestCase):
+    def test_retained_directory_observes_new_and_removed_entries(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                with profile.scan_current_directory(fd) as entries:
+                    self.assertEqual(list(entries), [])
+                os.fsync(fd)
+                for name in ("first", "second"):
+                    (root / name).touch()
+                    with profile.scan_current_directory(fd) as entries:
+                        self.assertEqual({entry.name for entry in entries}, {name})
+                    (root / name).unlink()
+            finally:
+                os.close(fd)
+
     def test_existing_golden_owner_is_consumed_without_extra_fields(self):
         owner = profile.storage_owner(fixed_context())
         self.assertEqual(owner.canonical(), RECORDS["owner"]["canonical_utf8"].encode())
@@ -171,6 +187,26 @@ class RealPersistentProfileTests(unittest.TestCase):
         self.assertEqual(self.event(reopened), {"event": "released"})
         _, stderr = reopened.communicate(timeout=5)
         self.assertEqual(reopened.returncode, 0, stderr)
+
+    def test_shared_home_allows_distinct_profiles_and_keeps_each_profile_exclusive(self):
+        home = self.private_home()
+        first = self.start_worker("shared:" + "a" * 32, home, "slot-1")
+        second = self.start_worker("shared:" + "b" * 32, home, "slot-2")
+        first_owner = self.event(first)
+        second_owner = self.event(second)
+        self.assertEqual(first_owner["event"], "acquired")
+        self.assertEqual(second_owner["event"], "acquired")
+        self.assertNotEqual(first_owner["root"], second_owner["root"])
+        self.send(second, "release")
+        self.assertEqual(self.event(second), {"event": "released"})
+        self.assertIsNone(first.poll())
+        duplicate = self.start_worker("shared:" + "a" * 32, home, "slot-1-contender")
+        self.assertEqual(self.event(duplicate), {"event": "denied", "reason": "APP_STATE_BUSY"})
+        self.send(first, "release")
+        self.assertEqual(self.event(first), {"event": "released"})
+        for process in (first, second, duplicate):
+            _, stderr = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 0, stderr)
 
     def test_os_unlock_after_helper_death_does_not_clear_unknown_journal(self):
         home = self.private_home()

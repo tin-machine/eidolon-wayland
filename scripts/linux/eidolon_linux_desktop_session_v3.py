@@ -1,9 +1,11 @@
 """C2 v3 wire/session entrypoint loaded only from B2's verified immutable snapshot."""
 from __future__ import annotations
 
+import json
 import os
 import select
 import stat
+import subprocess
 import sys
 import time
 
@@ -14,6 +16,28 @@ import linux_real_app_inspect as inspect_api
 from eidolon_linux_process_owner import ProcessOwner, OwnershipError, identity as process_identity
 from eidolon_linux_persistent_profile import PersistentProfileRepository, ProfileError
 import eidolon_linux_desktop_v3 as core
+
+
+def _resolve_installed_app(bundle, app_id):
+    # Read the verified snapshot. A desktop entry can change between listing
+    # and Start, so resolve its exact fingerprint again under the SSH account.
+    source = bundle.files["eidolon_desktop_entries.py"].decode("utf-8")
+    env = {key: os.environ[key] for key in (
+        "HOME", "PATH", "LANG", "LC_ALL", "LC_MESSAGES", "LANGUAGE",
+        "XDG_DATA_HOME", "XDG_DATA_DIRS", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS",
+        "XDG_CURRENT_DESKTOP",
+    ) if key in os.environ}
+    try:
+        result = subprocess.run(
+            ["/usr/bin/python3", "-I", "-B", "-c", source, "resolve",
+             app_id.removeprefix("desktop-entry:")],
+            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=3, check=True,
+        )
+        plan = json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise core.HelperError("CAPABILITY_STALE", "start") from None
+    return plan["argv"], plan["cwd"]
 
 
 def _event(binding, sequence, request_sequence, kind, payload):
@@ -135,10 +159,16 @@ def _cleanup(binding, source_hashes, origin_boot, request_sequence, emitter, own
     return 1
 
 
-def _before_prepared_reclaim(binding, source_hashes, origin_boot, owner, profile, drain, paths, fds):
+def _before_prepared_reclaim(binding, source_hashes, origin_boot, owner, profile, barrier, drain, paths, fds):
     if profile is None or paths is None or fds is None:
         return
+    own_drain = drain is None
     try:
+        if barrier.phase == "reserved":
+            # acquire() retained this live, locked handle before its final checks.
+            # Revalidate it and the original reservation before normal release.
+            profile.validate()
+            barrier.after_acquire(profile.identity)
         if drain is None:
             drain = core.Drain()
         core.cleanup_owner(owner, drain, profile)
@@ -148,6 +178,9 @@ def _before_prepared_reclaim(binding, source_hashes, origin_boot, owner, profile
         os.close(home_fd)
     except BaseException:
         pass
+    finally:
+        if own_drain and drain is not None:
+            drain.close()
 
 
 def _start_demo(owner, profile, drain, env, paths, verified_bundle, context):
@@ -165,13 +198,14 @@ def _start_demo(owner, profile, drain, env, paths, verified_bundle, context):
     return core.spawn_tracked(owner, profile, drain, command, env)
 
 
-def serve(bootstrap, verified_bundle, source_hashes):
+def serve(bootstrap, verified_bundle, source_hashes, *, workspace_slot=1):
     context = bootstrap.context
     pins = bootstrap.pins
     binding = W.Binding(context, pins)
     emitter = Emitter(binding)
     owner = None
     profile = None
+    barrier = None
     drain = None
     paths = None
     fds = None
@@ -183,10 +217,10 @@ def serve(bootstrap, verified_bundle, source_hashes):
     origin_boot = core.boot_id()
     try:
         owner = ProcessOwner()
-        paths, barrier, home_fd, state_fd, session_fd = core.prepare_session(context)
+        paths, barrier, home_fd, state_fd, session_fd = core.prepare_session(context, workspace_slot=workspace_slot)
         fds = (home_fd, state_fd, session_fd)
         profile = PersistentProfileRepository().acquire(
-            context, process_owner=owner, barrier=barrier)
+            context, process_owner=owner, barrier=barrier, share_home=True)
         drain = core.Drain()
         emitter.send(0, "prepared", {
             "lease_ms": W.LEASE_MS,
@@ -239,7 +273,6 @@ def serve(bootstrap, verified_bundle, source_hashes):
                     if action == "inspect":
                         core.require(phase == "prepared" and not inspected,
                                      "CAPABILITY_STALE", "protocol")
-                        bundle_api.validate_launch_package(verified_bundle)
                         recovery = inspect_api.guard_recovery_state(
                             profile.paths.root, uid=context.record()["uid"])
                         core.require(recovery.get("clear") is True,
@@ -247,12 +280,21 @@ def serve(bootstrap, verified_bundle, source_hashes):
                                      "tool_inspection")
                         core.render_bus_config(verified_bundle, paths, session_fd,
                                                context.record()["uid"])
-                        env = core.launch_environment(profile, paths, verified_bundle)
-                        core.run_settings_probe(owner, profile, drain, env, verified_bundle, True)
+                        # A portable bundle can serve installed applications without the
+                        # separately reviewed Mousepad package installed on the SSH host.
+                        try:
+                            bundle_api.validate_launch_package(verified_bundle)
+                        except (OSError, inspect_api.InspectionError):
+                            editor_available = False
+                        else:
+                            env = core.launch_environment(profile, paths, verified_bundle)
+                            core.run_settings_probe(owner, profile, drain, env, verified_bundle, True)
+                            editor_available = True
                         evidence = W.ExpectedEvidence.capture(
                             pins, verified_bundle.manifest, source_hashes)
                         emitter.set_evidence(evidence)
-                        emitter.send(sequence, "catalog", W.catalog_payload(binding, evidence))
+                        emitter.send(sequence, "catalog", W.catalog_payload(
+                            binding, evidence, editor_available=editor_available))
                         inspected = True
                         phase = "catalog"
                         continue
@@ -261,14 +303,18 @@ def serve(bootstrap, verified_bundle, source_hashes):
                                      "CAPABILITY_STALE", "start")
                         selection = C.Selection.parse(
                             C.canonical_json(command["command"]["payload"]["selection"]))
-                        bundle_api.validate_launch_package(verified_bundle)
+                        app_id = selection.record()["app_id"]
+                        if app_id == C.EDITOR:
+                            core.require(editor_available, "APP_PACKAGE_UNSUPPORTED", "start")
+                            bundle_api.validate_launch_package(verified_bundle)
                         recovery = inspect_api.guard_recovery_state(
                             profile.paths.root, uid=context.record()["uid"])
                         core.require(recovery.get("clear") is True,
                                      recovery.get("reason", "APP_STATE_RECOVERY_REQUIRED"), "start")
                         base_env = core.launch_environment(profile, paths, verified_bundle)
-                        core.run_settings_probe(owner, profile, drain, base_env,
-                                                verified_bundle, False)
+                        if app_id == C.EDITOR:
+                            core.run_settings_probe(owner, profile, drain, base_env,
+                                                    verified_bundle, False)
                         recovery = inspect_api.guard_recovery_state(
                             profile.paths.root, uid=context.record()["uid"])
                         core.require(recovery.get("clear") is True,
@@ -276,13 +322,16 @@ def serve(bootstrap, verified_bundle, source_hashes):
                         bus, address = core.start_private_bus(
                             owner, profile, drain, base_env, paths.bus_config, paths.bus_socket)
                         env = core.launch_environment(profile, paths, verified_bundle, address)
-                        app_id = selection.record()["app_id"]
                         if app_id == C.EDITOR:
                             started = core.launch_mousepad(owner, profile, drain, env, paths)
-                        else:
-                            core.require(app_id == C.DEMO, "APP_STATE_INVALID", "start")
+                        elif app_id == C.DEMO:
                             started = _start_demo(owner, profile, drain, env, paths,
                                                   verified_bundle, context)
+                        else:
+                            argv, cwd = _resolve_installed_app(verified_bundle, app_id)
+                            env["GSETTINGS_BACKEND"] = "keyfile"
+                            env.pop("GIO_EXTRA_MODULES", None)
+                            started = core.launch_wayland_app(owner, profile, drain, env, paths, argv, cwd)
                         row = process_identity(started.pid)
                         core.require(row is not None, "APP_STATE_INVALID", "start")
                         emitter.send(sequence, "started", {
@@ -302,7 +351,7 @@ def serve(bootstrap, verified_bundle, source_hashes):
             profile = error.handle
         if emitter.sequence == 0:
             _before_prepared_reclaim(binding, source_hashes, origin_boot, owner,
-                                     profile, drain, paths, fds)
+                                     profile, barrier, drain, paths, fds)
             return 1
         if drain is None:
             drain = core.Drain()
@@ -313,7 +362,7 @@ def serve(bootstrap, verified_bundle, source_hashes):
             drain.close()
 
 
-def main(argv, verified_bundle=None, source_hashes=None):
+def main(argv, verified_bundle=None, source_hashes=None, *, workspace_slot=1):
     os.umask(0o077)
     try:
         bootstrap = C.Bootstrap.parse(C.canonical_json(argv))
@@ -322,11 +371,11 @@ def main(argv, verified_bundle=None, source_hashes=None):
         binding = W.Binding(bootstrap.context, bootstrap.pins)
         if bootstrap.operation == "recover":
             raw, status = core.recovery_receipt(
-                binding, source_hashes, bootstrap.expected_boot_id)
+                binding, source_hashes, bootstrap.expected_boot_id, workspace_slot=workspace_slot)
             _write_bounded(sys.stdout.fileno(), raw)
             return status
         core.require(bootstrap.operation == "serve")
-        return serve(bootstrap, verified_bundle, source_hashes)
+        return serve(bootstrap, verified_bundle, source_hashes, workspace_slot=workspace_slot)
     except (C.ContractError, bundle_api.BundleError, core.HelperError, ProfileError,
             OwnershipError, inspect_api.InspectionError, OSError, ValueError,
             KeyError, TypeError):

@@ -7,6 +7,7 @@ pub mod preferences;
 pub mod runtime;
 mod sdk_evidence;
 pub mod session;
+mod session_memfds;
 pub mod shutdown;
 pub mod startup_observation;
 pub mod theme;

@@ -16,7 +16,6 @@ use serde::Serialize;
 use smithay::reexports::wayland_server::Display;
 use std::{
     collections::BTreeSet,
-    fs,
     os::unix::net::UnixListener,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -74,6 +73,7 @@ pub struct Report {
 }
 
 pub struct Session {
+    memfd_owner: crate::session_memfds::Owner,
     report: Report,
     directory: Option<RuntimeDirectory>,
     listener: Option<UnixListener>,
@@ -178,6 +178,9 @@ impl Session {
             current.startup_allocation_absent = false;
             current.directory = Some(directory);
             let path = &current.directory.as_ref().unwrap().path;
+            if let Some((context, _)) = current.v3_capture.as_ref() {
+                eidolon_transport::linux_desktop::v3::local_directory::mark(path, context)?;
+            }
             before_bind(path);
             current.listener =
                 Some(UnixListener::bind(path.join("w")).map_err(|_| "LOCAL_SOCKET_FAILED")?);
@@ -191,8 +194,9 @@ impl Session {
             let mut protocol = ProtocolState::new_with_budget(
                 &current.display.as_ref().unwrap().handle(),
                 current.session(),
-                pixels,
+                pixels.for_owner(),
             );
+            current.memfd_owner = protocol.memfd_owner.clone();
             // Bind before a worker or first dispatch can accept a client.
             // The retained capture already exists if any setup step fails.
             if let Some(origin) = current.v3_origin.as_ref() {
@@ -239,6 +243,7 @@ impl Session {
                 },
                 ..Default::default()
             },
+            memfd_owner: Default::default(),
             directory: None,
             listener: None,
             display: None,
@@ -394,6 +399,7 @@ impl Session {
             return Err("APP_ORIGIN_UNKNOWN");
         }
         self.v3_history.as_mut().ok_or("NOT_READY")?.started();
+        self.report.state = "running";
         Ok(())
     }
 
@@ -974,7 +980,7 @@ impl Session {
                 return Err("CLEANUP_FAILED");
             }
             self.report.directory_cleaned = true;
-            let (fds, maps) = named_memfds()?;
+            let (fds, maps) = self.memfd_owner.remaining()?;
             self.report.memfd_fds_after = Some(fds);
             self.report.memfd_maps_after = Some(maps);
             if fds != 0 || maps != 0 {
@@ -1237,29 +1243,10 @@ fn current_render_targets<'a>(
         .collect()
 }
 
-fn named_memfds() -> Result<(usize, usize), &'static str> {
-    fn owned(text: &str) -> bool {
-        text.contains("memfd:waypipe")
-            || text.contains("memfd:eidolon-shm-fixture")
-            || text.contains("memfd:smithay-keymap")
-    }
-    let fds = fs::read_dir("/proc/self/fd")
-        .map_err(|_| "PROC_FD")?
-        .filter_map(Result::ok)
-        .filter_map(|f| fs::read_link(f.path()).ok())
-        .filter(|p| owned(&p.to_string_lossy()))
-        .count();
-    let maps = fs::read_to_string("/proc/self/maps")
-        .map_err(|_| "PROC_MAPS")?
-        .lines()
-        .filter(|s| owned(s))
-        .count();
-    Ok((fds, maps))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::{
         process::Command,
         sync::{

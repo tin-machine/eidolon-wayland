@@ -28,7 +28,7 @@ EXECUTABLES = frozenset({"eidolon-gtk3-desktop", "gio/libeidolon-settings.so", "
 GENERATED = frozenset({"app-manifest.json", "eidolon-gtk3-desktop", "gio/giomodule.cache",
                        "gio/libeidolon-settings.so", "linux-settings-probe", "package-inspection.json",
                        "reviewed-package.json", "settings-backend.json"})
-C_SOURCES = frozenset({"eidolon_linux_desktop_session_v3.py", "eidolon_linux_desktop_v3.py",
+C_SOURCES = frozenset({"eidolon_desktop_entries.py", "eidolon_linux_desktop_session_v3.py", "eidolon_linux_desktop_v3.py",
                        "eidolon_linux_persistent_profile.py", "linux-desktop-v3-bus.conf.in"})
 _IMPORT_STATE = frozenset({"path", "modules", "meta_path", "path_hooks", "path_importer_cache", "__dict__"})
 REQUIRED_SOURCES = C_SOURCES | frozenset({INVENTORY_NAME, "eidolon-linux-session.py",
@@ -198,7 +198,11 @@ def check_python_closure(contents):
                         require(module == top, "BUNDLE_IMPORT_UNPINNED")
                         imports.add(modules[top])
                     else:
-                        require(top in sys.stdlib_module_names, "BUNDLE_IMPORT_UNPINNED")
+                        # Desktop discovery runs in its own interpreter with distro GIO.
+                        # The isolated session controller never imports that dependency.
+                        require(top in sys.stdlib_module_names or
+                                name == "eidolon_desktop_entries.py" and top == "gi",
+                                "BUNDLE_IMPORT_UNPINNED")
                 for alias in node.names:
                     if isinstance(node, ast.Import):
                         aliases[alias.asname or alias.name.split(".")[0]] = alias.name

@@ -10,21 +10,30 @@ import com.meta.spatial.core.Entity
 import com.meta.spatial.core.EntityContext
 import com.meta.spatial.core.Color4
 import com.meta.spatial.core.Pose
+import com.meta.spatial.core.Vector2
 import com.meta.spatial.core.Vector3
 import com.meta.spatial.core.SpatialContext
+import com.meta.spatial.isdk.IsdkPanelDimensions
 import com.meta.spatial.runtime.PanelSceneObject
 import com.meta.spatial.runtime.SceneObject
+import com.meta.spatial.runtime.HitInfo
+import com.meta.spatial.runtime.PointerEventType
+import com.meta.spatial.runtime.SemanticType
 import com.meta.spatial.runtime.PanelConfigOptions
 import com.meta.spatial.runtime.AlphaMode
+import com.meta.spatial.runtime.BlendFactor
+import com.meta.spatial.runtime.LayerAlphaBlend
+import com.meta.spatial.runtime.LayerConfig
 import com.meta.spatial.runtime.PanelShapeLayerBlendType
 import com.meta.spatial.runtime.Scene
 import com.meta.spatial.toolkit.*
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONArray
 import org.json.JSONObject
 
 /** Activity単位のSDK所有者。Scene終了時はSDK所有物を返し、native参照の回収を別に待つ。 */
-class SpatialPanelAdapter {
+class SpatialPanelAdapter internal constructor(private val mousepadAnchor: MousepadAnchor? = null) {
     private val ui = Handler(Looper.getMainLooper())
     private val adapterOwner = adapters.incrementAndGet()
     private val evidence = NativeSessionHost.sdkRetirement.evidence
@@ -59,6 +68,18 @@ class SpatialPanelAdapter {
     private var listeners = 0
     private var callbacks = 0
     private var lastPublish = 0L
+    private var snapshotInFlight = false
+    private var snapshotSamples = 0L
+    private var snapshotReadMaxNs = 0L
+    private var snapshotParseMaxNs = 0L
+    private var pollApplyMaxNs = 0L
+    private var snapshotQueueMaxNs = 0L
+    private data class PanelPoll(
+        val snapshots: Map<Long, JSONObject>,
+        val readNs: Long,
+        val parseNs: Long,
+        val finishedNs: Long,
+    )
     private var backgroundStamp: String? = null
     private var backgroundApi: JSONObject? = null
     private val trace = ArrayDeque<JSONObject>()
@@ -67,6 +88,8 @@ class SpatialPanelAdapter {
         val sdkScene: Scene, val scope: SdkResourceScope? = null,
         val allocation: Long = allocations.incrementAndGet(),
         var retirementSent: Boolean = false, var evidenceCurrent: Boolean = false, var everAttached: Boolean = false,
+        var retirementStartedMs: Long? = null, var lastRetirementBlockers: List<String>? = null,
+        var nativeReleaseCode: Int? = null,
         val ownerKey: JSONObject = JSONObject(key.toString()),
         val role: String = "diagnostic", val commandSeq: String? = null, var destroyCommand: JSONObject? = null,
         var surface: Surface? = null, var sceneObject: SceneObject? = null, var listener: Long? = null,
@@ -85,8 +108,10 @@ class SpatialPanelAdapter {
         var attached: Boolean = false, var retire: Boolean = false, var destroy: Boolean = false,
         var hidden: Boolean = false, var sdkDisposed: Boolean = false, var disposalFailed: Boolean = false,
         var detachSent: Boolean = false, var replacement: Surface? = null,
+        var decorationLayer: Boolean? = null,
+        var anchorDeferred: Boolean = false,
         var group:WindowGroupPresentation.Selection=WindowGroupPresentation.Unowned,
-        var groupVisible:Boolean=true,var groupCollision:Boolean?=null,var groupSize:String?=null,var normalCollision:MeshCollision?=null,
+        var groupVisible:Boolean=true,var appliedCollision:MeshCollision?=null,var groupSize:String?=null,var normalCollision:MeshCollision?=null,
         var groupAckRequest:String?=null,var groupAckFor:String?=null,var groupAckStamp:String?=null,var groupAckFailed:String?=null,
         var groupBodyGeometry:Boolean=false,var groupControlGeometry:Boolean=false)
 
@@ -137,10 +162,16 @@ class SpatialPanelAdapter {
                     layoutWidthInPx = config.width; layoutHeightInPx = config.height
                     width = 1.2f; height = .9f
                     alphaMode = AlphaMode.PREMULTIPLIED; enableTransparent = true; forceSceneTexture = true
-                    layerConfig = null; layerBlendType = PanelShapeLayerBlendType.ALPHA_BLEND
+                    // Use the same premultiplied canvas for the image and its surrounding decoration.
+                    layerConfig = LayerConfig(alphaBlend = LayerAlphaBlend(
+                        BlendFactor.ONE, BlendFactor.ONE_MINUS_SOURCE_ALPHA,
+                        BlendFactor.ONE, BlendFactor.ONE_MINUS_SOURCE_ALPHA,
+                    ))
+                    layerBlendType = PanelShapeLayerBlendType.ALPHA_BLEND
                 }
                 PanelSceneObject(sdkScene, entity, options).also { obj ->
                     postCallback(owner) { current ->
+                        current.decorationLayer = obj.layer != null
                         event("decoration_surface", current.entity.id)
                         surfaceReady(current, obj.surface)
                     }
@@ -234,14 +265,22 @@ class SpatialPanelAdapter {
     fun metrics(): JSONObject = JSONObject().put("scene", scene.toString()).put("created", created).put("destroyed", destroyed)
         .put("bindings", bindings.size).put("listeners", listeners).put("callbacks", callbacks)
         .put("pending", cancelledReservations.size)
+        .put("poll_timing", JSONObject().put("samples", snapshotSamples)
+            .put("snapshot_read_max_ns", snapshotReadMaxNs).put("json_parse_max_ns", snapshotParseMaxNs)
+            .put("ui_queue_max_ns", snapshotQueueMaxNs).put("ui_apply_max_ns", pollApplyMaxNs))
         .put("background_api", backgroundApi?.let { JSONObject(it.toString()) })
         .put("decoration_entities", visuals.size).put("window_controls",WindowControls.resources()).put("window_mode_badges",WindowModeBadge.resources()).put("window_menus",WindowMenuView.resources())
         .put("targets", JSONArray(bindings.values.map { JSONObject().put("runtime",it.handle.toString()).put("entity",it.entity.id.toString()).put("target",JSONObject(it.key.toString())).put("role",it.role)
             .put("retiring",it.retire).put("sdk_disposed",it.sdkDisposed).put("disposal_failed",it.disposalFailed)
+            .put("retirement_blockers", it.scope?.lease?.takeIf { _ -> it.retire }?.let { lease ->
+                JSONArray(evidence.retirementBlockers(lease))
+            }).put("native_release_code", it.nativeReleaseCode)
             .put("listener_owned",it.listener!=null).put("input_owned",it.input!=null)
             .put("group",groupMetadata(it)).put("decoration",it.decoration).put("visual_entity",it.visual?.id?.toString()).put("controls",it.controls?.metadata()).put("move",it.move?.metadata()).put("mode_badge",it.modeBadge?.metadata()).put("menu",it.menu?.metadata())
+            .put("decoration_layer_allocated", it.decorationLayer)
             .put("visual_collision",if(!it.sdkDisposed && canUseSdk(it)) it.visual?.getComponent<Panel>()?.hittable?.name else null)
             .put("input_collision",if(!it.sdkDisposed && canUseSdk(it) && it.decoration!=null) it.entity.getComponent<Hittable>().hittable.name else null) }))
+        .put("mousepad_anchor", mousepadAnchor?.diagnostics())
         .put("group_geometry_pending",NativeSessionHost.windowGroupGeometryPending())
         .put("retired",JSONArray(retired.toList()))
         .put("trace", JSONArray(trace.toList()))
@@ -257,9 +296,14 @@ class SpatialPanelAdapter {
     private fun key(): JSONObject = JSONObject().put("session", "1").put("window", "1").put("scene", scene.toString())
         .put("generation", generations.incrementAndGet().toString())
     private fun create(handle: Long, plan: JSONObject? = null, initialPose: JSONObject? = null,
-        group:WindowGroupPresentation.Selection=WindowGroupPresentation.Unowned) {
+        group:WindowGroupPresentation.Selection=WindowGroupPresentation.Unowned,
+        anchorDeferred: Boolean = false) {
         val initial=(group as? WindowGroupPresentation.Owned)?.pose ?: initialPose
-        val pose = if(plan==null) Pose(Vector3(0f,1.4f,1.6f)) else initial?.takeIf {PanelPoseCodec.valid(it)}?.let {PanelPoseCodec.toSdk(it)} ?: return
+        val pose = if (plan == null) {
+            Pose(Vector3(MainActivity.CONTROL_X, MainActivity.CONTROL_Y + .95f, MainActivity.CONTROL_Z))
+        } else {
+            initial?.takeIf { PanelPoseCodec.valid(it) }?.let { PanelPoseCodec.toSdk(it) } ?: return
+        }
         val sdkScene = runtimeScene ?: return
         val ownerKey = if(plan==null) key() else JSONObject(plan.getJSONObject("target").toString())
         val strict = plan?.optBoolean("v3_evidence_required", false) == true
@@ -286,8 +330,16 @@ class SpatialPanelAdapter {
             val decoration = plan?.optJSONObject("decoration")
             // Install immutable callback ownership before adding Panel, which
             // can immediately invoke SDK producers on another thread.
-            val allocate = { if (decoration == null) Entity.create(listOf(Transform(pose)))
-                else Entity.create(listOf(Mesh(android.net.Uri.parse(ThemeHitMesh.URI), ThemeHitMesh.COLLISION), Transform(pose))) }
+            val startsHidden = anchorDeferred || group == WindowGroupPresentation.Pending
+            val components = buildList {
+                add(Transform(pose))
+                if (decoration != null) {
+                    add(Mesh(android.net.Uri.parse(ThemeHitMesh.URI), ThemeHitMesh.COLLISION))
+                    add(IsdkPanelDimensions(Vector2(1.2f, .9f)))
+                }
+                if (startsHidden) add(Visible(false))
+            }
+            val allocate = { Entity.create(components) }
             val createdEntity = scope.createEntity(allocate)
             entity = createdEntity
             check(reservePanelEntity(sdkScene,createdEntity.id)) { "SDK_PANEL_ENTITY_REUSED" }
@@ -300,10 +352,10 @@ class SpatialPanelAdapter {
             if(plan!=null) createdEntity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
             current.normalCollision=if(plan==null) null else createdEntity.getComponent<Hittable>().hittable
             current.group=group
-            if(group==WindowGroupPresentation.Pending) {
-                createdEntity.setComponent(Visible(false));createdEntity.setComponent(Hittable(MeshCollision.NoCollision));current.groupVisible=false
-            }
+            current.anchorDeferred = anchorDeferred
+            if (startsHidden) setPresentationVisibility(current, false, false)
             created++; event("entity_created", createdEntity.id)
+            if (anchorDeferred) event("anchor_visibility_deferred", createdEntity.id)
             if (decoration != null) {
                 val content = decoration.getJSONObject("content"); val canvas = decoration.getJSONObject("canvas")
                 val origin = decoration.getJSONArray("content_origin")
@@ -364,9 +416,12 @@ class SpatialPanelAdapter {
             return
         }
         if (!current.attached || current.surface?.isValid != true ||
-            current.sceneObject?.handle?.let { it != 0L } != true || current.listener == null) return
-        if (!current.evidenceCurrent) current.evidenceCurrent =
-            NativeSessionHost.sdkEvidence(scope.lease,"current") == NativeBridge.ACCEPTED
+            current.sceneObject?.handle?.let { it != 0L } != true || current.listener == null) {
+            return
+        }
+        if (!current.evidenceCurrent) {
+            current.evidenceCurrent = NativeSessionHost.sdkEvidence(scope.lease, "current") == NativeBridge.ACCEPTED
+        }
     }
     private fun surfaceReady(current: Binding, surface: Surface) {
         val entity = current.entity.id
@@ -406,6 +461,7 @@ class SpatialPanelAdapter {
                     else if(current.grabSources.size<8 || source.id in current.grabSources) current.grabSources[source.id]=source to state
                 }
             }
+            if (current.anchorDeferred) current.input?.setSuppressed(true)
             current.listener = obj.addInputListener(current.scope?.listener(checkNotNull(current.input)) ?: checkNotNull(current.input))
             listeners++; event("listener_added", entity)
         }
@@ -461,7 +517,38 @@ class SpatialPanelAdapter {
         if (!current.disposalFailed) current.scope?.auxiliaryDisposed()
         return !current.disposalFailed
     }
+    fun scrollMouse(hit: HitInfo, source: Entity, x: Double, y: Double) {
+        val entity = hit.entity ?: return
+        val binding = bindings.values.firstOrNull { it.entity.id == entity.id }
+        if (binding == null) {
+            val sceneObject = runCatching { objects?.getSceneObject(entity)?.getNow(null) }.getOrNull()
+            sceneObject?.onPointerEvent(
+                hit, PointerEventType.Move.id, source, Vector2((x / 48).toFloat(), (-y / 48).toFloat()),
+                SemanticType.Scroll.id,
+            )
+            return
+        }
+        val target = NativeSessionHost.inputTarget(binding.key.toString(), binding.handle) ?: return
+        val uv = listOf(hit.textureCoordinate.x.toDouble(), hit.textureCoordinate.y.toDouble())
+        if (uv.any { !it.isFinite() || kotlin.math.abs(it) > 16 }) return
+        if (NativeSessionHost.sendPointer(target, source.id, uv, JSONObject().put("type", "scroll")
+            .put("delta", JSONArray(listOf(x, y))).put("stop", JSONArray(listOf(false, false))))
+        ) {
+            NativeSessionHost.sendPointer(target, source.id, uv, JSONObject().put("type", "scroll")
+                .put("delta", JSONArray(listOf(0, 0))).put("stop", JSONArray(listOf(x != 0.0, y != 0.0))))
+        }
+    }
+
     private fun destroy(current: Binding) {
+        val elapsed = SystemClock.elapsedRealtime()
+        val started = current.retirementStartedMs ?: elapsed.also { current.retirementStartedMs = it }
+        if (elapsed - started >= 1500) {
+            val blockers = current.scope?.lease?.let(evidence::retirementBlockers).orEmpty()
+            if (blockers != current.lastRetirementBlockers) {
+                current.lastRetirementBlockers = blockers
+                event("retirement_wait_${blockers.joinToString("_")}", current.entity.id)
+            }
+        }
         if(!disposeSdk(current)) return
         val scope = current.scope
         if (scope != null) {
@@ -471,7 +558,11 @@ class SpatialPanelAdapter {
             if (!scope.readyToRelease()) return
             val released = if (scope.lease.createCommand != null) NativeSessionHost.sdkEvidence(scope.lease,"retired")
                 else NativeSessionHost.sdkBinding(current.ownerKey,current.handle,false)
-            if (released != NativeBridge.ACCEPTED) return
+            if (released != NativeBridge.ACCEPTED) {
+                if (current.nativeReleaseCode != released) event("native_retirement_$released", current.entity.id)
+                current.nativeReleaseCode = released
+                return
+            }
             scope.nativeReleased()
         } else {
             val code=NativeSessionHost.sdkBinding(current.ownerKey,current.handle,false)
@@ -486,15 +577,55 @@ class SpatialPanelAdapter {
     private fun sameKey(a: JSONObject, b: JSONObject): Boolean = listOf("session", "window", "scene", "generation").all { a.optString(it) == b.optString(it) }
     private val poll = object : Runnable {
         override fun run() {
-            try { tick() } catch (failure: Exception) {
-                event("adapter_failure_${failure.javaClass.simpleName}")
-                // create() reports failure with the captured runtime/command.
-                // Never redirect an old callback to the currently selected owner.
+            if (snapshotInFlight || closed && bindings.isEmpty() && cancelledReservations.isEmpty()) return
+            val handle = NativeSessionHost.currentHandle()
+            val sampledScene = scene
+            val handles = (bindings.values.map { it.handle } + handle + NativeSessionHost.otherWorkspaceRuntimes()).filter { it > 0 }.distinct()
+            snapshotInFlight = true
+            // The host worker can be waiting for SDK retirement. Snapshot reads must
+            // run independently so that the UI can continue retiring SDK leases.
+            snapshotWorker.execute {
+                val result = runCatching {
+                    var readNs = 0L
+                    var parseNs = 0L
+                    val snapshots = handles.associateWith {
+                        val beforeRead = SystemClock.elapsedRealtimeNanos()
+                        val bytes = NativeBridge.nativeSnapshot(it)
+                        val beforeParse = SystemClock.elapsedRealtimeNanos()
+                        val snapshot = JSONObject(bytes)
+                        readNs += beforeParse - beforeRead
+                        parseNs += SystemClock.elapsedRealtimeNanos() - beforeParse
+                        snapshot
+                    }
+                    PanelPoll(snapshots, readNs, parseNs, SystemClock.elapsedRealtimeNanos())
+                }
+                ui.post {
+                    snapshotInFlight = false
+                    try {
+                        if (sampledScene == scene && handle == NativeSessionHost.currentHandle()) {
+                            val batch = result.getOrThrow()
+                            val startApply = SystemClock.elapsedRealtimeNanos()
+                            snapshotSamples++
+                            snapshotReadMaxNs = maxOf(snapshotReadMaxNs, batch.readNs)
+                            snapshotParseMaxNs = maxOf(snapshotParseMaxNs, batch.parseNs)
+                            snapshotQueueMaxNs = maxOf(snapshotQueueMaxNs, startApply - batch.finishedNs)
+                            tick(handle, batch.snapshots)
+                            pollApplyMaxNs = maxOf(pollApplyMaxNs, SystemClock.elapsedRealtimeNanos() - startApply)
+                        }
+                    } catch (failure: Exception) {
+                        event("adapter_failure_${failure.javaClass.simpleName}")
+                    } finally {
+                        ui.removeCallbacks(this)
+                        if (!closed || bindings.isNotEmpty() || cancelledReservations.isNotEmpty()) {
+                            ui.postDelayed(this, 32)
+                        }
+                    }
+                }
             }
-            if (!closed || bindings.isNotEmpty() || cancelledReservations.isNotEmpty()) ui.postDelayed(this, 32)
         }
     }
-    private fun tick() {
+
+    private fun tick(handle: Long, snapshots: Map<Long, JSONObject>) {
         val now = SystemClock.elapsedRealtime()
         for ((lease,scope) in cancelledReservations.toList()) {
             val target = JSONObject().put("session",lease.session.toString()).put("window",lease.window.toString())
@@ -504,15 +635,29 @@ class SpatialPanelAdapter {
                 scope.nativeReleased();cancelledReservations.remove(lease)
             }
         }
-        val handle = NativeSessionHost.currentHandle()
-        val host = if (handle > 0) JSONObject(NativeBridge.nativeSnapshot(handle)).optJSONObject("runtime") else null
+        val host = snapshots[handle]?.optJSONObject("runtime")
+        if (host != null && !closed) NativeSessionHost.applyLauncherPlacement(handle, host)
         if(host!=null && !closed && scene>0 && host.optString("scene")==scene.toString()) applyBackground(handle,host)
+        if (host != null && !closed && scene > 0 && host.optString("scene") == scene.toString()) {
+            val target = host.optJSONObject("anchor_placement_target")?.optJSONObject("target")
+            val actual = target?.let { key ->
+                bindings.values.singleOrNull { binding ->
+                    binding.handle == handle && binding.role == "windows" && !binding.retire &&
+                        !binding.destroy && sameKey(binding.key, key) && canUseSdk(binding)
+                }?.let { PanelPoseCodec.fromSdk(getAbsoluteTransform(it.entity)) }
+            }
+            mousepadAnchor?.tick(handle, host, actual)
+        }
+        val anchorTarget = host?.optJSONObject("anchor_preparing_target")?.optJSONObject("target")
         val plans = host?.optJSONArray("panels")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) } } ?: emptyList()
         val windows = host?.optJSONObject("render")?.optString("mode") == "windows"
-        val desired = plans.filter { it.getString("action") == "create" && it.isNull("error") && it.getJSONObject("target").optString("scene") == scene.toString() }
         for (current in bindings.values.toList()) {
-            val plan = plans.firstOrNull { sameKey(it.getJSONObject("target"), current.key) }
-            if (host?.optString("state") in setOf("Stopping","Stopped","Failed") || current.role == "diagnostic" && windows || current.handle != handle ||
+            val state = snapshots[current.handle]?.optJSONObject("runtime")
+            val ownPlans = if (current.handle == handle) plans else state?.optJSONArray("panels")?.let { a ->
+                List(a.length()) { a.getJSONObject(it) }
+            }.orEmpty()
+            val plan = ownPlans.firstOrNull { sameKey(it.getJSONObject("target"), current.key) }
+            if (state?.optString("state") in setOf("Stopping","Stopped","Failed") || current.role == "diagnostic" && windows ||
                 current.role == "windows" && (plan == null || plan.getString("action") == "destroy" || !plan.isNull("error"))) {
                 beginRetirement(current); current.destroy = true
             }
@@ -520,7 +665,7 @@ class SpatialPanelAdapter {
                 beginRetirement(current); current.destroy = true
             }
             if (current.role == "windows" && plan?.optString("action") == "destroy") current.destroyCommand = plan
-            val snapshot = JSONObject(NativeBridge.nativeSnapshot(current.handle))
+            val snapshot = snapshots[current.handle] ?: continue
             if (snapshot.getInt("code") == NativeBridge.STALE) {
                 beginRetirement(current)
                 if (current.scope != null) current.scope.failed()
@@ -530,13 +675,20 @@ class SpatialPanelAdapter {
                 val render = snapshot.getJSONObject("runtime").getJSONObject("render")
                 if(current.role=="windows" && !current.retire) {
                     val state=snapshot.getJSONObject("runtime")
+                    val reveal = current.anchorDeferred &&
+                        mousepadAnchor?.awaitingPlacement(AnchorWindow.from(current.handle, current.key)) == false
+                    if (reveal) current.anchorDeferred = false
                     val grouped=applyGroup(current,state)
+                    if (reveal && current.groupVisible) {
+                        if (!grouped) current.input?.setSuppressed(false)
+                        event("anchor_visibility_released", current.entity.id)
+                    }
                     if(plan?.optBoolean("applied")==true) {
                         if(!grouped) {
-                            tickMove(current,state)
+                            if (!current.anchorDeferred) tickMove(current,state)
                             if(current.move?.blocksPose()!=true) {applyPose(current,state);applyPhysical(current,state)}
                         }
-                        applyControls(current,state)
+                        if (!current.anchorDeferred) applyControls(current,state)
                         if(grouped) acknowledgeGroup(current,state)
                     }
                 }
@@ -601,28 +753,63 @@ class SpatialPanelAdapter {
                     NativeSessionHost.ackPanel(plan, handle)
             }
         }
-        if (!closed && scene > 0 && host?.optString("state") == "Ready" && host.optString("scene") == scene.toString() &&
-            !evidence.runtimeProgress(handle).sealed) {
-            if (windows && bindings.values.none { it.role == "diagnostic" }) {
+        for (runtime in (listOf(handle) + NativeSessionHost.otherWorkspaceRuntimes()).filter { it > 0 }.distinct()) {
+            val owner = snapshots[runtime]?.optJSONObject("runtime") ?: continue
+            if (runtime != handle && !closed) NativeSessionHost.applyLauncherPlacement(runtime, owner)
+            if (closed || scene <= 0 || owner.optString("state") != "Ready" || owner.optString("scene") != scene.toString() ||
+                evidence.runtimeProgress(runtime).sealed) continue
+            val ownerWindows = owner.optJSONObject("render")?.optString("mode") == "windows"
+            if (ownerWindows && bindings.values.none { it.role == "diagnostic" && it.handle == runtime }) {
+                val ownerPlans = owner.getJSONArray("panels")
+                val desired = List(ownerPlans.length()) { ownerPlans.getJSONObject(it) }.filter {
+                    it.getString("action") == "create" && it.isNull("error") && it.getJSONObject("target").optString("scene") == scene.toString()
+                }
                 for (plan in desired) {
                     if (bindings.size >= WindowBudget.MAX_WINDOWS) break
                     if (BuildHooks.holdPanelCreation(plan.getJSONObject("target").getString("window"))) continue
-                    if (bindings.values.none { sameKey(it.key,plan.getJSONObject("target")) }) {
+                    if (bindings.values.none { it.handle == runtime && sameKey(it.key,plan.getJSONObject("target")) }) {
                         val target=plan.getJSONObject("target")
-                        val placements=host.getJSONObject("workspace").getJSONArray("windows")
+                        val placements=owner.getJSONObject("workspace").getJSONArray("windows")
                         val initial=(0 until placements.length()).map {placements.getJSONObject(it)}.firstOrNull {
                             it.optString("session")==target.optString("session") && it.optString("window")==target.optString("window") &&
                                 !it.isNull("slot") && it.optInt("slot",-1)==plan.optInt("slot",-2)
-                        }?.optJSONObject("placement")?.optJSONObject("pose")
-                        // 最初のpose正本が来るまで待つ。旧横並び位置でEntityだけを先に作らない。
-                        if(initial!=null && PanelPoseCodec.valid(initial)) create(handle,plan,initial,
-                            WindowGroupPresentation.select(handle,target,host.optJSONObject("window_groups")))
+                        }?.optJSONObject("placement")
+                        val pose = initial?.optJSONObject("pose") ?: continue
+                        if (!PanelPoseCodec.valid(pose)) continue
+                        val group = WindowGroupPresentation.select(runtime, target, owner.optJSONObject("window_groups"))
+                        val arcPose = if (initial.isNull("pose_command") && group == WindowGroupPresentation.Unowned) {
+                            initialDialogArc(runtime, owner, plan, pose)
+                        } else null
+                        val deferAnchor = runtime == handle && anchorTarget != null && sameKey(target, anchorTarget) &&
+                            mousepadAnchor?.awaitingPlacement(AnchorWindow.from(runtime, target)) == true
+                        create(runtime, plan, arcPose ?: pose, group, deferAnchor)
                     }
                 }
-            } else if (!windows && bindings.isEmpty()) create(handle)
+            } else if (runtime == handle && !windows && bindings.isEmpty()) create(handle)
         }
         if (now - lastPublish >= 1000 && scene==NativeSessionHost.currentSceneEpoch()) { NativeSessionHost.publishAdapter(metrics()); lastPublish = now }
     }
+    private fun initialDialogArc(handle: Long, runtime: JSONObject, plan: JSONObject, fallback: JSONObject): JSONObject? {
+        if (!plan.optBoolean("v3_evidence_required") || runtime.optString("xr_state") != "FOCUSED") return null
+        val windows = runtime.optJSONObject("app")?.optJSONArray("windows") ?: return null
+        val target = plan.getJSONObject("target")
+        val report = (0 until windows.length()).map { windows.getJSONObject(it) }
+        val dialog = report.firstOrNull { it.optString("window") == target.getString("window") } ?: return null
+        val parentId = dialog.optString("parent").takeIf { it.toLongOrNull()?.let { id -> id > 0 } == true } ?: return null
+        val parent = bindings.values.firstOrNull {
+            it.handle == handle && it.key.optString("session") == target.getString("session")
+                && it.key.optString("window") == parentId && !it.retire && !it.sdkDisposed && canUseSdk(it)
+        } ?: return null
+        val parentWindow = report.firstOrNull { it.optString("window") == parentId } ?: return null
+        val parentWidth = parentWindow.optJSONObject("sizing")?.optJSONObject("physical_size_m")?.optDouble("width_m") ?: return null
+        val dialogWidth = dialog.optJSONObject("sizing")?.optJSONObject("physical_size_m")?.optDouble("width_m") ?: return null
+        val viewer = runCatching { runtimeScene?.getViewerPose() }.getOrNull() ?: return null
+        val parentPose = getAbsoluteTransform(parent.entity)
+        val side = if (fallback.getJSONArray("position_m").getDouble(0) < parentPose.t.x.toDouble()) -1 else 1
+        val pose = DialogArcPlacement.pose(viewer.t, parentPose.t, parentWidth, dialogWidth, side) ?: return null
+        return pose.takeIf { NativeSessionHost.setInitialDialogPose(plan, parentId, it, handle) }
+    }
+
     private fun applyControls(current: Binding, runtime: JSONObject) {
         if(current.retire || current.destroy || current.sdkDisposed) {
             current.menu?.close();current.menu=null
@@ -641,23 +828,31 @@ class SpatialPanelAdapter {
         if(current.menuStamp!=menuStamp) {
             current.menu?.close();current.menu=null;current.menuStamp=menuStamp
             val live={ !closed && scene==NativeSessionHost.currentSceneEpoch() && bindings[current.allocation]===current && !current.retire && !current.destroy &&
-                current.handle==NativeSessionHost.currentHandle() && sameKey(current.key,JSONObject(controlTarget)) }
+                NativeSessionHost.ownsWorkspaceRuntime(current.handle) && sameKey(current.key,JSONObject(controlTarget)) }
             current.menu=WindowMenuController(current.entity,controlTarget,current.handle,revision,config,checkNotNull(runtimeScene),checkNotNull(objects),live,current.scope)
         }
-        val stamp="$controlTarget:$revision:$config:$width:$height"
+        val anchor = mousepadAnchor
+        val anchorTarget = runtime.optJSONObject("anchor_preparing_target")?.optJSONObject("target")
+        val pinned = if (anchorTarget != null && sameKey(current.key, anchorTarget)) anchor?.controlPinned() else null
+        val hasPin = pinned != null
+        val stamp="$controlTarget:$revision:$config:$width:$height:$hasPin"
         if(current.controlsStamp!=stamp) {
             current.move?.close();current.move=null;current.modeBadge?.close();current.modeBadge=null
             current.controls?.close();current.controls=null
             current.controlsStamp=stamp
             runCatching {
                 val live={ !closed && scene==NativeSessionHost.currentSceneEpoch() && bindings[current.allocation]===current && !current.retire && !current.destroy &&
-                    current.handle==NativeSessionHost.currentHandle() && sameKey(current.key,JSONObject(controlTarget)) }
+                    NativeSessionHost.ownsWorkspaceRuntime(current.handle) && sameKey(current.key,JSONObject(controlTarget)) }
                 val move=WindowMoveController(current.entity,controlTarget,current.handle,revision,checkNotNull(runtimeScene),live)
                 current.move=move
+                val pin = if (hasPin && anchor != null) { ticket: NativeSessionHost.WindowControlTicket ->
+                    NativeSessionHost.mousepadAnchorControlCurrent(ticket) &&
+                        anchor.toggleForWindow(AnchorWindow.from(current.handle, current.key))
+                } else null
                 val createControls={WindowControls(current.entity,controlTarget,current.handle,checkNotNull(runtimeScene),checkNotNull(objects),
-                    live,config,width,height,revision,move,current.scope) {ticket -> current.menu?.open(ticket)==true}}
+                    live,config,width,height,revision,move,current.scope,pin,initiallyPinned = pinned == true) {ticket -> current.menu?.open(ticket)==true}}
                 current.controls=current.scope?.produce(createControls) ?: createControls()
-                val createBadge={WindowModeBadge(current.entity,config,width,height,checkNotNull(runtimeScene),checkNotNull(objects),live,current.scope)}
+                val createBadge={WindowModeBadge(current.entity,config,width,height,checkNotNull(runtimeScene),checkNotNull(objects),live,current.scope,hasPin)}
                 current.modeBadge=current.scope?.produce(createBadge) ?: createBadge()
             }.onFailure {
                 if (it !is SdkLeaseRevoked) current.scope?.failed()
@@ -668,14 +863,13 @@ class SpatialPanelAdapter {
         val visible=runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED"
         val group=current.group as? WindowGroupPresentation.Owned
         val groupHidden=current.group==WindowGroupPresentation.Pending || group?.let {it.phase=="stable" && !it.inputAllowed}==true
+        current.controls?.setPinned(pinned == true)
         current.controls?.setVisible(visible && !groupHidden)
         current.controls?.setMenuOnly(group?.phase=="animating")
         current.controls?.setEnabled(!current.editing && visible && !groupHidden &&
             (group==null || group.phase in setOf("settling","stable") || group.phase=="animating" && group.front && group.sourceReady))
-        val controls=current.controls?.metadata()
-        val controlsReady=controls?.optBoolean("enabled")==true && controls.optLong("failures")==0L &&
-            controls.optJSONArray("buttons")?.let {buttons -> buttons.length()==4 && (0 until buttons.length()).all {buttons.getJSONObject(it).optBoolean("ready")}}==true &&
-            current.modeBadge?.metadata()?.optBoolean("object_ready")==true
+        val controlsReady = current.controls?.ready() == true &&
+            current.modeBadge?.metadata()?.optBoolean("object_ready") == true
         current.menu?.tick(runtime,controlsReady)
         val input=runtime.optJSONObject("app")?.optJSONObject("input")
         val focused=input!=null && !input.isNull("focus_token") && NativeSessionHost.keyboardFocusMatches(current.key,input.getString("focus_token"))
@@ -690,7 +884,13 @@ class SpatialPanelAdapter {
             !group.inputAllowed -> WindowMode.GROUP_BACK
             else -> null
         }
-        current.modeBadge?.update(groupMode ?: WindowMode.from(NativeSessionHost.inputTarget(controlTarget)!=null,visible,current.editing,current.move?.phase,NativeSessionHost.inputStatus.value.reason,focused,current.menu?.phase,recentering=current.menu?.recentering==true),visible && !groupHidden)
+        current.modeBadge?.update(groupMode ?: WindowMode.from(NativeSessionHost.inputTarget(controlTarget,current.handle)!=null,visible,current.editing,current.move?.phase,NativeSessionHost.inputStatus.value.reason,focused,current.menu?.phase,recentering=current.menu?.recentering==true),visible && !groupHidden,
+            tooltip = current.menu?.hoverLabel ?: current.controls?.hoverLabel(),
+            hostLabel = when (runtime.optJSONObject("transport")?.optString("profile_id")) {
+                LinuxConnectionProfile.ID -> "Ubuntu"
+                "termux-local" -> "Termux"
+                else -> null
+            })
     }
     private fun groupMetadata(current:Binding):JSONObject?=when(val group=current.group) {
         WindowGroupPresentation.Unowned -> null
@@ -701,11 +901,19 @@ class SpatialPanelAdapter {
             .put("component_pose",runCatching {if(current.sdkDisposed || !canUseSdk(current)) null else PanelPoseCodec.fromSdk(getAbsoluteTransform(current.entity))}.getOrNull() ?: JSONObject.NULL)
             .put("ack_request",current.groupAckRequest ?: JSONObject.NULL).put("ack_failed",current.groupAckFailed ?: JSONObject.NULL)
     }
-    private fun groupVisible(current:Binding,value:Boolean,collision:Boolean) {
+    private fun setPresentationVisibility(current: Binding, groupAllows: Boolean, groupCollision: Boolean) {
+        val value = groupAllows && !current.anchorDeferred
+        val collision = groupCollision && value
         if(current.groupVisible!=value) {current.entity.setComponent(Visible(value));current.visual?.setComponent(Visible(value));current.groupVisible=value}
-        if(current.groupCollision!=collision) {current.entity.setComponent(Hittable(if(collision) checkNotNull(current.normalCollision) else MeshCollision.NoCollision));current.groupCollision=collision}
+        setCollision(current, if (collision) checkNotNull(current.normalCollision) else MeshCollision.NoCollision)
         if(!value) {current.controls?.setEnabled(false);current.controls?.setVisible(false);current.modeBadge?.update(WindowMode.GROUP_BLOCKED,false)}
     }
+    private fun setCollision(current: Binding, collision: MeshCollision) {
+        if (current.appliedCollision == collision) return
+        current.entity.setComponent(Hittable(collision))
+        current.appliedCollision = collision
+    }
+
     /** Returns true while the group owns SDK pose, including a scene/Surface capture gap. */
     private fun applyGroup(current:Binding,state:JSONObject):Boolean {
         val selection=WindowGroupPresentation.select(current.handle,current.key,state.optJSONObject("window_groups"))
@@ -713,7 +921,10 @@ class SpatialPanelAdapter {
             if(current.group!=WindowGroupPresentation.Unowned) {
                 current.groupAckRequest?.let(NativeSessionHost::forgetWindowGroupGeometry);current.groupAckRequest=null;current.groupAckFor=null
                 current.groupAckStamp=null;current.groupAckFailed=null;current.groupBodyGeometry=false;current.groupControlGeometry=false;current.groupSize=null
-                groupVisible(current,true,true);current.input?.setSuppressed(false)
+                current.input?.setSuppressed(current.anchorDeferred)
+            }
+            if (current.group != selection || current.groupVisible != !current.anchorDeferred) {
+                setPresentationVisibility(current, true, true)
             }
             current.group=selection;return false
         }
@@ -729,7 +940,7 @@ class SpatialPanelAdapter {
             current.groupAckRequest?.let(NativeSessionHost::forgetWindowGroupGeometry);current.groupAckRequest=null;current.groupAckFor=null
             current.groupAckStamp=null;current.groupAckFailed=null;current.groupBodyGeometry=false;current.groupControlGeometry=false;current.groupSize=null
         }
-        if(group==null || !menuClosed) {current.input?.setSuppressed(true);groupVisible(current,false,false);return true}
+        if(group==null || !menuClosed) {current.input?.setSuppressed(true);setPresentationVisibility(current,false,false);return true}
         val actual=PanelPoseCodec.fromSdk(getAbsoluteTransform(current.entity))
         if(actual==null || !PanelPoseCodec.near(actual,group.pose)) setAbsoluteTransform(current.entity,PanelPoseCodec.toSdk(group.pose))
         if(current.groupSize!=group.size.toString()) {
@@ -738,8 +949,8 @@ class SpatialPanelAdapter {
         }
         val visible=state.getBoolean("activity_visible") && state.getString("xr_state")=="FOCUSED"
         // Settling colliders stay alive for real geometry probes; Host/native still reject all member input.
-        groupVisible(current,visible,visible && (group.phase!="stable" || group.inputAllowed))
-        current.input?.setSuppressed(!group.inputAllowed || !group.sourceReady)
+        setPresentationVisibility(current,visible,visible && (group.phase!="stable" || group.inputAllowed))
+        current.input?.setSuppressed(current.anchorDeferred || !group.inputAllowed || !group.sourceReady)
         return true
     }
     private fun acknowledgeGroup(current:Binding,state:JSONObject) {
@@ -799,7 +1010,8 @@ class SpatialPanelAdapter {
         val state=(0 until windows.length()).map {windows.getJSONObject(it)}.firstOrNull {it.getString("window")==current.key.getString("window") && it.getString("session")==current.key.getString("session")} ?: return
         val placement=state.getJSONObject("placement");val desired=placement.getJSONObject("pose")
         val command=if(placement.isNull("pose_command")) null else placement.getString("pose_command")
-        val editing=NativeSessionHost.isLayoutEditing() && runtime.getBoolean("activity_visible") && runtime.getString("xr_state")=="FOCUSED"
+        val editing = !current.anchorDeferred && NativeSessionHost.isLayoutEditing() &&
+            runtime.getBoolean("activity_visible") && runtime.getString("xr_state") == "FOCUSED"
         if(current.editing!=editing) {
             if(!editing) cancelGrab(current)
             current.entity.setComponent(Grabbable(editing,GrabbableType.FACE,false,0f,4f))
@@ -829,10 +1041,20 @@ class SpatialPanelAdapter {
         if(current.poseRequested!=stamp || actual==null || !PanelPoseCodec.near(actual,desired)) {
             setAbsoluteTransform(current.entity,PanelPoseCodec.toSdk(desired));current.poseRequested=stamp;current.poseAcked=null
         }
+        if (current.anchorDeferred) {
+            val verify = mousepadAnchor?.isApplyingPlacement(current.handle, current.key, command) == true
+            // The SDK geometry probe needs a collider even while the panel and its input are hidden.
+            // Enable it only at the requested anchor pose. Controller and mouse input remain gated.
+            setCollision(current, if (verify) MeshCollision.LineTest_IgnoreVisible else MeshCollision.NoCollision)
+            if (!verify) return
+        }
         val app=runtime.optJSONObject("app") ?: return
         val appWindows=app.getJSONArray("windows")
         val window=(0 until appWindows.length()).map {appWindows.getJSONObject(it)}.firstOrNull {it.getString("window")==current.key.getString("window")} ?: return
-        if(current.poseAcked!=stamp && physicalGeometryMatches(current,window.getJSONObject("sizing").getJSONObject("physical_size_m"))) {
+        if (current.poseAcked != stamp &&
+            physicalGeometryMatches(current, window.getJSONObject("sizing").getJSONObject("physical_size_m"),
+                shortProbe = current.anchorDeferred)
+        ) {
             val observed=PanelPoseCodec.fromSdk(getAbsoluteTransform(current.entity))
             if(observed!=null && PanelPoseCodec.near(observed,desired) && NativeSessionHost.ackPose(current.key,command,observed,current.handle)==NativeBridge.ACCEPTED) current.poseAcked=stamp
         }
@@ -870,5 +1092,9 @@ class SpatialPanelAdapter {
         return true
     }
     companion object { private val generations = AtomicLong(0); private val adapters = AtomicLong(0)
-        private val allocations = AtomicLong(0) }
+        private val allocations = AtomicLong(0)
+        private val snapshotWorker = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "eidolon-panel-snapshot").apply { isDaemon = true }
+        }
+    }
 }

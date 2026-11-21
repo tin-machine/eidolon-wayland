@@ -379,6 +379,22 @@ class N01OracleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.verify()
 
+    def test_inspect_only_shelf_requires_complete_idle_host_fields(self):
+        ui = self.receipt["native"]["catalog"]["catalog"]
+        ui.update(desktop_preview=None, termux_shelf=None, desktop_v3_installed=None,
+                  desktop_v3_editor_available=True)
+        self.assertEqual(self.verify()["status"], "pass")
+        for field, bad in (("desktop_preview", {}), ("desktop_v3_installed", []),
+                           ("termux_shelf", []), ("desktop_v3_editor_available", 1)):
+            with self.subTest(field=field):
+                saved, ui[field] = ui[field], bad
+                with self.assertRaises(ValueError):
+                    self.verify()
+                ui[field] = saved
+        del ui["termux_shelf"]
+        with self.assertRaises(ValueError):
+            self.verify()
+
     def test_missing_receipt_steps_stay_incomplete_and_overflow_is_sticky(self):
         self.receipt["native"]["trace"]["overflow"] = True
         result = self.verify()

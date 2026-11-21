@@ -18,10 +18,42 @@ enum Phase {
     Persist,
     Unpersist,
 }
+#[derive(Clone, Copy)]
+pub(crate) enum PlacementSpace {
+    Probe,
+    Panel(Option<xr::Posef>),
+}
+
+impl PlacementSpace {
+    fn reference_type(self, action: Action) -> xr::ReferenceSpaceType {
+        match (self, action) {
+            (Self::Panel(_), _) => xr::ReferenceSpaceType::LOCAL_FLOOR,
+            (_, Action::Find) => xr::ReferenceSpaceType::STAGE,
+            _ => xr::ReferenceSpaceType::VIEW,
+        }
+    }
+
+    fn save_pose(self) -> Result<xr::Posef, String> {
+        match self {
+            Self::Panel(pose) => pose.ok_or_else(|| "missing panel pose".into()),
+            Self::Probe => Ok(xr::Posef {
+                position: xr::Vector3f {
+                    x: 0.,
+                    y: 0.,
+                    z: -1.,
+                },
+                ..xr::Posef::IDENTITY
+            }),
+        }
+    }
+}
+
 struct Trial {
     api: Session,
     owner: String,
     action: Action,
+    placement_space: PlacementSpace,
+    persist_started: bool,
     uuid: Option<xr::Uuid>,
     phase: Phase,
     future: xr::FutureEXT,
@@ -74,6 +106,7 @@ impl Trial {
         api: Session,
         owner: String,
         action: Action,
+        placement_space: PlacementSpace,
         uuid: Option<xr::Uuid>,
     ) -> Result<Self, String> {
         let create = load!(api, CreateSpatialPersistenceContextAsyncEXT);
@@ -88,6 +121,8 @@ impl Trial {
             api,
             owner,
             action,
+            placement_space,
+            persist_started: false,
             uuid,
             phase: Phase::Store,
             future: Default::default(),
@@ -283,13 +318,7 @@ impl Trial {
         let info = xr::ReferenceSpaceCreateInfo {
             ty: xr::ReferenceSpaceCreateInfo::TYPE,
             next: ptr::null(),
-            // Create one metre in front of the wearer. Report located poses in the
-            // same stationary STAGE space used by the SDK marker scene.
-            reference_space_type: if self.action == Action::Find {
-                xr::ReferenceSpaceType::STAGE
-            } else {
-                xr::ReferenceSpaceType::VIEW
-            },
+            reference_space_type: self.placement_space.reference_type(self.action),
             pose_in_reference_space: xr::Posef::IDENTITY,
         };
         check("base space", unsafe {
@@ -304,14 +333,7 @@ impl Trial {
                 next: ptr::null(),
                 base_space: self.space,
                 time: now(api)?,
-                pose: xr::Posef {
-                    position: xr::Vector3f {
-                        x: 0.0,
-                        y: 0.0,
-                        z: -1.0,
-                    },
-                    ..xr::Posef::IDENTITY
-                },
+                pose: self.placement_space.save_pose()?,
             };
             let mut id = xr::SpatialEntityIdEXT::default();
             check("one anchor", unsafe {
@@ -323,6 +345,7 @@ impl Trial {
                 spatial_context: self.context,
                 spatial_entity_id: id,
             };
+            self.persist_started = true;
             check("begin persist", unsafe {
                 persist(self.store, &info, &mut self.future)
             })?;
@@ -425,13 +448,13 @@ impl Trial {
             } else {
                 None
             };
-            let stage_pose = pose.map(|p| {
+            let pose_components = pose.map(|p| {
                 let v = p.position;
                 let q = p.orientation;
                 [v.x, v.y, v.z, q.x, q.y, q.z, q.w]
             });
             rows.push(json!({"uuid":encode_uuid(row.persist_uuid),"persist":format!("{:?}",row.persist_state),
-                "tracking":format!("{:?}",states[i]),"pose_valid":stage_pose.is_some(),"stage_pose":stage_pose}));
+                "tracking":format!("{:?}",states[i]),"pose_valid":pose_components.is_some(),"pose":pose_components}));
         }
         Ok(json!({"stage":"snapshot","rows":rows}))
     }
@@ -540,77 +563,71 @@ impl Trial {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_tinmachine_eidolon_probe_NativeProbe_persistence<'a>(
-    mut env: EnvUnowned<'a>,
-    _: JClass<'a>,
-    instance: jlong,
-    session: jlong,
-    proc_addr: jlong,
-    owner: JString<'a>,
-    command: JString<'a>,
-    uuid: JString<'a>,
-) -> JString<'a> {
-    env.with_env(|env| {
-        let owner = owner.to_string();
-        let command = command.to_string();
-        let uuid = uuid.to_string();
-        let run = (|| -> Result<Value, String> {
-            let mut current = CURRENT.lock().map_err(|_| "trial lock")?;
-            if let Some(t) = current.as_ref() {
-                if t.owner != owner
-                    || t.api.session.into_raw() != session as u64
-                    || t.api.instance.into_raw() != instance as u64
-                {
-                    return Err("different trial owner".into());
-                }
+pub(crate) fn step(
+    instance: u64,
+    session: u64,
+    proc_addr: usize,
+    owner: &str,
+    command: &str,
+    uuid: &str,
+    placement_space: PlacementSpace,
+) -> Value {
+    let run = (|| -> Result<Value, String> {
+        let mut current = CURRENT.lock().map_err(|_| "trial lock")?;
+        if let Some(t) = current.as_ref() {
+            if t.owner != owner
+                || t.api.session.into_raw() != session
+                || t.api.instance.into_raw() != instance
+            {
+                return Err("different trial owner".into());
             }
-            if command == "poll" || command == "cancel" {
-                let t = current.as_mut().ok_or("no active trial")?;
-                let mut done = if command == "cancel" {
-                    json!({"stage":"cancelled"})
-                } else {
-                    match t.tick() {
-                        Ok(None) => return Ok(json!({"stage":"pending"})),
-                        Ok(Some(v)) => v,
-                        Err(e) => json!({"stage":"error","error":e}),
-                    }
-                };
-                let errors = t.close();
-                *current = None;
-                done["release_errors"] = json!(errors);
-                return Ok(done);
-            }
-            if current.is_some() || instance == 0 || session == 0 || proc_addr == 0 {
-                return Err("invalid trial state".into());
-            }
-            let action = match command.as_str() {
-                "list" => Action::List,
-                "save" => Action::Save,
-                "find" => Action::Find,
-                "erase" => Action::Erase,
-                _ => return Err("unknown trial action".into()),
-            };
-            let uuid = if matches!(action, Action::Find | Action::Erase) {
-                Some(decode_uuid(&uuid)?)
+        }
+        if command == "poll" || command == "cancel" {
+            let t = current.as_mut().ok_or("no active trial")?;
+            let mut done = if command == "cancel" {
+                json!({"stage":"cancelled"})
             } else {
-                None
+                match t.tick() {
+                    Ok(None) => return Ok(json!({"stage":"pending"})),
+                    Ok(Some(v)) => v,
+                    Err(e) => {
+                        json!({"stage":"error","error":e,"persist_may_have_started":t.persist_started})
+                    }
+                }
             };
-            let api = Session {
-                instance: xr::Instance::from_raw(instance as u64),
-                session: xr::Session::from_raw(session as u64),
-                get: unsafe {
-                    std::mem::transmute::<usize, pfn::GetInstanceProcAddr>(proc_addr as usize)
-                },
-            };
-            *current = Some(Trial::open(api, owner, action, uuid)?);
-            Ok(json!({"stage":"pending"}))
-        })();
-        JString::from_str(
-            env,
-            run.unwrap_or_else(|e| json!({"stage":"error","error":e}))
-                .to_string(),
-        )
-    })
-    .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+            let errors = t.close();
+            *current = None;
+            done["release_errors"] = json!(errors);
+            return Ok(done);
+        }
+        if current.is_some() || instance == 0 || session == 0 || proc_addr == 0 {
+            return Err("invalid trial state".into());
+        }
+        let action = match command {
+            "list" => Action::List,
+            "save" => Action::Save,
+            "find" => Action::Find,
+            "erase" => Action::Erase,
+            _ => return Err("unknown trial action".into()),
+        };
+        let uuid = if matches!(action, Action::Find | Action::Erase) {
+            Some(decode_uuid(uuid)?)
+        } else {
+            None
+        };
+        let api = Session {
+            instance: xr::Instance::from_raw(instance),
+            session: xr::Session::from_raw(session),
+            get: unsafe { std::mem::transmute::<usize, pfn::GetInstanceProcAddr>(proc_addr) },
+        };
+        *current = Some(Trial::open(
+            api,
+            owner.into(),
+            action,
+            placement_space,
+            uuid,
+        )?);
+        Ok(json!({"stage":"pending"}))
+    })();
+    run.unwrap_or_else(|e| json!({"stage":"error","error":e}))
 }

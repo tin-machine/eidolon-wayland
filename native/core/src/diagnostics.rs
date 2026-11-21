@@ -25,6 +25,13 @@ pub struct RuntimeReclamationSnapshot {
     pub shutdown_complete: bool,
 }
 
+/// Current product window of the one placement eligible for local anchoring.
+#[derive(Debug, Clone, Serialize)]
+pub struct AnchorPlacementTarget {
+    pub placement: eidolon_model::workspace::PlacementId,
+    pub target: eidolon_model::surface::TargetKey,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
     pub schema: u32,
@@ -58,6 +65,11 @@ pub struct Snapshot {
     pub desktop_v3_sdk_target: Option<eidolon_model::linux_desktop_v3::report::SdkTarget>,
     pub panels: Vec<crate::panels::PanelCommand>,
     pub workspace: crate::workspace::Report,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_placement_target: Option<AnchorPlacementTarget>,
+    /// Authenticated main-window Create before SDK/first-frame evidence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_preparing_target: Option<AnchorPlacementTarget>,
     pub theme: crate::theme::Report,
     pub render: eidolon_render::Snapshot,
     pub transport: eidolon_transport::session::Snapshot,
@@ -97,6 +109,8 @@ impl Default for Snapshot {
             desktop_v3_sdk_target: None,
             panels: vec![],
             workspace: Default::default(),
+            anchor_placement_target: None,
+            anchor_preparing_target: None,
             theme: Default::default(),
             render: Default::default(),
             transport: Default::default(),

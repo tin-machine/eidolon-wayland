@@ -25,4 +25,4 @@ compositor = ["dep:smithay", "dep:xkbcommon"]
 jni = "=0.22.4"
 ndk = "=0.9.0"
 khronos-egl = { version = "=6.0.0", features = ["dynamic"] }
-openxr-sys = "=0.14.0"
+eidolon-spatial-anchor = { path = "../../../native/spatial-anchor" }

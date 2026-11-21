@@ -12,6 +12,7 @@ class LinuxDesktopV3StatusTest {
           "launch_request":"3","transport":{"phase":"started","launch_accepted":true,"journal_pending":true},
           "started_observed":true,"terminal_observed":false,"cleanup_pending":false,"error":null,
           "faults":{"first":null,"cleanup":null}}},
+      "app":{"session":"7"},
       "desktop_v3_presentation":{"state":"ready","main":"9","startup_completed":true,
         "first_failure":null,"cleanup_pending":false},
       "desktop_v3_sdk_target":{"runtime":"11","target":{"session":"7","window":"9","scene":"2","generation":"4"},
@@ -90,6 +91,16 @@ class LinuxDesktopV3StatusTest {
         assertFalse(LinuxDesktopV3Messages.reason("/private/remote-stderr")!!.contains("/private/remote-stderr"))
         assertFalse(LinuxDesktopV3Messages.settingsReason("secret-token")!!.contains("secret-token"))
         assertEquals("LauncherUi(<private>)", LauncherUi(capture = "private-capture").toString())
+    }
+
+    @Test fun inspectingNewSessionDoesNotReuseThePreviousAppFailure() {
+        val snapshot = ready()
+        snapshot.getJSONObject("app").put("session", "6")
+        presentation(snapshot).put("state", "pending").put("first_failure", "APP_STARTUP_CANCELLED")
+        report(snapshot).put("launch_request", JSONObject.NULL)
+            .getJSONObject("transport").put("phase", "catalog").put("launch_accepted", false)
+        assertEquals("catalog_waiting", view(snapshot).phase)
+        assertNull(view(snapshot).firstFailure)
     }
 
     @Test fun activeJournalIsNotMistakenForCleanupAndFinalizerPendingIsNotReady() {

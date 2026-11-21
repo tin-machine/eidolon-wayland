@@ -17,19 +17,31 @@ pub struct Report {
     pub exit_signal: bool,
     pub eof: bool,
 }
-#[derive(Default)]
 struct Ring {
     bytes: VecDeque<u8>,
     total: u64,
+    capacity: usize,
+}
+impl Default for Ring {
+    fn default() -> Self {
+        Self::new(CAP)
+    }
 }
 impl Ring {
+    fn new(capacity: usize) -> Self {
+        Self {
+            bytes: VecDeque::new(),
+            total: 0,
+            capacity,
+        }
+    }
     fn push(&mut self, data: &[u8]) {
         self.total = self.total.saturating_add(data.len() as u64);
-        if data.len() >= CAP {
+        if data.len() >= self.capacity {
             self.bytes.clear();
-            self.bytes.extend(&data[data.len() - CAP..]);
+            self.bytes.extend(&data[data.len() - self.capacity..]);
         } else {
-            while self.bytes.len() + data.len() > CAP {
+            while self.bytes.len() + data.len() > self.capacity {
                 self.bytes.pop_front();
             }
             self.bytes.extend(data);
@@ -82,14 +94,22 @@ pub async fn probe(
 
 /// 固定launcherの短いJSON応答。stderrはcapを超えてもEOFまで排出する。
 pub(crate) async fn json(
+    channel: Channel<client::Msg>,
+    command: String,
+) -> Result<serde_json::Value, &'static str> {
+    json_bounded(channel, command, CAP).await
+}
+
+pub(crate) async fn json_bounded(
     mut channel: Channel<client::Msg>,
     command: String,
+    stdout_limit: usize,
 ) -> Result<serde_json::Value, &'static str> {
     channel
         .exec(true, command)
         .await
         .map_err(|_| "SSH_IO_FAILED")?;
-    let (mut out, mut err) = (Ring::default(), Ring::default());
+    let (mut out, mut err) = (Ring::new(stdout_limit), Ring::default());
     let (mut status, mut signal, mut eof) = (None, false, false);
     while let Some(message) = channel.wait().await {
         match message {
@@ -106,7 +126,7 @@ pub(crate) async fn json(
     if status != Some(0) || signal {
         return Err("REMOTE_EXIT");
     }
-    if !eof || out.total > CAP as u64 {
+    if !eof || out.total > stdout_limit as u64 {
         return Err("PROTOCOL_ERROR");
     }
     serde_json::from_slice(&out.bytes.into_iter().collect::<Vec<_>>()).map_err(|_| "PROTOCOL_ERROR")

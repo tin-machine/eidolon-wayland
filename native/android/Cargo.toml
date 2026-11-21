@@ -20,3 +20,4 @@ serde_json.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "=0.22.4"
+eidolon-spatial-anchor = { path = "../spatial-anchor" }

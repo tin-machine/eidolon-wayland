@@ -15,6 +15,43 @@ import com.meta.spatial.runtime.PointerEventType
 import org.json.JSONArray
 import org.json.JSONObject
 
+internal object WristInputOwnership {
+    @Volatile var controller: Long? = null
+    @Volatile var handTailUntil = 0L
+    @Volatile private var lastController: Pair<Long, Long>? = null
+
+    fun finishController(source: Long) {
+        lastController = source to (SystemClock.elapsedRealtime() + 100L)
+        controller = null
+    }
+
+    fun owns(source: Entity): Boolean {
+        if (source.id == controller || lastController?.let {
+            it.first == source.id && SystemClock.elapsedRealtime() < it.second
+        } == true) return true
+        if (SystemClock.elapsedRealtime() >= handTailUntil) return false
+        return runCatching {
+            source.getComponent<com.meta.spatial.toolkit.Controller>().type == com.meta.spatial.toolkit.ControllerType.HAND
+        }.getOrDefault(false)
+    }
+}
+
+internal class PointerButtons {
+    data class Transition(val changed: Int, val state: Int) {
+        fun event() = JSONObject().put("type", "buttons").put("changed", changed).put("state", state)
+    }
+
+    var pressed: Int = 0
+        private set
+
+    fun update(changed: Int, state: Int): Transition? {
+        val next = (pressed and changed.inv()) or (state and changed)
+        val delta = pressed xor next
+        pressed = next
+        return if (delta == 0) null else Transition(delta, next)
+    }
+}
+
 /** SDKから小DTOだけを渡す。描画済み製品target以外は入力を消費しない。 */
 class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=null, private val editSource: (Entity,Int)->Unit = { _, _ -> }) : InputListener {
     @Volatile private var suppressed=false
@@ -25,8 +62,10 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
     @Volatile private var capture: Capture? = null
     @Volatile private var closed = false
     private val inputLock = Any()
-    private data class Source(var pressed: Int=0, var armedThumb: Int=0, var xAxis: Boolean=false, var yAxis: Boolean=false,
-        var pointerAxes: List<Double>?=null, var lastScroll: Long=0)
+    private data class Source(var armedThumb: Int=0, var xAxis: Boolean=false, var yAxis: Boolean=false,
+        var pointerAxes: List<Double>?=null, var lastScroll: Long=0) {
+        val buttons = PointerButtons()
+    }
     private val sources = linkedMapOf<Long,Source>()
     private var stamp = ""
     private val thumbMask = ButtonBits.ButtonThumbLU or ButtonBits.ButtonThumbLD or ButtonBits.ButtonThumbLL or ButtonBits.ButtonThumbLR or
@@ -75,7 +114,7 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
     }
     private fun leave(id: Long, cancel: Boolean=false) {
         synchronized(inputLock) { sources.remove(id) }
-        val ticket=if (closed) null else NativeSessionHost.inputTarget(targetJson)
+        val ticket=if (closed) null else inputTarget(targetJson)
         if (ticket!=null) NativeSessionHost.sendPointer(ticket,id,null,JSONObject().put("type",if(cancel)"cancel" else "leave"))
     }
 
@@ -87,6 +126,7 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
     override fun onInput(receiver: SceneObject, hitInfo: HitInfo, sourceOfInput: Entity,
         changed: Int, state: Int, downTime: Long): Boolean {
         if (closed) return false
+        if (WristInputOwnership.owns(sourceOfInput)) return true
         if(suppressed || NativeSessionHost.isLayoutEditing()) {post { if(!closed) editSource(sourceOfInput,state) };return false}
         val probe = capture
         val target = targetJson
@@ -99,19 +139,18 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
                 .put("callback_thread", Process.myTid()).put("source", sourceOfInput.id.toString()))
             return false
         }
-        val ticket=NativeSessionHost.inputTarget(target) ?: return false
+        val ticket=inputTarget(target) ?: return false
         if (changed and (ButtonBits.ButtonMenu or ButtonBits.ButtonSystem)!=0) { NativeSessionHost.resetInput();return false }
         val maskChanged=buttons(changed); val maskState=buttons(state)
-        val scrolling=synchronized(inputLock) {
+        val position=uv(receiver,hitInfo)
+        val (button, scrolling)=synchronized(inputLock) {
             val local=source(ticket,sourceOfInput.id) ?: return false
-            local.pressed=(local.pressed and maskChanged.inv()) or (maskState and maskChanged)
             // 新epochで旧thumb heldからscrollを再生しない。新しい方向downだけをarmする。
             local.armedThumb=((local.armedThumb and changed.inv()) or (state and changed)) and thumbMask
-            scrollEvent(local,SystemClock.uptimeMillis())
+            val effectiveChanged = if (position == null && local.buttons.pressed == 0) 0 else maskChanged
+            local.buttons.update(effectiveChanged, maskState)?.event() to scrollEvent(local,SystemClock.uptimeMillis())
         }
-        val position=uv(receiver,hitInfo)
-        val consumed=NativeSessionHost.sendPointer(ticket,sourceOfInput.id,position,JSONObject().put("type","buttons")
-            .put("changed",maskChanged).put("state",maskState))
+        val consumed=NativeSessionHost.sendPointer(ticket,sourceOfInput.id,position,button ?: JSONObject().put("type","move"))
         if (scrolling!=null) NativeSessionHost.sendPointer(ticket,sourceOfInput.id,position,scrolling)
         return consumed
     }
@@ -126,26 +165,36 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
         } else leave(sourceOfInput.id)
     }
     override fun onPointerEvent(receiver: SceneObject, hitInfo: HitInfo, type: Int, sourceOfInput: Entity, scrollInfo: Vector2, semanticType: Int) {
-        if (closed || suppressed || NativeSessionHost.isLayoutEditing() || capture!=null) return
+        if (closed || suppressed || NativeSessionHost.isLayoutEditing() || capture!=null || WristInputOwnership.owns(sourceOfInput)) return
         if (type==PointerEventType.Cancel.id) { leave(sourceOfInput.id,true);return }
         if (type==PointerEventType.Unhover.id) { onHoverStop(receiver,sourceOfInput);return }
-        val ticket=NativeSessionHost.inputTarget(targetJson) ?: return
-        synchronized(inputLock) {
+        val ticket=inputTarget(targetJson) ?: return
+        val position=uv(receiver,hitInfo)
+        val event=synchronized(inputLock) {
             val local=source(ticket,sourceOfInput.id) ?: return
             local.pointerAxes=if(semanticType==SemanticType.Scroll.id) listOf(scrollInfo.x.toDouble(),scrollInfo.y.toDouble()) else listOf(0.0,0.0)
+            when {
+                // Both interfaces can report the same press. Share their transition state.
+                semanticType == SemanticType.Select.id && type == PointerEventType.Select.id && position != null ->
+                    local.buttons.update(1, 1)?.event()
+                semanticType == SemanticType.Select.id && type == PointerEventType.Unselect.id ->
+                    local.buttons.update(1, 0)?.event()
+                else -> JSONObject().put("type","move")
+            }
         }
-        val position=uv(receiver,hitInfo)
-        NativeSessionHost.sendPointer(ticket,sourceOfInput.id,position,JSONObject().put("type","move"))
+        if (event!=null) NativeSessionHost.sendPointer(ticket,sourceOfInput.id,position,event)
     }
     override fun onHoverStop(receiver: SceneObject, sourceOfInput: Entity) {
         if (closed || suppressed || NativeSessionHost.isLayoutEditing() || capture!=null) return
-        if (synchronized(inputLock) { (sources[sourceOfInput.id]?.pressed ?: 0)==0 }) leave(sourceOfInput.id)
+        if (synchronized(inputLock) { (sources[sourceOfInput.id]?.buttons?.pressed ?: 0)==0 }) leave(sourceOfInput.id)
     }
     override fun onDragMove(receiver: SceneObject, hitInfo: HitInfo, sourceOfInput: Entity, state: Int) {
         if (closed || suppressed || NativeSessionHost.isLayoutEditing() || capture!=null) return
-        val ticket=NativeSessionHost.inputTarget(targetJson) ?: return
+        val ticket=inputTarget(targetJson) ?: return
         NativeSessionHost.sendPointer(ticket,sourceOfInput.id,uv(receiver,hitInfo),JSONObject().put("type","move"))
     }
+    private fun inputTarget(target: String): NativeSessionHost.InputTarget? =
+        NativeSessionHost.inputTarget(target, sdkScope?.lease?.runtime ?: NativeSessionHost.currentHandle())
     private fun post(action:()->Unit) {sdkScope?.post(action) ?: ui.post {action()} }
     private fun publish(probe: Capture, value: JSONObject) {
         // 生の物理入力は採取しない。debugの専用source Entityだけを限定採取する。

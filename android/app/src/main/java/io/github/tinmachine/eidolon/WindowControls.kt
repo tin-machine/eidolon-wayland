@@ -16,13 +16,19 @@ import org.json.JSONObject
 class WindowControls(private val parent: Entity, private val target: String, private val runtime: Long,
     private val sdk: Scene, private val objects: SceneObjectSystem, private val live: ()->Boolean,
     private val layout: WindowControlLayout, private val width: Double, private val height: Double,
-    private val revision: Long,private val move:WindowMoveController,private val sdkScope:SdkResourceScope?=null,private val menu:(NativeSessionHost.WindowControlTicket)->Boolean) : AutoCloseable {
+    private val revision: Long,private val move:WindowMoveController,private val sdkScope:SdkResourceScope?=null,
+    private val pin: ((NativeSessionHost.WindowControlTicket) -> Boolean)? = null,
+    initiallyPinned: Boolean = false,
+    private val menu:(NativeSessionHost.WindowControlTicket)->Boolean) : AutoCloseable {
     private val ui=Handler(Looper.getMainLooper())
     private var closed=false
     private var enabled=true
     private var visible=true
     private var menuOnly=false
+    private var pinned=initiallyPinned
     private val buttons=mutableListOf<Button>()
+    private val hover = WindowControlHover()
+    private val positions = layout.positions(width, height, anchorControl = pin != null)
     private var submitted=0L
     private var rejected=0L
     private var failures=0L
@@ -36,7 +42,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
     init {
         check(Looper.myLooper()==Looper.getMainLooper())
         try {
-            for(position in layout.positions(width,height)) {
+            for(position in positions) {
                 val d=position.diameter.toFloat()
                 val bodyPose=getAbsoluteTransform(parent)
                 fun create(mesh: String,collision: MeshCollision,z: Float,scale: Vector3): Entity {
@@ -54,9 +60,9 @@ class WindowControls(private val parent: Entity, private val target: String, pri
                 var icon: Entity?=null
                 var adopted=false
                 try {
-                    face=create(when(position.action) {"menu"->WindowControlMeshes.MENU;"move"->WindowControlMeshes.MOVE;"focus"->WindowControlMeshes.FOCUS;else->WindowControlMeshes.CLOSE},
+                    face=create(when(position.action) {"pin"->pinFace(); "menu"->WindowControlMeshes.MENU;"move"->WindowControlMeshes.MOVE;else->WindowControlMeshes.CLOSE},
                         MeshCollision.NoCollision,-.018f-d*.0125f,Vector3(d*.86f,d*.86f,d*.2375f))
-                    icon=create(when(position.action) {"menu"->WindowControlMeshes.MENU_ICON;"move"->WindowControlMeshes.MOVE_ICON;"focus"->WindowControlMeshes.FOCUS_ICON;else->WindowControlMeshes.CLOSE_ICON},
+                    icon=create(when(position.action) {"pin"->WindowControlMeshes.PIN_ICON;"menu"->WindowControlMeshes.MENU_ICON;"move"->WindowControlMeshes.MOVE_ICON;else->WindowControlMeshes.CLOSE_ICON},
                         MeshCollision.NoCollision,-.018f-d*.14f,Vector3(d,d,d*.25f))
                     val button=Button(position.action,root,checkNotNull(face),checkNotNull(icon),d);buttons.add(button);adopted=true
                     observe(root, { !closed && live() && buttons.contains(button) }) { obj,error ->
@@ -100,8 +106,11 @@ class WindowControls(private val parent: Entity, private val target: String, pri
                     val clicked=button.press.up(source,downTime,"$target:$revision")
                     if(ticket!=null) {button.tickets.remove(source);button.sources.remove(source);pressed(button,false)}
                     if(clicked && ticket!=null && live()) {
-                        if(button.action=="menu") {if(menu(ticket.second)) submitted++ else rejected++}
-                        else {NativeSessionHost.windowControl(ticket.second,button.action);submitted++}
+                        when (button.action) {
+                            "menu" -> if (menu(ticket.second)) submitted++ else rejected++
+                            "pin" -> if (pin?.invoke(ticket.second) == true) submitted++ else rejected++
+                            "close" -> { NativeSessionHost.windowControl(ticket.second, "close"); submitted++ }
+                        }
                     }
                 }
             }
@@ -110,19 +119,54 @@ class WindowControls(private val parent: Entity, private val target: String, pri
         override fun onDragMove(receiver: SceneObject,hitInfo: HitInfo,sourceOfInput: Entity,state: Int) {
             val p=point(hitInfo);post {if(!closed) button.press.move(sourceOfInput.id,p,layout.diameter*.3)}
         }
+        override fun onHoverStart(receiver: SceneObject, sourceOfInput: Entity) =
+            beginHover(button, sourceOfInput.id)
+
         override fun onHoverStop(receiver: SceneObject,sourceOfInput: Entity) {
+            endHover(button, sourceOfInput.id)
             if(button.action=="move") post {move.pointerLost(sourceOfInput.id)} else cancel(button,sourceOfInput.id)
         }
         override fun stopInput(receiver: SceneObject,sourceOfInput: Entity,downTime: Long) {
+            endHover(button, sourceOfInput.id)
             if(button.action=="move") post {move.pointerLost(sourceOfInput.id,downTime)} else cancel(button,sourceOfInput.id)
         }
         override fun onPointerEvent(receiver: SceneObject,hitInfo: HitInfo,type: Int,sourceOfInput: Entity,scrollInfo: Vector2,semanticType: Int) {
+            if (type == PointerEventType.Hover.id) beginHover(button, sourceOfInput.id)
+            if (type == PointerEventType.Unhover.id || type == PointerEventType.Cancel.id) endHover(button, sourceOfInput.id)
             if(button.action=="move") {
                 if(type==PointerEventType.Cancel.id) post {move.cancelSource(sourceOfInput.id,"pointer_cancel")}
                 else if(type==PointerEventType.Unhover.id) post {move.pointerLost(sourceOfInput.id)}
             } else if(type==PointerEventType.Cancel.id || type==PointerEventType.Unhover.id) cancel(button,sourceOfInput.id)
         }
     }
+    private fun beginHover(button: Button, source: Long) = post {
+        if (!closed && enabled && visible && (!menuOnly || button.action == "menu") && live())
+            hover.enter(source, button.action)
+    }
+
+    private fun endHover(button: Button, source: Long) = post { hover.leave(source, button.action) }
+
+    private fun pinFace() = if (pinned) WindowControlMeshes.PIN_ACTIVE else WindowControlMeshes.MENU
+
+    fun setPinned(value: Boolean) {
+        if (pinned == value) return
+        pinned = value
+        buttons.firstOrNull { it.action == "pin" }?.face?.setComponent(
+            Mesh(Uri.parse(pinFace()), MeshCollision.NoCollision),
+        )
+    }
+
+    fun hoverLabel(): String? = when (hover.action()) {
+        "pin" -> if (pinned) "位置の固定を解除" else "現在の位置に固定"
+        "menu" -> "ウィンドウメニュー"
+        "move" -> "ウィンドウを移動"
+        "close" -> "ウィンドウを閉じる"
+        else -> null
+    }
+
+    fun ready(): Boolean = enabled && failures == 0L && buttons.size == positions.size &&
+        buttons.all { it.listener != null }
+
     private fun cancel(button: Button,source: Long) {post {if(!closed) {
         button.press.cancel(source);button.tickets.remove(source);button.sources.remove(source);pressed(button,false)
     }}}
@@ -134,6 +178,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
         val next=value && failures==0L
         if(closed || enabled==next) return
         enabled=next
+        if (!next) hover.clear()
         buttons.forEach {button ->
             button.entity.setComponent(Hittable(if(next && (!menuOnly || button.action=="menu")) MeshCollision.LineTest else MeshCollision.NoCollision))
             if(!next) {cancelSources(button);pressed(button,false)}
@@ -142,6 +187,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
     fun setMenuOnly(value:Boolean) {
         if(closed || menuOnly==value) return
         menuOnly=value
+        hover.clear()
         for(button in buttons) {
             button.entity.setComponent(Hittable(if(enabled && (!value || button.action=="menu")) MeshCollision.LineTest else MeshCollision.NoCollision))
             if(value && button.action!="menu") {cancelSources(button);pressed(button,false)}
@@ -150,11 +196,12 @@ class WindowControls(private val parent: Entity, private val target: String, pri
     fun setVisible(value:Boolean) {
         if(closed || visible==value) return
         visible=value
+        if (!value) hover.clear()
         for(button in buttons) for(entity in listOf(button.entity,button.face,button.icon)) entity.setComponent(Visible(value))
     }
     /** Short probes stay near this sphere, avoiding another stacked window 25mm away. */
     fun geometryMatches():Boolean {
-        if(closed || !enabled || menuOnly || !visible || buttons.size!=4) return false
+        if(closed || !enabled || menuOnly || !visible || buttons.size!=positions.size) return false
         for(button in buttons) {
             if(button.listener==null) return false
             val pose=getAbsoluteTransform(button.entity);val scale=getAbsoluteScale(button.entity)
@@ -179,10 +226,11 @@ class WindowControls(private val parent: Entity, private val target: String, pri
     fun metadata(): JSONObject=JSONObject().put("revision",revision).put("enabled",enabled).put("visible",visible).put("menu_only",menuOnly).put("requests_submitted",submitted).put("rejected",rejected)
         .put("failures",failures).put("entities",buttons.size*3).put("extra_android_displays",0).put("extra_surfaces",0)
         .put("buttons",JSONArray(buttons.map {JSONObject().put("action",it.action).put("entity",it.entity.id.toString())
-            .put("ready",it.listener!=null).put("target",JSONObject(target))}))
+            .put("ready",it.listener!=null).put("active",if (it.action=="pin") pinned else null).put("target",JSONObject(target))}))
     override fun close() {
         if(closed) return
         closed=true
+        hover.clear()
         buttons.forEach {button ->
             cancelSources(button)
             runCatching {button.listener?.let {token -> checkNotNull(button.obj).removeInputListener(token);listenerRemoves++}}.onFailure {failures++;sdkScope?.failed()}

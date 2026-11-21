@@ -81,6 +81,7 @@ async fn output_frame_incomplete_or_event_after_terminal_never_closes_cleanly() 
         frames: FrameDecoder::default(),
         boot_id: None,
         remote_socket: None,
+        editor_available: true,
         report: RemoteReport::default(),
         #[cfg(feature = "host-acceptance")]
         host_capture: None,
@@ -107,6 +108,7 @@ fn inspect_stop_ack_requires_the_requested_validated_stop_and_complete_cleanup()
         frames: FrameDecoder::default(),
         boot_id: None,
         remote_socket: None,
+        editor_available: true,
         report: RemoteReport::default(),
         #[cfg(feature = "host-acceptance")]
         host_capture: None,

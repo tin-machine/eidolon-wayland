@@ -619,17 +619,26 @@ dependencies = [
 name = "eidolon-probe"
 version = "0.1.0"
 dependencies = [
+ "eidolon-spatial-anchor",
  "jni",
  "khronos-egl",
  "libc",
  "ndk",
- "openxr-sys",
  "rand 0.10.3",
  "russh",
  "serde_json",
  "smithay",
  "tokio",
  "xkbcommon",
+]
+
+[[package]]
+name = "eidolon-spatial-anchor"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "openxr-sys",
+ "serde_json",
 ]
 
 [[package]]

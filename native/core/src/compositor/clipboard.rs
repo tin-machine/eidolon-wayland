@@ -128,7 +128,10 @@ impl ProtocolState {
         let focused = device
             .client()
             .is_some_and(|c| Some(c.id()) == self.clipboard.focused_client);
-        if !focused || self.clipboard.owner.is_none() {
+        if !focused {
+            return;
+        }
+        if self.clipboard.owner.is_none() {
             device.selection(None);
             return;
         }

@@ -42,6 +42,7 @@ pub(crate) struct Request<'a> {
         eidolon_model::ids::CommandSeq,
         Option<crate::catalog::Target>,
     )>,
+    pub selection: Option<crate::catalog::ShelfStart>,
     pub catalog_requests:
         tokio::sync::mpsc::Receiver<(eidolon_model::ids::CommandSeq, crate::catalog::Operation)>,
 }
@@ -67,6 +68,7 @@ pub(crate) async fn run<H: client::Handler>(
         binding,
         mut terminal_requests,
         mut catalog_requests,
+        selection,
         mut observation,
     } = request;
     let started = std::time::Instant::now();
@@ -134,7 +136,19 @@ pub(crate) async fn run<H: client::Handler>(
         report.registered = true;
         report.state = "forwarded";
         publish(&report);
-        remote.start_app(mode.as_str(), session).await?;
+        if let Some(choice) = selection {
+            let result = remote.catalog(eidolon_model::ids::CommandSeq::new(1).unwrap(),
+                crate::catalog::Operation::Reload { path: choice.path }).await?;
+            if result.revision != choice.revision || result.builtin != choice.builtin ||
+                result.error.is_some() && !(choice.builtin && result.error == Some(crate::catalog::Error::PathMissing)) {
+                return Err("CATALOG_CHANGED");
+            }
+            remote.start_app_target(mode.as_str(), session, Some(crate::catalog::Target::Registered {
+                revision: choice.revision, id: choice.id,
+            })).await?;
+        } else {
+            remote.start_app(mode.as_str(), session).await?;
+        }
         let mut observation_open = matches!(mode, AppMode::Foot | AppMode::FootFixture);
         if observation_open {
             let enabled = *observation.borrow_and_update();

@@ -3,7 +3,10 @@ package io.github.tinmachine.eidolon
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class LauncherEntry(val id: String, val label: String, val icon: String, val available: Boolean, val error: String?)
+data class LauncherEntry(
+    val id: String, val label: String, val icon: String, val available: Boolean, val error: String?,
+    val desktopId: String? = null,
+)
 data class LauncherUi(
     val session: String = "", val connected: Boolean = false, val busy: Boolean = false,
     val revision: String = "", val builtin: Boolean = true, val total: Int = 0, val offset: Int = 0,
@@ -11,8 +14,15 @@ data class LauncherUi(
     val message: String = "ターミナルを開くとアプリ一覧を読み込めます",
     val linux: Boolean = false, val canConnect: Boolean = false, val canInspect: Boolean = false,
     val canRecover: Boolean = false, val canStop: Boolean = false, val running: Boolean = false,
+    val canRefresh: Boolean = false,
+    val canDiscover: Boolean = false,
     val runtime: Long = 0, val capture: String = "", val v3: Boolean = false,
     val phase: String = "catalog_waiting", val firstFailure: String? = null, val cleanupFailure: String? = null,
+    val menuRefreshing: Boolean = false,
+    val menuRefreshFailed: Boolean = false,
+    val companionRunning: Boolean = false,
+    val companionCleanup: Boolean = false,
+    val catalogComplete: Boolean = false,
 ) {
     override fun toString() = "LauncherUi(<private>)"
 }
@@ -50,5 +60,35 @@ data class LauncherForm(val id: String = "my-app", val label: String = "マイ�
             .put("args",JSONArray(args)).put("cwd",cwd.ifEmpty { "." }).put("icon","builtin:script").also {
                 if(interpreter.isNotEmpty()) it.put("interpreter",interpreter)
             }
+    }
+}
+
+
+internal data class ShelfCatalog(val entries: List<LauncherEntry>, val savedAtMs: Long, val failure: String? = null)
+
+/** Termux replies are paged and carry a single immutable revision. */
+internal class TermuxCatalogPages {
+    private var revision: String? = null
+    private var expectedTotal = 0
+    private val collected = ArrayList<LauncherEntry>()
+
+    fun reset() {
+        revision = null
+        expectedTotal = 0
+        collected.clear()
+    }
+
+    fun append(revision: String, offset: Int, total: Int, entries: List<LauncherEntry>): List<LauncherEntry>? {
+        if (total !in 0..64 || entries.size != minOf(8, total - offset)) return null
+        if (offset == 0) {
+            reset()
+            this.revision = revision
+            expectedTotal = total
+        }
+        if (this.revision != revision || expectedTotal != total || offset != collected.size ||
+            entries.any { entry -> collected.any { it.id == entry.id } } ||
+            entries.map { it.id }.distinct().size != entries.size) return null
+        collected.addAll(entries)
+        return collected.toList()
     }
 }

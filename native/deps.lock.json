@@ -57,6 +57,10 @@
       {
         "file": "native/patches/smithay/0004-keymap-fd-nul-android.patch",
         "sha256": "7d5b35c4242707479695109d766c8f09c474e37e1909bc0cbf364e6e275ea7ae"
+      },
+      {
+        "file": "native/patches/smithay/0005-borrow-sealed-keymap.patch",
+        "sha256": "1f3534503a08caeb42b4c80ad884ae5dcfa6fede3bf51fa3d85fe45d58fd2280"
       }
     ]
   },

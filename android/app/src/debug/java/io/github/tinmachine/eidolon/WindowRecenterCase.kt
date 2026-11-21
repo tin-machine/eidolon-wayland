@@ -58,7 +58,7 @@ object WindowRecenterCase {
             val rendered=items(s.getJSONObject("render").optJSONArray("targets"))
             return r.optJSONObject("mode_badge")?.optBoolean("object_ready")==true && c.optBoolean("enabled") && c.optLong("failures")==0L &&
                 c.optLong("revision")==s.getJSONObject("render").getLong("theme_revision") && c.optInt("entities")==12 &&
-                items(c.optJSONArray("buttons")).let {it.size==4 && it.all {b->b.optBoolean("ready") && WindowRecenterWire.sameTarget(b.getJSONObject("target"),key)}} &&
+                items(c.optJSONArray("buttons")).let {it.size==3 && it.all {b->b.optBoolean("ready") && WindowRecenterWire.sameTarget(b.getJSONObject("target"),key)}} &&
                 rendered.any {WindowRecenterWire.sameTarget(it.getJSONObject("key"),key) && it.optLong("frames")>0}
         }
         fun focused(s:JSONObject):Boolean {

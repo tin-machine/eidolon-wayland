@@ -10,6 +10,7 @@ val generatedNative = layout.buildDirectory.dir("generated/jniLibs")
 val generatedAssets = objects.directoryProperty().convention(layout.buildDirectory.dir("generated/probeAssets"))
 val nativeProbe by tasks.registering(Exec::class) {
     inputs.files(fileTree("../../probes/native") { exclude("target/**") })
+    inputs.files(fileTree("../../native/spatial-anchor"))
     inputs.file("../../scripts/build-native-probe")
     inputs.file("../../scripts/build-probe-xkbcommon")
     inputs.property("commit", providers.exec { commandLine("git", "rev-parse", "HEAD") }.standardOutput.asText.map { it.trim() })

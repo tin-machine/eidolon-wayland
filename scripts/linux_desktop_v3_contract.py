@@ -314,7 +314,9 @@ class Selection(_Record):
     def _validate(cls, raw):
         v = parse_json(raw)
         fields(v, ("scope", "revision", "app_id"))
-        require(hexadecimal(v["scope"], 64) and hexadecimal(v["revision"], 64) and v["app_id"] in (DEMO, EDITOR))
+        require(hexadecimal(v["scope"], 64) and hexadecimal(v["revision"], 64) and (v["app_id"] in (DEMO, EDITOR) or
+             type(v["app_id"]) is str and v["app_id"].startswith("desktop-entry:") and
+             hexadecimal(v["app_id"].removeprefix("desktop-entry:"), 64)))
         return v
 
     def matches(self, context, pins):

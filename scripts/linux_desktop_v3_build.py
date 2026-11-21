@@ -214,6 +214,31 @@ def build(reviewed_package):
             "pins": selected.record(), "available": False, "production_acceptance_passed": False, "quest_verified": False}
 
 
+def install_portable(source_home, configuration):
+    """Install an already built immutable bundle against this account's base helper."""
+    home = account_home()
+    raw = bundle.read_regular(INVENTORY_PATH, limit=bundle.MANIFEST_LIMIT)
+    spec = bundle.inventory(raw)
+    sources = bundle.source_snapshot(ROOT, raw)
+    source_hashes = {name: bundle.sha(data) for name, data in sources.items()}
+    source_pins = ConnectionConfig.parse(
+        bundle.read_regular(configuration, limit=bundle.MANIFEST_LIMIT)).pins()
+    verified = bundle.validate_bundle(source_home, source_pins, source_hashes, raw)
+    tools = _build_tools()
+    _, base_hashes, base_hash = tools._tools.helper.bundle(home)
+    bundle.require(base_hashes["eidolon-linux-session.py"] == source_hashes["eidolon-linux-session.py"],
+                   "BUNDLE_SOURCE_CHANGED")
+    manifest = bundle.bundle_manifest(
+        dict(verified.files), spec, base_bundle_sha256=base_hash, app_manifest_sha256=verified.manifest.sha256())
+    pins = _pins(manifest, base_hashes)
+    parent = _parent(home)
+    if not (parent / pins.build_id()).exists():
+        publish_immutable(parent, pins.build_id(), {
+            **verified.files, bundle.MANIFEST_NAME: canonical_json(manifest)})
+    target = bundle.validate_bundle(home, pins, source_hashes, raw)
+    return ConnectionConfig.capture(target.pins, target.manifest).record()
+
+
 def verified_export(build_id):
     """Read-only static export. It never runs Mousepad, --version or a probe."""
     bundle.require(hexadecimal(build_id, 64), "BUILD_ID_INVALID")
@@ -230,7 +255,6 @@ def verified_export(build_id):
     selected = _pins(manifest, base_hashes)
     bundle.require(selected.build_id() == build_id, "BUILD_ID_INVALID")
     verified = bundle.validate_bundle(home, selected, {name: bundle.sha(data) for name, data in sources.items()}, raw)
-    bundle.validate_launch_package(verified)
     bundle.require(bundle.source_snapshot(ROOT, raw) == sources, "BUILD_INPUT_CHANGED")
     return verified
 

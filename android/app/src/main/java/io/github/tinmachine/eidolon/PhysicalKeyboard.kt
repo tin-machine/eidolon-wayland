@@ -8,11 +8,17 @@ import android.view.InputDevice
 import android.view.KeyEvent
 
 /** UI threadで入口だけを判定。文字/ユーザーのkey列をログへ残さない。 */
-class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean = { false }) : InputManager.InputDeviceListener {
+class PhysicalKeyboard(
+    context: Context,
+    private val onOpenLauncher: (() -> Unit)? = null,
+    private val onImeToggle: () -> Boolean = { false },
+) : InputManager.InputDeviceListener {
     private val manager = context.getSystemService(InputManager::class.java)
     private var active=false
     private val consumed = mutableMapOf<Pair<Int, Int>, Long>()
+    private val launcherPresses = mutableMapOf<Int, Long>()
     private val imeShortcut = ImeShortcut()
+    private var keyboardDescriptors = emptyMap<Int, String>()
     fun resume() {
         if(active) return
         active=true;manager.registerInputDeviceListener(this, Handler(Looper.getMainLooper()));refreshDevices()
@@ -27,6 +33,18 @@ class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean 
         val previouslyConsumed = consumed[identity] == event.downTime
         val device = event.device
         val physical = event.deviceId >= 0 && device != null && !device.isVirtual && event.isFromSource(InputDevice.SOURCE_KEYBOARD)
+        if (event.keyCode == KeyEvent.KEYCODE_L && launcherPresses[event.deviceId] == event.downTime) {
+            if (event.action == KeyEvent.ACTION_UP || event.isCanceled) launcherPresses.remove(event.deviceId)
+            return true
+        }
+        if (active && physical && onOpenLauncher != null && event.keyCode == KeyEvent.KEYCODE_L &&
+            event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !event.isCanceled &&
+            event.isCtrlPressed && event.isAltPressed && !event.isShiftPressed && !event.isMetaPressed) {
+            launcherPresses[event.deviceId] = event.downTime
+            NativeSessionHost.resetInput()
+            onOpenLauncher()
+            return true
+        }
         val shortcut = ImeShortcut.Event(
             device = event.deviceId,
             key = when(event.keyCode) {
@@ -40,25 +58,32 @@ class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean 
             ctrl = event.isCtrlPressed, shift = event.isShiftPressed, alt = event.isAltPressed, meta = event.isMetaPressed,
             physical = physical, active = active, system = event.isSystem, cancelled = event.isCanceled,
         )
-        // pause/device切替後でも受理済みpressのtailを先に消費し、新targetへkeyupを送らない。
+        // 受理時に元のキーを解除済み。IMEへフォーカスを移す際のキャンセルも、
+        // このショートカットのキーだけを消費し、新しいIME ownerは閉じない。
         if (imeShortcut.dispatch(shortcut, onImeToggle)) {
             if(active && physical) KeyboardIngress.physical()
             if(event.action == KeyEvent.ACTION_UP && consumed[identity] == event.downTime) consumed.remove(identity)
-            if(event.isCanceled) {imeShortcut.reset();NativeSessionHost.resetInput()}
             KeyboardIngress.outcome("ime_shortcut")
             return true
         }
         if (!active) {KeyboardIngress.outcome("inactive");return false}
         if (event.isSystem) {
             KeyboardIngress.outcome("system")
-            if (event.action == KeyEvent.ACTION_DOWN) NativeSessionHost.resetInput()
+            if (event.action == KeyEvent.ACTION_DOWN) NativeSessionHost.resetInput("system_navigation")
             return false
         }
         if (!physical) {
             KeyboardIngress.outcome("not_physical_keyboard");return false
         }
         KeyboardIngress.physical()
-        if (event.isCanceled) { KeyboardIngress.outcome("cancelled");if(consumed[identity] == event.downTime) consumed.remove(identity);imeShortcut.reset(); NativeSessionHost.resetInput(); return previouslyConsumed }
+        if (event.isCanceled) {
+            KeyboardIngress.outcome("cancelled")
+            if (previouslyConsumed) {
+                consumed.remove(identity)
+                NativeSessionHost.cancelRawPhysicalKey()
+            }
+            return previouslyConsumed
+        }
         val sent = NativeSessionHost.sendPhysicalKey(event)
         KeyboardIngress.outcome(if(sent) "enqueued" else "input_gate_closed")
         if (sent && event.action == KeyEvent.ACTION_DOWN) consumed[identity] = event.downTime
@@ -67,18 +92,38 @@ class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean 
         return sent || previouslyConsumed
     }
     private fun refreshDevices() {
-        val count=runCatching { manager.inputDeviceIds.toList().mapNotNull {manager.getInputDevice(it)}.count {
-            !it.isVirtual && it.isExternal && it.supportsSource(InputDevice.SOURCE_KEYBOARD) && it.keyboardType==InputDevice.KEYBOARD_TYPE_ALPHABETIC
-        } }.getOrNull()
-        NativeSessionHost.setKeyboardCount(count)
+        val keyboards = runCatching {
+            manager.inputDeviceIds.toList().mapNotNull { manager.getInputDevice(it) }
+                .filter { !it.isVirtual && it.supportsSource(InputDevice.SOURCE_KEYBOARD) }
+        }.getOrNull()
+        if (keyboards != null) keyboardDescriptors = keyboards.associate { it.id to it.descriptor }
+        NativeSessionHost.setKeyboardCount(keyboards?.count {
+            it.isExternal && it.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC
+        })
     }
     override fun onInputDeviceAdded(deviceId: Int) { imeShortcut.deviceChanged(deviceId);if(active) refreshDevices() }
-    override fun onInputDeviceChanged(deviceId: Int) { imeShortcut.reset();if(active) {refreshDevices();NativeSessionHost.resetInput()} }
-    override fun onInputDeviceRemoved(deviceId: Int) {
-        imeShortcut.reset()
-        if(!active) return
+    override fun onInputDeviceChanged(deviceId: Int) {
+        if (!active) return
+        val previous = keyboardDescriptors[deviceId]
         refreshDevices()
-        consumed.keys.removeAll { it.first == deviceId }
-        NativeSessionHost.resetInput()
+        imeShortcut.deviceChanged(deviceId)
+        if (previous != null && keyboardDescriptors[deviceId] != previous) {
+            consumed.keys.removeAll { it.first == deviceId }
+            NativeSessionHost.resetInput("keyboard_replaced")
+        } else if (consumed.keys.any { it.first == deviceId }) {
+            // Horizon also updates device metadata when entering IME. Only the old
+            // raw input route can still require a reset for this keyboard.
+            NativeSessionHost.cancelRawPhysicalKey()
+        }
+    }
+    override fun onInputDeviceRemoved(deviceId: Int) {
+        imeShortcut.deviceChanged(deviceId)
+        launcherPresses.remove(deviceId)
+        if(!active) return
+        val wasKeyboard = keyboardDescriptors.containsKey(deviceId)
+        refreshDevices()
+        if (consumed.keys.removeAll { it.first == deviceId } || wasKeyboard) {
+            NativeSessionHost.resetInput("keyboard_removed")
+        }
     }
 }

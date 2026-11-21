@@ -9,11 +9,29 @@ class WindowControlLayoutTest {
         for(anchor in listOf("top-left","top-right","bottom-left","bottom-right")) for(size in listOf(.25,1.2,3.0)) {
             val spec=WindowControlLayout(anchor)
             val positions=spec.positions(size,size)
-            assertEquals(listOf("menu","move","focus","close"),positions.map {it.action})
+            assertEquals(listOf("menu","move","close"),positions.map {it.action})
             for(p in positions) {assertTrue(abs(p.y)-p.diameter/2>size/2);assertEquals(.08,p.diameter,0.0)}
             for((a,b) in positions.zipWithNext()) assertTrue(abs(a.x-b.x)>=spec.diameter+spec.gap-.000001)
         }
     }
+    @Test fun pinAddsOneButtonWithoutMovingExistingButtons() {
+        val layout = WindowControlLayout()
+        val withPin = layout.positions(1.2, .9, anchorControl = true)
+        assertEquals("pin", withPin.first().action)
+        assertEquals(layout.positions(1.2, .9), withPin.drop(1))
+        assertTrue(withPin[1].x - withPin[0].x >= layout.diameter + layout.gap - .000001)
+    }
+
+    @Test fun leavingAnOlderButtonDoesNotDismissTheNewTooltip() {
+        val hover = WindowControlHover()
+        hover.enter(1, "pin")
+        hover.enter(1, "close")
+        hover.leave(1, "pin")
+        assertEquals("close", hover.action())
+        hover.leave(1, "close")
+        assertNull(hover.action())
+    }
+
     @Test fun anchorAndOffsetAreBodyRelativeWithoutWorldOrCanvasCoordinates() {
         val a=WindowControlLayout().positions(1.2,.9).last()
         val b=WindowControlLayout("bottom-left",.1,.2).positions(1.2,.9).last()
