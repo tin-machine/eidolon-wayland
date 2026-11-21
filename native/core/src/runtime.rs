@@ -198,7 +198,12 @@ impl Shared {
                 self.snapshot.scene,
                 self.snapshot.xr_state == XrState::Focused,
             )
-            .transport(started.then_some(origin.clone()), terminal, closing, closing)
+            .transport(
+                started.then_some(origin.clone()),
+                terminal,
+                closing,
+                closing,
+            )
             .windows(cut.global_window_count, cut.windows)
             .current_create(create)
             .panel(panel_fact)
@@ -243,7 +248,10 @@ impl Shared {
             && cut.admission_open
             && origin.app_id() == eidolon_model::linux_desktop_v3::AppId::Editor
         {
-            self.mousepad_anchor_main = result.presentation.main.map(|main| (origin.session(), main));
+            self.mousepad_anchor_main = result
+                .presentation
+                .main
+                .map(|main| (origin.session(), main));
         }
         self.snapshot.desktop_v3_presentation = Some(result.presentation);
         self.snapshot.desktop_v3_sdk_target = result.sdk_target;
@@ -711,7 +719,12 @@ impl Runtime {
         config: RuntimeConfig,
         handle: eidolon_model::ids::RuntimeHandle,
     ) -> std::io::Result<Self> {
-        Self::start_owned_with_hook(config, handle, eidolon_render::ExecutorSlot::Companion, || {})
+        Self::start_owned_with_hook(
+            config,
+            handle,
+            eidolon_render::ExecutorSlot::Companion,
+            || {},
+        )
     }
     pub fn start_termux_registered(
         config: RuntimeConfig,
@@ -730,7 +743,12 @@ impl Runtime {
             .map_err(|_| std::io::Error::other("ID_EXHAUSTED"))?;
         let handle = eidolon_model::ids::RuntimeHandle::new(value)
             .map_err(|_| std::io::Error::other("ID_EXHAUSTED"))?;
-        Self::start_owned_with_hook(config, handle, eidolon_render::ExecutorSlot::Primary, ready_hook)
+        Self::start_owned_with_hook(
+            config,
+            handle,
+            eidolon_render::ExecutorSlot::Primary,
+            ready_hook,
+        )
     }
     fn start_owned_with_hook(
         config: RuntimeConfig,
@@ -818,15 +836,23 @@ impl Runtime {
             .map_err(|_| invalid())?;
             profiles.insert(profile.profile_id.clone(), profile);
         }
-        let transport = Arc::new(eidolon_transport::session::Controller::start_with_local_boot(
-            config
-                .paths
-                .as_ref()
-                .map(|paths| std::path::PathBuf::from(&paths.files_dir)),
-            config.paths.as_ref().and_then(|paths| paths.android_boot_count),
-        )?);
+        let transport = Arc::new(
+            eidolon_transport::session::Controller::start_with_local_boot(
+                config
+                    .paths
+                    .as_ref()
+                    .map(|paths| std::path::PathBuf::from(&paths.files_dir)),
+                config
+                    .paths
+                    .as_ref()
+                    .and_then(|paths| paths.android_boot_count),
+            )?,
+        );
         let io = transport.clone();
-        let render = Arc::new(eidolon_render::Controller::start_in_slot(Default::default(), render_slot)?);
+        let render = Arc::new(eidolon_render::Controller::start_in_slot(
+            Default::default(),
+            render_slot,
+        )?);
         let gl = render.clone();
         let shared = Arc::new(Mutex::new(Shared {
             ime_ui: None,
@@ -3032,8 +3058,11 @@ impl Runtime {
                     })
             });
             let current_create = state.panels.snapshot().iter().any(|plan| {
-                plan.target == *target && plan.command_seq == *create_command
-                    && plan.action == PanelAction::Create && !plan.applied && plan.error.is_none()
+                plan.target == *target
+                    && plan.command_seq == *create_command
+                    && plan.action == PanelAction::Create
+                    && !plan.applied
+                    && plan.error.is_none()
             });
             if self.stop.load(Ordering::Acquire)
                 || state.snapshot.state != RuntimeState::Ready
@@ -3049,7 +3078,11 @@ impl Runtime {
             {
                 return Status::NotReady;
             }
-            if state.workspace.set_initial_dialog_pose(*target, *request_id, *pose).is_err() {
+            if state
+                .workspace
+                .set_initial_dialog_pose(*target, *request_id, *pose)
+                .is_err()
+            {
                 return Status::Stale;
             }
             state.snapshot.workspace = state.workspace.snapshot();
@@ -3454,7 +3487,8 @@ impl Runtime {
         // Remote-only Recover still takes the old I/O fence and matches the
         // exact journal. Its Complete result cannot release the local SDK gate.
         let recovery_allowed = local_recovery_proven
-            || (origin_resources_retired && !native_origin_pending
+            || (origin_resources_retired
+                && !native_origin_pending
                 && transport_reclamation.v3_remote_only_recovery);
         let add = |values: &[usize]| {
             values
@@ -4821,7 +4855,10 @@ mod tests {
             let mut panels = state.panels.snapshot();
             assert!(!panels[0].applied);
             assert_eq!(
-                state.mousepad_anchor_preparing_target(&panels).unwrap().target,
+                state
+                    .mousepad_anchor_preparing_target(&panels)
+                    .unwrap()
+                    .target,
                 target
             );
             panels[0].target.window = eidolon_model::ids::WindowId::new(2).unwrap();

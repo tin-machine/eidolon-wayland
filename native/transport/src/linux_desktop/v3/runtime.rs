@@ -227,7 +227,11 @@ impl LaunchAdmission {
         }
     }
     pub(crate) fn refresh(&self, request: CommandSeq) -> bool {
-        self.gate_open() && self.sender.try_send(CatalogCommand::Refresh(request)).is_ok()
+        self.gate_open()
+            && self
+                .sender
+                .try_send(CatalogCommand::Refresh(request))
+                .is_ok()
     }
 
     pub fn reserve(
@@ -464,7 +468,12 @@ mod tests {
             permit: reserve(&other, &other_selection),
             local_socket: PathBuf::from("/tmp/eidolon-v3-other.sock"),
         };
-        assert!(admission.sender.try_send(CatalogCommand::Start(Box::new(foreign))).is_ok());
+        assert!(
+            admission
+                .sender
+                .try_send(CatalogCommand::Start(Box::new(foreign)))
+                .is_ok()
+        );
         let permit = reserve(&admission, &selection);
         assert!(matches!(
             admission.enqueue(permit, Path::new("/tmp/eidolon-v3-test.sock")),

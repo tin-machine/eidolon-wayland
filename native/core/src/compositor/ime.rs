@@ -143,13 +143,24 @@ impl ImeState {
             .is_some_and(|active| serial_in_revision(self.revision_serial, active.serial, serial))
     }
 
-    fn expect_feedback(&self, active: &TextInput, transaction: &ImeTransaction) -> Option<ImeFeedback> {
+    fn expect_feedback(
+        &self,
+        active: &TextInput,
+        transaction: &ImeTransaction,
+    ) -> Option<ImeFeedback> {
         if transaction.delete_before != 0 || transaction.delete_after != 0 {
             return None;
         }
-        let before = self.feedback.as_ref().map(|old| old.document.clone())
+        let before = self
+            .feedback
+            .as_ref()
+            .map(|old| old.document.clone())
             .or_else(|| active.current.surrounding.clone())
-            .unwrap_or(ImeSurrounding { text: String::new(), cursor: 0, anchor: 0 });
+            .unwrap_or(ImeSurrounding {
+                text: String::new(),
+                cursor: 0,
+                anchor: 0,
+            });
         let document = match &transaction.commit {
             Some(text) => replace_selection(&before, text, text.len(), text.len())?,
             None => before.clone(),
@@ -162,7 +173,12 @@ impl ImeState {
             }
             _ => None,
         };
-        Some(ImeFeedback { before, document, with_preedit, clears_preedit: self.preedit })
+        Some(ImeFeedback {
+            before,
+            document,
+            with_preedit,
+            clears_preedit: self.preedit,
+        })
     }
 
     fn active(&self) -> Option<&TextInput> {
@@ -325,7 +341,9 @@ impl ProtocolState {
             && (snapshot.composition_revision..snapshot.edit_revision)
                 .contains(&transaction.edit_revision)
             && serial_in_revision(
-                self.ime.composition_serial, snapshot.target.serial, transaction.target.serial,
+                self.ime.composition_serial,
+                snapshot.target.serial,
+                transaction.target.serial,
             );
         if identity != snapshot.target
             || !(current_revision || composition_revision)
@@ -528,12 +546,20 @@ fn text_input_request(
             let enabled = input.pending_enabled.take();
             let changed_content_type = input.pending.content_hint != input.current.content_hint
                 || input.pending.content_purpose != input.current.content_purpose;
-            let external = input.pending.change_cause == zwp_text_input_v3::ChangeCause::Other as u32;
+            let external =
+                input.pending.change_cause == zwp_text_input_v3::ChangeCause::Other as u32;
             let semantic_change = input.pending.surrounding != input.current.surrounding
-                || changed_content_type || external;
-            let own_feedback = !changed_content_type && !external && input.pending_surrounding
+                || changed_content_type
+                || external;
+            let own_feedback = !changed_content_type
+                && !external
+                && input.pending_surrounding
                 && state.ime.feedback.as_ref().is_some_and(|feedback| {
-                    input.pending.surrounding.as_ref().is_some_and(|data| feedback.accepts(data))
+                    input
+                        .pending
+                        .surrounding
+                        .as_ref()
+                        .is_some_and(|data| feedback.accepts(data))
                 });
             if state
                 .ime
@@ -565,8 +591,11 @@ fn text_input_request(
                 state.ime.instances[index].surrounding_fresh = false;
             } else if state.ime.active.as_ref() != Some(&resource.id()) {
                 return;
-            } else if state.ime.instances[index].serial.wrapping_sub(state.ime.composition_serial)
-                >= SERIAL_HALF_RANGE {
+            } else if state.ime.instances[index]
+                .serial
+                .wrapping_sub(state.ime.composition_serial)
+                >= SERIAL_HALF_RANGE
+            {
                 // 2^31を越すserial区間は比較が曖昧になるため、geometryだけでも失効。
                 state.ime.advance_edit_revision(false);
             } else if semantic_change {

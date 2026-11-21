@@ -71,7 +71,8 @@ impl Executor {
             std::sync::OnceLock::new();
         static COMPANION: std::sync::OnceLock<Mutex<Option<Arc<Executor>>>> =
             std::sync::OnceLock::new();
-        static TERMUX: std::sync::OnceLock<Mutex<Option<Arc<Executor>>>> = std::sync::OnceLock::new();
+        static TERMUX: std::sync::OnceLock<Mutex<Option<Arc<Executor>>>> =
+            std::sync::OnceLock::new();
         let executor = match slot {
             super::ExecutorSlot::Termux => &TERMUX,
             super::ExecutorSlot::Primary => &PRIMARY,

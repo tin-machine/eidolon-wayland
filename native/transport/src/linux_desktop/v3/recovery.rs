@@ -160,7 +160,10 @@ pub async fn recover_remote<H: client::Handler>(
         )
         .map_err(|e| e.0)?;
         let command = owner::recovery_command(
-            &binding, &bootstrap, journal.source_hashes(), request.files.ends_with("eidolon-workspace-2"),
+            &binding,
+            &bootstrap,
+            journal.source_hashes(),
+            request.files.ends_with("eidolon-workspace-2"),
         )?;
         let mut channel = tokio::select! { biased;
             _ = cancel.cancelled() => return Err("CANCELLED"),

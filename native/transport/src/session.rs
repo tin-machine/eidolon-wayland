@@ -235,7 +235,12 @@ pub struct DesktopPreview {
 }
 impl DesktopPreview {
     fn pending(request_id: CommandSeq) -> Self {
-        Self { request_id, pending: true, entries: None, error: None }
+        Self {
+            request_id,
+            pending: true,
+            entries: None,
+            error: None,
+        }
     }
     fn complete(&mut self, result: Result<Vec<desktop_v3::installed::InstalledApp>, &'static str>) {
         self.pending = false;
@@ -297,7 +302,10 @@ impl Controller {
     pub fn start_with_root(root: Option<PathBuf>) -> std::io::Result<Self> {
         Self::start_with_local_boot(root, None)
     }
-    pub fn start_with_local_boot(root: Option<PathBuf>, android_boot_count: Option<u32>) -> std::io::Result<Self> {
+    pub fn start_with_local_boot(
+        root: Option<PathBuf>,
+        android_boot_count: Option<u32>,
+    ) -> std::io::Result<Self> {
         Self::start_at_with_hook(
             (Ipv4Addr::LOCALHOST, 8022).into(),
             Deadlines::default(),
@@ -338,7 +346,8 @@ impl Controller {
             .unwrap_or(Ok(None));
         let desktop_v3_pending = match (&desktop_v3_pending, root.as_deref(), android_boot_count) {
             (Ok(Some(pending)), Some(files), Some(boot))
-                if desktop_v3::journal::Journal::remember_legacy_boot(files, pending, boot).is_ok() =>
+                if desktop_v3::journal::Journal::remember_legacy_boot(files, pending, boot)
+                    .is_ok() =>
             {
                 desktop_v3::journal::pending(files)
             }
@@ -526,17 +535,27 @@ impl Controller {
             return Status::InvalidArgument;
         }
         {
-            let mut s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = self
+                .signals
+                .shared
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if s.busy {
                 if self.signals.stop.load(Ordering::Acquire)
-                    || !matches!(s.report.state, State::ProbeReady | State::DesktopReady | State::CleanupPending)
+                    || !matches!(
+                        s.report.state,
+                        State::ProbeReady | State::DesktopReady | State::CleanupPending
+                    )
                     || !matches!(s.desktop_profile.as_ref(),
                         Some(DesktopConfig::V3 { profile: captured, .. }) if captured == profile)
                     || s.cancel.as_ref().is_none_or(|c| c.is_cancelled())
                 {
                     return Status::NotReady;
                 }
-                if s.desktop_preview.as_ref().is_some_and(|preview| preview.pending) {
+                if s.desktop_preview
+                    .as_ref()
+                    .is_some_and(|preview| preview.pending)
+                {
                     return Status::Busy;
                 }
                 s.desktop_preview = Some(DesktopPreview::pending(request));
@@ -550,7 +569,12 @@ impl Controller {
             Err(_) => Status::InvalidArgument,
         }
     }
-    fn enqueue_connect(&self, profile: ConnectSpec, request: CommandSeq, discovery: bool) -> Status {
+    fn enqueue_connect(
+        &self,
+        profile: ConnectSpec,
+        request: CommandSeq,
+        discovery: bool,
+    ) -> Status {
         let mut s = self
             .signals
             .shared
@@ -948,10 +972,17 @@ impl Controller {
         self.start_selected_app(session, local_socket, nonce, mode, None)
     }
     pub fn start_selected_app(
-        &self, session: SessionId, local_socket: &Path, nonce: &str, mode: AppMode,
+        &self,
+        session: SessionId,
+        local_socket: &Path,
+        nonce: &str,
+        mode: AppMode,
         selection: Option<crate::catalog::ShelfStart>,
     ) -> Status {
-        if selection.as_ref().is_some_and(|item| !item.valid() || mode != AppMode::Foot) {
+        if selection
+            .as_ref()
+            .is_some_and(|item| !item.valid() || mode != AppMode::Foot)
+        {
             return Status::InvalidArgument;
         }
         if mode == AppMode::LinuxDesktop
@@ -1020,7 +1051,10 @@ impl Controller {
             if s.catalog.pending {
                 return Status::Busy;
             }
-            if s.desktop_v3_launch.as_ref().is_none_or(|owner| !owner.refresh(request)) {
+            if s.desktop_v3_launch
+                .as_ref()
+                .is_none_or(|owner| !owner.refresh(request))
+            {
                 return Status::NotReady;
             }
             s.catalog.request_id = Some(request);
@@ -1154,9 +1188,16 @@ impl Controller {
     }
 
     fn v3_local_persist_capture(&self) -> Option<Arc<desktop_v3::runtime::RunCapture>> {
-        let s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
-        if s.busy || !s.desktop_v3_io_retired || s.desktop_v3_handoff.is_some()
-            || s.desktop_v3_finalization_pending || !matches!(s.desktop_v3_pending, Ok(Some(_)))
+        let s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.busy
+            || !s.desktop_v3_io_retired
+            || s.desktop_v3_handoff.is_some()
+            || s.desktop_v3_finalization_pending
+            || !matches!(s.desktop_v3_pending, Ok(Some(_)))
         {
             return None;
         }
@@ -1171,8 +1212,14 @@ impl Controller {
         &self,
         proof: &impl desktop_v3::reclamation::LocalRetirementGate,
     ) -> Result<(), &'static str> {
-        let capture = self.v3_local_persist_capture().ok_or("DESKTOP_V3_LOCAL_PROOF_DEFERRED")?;
-        let files = self.signals.files.as_deref().ok_or("DESKTOP_V3_LOCAL_PROOF_DEFERRED")?;
+        let capture = self
+            .v3_local_persist_capture()
+            .ok_or("DESKTOP_V3_LOCAL_PROOF_DEFERRED")?;
+        let files = self
+            .signals
+            .files
+            .as_deref()
+            .ok_or("DESKTOP_V3_LOCAL_PROOF_DEFERRED")?;
         desktop_v3::journal::Journal::record_local_retirement(files, &capture, proof)
     }
 
@@ -1545,12 +1592,21 @@ impl Controller {
             } else {
                 s.report.state == State::Ready && s.catalog_requests.is_some()
             };
-        let mut catalog = if connected { s.catalog.clone() } else { CatalogUi::default() };
+        let mut catalog = if connected {
+            s.catalog.clone()
+        } else {
+            CatalogUi::default()
+        };
         if catalog.desktop_v3_installed.is_none() {
             catalog.desktop_preview = s.desktop_preview.clone();
         }
-        catalog.termux_shelf = s.shelf_result.as_ref().filter(|(session, _)|
-            Some(*session) == s.report.session && s.report.state == State::Ready).map(|(_, data)| data.clone());
+        catalog.termux_shelf = s
+            .shelf_result
+            .as_ref()
+            .filter(|(session, _)| {
+                Some(*session) == s.report.session && s.report.state == State::Ready
+            })
+            .map(|(_, data)| data.clone());
         catalog
     }
     pub fn catalog(
@@ -1574,8 +1630,15 @@ impl Controller {
             return Status::NotReady;
         }
         if let crate::catalog::Operation::Shelf { path } = operation {
-            if s.desktop_profile.is_some() { return Status::NotReady; }
-            if s.shelf_request.as_ref().is_some_and(|(owner, _, _)| *owner == session) { return Status::Busy; }
+            if s.desktop_profile.is_some() {
+                return Status::NotReady;
+            }
+            if s.shelf_request
+                .as_ref()
+                .is_some_and(|(owner, _, _)| *owner == session)
+            {
+                return Status::Busy;
+            }
             s.shelf_request = Some((session, request, path));
             self.signals.notify.notify_one();
             self.signals.desktop_menu_notify.notify_one();
@@ -2233,7 +2296,11 @@ async fn connection(
                     let serve = desktop_v3::runtime::serve(
                         &client,
                         &connect.router,
-                        desktop_v3::runtime::Inspection { capture, files, android_boot_count: signals.android_boot_count },
+                        desktop_v3::runtime::Inspection {
+                            capture,
+                            files,
+                            android_boot_count: signals.android_boot_count,
+                        },
                         launches,
                         &connect.cancel,
                         |report| {
@@ -2261,8 +2328,10 @@ async fn connection(
                                 {
                                     s.catalog.pending = false;
                                     s.catalog.desktop_v3 = Some(catalog_descriptor.clone());
-                                    s.catalog.desktop_v3_editor_available = selections.iter()
-                                        .any(|selection| selection.record()["app_id"] == "mousepad-editor-v1");
+                                    s.catalog.desktop_v3_editor_available =
+                                        selections.iter().any(|selection| {
+                                            selection.record()["app_id"] == "mousepad-editor-v1"
+                                        });
                                     s.desktop_v3_selections = Some(selections.to_vec());
                                     s.catalog.desktop_v3_installed = installed.map(<[_]>::to_vec);
                                     s.report.state = State::DesktopReady;
@@ -2360,7 +2429,8 @@ async fn connection(
                     if live_capture.is_none()
                         && let Some(handoff) = outcome.handoff.as_mut()
                     {
-                        let local = handoff.bind_durable_local_retirement(files, signals.android_boot_count);
+                        let local = handoff
+                            .bind_durable_local_retirement(files, signals.android_boot_count);
                         if let Err(error) = local {
                             outcome.handoff = None;
                             outcome.report.error = Some(error);
@@ -2644,7 +2714,8 @@ async fn connection(
                     notified.await;
                 }
             };
-            let report = tokio::select! { value = forward_app => value, _ = refresh => unreachable!() };
+            let report =
+                tokio::select! { value = forward_app => value, _ = refresh => unreachable!() };
             signals.update(|s| {
                 s.forward_busy = false;
                 s.terminal_requests = None;
@@ -2701,11 +2772,22 @@ async fn connection(
 }
 
 async fn refresh_termux_shelf<H: client::Handler>(
-    signals: &Signals, client: &client::Handle<H>, connect: &Connect,
+    signals: &Signals,
+    client: &client::Handle<H>,
+    connect: &Connect,
 ) {
-    let work = signals.shared.lock().unwrap_or_else(|e| e.into_inner()).shelf_request.take();
-    let Some((session, request, path)) = work else { return };
-    if session != connect.session { return; }
+    let work = signals
+        .shared
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .shelf_request
+        .take();
+    let Some((session, request, path)) = work else {
+        return;
+    };
+    if session != connect.session {
+        return;
+    }
     let result = crate::launcher::shelf(client, &path, &connect.cancel).await;
     let value = match result {
         Ok(data) => serde_json::json!({"request":request, "data":data}),
@@ -2723,13 +2805,20 @@ async fn refresh_desktop_preview<H: client::Handler>(
     client: &client::Handle<H>,
     cancel: &CancellationToken,
 ) {
-    let request = signals.shared.lock().unwrap_or_else(|e| e.into_inner())
-        .desktop_preview.as_ref().filter(|preview| preview.pending)
+    let request = signals
+        .shared
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .desktop_preview
+        .as_ref()
+        .filter(|preview| preview.pending)
         .map(|preview| preview.request_id);
     let Some(request) = request else { return };
     let result = desktop_v3::installed::discover(client, cancel).await;
     signals.update(|s| {
-        if let Some(preview) = s.desktop_preview.as_mut()
+        if let Some(preview) = s
+            .desktop_preview
+            .as_mut()
             .filter(|preview| preview.pending && preview.request_id == request)
         {
             preview.complete(result);

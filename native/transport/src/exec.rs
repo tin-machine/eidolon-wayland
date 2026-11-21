@@ -29,7 +29,11 @@ impl Default for Ring {
 }
 impl Ring {
     fn new(capacity: usize) -> Self {
-        Self { bytes: VecDeque::new(), total: 0, capacity }
+        Self {
+            bytes: VecDeque::new(),
+            total: 0,
+            capacity,
+        }
     }
     fn push(&mut self, data: &[u8]) {
         self.total = self.total.saturating_add(data.len() as u64);

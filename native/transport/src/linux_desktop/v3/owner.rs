@@ -25,10 +25,20 @@ pub fn command(binding: &Binding, bootstrap: &Bootstrap) -> Result<String, &'sta
     command_in_slot(binding, bootstrap, false)
 }
 
-fn command_in_slot(binding: &Binding, bootstrap: &Bootstrap, companion: bool) -> Result<String, &'static str> {
+fn command_in_slot(
+    binding: &Binding,
+    bootstrap: &Bootstrap,
+    companion: bool,
+) -> Result<String, &'static str> {
     let hashes = sources::current_hashes();
     sources::validate_hashes(&hashes)?;
-    command_for_sources(binding, bootstrap, &hashes, Some(sources::inventory_bytes()), companion)
+    command_for_sources(
+        binding,
+        bootstrap,
+        &hashes,
+        Some(sources::inventory_bytes()),
+        companion,
+    )
 }
 
 pub(super) fn recovery_command(
@@ -60,9 +70,14 @@ fn command_for_sources(
         .matches(binding.context(), binding.pins())
         .map_err(|e| e.0)?;
     let inventory = inventory
-        .map(std::str::from_utf8).transpose().map_err(|_| "DESKTOP_V3_SOURCE_INVALID")?;
-    let inventory = inventory.map(serde_json::to_string).transpose()
-        .map_err(|_| "DESKTOP_V3_SOURCE_INVALID")?.unwrap_or_else(|| "None".into());
+        .map(std::str::from_utf8)
+        .transpose()
+        .map_err(|_| "DESKTOP_V3_SOURCE_INVALID")?;
+    let inventory = inventory
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|_| "DESKTOP_V3_SOURCE_INVALID")?
+        .unwrap_or_else(|| "None".into());
     let literal = |value: &str| serde_json::to_string(value).map_err(|_| "DESKTOP_BINDING_INVALID");
     let pins =
         serde_json::to_string(&binding.pins().record()).map_err(|_| "DESKTOP_BINDING_INVALID")?;
@@ -412,7 +427,9 @@ impl Owner {
                 self.boot_id = Some(boot_id);
                 self.remote_socket = Some(remote_socket);
             }
-            Event::Catalog(payload) => self.editor_available = payload.get("editor_available").is_none(),
+            Event::Catalog(payload) => {
+                self.editor_available = payload.get("editor_available").is_none()
+            }
             Event::Started { .. } => self.report.started = true,
             Event::Stopped {
                 reason,

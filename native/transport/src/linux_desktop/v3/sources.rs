@@ -203,15 +203,18 @@ pub fn validate_hashes(hashes: &SourceHashes) -> Result<(), &'static str> {
 /// to current compiled sources. The digest contains source hashes only.
 pub(super) fn validate_recovery_hashes(hashes: &SourceHashes) -> Result<(), &'static str> {
     const PRE_CATALOG: &str = "2f227f90630280bc28a8229664f1eb7e962d6f954b95f78a1a9dfb7b357dda5b";
-    const PRE_WORKDIR_CHECK: &str = "cf89c96a3ca32cb70bfb481eb7dccc2be0f228bd569592b653a05f7660ad78d4";
+    const PRE_WORKDIR_CHECK: &str =
+        "cf89c96a3ca32cb70bfb481eb7dccc2be0f228bd569592b653a05f7660ad78d4";
     const PRE_COMPANION: &str = "282ac4114508c809734ed72214b3ff2b910164f0c4c40fa10186264924532abb";
     if validate_hashes(hashes).is_ok() {
         return Ok(());
     }
     let value = serde_json::to_value(hashes).map_err(|_| "APP_V3_SOURCE_INVALID")?;
     super::source_map(&value)?;
-    if !matches!(eidolon_model::linux_desktop_v3::digest(&value).as_deref(),
-        Ok(PRE_CATALOG | PRE_WORKDIR_CHECK | PRE_COMPANION)) {
+    if !matches!(
+        eidolon_model::linux_desktop_v3::digest(&value).as_deref(),
+        Ok(PRE_CATALOG | PRE_WORKDIR_CHECK | PRE_COMPANION)
+    ) {
         return Err("APP_V3_SOURCE_CHANGED");
     }
     Ok(())
@@ -285,17 +288,31 @@ mod tests {
     fn old_installed_entries_sources_are_admitted_only_for_recovery() {
         let mut old = current_hashes();
         for (name, digest) in [
-            ("eidolon_linux_persistent_profile.py", "64a274acbfbb973f70bf214c21949de618e18f8e53985b4b91c98b2908ce2cb4"),
-            ("eidolon_linux_desktop_session_v3.py", "72edc8e94f51ffa357efaf79c26ba09eb4419089e9c96aab84c45c65004ac111"),
-            ("eidolon_linux_desktop_v3.py", "56c4ff653994e4d42283eb83e619660f4392d7ad754ea1572645b8d2e636fafa"),
-            ("linux_desktop_v3_wire.py", "85895e62f09f1e7fc97db43ee222da9d868f49a52ea1a1b7f8cc13873f41c84c"),
+            (
+                "eidolon_linux_persistent_profile.py",
+                "64a274acbfbb973f70bf214c21949de618e18f8e53985b4b91c98b2908ce2cb4",
+            ),
+            (
+                "eidolon_linux_desktop_session_v3.py",
+                "72edc8e94f51ffa357efaf79c26ba09eb4419089e9c96aab84c45c65004ac111",
+            ),
+            (
+                "eidolon_linux_desktop_v3.py",
+                "56c4ff653994e4d42283eb83e619660f4392d7ad754ea1572645b8d2e636fafa",
+            ),
+            (
+                "linux_desktop_v3_wire.py",
+                "85895e62f09f1e7fc97db43ee222da9d868f49a52ea1a1b7f8cc13873f41c84c",
+            ),
         ] {
             old.insert(name.into(), digest.into());
         }
         assert!(validate_hashes(&old).is_err());
         validate_recovery_hashes(&old).unwrap();
-        old.insert("eidolon_desktop_entries.py".into(),
-            "5805611999b2e6600c1a23b756453f793dfdfca88d628c119af12a2024bf4a3d".into());
+        old.insert(
+            "eidolon_desktop_entries.py".into(),
+            "5805611999b2e6600c1a23b756453f793dfdfca88d628c119af12a2024bf4a3d".into(),
+        );
         assert!(validate_hashes(&old).is_err());
         validate_recovery_hashes(&old).unwrap();
     }

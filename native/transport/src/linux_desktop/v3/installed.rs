@@ -31,9 +31,9 @@ enum DisabledReason {
 
 impl InstalledApp {
     pub(crate) fn selection_id(&self) -> Option<String> {
-        self.disabled_reason.is_none().then(|| {
-            format!("{}{}", AppId::DESKTOP_ENTRY_PREFIX, self.revision.as_str())
-        })
+        self.disabled_reason
+            .is_none()
+            .then(|| format!("{}{}", AppId::DESKTOP_ENTRY_PREFIX, self.revision.as_str()))
     }
 }
 
@@ -49,7 +49,10 @@ pub(crate) async fn discover<H: client::Handler>(
     cancel: &CancellationToken,
 ) -> Result<Vec<InstalledApp>, &'static str> {
     let read = async {
-        let channel = client.channel_open_session().await.map_err(|_| "SSH_IO_FAILED")?;
+        let channel = client
+            .channel_open_session()
+            .await
+            .map_err(|_| "SSH_IO_FAILED")?;
         let command = format!(
             "exec /usr/bin/python3 -I -B -c '{}'",
             SOURCE.replace('\'', "'\\''"),
@@ -59,12 +62,20 @@ pub(crate) async fn discover<H: client::Handler>(
             serde_json::from_value(payload).map_err(|_| "DESKTOP_DISCOVERY_INVALID")?;
         let mut seen_ids = BTreeSet::new();
         let mut seen_revisions = BTreeSet::new();
-        if catalog.schema != 1 || catalog.entries.len() > MAX_ENTRIES
+        if catalog.schema != 1
+            || catalog.entries.len() > MAX_ENTRIES
             || catalog.entries.iter().any(|entry| {
-                !entry.id.ends_with(".desktop") || entry.id.len() > 255 || entry.name.is_empty()
+                !entry.id.ends_with(".desktop")
+                    || entry.id.len() > 255
+                    || entry.name.is_empty()
                     || entry.name.len() > 255
-                    || entry.id.chars().chain(entry.name.chars()).any(char::is_control)
-                    || !seen_ids.insert(&entry.id) || !seen_revisions.insert(entry.revision.as_str())
+                    || entry
+                        .id
+                        .chars()
+                        .chain(entry.name.chars())
+                        .any(char::is_control)
+                    || !seen_ids.insert(&entry.id)
+                    || !seen_revisions.insert(entry.revision.as_str())
             })
         {
             return Err("DESKTOP_DISCOVERY_INVALID");

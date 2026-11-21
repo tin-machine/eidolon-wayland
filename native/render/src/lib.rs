@@ -1725,7 +1725,10 @@ mod tests {
         for renderer in [&first, &second] {
             renderer.use_windows();
             renderer.set_visible(true);
-            assert_eq!(renderer.windows(key.session, &[key.window]), Status::Accepted);
+            assert_eq!(
+                renderer.windows(key.session, &[key.window]),
+                Status::Accepted
+            );
             let (image, probes) = fixtures::make(0, 1, key, 64, 64).unwrap();
             assert_eq!(renderer.submit(image, probes), Status::Accepted);
             assert_eq!(
@@ -1733,9 +1736,15 @@ mod tests {
                 Status::Accepted,
             );
         }
-        wait(|| [&first, &second].iter().all(|renderer| {
-            renderer.snapshot().targets.iter().any(|target| target.key == key && target.frames > 0)
-        }));
+        wait(|| {
+            [&first, &second].iter().all(|renderer| {
+                renderer
+                    .snapshot()
+                    .targets
+                    .iter()
+                    .any(|target| target.key == key && target.frames > 0)
+            })
+        });
         second.request_stop();
         wait(|| second.is_finished());
         assert!(!first.is_finished());

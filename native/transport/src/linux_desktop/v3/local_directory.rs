@@ -23,25 +23,37 @@ pub fn mark(directory: &Path, context: &Context) -> Result<(), &'static str> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(directory.join(MARKER))
         .map_err(|_| ERROR)?;
-    marker.write_all(stamp(context, &identity).as_bytes()).map_err(|_| ERROR)?;
+    marker
+        .write_all(stamp(context, &identity).as_bytes())
+        .map_err(|_| ERROR)?;
     marker.sync_all().map_err(|_| ERROR)?;
     journal::sync(directory)?;
     journal::sync(directory.parent().ok_or(ERROR)?)
 }
 
 fn stamp(context: &Context, identity: &fs::Metadata) -> String {
-    format!("{}:{}:{}\n", context.scope(), identity.dev(), identity.ino())
+    format!(
+        "{}:{}:{}\n",
+        context.scope(),
+        identity.dev(),
+        identity.ino()
+    )
 }
 
 fn matches_after_reboot(context: &Context, identity: &fs::Metadata, raw: &[u8]) -> bool {
-    let Some(text) = std::str::from_utf8(raw).ok().and_then(|text| text.strip_suffix('\n')) else {
+    let Some(text) = std::str::from_utf8(raw)
+        .ok()
+        .and_then(|text| text.strip_suffix('\n'))
+    else {
         return false;
     };
     let mut parts = text.split(':');
     // Android's device-mapper minor number can change across reboot. The
     // same private path, context and filesystem inode identify this directory.
     parts.next() == Some(context.scope().as_str())
-        && parts.next().is_some_and(|value| value.parse::<u64>().is_ok())
+        && parts
+            .next()
+            .is_some_and(|value| value.parse::<u64>().is_ok())
         && parts.next().and_then(|value| value.parse::<u64>().ok()) == Some(identity.ino())
         && parts.next().is_none()
 }
@@ -69,7 +81,10 @@ pub(super) fn require_absent(files: &Path, context: &Context) -> Result<(), &'st
     Ok(())
 }
 
-fn owned_sockets(entries: impl Iterator<Item = std::io::Result<fs::DirEntry>>, uid: u32) -> Result<Vec<std::path::PathBuf>, &'static str> {
+fn owned_sockets(
+    entries: impl Iterator<Item = std::io::Result<fs::DirEntry>>,
+    uid: u32,
+) -> Result<Vec<std::path::PathBuf>, &'static str> {
     let mut sockets = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|_| ERROR)?;
@@ -104,7 +119,9 @@ pub(super) fn remember_legacy_owner(files: &Path, context: &Context) -> Result<(
     }
     journal::check_directory(&directory, true)?;
     let marker_path = directory.join(MARKER);
-    owned_sockets(fs::read_dir(&directory).map_err(|_| ERROR)?, unsafe { libc::getuid() })?;
+    owned_sockets(fs::read_dir(&directory).map_err(|_| ERROR)?, unsafe {
+        libc::getuid()
+    })?;
     if absent(&marker_path)? {
         mark(&directory, context)?;
     }

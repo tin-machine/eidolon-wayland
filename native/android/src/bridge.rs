@@ -172,7 +172,13 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeSamp
     env.with_env(|env| {
         let mut values = [0.0; 32];
         let available = unsafe {
-            eidolon_spatial_anchor::sample_hands(instance as u64, session as u64, proc_addr as usize, unobstructed, &mut values)
+            eidolon_spatial_anchor::sample_hands(
+                instance as u64,
+                session as u64,
+                proc_addr as usize,
+                unobstructed,
+                &mut values,
+            )
         };
         output.set_region(env, 0, &values)?;
         Ok::<_, jni::errors::Error>(available)

@@ -100,7 +100,9 @@ impl Definition {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
-    Shelf { path: String },
+    Shelf {
+        path: String,
+    },
     Save {
         path: String,
         expected_revision: Option<String>,

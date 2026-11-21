@@ -127,7 +127,10 @@ impl AppId {
 }
 
 impl Serialize for AppId {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         match self {
             Self::Demo => serializer.serialize_str("gtk3-desktop"),
             Self::Editor => serializer.serialize_str("mousepad-editor-v1"),
@@ -140,7 +143,9 @@ impl Serialize for AppId {
 }
 
 impl<'de> Deserialize<'de> for AppId {
-    fn deserialize<D: de::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: de::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         Self::parse(&String::deserialize(deserializer)?)
             .ok_or_else(|| de::Error::custom("invalid application selection"))
     }

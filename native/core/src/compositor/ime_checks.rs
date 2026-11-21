@@ -1024,7 +1024,11 @@ mod tests {
         peer.sync(&mut display, &mut state, &stop)?;
         let before = snapshot(&state)?;
         let mut preedit = transaction(&before, 1, None);
-        preedit.preedit = Some(ImePreedit { text: "継続".into(), cursor_begin: 6, cursor_end: 6 });
+        preedit.preedit = Some(ImePreedit {
+            text: "継続".into(),
+            cursor_begin: 6,
+            cursor_end: 6,
+        });
         state.apply_ime(5, &preedit)?;
         peer.sync(&mut display, &mut state, &stop)?;
         peer.surrounding(input, "継続".as_bytes(), 6, 6)?;
@@ -1038,18 +1042,25 @@ mod tests {
         assert_eq!(state.apply_ime(5, &deletion), Err("STALE"));
         state.apply_ime(5, &transaction(&before, 2, Some("確定")))?;
         let events = peer.sync(&mut display, &mut state, &stop)?;
-        assert!(events.iter().any(|event| event.object == input && event.opcode == 3
+        assert!(events.iter().any(|event| event.object == input
+            && event.opcode == 3
             && read_string(&event.body, 0).is_ok_and(|(text, _)| text == "確定")));
         for text in ["", "確定"] {
             peer.surrounding(input, text.as_bytes(), text.len() as u32, text.len() as u32)?;
             peer.send(input, 7, vec![])?;
             peer.sync(&mut display, &mut state, &stop)?;
-            assert_eq!(snapshot(&state)?.composition_revision, before.composition_revision);
+            assert_eq!(
+                snapshot(&state)?.composition_revision,
+                before.composition_revision
+            );
         }
         peer.surrounding(input, "任意の編集".as_bytes(), 0, 0)?;
         peer.send(input, 7, vec![])?;
         peer.sync(&mut display, &mut state, &stop)?;
-        assert_eq!(state.apply_ime(5, &transaction(&before, 3, Some("古い入力"))), Err("STALE"));
+        assert_eq!(
+            state.apply_ime(5, &transaction(&before, 3, Some("古い入力"))),
+            Err("STALE")
+        );
         drop(peer);
         cleanup(&mut display, &mut state)
     }

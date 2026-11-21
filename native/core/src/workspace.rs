@@ -187,11 +187,14 @@ impl Controller {
                         .app_id
                         .as_ref()
                         .and_then(|id| self.store.value.restore(id, slot, matches));
-                    let pose = saved.as_ref().map_or_else(|| {
-                        let mut pose = PanelPose::at_slot(slot);
-                        pose.position_m[0] += self.horizontal_offset;
-                        pose
-                    }, |s| s.pose);
+                    let pose = saved.as_ref().map_or_else(
+                        || {
+                            let mut pose = PanelPose::at_slot(slot);
+                            pose.position_m[0] += self.horizontal_offset;
+                            pose
+                        },
+                        |s| s.pose,
+                    );
                     state.placement = Placement::new(pose).unwrap();
                     restored.push(Restore {
                         window: window.window,
@@ -406,11 +409,23 @@ mod tests {
         let mut arc = PanelPose::at_slot(1);
         arc.position_m[0] = 1.0;
         let request = CommandSeq::new(5).unwrap();
-        workspace.sync(session(), &[parent, dialog], &[parent_panel, dialog_panel.clone()]);
-        workspace.set_initial_dialog_pose(dialog_panel.target, request, arc).unwrap();
-        assert!(workspace.set_initial_dialog_pose(
-            dialog_panel.target, CommandSeq::new(6).unwrap(), PanelPose::at_slot(1),
-        ).is_err());
+        workspace.sync(
+            session(),
+            &[parent, dialog],
+            &[parent_panel, dialog_panel.clone()],
+        );
+        workspace
+            .set_initial_dialog_pose(dialog_panel.target, request, arc)
+            .unwrap();
+        assert!(
+            workspace
+                .set_initial_dialog_pose(
+                    dialog_panel.target,
+                    CommandSeq::new(6).unwrap(),
+                    PanelPose::at_slot(1),
+                )
+                .is_err()
+        );
         let state = workspace.snapshot();
         assert_eq!(state.windows[0].placement.pose, PanelPose::at_slot(0));
         assert_eq!(state.windows[1].placement.pose, arc);

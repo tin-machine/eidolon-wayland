@@ -133,7 +133,10 @@ fn catalog_selections(
         selections.push(owner.selection("mousepad-editor-v1")?);
     }
     if let Some(installed) = installed {
-        for id in installed.iter().filter_map(v3::installed::InstalledApp::selection_id) {
+        for id in installed
+            .iter()
+            .filter_map(v3::installed::InstalledApp::selection_id)
+        {
             selections.push(owner.selection(&id)?);
         }
     }

@@ -96,8 +96,16 @@ impl Record {
     fn parse(raw: &[u8]) -> Result<Self, &'static str> {
         let value = parse_json(raw, LIMIT).map_err(|_| "DESKTOP_V3_JOURNAL_INVALID")?;
         let mut fields = vec![
-            "schema", "backend", "protocol_revision", "context", "pins", "build_id",
-            "sources", "stage", "boot_id", "cleanup",
+            "schema",
+            "backend",
+            "protocol_revision",
+            "context",
+            "pins",
+            "build_id",
+            "sources",
+            "stage",
+            "boot_id",
+            "cleanup",
         ];
         if value.get("android_boot_count").is_some() {
             fields.push("android_boot_count");
@@ -148,7 +156,10 @@ impl Record {
                 && !matches!(record.stage, Stage::Reserved | Stage::Unknown))
             || (record.stage == Stage::Complete && !record.cleanup.complete())
             || (record.local_launch_blocked
-                && matches!(record.stage, Stage::ForwardRequested | Stage::StartRequested | Stage::Started))
+                && matches!(
+                    record.stage,
+                    Stage::ForwardRequested | Stage::StartRequested | Stage::Started
+                ))
         {
             return Err("DESKTOP_V3_JOURNAL_INVALID");
         }
@@ -175,20 +186,33 @@ impl Pending {
         &self.0.sources
     }
     pub(crate) fn has_durable_local_proof(&self, current: Option<u32>) -> bool {
-        self.0.local_retired || self.0.local_launch_blocked
-            || self.0.android_boot_count.zip(current).is_some_and(|(old, new)| new > old)
+        self.0.local_retired
+            || self.0.local_launch_blocked
+            || self
+                .0
+                .android_boot_count
+                .zip(current)
+                .is_some_and(|(old, new)| new > old)
     }
 
     pub(crate) fn needs_android_reboot(&self, current: Option<u32>) -> bool {
-        !self.0.local_retired && !self.0.local_launch_blocked && self.0.android_boot_count.zip(current)
-            .is_some_and(|(old, new)| old == new)
+        !self.0.local_retired
+            && !self.0.local_launch_blocked
+            && self
+                .0
+                .android_boot_count
+                .zip(current)
+                .is_some_and(|(old, new)| old == new)
     }
 
     /// The remote side can be closed independently while the old local SDK
     /// owner remains unproven. A durable Complete never needs a second query.
     pub(crate) fn needs_remote_confirmation_on_same_boot(&self, current: Option<u32>) -> bool {
         self.needs_android_reboot(current)
-            && matches!(self.0.stage, Stage::StartRequested | Stage::Started | Stage::Unknown)
+            && matches!(
+                self.0.stage,
+                Stage::StartRequested | Stage::Started | Stage::Unknown
+            )
     }
 
     pub fn matches(&self, profile: &Profile, pins: &Pins) -> bool {
@@ -373,15 +397,28 @@ impl Journal {
         sources::require_complete()?;
         Self::reserve_record(files, binding, None)
     }
-    pub(crate) fn reserve_inspection(files: &Path, binding: &Binding, android_boot_count: Option<u32>) -> Result<Self, &'static str> {
+    pub(crate) fn reserve_inspection(
+        files: &Path,
+        binding: &Binding,
+        android_boot_count: Option<u32>,
+    ) -> Result<Self, &'static str> {
         check_v2_barrier(files)?;
         sources::require_complete()?;
         Self::reserve_with_admission(files, binding, android_boot_count, true)
     }
-    fn reserve_record(files: &Path, binding: &Binding, android_boot_count: Option<u32>) -> Result<Self, &'static str> {
+    fn reserve_record(
+        files: &Path,
+        binding: &Binding,
+        android_boot_count: Option<u32>,
+    ) -> Result<Self, &'static str> {
         Self::reserve_with_admission(files, binding, android_boot_count, false)
     }
-    fn reserve_with_admission(files: &Path, binding: &Binding, android_boot_count: Option<u32>, local_launch_blocked: bool) -> Result<Self, &'static str> {
+    fn reserve_with_admission(
+        files: &Path,
+        binding: &Binding,
+        android_boot_count: Option<u32>,
+        local_launch_blocked: bool,
+    ) -> Result<Self, &'static str> {
         check_v2_barrier(files)?;
         check_directory(files, false)?;
         let directory = files.join(DIRECTORY);
@@ -572,7 +609,10 @@ impl Journal {
         capture: &super::runtime::RunCapture,
         proof: &impl super::reclamation::LocalRetirementGate,
     ) -> Result<(), &'static str> {
-        if !proof.verify(capture.binding().context(), capture.generation)?.complete() {
+        if !proof
+            .verify(capture.binding().context(), capture.generation)?
+            .complete()
+        {
             return Err("DESKTOP_LOCAL_RETIREMENT_PENDING");
         }
         check_directory(files, false)?;
@@ -582,7 +622,8 @@ impl Journal {
         let path = directory.join("pending.json");
         let (_, bytes) = read(&path)?;
         let record = Record::parse(&bytes)?;
-        if &record.context != capture.binding().context() || &record.pins != capture.binding().pins()
+        if &record.context != capture.binding().context()
+            || &record.pins != capture.binding().pins()
             || record.sources != capture.evidence().source_hashes()
         {
             return Err("DESKTOP_V3_CLEANUP_SCOPE_MISMATCH");
@@ -597,7 +638,9 @@ impl Journal {
     }
 
     pub(super) fn predates_android_boot(&self, current: u32) -> bool {
-        self.record.android_boot_count.is_some_and(|old| current > old)
+        self.record
+            .android_boot_count
+            .is_some_and(|old| current > old)
     }
     pub fn stage(&self) -> Stage {
         self.record.stage

@@ -54,18 +54,26 @@ impl Registry {
             return Err(Status::Stale);
         }
         let mut config = config.clone();
-        let binding = RuntimeBinding::parse(config.linux_desktop_v3.as_deref().ok_or(Status::NotReady)?.as_bytes())
-            .map_err(|_| Status::InvalidArgument)?;
+        let binding = RuntimeBinding::parse(
+            config
+                .linux_desktop_v3
+                .as_deref()
+                .ok_or(Status::NotReady)?
+                .as_bytes(),
+        )
+        .map_err(|_| Status::InvalidArgument)?;
         let mut record = binding.record();
         let storage = &mut record["storage"];
         let derived = digest(&json!({
             "domain": "eidolon-workspace-2",
             "installation": storage["installation_id"],
             "profile_storage": storage["profile_storage_id"],
-        })).map_err(|_| Status::InvalidArgument)?;
+        }))
+        .map_err(|_| Status::InvalidArgument)?;
         storage["profile_storage_id"] = json!(&derived[..32]);
         let bytes = canonical_json(&record).map_err(|_| Status::InvalidArgument)?;
-        config.linux_desktop_v3 = Some(String::from_utf8(bytes).map_err(|_| Status::InvalidArgument)?);
+        config.linux_desktop_v3 =
+            Some(String::from_utf8(bytes).map_err(|_| Status::InvalidArgument)?);
         config.profiles.clear();
         config.debug_probe_profile_v2 = None;
         config.debug_linux_shm_pins = None;
@@ -78,12 +86,18 @@ impl Registry {
 
     pub fn create_termux(&self, primary: i64) -> Result<i64, Status> {
         let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if entries.termux.is_some() { return Err(Status::Busy); }
+        if entries.termux.is_some() {
+            return Err(Status::Busy);
+        }
         let (id, config) = entries.primary.as_ref().ok_or(Status::NotReady)?;
-        if *id != primary { return Err(Status::Stale); }
+        if *id != primary {
+            return Err(Status::Stale);
+        }
         let mut config = config.clone();
         config.profiles.retain(|p| p.profile_id == "termux-local");
-        if config.profiles.len() != 1 { return Err(Status::NotReady); }
+        if config.profiles.len() != 1 {
+            return Err(Status::NotReady);
+        }
         config.linux_desktop_v3 = None;
         config.linux_profile_v2 = None;
         config.linux_desktop_pins = None;
@@ -106,7 +120,11 @@ impl Registry {
         }
         let parent = std::fs::symlink_metadata(&paths.files_dir).map_err(|_| Status::Failed)?;
         let metadata = std::fs::symlink_metadata(&directory).map_err(|_| Status::Failed)?;
-        if !parent.is_dir() || !metadata.is_dir() || metadata.uid() != parent.uid() || metadata.mode() & 0o777 != 0o700 {
+        if !parent.is_dir()
+            || !metadata.is_dir()
+            || metadata.uid() != parent.uid()
+            || metadata.mode() & 0o777 != 0o700
+        {
             return Err(Status::Failed);
         }
         paths.files_dir = directory.to_str().ok_or(Status::InvalidArgument)?.into();
@@ -123,8 +141,8 @@ impl Registry {
         let id = entries.next.ok_or(Status::Failed)?;
         entries.next = id.checked_add(1);
         let runtime = Arc::new(
-            start(config, RuntimeHandle::new(id).map_err(|_| Status::Failed)?)
-                .map_err(|error| {
+            start(config, RuntimeHandle::new(id).map_err(|_| Status::Failed)?).map_err(
+                |error| {
                     if error.kind() == std::io::ErrorKind::InvalidInput {
                         Status::InvalidArgument
                     } else if error.kind() == std::io::ErrorKind::WouldBlock {
@@ -132,7 +150,8 @@ impl Registry {
                     } else {
                         Status::Failed
                     }
-                })?,
+                },
+            )?,
         );
         entries.runtimes.insert(id, runtime);
         Ok(id)
@@ -172,14 +191,21 @@ impl Registry {
             return Status::Busy;
         }
         let mut entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let is_primary = entries.primary.as_ref().is_some_and(|(primary, _)| *primary == id);
+        let is_primary = entries
+            .primary
+            .as_ref()
+            .is_some_and(|(primary, _)| *primary == id);
         if is_primary && entries.runtimes.len() > 1 {
             return Status::Busy;
         }
         let removed = entries.runtimes.remove(&id);
         if removed.is_some() {
-            if entries.termux == Some(id) { entries.termux = None; }
-            if entries.companion == Some(id) { entries.companion = None; }
+            if entries.termux == Some(id) {
+                entries.termux = None;
+            }
+            if entries.companion == Some(id) {
+                entries.companion = None;
+            }
             if is_primary {
                 entries.primary = None;
             }

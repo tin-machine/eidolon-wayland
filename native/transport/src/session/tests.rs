@@ -669,30 +669,51 @@ async fn discovery_uses_only_authenticated_read_without_overwriting_pending_reco
     let root = JournalRoot::new();
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../scripts/tests/fixtures/linux-desktop-v3-contract.json"
-    )).unwrap();
+    ))
+    .unwrap();
     let raw = |id| {
-        fixture["records"].as_array().unwrap().iter().find(|record| record["id"] == id)
-            .unwrap()["raw"].as_str().unwrap().as_bytes()
+        fixture["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["id"] == id)
+            .unwrap()["raw"]
+            .as_str()
+            .unwrap()
+            .as_bytes()
     };
     let binding = Binding::from_captured(
-        Context::parse(raw("context")).unwrap(), Pins::parse(raw("pins")).unwrap(),
-    ).unwrap();
+        Context::parse(raw("context")).unwrap(),
+        Pins::parse(raw("pins")).unwrap(),
+    )
+    .unwrap();
     drop(Journal::reserve(&root.0, &binding).unwrap());
     let journal_path = root.0.join("linux-desktop-v3-state/pending.json");
     let original = std::fs::read(&journal_path).unwrap();
     let controller = Controller::start_with_root(Some(root.0.clone())).unwrap();
     wait(&controller, |snapshot| snapshot.journal_ready).await;
     assert_eq!(controller.snapshot().state, State::CleanupPending);
-    assert_eq!(controller.discover_desktop(&profile, request(1)), Status::Accepted);
+    assert_eq!(
+        controller.discover_desktop(&profile, request(1)),
+        Status::Accepted
+    );
     wait(&controller, |s| s.state == State::AwaitingCredential).await;
     let scope = controller.credential_scope().unwrap();
     assert_eq!(scope.profile_id, "remote-linux");
-    assert_eq!(controller.provide_for(scope.session, request(1), &scope.binding, key),
-        Status::Accepted);
-    wait(&controller, |s| s.state == State::CleanupPending && s.owned_connections == 0).await;
+    assert_eq!(
+        controller.provide_for(scope.session, request(1), &scope.binding, key),
+        Status::Accepted
+    );
+    wait(&controller, |s| {
+        s.state == State::CleanupPending && s.owned_connections == 0
+    })
+    .await;
     let result = serde_json::to_value(controller.catalog_ui()).unwrap();
     assert_eq!(result["desktop_preview"]["pending"], false);
-    assert_eq!(result["desktop_preview"]["entries"][0]["id"], "org.kde.kwrite.desktop");
+    assert_eq!(
+        result["desktop_preview"]["entries"][0]["id"],
+        "org.kde.kwrite.desktop"
+    );
     assert!(result["desktop_v3"].is_null());
     assert_eq!(server_state.execs.load(Ordering::Acquire), 0);
     assert_eq!(server_state.non_probe_execs.load(Ordering::Acquire), 1);

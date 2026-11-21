@@ -505,7 +505,10 @@ impl Finalizer {
                 return;
             }
             if state.handoff.is_none() {
-                if state.local_persisted || state.proof.is_none() || !transport.v3_local_persist_ready() {
+                if state.local_persisted
+                    || state.proof.is_none()
+                    || !transport.v3_local_persist_ready()
+                {
                     return;
                 }
             } else if state.local.is_none() {

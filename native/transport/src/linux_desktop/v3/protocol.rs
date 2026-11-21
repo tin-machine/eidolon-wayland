@@ -114,8 +114,10 @@ fn valid_socket(value: &str, nonce: &str) -> bool {
     let Some(base) = value.strip_suffix(&suffix) else {
         return false;
     };
-    let Some(home) = base.strip_suffix("/.eidolon-desktop-v3")
-        .or_else(|| base.strip_suffix("/.eidolon-desktop-v3b")) else {
+    let Some(home) = base
+        .strip_suffix("/.eidolon-desktop-v3")
+        .or_else(|| base.strip_suffix("/.eidolon-desktop-v3b"))
+    else {
         return false;
     };
     value.len() <= 103
@@ -324,7 +326,7 @@ pub struct Protocol {
     request_sequence: u64,
     acknowledged_sequence: u64,
     in_flight: Option<Action>,
-    started_selection: Option<Selection>,
+    started_selection: Option<Box<Selection>>,
 }
 impl std::fmt::Debug for Protocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -402,7 +404,7 @@ impl Protocol {
         self.request_sequence = next;
         self.in_flight = Some(action);
         if action == Action::Start {
-            self.started_selection = selection.cloned();
+            self.started_selection = selection.cloned().map(Box::new);
         }
         Ok(raw)
     }
@@ -453,7 +455,7 @@ impl Protocol {
             Event::Started { selection, .. }
                 if self.phase == Phase::Catalog && self.in_flight == Some(Action::Start) =>
             {
-                if self.started_selection.as_ref() != Some(selection) {
+                if self.started_selection.as_deref() != Some(selection) {
                     return Err("DESKTOP_V3_PROTOCOL_SCOPE");
                 }
                 Phase::Started
