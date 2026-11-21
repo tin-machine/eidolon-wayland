@@ -60,7 +60,7 @@
       },
       {
         "file": "native/patches/smithay/0005-borrow-sealed-keymap.patch",
-        "sha256": "e53f73660b28ad9bc83c0b11d7142fa73dbeb0906a6560b32205d9edc689c515"
+        "sha256": "1f3534503a08caeb42b4c80ad884ae5dcfa6fede3bf51fa3d85fe45d58fd2280"
       }
     ]
   },

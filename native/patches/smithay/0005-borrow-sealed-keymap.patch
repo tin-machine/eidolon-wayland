@@ -1,11 +1,12 @@
 --- a/src/input/keyboard/mod.rs
 +++ b/src/input/keyboard/mod.rs
-@@ -684,6 +684,12 @@
+@@ -684,6 +684,13 @@
  }
  
  impl<D: SeatHandler + 'static> KeyboardHandle<D> {
 +
 +    /// Let the compositor identify the retained keymap while holding the keyboard's keymap lock.
++    #[cfg(feature = "wayland_frontend")]
 +    pub fn with_sealed_keymap_fd<T>(&self, visit: impl FnOnce(Option<std::os::fd::BorrowedFd<'_>>) -> T) -> T {
 +        visit(self.arc.keymap.lock().unwrap().sealed_fd())
 +    }
