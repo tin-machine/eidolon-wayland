@@ -834,8 +834,15 @@ impl Controller {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let mut report = shared.report.clone();
-        report.catalog_progress = (shared.catalog.request_id, shared.catalog.pending,
-            shared.catalog.desktop_preview.as_ref().map(|preview| (preview.request_id, preview.pending)));
+        report.catalog_progress = (
+            shared.catalog.request_id,
+            shared.catalog.pending,
+            shared
+                .catalog
+                .desktop_preview
+                .as_ref()
+                .map(|preview| (preview.request_id, preview.pending)),
+        );
         if let Some(router) = &shared.router {
             report.forward = router.report();
         }
