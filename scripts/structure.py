@@ -15,6 +15,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = "scripts/structure/retirement.json"
+SCOPES = {"retirement-settings": REGISTRY, "multi-app-retirement": "scripts/structure/multi-app-retirement.json"}
 
 
 class StructureError(ValueError):
@@ -132,9 +133,10 @@ def watch_sources(root, selectors, reviewed, revision):
             "meaning": "change detection only; no semantic review, ownership proof or test execution"}
 
 
-def build(root, profile_name):
+def build(root, profile_name, scope="retirement-settings"):
     root = Path(root).resolve()
-    registry_bytes = safe_file(root, REGISTRY).read_bytes()
+    registry_path = SCOPES[scope]
+    registry_bytes = safe_file(root, registry_path).read_bytes()
     registry = json.loads(registry_bytes)
     require(registry["schema"] == 1, "unsupported registry schema")
     require(profile_name in registry["profiles"], "unknown environment profile")
@@ -213,7 +215,7 @@ def build(root, profile_name):
     require(watch_sources(root, registry["watch"], reviewed, revision) == watched, "watched source changed during extraction")
     for key, name in files.items():
         require(digest(safe_file(root, name).read_bytes()) == file_evidence[key]["sha256"], "source changed during extraction")
-    require(safe_file(root, REGISTRY).read_bytes() == registry_bytes, "registry changed during extraction")
+    require(safe_file(root, registry_path).read_bytes() == registry_bytes, "registry changed during extraction")
     require(git(root, "rev-parse", "HEAD").decode().strip() == revision, "HEAD changed during extraction")
     result["artifact_sha256"] = digest(encoded(result))
     return result
@@ -269,6 +271,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("build", "check", "slice", "verify"):
         cmd = sub.add_parser(name)
+        cmd.add_argument("--scope", choices=SCOPES, default="retirement-settings")
         cmd.add_argument("--profile", required=True, help="android-product or host-model")
         if name == "verify":
             cmd.add_argument("artifact", type=Path)
@@ -280,7 +283,7 @@ def main(argv=None):
             cmd.add_argument("--max-bytes", type=int, default=16000)
     args = parser.parse_args(argv)
     try:
-        graph = build(args.root, args.profile)
+        graph = build(args.root, args.profile, args.scope)
         if args.command == "verify":
             verify(json.loads(args.artifact.read_bytes()), graph)
         if args.command == "slice":

@@ -1,0 +1,673 @@
+{
+  "schema": 1,
+  "scope": "multi-app-retirement",
+  "reviewed_revision": "ad137e34d224e78bfaf4f0851cf4b7984755edbd",
+  "domains": [
+    "android-model",
+    "android-adapter",
+    "native",
+    "linux-helper"
+  ],
+  "profiles": {
+    "android-product": {
+      "domains": [
+        "android-model",
+        "android-adapter",
+        "native",
+        "linux-helper"
+      ],
+      "execution_environment": "Quest client and Ubuntu helper source",
+      "rust_target": "aarch64-linux-android",
+      "android_variant": "debug",
+      "cfg_features": "declared scope only; compiler resolution not performed",
+      "test_evidence": "source and test references; no execution by index"
+    },
+    "host-model": {
+      "domains": [
+        "android-model",
+        "native",
+        "linux-helper"
+      ],
+      "execution_environment": "JVM model, native runtime and Ubuntu helper source",
+      "rust_target": "host (not auto-detected)",
+      "android_variant": "testDebugUnitTest model",
+      "cfg_features": "cfg(test) model scope; compiler resolution not performed",
+      "test_evidence": "source and test references; no execution by index"
+    }
+  },
+  "files": {
+    "CompanionLinuxSession": "android/app/src/main/java/io/github/tinmachine/eidolon/CompanionLinuxSession.kt",
+    "bridge": "native/android/src/bridge.rs",
+    "registry": "native/android/src/registry.rs",
+    "runtime": "native/core/src/runtime.rs",
+    "eidolon_linux_desktop_session_v3": "scripts/linux/eidolon_linux_desktop_session_v3.py",
+    "eidolon_linux_desktop_v3": "scripts/linux/eidolon_linux_desktop_v3.py",
+    "lib": "native/render/src/lib.rs",
+    "linux_desktop_v3_c2_cases": "scripts/tests/fixtures/linux_desktop_v3_c2_cases.py",
+    "DesktopRecoveryRetryTest": "android/app/src/test/java/io/github/tinmachine/eidolon/DesktopRecoveryRetryTest.kt",
+    "NativeSessionHost": "android/app/src/main/java/io/github/tinmachine/eidolon/NativeSessionHost.kt",
+    "ApplicationLauncher": "android/app/src/main/java/io/github/tinmachine/eidolon/ApplicationLauncher.kt",
+    "LauncherCapacity": "android/app/src/main/java/io/github/tinmachine/eidolon/LauncherCapacity.kt",
+    "TermuxShelfSession": "android/app/src/main/java/io/github/tinmachine/eidolon/TermuxShelfSession.kt",
+    "LinuxDesktopV3Status": "android/app/src/main/java/io/github/tinmachine/eidolon/LinuxDesktopV3Status.kt",
+    "serve": "native/transport/src/linux_desktop/v3/runtime/serve.rs",
+    "LauncherCapacityTest": "android/app/src/test/java/io/github/tinmachine/eidolon/LauncherCapacityTest.kt",
+    "LinuxDesktopV3StatusTest": "android/app/src/test/java/io/github/tinmachine/eidolon/LinuxDesktopV3StatusTest.kt"
+  },
+  "nodes": [
+    {
+      "id": "app.exit",
+      "file": "CompanionLinuxSession",
+      "anchor": "if (launchSent && !status.ready && (owned == 0 || transport.optJSONObject(\"desktop_v3_transport\")?.optBoolean(\"terminal_observed\") == true)) stop()",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "app.stop",
+      "file": "CompanionLinuxSession",
+      "anchor": "retired = NativeBridge.nativeRequestStop(current) == NativeBridge.ACCEPTED",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "app.destroy",
+      "file": "CompanionLinuxSession",
+      "anchor": "if (NativeBridge.nativeDestroy(current) == NativeBridge.ACCEPTED) {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "jni.destroy",
+      "file": "bridge",
+      "anchor": "Java_io_github_tinmachine_eidolon_NativeBridge_nativeDestroy,",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "registry.destroy",
+      "file": "registry",
+      "anchor": "pub fn destroy(&self, id: i64) -> Status {",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "registry.remove",
+      "file": "registry",
+      "anchor": "entries.companions.retain(|_, handle| *handle != id);",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "runtime.stopped",
+      "file": "runtime",
+      "anchor": "pub fn can_destroy(&self) -> bool {",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "app.retry",
+      "file": "CompanionLinuxSession",
+      "anchor": "command(\"linux_desktop_v3_recover\", JSONObject().put(\"session\", session))",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "linux.cleanup",
+      "file": "eidolon_linux_desktop_session_v3",
+      "anchor": "def _cleanup(binding, source_hashes, origin_boot, request_sequence, emitter, owner, profile, drain,",
+      "domain": "linux-helper",
+      "role": "source"
+    },
+    {
+      "id": "linux.owner",
+      "file": "eidolon_linux_desktop_v3",
+      "anchor": "def cleanup_owner(owner, drain, profile, deadline_seconds=5.0):",
+      "domain": "linux-helper",
+      "role": "source"
+    },
+    {
+      "id": "linux.proof",
+      "file": "eidolon_linux_desktop_v3",
+      "anchor": "def finish_session_cleanup(paths, fds, binding, source_hashes, origin):",
+      "domain": "linux-helper",
+      "role": "source"
+    },
+    {
+      "id": "linux.receipt",
+      "file": "eidolon_linux_desktop_v3",
+      "anchor": "def recovery_receipt(binding, source_hashes, expected_boot, *, workspace_slot=1):",
+      "domain": "linux-helper",
+      "role": "source"
+    },
+    {
+      "id": "linux.recover",
+      "file": "eidolon_linux_desktop_session_v3",
+      "anchor": "raw, status = core.recovery_receipt(",
+      "domain": "linux-helper",
+      "role": "source"
+    },
+    {
+      "id": "linux.slot",
+      "file": "eidolon_linux_desktop_v3",
+      "anchor": "def workspace_state_dir(slot):",
+      "domain": "linux-helper",
+      "role": "source"
+    },
+    {
+      "id": "test.stop",
+      "file": "registry",
+      "anchor": "fn ten_cycles_never_reuse_handles_and_destroy_waits_for_stop() {",
+      "domain": "native",
+      "role": "test"
+    },
+    {
+      "id": "test.isolation",
+      "file": "lib",
+      "anchor": "fn two_workspace_slots_draw_independently_and_one_can_stop() {",
+      "domain": "native",
+      "role": "test"
+    },
+    {
+      "id": "test.normal",
+      "file": "linux_desktop_v3_c2_cases",
+      "anchor": "def test_live_cleanup_receipt_failure_recovers_same_boot_and_preserves_documents(self):",
+      "domain": "linux-helper",
+      "role": "test"
+    },
+    {
+      "id": "test.restart",
+      "file": "linux_desktop_v3_c2_cases",
+      "anchor": "def test_twenty_workspaces_hold_distinct_sessions_and_recover_after_host_restart(self):",
+      "domain": "linux-helper",
+      "role": "test"
+    },
+    {
+      "id": "test.retry",
+      "file": "DesktopRecoveryRetryTest",
+      "anchor": "@Test fun aReturningHostCanRecoverImmediatelyAndRetriesAreBounded() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "app.released",
+      "file": "CompanionLinuxSession",
+      "anchor": "occupiesApp = false",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "capacity.count",
+      "file": "NativeSessionHost",
+      "anchor": "linux.occupiesApp || additionalTermux[number - 2].handle != 0L -> LauncherCapacity.Workspace.APP",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "capacity.admit",
+      "file": "NativeSessionHost",
+      "anchor": "val reason = capacity.refusal(source) ?: return capacity",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "capacity.shelf",
+      "file": "ApplicationLauncher",
+      "anchor": "val refusal = NativeSessionHost.launcherCapacity.value.refusal(source)",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "capacity.rule",
+      "file": "LauncherCapacity",
+      "anchor": "fun refusal(source: LauncherSource? = null): String? {",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "termux.destroy",
+      "file": "TermuxShelfSession",
+      "anchor": "if (NativeBridge.nativeDestroy(owner) == NativeBridge.ACCEPTED) clear()",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "primary.proof",
+      "file": "LinuxDesktopV3Status",
+      "anchor": "retired?.opt(\"runtime\") == runtime.toString() && retired.opt(\"origin_retired\") == true &&",
+      "domain": "android-model",
+      "role": "source"
+    },
+    {
+      "id": "primary.refresh",
+      "file": "NativeSessionHost",
+      "anchor": "if (view.phase == \"retired\" && refreshShelfAfterAppExit) {",
+      "domain": "android-adapter",
+      "role": "source"
+    },
+    {
+      "id": "native.origin",
+      "file": "runtime",
+      "anchor": "let origin_retired = origin_resources_retired",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "transport.exit",
+      "file": "serve",
+      "anchor": "report.terminal_observed |= remote.terminal_event;",
+      "domain": "native",
+      "role": "source"
+    },
+    {
+      "id": "test.capacity",
+      "file": "LauncherCapacityTest",
+      "anchor": "@Test fun twentiethAppHoldsItsSlotUntilItsOwnerReleasesIt() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.primary",
+      "file": "LinuxDesktopV3StatusTest",
+      "anchor": "@Test fun aRetiredOwnerSupersedesHistoricalPresentationButNotLiveCleanup() {",
+      "domain": "android-model",
+      "role": "test"
+    },
+    {
+      "id": "test.peers",
+      "file": "registry",
+      "anchor": "fn destroying_one_numbered_runtime_preserves_peer_and_allows_slot_reuse() {",
+      "domain": "native",
+      "role": "test"
+    }
+  ],
+  "edges": [
+    {
+      "id": "exit-stop",
+      "from": "app.exit",
+      "to": "app.stop",
+      "relation": "requires",
+      "invariant": "追加アプリの終了を検出した所有者が自分の接続を閉じ、接続数ゼロ・終了状態で同じ handle の停止を要求する。",
+      "evidence": [
+        "app.exit",
+        "app.stop"
+      ],
+      "tests": [
+        "test.isolation"
+      ],
+      "test_scope": "Rust の停止順・独立描画テストを参照。Android callback と実 JNI の通し実行は含まない。"
+    },
+    {
+      "id": "stop-destroy",
+      "from": "app.stop",
+      "to": "app.destroy",
+      "relation": "requires",
+      "invariant": "停止要求が受理された後も、同じ handle の destroy が受理されるまで Kotlin の handle を保持する。",
+      "evidence": [
+        "app.stop",
+        "app.destroy"
+      ],
+      "tests": [
+        "test.stop"
+      ],
+      "test_scope": "Rust の停止順・独立描画テストを参照。Android callback と実 JNI の通し実行は含まない。"
+    },
+    {
+      "id": "destroy-jni",
+      "from": "app.destroy",
+      "to": "jni.destroy",
+      "relation": "calls",
+      "invariant": "終了したセッションが自分の handle を JNI へ渡す。",
+      "evidence": [
+        "app.destroy",
+        "jni.destroy"
+      ],
+      "tests": [
+        "test.stop"
+      ],
+      "test_scope": "Rust の停止順・独立描画テストを参照。Android callback と実 JNI の通し実行は含まない。"
+    },
+    {
+      "id": "jni-registry",
+      "from": "jni.destroy",
+      "to": "registry.destroy",
+      "relation": "bridges",
+      "invariant": "JNI が受け取った handle だけを registry.destroy に渡す。",
+      "evidence": [
+        "jni.destroy",
+        "registry.destroy"
+      ],
+      "tests": [
+        "test.stop"
+      ],
+      "test_scope": "Rust の停止順・独立描画テストを参照。Android callback と実 JNI の通し実行は含まない。"
+    },
+    {
+      "id": "destroy-stopped",
+      "from": "registry.destroy",
+      "to": "runtime.stopped",
+      "relation": "requires",
+      "invariant": "Stopped と worker 終了を待ち、追加 runtime が残る間は primary の破棄を拒む。",
+      "evidence": [
+        "registry.destroy",
+        "runtime.stopped"
+      ],
+      "tests": [
+        "test.stop"
+      ],
+      "test_scope": "Rust の停止順・独立描画テストを参照。Android callback と実 JNI の通し実行は含まない。"
+    },
+    {
+      "id": "release-owner",
+      "from": "registry.destroy",
+      "to": "registry.remove",
+      "relation": "requires",
+      "invariant": "対象 id の runtime と同じ handle の枠だけを外す。隣のアプリの所有権を保持する。",
+      "evidence": [
+        "registry.destroy",
+        "registry.remove"
+      ],
+      "tests": [
+        "test.peers",
+        "test.isolation"
+      ],
+      "test_scope": "実 registry の2つの番号付き Termux runtime で停止前の再割当拒否、他方の生存、元枠の新 handle と古い handle の Stale を検証。実 SSH・Quest は範囲外。"
+    },
+    {
+      "id": "finish-owner",
+      "from": "linux.cleanup",
+      "to": "linux.owner",
+      "relation": "calls",
+      "invariant": "プロセス所有者の終了と出力 EOF を確認して profile を解放する。",
+      "evidence": [
+        "linux.cleanup",
+        "linux.owner"
+      ],
+      "tests": [
+        "test.normal"
+      ],
+      "test_scope": "専用 HOME のファイルシステム fixture と Python helper の検証。実機・SSH の結合は含まない。"
+    },
+    {
+      "id": "publish-receipt",
+      "from": "linux.cleanup",
+      "to": "linux.proof",
+      "relation": "calls",
+      "invariant": "同じセッションの終了記録を永続化してから stopped を通知し、失敗は pending にする。",
+      "evidence": [
+        "linux.cleanup",
+        "linux.proof"
+      ],
+      "tests": [
+        "test.normal"
+      ],
+      "test_scope": "専用 HOME のファイルシステム fixture と Python helper の検証。実機・SSH の結合は含まない。"
+    },
+    {
+      "id": "retry-bound-owner",
+      "from": "app.retry",
+      "to": "linux.recover",
+      "relation": "bridges",
+      "invariant": "回収可能な状態で同じセッションの回収を要求する。受信側は workspace_slot と起動記録を使う。",
+      "evidence": [
+        "app.retry",
+        "linux.recover"
+      ],
+      "tests": [
+        "test.retry",
+        "test.restart"
+      ],
+      "test_scope": "再試行間隔と受信側の独立したテスト。SSH の配送は未検証。"
+    },
+    {
+      "id": "recover-receipt",
+      "from": "linux.recover",
+      "to": "linux.receipt",
+      "relation": "calls",
+      "invariant": "回収入口が該当する workspace_slot、binding、起動 ID を引き渡す。",
+      "evidence": [
+        "linux.recover",
+        "linux.receipt"
+      ],
+      "tests": [
+        "test.restart"
+      ],
+      "test_scope": "専用 HOME のファイルシステム fixture と Python helper の検証。実機・SSH の結合は含まない。"
+    },
+    {
+      "id": "isolated-recovery",
+      "from": "linux.receipt",
+      "to": "linux.slot",
+      "relation": "requires",
+      "invariant": "対象枠の記録・起動 ID を照合してその枠だけを回収する。所有者が不明なら pending。",
+      "evidence": [
+        "linux.receipt",
+        "linux.slot"
+      ],
+      "tests": [
+        "test.restart"
+      ],
+      "test_scope": "専用 HOME のファイルシステム fixture と Python helper の検証。実機・SSH の結合は含まない。"
+    },
+    {
+      "id": "app-release",
+      "from": "app.released",
+      "to": "app.destroy",
+      "relation": "requires",
+      "invariant": "destroy が Accepted の時だけ占有を解除する。Busy の間は同じ枠を保持する。",
+      "evidence": [
+        "app.destroy",
+        "app.released"
+      ],
+      "tests": [
+        "test.peers",
+        "test.capacity"
+      ],
+      "test_scope": "JVM の容量・表示モデルの検証。Compose・実際のタップとスレッドの通し実行は含まない。"
+    },
+    {
+      "id": "count-owned",
+      "from": "app.released",
+      "to": "capacity.count",
+      "relation": "publishes",
+      "invariant": "選択された追加アプリ・回収中の所有者を数え、一覧接続だけの runtime は使用数から除く。",
+      "evidence": [
+        "capacity.count",
+        "app.released"
+      ],
+      "tests": [
+        "test.capacity"
+      ],
+      "test_scope": "JVM の容量・表示モデルの検証。Compose・実際のタップとスレッドの通し実行は含まない。"
+    },
+    {
+      "id": "card-capacity",
+      "from": "capacity.shelf",
+      "to": "capacity.rule",
+      "relation": "calls",
+      "invariant": "表示時の容量・接続先に対応する同じ拒否理由を用いる。",
+      "evidence": [
+        "capacity.shelf",
+        "capacity.rule"
+      ],
+      "tests": [
+        "test.capacity"
+      ],
+      "test_scope": "JVM の容量・表示モデルの検証。Compose・実際のタップとスレッドの通し実行は含まない。"
+    },
+    {
+      "id": "worker-capacity",
+      "from": "capacity.admit",
+      "to": "capacity.rule",
+      "relation": "calls",
+      "invariant": "直列 worker がクリック処理時の最新の所有状況を取り直して上限と番号枠を判定する。",
+      "evidence": [
+        "capacity.admit",
+        "capacity.rule"
+      ],
+      "tests": [
+        "test.capacity"
+      ],
+      "test_scope": "JVM の容量・表示モデルの検証。Compose・実際のタップとスレッドの通し実行は含まない。"
+    },
+    {
+      "id": "termux-release",
+      "from": "termux.destroy",
+      "to": "jni.destroy",
+      "relation": "calls",
+      "invariant": "独立した Termux runtime の停止と破棄後に clear する。primary を借りている接続は破棄を要求しない。",
+      "evidence": [
+        "termux.destroy",
+        "jni.destroy"
+      ],
+      "tests": [
+        "test.peers"
+      ],
+      "test_scope": "Host registry の番号付き Termux 所有者と再割当を実行。Android の借用経路はソース照合。"
+    },
+    {
+      "id": "observe-remote-exit",
+      "from": "transport.exit",
+      "to": "app.exit",
+      "relation": "publishes",
+      "invariant": "リモートの終端イベントを同じ接続の診断へ届ける。終了通知だけでは枠を解放しない。",
+      "evidence": [
+        "transport.exit",
+        "app.exit"
+      ],
+      "tests": [
+        "test.normal",
+        "test.peers"
+      ],
+      "test_scope": "Linux helper と native registry の両端を別々に検証。"
+    },
+    {
+      "id": "remote-event",
+      "from": "linux.cleanup",
+      "to": "transport.exit",
+      "relation": "bridges",
+      "invariant": "Ubuntu helper の終了・回収待ちが通信側の終端イベント処理へ届く。断線時は完全な回収の証拠にはならない。",
+      "evidence": [
+        "linux.cleanup",
+        "transport.exit"
+      ],
+      "tests": [
+        "test.normal"
+      ],
+      "test_scope": "Linux helper の fixture を参照。全通信経路の結合試験ではない。"
+    },
+    {
+      "id": "primary-retired",
+      "from": "native.origin",
+      "to": "primary.proof",
+      "relation": "publishes",
+      "invariant": "主 runtime のアプリの資源・ローカルとリモートの回収完了を照合する。接続・SDK 所有の残る別経路も区別する。",
+      "evidence": [
+        "native.origin",
+        "primary.proof"
+      ],
+      "tests": [
+        "test.primary"
+      ],
+      "test_scope": "JVM の容量・表示モデルの検証。Compose・実際のタップとスレッドの通し実行は含まない。"
+    },
+    {
+      "id": "primary-shelf",
+      "from": "primary.refresh",
+      "to": "primary.proof",
+      "relation": "requires",
+      "invariant": "アプリ終了後に主 runtime を保持し、棚が開いており操作可能なら一覧を取り直す。",
+      "evidence": [
+        "primary.refresh",
+        "primary.proof"
+      ],
+      "tests": [
+        "test.primary"
+      ],
+      "test_scope": "JVM の容量・表示モデルの検証。Compose・実際のタップとスレッドの通し実行は含まない。"
+    },
+    {
+      "id": "capacity-snapshot",
+      "from": "capacity.admit",
+      "to": "capacity.count",
+      "relation": "requires",
+      "invariant": "起動直前に同じ直列 worker が観測した所有者から使用数と割当先を計算する。",
+      "evidence": [
+        "capacity.admit",
+        "capacity.count",
+        "capacity.rule"
+      ],
+      "tests": [
+        "test.capacity"
+      ],
+      "test_scope": "判定モデルは JVM テストで実行。Android の worker 配送はソース照合。"
+    }
+  ],
+  "unknowns": [
+    {
+      "id": "M1",
+      "boundary": "Quest / JNI / SSH",
+      "detail": "端末で稼働するアプリや SDK のコールバックを索引は実行しない。"
+    },
+    {
+      "id": "M2",
+      "boundary": "ホスト再起動",
+      "detail": "20枠の fixture は起動 ID を置き換える。実ホストの再起動と20アプリの HMD 負荷は別に確認する。"
+    },
+    {
+      "id": "M3",
+      "boundary": "一覧接続とアプリ枠",
+      "detail": "host-model は Android 表示・worker/JNI の辺を除く。残りの枠があっても認証やアプリ一覧の世代など個別の起動条件が別にある。"
+    }
+  ],
+  "watch": [
+    {
+      "id": "android-source",
+      "root": "android/app/src",
+      "suffixes": [
+        ".kt",
+        ".java"
+      ],
+      "reason": "SDK effect sites, IME/Activity, debug/release callers and tests; new files require classification, not automatic semantic approval"
+    },
+    {
+      "id": "native-android",
+      "root": "native/android",
+      "suffixes": [
+        ".rs"
+      ],
+      "reason": "Rust source/test/build inputs in android; detect changes without claiming semantic review"
+    },
+    {
+      "id": "native-core",
+      "root": "native/core",
+      "suffixes": [
+        ".rs"
+      ],
+      "reason": "Rust source/test/build inputs in core; detect changes without claiming semantic review"
+    },
+    {
+      "id": "native-transport",
+      "root": "native/transport",
+      "suffixes": [
+        ".rs"
+      ],
+      "reason": "Rust source/test/build inputs in transport; detect changes without claiming semantic review"
+    },
+    {
+      "id": "native-render",
+      "root": "native/render",
+      "suffixes": [
+        ".rs"
+      ],
+      "reason": "Rust source/test/build inputs in render; detect changes without claiming semantic review"
+    },
+    {
+      "id": "remote-helper",
+      "root": "scripts/linux",
+      "suffixes": [
+        ".py"
+      ],
+      "reason": "Ubuntu helper と回収の新しい呼出箇所の変化を検出する。"
+    }
+  ]
+}
