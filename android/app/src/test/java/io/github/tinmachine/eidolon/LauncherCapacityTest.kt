@@ -82,4 +82,25 @@ class LauncherCapacityTest {
         windows.put(JSONObject("""{"window":"4"}"""))
         assertEquals(3, LauncherCapacity.terminalApps(windows, true, setOf("1", "2")))
     }
+
+    @Test fun recoveryCountsActualRetirementAndIgnoresResourcesOfAnActiveApp() {
+        val reclamation = JSONObject().put("local_cleanup_pending", true).put("remote_cleanup_pending", true)
+        val transport = JSONObject().put("state", "DesktopReady")
+        val app = JSONObject().put("state", "running")
+        val runtime = JSONObject().put("app", app).put("transport", transport).put("reclamation", reclamation)
+        assertFalse(LauncherCapacity.recoveryPending(runtime))
+        app.put("state", "stopping")
+        assertTrue(LauncherCapacity.recoveryPending(runtime))
+        app.put("state", "stopped")
+        assertTrue(LauncherCapacity.recoveryPending(runtime))
+        reclamation.put("local_cleanup_pending", false).put("remote_cleanup_pending", false)
+        assertFalse(LauncherCapacity.recoveryPending(runtime))
+        runtime.remove("app")
+        transport.put("state", "CleanupPending")
+        assertTrue(LauncherCapacity.recoveryPending(runtime))
+        transport.put("state", "Recovering")
+        assertTrue(LauncherCapacity.recoveryPending(runtime))
+        transport.put("state", "DesktopReady")
+        assertFalse(LauncherCapacity.recoveryPending(runtime))
+    }
 }

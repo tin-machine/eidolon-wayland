@@ -425,7 +425,10 @@ object NativeSessionHost {
         } else launcherUpdate(launcherState.copy(message="操作を開始できません（$code）"))
     }
     private fun pumpCatalog(runtime: JSONObject) {
-        val capacity = capacityFor(runtime)
+        val recovering = (if (LauncherCapacity.recoveryPending(runtime)) 1 else 0) +
+            linuxSessions.count { it.recovering } + additionalTermux.count { it.recovering } +
+            if (termuxShelf.recovering) 1 else 0
+        val capacity = capacityFor(runtime).copy(recovering = recovering)
         if (publishedCapacity != capacity) {
             publishedCapacity = capacity
             ui.post { launcherCapacity.value = capacity }
