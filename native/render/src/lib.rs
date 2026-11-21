@@ -1037,7 +1037,8 @@ fn owner(state: &State) {
                 .latest
                 .retain(|key| logical.contains(&(key.session, key.window)));
             update(state, |s| {
-                s.semantic.retain(|(key, _)| logical.contains(key))
+                // A producer can register a window after this tick took its logical snapshot.
+                s.semantic.retain(|(key, _)| s.logical.contains(key))
             });
         }
         if let Some(message) = message {
