@@ -4,7 +4,7 @@
 
 **資料確認日:** 2026-11-21。参照したmainは`64374c65f21dd24a5de3d06af4365d9a5abbf063`。
 
-**証拠の範囲:** 公式資料で確認した機能と、過去の実機記録を整理したもの。本手順全体の現行Quest実行成功やHMD受入を意味しない。managed feature/resolverには未登録。
+**証拠の範囲:** 公式資料と過去の実機記録に加え、4.5に今回の短時間実測を記載した。本手順全体の現行Quest実行成功やHMD受入を意味しない。managed feature/resolverには未登録。
 
 入口は[AGENTS.md](../../AGENTS.md)。接続・forward・観測の詳細は[開発自動化・デバッグ](development-automation-and-debugging.md)、製品のsleep/復帰検証は[Phase 6](../features/initial-phases/phase-6-rust-lifecycle-testing.md)を参照する。
 
@@ -27,7 +27,7 @@
 
 ## 2. 対象と開発セッションの所有者を固定する
 
-- 開発PC/runnerから見える承認済みのQuestを選ぶ。`adb devices -l`の最初の行を無条件に選ばず、以降は必ず`adb -s`または`metavr -d`で対象を指定する。[ADB][adb]
+- Wi-Fi ADBを確立したホストで調べる。Ubuntu Desktop経由なら、まず既存のSSH経路でそのホストへ入り、そこで承認済みのQuestを選ぶ。`adb devices -l`の最初の行を無条件に選ばず、以降は必ず`adb -s`または`metavr -d`で対象を指定する。[ADB][adb]
 - **同じ物理QuestのUSB serialとWi-Fiの`IP:port`は、別の端末として扱わない。** 固定の管理IDと現在のtransportを対応付け、既存の端末管理・排他を引き継ぐ。
 - 同じQuestを他のCodex/job/Developer Hubが操作していないか、共有hostの所有記録を確認する。並行利用なら端末操作を直列化し、一つの開発セッションが設定を管理する。所有者が不明な設定を解除しない。
 - 現在の依頼・継続開発の引継ぎ・過去の設定記録を確認する。短いテストの終了と、端末を使う開発セッション全体の終了を区別する。
@@ -54,7 +54,7 @@ mkdir -p "$quest_run_dir"
 
 adb version
 timeout 15s adb devices -l
-timeout 15s adb -s "$quest_serial" get-state
+test "$(timeout 15s adb -s "$quest_serial" get-state)" = device
 timeout 15s adb -s "$quest_serial" shell getprop ro.product.model
 timeout 15s adb -s "$quest_serial" shell getprop ro.build.version.sdk
 timeout 15s adb -s "$quest_serial" shell getprop ro.build.fingerprint
@@ -156,6 +156,14 @@ timeout 15s adb -s "$quest_serial" shell dumpsys battery > "$quest_run_dir/batte
 
 対象・所有者・適用/再利用した設定が整合し、必要なADB接続と起動状態が確認できたら`ready`として実機開発を始める。未確認や失敗を消して成功扱いにせず、実機操作の阻害理由を`blocked_device`へ残す。
 
+### Wi-Fi ADB は応答するが画面が消えているとき
+
+`dumpsys power` の `mWakefulness`、`mLastSleepReason`、`mIsPowered`、`mStayOn` と、`dumpsys battery` の AC/USB/Wireless 給電を照合する。必要に応じて `settings get system screen_off_timeout`、`settings get secure sleep_timeout` を読み取る。タイムアウト延長や省電力設定の一括変更は不要。直前の sleep 理由だけで原因を特定しない。ADB 接続を維持したまま `Asleep` であれば、4.1〜4.3 の対象・所有条件を確かめて装着状態を再設定し、4.5 の間隔で電源と接続を再読取する。
+
+2026-11-21 の Quest 3（API 34）では、Wi-Fi ADB が応答し、AC 給電、`stay_on_while_plugged_in=15`、`mStayOn=true`、画面タイムアウト 86400000 ms、sleep timeout −1 で `Asleep` だった。Meta VR CLI がない Ubuntu Desktop から既存の開発用 `prox_close` を送り、約1秒後と45秒後に Wi-Fi ADB と `Awake` を確認した。給電設定の変更はなかった。装着状態と長時間維持は未確認。
+
+インストールには ADB 到達性、UI 操作・スクリーンショットにはさらに Eidolon の前景復帰と現在の XR focus を確認する。[Activity と XR の観測手順](development-automation-and-debugging.md)を使う。画面が点灯しても XR focus が戻らない場合は OS ダイアログ、ロック、装着・追跡状態を個別に確認する。
+
 ## 5. 作業中の期限・再接続・通常ライフサイクル試験
 
 **長いbuildの終了後、CLIの期限切れ前後、reboot後、再接続後、給電変更後、担当者変更後**は、次の実機操作の前に手順3〜4の関連項目を再確認する。初回のbaseline取得例は再実行せず、現在の観測は次のように別directoryへ保存する。物理端末が同じでも、reconnectを理由に復元元を更新しない。
@@ -208,6 +216,13 @@ timeout 15s adb -s "$quest_endpoint" get-state
 (
 set -e
 quest_stayon_before="$(tr -d '\r\n' < "$quest_run_dir/stayon-before.txt")"
+quest_stayon_after="$(tr -d '\r\n' < "$quest_run_dir/stayon-after.txt")"
+[[ "$quest_stayon_after" =~ ^[0-9]+$ ]]
+quest_stayon_current="$(timeout 15s adb -s "$quest_serial" shell settings get global stay_on_while_plugged_in)"
+if [[ "${quest_stayon_current//$'\r'/}" != "$quest_stayon_after" ]]; then
+  printf '%s\n' '変更後の値と一致しないため、現在の設定を維持します。' >&2
+  exit 1
+fi
 case "$quest_stayon_before" in
   null)
     timeout 15s adb -s "$quest_serial" shell settings delete global stay_on_while_plugged_in
