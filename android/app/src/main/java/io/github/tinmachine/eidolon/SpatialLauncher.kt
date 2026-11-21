@@ -4,7 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import androidx.core.os.trace
+import android.os.Trace
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.FlowRow
@@ -159,7 +159,7 @@ internal class SpatialLauncher(
                     if (shelfWasGrabbed && !grabbed) finishShelfMove()
                     shelfWasGrabbed = grabbed
                 }
-                trace("Eidolon.wrist.update") { updateWrist() }
+                traceWrist("Eidolon.wrist.update") { updateWrist() }
                 reportedInputError = false
             } catch (e: RuntimeException) {
                 if (!reportedInputError) android.util.Log.w("EidolonWrist", e.javaClass.simpleName)
@@ -564,6 +564,12 @@ internal class SpatialLauncher(
         return if (norm in .9f..1.1f) Pose(pose.t, pose.q.normalize()) else null
     }
 
+    private inline fun <T> traceWrist(section: String, block: () -> T): T {
+        if (!Trace.isEnabled()) return block()
+        Trace.beginSection(section)
+        return try { block() } finally { Trace.endSection() }
+    }
+
     private fun updateWrist() {
         val sdk = scene ?: return
         val menuSide = side.value
@@ -576,14 +582,15 @@ internal class SpatialLauncher(
         var supportController: Pose? = null
         val next = selectTrackedWristInput(mode, actualInput) { source ->
             if (source == WristInput.CONTROLLERS) {
-                trace("Eidolon.wrist.controllers") {
+                traceWrist("Eidolon.wrist.controllers") {
                     supportController = controller(menuSide.left)
                     supportController != null && controller(menuSide.opposite.left) != null
                 }
             } else {
-                canSampleHands && trace("Eidolon.wrist.hands") {
-                    handPair = hands.sample(sdk, "XR_EXT_hand_tracking_data_source" in extensions)
-                    handPair?.get(menuSide) != null && handPair?.get(menuSide.opposite)?.aim != null
+                canSampleHands && traceWrist("Eidolon.wrist.hands") {
+                    val pair = hands.sample(sdk, "XR_EXT_hand_tracking_data_source" in extensions)
+                    handPair = pair
+                    pair.get(menuSide) != null && pair.get(menuSide.opposite)?.aim != null
                 }
             }
         }
