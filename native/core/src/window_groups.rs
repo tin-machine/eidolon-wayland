@@ -373,6 +373,7 @@ pub(crate) mod tests {
                 presentation_paused: false,
                 player_clock_ms: None,
                 content_frame: Some(FrameSeq::new(1).unwrap()),
+                content_updates: 1,
                 role: eidolon_render::RenderMode::Windows,
                 canvas: None,
                 content_size: Some(LogicalSize::new(640, 360).unwrap()),

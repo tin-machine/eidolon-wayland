@@ -4955,6 +4955,7 @@ mod tests {
                     presentation_paused: false,
                     player_clock_ms: None,
                     content_frame: Some(eidolon_model::ids::FrameSeq::new(1).unwrap()),
+                    content_updates: 1,
                     role: eidolon_render::RenderMode::Windows,
                     canvas: None,
                     content_size: None,

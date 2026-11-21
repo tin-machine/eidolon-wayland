@@ -23,6 +23,8 @@ fun ControlPanel(
     hudEnabled: () -> Boolean,
     toggleHud: () -> Unit,
     recenterHud: () -> Unit,
+    hudRotation: () -> Boolean,
+    toggleHudRotation: () -> Unit,
     launcherControls: @Composable () -> Unit = {},
     openDetailsRequest: Int = 0,
     anchorControls: @Composable (restoring: Boolean) -> Unit,
@@ -151,6 +153,9 @@ fun ControlPanel(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = toggleHud) { Text(if (hudEnabled()) "HUD を非表示" else "HUD を表示") }
                 if (hudEnabled()) Button(onClick = recenterHud) { Text("HUD を置き直す") }
+            }
+            if (hudEnabled()) Button(onClick = toggleHudRotation) {
+                Text(if (hudRotation()) "リングの回転を停止" else "リングを回転")
             }
             Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={if(NativeSessionHost.layoutEditing.value) NativeSessionHost.finishLayoutEditing() else NativeSessionHost.setLayoutEditing(true)}) {
                 Text(if(NativeSessionHost.layoutEditing.value) "配置を確定して入力へ戻る" else "配置を編集")
