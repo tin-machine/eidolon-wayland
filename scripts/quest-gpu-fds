@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""debug APKでSDKなし/空SDK sceneのGPU FD比較。対象アプリを再起動する。"""
+"""debug APKでSDKなし/空SDK sceneのGPU FD比較。Quest 開発 preflight で装着・スリープ状態を準備してから実行する。対象アプリを再起動する。"""
 import argparse
 import datetime
 import json
@@ -31,7 +31,6 @@ instrument = None
 instrument_log = None
 app_log = None
 log_stream = None
-prox = False
 started = False
 try:
     result['device'] = device.validate()
@@ -49,8 +48,6 @@ try:
         device.adb('shell', 'setprop', 'debug.oculus.guardian_pause', '1')
     app_log = (run / 'app.log').open('w')
     log_stream = device.start_log(uid, app_log)
-    prox = True
-    device.adb('shell', 'am', 'broadcast', '-a', 'com.oculus.vrpowermanager.prox_close')
     device.adb('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP')
     for mode in ['platform', 'sdk']:
         nonce = secrets.token_hex(16)
@@ -99,7 +96,6 @@ finally:
     actions = [('stop_probe', ('shell', 'am', 'force-stop', PACKAGE))] if started else []
     if guardian is not None:
         actions.append(('restore_guardian', ('shell', shlex.join(['setprop', 'debug.oculus.guardian_pause', guardian]))))
-    if prox: actions.append(('restore_proximity', ('shell', 'am', 'broadcast', '-a', 'com.oculus.vrpowermanager.prox_far')))
     if started: actions.append(('restore_product_ui', ('shell', 'am', 'start', '-W', '-n', PACKAGE + '/.MainActivity')))
     for name, command in actions:
         try:

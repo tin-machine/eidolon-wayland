@@ -131,7 +131,7 @@ internal class SpatialLauncher(
     private var controllerDrag: Entity? = null
     private var controllerOffset: Pose? = null
     private var handleListener: Pair<SceneObject, Long>? = null
-    private data class Placement(val snapshot: LauncherUi, val entry: LauncherEntry, val shortcut: Boolean)
+    private data class Placement(val source: LauncherSource, val binding: String, val snapshot: LauncherUi, val entry: LauncherEntry, val shortcut: Boolean)
     private val placement = mutableStateOf<Placement?>(null)
     private data class Shortcut(val entity: Entity, val selection: Placement)
     private val shortcuts = androidx.compose.runtime.mutableStateMapOf<Long, Shortcut>()
@@ -791,7 +791,8 @@ internal class SpatialLauncher(
         cancelAppPlacement()
         NativeSessionHost.launcherPlacementMessage.value = if (shortcut) "取っ手をつかみ、起動ボタンを置く場所で離してください。"
             else "取っ手をつかみ、窓を開く場所で離してください。"
-        placement.value = Placement(state, entry, shortcut)
+        val source = if (state.linux) LauncherSource.UBUNTU else LauncherSource.TERMUX
+        placement.value = Placement(source, shortcutBinding(source), state, entry, shortcut)
     }
 
     private fun cancelAppPlacement() {
@@ -807,7 +808,7 @@ internal class SpatialLauncher(
             val entity = Entity.create(listOf(Panel(R.id.spatial_launcher_shortcut), Transform(pose)))
             shortcuts[entity.id] = Shortcut(entity, selection)
         } else {
-            val latest = NativeSessionHost.launcherUi.value
+            val latest = NativeSessionHost.shelfState(selection.source)
             val snapshot = selection.snapshot
             if (latest.runtime != snapshot.runtime || latest.capture != snapshot.capture ||
                 latest.session != snapshot.session || latest.revision != snapshot.revision || latest.busy) return
@@ -816,18 +817,24 @@ internal class SpatialLauncher(
         }
     }
 
+    private fun shortcutBinding(source: LauncherSource): String = when (source) {
+        LauncherSource.UBUNTU -> NativeSessionHost.linuxConnectionUi.value.savedBinding
+        LauncherSource.TERMUX -> NativeSessionHost.connectionUi.value.savedToken
+    }
+
     private fun launchShortcut(selection: Placement) {
         if (!active || !live()) return
-        val latest = NativeSessionHost.launcherUi.value
+        val latest = NativeSessionHost.shelfState(selection.source)
         val entry = latest.entries.firstOrNull {
             val desktopId = selection.entry.desktopId
             if (desktopId == null) it.id == selection.entry.id else it.desktopId == desktopId
         }
-        if (latest.capture != selection.snapshot.capture || entry?.available != true || latest.busy) {
+        if (selection.binding.isBlank() || shortcutBinding(selection.source) != selection.binding || !latest.connected ||
+            latest.menuRefreshFailed || entry?.available != true || latest.busy) {
             NativeSessionHost.launcherPlacementMessage.value = "接続先と一覧を更新し、対象のアプリを確認してください。"
             return
         }
-        NativeSessionHost.launchRegistered(latest.runtime, latest.capture, latest.session, latest.revision, entry.id)
+        NativeSessionHost.launchShelfApp(selection.source, latest, entry)
     }
 
     private fun validDrop(pose: Pose): Boolean {

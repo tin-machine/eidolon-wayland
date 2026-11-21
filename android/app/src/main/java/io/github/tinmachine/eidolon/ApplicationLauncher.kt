@@ -273,8 +273,9 @@ private fun ShelfAppCard(source: LauncherSource, entry: LauncherEntry, state: La
             TextButton(onClick = { NativeSessionHost.toggleLauncherFavorite(favorite); menu = false }) {
                 Text(if (favorite in NativeSessionHost.launcherFavorites) "お気に入りを解除" else "お気に入りに追加")
             }
-            if (place != null && state.v3 && state.runtime == NativeSessionHost.launcherUi.value.runtime) {
-                TextButton(enabled = live, onClick = { place(state, entry, false); menu = false }) { Text("引き出して起動") }
+            if (place != null) {
+                if (state.v3 && state.runtime == NativeSessionHost.launcherUi.value.runtime)
+                    TextButton(enabled = live, onClick = { place(state, entry, false); menu = false }) { Text("引き出して起動") }
                 TextButton(onClick = { place(state, entry, true); menu = false }) { Text("起動ボタンを置く") }
             }
         }

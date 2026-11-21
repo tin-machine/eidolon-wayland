@@ -79,6 +79,8 @@ class GpuFdChecksTests(unittest.TestCase):
             def start_log(self, *args, **kwargs):
                 return mock.Mock()
             def adb(self, *command, **kwargs):
+                owner.assertFalse(any('vrpowermanager.' in part for part in command),
+                                  'プローブは preflight が管理する近接センサー設定を保持する')
                 if command[:3] == ('shell','pm','list'): return 'package:io.github.tinmachine.eidolon uid:100\n'
                 if command[0] == 'shell' and command[1].startswith('pidof'): return ''
                 if any('GpuFdSdkActivity' in x for x in command): self.mode='sdk';self.reads=0

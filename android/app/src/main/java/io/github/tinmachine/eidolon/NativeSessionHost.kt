@@ -918,11 +918,7 @@ object NativeSessionHost {
             requested?.invoke("",NativeBridge.NOT_READY);return@safely
         }
         val permitted=when(kind) {
-            "inspect" -> when (transport.optString("state")) {
-                "ProbeReady" -> !transport.optBoolean("desktop_pending")
-                "DesktopReady" -> linuxV3Catalog?.let(linuxV3LaunchAdmission::canClaim) == true
-                else -> false
-            }
+            "inspect" -> transport.optString("state") == "ProbeReady" && !transport.optBoolean("desktop_pending")
             "recover" -> transport.optString("state")=="CleanupPending" && transport.optBoolean("desktop_pending") && transport.isNull("desktop")
             else -> false
         }
@@ -936,7 +932,7 @@ object NativeSessionHost {
         requested?.invoke(request,code)
     } } }
     private fun launchLinuxDesktop(session:String,revision:String,id:String,requested:((String,Int)->Unit)?) { productWorker.execute { safely {
-        if(handle==0L || selectedProfileId!=LinuxConnectionProfile.ID || linuxAction!=null || pendingDisconnect!=null || connectPending) {
+        if(handle==0L || linuxV3Active() || selectedProfileId!=LinuxConnectionProfile.ID || linuxAction!=null || pendingDisconnect!=null || connectPending) {
             requested?.invoke("",NativeBridge.NOT_READY);return@safely
         }
         val catalog=linuxCatalog
@@ -950,8 +946,7 @@ object NativeSessionHost {
         val request=requests.incrementAndGet().toString()
         val code=NativeBridge.nativeCommand(handle,JSONObject().put("schema",1).put("type","linux_desktop_launch")
             .put("request_id",request).put("session",session).put("selection",catalog.selection()).toString())
-        if(code==NativeBridge.ACCEPTED) {linuxAction=LinuxAction("launch",session,request);linuxMessage=null
-            refreshShelfAfterAppExit = true}
+        if(code==NativeBridge.ACCEPTED) {linuxAction=LinuxAction("launch",session,request);linuxMessage=null}
         else linuxMessage="起動を開始できません。接続と前回の終了状態を確認してください。"
         requested?.invoke(request,code)
     } } }
@@ -1504,7 +1499,9 @@ object NativeSessionHost {
             else -> { pendingDisconnect = null; terminalError = "切断を開始できません（$code）" }
         }
     }
-    fun showWindow(choice: WindowChoice, slot: Int) { windowCommand(choice,"show_window",slot) }
+    fun showWindow(choice: WindowChoice, slot: Int) {
+        if (choice.desktopRuntime == 0L) windowCommand(choice, "show_window", slot)
+    }
     fun closeWindow(choice: WindowChoice) {
         if (choice.desktopRuntime == 0L) { windowCommand(choice, "close_window", null); return }
         val target = choice.target ?: return
@@ -1843,6 +1840,8 @@ object NativeSessionHost {
         if(target==null) resetInput()
     } } } }
     fun selectWindow(choice: WindowChoice) { productWorker.execute { safely {
+        if (choice.desktopRuntime != 0L && (handle != choice.desktopRuntime ||
+            focusTarget(snapshot().getJSONObject("runtime"), choice) == null)) return@safely
         selectedWindow=choice.session to choice.window; resetInput()
     } } }
     fun setBackground(mode: String) { if(mode in setOf("passthrough","virtual")) productWorker.execute { send("set_background","background",mode) } }
@@ -2267,6 +2266,11 @@ object NativeSessionHost {
         val live=(0 until plans.length()).map {plans.getJSONObject(it)}
             .filter {it.optString("action")=="create" && (!requireApplied || it.optBoolean("applied")) && it.isNull("error")}
             .map {it.getJSONObject("target")}
+        if (choice != null && choice.desktopRuntime != 0L) {
+            if (handle != choice.desktopRuntime) return null
+            val captured = choice.target?.let(::JSONObject) ?: return null
+            return live.singleOrNull { targetIdentity(it) == targetIdentity(captured) }
+        }
         val wanted=choice?.let {it.session to it.window} ?: selectedWindow
         if(wanted!=null) {
             val match=live.firstOrNull {(it.getString("session") to it.getString("window"))==wanted && (choice==null || it.getString("scene")==choice.scene)}
@@ -3266,7 +3270,7 @@ object NativeSessionHost {
             val placements=workspace.getJSONArray("windows")
             val ambiguous=(0 until placements.length()).map {placements.getJSONObject(it)}.firstOrNull {it.getString("window")==w.getString("window")}?.optBoolean("ambiguous")==true
             WindowChoice(checkNotNull(currentApp).getString("session"),runtime.optString("scene"),w.getString("window"),plan?.optInt("slot"),ambiguous,
-                if (currentApp.optString("mode") == "linux_desktop") handle else 0L,
+                if (linuxV3Active() && currentApp.optString("mode") == "linux_desktop") handle else 0L,
                 plan?.optJSONObject("target")?.toString(), runtime.getJSONObject("render").optLong("theme_revision",0))
         } } ?: emptyList()
         ui.post { windowChoices.value=choices }
