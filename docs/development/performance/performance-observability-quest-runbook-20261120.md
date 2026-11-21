@@ -67,9 +67,16 @@ ANDROID_SERIAL="$EIDOLON_QUEST_SERIAL" python3 "$EIDOLON_ANDROID_NDK/simpleperf/
 
 "$EIDOLON_ANDROID_NDK/simpleperf/bin/linux/x86_64/simpleperf" report \
   -i "$EIDOLON_PROFILE_DIR/idle.perf.data" --sort comm,dso,symbol --children
+
+# 同じ記録を、メインスレッドの SDK フレーム内と、それ以外の UI 更新に分ける
+PYTHONPATH="$EIDOLON_ANDROID_NDK/simpleperf" scripts/quest-frame-cpu "$EIDOLON_PROFILE_DIR/idle.perf.data"
 ```
 
 `task-clock:u` はユーザー空間の CPU サンプル。OS 上の実行・待機は Perfetto で見る。Rust のシンボルが足りないときは同じビルドの未 strip ライブラリを用意し、`app_profiler.py -lib` でシンボルを補う。その場合は `-nb` を外し、非公開の作業ディレクトリで実行する。[Perfetto のスケジューリング解析](https://perfetto.dev/docs/data-sources/cpu-scheduling)・[Meta の Simpleperf 手順](https://developers.meta.com/vr/documentation/spatial-sdk/ts-simpleperf/)
+
+[`quest-frame-cpu`](../../../scripts/quest-frame-cpu) は1プロセスの全ユーザー空間 CPU 時間を分母にし、各サンプルを `period` で重み付けして1行にだけ数える。メインスレッドの `FramePhaseController.onFrame` 配下は Eidolon のコールバック、呼び出し元を特定できた SDK のシステム、その他に分ける。手首ランチャーとパネルのタイマーはフレーム外でも動く。スタックで見分けられない処理は「その他」に含む。SDK や OS の別スレッド、GPU で使った追跡時間の内訳はこの値から推定しない。
+
+手首 UI の呼び出し頻度は、Perfetto の `linux.ftrace` で `ftrace/print` と `atrace_apps: "io.github.tinmachine.eidolon"` を有効にすると確認できる。メインスレッドの `Eidolon.wrist.update` が更新全体、`Eidolon.wrist.controllers` と `Eidolon.wrist.hands` が入力源ごとの探索。頻度は区間の開始時刻の差から計算する。これらの区間長には待ち時間も含むので、CPU 時間には Simpleperf か Perfetto の `sched` を使う。
 
 Perfetto の SQL クエリで上位を一覧にできる。収録全体の平均なので、操作を含む計測では UI で対象区間を選んで集計する。
 
@@ -131,6 +138,27 @@ CPU はプロファイラを止めて約26秒ずつ3回採ったスレッド別 
 描画指標は各条件1回の Perfetto と同時刻の VrApi 報告を照合した。記録の長さは窓なし 26.7 → 27.7 秒、1窓 26.2 → 27.5 秒。Perfetto のスケジューリング集計でも、窓なし 1.04 → 0.78、1窓 1.36 → 1.10 コア分と同じ方向に変化した。各トレースに一部チャンクの欠測がある。前フレーム再利用はこの短い区間の実数として扱う。
 
 15秒の Simpleperf では、全ユーザー空間サンプルに対する `Saved.forProfile` 配下の割合が旧版で窓なし 10.64%、1窓 7.03% だった。新版では両条件とも表示下限の 0.3% に届かなかった。全体の CPU 低下は2変更を合わせた実測値。Android メインでは新版の窓なしでも Spatial SDK の `FramePhaseController.onFrame` 配下が全サンプルの約21%を占めた。追加調査では、空間描画・コントローラー追跡と、Eidolon が行う UI 更新を同じスレッド上で区別して計測する。
+
+### SDK のフレームと手首ランチャーの更新
+
+0.1.112 の窓なしの元記録を上の手順で再集計した。全プロセスのユーザー空間 CPU の 21.16% が SDK のメインスレッドのフレーム内で、その内訳はコントローラー更新 `TickControllerSystem` が 4.49 ポイント、`IsdkSystem` が 4.29 ポイント、Eidolon のコールバックが 0.10 ポイント、その他の SDK 処理が約12.28 ポイントだった。フレーム外で動く手首ランチャーのタイマーは全体の 1.17%、空間パネルの更新は 1.32%。別の同条件の 15 秒でもフレーム内は 18.73%、コントローラー更新は 4.22%、`IsdkSystem` は 3.87% だった。`IsdkSystem` は対話処理全体を含むため、素手追跡だけの使用率はこの分類からは求められない。
+
+0.1.113 は自動モードで、すでに追跡できている入力源から調べる。追跡を失った場合は同じ更新内で別の入力源を試す。両方を利用できず、アプリの配置・棚の移動・アンカー操作も待っていない間は再探索の待ち時間を 25 ms から 75 ms にする。再検出の待ち時間が最大約50 ms 増える。追跡中は 25 ms 間隔で入力を読み、表示面がない間もピンチの開始と解放を区別する。
+
+同じ給電中の Quest 3、90 Hz、FOCUSED、HUD 非表示、ランタイム2本、手首の入力源を探索中の状態で 0.1.112 → 0.1.113（`b0e06dd`）を比較した。Dolphin は同じ実行先から起動して静止させた。
+
+| 指標 | 窓なし | Dolphin 1窓 |
+| --- | ---: | ---: |
+| 手首ランチャーの CPU サンプル比率 | 1.41% → 0.44% | 0.80% → 0.21% |
+| 15秒の記録で手首ランチャーに帰属した CPU 時間 | 141 → 45 ms | 116 → 30 ms |
+| SDK フレームの CPU サンプル比率 | 18.73% → 20.29% | 13.56% → 14.10% |
+| Eidolon 全体の CPU（コア分、中央値） | 0.723 → 0.736 | 1.031 → 1.033 |
+| Android メインスレッドの CPU（コア分、中央値） | 0.167 → 0.176 | 0.198 → 0.202 |
+| 平均 FPS | 90.57 → 90.59 | 90.61 → 90.56 |
+| 区間内の前フレーム再利用 | 0 → 0 回 | 1 → 0 回 |
+| 平均アプリ GPU 時間 | 0.94 → 0.93 ms | 3.07 → 3.06 ms |
+
+`/proc` はプロファイラを止めて約26秒を各3回測定。窓なしの各回は 0.719–0.741 → 0.730–0.748 コア分、1窓は 1.018–1.044 → 1.030–1.044 コア分と範囲が重なった。Simpleperf は各条件15秒1回で、取得した約2,000～2,900サンプルの一部を手首に帰属した。FPS は各約27秒の有効区間の VrApi 平均で、Perfetto のスケジューリング記録には一部欠測がある。別途採った6秒のアプリトレースで、窓なしの探索は80回（平均75.4 ms間隔）、1窓では79回（75.5 ms）だった。手首の探索負荷は両方で下がった。全体の CPU 使用量の改善は今回の比較では確認できなかった。
 
 ## 3. P2: Host → Questフレームと入力相関
 
