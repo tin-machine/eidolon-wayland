@@ -56,6 +56,7 @@ pub struct Controller {
     scene: Option<SceneEpoch>,
     background_command: Option<CommandSeq>,
     applied_background: Option<AppliedBackground>,
+    horizontal_offset: f32,
 }
 impl Controller {
     pub fn load(root: Option<&Path>) -> Self {
@@ -67,7 +68,11 @@ impl Controller {
             scene: None,
             background_command: None,
             applied_background: None,
+            horizontal_offset: 0.,
         }
+    }
+    pub fn place_companion_to_right(&mut self) {
+        self.horizontal_offset = 1.8;
     }
     pub fn snapshot(&self) -> Report {
         Report {
@@ -182,7 +187,11 @@ impl Controller {
                         .app_id
                         .as_ref()
                         .and_then(|id| self.store.value.restore(id, slot, matches));
-                    let pose = saved.as_ref().map_or(PanelPose::at_slot(slot), |s| s.pose);
+                    let pose = saved.as_ref().map_or_else(|| {
+                        let mut pose = PanelPose::at_slot(slot);
+                        pose.position_m[0] += self.horizontal_offset;
+                        pose
+                    }, |s| s.pose);
                     state.placement = Placement::new(pose).unwrap();
                     restored.push(Restore {
                         window: window.window,

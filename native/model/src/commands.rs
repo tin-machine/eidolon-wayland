@@ -648,6 +648,8 @@ pub enum Command {
         session: crate::ids::SessionId,
         nonce: String,
         mode: AppMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selection: Option<crate::catalog::ShelfStart>,
     },
     ForwardProbe {
         schema: u32,

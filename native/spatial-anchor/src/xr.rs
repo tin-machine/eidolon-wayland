@@ -35,4 +35,5 @@ fn check(op: &str, result: xr::Result) -> Result<(), String> {
     }
 }
 
+pub(crate) mod hands;
 pub(crate) mod persistence;

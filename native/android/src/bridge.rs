@@ -147,13 +147,47 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeAnch
         let advertised = unsafe {
             eidolon_spatial_anchor::startup_extensions(vm.get_raw().cast(), context.as_raw().cast())
         };
-        let required = advertised
-            .as_deref()
-            .map(eidolon_spatial_anchor::required_if_advertised)
-            .unwrap_or_default();
+        let mut required = Vec::new();
+        if let Ok(advertised) = advertised {
+            required.extend_from_slice(eidolon_spatial_anchor::required_if_advertised(&advertised));
+            required.extend(eidolon_spatial_anchor::hand_extensions(&advertised));
+        }
+        required.sort_unstable();
+        required.dedup();
         JString::from_str(env, serde_json::json!(required).to_string())
     })
     .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeSampleHands<'a>(
+    mut env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    instance: jlong,
+    session: jlong,
+    proc_addr: jlong,
+    unobstructed: jni::sys::jboolean,
+    output: jni::objects::JFloatArray<'a>,
+) -> jni::sys::jboolean {
+    env.with_env(|env| {
+        let mut values = [0.0; 32];
+        let available = unsafe {
+            eidolon_spatial_anchor::sample_hands(instance as u64, session as u64, proc_addr as usize, unobstructed, &mut values)
+        };
+        output.set_region(env, 0, &values)?;
+        Ok::<_, jni::errors::Error>(available)
+    })
+    .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeCloseHands(
+    _: EnvUnowned<'_>,
+    _: JClass<'_>,
+    instance: jlong,
+    session: jlong,
+) {
+    unsafe { eidolon_spatial_anchor::close_hands(instance as u64, session as u64) }
 }
 
 #[unsafe(no_mangle)]
@@ -424,6 +458,34 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeCrea
         }
     })
     .resolve_with::<BridgePolicy, _>(|| 0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeCreateCompanion<'a>(
+    _: EnvUnowned<'a>,
+    _: JClass<'a>,
+    primary: jlong,
+) -> jlong {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    match catch_unwind(AssertUnwindSafe(|| global().create_companion(primary))) {
+        Ok(Ok(handle)) => handle,
+        Ok(Err(status)) => -i64::from(status as i32),
+        Err(_) => -i64::from(Status::Failed as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeCreateTermux<'a>(
+    _: EnvUnowned<'a>,
+    _: JClass<'a>,
+    primary: jlong,
+) -> jlong {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    match catch_unwind(AssertUnwindSafe(|| global().create_termux(primary))) {
+        Ok(Ok(handle)) => handle,
+        Ok(Err(status)) => -i64::from(status as i32),
+        Err(_) => -i64::from(Status::Failed as i32),
+    }
 }
 
 #[unsafe(no_mangle)]

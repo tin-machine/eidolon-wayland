@@ -86,6 +86,31 @@ class RealC2Cases(unittest.TestCase):
     def test_recover_repeated_unknown_boot_preserves_evidence(self):
         self.assert_boot_recovered("-")
 
+    def test_workspace_recovery_completes_in_only_the_matching_slot(self):
+        primary, barrier1, *first = self.prepare()
+        files = [*first]
+        try:
+            with mock.patch.object(core, "boot_id", return_value=ORIGIN):
+                companion, barrier2, *second = core.prepare_session(self.binding.context, workspace_slot=2)
+            files += second
+            barrier1.before_acquire()
+            barrier2.before_acquire()
+            self.assertNotEqual(primary.session, companion.session)
+            self.assertTrue(W.valid_socket(str(companion.wayland_socket), self.binding.context.record()["nonce"]))
+            for fd in second:
+                os.close(fd)
+                files.remove(fd)
+            with mock.patch.object(core, "boot_id", return_value=CURRENT):
+                result, status = core.recovery_receipt(self.binding, SOURCES, ORIGIN, workspace_slot=2)
+            self.assertEqual(status, 0)
+            self.assertEqual(W.parse_receipt(result, self.binding, SOURCES, ORIGIN, status)["process_evidence"],
+                             "boot_changed")
+            self.assertTrue(primary.session.is_dir())
+            self.assertFalse(companion.session.exists())
+        finally:
+            for fd in files:
+                os.close(fd)
+
     def test_existing_receipt_with_explicit_expected_boot_can_be_retried(self):
         paths, _, hfd, sfd, fd = self.prepare()
         hfd, sfd = core._remove_session(paths, (hfd, sfd, fd))

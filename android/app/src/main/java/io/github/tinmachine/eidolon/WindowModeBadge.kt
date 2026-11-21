@@ -22,6 +22,7 @@ class WindowModeBadge(parent:Entity,layout:WindowControlLayout,width:Double,heig
     private var mode=WindowMode.PREPARING
     private var label=mode.label
     private var tooltip:String?=null
+    private var hostLabel:String?=null
     private var lastPose:Pose?=null
     private var lastVisible:Boolean?=null
     private var failures=0L
@@ -55,7 +56,7 @@ class WindowModeBadge(parent:Entity,layout:WindowControlLayout,width:Double,heig
             update(mode,true,true)
         } catch(error:Exception) {runCatching {close()};throw error}
     }
-    fun update(value:WindowMode,visible:Boolean,force:Boolean=false,tooltip:String?=null) {
+    fun update(value:WindowMode,visible:Boolean,force:Boolean=false,tooltip:String?=null,hostLabel:String?=this.hostLabel) {
         if(closeRequested || !live()) return
         val e=checkNotNull(entity);val sceneObject=checkNotNull(obj)
         val pose=getAbsoluteTransform(e)
@@ -67,16 +68,21 @@ class WindowModeBadge(parent:Entity,layout:WindowControlLayout,width:Double,heig
         if(lastVisible!=visible) {sceneObject.setIsVisible(visible);lastVisible=visible}
         mode=value
         val nextLabel = tooltip ?: value.label
-        val redraw = force || label != nextLabel || this.tooltip != tooltip
+        val redraw = force || label != nextLabel || this.tooltip != tooltip || this.hostLabel != hostLabel
         label = nextLabel
         this.tooltip = tooltip
+        this.hostLabel = hostLabel
         if (!redraw) return
         val canvas=Canvas(slot.bitmap);canvas.drawColor(Color.TRANSPARENT,android.graphics.PorterDuff.Mode.CLEAR)
         val paint=slot.paint
         paint.color=(if (tooltip == null) 0xee24364b else 0xf5152231).toInt();canvas.drawRoundRect(0f,0f,WIDTH.toFloat(),HEIGHT.toFloat(),22f,22f,paint)
         paint.color=0xfffff0cf.toInt();paint.textSize=38f;paint.textAlign=Paint.Align.CENTER
         val baseline=HEIGHT/2f-(paint.fontMetrics.ascent+paint.fontMetrics.descent)/2f
-        canvas.drawText(label,WIDTH/2f,baseline,paint)
+        val shown = if (tooltip == null && hostLabel != null) "$hostLabel · $label" else label
+        val space = WIDTH - 24f
+        val measured = paint.measureText(shown)
+        if (measured > space) paint.textSize *= space / measured
+        canvas.drawText(shown,WIDTH/2f,baseline,paint)
         slot.buffer.clear();slot.bitmap.copyPixelsToBuffer(slot.buffer);slot.buffer.rewind()
         checkNotNull(texture).update(slot.buffer,WIDTH,HEIGHT,slot.bitmap.rowBytes);updates++;textureUpdates++
     }

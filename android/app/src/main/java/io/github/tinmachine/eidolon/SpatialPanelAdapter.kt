@@ -528,7 +528,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
             )
             return
         }
-        val target = NativeSessionHost.inputTarget(binding.key.toString()) ?: return
+        val target = NativeSessionHost.inputTarget(binding.key.toString(), binding.handle) ?: return
         val uv = listOf(hit.textureCoordinate.x.toDouble(), hit.textureCoordinate.y.toDouble())
         if (uv.any { !it.isFinite() || kotlin.math.abs(it) > 16 }) return
         if (NativeSessionHost.sendPointer(target, source.id, uv, JSONObject().put("type", "scroll")
@@ -580,7 +580,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
             if (snapshotInFlight || closed && bindings.isEmpty() && cancelledReservations.isEmpty()) return
             val handle = NativeSessionHost.currentHandle()
             val sampledScene = scene
-            val handles = (bindings.values.map { it.handle } + handle).filter { it > 0 }.distinct()
+            val handles = (bindings.values.map { it.handle } + handle + NativeSessionHost.otherWorkspaceRuntimes()).filter { it > 0 }.distinct()
             snapshotInFlight = true
             // The host worker can be waiting for SDK retirement. Snapshot reads must
             // run independently so that the UI can continue retiring SDK leases.
@@ -636,6 +636,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
             }
         }
         val host = snapshots[handle]?.optJSONObject("runtime")
+        if (host != null && !closed) NativeSessionHost.applyLauncherPlacement(handle, host)
         if(host!=null && !closed && scene>0 && host.optString("scene")==scene.toString()) applyBackground(handle,host)
         if (host != null && !closed && scene > 0 && host.optString("scene") == scene.toString()) {
             val target = host.optJSONObject("anchor_placement_target")?.optJSONObject("target")
@@ -650,10 +651,13 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         val anchorTarget = host?.optJSONObject("anchor_preparing_target")?.optJSONObject("target")
         val plans = host?.optJSONArray("panels")?.let { values -> (0 until values.length()).map { values.getJSONObject(it) } } ?: emptyList()
         val windows = host?.optJSONObject("render")?.optString("mode") == "windows"
-        val desired = plans.filter { it.getString("action") == "create" && it.isNull("error") && it.getJSONObject("target").optString("scene") == scene.toString() }
         for (current in bindings.values.toList()) {
-            val plan = plans.firstOrNull { sameKey(it.getJSONObject("target"), current.key) }
-            if (host?.optString("state") in setOf("Stopping","Stopped","Failed") || current.role == "diagnostic" && windows || current.handle != handle ||
+            val state = snapshots[current.handle]?.optJSONObject("runtime")
+            val ownPlans = if (current.handle == handle) plans else state?.optJSONArray("panels")?.let { a ->
+                List(a.length()) { a.getJSONObject(it) }
+            }.orEmpty()
+            val plan = ownPlans.firstOrNull { sameKey(it.getJSONObject("target"), current.key) }
+            if (state?.optString("state") in setOf("Stopping","Stopped","Failed") || current.role == "diagnostic" && windows ||
                 current.role == "windows" && (plan == null || plan.getString("action") == "destroy" || !plan.isNull("error"))) {
                 beginRetirement(current); current.destroy = true
             }
@@ -749,31 +753,39 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                     NativeSessionHost.ackPanel(plan, handle)
             }
         }
-        if (!closed && scene > 0 && host?.optString("state") == "Ready" && host.optString("scene") == scene.toString() &&
-            !evidence.runtimeProgress(handle).sealed) {
-            if (windows && bindings.values.none { it.role == "diagnostic" }) {
+        for (runtime in (listOf(handle) + NativeSessionHost.otherWorkspaceRuntimes()).filter { it > 0 }.distinct()) {
+            val owner = snapshots[runtime]?.optJSONObject("runtime") ?: continue
+            if (runtime != handle && !closed) NativeSessionHost.applyLauncherPlacement(runtime, owner)
+            if (closed || scene <= 0 || owner.optString("state") != "Ready" || owner.optString("scene") != scene.toString() ||
+                evidence.runtimeProgress(runtime).sealed) continue
+            val ownerWindows = owner.optJSONObject("render")?.optString("mode") == "windows"
+            if (ownerWindows && bindings.values.none { it.role == "diagnostic" && it.handle == runtime }) {
+                val ownerPlans = owner.getJSONArray("panels")
+                val desired = List(ownerPlans.length()) { ownerPlans.getJSONObject(it) }.filter {
+                    it.getString("action") == "create" && it.isNull("error") && it.getJSONObject("target").optString("scene") == scene.toString()
+                }
                 for (plan in desired) {
                     if (bindings.size >= WindowBudget.MAX_WINDOWS) break
                     if (BuildHooks.holdPanelCreation(plan.getJSONObject("target").getString("window"))) continue
-                    if (bindings.values.none { sameKey(it.key,plan.getJSONObject("target")) }) {
+                    if (bindings.values.none { it.handle == runtime && sameKey(it.key,plan.getJSONObject("target")) }) {
                         val target=plan.getJSONObject("target")
-                        val placements=host.getJSONObject("workspace").getJSONArray("windows")
+                        val placements=owner.getJSONObject("workspace").getJSONArray("windows")
                         val initial=(0 until placements.length()).map {placements.getJSONObject(it)}.firstOrNull {
                             it.optString("session")==target.optString("session") && it.optString("window")==target.optString("window") &&
                                 !it.isNull("slot") && it.optInt("slot",-1)==plan.optInt("slot",-2)
                         }?.optJSONObject("placement")
                         val pose = initial?.optJSONObject("pose") ?: continue
                         if (!PanelPoseCodec.valid(pose)) continue
-                        val group = WindowGroupPresentation.select(handle, target, host.optJSONObject("window_groups"))
+                        val group = WindowGroupPresentation.select(runtime, target, owner.optJSONObject("window_groups"))
                         val arcPose = if (initial.isNull("pose_command") && group == WindowGroupPresentation.Unowned) {
-                            initialDialogArc(handle, host, plan, pose)
+                            initialDialogArc(runtime, owner, plan, pose)
                         } else null
-                        val deferAnchor = anchorTarget != null && sameKey(target, anchorTarget) &&
-                            mousepadAnchor?.awaitingPlacement(AnchorWindow.from(handle, target)) == true
-                        create(handle, plan, arcPose ?: pose, group, deferAnchor)
+                        val deferAnchor = runtime == handle && anchorTarget != null && sameKey(target, anchorTarget) &&
+                            mousepadAnchor?.awaitingPlacement(AnchorWindow.from(runtime, target)) == true
+                        create(runtime, plan, arcPose ?: pose, group, deferAnchor)
                     }
                 }
-            } else if (!windows && bindings.isEmpty()) create(handle)
+            } else if (runtime == handle && !windows && bindings.isEmpty()) create(handle)
         }
         if (now - lastPublish >= 1000 && scene==NativeSessionHost.currentSceneEpoch()) { NativeSessionHost.publishAdapter(metrics()); lastPublish = now }
     }
@@ -816,7 +828,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         if(current.menuStamp!=menuStamp) {
             current.menu?.close();current.menu=null;current.menuStamp=menuStamp
             val live={ !closed && scene==NativeSessionHost.currentSceneEpoch() && bindings[current.allocation]===current && !current.retire && !current.destroy &&
-                current.handle==NativeSessionHost.currentHandle() && sameKey(current.key,JSONObject(controlTarget)) }
+                NativeSessionHost.ownsWorkspaceRuntime(current.handle) && sameKey(current.key,JSONObject(controlTarget)) }
             current.menu=WindowMenuController(current.entity,controlTarget,current.handle,revision,config,checkNotNull(runtimeScene),checkNotNull(objects),live,current.scope)
         }
         val anchor = mousepadAnchor
@@ -830,7 +842,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
             current.controlsStamp=stamp
             runCatching {
                 val live={ !closed && scene==NativeSessionHost.currentSceneEpoch() && bindings[current.allocation]===current && !current.retire && !current.destroy &&
-                    current.handle==NativeSessionHost.currentHandle() && sameKey(current.key,JSONObject(controlTarget)) }
+                    NativeSessionHost.ownsWorkspaceRuntime(current.handle) && sameKey(current.key,JSONObject(controlTarget)) }
                 val move=WindowMoveController(current.entity,controlTarget,current.handle,revision,checkNotNull(runtimeScene),live)
                 current.move=move
                 val pin = if (hasPin && anchor != null) { ticket: NativeSessionHost.WindowControlTicket ->
@@ -872,8 +884,13 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
             !group.inputAllowed -> WindowMode.GROUP_BACK
             else -> null
         }
-        current.modeBadge?.update(groupMode ?: WindowMode.from(NativeSessionHost.inputTarget(controlTarget)!=null,visible,current.editing,current.move?.phase,NativeSessionHost.inputStatus.value.reason,focused,current.menu?.phase,recentering=current.menu?.recentering==true),visible && !groupHidden,
-            tooltip = current.menu?.hoverLabel ?: current.controls?.hoverLabel())
+        current.modeBadge?.update(groupMode ?: WindowMode.from(NativeSessionHost.inputTarget(controlTarget,current.handle)!=null,visible,current.editing,current.move?.phase,NativeSessionHost.inputStatus.value.reason,focused,current.menu?.phase,recentering=current.menu?.recentering==true),visible && !groupHidden,
+            tooltip = current.menu?.hoverLabel ?: current.controls?.hoverLabel(),
+            hostLabel = when (runtime.optJSONObject("transport")?.optString("profile_id")) {
+                LinuxConnectionProfile.ID -> "Ubuntu"
+                "termux-local" -> "Termux"
+                else -> null
+            })
     }
     private fun groupMetadata(current:Binding):JSONObject?=when(val group=current.group) {
         WindowGroupPresentation.Unowned -> null

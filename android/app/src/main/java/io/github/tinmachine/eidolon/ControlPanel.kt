@@ -23,16 +23,35 @@ fun ControlPanel(
     hudEnabled: () -> Boolean,
     toggleHud: () -> Unit,
     recenterHud: () -> Unit,
+    launcherControls: @Composable () -> Unit = {},
+    openDetailsRequest: Int = 0,
     anchorControls: @Composable (restoring: Boolean) -> Unit,
 ) {
     var clicks by remember { mutableIntStateOf(0) }
     var details by remember { mutableStateOf(false) }
+    LaunchedEffect(openDetailsRequest) {
+        if (openDetailsRequest != 0) {
+            NativeSessionHost.launcherExpanded.value = false
+            details = true
+        }
+    }
     val input=NativeSessionHost.inputStatus.value
     val device=NativeSessionHost.deviceMetrics.value
     val linux=NativeSessionHost.selectedConnection.value==LinuxConnectionProfile.ID
     val launcher=NativeSessionHost.launcherUi.value
     Column(Modifier.fillMaxSize().background(Color(0xFF102331)).padding(16.dp),
         verticalArrangement=Arrangement.spacedBy(6.dp), horizontalAlignment=Alignment.CenterHorizontally) {
+        if (NativeSessionHost.launcherExpanded.value) {
+            LauncherSettings(
+                Modifier.fillMaxSize(),
+                launcherControls = launcherControls,
+                openConnectionSettings = {
+                    NativeSessionHost.launcherExpanded.value = false
+                    details = true
+                },
+            )
+            return@Column
+        }
         Text("Eidolon · Build ${BuildConfig.VERSION_CODE}",color=Color(0xFF67E8C3),style=MaterialTheme.typography.titleMedium)
         Text(input.message,color=if(input.reason=="READY") Color(0xFF67E8C3) else Color(0xFFFFD59E),style=MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -77,9 +96,8 @@ fun ControlPanel(
             if(linux) Text(if(launcher.v3) "Linuxアプリ · 切断や通信が途絶えると未保存の作業も終了します"
                 else "固定GTKデモ · 切断・lease失効で未保存の作業も終了します",color=Color(0xFFFFD59E),style=MaterialTheme.typography.bodySmall)
         }
-        if(NativeSessionHost.launcherExpanded.value) LauncherSettings(Modifier.weight(1f))
-        else Button(onClick={details=!details}) {Text(if(details) "設定と詳細を閉じる" else "設定と詳細")}
-        if(details && !NativeSessionHost.launcherExpanded.value) Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        Button(onClick={details=!details}) {Text(if(details) "設定と詳細を閉じる" else "設定と詳細")}
+        if(details) Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
             verticalArrangement=Arrangement.spacedBy(12.dp),horizontalAlignment=Alignment.CenterHorizontally) {
             Text(device.summary(),color=Color.White,style=MaterialTheme.typography.bodySmall)
             Text(device.processCpuSummary(),color=Color.White,style=MaterialTheme.typography.bodySmall)

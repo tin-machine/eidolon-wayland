@@ -188,6 +188,26 @@ class RealPersistentProfileTests(unittest.TestCase):
         _, stderr = reopened.communicate(timeout=5)
         self.assertEqual(reopened.returncode, 0, stderr)
 
+    def test_shared_home_allows_distinct_profiles_and_keeps_each_profile_exclusive(self):
+        home = self.private_home()
+        first = self.start_worker("shared:" + "a" * 32, home, "slot-1")
+        second = self.start_worker("shared:" + "b" * 32, home, "slot-2")
+        first_owner = self.event(first)
+        second_owner = self.event(second)
+        self.assertEqual(first_owner["event"], "acquired")
+        self.assertEqual(second_owner["event"], "acquired")
+        self.assertNotEqual(first_owner["root"], second_owner["root"])
+        self.send(second, "release")
+        self.assertEqual(self.event(second), {"event": "released"})
+        self.assertIsNone(first.poll())
+        duplicate = self.start_worker("shared:" + "a" * 32, home, "slot-1-contender")
+        self.assertEqual(self.event(duplicate), {"event": "denied", "reason": "APP_STATE_BUSY"})
+        self.send(first, "release")
+        self.assertEqual(self.event(first), {"event": "released"})
+        for process in (first, second, duplicate):
+            _, stderr = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 0, stderr)
+
     def test_os_unlock_after_helper_death_does_not_clear_unknown_journal(self):
         home = self.private_home()
         first = self.start_worker("hold", home, "crash-journal")

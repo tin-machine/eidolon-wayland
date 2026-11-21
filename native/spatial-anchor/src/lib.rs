@@ -97,6 +97,47 @@ pub unsafe fn panel_step(
 }
 
 /// Request the complete set only when the loader advertises every dependency.
+pub fn hand_extensions(advertised: &[String]) -> Vec<&'static str> {
+    let mut required = vec![
+        "XR_EXT_hand_tracking",
+        "XR_FB_hand_tracking_aim",
+        "XR_KHR_convert_timespec_time",
+    ];
+    if !required
+        .iter()
+        .all(|name| advertised.iter().any(|item| item == name))
+    {
+        return Vec::new();
+    }
+    if advertised
+        .iter()
+        .any(|item| item == "XR_EXT_hand_tracking_data_source")
+    {
+        required.push("XR_EXT_hand_tracking_data_source");
+    }
+    required
+}
+
+/// # Safety
+/// All handles belong to the live SDK scene, used on its Activity thread.
+#[cfg(target_os = "android")]
+pub unsafe fn sample_hands(
+    instance: u64,
+    session: u64,
+    proc_addr: usize,
+    unobstructed: bool,
+    out: &mut [f32; 32],
+) -> bool {
+    xr::hands::sample(instance, session, proc_addr, unobstructed, out)
+}
+
+/// # Safety
+/// Release on the Activity thread before the owning SDK session is torn down.
+#[cfg(target_os = "android")]
+pub unsafe fn close_hands(instance: u64, session: u64) {
+    xr::hands::close(instance, session);
+}
+
 pub fn required_if_advertised(advertised: &[String]) -> &[&'static str] {
     if REQUIRED_EXTENSIONS
         .iter()
@@ -111,6 +152,19 @@ pub fn required_if_advertised(advertised: &[String]) -> &[&'static str] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hand_extensions_require_aim_joints_and_clock() {
+        let mut advertised = vec![
+            "XR_EXT_hand_tracking".into(),
+            "XR_FB_hand_tracking_aim".into(),
+        ];
+        assert!(hand_extensions(&advertised).is_empty());
+        advertised.push("XR_KHR_convert_timespec_time".into());
+        assert_eq!(hand_extensions(&advertised).len(), 3);
+        advertised.push("XR_EXT_hand_tracking_data_source".into());
+        assert_eq!(hand_extensions(&advertised).len(), 4);
+    }
 
     #[test]
     fn a_partial_runtime_keeps_default_sdk_extensions() {

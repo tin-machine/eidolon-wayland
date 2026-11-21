@@ -34,7 +34,10 @@ object LinuxDesktopMessages {
         "HOST_KEY_MISMATCH" -> "接続先のホスト鍵が変わっています。設定で指紋を照合してください"
         "AUTH_FAILED" -> "このLinux用の公開鍵を、接続先ユーザーに登録してください"
         "DNS_NOT_IMPLEMENTED" -> "この版ではIPv4アドレスを指定してください"
-        "SSH_CONNECTION_REFUSED","AUTH_TIMEOUT","SSH_CONNECT_FAILED","CONNECT_TIMEOUT" -> "接続先・sshd・ネットワークを確認して接続し直してください"
+        "SSH_CONNECTION_REFUSED" -> "Ubuntu が SSH 接続を拒否しました。sshd の起動とポートを確認してください"
+        "CONNECT_TIMEOUT" -> "Ubuntu から応答がありません。接続先の電源とネットワークを確認してください"
+        "AUTH_TIMEOUT" -> "Ubuntu の SSH 認証が時間切れになりました。sshd の状態を確認してください"
+        "SSH_CONNECT_FAILED" -> "Ubuntu に接続できません。接続先アドレスとネットワークを確認してください"
         "REMOTE_EXIT","SSH_IO_FAILED" -> "Linuxとの通信が終了しました。回収状態を確認してください"
         else -> "Linuxとの処理を完了できませんでした。接続先と転送用ファイル、前回の回収状態を確認してください"
     }

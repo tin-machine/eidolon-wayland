@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -47,8 +48,20 @@ class MainActivity : AppSystemActivity() {
     private val hud by lazy { QuestStatusHud(applicationContext, activityOwner) }
     private val mousepadAnchor by lazy { MousepadAnchor(applicationContext, activityOwner) }
     private val nativePanels by lazy { SpatialPanelAdapter(mousepadAnchor = mousepadAnchor) }
-    private val keyboard by lazy { PhysicalKeyboard(this) { TerminalImeController.toggle() } }
+    private val keyboard: PhysicalKeyboard by lazy {
+        PhysicalKeyboard(this, onOpenLauncher = { spatialLauncher.open() }) { TerminalImeController.toggle() }
+    }
     private val mouse by lazy { PhysicalMouse(nativePanels) }
+    private val openDetails = mutableIntStateOf(0)
+    private var handExtensions = emptySet<String>()
+    private val spatialLauncher: SpatialLauncher by lazy {
+        SpatialLauncher(applicationContext, ::ownsScene, { view, window ->
+            mouse.track(view)
+            PanelKeyboardBridge(view, window) { event ->
+                ownsScene() && (mouse.key(event) || keyboard.dispatch(event, "spatial-launcher"))
+            }
+        }, { handExtensions }) { openDetails.intValue += 1 }
+    }
     private var themePickerToken: String? = null
 
     override fun registerFeatures(): List<SpatialFeature> =
@@ -65,6 +78,9 @@ class MainActivity : AppSystemActivity() {
         } catch (_: LinkageError) {
             emptyList()
         }
+        handExtensions = (defaults + anchorExtensions).filter { it.contains("hand_tracking") }.toSet()
+        Log.i("EidolonWrist", "joint_extension=${"XR_EXT_hand_tracking" in handExtensions} " +
+            "aim_extension=${"XR_FB_hand_tracking_aim" in handExtensions}")
         return (defaults + anchorExtensions).distinct()
     }
 
@@ -109,6 +125,7 @@ class MainActivity : AppSystemActivity() {
         }
         mousepadAnchor.bind(scene, epoch)
         nativePanels.sceneReady(epoch, scene)
+        spatialLauncher.bind(scene)
         hud.bind(scene, epoch)
         hud.setActive(resumed && observedXr in setOf("VISIBLE", "FOCUSED"))
         refreshMouseScene()
@@ -129,6 +146,8 @@ class MainActivity : AppSystemActivity() {
                                 ::chooseTheme, ::allowTermux, ::openTermux, mouse.enabled.value,
                                 { if (ownsScene()) mouse.toggle() },
                                 { hud.enabled.value }, hud::toggle, hud::recenter,
+                                launcherControls = { spatialLauncher.Presets() },
+                                openDetailsRequest = openDetails.intValue,
                             ) { restoring -> MousepadAnchorControls(mousepadAnchor, restoring) }
                         }
                     }
@@ -152,7 +171,7 @@ class MainActivity : AppSystemActivity() {
             R.id.terminal_launcher_panel,
             composeViewCreator={_,context -> ComposeView(context).apply {setContent {
                 MaterialTheme {
-                    LauncherStrip()
+                    LauncherStrip(spatialLauncher::open)
                 }
             }}},
             settingsCreator={UIPanelSettings(shape=QuadShapeOptions(width=1.05f,height=.22f),
@@ -164,7 +183,7 @@ class MainActivity : AppSystemActivity() {
                 }
             } },
         ),
-    ) + hud.registration + nativePanels.registration + nativePanels.decorationRegistration + TerminalImeController.registrations() + BuildHooks.additionalPanels()
+    ) + hud.registration + spatialLauncher.registrations + nativePanels.registration + nativePanels.decorationRegistration + TerminalImeController.registrations() + BuildHooks.additionalPanels()
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -229,6 +248,7 @@ class MainActivity : AppSystemActivity() {
         deviceMetrics.stop()
         resumed=false
         hud.setActive(false)
+        spatialLauncher.setActive(false)
         mouse.setFocusedScene(null)
         val current=ownsScene()
         if(current) TerminalImeController.pause()
@@ -270,12 +290,15 @@ class MainActivity : AppSystemActivity() {
     }
 
     private fun refreshMouseScene() {
-        mouse.setFocusedScene(xrScene.takeIf { ownsScene() && resumed && observedXr == "FOCUSED" })
+        val focused = ownsScene() && resumed && observedXr == "FOCUSED"
+        mouse.setFocusedScene(xrScene.takeIf { focused })
+        spatialLauncher.setActive(focused)
     }
 
     override fun onSpatialShutdown() {
         mousepadAnchor.close()
         hud.close()
+        spatialLauncher.close()
         mouse.setFocusedScene(null)
         NativeSessionHost.sceneClosing(activityOwner,sceneEpoch)
         xrScene=null;observedXr="IDLE"

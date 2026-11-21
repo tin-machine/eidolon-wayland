@@ -49,9 +49,11 @@ def valid_sources(value):
 
 
 def valid_socket(value, nonce):
-    tail = "/.eidolon-desktop-v3/s-" + nonce + "/p"
-    return (type(value) is str and value.endswith(tail) and len(value.encode()) <= 103 and
-            len(value[:-len(tail)]) > 1 and value.startswith("/") and
+    if type(value) is not str:
+        return False
+    tails = ("/.eidolon-desktop-v3/s-" + nonce + "/p", "/.eidolon-desktop-v3b/s-" + nonce + "/p")
+    return (any(value.endswith(tail) and len(value) - len(tail) > 1 for tail in tails)
+            and len(value.encode()) <= 103 and value.startswith("/") and
             not value.startswith("/data/data/com.termux/") and
             not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value) and
             all(part not in ("", ".", "..") for part in value.split("/")[1:]))

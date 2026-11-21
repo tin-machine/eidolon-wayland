@@ -17,6 +17,7 @@ import linux_desktop_v3_wire as W
 from eidolon_linux_persistent_profile import JournalBarrier, ProfileIdentity, scan_current_directory, storage_owner
 
 STATE_DIR = ".eidolon-desktop-v3"
+COMPANION_STATE_DIR = ".eidolon-desktop-v3b"
 LEASE_MS = W.LEASE_MS
 LEASE_SECONDS = LEASE_MS / 1000.0
 OUTPUT_RATE_BYTES_PER_SEC = 1024 * 1024
@@ -248,7 +249,12 @@ def _lock_state(state_fd):
         raise HelperError("APP_STATE_RECOVERY_REQUIRED", "process_ownership") from None
 
 
-def prepare_session(context):
+def workspace_state_dir(slot):
+    require(type(slot) is int and slot in (1, 2))
+    return COMPANION_STATE_DIR if slot == 2 else STATE_DIR
+
+
+def prepare_session(context, *, workspace_slot=1):
     value = context.record()
     uid = value["uid"]
     home = account_home(uid)
@@ -256,7 +262,8 @@ def prepare_session(context):
     state_fd = None
     session_fd = None
     try:
-        state_fd = _ensure_dir(home_fd, STATE_DIR, uid)
+        state_dir = workspace_state_dir(workspace_slot)
+        state_fd = _ensure_dir(home_fd, state_dir, uid)
         _lock_state(state_fd)
         count = 0
         with os.scandir(state_fd) as entries:
@@ -281,8 +288,8 @@ def prepare_session(context):
         for child_name in ("runtime", "cache", "tmp"):
             child = _ensure_dir(session_fd, child_name, uid)
             os.close(child)
-        base = home / STATE_DIR / name
-        paths = SessionPaths(home, home / STATE_DIR, base, base / "runtime", base / "cache",
+        base = home / state_dir / name
+        paths = SessionPaths(home, home / state_dir, base, base / "runtime", base / "cache",
                              base / "tmp", base / "b", base / "p", base / "bus.conf")
         require(W.valid_socket(str(paths.wayland_socket), value["nonce"]),
                 "APP_STATE_INVALID", "protocol")
@@ -706,15 +713,16 @@ def _recover_remove_session(state_fd, session_name, uid):
     os.fsync(state_fd)
 
 
-def recovery_receipt(binding, source_hashes, expected_boot):
+def recovery_receipt(binding, source_hashes, expected_boot, *, workspace_slot=1):
     uid = binding.context.record()["uid"]
     home = account_home(uid)
     current = boot_id()
     home_fd = _open_dir(home, uid)
     state_fd = None
     try:
+        state_dir = workspace_state_dir(workspace_slot)
         try:
-            state_fd = os.open(STATE_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            state_fd = os.open(state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                                dir_fd=home_fd)
         except FileNotFoundError:
             value = receipt(binding, source_hashes, expected_boot, None, current, "unknown", "pending",
@@ -723,7 +731,7 @@ def recovery_receipt(binding, source_hashes, expected_boot):
             W.parse_receipt(raw, binding, source_hashes, expected_boot, 1)
             return raw, 1
         info = os.fstat(state_fd)
-        named = os.stat(STATE_DIR, dir_fd=home_fd, follow_symlinks=False)
+        named = os.stat(state_dir, dir_fd=home_fd, follow_symlinks=False)
         require(stat.S_ISDIR(info.st_mode) and info.st_uid == uid and
                 stat.S_IMODE(info.st_mode) == 0o700 and _id(info) == _id(named),
                 "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")

@@ -15,6 +15,27 @@ import com.meta.spatial.runtime.PointerEventType
 import org.json.JSONArray
 import org.json.JSONObject
 
+internal object WristInputOwnership {
+    @Volatile var controller: Long? = null
+    @Volatile var handTailUntil = 0L
+    @Volatile private var lastController: Pair<Long, Long>? = null
+
+    fun finishController(source: Long) {
+        lastController = source to (SystemClock.elapsedRealtime() + 100L)
+        controller = null
+    }
+
+    fun owns(source: Entity): Boolean {
+        if (source.id == controller || lastController?.let {
+            it.first == source.id && SystemClock.elapsedRealtime() < it.second
+        } == true) return true
+        if (SystemClock.elapsedRealtime() >= handTailUntil) return false
+        return runCatching {
+            source.getComponent<com.meta.spatial.toolkit.Controller>().type == com.meta.spatial.toolkit.ControllerType.HAND
+        }.getOrDefault(false)
+    }
+}
+
 internal class PointerButtons {
     data class Transition(val changed: Int, val state: Int) {
         fun event() = JSONObject().put("type", "buttons").put("changed", changed).put("state", state)
@@ -93,7 +114,7 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
     }
     private fun leave(id: Long, cancel: Boolean=false) {
         synchronized(inputLock) { sources.remove(id) }
-        val ticket=if (closed) null else NativeSessionHost.inputTarget(targetJson)
+        val ticket=if (closed) null else inputTarget(targetJson)
         if (ticket!=null) NativeSessionHost.sendPointer(ticket,id,null,JSONObject().put("type",if(cancel)"cancel" else "leave"))
     }
 
@@ -105,6 +126,7 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
     override fun onInput(receiver: SceneObject, hitInfo: HitInfo, sourceOfInput: Entity,
         changed: Int, state: Int, downTime: Long): Boolean {
         if (closed) return false
+        if (WristInputOwnership.owns(sourceOfInput)) return true
         if(suppressed || NativeSessionHost.isLayoutEditing()) {post { if(!closed) editSource(sourceOfInput,state) };return false}
         val probe = capture
         val target = targetJson
@@ -117,7 +139,7 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
                 .put("callback_thread", Process.myTid()).put("source", sourceOfInput.id.toString()))
             return false
         }
-        val ticket=NativeSessionHost.inputTarget(target) ?: return false
+        val ticket=inputTarget(target) ?: return false
         if (changed and (ButtonBits.ButtonMenu or ButtonBits.ButtonSystem)!=0) { NativeSessionHost.resetInput();return false }
         val maskChanged=buttons(changed); val maskState=buttons(state)
         val position=uv(receiver,hitInfo)
@@ -143,10 +165,10 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
         } else leave(sourceOfInput.id)
     }
     override fun onPointerEvent(receiver: SceneObject, hitInfo: HitInfo, type: Int, sourceOfInput: Entity, scrollInfo: Vector2, semanticType: Int) {
-        if (closed || suppressed || NativeSessionHost.isLayoutEditing() || capture!=null) return
+        if (closed || suppressed || NativeSessionHost.isLayoutEditing() || capture!=null || WristInputOwnership.owns(sourceOfInput)) return
         if (type==PointerEventType.Cancel.id) { leave(sourceOfInput.id,true);return }
         if (type==PointerEventType.Unhover.id) { onHoverStop(receiver,sourceOfInput);return }
-        val ticket=NativeSessionHost.inputTarget(targetJson) ?: return
+        val ticket=inputTarget(targetJson) ?: return
         val position=uv(receiver,hitInfo)
         val event=synchronized(inputLock) {
             val local=source(ticket,sourceOfInput.id) ?: return
@@ -168,9 +190,11 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
     }
     override fun onDragMove(receiver: SceneObject, hitInfo: HitInfo, sourceOfInput: Entity, state: Int) {
         if (closed || suppressed || NativeSessionHost.isLayoutEditing() || capture!=null) return
-        val ticket=NativeSessionHost.inputTarget(targetJson) ?: return
+        val ticket=inputTarget(targetJson) ?: return
         NativeSessionHost.sendPointer(ticket,sourceOfInput.id,uv(receiver,hitInfo),JSONObject().put("type","move"))
     }
+    private fun inputTarget(target: String): NativeSessionHost.InputTarget? =
+        NativeSessionHost.inputTarget(target, sdkScope?.lease?.runtime ?: NativeSessionHost.currentHandle())
     private fun post(action:()->Unit) {sdkScope?.post(action) ?: ui.post {action()} }
     private fun publish(probe: Capture, value: JSONObject) {
         // 生の物理入力は採取しない。debugの専用source Entityだけを限定採取する。

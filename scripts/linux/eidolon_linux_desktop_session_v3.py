@@ -198,7 +198,7 @@ def _start_demo(owner, profile, drain, env, paths, verified_bundle, context):
     return core.spawn_tracked(owner, profile, drain, command, env)
 
 
-def serve(bootstrap, verified_bundle, source_hashes):
+def serve(bootstrap, verified_bundle, source_hashes, *, workspace_slot=1):
     context = bootstrap.context
     pins = bootstrap.pins
     binding = W.Binding(context, pins)
@@ -217,10 +217,10 @@ def serve(bootstrap, verified_bundle, source_hashes):
     origin_boot = core.boot_id()
     try:
         owner = ProcessOwner()
-        paths, barrier, home_fd, state_fd, session_fd = core.prepare_session(context)
+        paths, barrier, home_fd, state_fd, session_fd = core.prepare_session(context, workspace_slot=workspace_slot)
         fds = (home_fd, state_fd, session_fd)
         profile = PersistentProfileRepository().acquire(
-            context, process_owner=owner, barrier=barrier)
+            context, process_owner=owner, barrier=barrier, share_home=True)
         drain = core.Drain()
         emitter.send(0, "prepared", {
             "lease_ms": W.LEASE_MS,
@@ -362,7 +362,7 @@ def serve(bootstrap, verified_bundle, source_hashes):
             drain.close()
 
 
-def main(argv, verified_bundle=None, source_hashes=None):
+def main(argv, verified_bundle=None, source_hashes=None, *, workspace_slot=1):
     os.umask(0o077)
     try:
         bootstrap = C.Bootstrap.parse(C.canonical_json(argv))
@@ -371,11 +371,11 @@ def main(argv, verified_bundle=None, source_hashes=None):
         binding = W.Binding(bootstrap.context, bootstrap.pins)
         if bootstrap.operation == "recover":
             raw, status = core.recovery_receipt(
-                binding, source_hashes, bootstrap.expected_boot_id)
+                binding, source_hashes, bootstrap.expected_boot_id, workspace_slot=workspace_slot)
             _write_bounded(sys.stdout.fileno(), raw)
             return status
         core.require(bootstrap.operation == "serve")
-        return serve(bootstrap, verified_bundle, source_hashes)
+        return serve(bootstrap, verified_bundle, source_hashes, workspace_slot=workspace_slot)
     except (C.ContractError, bundle_api.BundleError, core.HelperError, ProfileError,
             OwnershipError, inspect_api.InspectionError, OSError, ValueError,
             KeyError, TypeError):

@@ -349,9 +349,9 @@ def _fixed_entries(root):
     _require(names == _ENTRIES)
 
 
-def _flock(fd):
+def _flock(fd, *, shared=False):
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
     except OSError as error:
         if error.errno in (errno.EACCES, errno.EAGAIN):
             raise ProfileError("APP_STATE_BUSY") from None
@@ -369,7 +369,7 @@ def _write_all(fd, raw):
 class PersistentProfileRepository:
     """Fixed passwd-HOME repository. No configurable root, migration or erase."""
 
-    def acquire(self, context, *, process_owner, barrier, expected_identity=None):
+    def acquire(self, context, *, process_owner, barrier, expected_identity=None, share_home=False):
         nodes, lock_fd, owner_fd, handle = [], None, None, None
         try:
             _require(type(context) is contract.Context)
@@ -389,9 +389,9 @@ class PersistentProfileRepository:
             # A nested HOME is itself replaceable by its UID. Hold the first
             # UID-owned ancestor below the root-owned trusted chain as well.
             # Unsupported directory flock/fsync filesystems fail closed.
-            _flock(anchor.fd)
+            _flock(anchor.fd, shared=share_home)
             if anchor is not home_node:
-                _flock(home_node.fd)
+                _flock(home_node.fd, shared=share_home)
             _validate_directories(nodes, uid)
             _require(expected_identity is None or home_node.identity == expected_identity.home)
             parent = home_node

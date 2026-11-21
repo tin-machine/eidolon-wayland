@@ -110,8 +110,12 @@ fn common(value: &Value, binding: &Binding, names: &[&str]) -> Result<u64> {
     decimal(&value["sequence"], false)
 }
 fn valid_socket(value: &str, nonce: &str) -> bool {
-    let tail = format!("/.eidolon-desktop-v3/s-{nonce}/p");
-    let Some(home) = value.strip_suffix(&tail) else {
+    let suffix = format!("/s-{nonce}/p");
+    let Some(base) = value.strip_suffix(&suffix) else {
+        return false;
+    };
+    let Some(home) = base.strip_suffix("/.eidolon-desktop-v3")
+        .or_else(|| base.strip_suffix("/.eidolon-desktop-v3b")) else {
         return false;
     };
     value.len() <= 103

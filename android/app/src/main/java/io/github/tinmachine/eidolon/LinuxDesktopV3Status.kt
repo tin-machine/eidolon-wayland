@@ -20,7 +20,10 @@ object LinuxDesktopV3Status {
                 transport.opt("session") == session && it.opt("session") == session &&
                 it.opt("protocol_revision") == LinuxDesktopV3Catalog.REVISION
         }
-        val presentation = snapshot.optJSONObject("desktop_v3_presentation").takeIf { report != null }
+        val presentation = snapshot.optJSONObject("desktop_v3_presentation").takeIf {
+            (report?.opt("launch_request") as? String)?.let(LinuxDesktopV3Catalog::positiveDecimal) == true &&
+                snapshot.optJSONObject("app")?.opt("session") == session
+        }
         val first = previousFirstFailure ?: reason(presentation, "first_failure") ?: reason(report, "error") ?:
             reason(report?.optJSONObject("faults"), "first")
         val cleanup = reason(snapshot, "desktop_v3_cleanup_error") ?: reason(report?.optJSONObject("faults"), "cleanup")

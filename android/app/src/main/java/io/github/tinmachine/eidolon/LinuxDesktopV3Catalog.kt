@@ -77,7 +77,7 @@ class LinuxDesktopV3Catalog private constructor(
                 require(desktopId.endsWith(".desktop") && desktopIds.add(desktopId) &&
                     label.isNotBlank() && LinuxStorageIdentity.hex(revision, 64) && revisions.add(revision) &&
                     (reason == null || reason is String && reason in disabledReasons))
-                LauncherEntry("desktop-entry:$revision", label, "", reason == null, reason as String?)
+                LauncherEntry("desktop-entry:$revision", label, "", reason == null, reason as String?, desktopId)
             }.sortedBy { it.label.lowercase() }
         }
 

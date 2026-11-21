@@ -159,7 +159,7 @@ struct Shared {
     cancel: Option<CancellationToken>,
     router: Option<Arc<forward::Router>>,
     forward: Option<(PathBuf, String, Option<CleanupScenario>)>,
-    app: Option<(PathBuf, String, AppMode)>,
+    app: Option<(PathBuf, String, AppMode, Option<crate::catalog::ShelfStart>)>,
     desktop_profile: Option<DesktopConfig>,
     desktop_pending: Result<Option<linux_desktop::Pending>, &'static str>,
     // Only the authenticated in-process actor may mint this capture. A cold
@@ -188,6 +188,8 @@ struct Shared {
         Option<tokio::sync::mpsc::Sender<(CommandSeq, Option<crate::catalog::Target>)>>,
     catalog_requests: Option<tokio::sync::mpsc::Sender<(CommandSeq, crate::catalog::Operation)>>,
     catalog: CatalogUi,
+    shelf_request: Option<(SessionId, CommandSeq, String)>,
+    shelf_result: Option<(SessionId, serde_json::Value)>,
     desktop_preview: Option<DesktopPreview>,
 }
 #[derive(Clone, Copy)]
@@ -199,7 +201,6 @@ enum DesktopWork {
 enum DesktopV3Work {
     Inspect(CommandSeq),
     Recover(CommandSeq),
-    Discover,
 }
 #[cfg(any(test, feature = "debug-fixtures"))]
 struct LinuxWork {
@@ -223,6 +224,7 @@ pub struct CatalogUi {
     pub desktop_v3_installed: Option<Vec<desktop_v3::installed::InstalledApp>>,
     pub desktop_v3_editor_available: bool,
     pub desktop_preview: Option<DesktopPreview>,
+    pub termux_shelf: Option<serde_json::Value>,
 }
 #[derive(Clone, Serialize)]
 pub struct DesktopPreview {
@@ -258,6 +260,7 @@ struct Signals {
     shared: Mutex<Shared>,
     cv: Condvar,
     notify: Notify,
+    desktop_menu_notify: Notify,
     stop: AtomicBool,
     tokio_workers: AtomicUsize,
     observation: tokio::sync::watch::Sender<bool>,
@@ -387,10 +390,13 @@ impl Controller {
                 terminal_requests: None,
                 catalog_requests: None,
                 catalog: CatalogUi::default(),
+                shelf_request: None,
+                shelf_result: None,
                 desktop_preview: None,
             }),
             cv: Condvar::new(),
             notify: Notify::new(),
+            desktop_menu_notify: Notify::new(),
             stop: AtomicBool::new(false),
             tokio_workers: AtomicUsize::new(0),
             observation: tokio::sync::watch::channel(true).0,
@@ -523,20 +529,19 @@ impl Controller {
             let mut s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
             if s.busy {
                 if self.signals.stop.load(Ordering::Acquire)
-                    || s.report.state != State::CleanupPending
+                    || !matches!(s.report.state, State::ProbeReady | State::DesktopReady | State::CleanupPending)
                     || !matches!(s.desktop_profile.as_ref(),
                         Some(DesktopConfig::V3 { profile: captured, .. }) if captured == profile)
                     || s.cancel.as_ref().is_none_or(|c| c.is_cancelled())
                 {
                     return Status::NotReady;
                 }
-                if s.forward_busy || s.desktop_v3_work.is_some() {
+                if s.desktop_preview.as_ref().is_some_and(|preview| preview.pending) {
                     return Status::Busy;
                 }
-                s.forward_busy = true;
                 s.desktop_preview = Some(DesktopPreview::pending(request));
-                s.desktop_v3_work = Some(DesktopV3Work::Discover);
                 self.signals.notify.notify_one();
+                self.signals.desktop_menu_notify.notify_one();
                 return Status::Accepted;
             }
         }
@@ -940,6 +945,15 @@ impl Controller {
         nonce: &str,
         mode: AppMode,
     ) -> Status {
+        self.start_selected_app(session, local_socket, nonce, mode, None)
+    }
+    pub fn start_selected_app(
+        &self, session: SessionId, local_socket: &Path, nonce: &str, mode: AppMode,
+        selection: Option<crate::catalog::ShelfStart>,
+    ) -> Status {
+        if selection.as_ref().is_some_and(|item| !item.valid() || mode != AppMode::Foot) {
+            return Status::InvalidArgument;
+        }
         if mode == AppMode::LinuxDesktop
             || mode.linux_gtk_case().is_some()
             || mode != AppMode::Foot && !cfg!(debug_assertions)
@@ -976,7 +990,7 @@ impl Controller {
             mode: mode.as_str().into(),
             ..Default::default()
         });
-        s.app = Some((local_socket.into(), nonce.into(), mode));
+        s.app = Some((local_socket.into(), nonce.into(), mode, selection));
         self.signals.notify.notify_one();
         Status::Accepted
     }
@@ -1535,6 +1549,8 @@ impl Controller {
         if catalog.desktop_v3_installed.is_none() {
             catalog.desktop_preview = s.desktop_preview.clone();
         }
+        catalog.termux_shelf = s.shelf_result.as_ref().filter(|(session, _)|
+            Some(*session) == s.report.session && s.report.state == State::Ready).map(|(_, data)| data.clone());
         catalog
     }
     pub fn catalog(
@@ -1556,6 +1572,14 @@ impl Controller {
         }
         if s.report.state != State::Ready || s.cancel.as_ref().is_none_or(|c| c.is_cancelled()) {
             return Status::NotReady;
+        }
+        if let crate::catalog::Operation::Shelf { path } = operation {
+            if s.desktop_profile.is_some() { return Status::NotReady; }
+            if s.shelf_request.as_ref().is_some_and(|(owner, _, _)| *owner == session) { return Status::Busy; }
+            s.shelf_request = Some((session, request, path));
+            self.signals.notify.notify_one();
+            self.signals.desktop_menu_notify.notify_one();
+            return Status::Accepted;
         }
         if s.catalog.pending {
             return Status::Busy;
@@ -2126,6 +2150,12 @@ async fn connection(
             return Err("CANCELLED");
         }
         let notified = signals.notify.notified();
+        if matches!(connect.profile.desktop, Some(DesktopConfig::V3 { .. })) {
+            refresh_desktop_preview(signals, &client, &connect.cancel).await;
+        }
+        if connect.profile.helper_supported {
+            refresh_termux_shelf(signals, &client, connect).await;
+        }
         let forward = signals
             .shared
             .lock()
@@ -2161,15 +2191,6 @@ async fn connection(
                 _ => return Err("DESKTOP_VERSION_SELECTION"),
             };
             match work {
-                DesktopV3Work::Discover => {
-                    let result = desktop_v3::installed::discover(&client, &connect.cancel).await;
-                    signals.update(|s| {
-                        s.forward_busy = false;
-                        if let Some(preview) = &mut s.desktop_preview {
-                            preview.complete(result);
-                        }
-                    });
-                }
                 DesktopV3Work::Inspect(inspect_request) => {
                     let nonce = format!("{:016x}", rand::random::<u64>());
                     let binding = desktop_v3::Binding::capture(
@@ -2209,7 +2230,7 @@ async fn connection(
                         s.desktop_v3_capture = Some(capture.clone());
                         s.desktop_v3_no_local_allocation = None;
                     });
-                    let mut outcome = desktop_v3::runtime::serve(
+                    let serve = desktop_v3::runtime::serve(
                         &client,
                         &connect.router,
                         desktop_v3::runtime::Inspection { capture, files, android_boot_count: signals.android_boot_count },
@@ -2248,7 +2269,20 @@ async fn connection(
                                 }
                             });
                         },
-                    ).await;
+                    );
+                    // The read-only menu uses an additional SSH channel while
+                    // the app helper continues to service its lease.
+                    let refresh_menu = async {
+                        loop {
+                            let notified = signals.desktop_menu_notify.notified();
+                            refresh_desktop_preview(signals, &client, &connect.cancel).await;
+                            notified.await;
+                        }
+                    };
+                    let mut outcome = tokio::select! {
+                        result = serve => result,
+                        _ = refresh_menu => unreachable!(),
+                    };
                     let mut no_local_allocation = admission.seal_without_local_allocation();
                     if let Some(handoff) = outcome.handoff.as_mut() {
                         handoff.no_local_allocation = no_local_allocation.take();
@@ -2558,7 +2592,7 @@ async fn connection(
             }
             continue;
         }
-        if let Some((local_socket, nonce, mode)) = app {
+        if let Some((local_socket, nonce, mode, selection)) = app {
             let (sender, terminal_requests) = tokio::sync::mpsc::channel(1);
             let (catalog_sender, catalog_requests) = tokio::sync::mpsc::channel(1);
             signals.update(|s| {
@@ -2566,7 +2600,7 @@ async fn connection(
                 s.catalog_requests = Some(catalog_sender);
                 s.catalog = CatalogUi::default();
             });
-            let report = forward_app::run(
+            let forward_app = forward_app::run(
                 &client,
                 &connect.router,
                 forward_app::Request {
@@ -2579,6 +2613,7 @@ async fn connection(
                     binding: &binding,
                     terminal_requests,
                     catalog_requests,
+                    selection,
                     observation: signals.observation.subscribe(),
                 },
                 &connect.cancel,
@@ -2601,8 +2636,15 @@ async fn connection(
                         }
                     })
                 },
-            )
-            .await;
+            );
+            let refresh = async {
+                loop {
+                    let notified = signals.desktop_menu_notify.notified();
+                    refresh_termux_shelf(signals, &client, connect).await;
+                    notified.await;
+                }
+            };
+            let report = tokio::select! { value = forward_app => value, _ = refresh => unreachable!() };
             signals.update(|s| {
                 s.forward_busy = false;
                 s.terminal_requests = None;
@@ -2656,6 +2698,43 @@ async fn connection(
             }
         }
     }
+}
+
+async fn refresh_termux_shelf<H: client::Handler>(
+    signals: &Signals, client: &client::Handle<H>, connect: &Connect,
+) {
+    let work = signals.shared.lock().unwrap_or_else(|e| e.into_inner()).shelf_request.take();
+    let Some((session, request, path)) = work else { return };
+    if session != connect.session { return; }
+    let result = crate::launcher::shelf(client, &path, &connect.cancel).await;
+    let value = match result {
+        Ok(data) => serde_json::json!({"request":request, "data":data}),
+        Err(code) => serde_json::json!({"request":request, "error":code}),
+    };
+    signals.update(|s| {
+        if s.report.session == Some(session) && !connect.cancel.is_cancelled() {
+            s.shelf_result = Some((session, value));
+        }
+    });
+}
+
+async fn refresh_desktop_preview<H: client::Handler>(
+    signals: &Signals,
+    client: &client::Handle<H>,
+    cancel: &CancellationToken,
+) {
+    let request = signals.shared.lock().unwrap_or_else(|e| e.into_inner())
+        .desktop_preview.as_ref().filter(|preview| preview.pending)
+        .map(|preview| preview.request_id);
+    let Some(request) = request else { return };
+    let result = desktop_v3::installed::discover(client, cancel).await;
+    signals.update(|s| {
+        if let Some(preview) = s.desktop_preview.as_mut()
+            .filter(|preview| preview.pending && preview.request_id == request)
+        {
+            preview.complete(result);
+        }
+    });
 }
 
 async fn reconcile<H: client::Handler>(

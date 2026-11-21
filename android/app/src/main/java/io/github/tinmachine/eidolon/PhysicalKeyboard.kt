@@ -8,10 +8,15 @@ import android.view.InputDevice
 import android.view.KeyEvent
 
 /** UI threadで入口だけを判定。文字/ユーザーのkey列をログへ残さない。 */
-class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean = { false }) : InputManager.InputDeviceListener {
+class PhysicalKeyboard(
+    context: Context,
+    private val onOpenLauncher: (() -> Unit)? = null,
+    private val onImeToggle: () -> Boolean = { false },
+) : InputManager.InputDeviceListener {
     private val manager = context.getSystemService(InputManager::class.java)
     private var active=false
     private val consumed = mutableMapOf<Pair<Int, Int>, Long>()
+    private val launcherPresses = mutableMapOf<Int, Long>()
     private val imeShortcut = ImeShortcut()
     private var keyboardDescriptors = emptyMap<Int, String>()
     fun resume() {
@@ -28,6 +33,18 @@ class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean 
         val previouslyConsumed = consumed[identity] == event.downTime
         val device = event.device
         val physical = event.deviceId >= 0 && device != null && !device.isVirtual && event.isFromSource(InputDevice.SOURCE_KEYBOARD)
+        if (event.keyCode == KeyEvent.KEYCODE_L && launcherPresses[event.deviceId] == event.downTime) {
+            if (event.action == KeyEvent.ACTION_UP || event.isCanceled) launcherPresses.remove(event.deviceId)
+            return true
+        }
+        if (active && physical && onOpenLauncher != null && event.keyCode == KeyEvent.KEYCODE_L &&
+            event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !event.isCanceled &&
+            event.isCtrlPressed && event.isAltPressed && !event.isShiftPressed && !event.isMetaPressed) {
+            launcherPresses[event.deviceId] = event.downTime
+            NativeSessionHost.resetInput()
+            onOpenLauncher()
+            return true
+        }
         val shortcut = ImeShortcut.Event(
             device = event.deviceId,
             key = when(event.keyCode) {
@@ -101,6 +118,7 @@ class PhysicalKeyboard(context: Context, private val onImeToggle: () -> Boolean 
     }
     override fun onInputDeviceRemoved(deviceId: Int) {
         imeShortcut.deviceChanged(deviceId)
+        launcherPresses.remove(deviceId)
         if(!active) return
         val wasKeyboard = keyboardDescriptors.containsKey(deviceId)
         refreshDevices()

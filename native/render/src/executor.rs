@@ -1,4 +1,4 @@
-//! Android processごとに一つの実行threadを保持する。runtimeのGL所有物はjob終了時に全回収する。
+//! Androidの各workspace枠に一つの実行threadを保持する。runtimeのGL所有物はjob終了時に全回収する。
 //! SDK 0.15.0のTID別GPU計測cacheを無制限に増やさない。停止・故障時の代替threadは作らない。
 use super::State;
 use serde::Serialize;
@@ -65,18 +65,26 @@ impl Executor {
         Ok(Self { sender, report })
     }
 
-    #[cfg(target_os = "android")]
-    pub(crate) fn global() -> io::Result<Arc<Self>> {
-        static GLOBAL: std::sync::OnceLock<Mutex<Option<Arc<Executor>>>> =
+    #[cfg(any(target_os = "android", test))]
+    pub(crate) fn for_slot(slot: super::ExecutorSlot) -> io::Result<Arc<Self>> {
+        static PRIMARY: std::sync::OnceLock<Mutex<Option<Arc<Executor>>>> =
             std::sync::OnceLock::new();
-        let mut global = GLOBAL
+        static COMPANION: std::sync::OnceLock<Mutex<Option<Arc<Executor>>>> =
+            std::sync::OnceLock::new();
+        static TERMUX: std::sync::OnceLock<Mutex<Option<Arc<Executor>>>> = std::sync::OnceLock::new();
+        let executor = match slot {
+            super::ExecutorSlot::Termux => &TERMUX,
+            super::ExecutorSlot::Primary => &PRIMARY,
+            super::ExecutorSlot::Companion => &COMPANION,
+        };
+        let mut executor = executor
             .get_or_init(|| Mutex::new(None))
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if global.is_none() {
-            *global = Some(Arc::new(Self::new()?));
+        if executor.is_none() {
+            *executor = Some(Arc::new(Self::new()?));
         }
-        Ok(global.as_ref().unwrap().clone())
+        Ok(executor.as_ref().unwrap().clone())
     }
 
     pub(crate) fn submit(&self, state: State) -> io::Result<Arc<AtomicBool>> {

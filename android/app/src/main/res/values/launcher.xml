@@ -1,3 +1,8 @@
 <resources>
+    <item name="spatial_app_shelf" type="id" />
+    <item name="spatial_launcher_wrist" type="id" />
+    <item name="spatial_launcher_preview" type="id" />
+    <item name="spatial_launcher_handle" type="id" />
+    <item name="spatial_launcher_shortcut" type="id" />
     <item name="terminal_launcher_panel" type="id" />
 </resources>

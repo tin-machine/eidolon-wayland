@@ -705,7 +705,19 @@ impl Runtime {
         config: RuntimeConfig,
         handle: eidolon_model::ids::RuntimeHandle,
     ) -> std::io::Result<Self> {
-        Self::start_owned_with_hook(config, handle, || {})
+        Self::start_owned_with_hook(config, handle, eidolon_render::ExecutorSlot::Primary, || {})
+    }
+    pub fn start_companion_registered(
+        config: RuntimeConfig,
+        handle: eidolon_model::ids::RuntimeHandle,
+    ) -> std::io::Result<Self> {
+        Self::start_owned_with_hook(config, handle, eidolon_render::ExecutorSlot::Companion, || {})
+    }
+    pub fn start_termux_registered(
+        config: RuntimeConfig,
+        handle: eidolon_model::ids::RuntimeHandle,
+    ) -> std::io::Result<Self> {
+        Self::start_owned_with_hook(config, handle, eidolon_render::ExecutorSlot::Termux, || {})
     }
     fn start_with_hook(
         config: RuntimeConfig,
@@ -718,11 +730,12 @@ impl Runtime {
             .map_err(|_| std::io::Error::other("ID_EXHAUSTED"))?;
         let handle = eidolon_model::ids::RuntimeHandle::new(value)
             .map_err(|_| std::io::Error::other("ID_EXHAUSTED"))?;
-        Self::start_owned_with_hook(config, handle, ready_hook)
+        Self::start_owned_with_hook(config, handle, eidolon_render::ExecutorSlot::Primary, ready_hook)
     }
     fn start_owned_with_hook(
         config: RuntimeConfig,
         runtime_handle: eidolon_model::ids::RuntimeHandle,
+        render_slot: eidolon_render::ExecutorSlot,
         ready_hook: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<Self> {
         let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "CONFIG_INVALID");
@@ -813,7 +826,7 @@ impl Runtime {
             config.paths.as_ref().and_then(|paths| paths.android_boot_count),
         )?);
         let io = transport.clone();
-        let render = Arc::new(eidolon_render::Controller::start()?);
+        let render = Arc::new(eidolon_render::Controller::start_in_slot(Default::default(), render_slot)?);
         let gl = render.clone();
         let shared = Arc::new(Mutex::new(Shared {
             ime_ui: None,
@@ -875,6 +888,7 @@ impl Runtime {
                     String,
                     Vec<eidolon_model::ids::WindowId>,
                 )> = None;
+                let mut shelf_start: Option<(String, eidolon_model::catalog::ShelfStart)> = None;
                 let mut pending_app: Option<(
                     eidolon_model::ids::SessionId,
                     String,
@@ -886,6 +900,10 @@ impl Runtime {
                 let mut workspace = crate::workspace::Controller::load(
                     config.preferences_dir.as_deref().map(std::path::Path::new),
                 );
+                if config.paths.as_ref().is_some_and(|paths|
+                    std::path::Path::new(&paths.files_dir).ends_with("eidolon-workspace-2")) {
+                    workspace.place_companion_to_right();
+                }
                 if config.preferences_dir.is_none() {
                     workspace.set_keyboard_layout(config.keyboard_layout);
                 }
@@ -1258,11 +1276,12 @@ impl Runtime {
                                     }else{Status::NotReady}}
                                     #[cfg(not(any(test, feature = "debug-fixtures")))]
                                     {Status::InvalidArgument}
-                                }else{io.start_app(
+                                }else{io.start_selected_app(
                                     current.session(),
                                     &current.socket().unwrap(),
                                     current.nonce(),
                                     current.mode(),
+                                    shelf_start.take().and_then(|(owner, selection)| (owner == current.nonce()).then_some(selection)),
                                 )};
                                 if code == Status::Accepted {
                                     current.forward_started();
@@ -1758,7 +1777,9 @@ impl Runtime {
                                 }
 
                                 Command::LinuxDesktopDiscover { request_id, .. } => {
-                                    if app_busy || helper.is_some() || dependencies.is_some() || compositor.is_some() {
+                                    let app_allows_discovery = !app_busy
+                                        || app.as_ref().is_some_and(crate::session::Session::is_v3);
+                                    if !app_allows_discovery || helper.is_some() || dependencies.is_some() || compositor.is_some() {
                                         Status::Busy
                                     } else if let Some(profile) = desktop_profile.as_ref() {
                                         io.discover_desktop(profile, *request_id)
@@ -1839,6 +1860,8 @@ impl Runtime {
                                                         origin, clock.elapsed().as_millis() as u64, vec![]
                                                     ) {
                                                         Ok(observer) => {
+                                                            state.snapshot.desktop_v3_presentation = observer.snapshot().ok();
+                                                            state.snapshot.desktop_v3_sdk_target = None;
                                                             v3_observer = Some(observer);
                                                             v3_pending = Some(permit);
                                                             app_linux = false;
@@ -2434,6 +2457,11 @@ impl Runtime {
                                     {
                                         Status::Busy
                                     } else {
+                                        shelf_start = match &command {
+                                            Command::StartApp { selection: Some(choice), .. } =>
+                                                Some((nonce.clone(), choice.clone())),
+                                            _ => None,
+                                        };
                                         pending_app =
                                             Some((*session, nonce.clone(), *mode, virtual_clock, false));
                                         state.snapshot.app = Some(crate::session::Report {
@@ -3916,7 +3944,7 @@ mod tests {
         entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         let private: eidolon_model::ime::ImeSnapshot = serde_json::from_value(serde_json::json!({
             "target":{"session":"1","window":"2","surface":"3","focus_token":"4",
-                "input_epoch":0,"activation":1,"serial":1},"edit_revision":1,"last_sequence":0,
+                "input_epoch":0,"activation":1,"serial":1},"edit_revision":1,"composition_revision":0,"last_sequence":0,
             "surrounding":{"text":"private-ime-fixture","cursor":0,"anchor":0},
             "content_hint":0,"content_purpose":0,"cursor_rectangle":null,"change_cause":0
         }))
@@ -5093,6 +5121,7 @@ mod host_readback_tests {
         let runtime = Runtime::start_owned_with_hook(
             RuntimeConfig::default(),
             RuntimeHandle::new(42).unwrap(),
+            eidolon_render::ExecutorSlot::Primary,
             move || {
                 entered_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
