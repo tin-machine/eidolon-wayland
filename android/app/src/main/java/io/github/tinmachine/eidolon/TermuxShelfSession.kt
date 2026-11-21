@@ -201,6 +201,17 @@ internal class TermuxShelfSession(
             } else if (app != null && !app.isNull("error")) fail("起動できません（${app.optString("error")}）")
         }
     }
+    fun diagnostics(): JSONObject = JSONObject().apply {
+        val state = snapshot ?: return@apply
+        put("transport", state.optJSONObject("transport")?.optString("state"))
+        put("scene", state.optLong("scene"))
+        put("xr", state.optString("xr_state"))
+        put("app_windows", state.optJSONObject("app")?.optJSONArray("windows")?.length() ?: 0)
+        put("render_mode", state.optJSONObject("render")?.optString("mode"))
+        put("panels", state.optJSONArray("panels")?.length() ?: 0)
+        put("sdk_bindings", state.optInt("app_sdk_bindings"))
+    }
+
     private fun clear() {
         handle = 0; borrowed = false; snapshot = null; retiring = false; stopping = false
         connectSent = null; update(LauncherUi(message = "Termux は未接続です"))

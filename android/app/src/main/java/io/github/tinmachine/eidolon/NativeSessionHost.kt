@@ -2904,7 +2904,28 @@ object NativeSessionHost {
         }
         if (!runtimeAdmission.open()) termuxShelf.stop()
         application?.let { termuxShelf.tick(it, credentials) }
+        if (runtimeAdmission.open()) {
+            syncWorkspaceScene(companionRuntime(), companionLinux.snapshot)
+            syncWorkspaceScene(termuxRuntime(), termuxShelf.snapshot)
+        }
         refreshCompanionInput()
+    }
+
+    // Allocation returns before the secondary runtime is Ready. SceneReady can be
+    // rejected in that interval even though SSH and the app start later.
+    private fun syncWorkspaceScene(runtime: Long, report: JSONObject?) {
+        if (runtime <= 0 || report?.optString("state") != "Ready") return
+        inputIntents.serial {
+            val scene = currentSceneEpoch()
+            if (scene <= 0 || report.optLong("scene") >= scene) return@serial
+            fun submit(type: String, args: JSONObject): Boolean = NativeBridge.nativeCommand(runtime,
+                args.put("schema", 1).put("type", type)
+                    .put("request_id", requests.incrementAndGet().toString()).toString()) == NativeBridge.ACCEPTED
+            if (submit("scene_ready", JSONObject().put("scene", scene.toString()))) {
+                submit("set_xr_state", JSONObject().put("expected_scene", scene.toString()).put("state", xrState.get()))
+                submit("set_activity_state", JSONObject().put("expected_scene", scene.toString()).put("visible", activityVisible.get()))
+            }
+        }
     }
 
     private fun tick() {
@@ -3130,6 +3151,7 @@ object NativeSessionHost {
             .put("focus_window",focusedWindow ?: JSONObject.NULL).put("device",latestMetrics.get().json())
             .put("keyboard_ingress",KeyboardIngress.json())
             .put("companion_linux",companionLinux.diagnostics())
+            .put("termux_shelf",termuxShelf.diagnostics())
             .put("termux_start",JSONObject().put("requests",termuxRequests).put("successes",termuxSuccesses).put("failures",termuxFailures)))
         val workspace=runtime.getJSONObject("workspace");val storage=workspace.getJSONObject("storage")
         val observing=workspace.getBoolean("workload_observation")

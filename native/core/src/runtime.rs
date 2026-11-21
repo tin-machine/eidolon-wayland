@@ -926,10 +926,11 @@ impl Runtime {
                 let mut workspace = crate::workspace::Controller::load(
                     config.preferences_dir.as_deref().map(std::path::Path::new),
                 );
-                if config.paths.as_ref().is_some_and(|paths|
-                    std::path::Path::new(&paths.files_dir).ends_with("eidolon-workspace-2")) {
-                    workspace.place_companion_to_right();
-                }
+                workspace.set_horizontal_offset(match render_slot {
+                    eidolon_render::ExecutorSlot::Primary => 0.,
+                    eidolon_render::ExecutorSlot::Companion => 1.8,
+                    eidolon_render::ExecutorSlot::Termux => -1.8,
+                });
                 if config.preferences_dir.is_none() {
                     workspace.set_keyboard_layout(config.keyboard_layout);
                 }

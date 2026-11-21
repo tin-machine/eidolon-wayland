@@ -71,8 +71,8 @@ impl Controller {
             horizontal_offset: 0.,
         }
     }
-    pub fn place_companion_to_right(&mut self) {
-        self.horizontal_offset = 1.8;
+    pub fn set_horizontal_offset(&mut self, meters: f32) {
+        self.horizontal_offset = meters;
     }
     pub fn snapshot(&self) -> Report {
         Report {
