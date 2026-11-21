@@ -51,7 +51,11 @@ class GpuFdChecksTests(unittest.TestCase):
                 validate(proof,'a'*32,'sdk',{'source_digest':'digest'},100)
 
     def test_busy_product_is_rejected_without_force_stop_or_settings_changes(self):
-        calls=[]
+        calls = []
+        state = dict(transport=dict(state='Idle', owned_connections=0),
+                     reclamation=dict(local_cleanup_pending=False, remote_cleanup_pending=False))
+        snapshot = dict(process_id=123, runtime=dict(registry=dict(runtimes=1), runtime=state))
+
         class Device:
             def __init__(self, serial, run): pass
             def validate(self): return dict(model='Quest 3', api=34)
@@ -59,17 +63,23 @@ class GpuFdChecksTests(unittest.TestCase):
                 calls.append(command)
                 if command[:3] == ('shell','pm','list'): return 'package:io.github.tinmachine.eidolon uid:100\n'
                 if command[0] == 'shell' and command[1].startswith('pidof'): return '123\n'
-                if command[:2] == ('exec-out','run-as'):
-                    return json.dumps(dict(process_id=123, runtime=dict(runtime=dict(transport=dict(owned_connections=1)))))
+                if command[:2] == ('exec-out','run-as'): return json.dumps(snapshot)
                 raise AssertionError('接続中に変更を実行: '+repr(command))
-        with tempfile.TemporaryDirectory() as tmp, mock.patch('quest_device.QuestDevice', Device), \
-                mock.patch.object(sys,'argv',['quest-gpu-fds','--serial','fixture','--artifact-root',tmp,'--pause-boundary']):
-            with self.assertRaisesRegex(RuntimeError, 'SSH切断'):
-                runpy.run_path(str(Path(__file__).resolve().parents[1]/'quest-gpu-fds'),run_name='__main__')
-            result=json.loads(next(Path(tmp).glob('*/result.json')).read_text())
-            self.assertEqual(result['status'],'failed')
-            self.assertEqual(result['cleanup'],[])
-        self.assertEqual(len(calls),3)
+
+        for field, key, value in [(state['transport'], 'owned_connections', 1),
+                                  (snapshot['runtime']['registry'], 'runtimes', 2),
+                                  (state['reclamation'], 'remote_cleanup_pending', True),
+                                  (snapshot, 'process_id', 122)]:
+            with self.subTest(key=key), mock.patch.dict(field, {key: value}), tempfile.TemporaryDirectory() as tmp, \
+                    mock.patch('quest_device.QuestDevice', Device), \
+                    mock.patch.object(sys,'argv',['quest-gpu-fds','--serial','fixture','--artifact-root',tmp,'--pause-boundary']):
+                calls.clear()
+                with self.assertRaisesRegex(RuntimeError, '製品'):
+                    runpy.run_path(str(Path(__file__).resolve().parents[1]/'quest-gpu-fds'),run_name='__main__')
+                result = json.loads(next(Path(tmp).glob('*/result.json')).read_text())
+                self.assertEqual(result['status'],'failed')
+                self.assertEqual(result['cleanup'],[])
+                self.assertEqual(len(calls),3)
 
     def test_transient_empty_adb_read_waits_for_nonce_report(self):
         owner=self
