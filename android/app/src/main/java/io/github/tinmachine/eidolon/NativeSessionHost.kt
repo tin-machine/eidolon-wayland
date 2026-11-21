@@ -121,6 +121,8 @@ object NativeSessionHost {
             val saved = linuxProfile ?: return@safely
             companionLinux.browse(handle, saved, runtimeSettingsCapture.orEmpty(), currentSceneEpoch(), xrState.get(), activityVisible.get())
         } else {
+            // Refresh admission from this runtime after a shelf-open profile change.
+            pumpLinuxCatalog(snapshot().getJSONObject("runtime"))
             val state = launcherState
             when {
                 state.canInspect || state.canRefresh -> inspectLinuxDesktop()
@@ -952,6 +954,10 @@ object NativeSessionHost {
             entries=if(selection!=null) listOf(LauncherEntry(LinuxDesktopCatalog.APP_ID,"GTKデモ","builtin:script",!busy && !appActive,null)) else emptyList(),
             message=message,linux=true,canConnect=canConnect,canInspect=canInspect,canRecover=canRecover,canStop=canStop,running=running)
         if(value!=launcherState) launcherUpdate(value)
+        if (inspectAfterShelfConnect && canInspect) {
+            inspectAfterShelfConnect = false
+            inspectLinuxDesktop()
+        } else if (!connectPending && phase == "Failed") inspectAfterShelfConnect = false
     }
 
     private fun linuxDesktopV3Action(kind:String,requested:((String,Int)->Unit)?) {
