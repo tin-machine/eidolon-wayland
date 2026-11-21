@@ -172,7 +172,7 @@ fun LauncherSettings(
                             if (!wide) Row { ShelfTabs(favoritesOnly) { favoritesOnly = it } }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 LauncherField("アプリ名・ホスト名で検索", query, { query = it }, Modifier.weight(1f))
-                                Text("起動枠 ${NativeSessionHost.launcherAppCount.intValue}/${NativeSessionHost.MAX_APPS}", color = candy)
+                                Text("起動枠 ${NativeSessionHost.launcherCapacity.value.used}/${LauncherCapacity.MAX_APPS}", color = candy)
                                 TextButton(onClick = NativeSessionHost::refreshLauncherMenu) { Text("更新") }
                             }
                             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -251,12 +251,12 @@ private fun ShelfAppCard(source: LauncherSource, entry: LauncherEntry, state: La
     var messageAtClick by remember { mutableStateOf("") }
     var notice by remember(state.runtime, state.session, state.revision, entry.id) { mutableStateOf<String?>(null) }
     val favorite = launcherFavoriteKey(source, entry)
-    val atLimit = NativeSessionHost.launcherAppCount.intValue >= NativeSessionHost.MAX_APPS
-    val live = !atLimit && state.connected && !state.menuRefreshFailed && !state.busy && entry.available &&
+    val refusal = NativeSessionHost.launcherCapacity.value.refusal(source)
+    val live = refusal == null && state.connected && !state.menuRefreshFailed && !state.busy && entry.available &&
         state.entries.any { it.id == entry.id && it.available }
     OutlinedCard(onClick = {
         if (live) { messageAtClick = state.message; notice = "起動を要求しました"; NativeSessionHost.launchShelfApp(source, state, entry) }
-        else if (atLimit) notice = "同時起動は20アプリまでです。アプリを閉じてください。"
+        else if (refusal != null) notice = refusal
         else notice = launchUnavailableReason(entry.error) ?: if (entry.error != null) LauncherMessages.error(entry.error) else state.message
     }, colors = CardDefaults.outlinedCardColors(containerColor = Color(0xFF402E48)), border = BorderStroke(1.dp, Color(0xFFA987A5))) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -265,7 +265,7 @@ private fun ShelfAppCard(source: LauncherSource, entry: LauncherEntry, state: La
                 Text(entry.label, color = Color.White, style = MaterialTheme.typography.titleMedium)
                 Text(hostName(source), color = Color(0xFFBBF2DC))
                 val message = if (notice != null && (state.message != messageAtClick || state.firstFailure != null || state.menuRefreshFailed)) state.message else notice
-                if (message != null || !live) Text(message ?: launchUnavailableReason(entry.error) ?: "起動準備待ち", color = Color(0xFFFFD59E))
+                if (message != null || !live) Text(message ?: refusal ?: launchUnavailableReason(entry.error) ?: "起動準備待ち", color = Color(0xFFFFD59E))
             }
             TextButton(onClick = { menu = !menu }, modifier = Modifier.semantics { contentDescription = entry.label + " の操作" }) { Text("⋯") }
         }
