@@ -38,3 +38,5 @@ scripts/check-host --suite compositor
 9つ目のpoolが拒否されることと、client切断後の実mapping・FD・予算回収を確認する。
 上流のprocess共通drop thread自体はprocess終了まで存続する。
 sessionが所有するworkerとは別であり、Stopでは実pool予算が0に戻ったことを照合する。
+
+`0005-borrow-sealed-keymap.patch` は、同時に動く別のウィンドウが保持するキーマップを回収時に識別するため、封印済み FD をロック中だけ借用できるようにする。

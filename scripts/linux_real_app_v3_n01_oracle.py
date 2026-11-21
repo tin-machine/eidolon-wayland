@@ -403,7 +403,15 @@ def _trace(native, owner, environment):
             _require(type(catalog["schema"]) is int and catalog["schema"] == 1
                      and type(catalog["code"]) is int and catalog["code"] == 0)
             ui = catalog["catalog"]
-            _exact(ui, {"session", "request_id", "pending", "reply", "error", "desktop", "desktop_v3"})
+            fields = {"session", "request_id", "pending", "reply", "error", "desktop", "desktop_v3"}
+            # The pinned Inspect-only fixture has Mousepad and does not browse either host.
+            shelf = {"desktop_preview": None, "termux_shelf": None,
+                     "desktop_v3_installed": None, "desktop_v3_editor_available": True}
+            if isinstance(ui, dict) and shelf.keys() & ui.keys():
+                _exact(ui, fields | shelf.keys())
+                _same({key: ui[key] for key in shelf}, shelf)
+            else:
+                _exact(ui, fields)
             _require(ui["session"] == capture["session"] and ui["request_id"] == capture["inspect_request"]
                      and ui["pending"] is False and ui["reply"] is None and ui["error"] is None
                      and ui["desktop"] is None, "I6_OWNER_MISMATCH")
