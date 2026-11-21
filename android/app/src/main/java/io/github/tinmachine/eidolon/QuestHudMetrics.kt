@@ -13,7 +13,7 @@ internal fun hudLoadColor(percent: Double): HudColor? = when {
     else -> HudColor.RED
 }
 
-internal data class HudReading(val value: String, val color: HudColor = HudColor.WHITE)
+internal data class HudReading(val value: String, val color: HudColor = HudColor.WHITE, val available: Boolean = true)
 internal data class HudDraw(
     val value: String,
     val targets: Int = 0,
@@ -21,7 +21,51 @@ internal data class HudDraw(
     val coverageMs: Long = 0,
     val eligibleTargets: Int = 0,
 )
-internal data class HudDrawSample(val draw: HudDraw, val at: Long)
+internal data class HudDrawSample(val draw: HudDraw, val at: Long, val contentHz: Double?)
+
+internal fun hudBattery(metrics: DeviceMetricsSnapshot, since: Long, now: Long): String {
+    val percent = metrics.batteryPercent
+    if (metrics.sampledMs < since || now - metrics.sampledMs !in 0..15_000 || percent == null || percent !in 0..100)
+        return "電池 —"
+    val state = when (metrics.charging) { true -> " 充電中"; false -> " 放電中"; null -> "" }
+    return "電池 $percent%$state"
+}
+
+/** Successive observations of the same focused render target, including its runtime and EGL generation. */
+internal class HudContentRate {
+    private var owner = ""
+    private var lastAt = 0L
+    private var lastCount = 0L
+
+    fun reset() { owner = "" }
+
+    fun sample(runtime: Long, state: JSONObject?, focus: JSONObject?, now: Long): Double? {
+        val render = state?.optJSONObject("render")
+        val targets = render?.optJSONArray("targets")
+        if (focus != null && state?.optBoolean("activity_visible") == true && render != null &&
+            !render.optBoolean("paused") && render.isNull("error") && targets != null) {
+            val fields = listOf("session", "window", "scene", "generation")
+            for (i in 0 until targets.length()) {
+                val target = targets.optJSONObject(i) ?: continue
+                val key = target.optJSONObject("key") ?: continue
+                if (target.optString("role") != "windows" || target.optBoolean("presentation_paused") ||
+                    target.isNull("content_frame") || fields.any { key.isNull(it) || key.optString(it) != focus.optString(it) }) continue
+                val count = target.optLong("content_updates", -1)
+                if (count < 0) break
+                val identity = "$runtime:${render.optLong("context_rebuilds")}:" + fields.joinToString(":") { key.getString(it) }
+                val elapsed = now - lastAt
+                val rate = if (identity == owner && elapsed in 1..2_500 && count >= lastCount)
+                    (count - lastCount) * 1000.0 / elapsed else null
+                owner = identity
+                lastCount = count
+                lastAt = now
+                return rate
+            }
+        }
+        reset()
+        return null
+    }
+}
 
 internal fun hudCpu(metrics: DeviceMetricsSnapshot, since: Long, now: Long): HudReading {
     val reading = metrics.processCpu
@@ -30,7 +74,7 @@ internal fun hudCpu(metrics: DeviceMetricsSnapshot, since: Long, now: Long): Hud
     if (reading.status == ProcessCpuStatus.AVAILABLE && sampled != null && sampled >= since && now - sampled in 0..15_000 && percent != null) {
         hudLoadColor(percent)?.let { return HudReading(String.format(Locale.ROOT, "%.2f core", percent / 100), it) }
     }
-    return HudReading(if (reading.status == ProcessCpuStatus.WARMING_UP || (sampled != null && sampled < since)) "— 計測中" else "— 取得待ち")
+    return HudReading(if (reading.status == ProcessCpuStatus.WARMING_UP || (sampled != null && sampled < since)) "— 計測中" else "— 取得待ち", available = false)
 }
 
 internal fun hudRam(metrics: DeviceMetricsSnapshot, since: Long, now: Long): HudReading {
@@ -38,7 +82,7 @@ internal fun hudRam(metrics: DeviceMetricsSnapshot, since: Long, now: Long): Hud
     val total = metrics.totalRam
     if (metrics.sampledMs < since || now - metrics.sampledMs !in 0..15_000 || available == null ||
         total == null || total <= 0 || available !in 0..total
-    ) return HudReading("— 取得待ち")
+    ) return HudReading("— 取得待ち", available = false)
     val used = 100.0 * (total - available) / total
     return HudReading(String.format(Locale.ROOT, "%.2f GiB", available / 1073741824.0), checkNotNull(hudLoadColor(used)))
 }

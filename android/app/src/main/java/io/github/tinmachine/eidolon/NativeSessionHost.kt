@@ -266,6 +266,7 @@ object NativeSessionHost {
     internal val hudDraw = mutableStateOf<HudDrawSample?>(null)
     private val hudTimingConfig = java.util.concurrent.atomic.AtomicLong()
     private val hudTiming = QuestHudTiming()
+    private val hudContent = HudContentRate()
     private var hudTimingGeneration = -1L
     private var hudTimingLast = -1L
 
@@ -284,6 +285,7 @@ object NativeSessionHost {
         if (config != hudTimingGeneration) {
             hudTimingGeneration = config
             hudTiming.reset()
+            hudContent.reset()
             hudTimingLast = -1
         }
         if (config and 1L == 0L) return
@@ -291,7 +293,11 @@ object NativeSessionHost {
         if (hudTimingLast >= 0 && now - hudTimingLast in 0..999) return
         hudTimingLast = now
         val reading = hudTiming.sample(handle, runtime, now)
-        ui.post { if (hudTimingConfig.get() == config) hudDraw.value = HudDrawSample(reading, now) }
+        val focus = keyboardFocus
+        val focusedRuntime = focus?.runtime ?: 0L
+        val state = if (focusedRuntime == handle) runtime else focus?.let { secondarySnapshot(it.runtime) }
+        val rate = hudContent.sample(focusedRuntime, state, focus?.let { JSONObject(it.target) }, now)
+        ui.post { if (hudTimingConfig.get() == config) hudDraw.value = HudDrawSample(reading, now, rate) }
     }
 
     fun publishDeviceMetrics(value: DeviceMetricsSnapshot) { latestMetrics.set(value);deviceMetrics.value=value }
@@ -3128,7 +3134,6 @@ object NativeSessionHost {
         pumpDisconnect()
         val snapshot = snapshot()
         val runtime = snapshot.getJSONObject("runtime")
-        sampleHudTiming(runtime)
         pumpCatalog(runtime)
         inputIntents.serial {
         mousepadAnchorCandidate = (runtime.optJSONObject("anchor_preparing_target") ?: runtime.optJSONObject("anchor_placement_target"))
@@ -3212,6 +3217,7 @@ object NativeSessionHost {
         }
         val eligibleIme=keyboardFocus?.let {f-> f.runtime == handle && strictImeSdkTarget(JSONObject(f.target))?.let {ImeTargetEligibility.allows(runtime,it)} == true}==true &&
             !debugSdkLease.blocksProduct() && !imeRawBlocked.get() && !editing.get() && panelTextInputs.isEmpty() && !BuildHooks.imeProbeActive()
+        sampleHudTiming(runtime)
         ui.post {imeAvailable.value=eligibleIme}
         pumpIme(runtime, imeCompletions)
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else if(selectedProfileId==LinuxConnectionProfile.ID) "Linuxアプリへ入力" else "ターミナルへ入力"

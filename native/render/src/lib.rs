@@ -112,6 +112,8 @@ pub struct TargetReport {
     /// 同じrender tickのwindow player clock。入力本文・shader値は含めない。
     pub player_clock_ms: Option<u64>,
     pub content_frame: Option<FrameSeq>,
+    /// Successful presents with a new app image; excludes redraws of the same content.
+    pub content_updates: u64,
     pub role: RenderMode,
     pub canvas: Option<theme_state::Canvas>,
     pub content_size: Option<eidolon_model::window::LogicalSize>,
@@ -1095,6 +1097,7 @@ fn owner(state: &State) {
                                     presentation_paused: false,
                                     player_clock_ms: None,
                                     content_frame: None,
+                                    content_updates: 0,
                                     role,
                                     canvas: None,
                                     content_size: None,
@@ -1452,8 +1455,12 @@ fn owner(state: &State) {
                             .as_ref()
                             .map(|d| d.io_draw(&drawing_semantic, theme_revision));
                         target.report.frames += 1;
-                        target.report.content_frame =
-                            image.as_ref().map(|image| image.snapshot.frame_seq);
+                        let content = image.as_ref().map(|image| image.snapshot.frame_seq);
+                        if content.is_some() && content != target.report.content_frame {
+                            target.report.content_updates =
+                                target.report.content_updates.saturating_add(1);
+                        }
+                        target.report.content_frame = content;
                         target.report.gpu = target.gpu.info();
                         #[cfg(feature = "host-acceptance")]
                         if let Some(request) = &readback_request {
@@ -2038,7 +2045,9 @@ mod tests {
                 .snapshot()
                 .targets
                 .iter()
-                .all(|t| t.content_frame == Some(FrameSeq::new(1).unwrap()) && t.canvas.is_some())
+                .all(|t| t.content_frame == Some(FrameSeq::new(1).unwrap())
+                    && t.content_updates == 1
+                    && t.canvas.is_some())
         );
         let before = renderer
             .snapshot()

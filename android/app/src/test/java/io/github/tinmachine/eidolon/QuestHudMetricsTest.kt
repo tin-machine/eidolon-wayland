@@ -6,6 +6,43 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class QuestHudMetricsTest {
+    @Test fun xrReportUsesMeasuredNumeratorAndOriginalTimestamp() {
+        val wall = 1_700_000_000_500L
+        val line = "1700000000.125  1254  1270 I VrApi   : FPS=45/90,Prd=21ms"
+        assertEquals(QuestFpsSample(45, 625), QuestXrFrameRate.parse(line, wall - 500, wall, 1000))
+        assertNull(QuestXrFrameRate.parse(line, wall, wall, 1000))
+        assertNull(QuestXrFrameRate.parse(line, 0, wall + 3_000, 4000))
+        assertNull(QuestXrFrameRate.parse(line, 0, wall - 500, 1000))
+        assertNull(QuestXrFrameRate.parse(line.replace("VrApi", "Other"), 0, wall, 1000))
+        assertNull(QuestXrFrameRate.parse(line.replace("45/90", "90"), 0, wall, 1000))
+    }
+
+    @Test fun focusedUpdatesIgnoreDecorationAndRestartOnOwnerChangeOrGap() {
+        val rate = HudContentRate()
+        val target = target(1, 1, 0, 1).put("content_frame", "163").put("content_updates", 10)
+        val focus = target.getJSONObject("key")
+        val state = runtime(target)
+        assertNull(rate.sample(1, state, focus, 1_000))
+        target.put("frames", 100).put("decoration_frames", 90)
+        assertEquals(0.0, rate.sample(1, state, focus, 2_000)!!, 0.001)
+        target.put("content_frame", "999").put("content_updates", 16)
+        assertEquals(4.0, rate.sample(1, state, focus, 3_500)!!, 0.001)
+        assertNull(rate.sample(2, state, focus, 4_500))
+        assertNull(rate.sample(2, state, focus, 7_500))
+        target.put("presentation_paused", true)
+        assertNull(rate.sample(2, state, focus, 8_500))
+        target.put("presentation_paused", false)
+        assertNull(rate.sample(2, state, focus, 9_500))
+        assertNull(rate.sample(2, state, null, 10_500))
+    }
+
+    @Test fun batteryKeepsZeroAndRejectsStaleValues() {
+        val sample = DeviceMetricsSnapshot(sampledMs = 200, batteryPercent = 0, charging = true)
+        assertEquals("電池 0% 充電中", hudBattery(sample, 100, 300))
+        assertEquals("電池 —", hudBattery(sample, 201, 300))
+        assertEquals("電池 —", hudBattery(sample, 100, 16_000))
+    }
+
     @Test fun loadColorsUseUnroundedThresholdsAndInvalidIsMissing() {
         val white = listOf(0.0, 60.0, 60.1, 69.99)
         val blue = listOf(70.0, 79.99)
