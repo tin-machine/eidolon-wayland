@@ -170,9 +170,11 @@ object NativeSessionHost {
             companionLinux.browse(handle, saved, runtimeSettingsCapture.orEmpty(), currentSceneEpoch(), xrState.get(), activityVisible.get())
         } else {
             // Refresh admission from this runtime after a shelf-open profile change.
-            pumpLinuxCatalog(snapshot().getJSONObject("runtime"))
+            val runtime = snapshot().getJSONObject("runtime")
+            if (runtime.getJSONObject("transport").optString("state") == "CleanupPending")
+                refreshShelfAfterAppExit = true
+            pumpLinuxCatalog(runtime)
             val state = launcherState
-            if (state.recoveryWait != null) refreshShelfAfterAppExit = true
             when {
                 state.canInspect || state.canRefresh -> inspectLinuxDesktop()
                 state.canConnect && !connectPending -> { inspectAfterShelfConnect = true; enqueueConnect() }

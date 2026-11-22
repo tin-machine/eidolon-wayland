@@ -101,7 +101,7 @@ object LinuxDesktopV3Messages {
         "APP_STATE_INVALID" -> "アプリ設定の所有情報が一致しません"
         "APP_STATE_RECOVERY_REQUIRED", "RECOVERY_REQUIRED", "local_admission_unavailable", "previous_io_pending" ->
             "前回の処理が未回収です。同じ接続先と元の処理で回収してください"
-        "APP_LAUNCH_TIMEOUT" -> "Wayland のメインウィンドウが起動確認の期限内に届きませんでした。この接続で表示するには、アプリが Wayland の窓を開く必要があります。"
+        "APP_LAUNCH_TIMEOUT" -> "Wayland のメインウィンドウが起動確認の期限内に届きませんでした。X11 専用のアプリは、この接続では窓を表示できません。"
         "APP_PRESENTATION_TIMEOUT" -> "ウィンドウ表示を期限内に確認できませんでした"
         "APP_PRESENTATION_FAILED" -> "現在のウィンドウを表示できませんでした"
         "APP_STARTUP_CANCELLED" -> "アプリの起動が取り消されました"

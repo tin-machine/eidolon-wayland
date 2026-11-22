@@ -358,6 +358,9 @@ class RealC2Cases(unittest.TestCase):
             self.binding.context, process_owner=owner, barrier=barrier)
         document = handle.paths.documents / "preserved.txt"
         document.write_text("saved document")
+        cache_file = paths.cache / "jre_version"
+        cache_file.write_bytes(b"17")
+        cache_file.chmod(0o620)
         drain = core.Drain()
         core.cleanup_owner(owner, drain, handle)
         self.assertTrue(handle.closed)
