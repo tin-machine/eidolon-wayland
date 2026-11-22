@@ -62,9 +62,9 @@ fn point(
 ) -> Result<(), &'static str> {
     // target64x96にlogical32x32、上下16pxのletterbox。
     let uv = position.map(|p| [p[0] / 32., (16. + p[1] * 2.) / 96.]);
-    state.pointer(
+    state.pointer_command(
         window,
-        eidolon_model::ids::CommandSeq::new(42).unwrap(),
+        Some(eidolon_model::ids::CommandSeq::new(42).unwrap()),
         PointerPacket {
             source: InputSourceId::new(source).unwrap(),
             uv,
@@ -125,7 +125,6 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
                         Stage::Mapped => {
                             state.pointer(
                                 a,
-                                eidolon_model::ids::CommandSeq::new(42).unwrap(),
                                 PointerPacket {
                                     source: InputSourceId::new(1).unwrap(),
                                     uv: Some([0.5, 0.05]),

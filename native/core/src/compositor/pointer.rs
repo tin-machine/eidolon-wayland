@@ -198,7 +198,17 @@ impl ProtocolState {
     pub fn pointer(
         &mut self,
         window: WindowId,
-        press_id: CommandSeq,
+        packet: PointerPacket,
+        width: i32,
+        height: i32,
+    ) -> Result<(), &'static str> {
+        self.pointer_command(window, None, packet, width, height)
+    }
+
+    pub(crate) fn pointer_command(
+        &mut self,
+        window: WindowId,
+        press_id: Option<CommandSeq>,
         packet: PointerPacket,
         width: i32,
         height: i32,
@@ -312,7 +322,10 @@ impl ProtocolState {
                         self.input.report.pointer.title_move = None;
                     }
                     if self.pointer_surface(delta.target.surface).is_some() {
-                        if delta.pressed && delta.button == PointerButton::Primary {
+                        if delta.pressed
+                            && delta.button == PointerButton::Primary
+                            && let Some(press_id) = press_id
+                        {
                             self.input.pointer.primary = Some((
                                 serial.into(),
                                 TitleMove {

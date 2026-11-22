@@ -2368,9 +2368,9 @@ impl Runtime {
                                                             )
                                                     });
                                                 match size {
-                                                    Some((width, height)) => current.pointer(
+                                                    Some((width, height)) => current.pointer_command(
                                                         target.window,
-                                                        *request_id,
+                                                        Some(*request_id),
                                                         *pointer,
                                                         width,
                                                         height,
