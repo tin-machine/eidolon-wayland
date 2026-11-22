@@ -19,6 +19,7 @@ pub struct Manifest {
     pub rotations: Vec<RotationBinding>,
     #[serde(default)]
     pub controls: Option<eidolon_model::window_controls::WindowControls>,
+    pub hud: Option<crate::hud::Profile>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -114,6 +115,13 @@ impl Manifest {
             .is_some_and(|c| self.format_version != 2 || !c.valid())
         {
             return fail("invalid controls layout or format_version");
+        }
+        if self
+            .hud
+            .as_ref()
+            .is_some_and(|h| self.format_version != 2 || !h.valid())
+        {
+            return fail("invalid HUD profile or format_version");
         }
         if !identifier(&self.id)
             || self.name.trim().is_empty()
@@ -238,6 +246,43 @@ output = [0.0, 1.0]
 clamp = true
 missing = "hold-last"
 "#;
+    #[test]
+    fn hud_is_optional_and_validated_as_version_two_configuration() {
+        assert!(Manifest::parse(SOURCE).unwrap().hud.is_none());
+        let v2 = SOURCE.replace("format_version = 1", "format_version = 2");
+        let config = r##"
+[hud]
+layout = "alerts"
+offset_m = [0.48, -0.43, 1.4]
+metrics = ["fps", "battery"]
+[hud.rules.fps]
+comparison = "below"
+threshold = 60.0
+motion_ms = 1000
+color = "#FFD75A"
+"##;
+        let hud = Manifest::parse(&format!("{v2}{config}"))
+            .unwrap()
+            .hud
+            .unwrap();
+        assert!(matches!(hud.layout, crate::hud::Layout::Alerts));
+        assert_eq!(
+            hud.metrics.unwrap(),
+            [crate::hud::Metric::Fps, crate::hud::Metric::Battery]
+        );
+        assert_eq!(hud.rules.unwrap()[&crate::hud::Metric::Fps].motion_ms, 1000);
+        for invalid in [
+            config.replace("1000", "9000"),
+            config.replace("battery", "fps"),
+            config.replace("FFD75A", "FFF"),
+            config.replace("60.0", "nan"),
+            config.replace("below", "unknown"),
+        ] {
+            assert!(Manifest::parse(&format!("{v2}{invalid}")).is_err());
+        }
+        assert!(Manifest::parse(&format!("{SOURCE}{config}")).is_err());
+    }
+
     #[test]
     fn rotations_require_v2_and_one_bounded_writer_per_existing_part() {
         let source = include_str!("../assets/cyan-orbit/theme.toml");

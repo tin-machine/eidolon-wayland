@@ -14,7 +14,7 @@ import android.os.Build
 import android.util.Log
 
 @Composable
-fun ControlPanel(
+internal fun ControlPanel(
     chooseTheme: () -> Unit,
     allowTermux: () -> Unit,
     openTermux: () -> Unit,
@@ -25,6 +25,8 @@ fun ControlPanel(
     recenterHud: () -> Unit,
     hudRotation: () -> Boolean,
     toggleHudRotation: () -> Unit,
+    hudPreset: HudPreset,
+    selectHudPreset: (HudPreset) -> Unit,
     launcherControls: @Composable () -> Unit = {},
     openDetailsRequest: Int = 0,
     anchorControls: @Composable (restoring: Boolean) -> Unit,
@@ -154,8 +156,22 @@ fun ControlPanel(
                 Button(onClick = toggleHud) { Text(if (hudEnabled()) "HUD を非表示" else "HUD を表示") }
                 if (hudEnabled()) Button(onClick = recenterHud) { Text("HUD を置き直す") }
             }
-            if (hudEnabled()) Button(onClick = toggleHudRotation) {
-                Text(if (hudRotation()) "リングの回転を停止" else "リングを回転")
+            if (hudEnabled()) {
+                var chooseHud by remember { mutableStateOf(false) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { chooseHud = !chooseHud }) { Text(hudPreset.label) }
+                    Button(onClick = toggleHudRotation) {
+                        Text(if (hudRotation()) "警告の動きを停止" else "警告の動きを有効に")
+                    }
+                }
+                if (chooseHud) Column {
+                    HudPreset.entries.filter { it != HudPreset.IMPORTED || theme.importedHud != null }.forEach { preset ->
+                        TextButton(enabled = preset != hudPreset, onClick = {
+                            selectHudPreset(preset)
+                            chooseHud = false
+                        }) { Text(preset.label) }
+                    }
+                }
             }
             Button(enabled=NativeSessionHost.layoutAvailable.value,onClick={if(NativeSessionHost.layoutEditing.value) NativeSessionHost.finishLayoutEditing() else NativeSessionHost.setLayoutEditing(true)}) {
                 Text(if(NativeSessionHost.layoutEditing.value) "配置を確定して入力へ戻る" else "配置を編集")

@@ -56,24 +56,11 @@ class QuestHudMetricsTest {
         assertEquals("電池 —", hudBattery(sample, 100, 16_000))
     }
 
-    @Test fun loadColorsUseUnroundedThresholdsAndInvalidIsMissing() {
-        val white = listOf(0.0, 60.0, 60.1, 69.99)
-        val blue = listOf(70.0, 79.99)
-        val yellow = listOf(80.0, 89.99)
-        val red = listOf(90.0, 100.0, 250.0)
-        for ((color, values) in listOf(HudColor.WHITE to white, HudColor.BLUE to blue, HudColor.YELLOW to yellow, HudColor.RED to red)) {
-            values.forEach { assertEquals(color, hudLoadColor(it)) }
-        }
-        assertNull(hudLoadColor(-1.0))
-        assertNull(hudLoadColor(Double.NaN))
-        assertNull(hudLoadColor(Double.POSITIVE_INFINITY))
-    }
-
     @Test fun cpuUsesOneCoreBasisAndExpiresAtTheOriginalSampleTime() {
         val sample = DeviceMetricsSnapshot(processCpu = ProcessCpuReading(
             ProcessCpuStatus.AVAILABLE, 250.0, 5_000, 5_000,
         ))
-        assertEquals(HudReading("2.50 core", HudColor.RED), hudCpu(sample, 1_000, 20_000))
+        assertEquals(HudReading("2.50 core"), hudCpu(sample, 1_000, 20_000))
         assertTrue(hudCpu(sample, 1_000, 20_001).value.startsWith("—"))
         assertTrue(hudCpu(sample, 5_001, 5_002).value.startsWith("—"))
         assertTrue(hudCpu(sample, 1_000, 4_999).value.startsWith("—"))
@@ -82,8 +69,8 @@ class QuestHudMetricsTest {
     @Test fun ramUsesCurrentSampleAndKeepsValidZero() {
         val one = 1L shl 30
         val sample = DeviceMetricsSnapshot(sampledMs = 1_000, availableRam = one, totalRam = one * 4)
-        assertEquals(HudReading("1.00 GiB", HudColor.BLUE), hudRam(sample, 1_000, 5_000))
-        assertEquals(HudReading("0.00 GiB", HudColor.RED), hudRam(sample.copy(availableRam = 0), 1_000, 5_000))
+        assertEquals(HudReading("1.00 GiB"), hudRam(sample, 1_000, 5_000))
+        assertEquals(HudReading("0.00 GiB"), hudRam(sample.copy(availableRam = 0), 1_000, 5_000))
         assertTrue(hudRam(sample, 1_001, 5_000).value.startsWith("—"))
         assertTrue(hudRam(sample, 1_000, 16_001).value.startsWith("—"))
         assertTrue(hudRam(sample, 1_000, 999).value.startsWith("—"))
@@ -97,7 +84,7 @@ class QuestHudMetricsTest {
         val timing = QuestHudTiming()
         assertEquals("— サンプルなし", timing.sample(1, runtime(target(1, 1, 1, 100), target(2, 1, 31, 100)), 1_000).value)
         val update = timing.sample(1, runtime(target(1, 1, 1, 110), target(2, 1, 31, 102)), 2_000)
-        assertEquals(HudDraw("> 31 ms", 2, 12, 1_000, 2), update)
+        assertEquals(HudDraw("> 31 ms", 2, 12, 1_000, 2, 32), update)
         assertEquals("— サンプルなし", timing.sample(1, runtime(target(1, 1, 1, 114), rebuild = 1), 3_000).value)
         assertEquals("≤ 2 ms", timing.sample(1, runtime(target(1, 1, 1, 116), rebuild = 1), 4_000).value)
         assertEquals("— サンプルなし", timing.sample(1, runtime(target(1, 2, 1, 2), rebuild = 1), 5_000).value)

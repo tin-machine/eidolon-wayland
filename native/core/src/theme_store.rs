@@ -15,6 +15,7 @@ pub struct Value {
     pub selection: ThemeSelection,
     pub reduced_motion: bool,
     pub imported: Option<Arc<[u8]>>,
+    pub imported_hud: Option<eidolon_theme::hud::Profile>,
 }
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
@@ -97,11 +98,13 @@ fn decode(bytes: &[u8]) -> Result<Value, &'static str> {
     if u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize != bytes.len() - 14 {
         return Err("THEME_STORAGE_INVALID");
     }
-    let imported = if bytes.len() > 14 {
-        eidolon_theme::package::decode(&bytes[14..]).map_err(|_| "THEME_STORAGE_INVALID")?;
-        Some(Arc::from(&bytes[14..]))
+    let (imported, imported_hud) = if bytes.len() > 14 {
+        let bundle =
+            eidolon_theme::package::decode(&bytes[14..]).map_err(|_| "THEME_STORAGE_INVALID")?;
+        let hud = bundle.manifest().ok().and_then(|manifest| manifest.hud);
+        (Some(Arc::from(&bytes[14..])), hud)
     } else {
-        None
+        (None, None)
     };
     if selection == ThemeSelection::Imported && imported.is_none() {
         return Err("THEME_STORAGE_INVALID");
@@ -110,6 +113,7 @@ fn decode(bytes: &[u8]) -> Result<Value, &'static str> {
         selection,
         reduced_motion: bytes[9] == 1,
         imported,
+        imported_hud,
     })
 }
 fn save(root: &Path, value: &Value, serial: u64) -> Result<(), &'static str> {
@@ -254,6 +258,7 @@ mod tests {
             imported: Some(Arc::from(eidolon_theme::package::encode(
                 &eidolon_theme::cyan_orbit(),
             ))),
+            imported_hud: None,
         };
         let bytes = encode(&value);
         for size in 0..bytes.len() {
