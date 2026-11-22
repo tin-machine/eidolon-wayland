@@ -14,7 +14,7 @@ last_reviewed: "2026-11-21"
 
 「設定と詳細」で HUD を表示すると、短く動くリング・静止する横帯・警告だけを切り替えられる。読み込んだテーマ ZIP に [hud] があると「読み込んだ HUD」を選べる。HUD の選択は窓のテーマとは独立し、アプリの再起動後も保持する。
 
-標準位置は右下。表示したときや「HUD を置き直す」を押したときに、HUD の中心と目を結ぶ線へ正面を向け、その位置に固定する。標準のリングは切れ目の端が平らで、各項目の横に一つずつ置く。GPU 時間、選択窓の更新頻度、描画 p95、OS 熱は標準では数値欄に表示する。
+標準位置は右下。中心は視点から右0.55 m、下0.51 m、前1.40 m。表示したときや「HUD を置き直す」を押したときに、HUD の中心と目を結ぶ線へ正面を向け、その位置に固定する。標準のリングは切れ目の端が平らで、同じ軸の周りに重ねて短い円柱として表示する。輪の中心は各項目の行にそろえる。GPU 時間、選択窓の更新頻度、描画 p95、OS 熱は標準では数値欄に表示する。
 
 | 項目 | 警告条件 | 反応 |
 | --- | --- | --- |
@@ -35,10 +35,14 @@ last_reviewed: "2026-11-21"
 [hud]
 layout = "rings"
 anchor = "space"
-offset_m = [0.48, -0.43, 1.40]
+offset_m = [0.55, -0.51, 1.40]
 face_viewer = true
 scale = 1.0
 ring_cap = "flat"
+ring_layout = "stacked"
+stack_width_dp = 132
+stack_height_dp = 44
+stack_stroke_dp = 5.5
 normal_color = "#EEEEEE"
 metrics = ["fps", "reused_frames", "cpu", "ram", "app_slots", "battery"]
 
@@ -52,6 +56,8 @@ motion_ms = 1000
 - `layout` は `rings`、`bar`、`alerts`。警告を指定するには `comparison` に `below`、`above`、`at_least` のいずれかを使う。
 - `metrics` の並び順が表示順になる。例にある6項目に加え、`gpu_time`、`window_updates`、`draw_p95`、`thermal` を指定できる。閾値は表示に対応する単位で、CPU はコア、RAM は GiB、熱は Android の状態コード。描画 p95 は計測区間のヒストグラム上端で、31 ms 超の区間は 32 として扱う。
 - `rules` を省略すると選んだ表示方式の標準条件を使う。指定した場合はその表で標準条件を置き換える。警告時の色は `#RRGGBB`。動かさない項目は `motion_ms = 0`、動かす時間は 250〜3000 ms。文字の横帯は静止表示。
+- `ring_layout = "stacked"` は同じ軸に重ねた円柱、`"inline"` は各行の小さな円。既存のテーマ ZIP が `ring_layout` を省略した場合は従来の各行表示を使う。
+- 円柱では `stack_width_dp`（72〜156）、`stack_height_dp`（34〜52）、`stack_stroke_dp`（2〜8）で輪の幅、高さ、線幅を指定できる。行の間隔は共通なので、高さを増すと輪の重なりが深くなる。
 - `offset_m` は装着者基準の右・上・前の順。 `anchor = "head"` で頭の向きに追従させる。 `face_viewer = false` で表示面を視線の正面平面と平行にする。 `ring_cap = "round"` で切れ目を丸くする。
 
 ## 2026-11-20 の初期表示計画

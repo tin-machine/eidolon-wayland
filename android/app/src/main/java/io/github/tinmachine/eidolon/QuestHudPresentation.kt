@@ -42,13 +42,16 @@ internal enum class HudPreset(val label: String) {
     IMPORTED("読み込んだ HUD");
 }
 
+internal data class HudRingStack(val widthDp: Float = 132f, val heightDp: Float = 44f, val strokeDp: Float = 5.5f)
+
 internal data class HudTheme(
     val layout: HudLayout = HudLayout.RINGS,
-    val offset: List<Float> = listOf(.48f, -.43f, 1.40f),
+    val offset: List<Float> = listOf(.55f, -.51f, 1.40f),
     val scale: Float = 1f,
     val faceViewer: Boolean = true,
     val followHead: Boolean = false,
     val roundedEnds: Boolean = false,
+    val ringStack: HudRingStack? = HudRingStack(),
     val normalColor: Int = 0xffeeeeee.toInt(),
     val metrics: List<HudMetric> = HudMetric.entries.toList(),
     val rules: Map<HudMetric, HudRule> = defaultHudRules,
@@ -91,6 +94,14 @@ internal data class HudTheme(
                 faceViewer = value.optBoolean("face_viewer", true),
                 followHead = value.getString("anchor") == "head",
                 roundedEnds = value.getString("ring_cap") == "round",
+                ringStack = if (value.optString("ring_layout") == "stacked") {
+                    val stack = HudRingStack()
+                    HudRingStack(
+                        widthDp = value.optDouble("stack_width_dp", stack.widthDp.toDouble()).toFloat(),
+                        heightDp = value.optDouble("stack_height_dp", stack.heightDp.toDouble()).toFloat(),
+                        strokeDp = value.optDouble("stack_stroke_dp", stack.strokeDp.toDouble()).toFloat(),
+                    )
+                } else null,
                 normalColor = color(value, "normal_color") ?: defaults.normalColor,
                 metrics = metrics ?: defaults.metrics,
                 rules = rules ?: defaults.rules,

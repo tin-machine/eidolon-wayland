@@ -253,6 +253,10 @@ missing = "hold-last"
         let config = r##"
 [hud]
 layout = "alerts"
+ring_layout = "stacked"
+stack_width_dp = 128
+stack_height_dp = 40
+stack_stroke_dp = 6.0
 offset_m = [0.48, -0.43, 1.4]
 metrics = ["fps", "battery"]
 [hud.rules.fps]
@@ -266,6 +270,13 @@ color = "#FFD75A"
             .hud
             .unwrap();
         assert!(matches!(hud.layout, crate::hud::Layout::Alerts));
+        assert!(matches!(
+            hud.ring_layout,
+            Some(crate::hud::RingLayout::Stacked)
+        ));
+        assert_eq!(hud.stack_width_dp, Some(128.0));
+        assert_eq!(hud.stack_height_dp, Some(40.0));
+        assert_eq!(hud.stack_stroke_dp, Some(6.0));
         assert_eq!(
             hud.metrics.unwrap(),
             [crate::hud::Metric::Fps, crate::hud::Metric::Battery]
@@ -276,6 +287,8 @@ color = "#FFD75A"
             config.replace("battery", "fps"),
             config.replace("FFD75A", "FFF"),
             config.replace("60.0", "nan"),
+            config.replace("128", "300"),
+            config.replace("stacked", "other"),
             config.replace("below", "unknown"),
         ] {
             assert!(Manifest::parse(&format!("{v2}{invalid}")).is_err());

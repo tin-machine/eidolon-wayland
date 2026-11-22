@@ -49,6 +49,13 @@ pub enum RingCap {
     Round,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RingLayout {
+    Stacked,
+    Inline,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
@@ -68,6 +75,10 @@ pub struct Profile {
     pub scale: Option<f64>,
     pub face_viewer: Option<bool>,
     pub ring_cap: RingCap,
+    pub ring_layout: Option<RingLayout>,
+    pub stack_width_dp: Option<f64>,
+    pub stack_height_dp: Option<f64>,
+    pub stack_stroke_dp: Option<f64>,
     pub normal_color: Option<String>,
     pub metrics: Option<Vec<Metric>>,
     pub rules: Option<BTreeMap<Metric, Rule>>,
@@ -84,6 +95,15 @@ impl Profile {
         self.offset_m.is_none_or(|[x, y, z]| {
             (-1.0..=1.0).contains(&x) && (-0.9..=0.65).contains(&y) && (0.8..=2.5).contains(&z)
         }) && self.scale.is_none_or(|x| (0.65..=1.35).contains(&x))
+            && self
+                .stack_width_dp
+                .is_none_or(|x| (72.0..=156.0).contains(&x))
+            && self
+                .stack_height_dp
+                .is_none_or(|x| (34.0..=52.0).contains(&x))
+            && self
+                .stack_stroke_dp
+                .is_none_or(|x| (2.0..=8.0).contains(&x))
             && self.normal_color.as_deref().is_none_or(valid_color)
             && self.metrics.as_ref().is_none_or(|metrics| {
                 !metrics.is_empty()
