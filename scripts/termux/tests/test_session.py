@@ -12,6 +12,29 @@ spec.loader.exec_module(launcher)
 
 
 class SessionTests(unittest.TestCase):
+    def test_only_creator_removes_an_empty_private_pulse_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, nonce = Path(tmp), 'c' * 16
+            session = Path(launcher.prepare(home, nonce)['socket']).parent
+            pulse = session / 'pulse'
+            other = home / 'other'
+            other.mkdir(mode=0o700)
+            pulse.symlink_to(other, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                launcher.cleanup(home, nonce, creator=True)
+            self.assertTrue(other.is_dir())
+            pulse.unlink()
+            pulse.mkdir(mode=0o700)
+            (pulse / 'pid').touch()
+            with self.assertRaises(OSError):
+                launcher.cleanup(home, nonce, creator=True)
+            self.assertTrue((pulse / 'pid').is_file())
+            (pulse / 'pid').unlink()
+            self.assertTrue(launcher.cleanup(home, nonce)['pending'])
+            self.assertTrue(pulse.is_dir())
+            self.assertTrue(launcher.cleanup(home, nonce, creator=True)['cleaned'])
+            self.assertFalse(session.exists())
+
     def test_dangling_receipt_blocks_nonce_reuse_without_creating_directory(self):
         with tempfile.TemporaryDirectory(prefix="eidolon-launcher-") as value:
             home, nonce = Path(value), "c" * 16

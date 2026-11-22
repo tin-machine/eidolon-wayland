@@ -43,6 +43,7 @@ pub(crate) fn project(state: &Snapshot, panel: bool) -> Value {
         drawing["context_rebuilds"] = json!(render.context_rebuilds);
         drawing["error"] = json!(render.error);
         transport["owned_connections"] = json!(tx.owned_connections);
+        transport["termux_shelf_readable"] = json!(tx.termux_shelf_readable());
         transport["error"] = json!(tx.error);
         transport["desktop_reboot_needed"] = json!(tx.desktop_reboot_needed);
         transport["desktop_v3_recovery"] = json!(tx.desktop_v3_recovery);
