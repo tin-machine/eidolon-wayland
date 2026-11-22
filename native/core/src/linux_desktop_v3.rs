@@ -40,6 +40,8 @@ pub struct I3WindowCut {
     pub fixed_main: Option<WindowId>,
     /// Previous desktop-entry root withdrawn by this owner; does not authorize a new target.
     pub released_main: Option<WindowId>,
+    /// The committed desktop editor disappeared from its own compositor census.
+    pub main_closed: bool,
     pub admission_open: bool,
 }
 
@@ -47,6 +49,15 @@ pub struct I3WindowCut {
 // Once the bounded owner ledger is full, fail closed rather than dropping
 // unresolved SDK/native receipts or consuming unbounded memory.
 pub(crate) const MAX_RETAINED_WINDOWS: usize = 64;
+
+// A delivered input can open an independent dialog even if no splash was seen.
+// Until a peer is actually presented, an interacted-with splash may still hand off.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DesktopMain {
+    Startup,
+    ReceivedInput,
+    Editor,
+}
 
 pub struct WindowHistory {
     origin: NativeOrigin,
@@ -63,6 +74,7 @@ pub struct WindowHistory {
     fixed_main: Option<WindowId>,
     released_main: Option<WindowId>,
     overlap_until: Option<Instant>,
+    desktop_main: DesktopMain,
     started: bool,
     admission_open: bool,
 }
@@ -71,6 +83,7 @@ impl WindowHistory {
         Self {
             origin,
             overlap_until: None,
+            desktop_main: DesktopMain::Startup,
             released_main: None,
             before: before.into_iter().collect(),
             entries: BTreeMap::new(),
@@ -87,6 +100,14 @@ impl WindowHistory {
     }
     pub fn fixed_main(&self) -> Option<WindowId> {
         self.fixed_main
+    }
+    pub(crate) fn note_main_input(&mut self, window: WindowId) {
+        if self.desktop_main == DesktopMain::Startup
+            && self.fixed_main == Some(window)
+            && matches!(self.origin.app_id(), AppId::DesktopEntry(_))
+        {
+            self.desktop_main = DesktopMain::ReceivedInput;
+        }
     }
     pub fn started(&mut self) {
         if self.admission_open {
@@ -218,7 +239,10 @@ impl WindowHistory {
                     || (old.role == Some(Role::Main)
                         && (!matches!(sample.parent, Parent::None {})
                             || !self.origin.main_app_id_matches(sample.app_id.as_deref())))
-                    || (old.role == Some(Role::Dialog) && matches!(sample.parent, Parent::None {}))
+                    || (old.role == Some(Role::Dialog)
+                        && matches!(sample.parent, Parent::None {})
+                        && (!matches!(old.sample.parent, Parent::None {})
+                            || old.sample.app_id != sample.app_id))
             }) {
                 return Err("APP_WINDOW_UNSUPPORTED");
             }
@@ -266,7 +290,11 @@ impl WindowHistory {
                 .get(&main)
                 .is_none_or(|e| e.sample.life == Life::Destroyed)
         {
-            self.release_startup_root(main)?;
+            if self.desktop_main == DesktopMain::Editor {
+                self.seal();
+            } else {
+                self.release_startup_root(main)?;
+            }
         }
         Ok(())
     }
@@ -285,6 +313,7 @@ impl WindowHistory {
             self.seal();
             return Err("APP_WINDOW_UNSUPPORTED");
         }
+        self.desktop_main = DesktopMain::Startup;
         self.released_main = Some(main);
         self.fixed_main = None;
         self.overlap_until = None;
@@ -292,7 +321,7 @@ impl WindowHistory {
         Ok(())
     }
 
-    fn chain_to_main(&self, id: WindowId, main: WindowId) -> bool {
+    fn belongs_to_main(&self, id: WindowId, main: WindowId) -> bool {
         let mut visited = BTreeSet::from([id]);
         let mut cursor = id;
         loop {
@@ -305,7 +334,17 @@ impl WindowHistory {
                 return false;
             }
             let Parent::Resolved { window: parent } = entry.sample.parent else {
-                return false;
+                let editor = &self.entries[&main].sample;
+                return self.desktop_main != DesktopMain::Startup
+                    && matches!(entry.sample.parent, Parent::None {})
+                    && entry.sample.life == Life::Mapped
+                    && Some(cursor) != self.released_main
+                    && !self.before.contains(&cursor)
+                    && editor.life == Life::Mapped
+                    && self.origin.matches_peer_app_id(
+                        editor.app_id.as_deref(),
+                        entry.sample.app_id.as_deref(),
+                    );
             };
             if !visited.insert(parent) {
                 return false;
@@ -331,6 +370,11 @@ impl WindowHistory {
     /// Candidate facts for the one B1 Startup reducer; not a second admission
     /// state machine. Call only after this tick's Wayland dispatch and I2 cut.
     pub fn cut(&mut self) -> Result<I3WindowCut, &'static str> {
+        let active = self
+            .entries
+            .values()
+            .filter(|e| e.sample.life != Life::Destroyed)
+            .count();
         // confirm_retired may remove the main's tombstone after observe has
         // sealed this owner. Never index a missing main or elect a replacement.
         if self.fixed_main.is_some_and(|main| {
@@ -339,19 +383,24 @@ impl WindowHistory {
                 .is_none_or(|e| e.sample.life == Life::Destroyed)
         }) {
             self.seal();
+            if self.desktop_main == DesktopMain::Editor {
+                return Ok(I3WindowCut {
+                    origin: self.origin.clone(),
+                    global_window_count: active as u32,
+                    windows: vec![],
+                    admitted: BTreeSet::new(),
+                    fixed_main: self.fixed_main,
+                    released_main: None,
+                    main_closed: true,
+                    admission_open: false,
+                });
+            }
             return Err("APP_WINDOW_UNSUPPORTED");
         }
-        let active = self
-            .entries
-            .values()
-            .filter(|e| e.sample.life != Life::Destroyed)
-            .count();
         if active > 9 {
             return Err("APP_WINDOW_UNSUPPORTED");
         }
-        // A desktop entry can briefly expose both its splash and editor. Only
-        // one root and its actual children are ever projected. Ignore the old
-        // unmapped role if the toolkit keeps it around after the handoff.
+        // Ignore the old splash even if its toolkit keeps the unmapped role.
         let roots: Vec<_> = self
             .entries
             .iter()
@@ -364,7 +413,7 @@ impl WindowHistory {
             .collect();
         // Start the ambiguity deadline when roots overlap. Loading resources
         // while a single splash is visible can take minutes on first launch.
-        if roots.len() > 1 {
+        if roots.len() > 1 && self.desktop_main == DesktopMain::Startup {
             self.overlap_until
                 .get_or_insert_with(|| Instant::now() + Duration::from_millis(MAIN_WAIT_MS));
             if roots.len() != 2
@@ -378,6 +427,7 @@ impl WindowHistory {
             self.overlap_until = None;
         }
         if let Some(main) = self.fixed_main
+            && self.desktop_main != DesktopMain::Editor
             && self.entries[&main].sample.life == Life::Unmapped
             && roots
                 .iter()
@@ -406,7 +456,7 @@ impl WindowHistory {
             for (id, entry) in &self.entries {
                 if *id != main
                     && entry.sample.life != Life::Destroyed
-                    && self.chain_to_main(*id, main)
+                    && self.belongs_to_main(*id, main)
                 {
                     eligible.insert(*id, Role::Dialog);
                 }
@@ -417,6 +467,12 @@ impl WindowHistory {
                 if entry.role.is_some_and(|old| old != *role) {
                     self.seal();
                     return Err("APP_WINDOW_UNSUPPORTED");
+                }
+                if *role == Role::Dialog
+                    && matches!(entry.sample.parent, Parent::None {})
+                    && entry.sample.life == Life::Mapped
+                {
+                    self.desktop_main = DesktopMain::Editor;
                 }
                 entry.role = Some(*role);
             }
@@ -466,6 +522,7 @@ impl WindowHistory {
             admitted,
             fixed_main: self.fixed_main,
             released_main: self.released_main.filter(|_| self.fixed_main.is_none()),
+            main_closed: false,
             admission_open: self.admission_open,
         })
     }
@@ -484,6 +541,9 @@ impl WindowHistory {
             return Err("APP_WINDOW_UNSUPPORTED");
         }
         self.fixed_main = Some(id);
+        if self.released_main.is_some() {
+            self.desktop_main = DesktopMain::Editor;
+        }
         Ok(())
     }
 }
@@ -1028,8 +1088,78 @@ mod tests {
             );
             assert!(!h.confirm_retired(splash.window, true, false));
             assert!(h.confirm_retired(splash.window, true, true));
-            assert_eq!(h.observe(&[]), Err("APP_WINDOW_UNSUPPORTED"));
+            h.observe(&[]).unwrap();
+            let closed = h.cut().unwrap();
+            assert!(closed.main_closed && !closed.admission_open && closed.admitted.is_empty());
+            assert_eq!(closed.fixed_main, Some(editor.window));
+            assert!(h.confirm_retired(editor.window, true, true));
+            assert!(h.cut().unwrap().main_closed);
         }
+    }
+
+    #[test]
+    fn desktop_independent_dialog_preserves_parentage_focus_scope_and_retirement() {
+        let owner = desktop_origin();
+        let editor = sample(&owner, 1, Parent::None {}, Life::Mapped);
+        let dialog = sample(&owner, 2, Parent::None {}, Life::Mapped);
+        let child = sample(
+            &owner,
+            3,
+            Parent::Resolved {
+                window: dialog.window,
+            },
+            Life::Mapped,
+        );
+        let other = WindowSample {
+            app_id: Some("different-app".into()),
+            ..sample(&owner, 4, Parent::None {}, Life::Mapped)
+        };
+        let before = sample(&owner, 5, Parent::None {}, Life::Mapped);
+        let mut h = WindowHistory::new(owner.clone(), [before.window]);
+        h.started();
+        h.observe(std::slice::from_ref(&editor)).unwrap();
+        h.commit_main(editor.window).unwrap();
+        h.note_main_input(editor.window);
+        h.observe(&[editor.clone(), dialog.clone(), child.clone(), other, before])
+            .unwrap();
+        let cut = h.cut().unwrap();
+        assert_eq!(
+            cut.admitted,
+            BTreeSet::from([editor.window, dialog.window, child.window])
+        );
+        assert!(cut.windows.iter().any(|w| w.window == dialog.window
+            && w.role == Role::Dialog
+            && matches!(w.parent, Parent::None {})));
+        let observation =
+            eidolon_model::linux_desktop_v3::presentation::Observation::native_builder(
+                owner.clone(),
+                1,
+            )
+            .lifecycle(
+                true,
+                Some(eidolon_model::ids::SceneEpoch::new(1).unwrap()),
+                true,
+            )
+            .transport(Some(owner.clone()), None, false, false)
+            .windows(cut.global_window_count, cut.windows)
+            .finish()
+            .unwrap();
+        let mut observer =
+            crate::startup_observation::V3PresentationObserver::begin(owner, 0, vec![]).unwrap();
+        let presentation = observer.tick(&observation).unwrap();
+        assert_eq!(presentation.newly_adopted_main, Some(editor.window));
+        assert_eq!(presentation.presentation.first_failure, None);
+
+        let hidden = WindowSample {
+            life: Life::Unmapped,
+            ..dialog.clone()
+        };
+        h.observe(&[editor.clone(), hidden, child]).unwrap();
+        assert_eq!(h.cut().unwrap().admitted, BTreeSet::from([editor.window]));
+        h.observe(std::slice::from_ref(&editor)).unwrap();
+        assert!(!h.confirm_retired(dialog.window, false, true));
+        assert!(h.confirm_retired(dialog.window, true, true));
+        assert_eq!(h.cut().unwrap().fixed_main, Some(editor.window));
     }
 
     #[test]

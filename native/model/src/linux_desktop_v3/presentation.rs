@@ -95,6 +95,12 @@ impl NativeOrigin {
     pub fn main_app_id_matches(&self, app_id: Option<&str>) -> bool {
         matches!(self.app_id, AppId::DesktopEntry(_)) || app_id == Some(self.main_app_id().as_str())
     }
+
+    /// Classify independent toplevels only within an already verified launch origin.
+    pub fn matches_peer_app_id(&self, main: Option<&str>, peer: Option<&str>) -> bool {
+        matches!(self.app_id, AppId::DesktopEntry(_))
+            && main.is_some_and(|id| !id.is_empty() && Some(id) == peer)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
@@ -578,6 +584,17 @@ fn topology(windows: &[Window], main: WindowId, origin: &NativeOrigin) -> bool {
         let mut seen = BTreeSet::from([window.window]);
         loop {
             let Parent::Resolved { window: parent } = current.parent else {
+                if matches!(current.parent, Parent::None {})
+                    && nodes.get(&main).is_some_and(|editor| {
+                        editor.life == Life::Mapped
+                            && origin.matches_peer_app_id(
+                                editor.app_id.as_deref(),
+                                current.app_id.as_deref(),
+                            )
+                    })
+                {
+                    break;
+                }
                 return false;
             };
             if seen.contains(&parent) {
