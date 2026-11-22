@@ -1165,7 +1165,9 @@ mod tests {
     use super::*;
     #[test]
     fn recovery_proof_must_match_the_persisted_identity_and_completed_cleanup() {
-        let nonce = "aaaaaaaaaaaaaaaa";
+        let seed = rand::random::<u64>();
+        let nonce = format!("{seed:016x}");
+        let other_nonce = format!("{:016x}", seed ^ 1);
         let id = Identity {
             pid: 123,
             start: "45".to_string(),
@@ -1176,15 +1178,21 @@ mod tests {
             "schema":1, "cleaned":true, "already_absent":true,
             "reconciliation":{"schema":1, "nonce":nonce, "uid":42, "child":id, "basis":"HostRebooted"}
         });
-        let check =
-            |value| verify_audit(serde_json::from_value(value).unwrap(), nonce, 42, Some(&id));
+        let check = |value| {
+            verify_audit(
+                serde_json::from_value(value).unwrap(),
+                &nonce,
+                42,
+                Some(&id),
+            )
+        };
         let verified = check(wire.clone()).unwrap();
         assert!(verified.verified && verified.receipt.is_none());
         for (key, value) in [
             ("uid", serde_json::json!(43)),
             ("child", serde_json::Value::Null),
             ("basis", serde_json::json!("BeforeLaunch")),
-            ("nonce", serde_json::json!("bbbbbbbbbbbbbbbb")),
+            ("nonce", serde_json::json!(other_nonce)),
         ] {
             let mut invalid = wire.clone();
             invalid["reconciliation"][key] = value;
