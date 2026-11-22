@@ -118,7 +118,7 @@ pub fn run(
     };
     connection.display().get_registry(&qh, ());
     sync(&connection, &mut queue, &mut state, &stop, deadline)?;
-    let seat = state.seat.as_ref().ok_or("NO_SEAT")?;
+    let seat = state.seat.clone().ok_or("NO_SEAT")?;
     let pointer = seat.get_pointer(&qh, ());
     let keyboard = seat.get_keyboard(&qh, ());
     let compositor = state.compositor.clone().ok_or("NO_COMPOSITOR")?;
@@ -194,6 +194,30 @@ pub fn run(
         Stage::FocusedB,
         Stage::Reset,
     ] {
+        if matches!(stage, Stage::Pressed | Stage::Released) {
+            use wayland_protocols::xdg::shell::client::xdg_toplevel::Request;
+            let serial = state.pointer_serial;
+            let requests = if matches!(stage, Stage::Pressed) {
+                vec![
+                    (1, serial),
+                    (0, serial.wrapping_sub(1)),
+                    (0, serial),
+                    (0, serial),
+                ]
+            } else {
+                vec![(0, serial)]
+            };
+            for (root, serial) in requests {
+                roots[root]
+                    .2
+                    .send_request(Request::Move {
+                        seat: seat.clone(),
+                        serial,
+                    })
+                    .map_err(|_| "TITLE_MOVE_REQUEST")?;
+            }
+            sync(&connection, &mut queue, &mut state, &stop, deadline)?;
+        }
         step(&control, stage, &mut state, &stop, deadline)?;
         sync(&connection, &mut queue, &mut state, &stop, deadline)?;
     }

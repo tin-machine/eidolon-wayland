@@ -1423,7 +1423,7 @@ impl Runtime {
                                 ssh.desktop_v3_transport.as_ref().map(|t| (t.inspect_request, t.launch_request,
                                     t.transport.phase, t.terminal_observed, t.io_retired, t.cleanup_pending)),
                                 shared.snapshot.app.as_ref().map(|a| (a.session, a.state, a.ready, a.windows.len(),
-                                    a.input.focus_window, a.input.focus_token, a.error)),
+                                    a.input.focus_window, a.input.focus_token, a.input.pointer.title_move, a.error)),
                                 (shared.snapshot.desktop_v3_presentation.clone(), shared.snapshot.desktop_v3_finalizer_pending,
                                     shared.snapshot.desktop_v3_pending_targets, shared.sdk_bindings.len(), render.theme_revision),
                             );
@@ -2341,7 +2341,7 @@ impl Runtime {
                                             Command::Key {
                                                 key, focus_token, ..
                                             } => current.key(target.window, *focus_token, *key),
-                                            Command::Pointer { pointer, .. } => {
+                                            Command::Pointer { pointer, request_id, .. } => {
                                                 let render = gl.snapshot();
                                                 let size = render
                                                     .targets
@@ -2370,6 +2370,7 @@ impl Runtime {
                                                 match size {
                                                     Some((width, height)) => current.pointer(
                                                         target.window,
+                                                        *request_id,
                                                         *pointer,
                                                         width,
                                                         height,

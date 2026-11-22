@@ -51,6 +51,7 @@ fn point(
 ) -> Result<(), &'static str> {
     state.pointer(
         WindowId::new(window).unwrap(),
+        eidolon_model::ids::CommandSeq::new(42).unwrap(),
         PointerPacket {
             source: InputSourceId::new(1).unwrap(),
             uv: Some([p[0] / 32., p[1] / 32.]),

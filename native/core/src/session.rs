@@ -637,6 +637,7 @@ impl Session {
     pub fn pointer(
         &mut self,
         window: WindowId,
+        press_id: eidolon_model::ids::CommandSeq,
         pointer: eidolon_model::pointer::PointerPacket,
         width: i32,
         height: i32,
@@ -647,7 +648,7 @@ impl Session {
         self.protocol
             .as_mut()
             .ok_or("NOT_READY")?
-            .pointer(window, pointer, width, height)?;
+            .pointer(window, press_id, pointer, width, height)?;
         if matches!(pointer.event, eidolon_model::pointer::PointerEvent::Buttons { changed, state } if changed & state != 0)
             && let Some(history) = self.v3_history.as_mut()
         {

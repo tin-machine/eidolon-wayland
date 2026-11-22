@@ -64,6 +64,7 @@ fn point(
     let uv = position.map(|p| [p[0] / 32., (16. + p[1] * 2.) / 96.]);
     state.pointer(
         window,
+        eidolon_model::ids::CommandSeq::new(42).unwrap(),
         PointerPacket {
             source: InputSourceId::new(source).unwrap(),
             uv,
@@ -124,6 +125,7 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
                         Stage::Mapped => {
                             state.pointer(
                                 a,
+                                eidolon_model::ids::CommandSeq::new(42).unwrap(),
                                 PointerPacket {
                                     source: InputSourceId::new(1).unwrap(),
                                     uv: Some([0.5, 0.05]),
@@ -175,6 +177,15 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
                         }
                         Stage::Pressed => {
                             let old = state.input_report().pointer;
+                            if old.title_move_requests != 1
+                                || !old.title_move.is_some_and(|gesture| {
+                                    gesture.window == a
+                                        && gesture.source.get() == 1
+                                        && gesture.press.get() == 42
+                                })
+                            {
+                                return Err("TITLE_MOVE_CAPTURE");
+                            }
                             point(
                                 &mut state,
                                 b,
@@ -208,6 +219,10 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
                                 && input.focus_window == Some(a);
                         }
                         Stage::Released => {
+                            let pointer = state.input_report().pointer;
+                            if pointer.title_move.is_some() || pointer.title_move_requests != 1 {
+                                return Err("TITLE_MOVE_AFTER_RELEASE");
+                            }
                             point(&mut state, b, 1, Some([4., 4.]), PointerEvent::Move)?;
                             point(
                                 &mut state,

@@ -707,6 +707,9 @@ impl XdgShellHandler for ProtocolState {
             self.popups.push(popup);
         }
     }
+    fn move_request(&mut self, surface: ToplevelSurface, seat: WlSeat, serial: Serial) {
+        self.request_title_move(surface.wl_surface(), &seat, serial.into());
+    }
     fn grab(&mut self, popup: PopupSurface, seat: WlSeat, serial: Serial) {
         if !self.new_roles_open {
             return;

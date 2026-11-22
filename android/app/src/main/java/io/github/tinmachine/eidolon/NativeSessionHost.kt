@@ -1990,10 +1990,12 @@ object NativeSessionHost {
             .put("request_id",requests.incrementAndGet().toString()).put("target",target)
             .put("size_command",command ?: JSONObject.NULL).put("size",size).toString())
     /** SDK callbackではimmutableなtargetと小DTOだけをenqueueする。座標をログへ出さない。 */
-    fun sendPointer(target: InputTarget, source: Long, uv: List<Double>?, event: JSONObject): Boolean = inputIntents.serial {
-        sendPointerLocked(target,source,uv,event)
+    internal fun nextPointerRequest(): Long = requests.incrementAndGet()
+    fun sendPointer(target: InputTarget, source: Long, uv: List<Double>?, event: JSONObject,
+                    request: Long = nextPointerRequest()): Boolean = inputIntents.serial {
+        sendPointerLocked(target, source, uv, event, request)
     }
-    private fun sendPointerLocked(target: InputTarget, source: Long, uv: List<Double>?, event: JSONObject): Boolean {
+    private fun sendPointerLocked(target: InputTarget, source: Long, uv: List<Double>?, event: JSONObject, request: Long): Boolean {
         if (source<=0 || windowMoveSourceOwned(source) || inputTarget(target.target, target.runtime)!=target) return false
         if(event.optString("type")=="buttons" && event.optInt("changed") and event.optInt("state") and 1 != 0) {
             inputIntents.incrementAndGet();releasePanelTextFocus()
@@ -2006,7 +2008,7 @@ object NativeSessionHost {
         val pointer=JSONObject().put("source",source.toString()).put("uv",uv?.let { JSONArray(it) } ?: JSONObject.NULL)
             .put("event",event).put("time_ms",SystemClock.uptimeMillis() and 0xffffffffL)
         val code=NativeBridge.nativeCommand(target.runtime,JSONObject().put("schema",1).put("type","pointer")
-            .put("request_id",requests.incrementAndGet().toString()).put("target",JSONObject(target.target))
+            .put("request_id",request.toString()).put("target",JSONObject(target.target))
             .put("input_epoch",target.epoch).put("pointer",pointer).toString())
         if (code !in setOf(NativeBridge.ACCEPTED,NativeBridge.INVALID_ARGUMENT)) resetInput()
         return code!=NativeBridge.INVALID_ARGUMENT
