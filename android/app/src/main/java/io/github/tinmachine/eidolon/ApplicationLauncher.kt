@@ -259,7 +259,8 @@ private fun AppFailureDialog(dialog: ShelfAppDialog) {
         contentAlignment = Alignment.Center) {
         Surface(modifier = Modifier.widthIn(max = 520.dp).fillMaxWidth().padding(16.dp)
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
-            shape = MaterialTheme.shapes.large, color = Color(0xFF402E48), border = BorderStroke(2.dp, candy)) {
+            shape = MaterialTheme.shapes.large, color = Color(0xFF402E48), contentColor = Color.White,
+            border = BorderStroke(2.dp, candy)) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(dialog.entry.label, style = MaterialTheme.typography.headlineSmall)
                 Text(dialog.host + " · " + (dialog.entry.desktopId ?: dialog.entry.id), color = Color(0xFFBBF2DC))
