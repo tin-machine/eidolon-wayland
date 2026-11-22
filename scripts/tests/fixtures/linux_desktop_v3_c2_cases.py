@@ -266,6 +266,36 @@ class RealC2Cases(unittest.TestCase):
         self.assertEqual(self.recover()[0], 0)
         self.assertFalse(paths.session.exists())
 
+    def test_recover_install4j_private_cache_after_exit(self):
+        paths = self.abandoned_session()
+        cache = paths.session / "cache" / "install4j"
+        cache.mkdir(mode=0o700)
+        version = cache / "jre_version"
+        version.write_bytes(b"17")
+        version.chmod(0o620)
+        self.assertEqual(self.recover()[0], 0)
+        self.assertFalse(paths.session.exists())
+
+    def test_recover_preserves_unsafe_cache_and_retries_without_losing_proof(self):
+        paths = self.abandoned_session()
+        cache = paths.session / "cache" / "install4j"
+        cache.mkdir(mode=0o700)
+        version = cache / "jre_version"
+        version.write_bytes(b"17")
+        version.chmod(0o620)
+        outside = self.home / "preserved"
+        os.link(version, outside)
+        self.assertEqual(self.recover()[0], 1)
+        self.assertEqual(outside.read_bytes(), b"17")
+        outside.unlink()
+        version.chmod(0o622)
+        self.assertEqual(self.recover()[0], 1)
+        version.chmod(0o620)
+        cache.chmod(0o720)
+        self.assertEqual(self.recover()[0], 1)
+        cache.chmod(0o700)
+        self.assertEqual(self.recover()[0], 0)
+
     def test_final_rename_fsync_failure_is_retryable(self):
         paths = self.abandoned_session()
         rename, fsync = core.os.rename, core.os.fsync
@@ -328,6 +358,9 @@ class RealC2Cases(unittest.TestCase):
             self.binding.context, process_owner=owner, barrier=barrier)
         document = handle.paths.documents / "preserved.txt"
         document.write_text("saved document")
+        cache_file = paths.cache / "jre_version"
+        cache_file.write_bytes(b"17")
+        cache_file.chmod(0o620)
         drain = core.Drain()
         core.cleanup_owner(owner, drain, handle)
         self.assertTrue(handle.closed)

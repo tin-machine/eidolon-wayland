@@ -14,6 +14,10 @@ internal fun launcherAppKey(source: LauncherSource, state: LauncherUi, entry: La
 }
 
 internal data class AppFailure(val reason: String, val log: String, val event: String? = null) {
+    // Stored histories from earlier APKs have the same diagnostic code.
+    fun displayReason(): String = if (log.lineSequence().any { it == "first_failure=APP_LAUNCH_TIMEOUT" })
+        checkNotNull(LinuxDesktopV3Messages.reason("APP_LAUNCH_TIMEOUT")) else reason
+
     fun encode(): String = JSONObject().put("reason", reason).put("log", log).put("event", event).toString()
 
     companion object {
