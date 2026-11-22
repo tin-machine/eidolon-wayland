@@ -141,7 +141,12 @@ def lease(home,nonce,parent):
     root=home/'.eidolon'/('s-'+nonce);fd=directory(home,('.eidolon','s-'+nonce));os.close(fd)
     _,raw=read_file(root,'owner.json',limit=1024);require(decode(raw)==dict(schema=1,nonce=nonce,uid=os.getuid()),'GUI_LEASE_CHANGED')
     _,raw=read_file(root,'lease.json',limit=4096);value=decode(raw)
-    require(type(value) is dict and set(value)=={'schema','nonce','uid','owner','child'} and value['schema']==1 and value['nonce']==nonce and value['uid']==os.getuid(),'GUI_LEASE_CHANGED')
+    required={'schema','nonce','uid','owner','child'}
+    require(type(value) is dict and required <= set(value) <= required | {'phase','boot'} and
+            value['schema']==1 and value['nonce']==nonce and value['uid']==os.getuid(),'GUI_LEASE_CHANGED')
+    require('phase' not in value or value['phase']=='starting','GUI_LEASE_CHANGED')
+    if 'boot' in value:
+        require(isinstance(value['boot'],str) and re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',value['boot']),'GUI_LEASE_CHANGED')
     def normalized(row):return {key:row[key] for key in ('pid','start','group')}
     require(normalized(value['owner'])==parent and process(parent['pid'])==parent and parent['pid']==os.getppid(),'GUI_LEASE_CHANGED')
     child=normalized(value['child']);require(process(child['pid'])==child,'GUI_LEASE_CHANGED')
