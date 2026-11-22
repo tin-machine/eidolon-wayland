@@ -472,7 +472,13 @@ impl Session {
         self.protocol
             .as_mut()
             .ok_or("NOT_READY")?
-            .key_at_focus(window, focus_token, key)
+            .key_at_focus(window, focus_token, key)?;
+        if key.action == eidolon_model::keyboard::KeyAction::Pressed
+            && let Some(history) = self.v3_history.as_mut()
+        {
+            history.note_main_input(window);
+        }
+        Ok(())
     }
     pub fn set_ime_backend(&mut self, enabled: bool) -> Result<(), &'static str> {
         if self.closing {
@@ -641,7 +647,13 @@ impl Session {
         self.protocol
             .as_mut()
             .ok_or("NOT_READY")?
-            .pointer(window, pointer, width, height)
+            .pointer(window, pointer, width, height)?;
+        if matches!(pointer.event, eidolon_model::pointer::PointerEvent::Buttons { changed, state } if changed & state != 0)
+            && let Some(history) = self.v3_history.as_mut()
+        {
+            history.note_main_input(window);
+        }
+        Ok(())
     }
     /// normal modeだけが実際のpresented snapshotに応じてclientを進める。
     pub fn render_tick(

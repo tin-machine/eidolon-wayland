@@ -124,6 +124,7 @@ impl Shared {
                 admitted: Default::default(),
                 fixed_main: observer.snapshot().map_err(|error| error.0)?.main,
                 released_main: None,
+                main_closed: false,
                 admission_open: false,
             }
         } else {
@@ -207,7 +208,7 @@ impl Shared {
             .transport(
                 started.then_some(origin.clone()),
                 terminal,
-                closing,
+                closing || cut.main_closed,
                 closing,
             )
             .windows(cut.global_window_count, cut.windows)
