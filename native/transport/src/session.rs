@@ -207,7 +207,7 @@ struct Shared {
         Option<tokio::sync::mpsc::Sender<(CommandSeq, Option<crate::catalog::Target>)>>,
     catalog_requests: Option<tokio::sync::mpsc::Sender<(CommandSeq, crate::catalog::Operation)>>,
     catalog: CatalogUi,
-    shelf_request: Option<(SessionId, CommandSeq, String)>,
+    shelf_request: Option<(SessionId, CommandSeq, String, bool)>,
     shelf_result: Option<(SessionId, serde_json::Value)>,
     desktop_preview: Option<DesktopPreview>,
 }
@@ -1659,17 +1659,17 @@ impl Controller {
         if s.cancel.as_ref().is_none_or(|c| c.is_cancelled()) {
             return Status::NotReady;
         }
-        if let crate::catalog::Operation::Shelf { path } = operation {
+        if let crate::catalog::Operation::Shelf { path, diagnostics } = operation {
             if s.desktop_profile.is_some() || !s.report.termux_shelf_readable() {
                 return Status::NotReady;
             }
             if s.shelf_request
                 .as_ref()
-                .is_some_and(|(owner, _, _)| *owner == session)
+                .is_some_and(|(owner, ..)| *owner == session)
             {
                 return Status::Busy;
             }
-            s.shelf_request = Some((session, request, path));
+            s.shelf_request = Some((session, request, path, diagnostics));
             self.signals.notify.notify_one();
             self.signals.desktop_menu_notify.notify_one();
             return Status::Accepted;
@@ -2818,13 +2818,13 @@ async fn refresh_termux_shelf<H: client::Handler>(
         .unwrap_or_else(|e| e.into_inner())
         .shelf_request
         .take();
-    let Some((session, request, path)) = work else {
+    let Some((session, request, path, diagnostics)) = work else {
         return;
     };
     if session != connect.session {
         return;
     }
-    let result = crate::launcher::shelf(client, &path, &connect.cancel).await;
+    let result = crate::launcher::shelf(client, &path, diagnostics, &connect.cancel).await;
     let value = match result {
         Ok(data) => serde_json::json!({"request":request, "data":data}),
         Err(code) => serde_json::json!({"request":request, "error":code}),

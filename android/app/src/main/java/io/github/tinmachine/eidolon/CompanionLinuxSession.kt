@@ -17,6 +17,9 @@ internal class CompanionLinuxSession(
         private set
     var message: String? = null
         private set
+    private var attempt: LauncherFailures.Attempt? = null
+    private var observation: LinuxAppObservation? = null
+    private val failures get() = NativeSessionHost.appFailures
     private var selection: String? = null
     private var credentials: LinuxCredentialCapture? = null
     private var profile: ConnectionProfileV2.Value? = null
@@ -66,6 +69,7 @@ internal class CompanionLinuxSession(
         if (!browsing || stopping || launchSent || request != null ||
             !catalog.accepts(handle, expected.session, expected.capture, expected.revision, id)) return
         occupiesApp = true
+        attempt = failures.begin(launcherAppKey(LauncherSource.UBUNTU, expected, expected.entries.first { it.id == id }))
         selection = id
         pending = true
         deadline = SystemClock.elapsedRealtime() + 30000
@@ -76,7 +80,7 @@ internal class CompanionLinuxSession(
     fun begin(
         primary: Long, profile: ConnectionProfileV2.Value, capture: String, app: String?,
         scene: Long, xr: String, visible: Boolean, launched: ((Long, String, String) -> Unit)? = null,
-        forBrowsing: Boolean = false,
+        forBrowsing: Boolean = false, appKey: String? = null,
     ): Boolean {
         if (handle != 0L) return false
         val created = NativeBridge.nativeCreateCompanion(primary, slot)
@@ -90,6 +94,7 @@ internal class CompanionLinuxSession(
         this.profile = profile
         this.capture = capture
         selection = app
+        attempt = appKey?.let(failures::begin)
         onLaunch = launched
         pending = true
         lastRejection = null
@@ -112,6 +117,9 @@ internal class CompanionLinuxSession(
         if (handle == 0L) return
         selection = null
         onLaunch = null
+        attempt?.let(failures::finish)
+        attempt = null
+        observation = null
         stopping = true
         browsing = false
     }
@@ -196,6 +204,13 @@ internal class CompanionLinuxSession(
         val transport = runtime.getJSONObject("transport")
         val session = transport.optString("session")
         val status = LinuxDesktopV3Status.observe(current, session, runtime)
+        observation?.let {
+            if (it.read(current, runtime, failures)) {
+                it.finish(failures)
+                attempt = null
+                observation = null
+            }
+        }
         if (status.ready && !stopping) {
             if (!wasRunning) message = null
             if (browsing && !wasRunning) shelf = shelf.copy(busy = false, running = true, message = "起動しました")
@@ -302,6 +317,7 @@ internal class CompanionLinuxSession(
         }
         val id = nextRequest()
         if (send("linux_desktop_v3_launch", JSONObject().put("session", session).put("selection", value.selection(app)), id)) {
+            observation = attempt?.let { LinuxAppObservation(session, id, it) }
             launchSent = true
             selection = null
             request = Request(id, "linux_desktop_v3_launch")
@@ -312,6 +328,8 @@ internal class CompanionLinuxSession(
 
     private fun fail(reason: String = "追加アプリの起動または回収を確認できません。") {
         if (!stopping) message = reason
+        if (observation != null && pending && !wasRunning && !stopping && snapshot?.optJSONObject("transport")?.optBoolean("desktop_pending") != true)
+            attempt?.let { failures.record(it, AppFailure(reason, "Ubuntu · 追加アプリの起動要求")) }
         if (browsing) shelf = shelf.copy(busy = false, firstFailure = "NOT_READY", message = reason, menuRefreshFailed = true)
         pending = false
         stop()

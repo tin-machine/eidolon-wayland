@@ -1076,7 +1076,8 @@ async fn pending_receipt_blocks_remote_start_then_survives_controller_recreation
             first,
             request(20),
             crate::catalog::Operation::Shelf {
-                path: "registered-apps.toml".into()
+                path: "registered-apps.toml".into(),
+                diagnostics: false
             }
         ),
         Status::Accepted

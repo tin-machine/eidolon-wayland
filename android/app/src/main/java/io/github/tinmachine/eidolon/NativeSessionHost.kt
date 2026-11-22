@@ -83,6 +83,7 @@ object NativeSessionHost {
     private val automaticRecovery = DesktopRecoveryRetry()
     private var linuxV3Catalog: LinuxDesktopV3Catalog? = null
     private val linuxV3LaunchAdmission = LinuxDesktopV3LaunchAdmission()
+    private var mainAppObservation: LinuxAppObservation? = null
     private var linuxV3FirstFailure: String? = null
     private data class LinuxAction(val kind: String, val session: String, val request: String,
         val deadline: Long = SystemClock.elapsedRealtime()+30000)
@@ -106,7 +107,7 @@ object NativeSessionHost {
     private val termuxShelfView = mutableStateOf(LauncherUi(message = "Termux は未接続です"))
     private fun termuxSession(slot: Int) = TermuxShelfSession(slot, { requests.incrementAndGet().toString() },
         { value -> if (slot == 0) ui.post { termuxShelfView.value = value }
-            else if (value.firstFailure != null) ui.post { launcherPlacementMessage.value = value.message } },
+            else if (value.firstFailure != null) ui.post { termuxShelfView.value = termuxShelfView.value.copy(message = value.message) } },
         { action -> worker.execute(action) })
     private val termuxShelf = termuxSession(0)
     private val additionalTermux = LauncherCapacity.workspaces.map(::termuxSession)
@@ -184,7 +185,31 @@ object NativeSessionHost {
         } else if (launcherUi.value.linux) disconnect()
         else productWorker.execute { linuxSessions.forEach { it.stop() } }
     }
-    internal fun launchShelfApp(source: LauncherSource, state: LauncherUi, entry: LauncherEntry) {
+    internal val appFailures = LauncherFailures()
+    internal val appDialog = mutableStateOf<ShelfAppDialog?>(null)
+
+    internal fun guardAppLaunch(source: LauncherSource, state: LauncherUi, entry: LauncherEntry, onShelf: Boolean = false, launch: () -> Unit) {
+        if (appDialog.value != null) return
+        val key = launcherAppKey(source, state, entry)
+        val failure = appFailures.reason(key)
+        if (failure == null) { launch(); return }
+        if (!onShelf) showLauncher()
+        appDialog.value = ShelfAppDialog(source, entry, key, hostName(source), failure) {
+            if (launcherAppKey(source, state, entry) == key) launch()
+        }
+    }
+
+    internal fun launchShelfApp(source: LauncherSource, state: LauncherUi, entry: LauncherEntry, onShelf: Boolean = false) =
+        guardAppLaunch(source, state, entry, onShelf) {
+            // Refreshes can change the opaque launch ID while the dialog is open.
+            val latest = shelfState(source)
+            val key = launcherAppKey(source, state, entry)
+            val current = latest.entries.firstOrNull { it.available && launcherAppKey(source, latest, it) == key }
+            if (current != null && latest.connected && !latest.menuRefreshFailed && !latest.busy)
+                dispatchShelfApp(source, latest, current)
+        }
+
+    private fun dispatchShelfApp(source: LauncherSource, state: LauncherUi, entry: LauncherEntry) {
         if (source == LauncherSource.TERMUX) productWorker.execute { safely {
             if (handle == 0L || !runtimeAdmission.open() || !termuxShelf.accepts(state, entry.id)) return@safely
             val capacity = admitLaunch(snapshot().getJSONObject("runtime"), source) ?: return@safely
@@ -202,7 +227,7 @@ object NativeSessionHost {
                     state.capture == runtimeSettingsCapture && companionLinux.shelf.entries.any { it.id == entry.id && it.available }) {
                     val number = capacity.nextWorkspace ?: return@safely
                     linuxSessions[number - 2].begin(handle, linuxProfile ?: return@safely, state.capture, entry.id,
-                        currentSceneEpoch(), xrState.get(), activityVisible.get())
+                        currentSceneEpoch(), xrState.get(), activityVisible.get(), appKey = launcherAppKey(source, state, entry))
                 }
             } }
         else if (state.v3) launchRegistered(state.runtime, state.capture, state.session, state.revision, entry.id)
@@ -1079,7 +1104,8 @@ object NativeSessionHost {
             }
             val number = capacity.nextWorkspace ?: return@safely
             if (linuxSessions[number - 2].begin(handle, profile, capture, id, currentSceneEpoch(), xrState.get(),
-                    activityVisible.get(), launched)) releasePanelTextFocus()
+                    activityVisible.get(), launched, appKey = launcherAppKey(LauncherSource.UBUNTU, launcherState,
+                        launcherState.entries.first { it.id == id }))) releasePanelTextFocus()
             else linuxMessage = "追加アプリの起動枠を準備できません。"
             return@safely
         }
@@ -1101,6 +1127,9 @@ object NativeSessionHost {
             .put("request_id",request).put("session",session).put("selection",catalog.selection(id)).toString())
         // This inspected catalog is consumed even on enqueue uncertainty or timeout.
         if(code==NativeBridge.ACCEPTED) {
+            mainAppObservation?.finish(appFailures)
+            val entry = catalog.entries.first { it.id == id }
+            mainAppObservation = LinuxAppObservation(session, request, appFailures.begin(launcherAppKey(LauncherSource.UBUNTU, launcherState, entry)))
             linuxAction=LinuxAction("launch",session,request);linuxMessage=null
             refreshShelfAfterAppExit = true
             if (placement != null && placementEpochAtClick == placementEpoch.get()) {
@@ -1187,6 +1216,12 @@ object NativeSessionHost {
             } catch(_:Exception) {catalogError="DESKTOP_CATALOG_INVALID"}
         }
         val view=LinuxDesktopV3Status.observe(handle,session,runtime,linuxV3FirstFailure)
+        mainAppObservation?.let {
+            if (it.read(handle, runtime, appFailures) || view.phase == "retired") {
+                it.finish(appFailures)
+                mainAppObservation = null
+            }
+        }
         linuxV3FirstFailure=view.firstFailure
         if (view.phase == "retired" && refreshShelfAfterAppExit) {
             refreshShelfAfterAppExit = false
@@ -1322,6 +1357,7 @@ object NativeSessionHost {
     fun initialize(context: Context) {
         val application = context.applicationContext
         if (launcherPreferences == null) {
+            appFailures.restore(application.getSharedPreferences("launcher_failures", Context.MODE_PRIVATE))
             launcherPreferences = application.getSharedPreferences("launcher", Context.MODE_PRIVATE)
             launcherFavorites.addAll(launcherPreferences?.getStringSet("favorites", emptySet()).orEmpty())
         }

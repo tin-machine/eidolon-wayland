@@ -29,14 +29,16 @@ pub fn command(mode: &str, nonce: &str) -> Result<String, &'static str> {
 pub(crate) async fn shelf<H: russh::client::Handler>(
     client: &russh::client::Handle<H>,
     path: &str,
+    diagnostics: bool,
     cancel: &CancellationToken,
 ) -> Result<serde_json::Value, &'static str> {
     const SOURCE: &str = include_str!("../../../scripts/termux/eidolon-shelf.py");
     let encoded: String = path.bytes().map(|b| format!("{b:02x}")).collect();
     let command = format!(
-        "exec {PYTHON} -I -B -c '{}' {encoded} {}",
+        "exec {PYTHON} -I -B -c '{}' {encoded} {} {}",
         SOURCE.replace(char::from(39), "'\\''"),
-        script_hash()
+        script_hash(),
+        u8::from(diagnostics)
     );
     let read = async {
         let channel = client
