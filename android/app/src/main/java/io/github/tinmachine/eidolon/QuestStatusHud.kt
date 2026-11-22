@@ -7,11 +7,14 @@ import android.os.SystemClock
 import android.view.Choreographer
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,13 +24,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
-import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -296,6 +299,7 @@ internal class QuestStatusHud(context: Context, private val owner: Long) {
     @Composable
     private fun DrawHud() {
         val current = presentation.value ?: return
+        if (current.rows.isEmpty()) return
         val theme = current.theme
         val motion = rotation.value && !NativeSessionHost.themeUi.value.reduced
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
@@ -307,15 +311,40 @@ internal class QuestStatusHud(context: Context, private val owner: Long) {
                             modifier = Modifier.weight(1f), color = rowColor(row, theme), fontSize = 12.sp, maxLines = 1)
                     }
                 }
-            } else for (row in current.rows) key(row.metric) {
-                Row(Modifier.fillMaxWidth().height(23.dp), verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    val color = rowColor(row, theme)
-                    if (row.rule != null) Ring(row, theme, color, motion)
-                    else Canvas(Modifier.size(17.dp)) {}
-                    Text(if (row.alert.active) "!" else "", Modifier.size(10.dp, 19.dp), color = color, fontSize = 13.sp)
-                    Text(row.metric.label, Modifier.weight(1f), color = color, fontSize = 15.sp, maxLines = 1)
-                    Text(row.text, color = color, fontSize = 15.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
+            } else {
+                val rowHeight = 23.dp
+                val stack = theme.ringStack
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (stack != null) {
+                        val width = stack.widthDp.dp
+                        val height = stack.heightDp.dp
+                        Box(Modifier.size(width, rowHeight * (current.rows.size - 1) + height)) {
+                            // Draw lower rings first. The same row spacing aligns their centers with the labels.
+                            for (index in current.rows.indices.reversed()) {
+                                val row = current.rows[index]
+                                if (row.rule != null) key(row.metric) {
+                                    Ring(row, theme, rowColor(row, theme), motion,
+                                        Modifier.offset(y = rowHeight * index).size(width, height), stack.strokeDp.dp)
+                                }
+                            }
+                        }
+                    }
+                    Column(Modifier.weight(1f)) {
+                        for (row in current.rows) key(row.metric) {
+                            Row(Modifier.fillMaxWidth().height(rowHeight), verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                                val color = rowColor(row, theme)
+                                if (stack == null) {
+                                    if (row.rule != null) Ring(row, theme, color, motion, Modifier.size(17.dp), 2.5.dp)
+                                    else Box(Modifier.size(17.dp))
+                                }
+                                Text(if (row.alert.active) "!" else "", Modifier.size(10.dp, 19.dp), color = color, fontSize = 13.sp)
+                                Text(row.metric.label, Modifier.weight(1f), color = color, fontSize = 15.sp, maxLines = 1)
+                                Text(row.text, color = color, fontSize = 15.sp, fontFamily = FontFamily.Monospace, maxLines = 1)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -332,7 +361,8 @@ internal class QuestStatusHud(context: Context, private val owner: Long) {
         Color(if (row.alert.active) row.rule?.color ?: theme.normalColor else theme.normalColor)
 
     @Composable
-    private fun Ring(row: HudRow, theme: HudTheme, color: Color, motion: Boolean) {
+    private fun Ring(row: HudRow, theme: HudTheme, color: Color, motion: Boolean,
+                     modifier: Modifier, strokeWidth: Dp) {
         val duration = row.rule?.motionMs?.takeIf { motion && row.alert.active } ?: 0
         val angle = remember(row.alert.startedAt, duration) { mutableFloatStateOf(0f) }
         LaunchedEffect(row.alert.startedAt, duration) {
@@ -344,9 +374,10 @@ internal class QuestStatusHud(context: Context, private val owner: Long) {
                 delay(40)
             } while (true)
         }
-        Canvas(Modifier.size(17.dp).padding(2.dp)) {
-            drawArc(color, -80f + angle.floatValue, 315f, false, style = Stroke(
-                2.5.dp.toPx(), cap = if (theme.roundedEnds) StrokeCap.Round else StrokeCap.Butt))
+        Canvas(modifier.padding(strokeWidth / 2f)) {
+            val start = if (theme.ringStack != null) 104f else -80f
+            drawArc(color, start + angle.floatValue, 315f, false, style = Stroke(
+                strokeWidth.toPx(), cap = if (theme.roundedEnds) StrokeCap.Round else StrokeCap.Butt))
         }
     }
 }

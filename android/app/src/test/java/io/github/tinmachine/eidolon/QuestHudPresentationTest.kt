@@ -37,6 +37,8 @@ class QuestHudPresentationTest {
         assertFalse(triggered(HudMetric.BATTERY, 20.0))
         assertTrue(triggered(HudMetric.BATTERY, 19.0))
         assertEquals(0, rings.rules.getValue(HudMetric.BATTERY).motionMs)
+        assertEquals(HudRingStack(), rings.ringStack)
+        assertEquals(listOf(.55f, -.51f, 1.4f), rings.offset)
         assertTrue(HudTheme.builtin(HudPreset.BAR).rules.values.all { it.motionMs == 0 })
     }
 
@@ -53,8 +55,17 @@ class QuestHudPresentationTest {
         assertTrue(custom.followHead)
         assertFalse(custom.faceViewer)
         assertTrue(custom.roundedEnds)
+        assertNull(custom.ringStack)
         assertEquals(0xff102030.toInt(), custom.normalColor)
         assertEquals(listOf(HudMetric.BATTERY, HudMetric.FPS), custom.metrics)
         assertEquals(mapOf(HudMetric.FPS to HudRule(HudComparison.BELOW, 72.0, 0xffffaa00.toInt(), 750)), custom.rules)
     }
+    @Test fun importedHudCanSelectStackedRingsAndTuneTheirDimensions() {
+        val config = JSONObject("""{"layout":"rings","anchor":"space","ring_cap":"flat",
+            "ring_layout":"stacked","stack_width_dp":124,"stack_height_dp":42,"stack_stroke_dp":6}
+        """.trimIndent())
+        assertEquals(HudRingStack(124f, 42f, 6f), HudTheme.fromNative(config)?.ringStack)
+        assertNull(HudTheme.fromNative(config.put("ring_layout", "inline"))?.ringStack)
+    }
+
 }
