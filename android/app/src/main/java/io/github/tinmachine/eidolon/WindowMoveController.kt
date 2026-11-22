@@ -27,6 +27,7 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
     private var cancelled=0L
     private var started=0L
     private var releaseRoute:String?=null
+    private var startedBy:String?=null
     private val starts=WindowMoveStarts()
     val phase:WindowMoveCapture.Phase? get()=capture?.phase
     fun blocksPose():Boolean=phase in setOf(WindowMoveCapture.Phase.DRAGGING,WindowMoveCapture.Phase.NEEDS_SUBMIT,WindowMoveCapture.Phase.COMMITTING)
@@ -37,19 +38,25 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
     private fun sourcePose(entity:Entity):WindowMotionPose?=runCatching {
         if(!entity.hasComponent<Transform>()) null else motion(getAbsoluteTransform(entity))
     }.getOrNull()
-    fun begin(entity:Entity,downTime:Long):Boolean {
+    internal fun beginTitleDrag(press: InputAdapter.TitlePress): Boolean =
+        begin(press.entity, press.downTime, titleBar = true)
+
+    fun begin(entity:Entity,downTime:Long,titleBar:Boolean=false):Boolean {
         if(closed || !live() || capture!=null || downTime<0) return false
         val state=controller(entity)
         val from=sourcePose(entity)
         val body=runCatching {motion(getAbsoluteTransform(parent))}.getOrNull()
+        if (titleBar && (state?.type != com.meta.spatial.toolkit.ControllerType.CONTROLLER ||
+                state.buttonState and ButtonBits.ButtonTriggerR == 0)) return false
         if(state?.isActive!=true || state.buttonState and PRIMARY==0 || from?.valid()!=true || body?.valid(true)!=true) {
             rejected++;lastReason="source_pose_unavailable";return false
         }
-        if(!starts.accept(entity.id,downTime)) {rejected++;lastReason="old_or_excess_source";return false}
+        if(!titleBar && !starts.accept(entity.id,downTime)) {rejected++;lastReason="old_or_excess_source";return false}
         val owner=NativeSessionHost.beginWindowMove(JSONObject(target),runtime,revision,entity.id)
         if(owner==null) {rejected++;lastReason="owner_unavailable";return false}
         ticket=owner;source=entity
         capture=WindowMoveCapture(WindowMoveIdentity(runtime,target,revision,owner.control.intent,entity.id,downTime),from,body,SystemClock.elapsedRealtime())
+        startedBy=if(titleBar) "client_titlebar" else "window_control"
         started++;releaseRoute=null;lastReason="dragging";return true
     }
     fun release(sourceId:Long,downTime:Long,route:String="sdk_up") {
@@ -91,7 +98,7 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
             val from=entity?.let(::sourcePose)
             when {
                 state?.isActive!=true || from==null -> c.cancel("source_pose_unavailable")
-                state.buttonState and PRIMARY==0 -> {
+                state.buttonState and (if (startedBy=="client_titlebar") ButtonBits.ButtonTriggerR else PRIMARY)==0 -> {
                     c.preview(c.identity,from,now)?.let {setAbsoluteTransform(parent,sdkPose(it))}
                     if(c.release(c.identity,now)) releaseRoute="controller_state_up"
                 }
@@ -142,7 +149,7 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
     }
     fun metadata():JSONObject=JSONObject().put("phase",phase?.name ?: lastPhase).put("reason",capture?.reason ?: lastReason)
         .put("source",source?.id?.toString() ?: JSONObject.NULL).put("request_id",capture?.request ?: lastRequest ?: JSONObject.NULL)
-        .put("release_route",releaseRoute ?: JSONObject.NULL).put("started",started).put("completed",completed).put("cancelled",cancelled).put("rejected",rejected)
+        .put("started_by",startedBy ?: JSONObject.NULL).put("release_route",releaseRoute ?: JSONObject.NULL).put("started",started).put("completed",completed).put("cancelled",cancelled).put("rejected",rejected)
     override fun close() {
         if(closed) return
         closed=true;capture?.cancel("owner_disposed");end(false)

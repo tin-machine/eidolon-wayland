@@ -641,13 +641,24 @@ impl Session {
         width: i32,
         height: i32,
     ) -> Result<(), &'static str> {
+        self.pointer_command(window, None, pointer, width, height)
+    }
+
+    pub(crate) fn pointer_command(
+        &mut self,
+        window: WindowId,
+        press_id: Option<eidolon_model::ids::CommandSeq>,
+        pointer: eidolon_model::pointer::PointerPacket,
+        width: i32,
+        height: i32,
+    ) -> Result<(), &'static str> {
         if self.closing || !self.owns_window(window) {
             return Err("STALE");
         }
         self.protocol
             .as_mut()
             .ok_or("NOT_READY")?
-            .pointer(window, pointer, width, height)?;
+            .pointer_command(window, press_id, pointer, width, height)?;
         if matches!(pointer.event, eidolon_model::pointer::PointerEvent::Buttons { changed, state } if changed & state != 0)
             && let Some(history) = self.v3_history.as_mut()
         {

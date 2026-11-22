@@ -1,7 +1,7 @@
 //! UV/hitとWayland pointerの境界。Wayland resourceはこのownerから持ち出さない。
 use super::{ProtocolState, SurfaceAttributes, with_states};
 use eidolon_model::{
-    ids::{InputSourceId, SurfaceId, WindowId},
+    ids::{CommandSeq, InputSourceId, SurfaceId, WindowId},
     input::{UvOrigin, surface_hits, window_at},
     layout::Viewport,
     pointer::{PointerButton, PointerCapture, PointerEvent, PointerPacket, PointerTracker},
@@ -32,9 +32,19 @@ pub struct PointerReport {
     pub last_delivered_serial: Option<u32>,
     /// Serial of the last actual pointer press, needed to correlate xdg_popup.grab.
     pub last_delivered_press_serial: Option<u32>,
+    /// Published only while the delivered primary press that authorized xdg_toplevel.move is held.
+    pub title_move: Option<TitleMove>,
+    pub title_move_requests: u64,
     pub axis_frames: u64,
     pub resets: u64,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct TitleMove {
+    pub window: WindowId,
+    pub source: InputSourceId,
+    pub press: CommandSeq,
+}
+
 #[derive(Clone, Copy)]
 struct GrabGeometry {
     origin: [f64; 2],
@@ -48,6 +58,7 @@ pub(super) struct PointerState {
     grab: Option<GrabGeometry>,
     axes: [bool; 2],
     last_time: u32,
+    primary: Option<(u32, TitleMove)>,
 }
 struct Hit {
     target: PointerCapture,
@@ -191,6 +202,17 @@ impl ProtocolState {
         width: i32,
         height: i32,
     ) -> Result<(), &'static str> {
+        self.pointer_command(window, None, packet, width, height)
+    }
+
+    pub(crate) fn pointer_command(
+        &mut self,
+        window: WindowId,
+        press_id: Option<CommandSeq>,
+        packet: PointerPacket,
+        width: i32,
+        height: i32,
+    ) -> Result<(), &'static str> {
         if !packet.valid() {
             return Err("INVALID_ARGUMENT");
         }
@@ -295,7 +317,24 @@ impl ProtocolState {
                     // Count only a real compositor button forwarded to a live
                     // hit/captured Wayland surface; reset-generated releases are
                     // deliberately excluded from this counter.
+                    if delta.button == PointerButton::Primary {
+                        self.input.pointer.primary = None;
+                        self.input.report.pointer.title_move = None;
+                    }
                     if self.pointer_surface(delta.target.surface).is_some() {
+                        if delta.pressed
+                            && delta.button == PointerButton::Primary
+                            && let Some(press_id) = press_id
+                        {
+                            self.input.pointer.primary = Some((
+                                serial.into(),
+                                TitleMove {
+                                    window: delta.target.window,
+                                    source: delta.target.source,
+                                    press: press_id,
+                                },
+                            ));
+                        }
                         self.input.report.pointer.delivered_buttons += 1;
                         self.input.report.pointer.last_delivered_source = Some(delta.target.source);
                         self.input.report.pointer.last_delivered_surface =
@@ -338,7 +377,49 @@ impl ProtocolState {
         pointer.frame(self);
         Ok(())
     }
+    pub(super) fn request_title_move(
+        &mut self,
+        surface: &WlSurface,
+        seat: &smithay::reexports::wayland_server::protocol::wl_seat::WlSeat,
+        serial: u32,
+    ) {
+        let Some((press_serial, gesture)) = self.input.pointer.primary else {
+            return;
+        };
+        if serial != press_serial
+            || !self.new_roles_open
+            || !self.popup_grabs.is_empty()
+            || smithay::input::Seat::<Self>::from_resource(seat).as_ref() != Some(&self._seat)
+            || !self
+                .toplevels
+                .get(&surface.id())
+                .is_some_and(|w| w.id == gesture.window && w.life == WindowLife::Mapped)
+        {
+            return;
+        }
+        let Some(capture) = self.input.pointer.tracker.capture() else {
+            return;
+        };
+        let Some(mut origin) = self.pointer_surface(capture.surface) else {
+            return;
+        };
+        // A decoration may live in a wl_subsurface. Do not follow xdg_popup parents.
+        while let Some(parent) = smithay::wayland::compositor::get_parent(&origin) {
+            origin = parent;
+        }
+        if origin == *surface
+            && capture.window == gesture.window
+            && capture.source == gesture.source
+            && self.input.report.pointer.title_move.is_none()
+        {
+            self.input.report.pointer.title_move_requests += 1;
+            self.input.report.pointer.title_move = Some(gesture);
+        }
+    }
+
     pub(super) fn reset_pointer(&mut self) {
+        self.input.pointer.primary = None;
+        self.input.report.pointer.title_move = None;
         let releases = self.input.pointer.tracker.reset();
         let had_state = !releases.is_empty()
             || self.input.pointer.hover.is_some()

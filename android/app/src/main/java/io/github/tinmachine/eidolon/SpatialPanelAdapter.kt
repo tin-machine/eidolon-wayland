@@ -1014,7 +1014,13 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         val placement=(0 until windows.length()).map {windows.getJSONObject(it)}.firstOrNull {
             it.getString("window")==current.key.getString("window") && it.getString("session")==current.key.getString("session")
         }?.getJSONObject("placement") ?: return
-        current.move?.tick(runtime,placement)
+        val move = current.move ?: return
+        val request = runtime.optJSONObject("app")?.optJSONObject("input")?.optJSONObject("pointer")?.optJSONObject("title_move")
+        if (request != null && request.optString("window") == current.key.optString("window") &&
+            move.phase == null && !current.editing && current.menu?.phase == null) {
+            current.input?.takeTitlePress(request, runtime.getLong("input_resets"))?.let(move::beginTitleDrag)
+        }
+        move.tick(runtime,placement)
     }
     private fun applyBackground(handle: Long, runtime: JSONObject) {
         val workspace=runtime.getJSONObject("workspace");val sdk=runtimeScene ?: return
