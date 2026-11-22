@@ -102,6 +102,8 @@ impl Definition {
 pub enum Operation {
     Shelf {
         path: String,
+        #[serde(default)]
+        diagnostics: bool,
     },
     Save {
         path: String,
@@ -131,7 +133,7 @@ impl Operation {
                     && expected_revision.as_ref().is_none_or(|v| hash(v))
                     && definition.valid()
             }
-            Self::Shelf { path } | Self::Reload { path } => text(path, 1024),
+            Self::Shelf { path, .. } | Self::Reload { path } => text(path, 1024),
             Self::Page { revision, offset } => {
                 hash(revision) && *offset <= 64 && offset.is_multiple_of(8)
             }

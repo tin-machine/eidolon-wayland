@@ -23,7 +23,14 @@ internal class TermuxShelfSession(
     private var connectSent: String? = null
     private var request: String? = null
     private var launchRequest: String? = null
-    private var initialWindows = 0
+    private var attempt: LauncherFailures.Attempt? = null
+    private var observation: TermuxAppObservation? = null
+    private val failures get() = NativeSessionHost.appFailures
+    private fun endObservation() {
+        attempt?.let(failures::finish)
+        attempt = null
+        observation = null
+    }
     private var deadline = 0L
     private var stopping = false
     private var retiring = false
@@ -45,11 +52,18 @@ internal class TermuxShelfSession(
     fun openApp(primary: Long, expected: LauncherUi, id: String, scene: Long, xr: String, visible: Boolean) {
         if (handle != 0L) return
         open(primary, false, expected.path, scene, xr, visible)
-        if (handle != 0L) queuedApp = id to expected.revision
+        if (handle != 0L) {
+            queuedApp = id to expected.revision
+            val entry = expected.entries.first { it.id == id }
+            attempt = failures.begin(launcherAppKey(LauncherSource.TERMUX, expected, entry))
+        }
     }
 
     fun unavailable(reason: String) = update(LauncherUi(message = reason, firstFailure = "TERMUX_UNAVAILABLE"))
-    private fun fail(reason: String) {
+    private fun fail(reason: String, log: String = "Termux · 起動要求の完了を確認できませんでした") {
+        attempt?.takeIf { observation != null && !presentedApp }?.let { failures.record(it, AppFailure(reason, log)) }
+        endObservation()
+        queuedApp = null
         if (slot > 0) stop()
         wantMenu = false
         request = null
@@ -105,9 +119,12 @@ internal class TermuxShelfSession(
                 .put("selection", target.put("path", path).put("builtin", view.builtin))
             "start_app"
         }
-        initialWindows = app?.optJSONArray("windows")?.length() ?: 0
+        val entry = expected.entries.first { it.id == id }
+        if (attempt == null) attempt = failures.begin(launcherAppKey(LauncherSource.TERMUX, expected, entry))
         launchRequest = send(type, args)
         if (launchRequest == null) { fail("Termux で起動を受け付けられませんでした"); return }
+        val nonce = if (running) app.getString("nonce") else args.getString("nonce")
+        observation = TermuxAppObservation(view.session, nonce, launchRequest.takeIf { running })
         deadline = SystemClock.elapsedRealtime() + 45000
         update(view.copy(message = "起動中", busy = true))
     }
@@ -115,6 +132,7 @@ internal class TermuxShelfSession(
         if (handle == 0L) return
         helper?.let(TermuxStarter::cancel)
         helper = null
+        endObservation()
         stoppingApp = occupiesApp
         stopping = true
         wantMenu = false
@@ -153,8 +171,31 @@ internal class TermuxShelfSession(
         val phase = tx.optString("state")
         val session = tx.optString("session")
         val running = state.optJSONObject("app")?.optString("state")
+        val active = attempt
+        if (!stopping && active != null) {
+            if (active.event == null) observation?.event(state)?.let { failures.bind(active, it) }
+            when (val result = observation?.read(state)) {
+                AppObservation.Displayed -> if (!presentedApp) {
+                    launchRequest = null
+                    presentedApp = true
+                    failures.record(active, null)
+                    update(view.copy(busy = false, message = "起動しました"))
+                }
+                AppObservation.Completed, AppObservation.Cancelled, is AppObservation.Failed -> {
+                    if (result == AppObservation.Completed) failures.record(active, null)
+                    if (result is AppObservation.Failed) failures.record(active, AppFailure(result.reason, result.log, result.event))
+                    endObservation()
+                    launchRequest = null
+                    presentedApp = false
+                    update(view.copy(busy = false, message = "アプリが終了しました"))
+                    if (slot > 0) stop()
+                }
+                null -> Unit
+            }
+        }
         if (presentedApp && (running in setOf(null, "stopped") || phase in setOf("Failed", "Disconnected"))) {
             presentedApp = false
+            endObservation()
             if (slot > 0) stop()
         }
         if (stopping) {
@@ -203,7 +244,7 @@ internal class TermuxShelfSession(
             update(view.copy(message = catalogMessage))
         if (wantMenu) {
             wantMenu = false
-            request = send("catalog", JSONObject().put("session", session).put("operation", JSONObject().put("kind", "shelf").put("path", path)))
+            request = send("catalog", JSONObject().put("session", session).put("operation", JSONObject().put("kind", "shelf").put("path", path).put("diagnostics", slot == 0)))
             if (request == null) fail("Termux の一覧取得を開始できません")
         }
         if (request != null) {
@@ -216,11 +257,18 @@ internal class TermuxShelfSession(
                 val entries = List(rows.length()) {
                     val row = rows.getJSONObject(it)
                     LauncherEntry(row.getString("id"), row.getString("label"), row.getString("icon"), row.getBoolean("available"),
-                        row.optString("error").takeUnless { row.isNull("error") }, row.optString("desktop_id").takeIf { it.isNotEmpty() })
+                        row.optString("error").takeUnless { row.isNull("error") }, row.opt("desktop_id") as? String)
                 }
                 update(LauncherUi(runtime = owner, session = session, path = path, connected = true, canStop = true,
                     entries = entries, total = entries.size, revision = data.getString("revision"), builtin = data.getBoolean("builtin"),
                     catalogComplete = true, message = catalogMessage))
+                if (slot == 0) data.optJSONArray("crashes")?.let { crashes ->
+                    for (i in 0 until crashes.length()) {
+                        val row = crashes.optJSONObject(i) ?: continue
+                        val entry = entries.singleOrNull { it.id == row.optString("id") && it.desktopId == null } ?: continue
+                        failures.importCrash(launcherAppKey(LauncherSource.TERMUX, view, entry), row)
+                    }
+                }
             }
         }
         queuedApp?.takeIf { view.connected && !view.busy && !wantMenu && request == null }?.let { (id, revision) ->
@@ -231,9 +279,8 @@ internal class TermuxShelfSession(
         }
         if (launchRequest != null) {
             val app = state.optJSONObject("app")
-            if ((app?.optJSONArray("windows")?.length() ?: 0) > initialWindows) {
-                launchRequest = null; presentedApp = true; update(view.copy(busy = false, message = "起動しました"))
-            } else if (app != null && !app.isNull("error")) fail("起動できません（${app.optString("error")}）")
+            if (app != null && app.opt("nonce") == observation?.nonce && !app.isNull("error"))
+                fail("Termux がアプリの起動を完了できませんでした", "Termux · app.error")
         }
     }
     fun diagnostics(): JSONObject = JSONObject().apply {
@@ -252,6 +299,7 @@ internal class TermuxShelfSession(
     }
 
     private fun clear() {
+        endObservation()
         queuedApp = null; presentedApp = false; launchRequest = null; wantMenu = false; request = null
         handle = 0; stoppingApp = false; borrowed = false; snapshot = null; retiring = false; stopping = false
         connectSent = null; update(LauncherUi(message = "Termux は未接続です"))

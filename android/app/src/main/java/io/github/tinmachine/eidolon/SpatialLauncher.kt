@@ -528,6 +528,7 @@ internal class SpatialLauncher(
         shelfListener?.let { (obj, token) -> runCatching { obj.removeInputListener(token) } }
         shelfListener = null
         ShelfReasonFocus.clear()
+        if (shelf != null) NativeSessionHost.appDialog.value = null
         shelfKeyboard?.close()
         shelfKeyboard = null
         shelf?.destroy()
@@ -877,7 +878,10 @@ internal class SpatialLauncher(
             if (latest.runtime != snapshot.runtime || latest.capture != snapshot.capture ||
                 latest.session != snapshot.session || latest.revision != snapshot.revision || latest.busy) return
             val wire = PanelPoseCodec.fromSdk(pose) ?: return
-            NativeSessionHost.launchInPlace(snapshot, selection.entry.id, wire, NativeSessionHost.currentSceneEpoch())
+            val scene = NativeSessionHost.currentSceneEpoch()
+            NativeSessionHost.guardAppLaunch(selection.source, snapshot, selection.entry, onShelf = true) {
+                NativeSessionHost.launchInPlace(snapshot, selection.entry.id, wire, scene)
+            }
         }
     }
 

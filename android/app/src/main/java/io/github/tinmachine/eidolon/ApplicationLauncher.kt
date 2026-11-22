@@ -2,6 +2,10 @@
 
 package io.github.tinmachine.eidolon
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.hoverable
@@ -21,6 +25,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
@@ -52,6 +58,7 @@ private fun icon(name: String): String = when(name) {
 }
 
 private fun launchUnavailableReason(code: String?): String? = when (code) {
+    "GUI_NOT_VERIFIED" -> "Termux にあるアプリですが、Eidolon から起動するための GUI 設定がまだ確認できていません。"
     "terminal_required" -> "端末が必要"
     "dbus_activation_required" -> "D-Bus による起動が必要"
     "executable_unavailable" -> "実行ファイルが見つかりません"
@@ -83,7 +90,10 @@ fun LauncherStrip(open: () -> Unit = NativeSessionHost::showLauncher) {
             }}) {Text(when {state.canRecover -> "前回の回収";state.canInspect -> "アプリを確認";state.canConnect -> "Linuxへ接続";else -> "停止・切断"})}
         for(entry in state.entries.filter {it.id!="terminal"}.take(2)) {
             Button(modifier=Modifier.weight(1f),enabled=state.connected && entry.available && !state.busy && !NativeSessionHost.terminalBusy.value,
-                onClick={launch(state,entry.id)},
+                onClick={
+                    val source = if (state.linux) LauncherSource.UBUNTU else LauncherSource.TERMUX
+                    NativeSessionHost.guardAppLaunch(source, state, entry) { launch(state, entry.id) }
+                },
                 colors=ButtonDefaults.buttonColors(containerColor=Color(0xFFD6C6FF),contentColor=Color(0xFF28203D))) {
                 Text("${icon(entry.icon)} ${entry.label}",maxLines=1,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             }
@@ -138,7 +148,8 @@ fun LauncherSettings(
     MaterialTheme(colorScheme = launcherColors) {
         BoxWithConstraints(modifier.fillMaxSize().background(Color(0xFF281D30)).padding(12.dp)) {
             val wide = maxWidth >= 620.dp
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            val dialog = NativeSessionHost.appDialog.value
+            Column(if (dialog == null) Modifier else Modifier.clearAndSetSemantics { }.onPreviewKeyEvent { true }, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(modifier = Modifier.weight(1f), enabled = placeShelf != null || finishShelf != null,
                         onClick = { (placeShelf ?: finishShelf)?.invoke() }) {
@@ -225,6 +236,53 @@ fun LauncherSettings(
                     }
                 }
             }
+            if (dialog != null) AppFailureDialog(dialog)
+        }
+    }
+}
+
+internal class ShelfAppDialog(val source: LauncherSource, val entry: LauncherEntry, val key: String,
+    val host: String, val failure: AppFailure, val retry: (() -> Unit)?)
+
+@Composable
+private fun AppFailureDialog(dialog: ShelfAppDialog) {
+    var details by remember(dialog) { mutableStateOf(false) }
+    val dismiss = { if (NativeSessionHost.appDialog.value === dialog) NativeSessionHost.appDialog.value = null }
+    val closeFocus = remember { FocusRequester() }
+    LaunchedEffect(dialog) { closeFocus.requestFocus() }
+    val failure = NativeSessionHost.appFailures.reason(dialog.key) ?: dialog.failure
+    val latest = NativeSessionHost.shelfState(dialog.source)
+    val canRetry = latest.entries.any { launcherAppKey(dialog.source, latest, it) == dialog.key && it.available } &&
+        latest.connected && !latest.busy && !latest.menuRefreshFailed && NativeSessionHost.launcherCapacity.value.refusal(dialog.source) == null
+    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.7f))
+        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { dismiss() },
+        contentAlignment = Alignment.Center) {
+        Surface(modifier = Modifier.widthIn(max = 520.dp).fillMaxWidth().padding(16.dp)
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+            shape = MaterialTheme.shapes.large, color = Color(0xFF402E48), border = BorderStroke(2.dp, candy)) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(dialog.entry.label, style = MaterialTheme.typography.headlineSmall)
+                Text(dialog.host + " · " + (dialog.entry.desktopId ?: dialog.entry.id), color = Color(0xFFBBF2DC))
+                Text(if (dialog.retry != null) "前回の起動について" else "起動できない理由", color = candy)
+                Text(failure.reason)
+                if (failure.log.isNotBlank()) {
+                    TextButton(onClick = {
+                        details = !details
+                        if (details && failure.event != null && dialog.source == LauncherSource.TERMUX &&
+                            !failure.log.startsWith("Android クラッシュログ")) NativeSessionHost.refreshShelfHost(dialog.source)
+                    }) { Text(if (details) "診断ログを閉じる" else "診断ログを見る") }
+                    if (details) Text(failure.log, Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), style = MaterialTheme.typography.bodyMedium)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(modifier = Modifier.focusRequester(closeFocus), onClick = dismiss) { Text("閉じる") }
+                    if (dialog.retry != null) OutlinedButton(enabled = canRetry, onClick = {
+                        if (NativeSessionHost.appDialog.value === dialog) {
+                            dismiss()
+                            dialog.retry.invoke()
+                        }
+                    }) { Text("再試行") }
+                }
+            }
         }
     }
 }
@@ -241,31 +299,39 @@ internal object ShelfReasonFocus {
     fun clear() { hovered = null }
 }
 
-private fun hostName(source: LauncherSource) = if (source.linux)
+internal fun hostName(source: LauncherSource) = if (source.linux)
     NativeSessionHost.linuxConnectionUi.value.displayName.ifBlank { source.title } else source.title
 
 @Composable
 private fun ShelfAppCard(source: LauncherSource, entry: LauncherEntry, state: LauncherUi,
     place: ((LauncherUi, LauncherEntry, Boolean) -> Unit)?) {
     var menu by remember { mutableStateOf(false) }
-    var messageAtClick by remember { mutableStateOf("") }
-    var notice by remember(state.runtime, state.session, state.revision, entry.id) { mutableStateOf<String?>(null) }
+    val host = launcherSourceKey(source)
+    val key = remember(host, state.path, entry.id, entry.desktopId) { launcherAppKey(source, state, entry) }
+    val failure = NativeSessionHost.appFailures.reason(key)
     val favorite = launcherFavoriteKey(source, entry)
     val refusal = NativeSessionHost.launcherCapacity.value.refusal(source)
     val live = refusal == null && state.connected && !state.menuRefreshFailed && !state.busy && entry.available &&
         state.entries.any { it.id == entry.id && it.available }
     OutlinedCard(onClick = {
-        if (live) { messageAtClick = state.message; notice = "起動を要求しました"; NativeSessionHost.launchShelfApp(source, state, entry) }
-        else if (refusal != null) notice = refusal
-        else notice = launchUnavailableReason(entry.error) ?: if (entry.error != null) LauncherMessages.error(entry.error) else state.message
+        if (failure != null || live) NativeSessionHost.launchShelfApp(source, state, entry, onShelf = true)
+        else {
+            val reason = refusal ?: launchUnavailableReason(entry.error) ?: entry.error?.let(LauncherMessages::error) ?: state.message
+            NativeSessionHost.appDialog.value = ShelfAppDialog(source, entry, key, hostName(source), AppFailure(reason, ""), null)
+        }
     }, colors = CardDefaults.outlinedCardColors(containerColor = Color(0xFF402E48)), border = BorderStroke(1.dp, Color(0xFFA987A5))) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(icon(entry.icon), color = candy)
             Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
                 Text(entry.label, color = Color.White, style = MaterialTheme.typography.titleMedium)
                 Text(hostName(source), color = Color(0xFFBBF2DC))
-                val message = if (notice != null && (state.message != messageAtClick || state.firstFailure != null || state.menuRefreshFailed)) state.message else notice
-                if (message != null || !live) Text(message ?: refusal ?: launchUnavailableReason(entry.error) ?: "起動準備待ち", color = Color(0xFFFFD59E))
+            }
+            Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                if (failure != null) Box(Modifier.fillMaxSize().background(Color(0xFFFFCE71), CircleShape)
+                    .clearAndSetSemantics { contentDescription = entry.label + " · 前回の起動で問題がありました" },
+                    contentAlignment = Alignment.Center) {
+                    Text("!", color = Color(0xFF281D30), fontWeight = FontWeight.Bold)
+                }
             }
             TextButton(onClick = { menu = !menu }, modifier = Modifier.semantics { contentDescription = entry.label + " の操作" }) { Text("⋯") }
         }
@@ -282,7 +348,7 @@ private fun ShelfAppCard(source: LauncherSource, entry: LauncherEntry, state: La
     }
 }
 
-private fun launcherSourceKey(source: LauncherSource): String = if (source.linux)
+internal fun launcherSourceKey(source: LauncherSource): String = if (source.linux)
     "ubuntu:${NativeSessionHost.linuxConnectionUi.value.savedBinding}" else source.profile
 
 private fun launcherFavoriteKey(source: LauncherSource, entry: LauncherEntry): String =
