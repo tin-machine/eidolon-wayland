@@ -6,9 +6,15 @@
 //! is called only after V3PresentationObserver::tick() returns that decision.
 use eidolon_model::{
     ids::WindowId,
-    linux_desktop_v3::presentation::{Life, NativeOrigin, NativeWindowFact, Parent, Role},
+    linux_desktop_v3::{
+        AppId,
+        presentation::{Life, MAIN_WAIT_MS, NativeOrigin, NativeWindowFact, Parent, Role},
+    },
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
 #[derive(Clone)]
 pub struct WindowSample {
@@ -32,6 +38,8 @@ pub struct I3WindowCut {
     pub windows: Vec<NativeWindowFact>,
     pub admitted: BTreeSet<WindowId>,
     pub fixed_main: Option<WindowId>,
+    /// Previous desktop-entry root withdrawn by this owner; does not authorize a new target.
+    pub released_main: Option<WindowId>,
     pub admission_open: bool,
 }
 
@@ -53,6 +61,8 @@ pub struct WindowHistory {
     // Live entries may have lower IDs than this floor.
     retired_floor: i64,
     fixed_main: Option<WindowId>,
+    released_main: Option<WindowId>,
+    overlap_until: Option<Instant>,
     started: bool,
     admission_open: bool,
 }
@@ -60,6 +70,8 @@ impl WindowHistory {
     pub fn new(origin: NativeOrigin, before: impl IntoIterator<Item = WindowId>) -> Self {
         Self {
             origin,
+            overlap_until: None,
+            released_main: None,
             before: before.into_iter().collect(),
             entries: BTreeMap::new(),
             reserved_slots: BTreeSet::new(),
@@ -248,14 +260,35 @@ impl WindowHistory {
                 );
             }
         }
-        if self.fixed_main.is_some_and(|main| {
-            self.entries
+        if let Some(main) = self.fixed_main
+            && self
+                .entries
                 .get(&main)
                 .is_none_or(|e| e.sample.life == Life::Destroyed)
-        }) {
+        {
+            self.release_startup_root(main)?;
+        }
+        Ok(())
+    }
+
+    fn can_handoff(&self) -> bool {
+        self.admission_open
+            && matches!(self.origin.app_id(), AppId::DesktopEntry(_))
+            && self.released_main.is_none()
+            && self
+                .overlap_until
+                .is_none_or(|until| Instant::now() < until)
+    }
+
+    fn release_startup_root(&mut self, main: WindowId) -> Result<(), &'static str> {
+        if !self.can_handoff() {
             self.seal();
             return Err("APP_WINDOW_UNSUPPORTED");
         }
+        self.released_main = Some(main);
+        self.fixed_main = None;
+        self.overlap_until = None;
+        // Native/SDK retirement still owns the old slot and tombstone.
         Ok(())
     }
 
@@ -316,34 +349,55 @@ impl WindowHistory {
         if active > 9 {
             return Err("APP_WINDOW_UNSUPPORTED");
         }
-        // Any second explicit root (even with a forged app_id) is unsupported.
-        let all_roots: Vec<_> = self
+        // A desktop entry can briefly expose both its splash and editor. Only
+        // one root and its actual children are ever projected. Ignore the old
+        // unmapped role if the toolkit keeps it around after the handoff.
+        let roots: Vec<_> = self
             .entries
             .iter()
-            .filter(|(_, e)| {
-                e.sample.life != Life::Destroyed && matches!(e.sample.parent, Parent::None {})
+            .filter(|(id, e)| {
+                e.sample.life != Life::Destroyed
+                    && matches!(e.sample.parent, Parent::None {})
+                    && Some(**id) != self.released_main
             })
             .map(|(id, _)| *id)
             .collect();
-        let roots: Vec<_> = all_roots
-            .iter()
-            .copied()
-            .filter(|id| {
-                self.entries.get(id).is_some_and(|e| {
-                    self.origin.main_app_id_matches(e.sample.app_id.as_deref())
-                        && !self.before.contains(id)
-                })
-            })
-            .collect();
-        if all_roots.len() > 1
-            || self
-                .fixed_main
-                .is_some_and(|main| all_roots.iter().any(|id| *id != main))
-        {
-            self.seal();
-            return Err("APP_WINDOW_UNSUPPORTED");
+        // Start the ambiguity deadline when roots overlap. Loading resources
+        // while a single splash is visible can take minutes on first launch.
+        if roots.len() > 1 {
+            self.overlap_until
+                .get_or_insert_with(|| Instant::now() + Duration::from_millis(MAIN_WAIT_MS));
+            if roots.len() != 2
+                || !self.can_handoff()
+                || roots.iter().any(|id| self.before.contains(id))
+            {
+                self.seal();
+                return Err("APP_WINDOW_UNSUPPORTED");
+            }
+        } else {
+            self.overlap_until = None;
         }
-        let candidate = self.fixed_main.or_else(|| roots.first().copied());
+        if let Some(main) = self.fixed_main
+            && self.entries[&main].sample.life == Life::Unmapped
+            && roots
+                .iter()
+                .any(|id| *id != main && self.entries[id].sample.life == Life::Mapped)
+        {
+            self.release_startup_root(main)?;
+        }
+        let candidate = self.fixed_main.or_else(|| {
+            roots
+                .iter()
+                .copied()
+                .filter(|id| {
+                    Some(*id) != self.released_main
+                        && !self.before.contains(id)
+                        && self
+                            .origin
+                            .main_app_id_matches(self.entries[id].sample.app_id.as_deref())
+                })
+                .min_by_key(|id| (self.entries[id].sample.life != Life::Mapped, *id))
+        });
         let mut eligible = BTreeMap::new();
         if let Some(id) = candidate {
             eligible.insert(id, Role::Main);
@@ -411,11 +465,12 @@ impl WindowHistory {
             windows,
             admitted,
             fixed_main: self.fixed_main,
+            released_main: self.released_main.filter(|_| self.fixed_main.is_none()),
             admission_open: self.admission_open,
         })
     }
 
-    /// Only a newly_adopted_main returned by I4 may permanently fix the root.
+    /// Commit only the root just adopted by I4 for this presentation.
     pub fn commit_main(&mut self, id: WindowId) -> Result<(), &'static str> {
         if !self.admission_open || !self.started || self.fixed_main.is_some() {
             return Err("APP_WINDOW_UNSUPPORTED");
@@ -919,6 +974,86 @@ mod tests {
             BTreeSet::from([main.window, waiting.window])
         );
         assert_eq!(h.reserved_slots.len(), 9);
+    }
+
+    fn desktop_origin() -> NativeOrigin {
+        let mut record = origin().record();
+        record["app_id"] = format!("desktop-entry:{}", "a".repeat(64)).into();
+        NativeOrigin::parse(&serde_json::to_vec(&record).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn desktop_startup_handoff_accepts_gap_or_overlap_and_retains_retirement() {
+        let owner = desktop_origin();
+        let splash = sample(&owner, 1, Parent::None {}, Life::Mapped);
+        let editor = sample(&owner, 2, Parent::None {}, Life::Mapped);
+        let welcome = sample(
+            &owner,
+            3,
+            Parent::Resolved {
+                window: editor.window,
+            },
+            Life::Mapped,
+        );
+        for overlap in [false, true] {
+            let mut h = WindowHistory::new(owner.clone(), []);
+            h.started();
+            h.observe(std::slice::from_ref(&splash)).unwrap();
+            h.commit_main(splash.window).unwrap();
+            assert_eq!(h.cut().unwrap().admitted, BTreeSet::from([splash.window]));
+            if overlap {
+                h.observe(&[splash.clone(), editor.clone(), welcome.clone()])
+                    .unwrap();
+                assert_eq!(h.cut().unwrap().admitted, BTreeSet::from([splash.window]));
+                let unmapped = WindowSample {
+                    life: Life::Unmapped,
+                    ..splash.clone()
+                };
+                h.observe(&[unmapped, editor.clone(), welcome.clone()])
+                    .unwrap();
+            } else {
+                h.observe(&[]).unwrap();
+                assert!(h.cut().unwrap().admitted.is_empty());
+                h.observe(&[editor.clone(), welcome.clone()]).unwrap();
+            }
+            let cut = h.cut().unwrap();
+            assert_eq!(cut.released_main, Some(splash.window));
+            assert_eq!(cut.fixed_main, None);
+            assert!(cut.admitted.is_empty());
+            h.commit_main(editor.window).unwrap();
+            h.observe(&[editor.clone(), welcome.clone()]).unwrap();
+            assert_eq!(
+                h.cut().unwrap().admitted,
+                BTreeSet::from([editor.window, welcome.window])
+            );
+            assert!(!h.confirm_retired(splash.window, true, false));
+            assert!(h.confirm_retired(splash.window, true, true));
+            assert_eq!(h.observe(&[]), Err("APP_WINDOW_UNSUPPORTED"));
+        }
+    }
+
+    #[test]
+    fn desktop_startup_rejects_foreign_roots_excess_roots_and_late_handoffs() {
+        let owner = desktop_origin();
+        let main = sample(&owner, 1, Parent::None {}, Life::Mapped);
+        let second = sample(&owner, 2, Parent::None {}, Life::Mapped);
+        let mut h = WindowHistory::new(owner.clone(), []);
+        h.started();
+        h.observe(std::slice::from_ref(&main)).unwrap();
+        h.commit_main(main.window).unwrap();
+        let foreign = sample(&origin(), 2, Parent::None {}, Life::Mapped);
+        assert_eq!(
+            h.observe(&[main.clone(), foreign]),
+            Err("APP_ORIGIN_UNKNOWN")
+        );
+        h.overlap_until = Some(Instant::now());
+        h.observe(&[main.clone(), second.clone()]).unwrap();
+        assert_eq!(h.cut().err(), Some("APP_WINDOW_UNSUPPORTED"));
+
+        let mut h = WindowHistory::new(owner.clone(), []);
+        let third = sample(&owner, 3, Parent::None {}, Life::Mapped);
+        h.observe(&[main, second, third]).unwrap();
+        assert_eq!(h.cut().err(), Some("APP_WINDOW_UNSUPPORTED"));
     }
 
     #[test]

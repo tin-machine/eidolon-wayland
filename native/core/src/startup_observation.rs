@@ -80,6 +80,15 @@ impl V3PresentationObserver {
         })
     }
 
+    pub(crate) fn release_startup_main(
+        &mut self,
+        origin: &NativeOrigin,
+        main: WindowId,
+        now_ms: u64,
+    ) -> Result<()> {
+        self.startup.release_startup_main(origin, main, now_ms)
+    }
+
     pub fn snapshot(&self) -> Result<PresentationSummary> {
         PresentationSummary::from_startup(&self.startup)
     }
@@ -89,7 +98,7 @@ impl V3PresentationObserver {
     }
 
     /// The same native/SDK proof releases I3 history and B1's role cache.
-    /// Keep the fixed main identity until the whole origin is retired.
+    /// Keep the current main identity while it is still in the presentation.
     pub(crate) fn retire_confirmed_window(
         &mut self,
         proof: &crate::v3_retirement::WindowRetirementProof,
@@ -176,6 +185,128 @@ mod tests {
         let repeated = observer.tick(&mapped);
         assert!(repeated.is_ok(), "same tick time is monotonic");
         assert_eq!(repeated.unwrap().newly_adopted_main, None);
+    }
+
+    #[test]
+    fn desktop_handoff_requires_fresh_sdk_evidence_and_cannot_extend_wait() {
+        use eidolon_model::{
+            ids::CommandSeq,
+            linux_desktop_v3::presentation::{
+                MAIN_WAIT_MS, NativeAckFact, NativeCreateIdentity, NativeFrameFact,
+                NativePanelFact, NativeSdkFact,
+            },
+            surface::TargetKey,
+        };
+        let mut record = origin().record();
+        record["app_id"] = format!("desktop-entry:{}", "a".repeat(64)).into();
+        let owner = NativeOrigin::parse(&serde_json::to_vec(&record).unwrap()).unwrap();
+        let scene = SceneEpoch::new(1).unwrap();
+        let splash = WindowId::new(1).unwrap();
+        let editor = WindowId::new(2).unwrap();
+        let observe = |now, root: Option<WindowId>, evidence: Option<WindowId>| {
+            let windows: Vec<_> = root
+                .into_iter()
+                .map(|window| NativeWindowFact {
+                    origin: owner.clone(),
+                    window,
+                    life: Life::Mapped,
+                    role: Role::Main,
+                    app_id: None,
+                    parent: Parent::None {},
+                })
+                .collect();
+            let mut obs = Observation::native_builder(owner.clone(), now)
+                .lifecycle(true, Some(scene), true)
+                .transport(Some(owner.clone()), None, false, false)
+                .windows(windows.len() as u32, windows);
+            if let Some(window) = evidence {
+                let runtime = owner.runtime();
+                let target =
+                    TargetKey::from_raw(owner.session().get(), window.get(), scene.get(), 1)
+                        .unwrap();
+                let create = NativeCreateIdentity {
+                    runtime,
+                    target,
+                    command_seq: CommandSeq::new(window.get()).unwrap(),
+                };
+                obs = obs
+                    .current_create(Some(create.clone()))
+                    .panel(Some(NativePanelFact {
+                        create: create.clone(),
+                        applied: true,
+                        error: false,
+                    }))
+                    .ack(Some(NativeAckFact {
+                        create,
+                        success: true,
+                    }))
+                    .sdk(Some(NativeSdkFact {
+                        runtime,
+                        target,
+                        bound: true,
+                        diagnostic: false,
+                    }))
+                    .frame(Some(NativeFrameFact {
+                        runtime,
+                        target,
+                        frames: 1,
+                        paused: false,
+                        presentation_paused: false,
+                        windows_mode: true,
+                        content_frame_seen: true,
+                    }));
+            }
+            obs.finish().unwrap()
+        };
+        let mut observer = V3PresentationObserver::begin(owner.clone(), 0, vec![]).unwrap();
+        observer.tick(&observe(100, Some(splash), None)).unwrap();
+        assert!(
+            observer
+                .tick(&observe(120, Some(splash), Some(splash)))
+                .unwrap()
+                .main_input_eligible
+        );
+        observer.release_startup_main(&owner, splash, 130).unwrap();
+        let gap = observer.tick(&observe(130, None, None)).unwrap();
+        assert_eq!(gap.presentation.state, PresentationState::AwaitingMain);
+        assert!(!gap.main_input_eligible);
+        observer.release_startup_main(&owner, splash, 150).unwrap();
+        let cancelled = Observation::native_builder(owner.clone(), 150)
+            .lifecycle(true, Some(scene), true)
+            .transport(None, None, true, false)
+            .finish()
+            .unwrap();
+        let stopped = observer.startup().advance(&cancelled).unwrap().summary();
+        assert_eq!(stopped["state"], "stopping");
+        assert!(stopped["first_failure"].is_null());
+        let waiting = observer.startup().clone();
+        assert_eq!(
+            waiting
+                .advance(&observe(130 + MAIN_WAIT_MS, None, None))
+                .unwrap()
+                .summary()["first_failure"],
+            "APP_LAUNCH_TIMEOUT"
+        );
+        let adopted = observer.tick(&observe(160, Some(editor), None)).unwrap();
+        assert_eq!(adopted.newly_adopted_main, Some(editor));
+        assert!(!adopted.main_input_eligible);
+        assert_eq!(
+            observer
+                .startup()
+                .advance(&observe(170, Some(editor), Some(splash)))
+                .err()
+                .unwrap()
+                .0,
+            "PRESENTATION_STALE"
+        );
+        assert!(
+            observer
+                .tick(&observe(170, Some(editor), Some(editor)))
+                .unwrap()
+                .main_input_eligible
+        );
+        assert!(observer.release_startup_main(&owner, editor, 180).is_err());
+        assert_eq!(observer.snapshot().unwrap().first_failure, None);
     }
 
     #[test]

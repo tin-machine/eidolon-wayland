@@ -123,11 +123,17 @@ impl Shared {
                 windows: vec![],
                 admitted: Default::default(),
                 fixed_main: observer.snapshot().map_err(|error| error.0)?.main,
+                released_main: None,
                 admission_open: false,
             }
         } else {
             current.v3_cut()?
         };
+        if let Some(old) = cut.released_main {
+            observer
+                .release_startup_main(&origin, old, now_ms)
+                .map_err(|error| error.0)?;
+        }
         let candidate = cut.fixed_main.or_else(|| {
             cut.windows
                 .iter()
