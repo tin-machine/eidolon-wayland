@@ -38,7 +38,7 @@ internal class TermuxShelfSession(
     private var presentedApp = false
     private var stoppingApp = false
     val occupiesApp get() = handle != 0L && (slot > 0 || stoppingApp || presentedApp || launchRequest != null ||
-        LauncherCapacity.appOccupiesRuntime(snapshot))
+        LauncherCapacity.appOccupiesRuntime(snapshot) || LauncherCapacity.recoveryPending(snapshot))
     val recovering get() = handle != 0L && !borrowed && (stoppingApp || LauncherCapacity.recoveryPending(snapshot))
     fun accepts(expected: LauncherUi, id: String) = expected.runtime == handle && expected.session == view.session &&
         expected.revision == view.revision && view.connected && !view.busy && !view.menuRefreshFailed && view.entries.any { it.id == id && it.available }
@@ -90,7 +90,8 @@ internal class TermuxShelfSession(
     }
     fun launch(expected: LauncherUi, id: String) {
         val state = snapshot ?: return
-        if (expected.runtime != handle || expected.session != view.session || expected.revision != view.revision ||
+        if (state.optJSONObject("transport")?.optString("state") != "Ready" ||
+            expected.runtime != handle || expected.session != view.session || expected.revision != view.revision ||
             view.entries.none { it.id == id && it.available } || view.busy || !view.connected || view.menuRefreshFailed) return
         val app = state.optJSONObject("app")
         val running = app?.optString("state") == "running"
@@ -170,9 +171,11 @@ internal class TermuxShelfSession(
             helper?.let(TermuxStarter::cancel); helper = null
             fail("Termux の応答がありません。接続とアプリの状態を確認してください")
         }
-        if (phase != "Ready") {
+        val pending = phase == "CleanupPending"
+        if (!tx.optBoolean("termux_shelf_readable")) {
             if (view.connected) update(view.copy(connected = false, session = "", canStop = false, message = "Termux は未接続です"))
-            if (wantMenu && helper == null && phase in setOf("Idle", "Disconnected", "Failed")) {
+            val reconnectPending = pending && tx.optInt("owned_connections") == 0 && !tx.optBoolean("desktop_pending")
+            if (wantMenu && helper == null && (reconnectPending || phase in setOf("Idle", "Disconnected", "Failed"))) {
                 if (connectSent == null) {
                     connectSent = send("connect", JSONObject().put("profile_id", "termux-local"))
                     if (connectSent == null) fail("Termux の SSH 接続を開始できません")
@@ -194,6 +197,9 @@ internal class TermuxShelfSession(
             return
         }
         connectSent = null
+        val catalogMessage = if (pending) "Termux の一覧を取得しました。前回の終了記録を確認中です。新しいアプリは別の空き枠で開きます" else "Termux のアプリ一覧を取得しました"
+        if (view.connected && view.catalogComplete && !view.busy && !view.menuRefreshFailed && view.message != catalogMessage && launchRequest == null && !presentedApp)
+            update(view.copy(message = catalogMessage))
         if (wantMenu) {
             wantMenu = false
             request = send("catalog", JSONObject().put("session", session).put("operation", JSONObject().put("kind", "shelf").put("path", path)))
@@ -213,12 +219,13 @@ internal class TermuxShelfSession(
                 }
                 update(LauncherUi(runtime = owner, session = session, path = path, connected = true, canStop = true,
                     entries = entries, total = entries.size, revision = data.getString("revision"), builtin = data.getBoolean("builtin"),
-                    catalogComplete = true, message = "Termux のアプリ一覧を取得しました"))
+                    catalogComplete = true, message = catalogMessage))
             }
         }
         queuedApp?.takeIf { view.connected && !view.busy && !wantMenu && request == null }?.let { (id, revision) ->
             queuedApp = null
-            if (revision != view.revision || !accepts(view, id)) fail("Termux の一覧が変わりました。更新してください")
+            if (pending) fail("この起動枠は前回の Termux アプリの終了記録を確認中です")
+            else if (revision != view.revision || !accepts(view, id)) fail("Termux の一覧が変わりました。更新してください")
             else launch(view, id)
         }
         if (launchRequest != null) {
@@ -230,7 +237,11 @@ internal class TermuxShelfSession(
     }
     fun diagnostics(): JSONObject = JSONObject().apply {
         val state = snapshot ?: return@apply
-        put("transport", state.optJSONObject("transport")?.optString("state"))
+        val tx = state.optJSONObject("transport")
+        put("transport", tx?.optString("state"))
+        put("pending_launches", tx?.optJSONArray("pending_cleanup")?.length() ?: 0)
+        put("catalog_readable", tx?.optBoolean("termux_shelf_readable") == true)
+        put("catalog_entries", view.entries.size)
         put("scene", state.optLong("scene"))
         put("xr", state.optString("xr_state"))
         put("app_windows", state.optJSONObject("app")?.optJSONArray("windows")?.length() ?: 0)

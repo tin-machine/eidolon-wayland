@@ -62,6 +62,8 @@ pub struct Snapshot {
     // Wake the UI when its authenticated catalog/preview completes without copying the catalog.
     #[serde(skip)]
     pub catalog_progress: (Option<CommandSeq>, bool, Option<(CommandSeq, bool)>),
+    #[serde(skip)]
+    pub authenticated_termux: bool,
     pub state: State,
     pub session: Option<SessionId>,
     pub profile_id: Option<String>,
@@ -122,6 +124,20 @@ pub struct CleanupAudit {
     pub child_alive: bool,
     pub reason: Option<String>,
     pub error: Option<&'static str>,
+}
+impl Snapshot {
+    /// The SSH probe and the old launch's cleanup audit use the same authenticated
+    /// connection. A missing termination receipt blocks launches on it, but the
+    /// shelf command only reads the app list.
+    pub fn termux_shelf_readable(&self) -> bool {
+        self.authenticated_termux
+            && self.owned_connections == 1
+            && !self.desktop_pending
+            && (self.state == State::Ready
+                || (self.state == State::CleanupPending
+                    && self.error == Some("CLEANUP_PENDING")
+                    && !self.pending_cleanup.is_empty()))
+    }
 }
 #[derive(Clone, Copy)]
 struct Deadlines {
@@ -1616,7 +1632,9 @@ impl Controller {
             .shelf_result
             .as_ref()
             .filter(|(session, _)| {
-                Some(*session) == s.report.session && s.report.state == State::Ready
+                Some(*session) == s.report.session
+                    && s.report.termux_shelf_readable()
+                    && s.cancel.as_ref().is_some_and(|c| !c.is_cancelled())
             })
             .map(|(_, data)| data.clone());
         catalog
@@ -1638,11 +1656,11 @@ impl Controller {
         if s.report.session != Some(session) {
             return Status::Stale;
         }
-        if s.report.state != State::Ready || s.cancel.as_ref().is_none_or(|c| c.is_cancelled()) {
+        if s.cancel.as_ref().is_none_or(|c| c.is_cancelled()) {
             return Status::NotReady;
         }
         if let crate::catalog::Operation::Shelf { path } = operation {
-            if s.desktop_profile.is_some() {
+            if s.desktop_profile.is_some() || !s.report.termux_shelf_readable() {
                 return Status::NotReady;
             }
             if s.shelf_request
@@ -1655,6 +1673,9 @@ impl Controller {
             self.signals.notify.notify_one();
             self.signals.desktop_menu_notify.notify_one();
             return Status::Accepted;
+        }
+        if s.report.state != State::Ready {
+            return Status::NotReady;
         }
         if s.catalog.pending {
             return Status::Busy;
@@ -2218,6 +2239,9 @@ async fn connection(
         // The normal GUI lease is a non-root capability. Reject the verified
         // UID before exposing Inspect; debug probe/legacy semantics stay intact.
         return Err("DESKTOP_BINDING_INVALID");
+    }
+    if connect.profile.helper_supported {
+        signals.update(|s| s.report.authenticated_termux = true);
     }
     reconcile(signals, &client, connect, journal, &binding, uid).await?;
     loop {

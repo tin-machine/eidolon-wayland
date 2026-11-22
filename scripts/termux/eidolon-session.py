@@ -1303,7 +1303,7 @@ def cleanup(home, nonce, *, creator=False):
         if match:
             terminal_application_read(directory, match[1])
             applications.append(match[1])
-    if {entry.name for entry in directory.iterdir()} - {"owner.json", "lease.json", "p", "w", "f", "m"} - {'a-' + terminal + '.json' for terminal in applications}:
+    if {entry.name for entry in directory.iterdir()} - {"owner.json", "lease.json", "p", "w", "f", "m", "pulse"} - {'a-' + terminal + '.json' for terminal in applications}:
         raise ValueError("DIRECTORY_NOT_EMPTY")
     sockets = []
     for name in ('p', 'w', 'f', 'm'):
@@ -1315,6 +1315,12 @@ def cleanup(home, nonce, *, creator=False):
         if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
             raise ValueError("SOCKET_INVALID")
         sockets.append(sock)
+    # libpulse may create an empty private directory under XDG_RUNTIME_DIR.
+    # Never follow a link or remove contents that still belong to a sound server.
+    pulse = directory / 'pulse'
+    if pulse.exists() or pulse.is_symlink():
+        checked(pulse)
+        pulse.rmdir()
     for sock in sockets:
         sock.unlink()
     for terminal in applications:

@@ -1070,6 +1070,32 @@ async fn pending_receipt_blocks_remote_start_then_survives_controller_recreation
     let report = controller.snapshot();
     assert_eq!(report.pending_cleanup.len(), 1);
     assert!(!report.cleanup_audits[0].verified);
+    assert!(report.termux_shelf_readable());
+    assert_eq!(
+        controller.catalog(
+            first,
+            request(20),
+            crate::catalog::Operation::Shelf {
+                path: "registered-apps.toml".into()
+            }
+        ),
+        Status::Accepted
+    );
+    wait(&controller, |_| {
+        controller.catalog_ui().termux_shelf.is_some()
+    })
+    .await;
+    assert_eq!(controller.snapshot().pending_cleanup.len(), 1);
+    assert_eq!(
+        controller.catalog(
+            first,
+            request(21),
+            crate::catalog::Operation::Reload {
+                path: "registered-apps.toml".into()
+            }
+        ),
+        Status::NotReady
+    );
     assert_eq!(
         controller.forward_probe(first, &root.0, "aaaaaaaaaaaaaaaa"),
         Status::NotReady
