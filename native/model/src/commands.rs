@@ -397,7 +397,7 @@ pub enum Command {
         request_id: CommandSeq,
         target: crate::surface::TargetKey,
         create_command: CommandSeq,
-        parent: crate::ids::WindowId,
+        parent: Option<crate::ids::WindowId>,
         pose: crate::workspace::PanelPose,
     },
     SetPoseControl {

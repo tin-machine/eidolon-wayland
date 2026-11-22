@@ -22,6 +22,7 @@ pub struct WindowPlacement {
     pub app_id: Option<String>,
     pub slot: Option<usize>,
     pub ambiguous: bool,
+    pub restored_pose: bool,
     pub placement: Placement,
     #[serde(skip)]
     last_slot: Option<usize>,
@@ -175,6 +176,7 @@ impl Controller {
                     app_id: window.app_id.clone(),
                     slot: None,
                     ambiguous: false,
+                    restored_pose: false,
                     placement: Placement::new(PanelPose::at_slot(0)).unwrap(),
                     last_slot: None,
                 });
@@ -187,6 +189,7 @@ impl Controller {
                         .app_id
                         .as_ref()
                         .and_then(|id| self.store.value.restore(id, slot, matches));
+                    state.restored_pose = saved.is_some();
                     let pose = saved.as_ref().map_or_else(
                         || {
                             let mut pose = PanelPose::at_slot(slot);
@@ -250,7 +253,9 @@ impl Controller {
         pose: PanelPose,
     ) -> Result<(), &'static str> {
         let initial = self.windows.iter().any(|window| {
-            window.placement.accepts(target) && window.placement.pose_command.is_none()
+            !window.restored_pose
+                && window.placement.accepts(target)
+                && window.placement.pose_command.is_none()
         });
         if !initial {
             return Err("STALE");
@@ -431,6 +436,33 @@ mod tests {
         assert_eq!(state.windows[0].placement.pose, PanelPose::at_slot(0));
         assert_eq!(state.windows[1].placement.pose, arc);
     }
+    #[test]
+    fn automatic_facing_preserves_restored_user_pose() {
+        let mut workspace = Controller::load(None);
+        workspace.scene(Some(scene()));
+        let a = window(1);
+        let pa = panel(&a, 0, 1);
+        workspace.sync(
+            session(),
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&pa),
+        );
+        let mut moved = PanelPose::at_slot(0);
+        moved.position_m[0] = 0.25;
+        let request = CommandSeq::new(3).unwrap();
+        workspace.set_pose(pa.target, request, moved).unwrap();
+        workspace.remember(&a);
+        workspace.sync(session(), &[], &[]);
+        workspace.sync(session(), &[a], std::slice::from_ref(&pa));
+        assert!(workspace.windows[0].restored_pose);
+        assert!(
+            workspace
+                .set_initial_dialog_pose(pa.target, request, PanelPose::at_slot(0))
+                .is_err()
+        );
+        assert_eq!(workspace.windows[0].placement.pose, moved);
+    }
+
     #[test]
     fn duplicate_app_keeps_existing_pose_and_stale_target_cannot_move_live_window() {
         let mut c = Controller::load(None);

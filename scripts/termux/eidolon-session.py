@@ -1,6 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """固定mode/nonceだけを扱い、prepare作成者がleaseと子processを所有する。"""
+from contextlib import contextmanager
 import concurrent.futures
+import errno
 import hashlib
 import json
 import os
@@ -411,10 +413,13 @@ def observe_process(pid, proc=Path('/proc')):
         os.close(directory)
 
 
+BOOT_PATTERN = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+
+
 def observation_boot(proc=Path('/proc')):
     with (proc / 'sys/kernel/random/boot_id').open() as stream:
         boot = stream.read(65).strip()
-    if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', boot):
+    if not re.fullmatch(BOOT_PATTERN, boot):
         raise ValueError('BOOT_INVALID')
     return boot
 
@@ -1248,7 +1253,7 @@ def prepare(home, nonce):
         pass
     checked(root)
     receipt = root / ("r-" + nonce + ".json")
-    if receipt.exists() or receipt.is_symlink():
+    if os.path.lexists(receipt) or os.path.lexists(root / ("q-" + nonce + ".json")):
         raise FileExistsError("NONCE_REUSED")
     directory.mkdir(mode=0o700)  # 再利用・既存socketの上書きをしない。
     checked(directory)
@@ -1295,7 +1300,13 @@ def cleanup(home, nonce, *, creator=False):
     if not creator:
         # 後日の照合では既存directoryの所有権を新たに取得しない。
         return {"schema": 1, "cleaned": False, "pending": True}
-    # child/groupの終了後、作成者だけが転送pとWayland wを回収する。
+    remove_session_files(directory)
+    return {"schema": 1, "cleaned": True, "already_absent": False}
+
+
+def remove_session_files(directory, *, probe_sockets=False):
+    lease = directory / "lease.json"
+    # Validate the entire private inventory before unlinking anything.
     # unexpected fileやsymlinkならlease/markerも残し、完了を偽らない。
     applications = []
     for entry in directory.iterdir():
@@ -1314,6 +1325,12 @@ def cleanup(home, nonce, *, creator=False):
             continue
         if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
             raise ValueError("SOCKET_INVALID")
+        if probe_sockets:
+            kind = socket.SOCK_DGRAM if name == "m" else socket.SOCK_STREAM
+            with socket.socket(socket.AF_UNIX, kind) as peer:
+                peer.setblocking(False)
+                if peer.connect_ex(str(sock)) != errno.ECONNREFUSED:
+                    raise ValueError("SOCKET_STILL_IN_USE")
         sockets.append(sock)
     # libpulse may create an empty private directory under XDG_RUNTIME_DIR.
     # Never follow a link or remove contents that still belong to a sound server.
@@ -1331,8 +1348,133 @@ def cleanup(home, nonce, *, creator=False):
         raise ValueError("DIRECTORY_NOT_EMPTY")
     (directory / "owner.json").unlink()
     directory.rmdir()
-    return {"schema": 1, "cleaned": True, "already_absent": False}
 
+
+
+@contextmanager
+def retirement_lock(root):
+    # Serialize short filesystem transactions, including concurrent SSH retries.
+    checked(root)
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def save_proof(path, value):
+    write_record(path, value)
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def valid_lease_identity(value, *, leader):
+    return (isinstance(value, dict) and set(value) == {"pid", "start", "group", "state"}
+            and type(value["pid"]) is int and value["pid"] > 0
+            and type(value["group"]) is int and value["group"] > 0
+            and (not leader or value["group"] == value["pid"])
+            and isinstance(value["start"], str) and re.fullmatch(r"[0-9]{1,32}", value["start"])
+            and isinstance(value["state"], str) and len(value["state"]) == 1)
+
+
+def validate_proof(proof):
+    child = proof.get("child")
+    if (set(proof) != {"schema", "nonce", "uid", "basis", "child"}
+            or proof["basis"] not in {"OwnerRetired", "HostRebooted", "BeforeLaunch"}
+            or (child is not None and not valid_lease_identity(child, leader=True))
+            or (proof["basis"] == "BeforeLaunch" and child is not None)):
+        raise ValueError("RETIREMENT_PROOF_INVALID")
+    return proof
+
+
+def recovery_candidate(directory, nonce):
+    owned(directory.parent.parent, nonce)
+    if not os.path.lexists(directory / "lease.json"):
+        return None
+    lease = read_record(directory / "lease.json", nonce)
+    if (not valid_lease_identity(lease.get("owner"), leader=False) or "child" not in lease
+            or (lease["child"] is not None and not valid_lease_identity(lease["child"], leader=True))):
+        raise ValueError("LEASE_IDENTITY_INVALID")
+    try:
+        boot = observation_boot()
+    except (OSError, ValueError):
+        boot = None
+    old_boot = lease.get("boot")
+    if old_boot is not None and not re.fullmatch(BOOT_PATTERN, old_boot):
+        raise ValueError("BOOT_INVALID")
+    if boot is not None and old_boot is not None and old_boot != boot:
+        basis = "HostRebooted"
+    elif same_process(lease["owner"]):
+        return None
+    elif lease.get("phase") == "before_launch" and lease["child"] is None:
+        basis = "BeforeLaunch"
+    else:
+        if old_boot is None and boot is not None:
+            # The dead owner's legacy lease existed on this boot. A later boot
+            # proves its processes have gone, even if they escaped the original group.
+            save_proof(directory / "lease.json", {**lease, "boot": boot})
+        return None
+    return validate_proof({**marker(nonce), "basis": basis, "child": lease["child"]})
+
+
+def recovery_audit(home, nonce, expected=None):
+    root, directory = paths(home, nonce)
+    intent = root / ("q-" + nonce + ".json")
+    receipt = root / ("r-" + nonce + ".json")
+    with retirement_lock(root):
+        if not os.path.lexists(directory) and os.path.lexists(receipt):
+            saved = read_record(receipt, nonce)
+            if "basis" in saved:
+                result = dict(schema=1, cleaned=True, already_absent=True, reconciliation=validate_proof(saved))
+            else:
+                result = cleanup(home, nonce)
+            if os.path.lexists(intent) and (saved.get("cleaned") is True or "reconciliation" in result):
+                intent.unlink()
+            return result
+        if os.path.lexists(intent):
+            proof = validate_proof(read_record(intent, nonce))
+        elif os.path.lexists(directory):
+            proof = recovery_candidate(directory, nonce)
+        else:
+            proof = None
+        if proof is None:
+            return cleanup(home, nonce)
+        if expected is None:
+            return dict(schema=1, cleaned=False, pending=True, recoverable=True)
+        uid, pid, start = expected
+        child = proof["child"]
+        if uid != str(os.getuid()) or (pid != "0" and
+                (child is None or (str(child["pid"]), child["start"]) != (pid, start))):
+            raise ValueError("RETIREMENT_IDENTITY_MISMATCH")
+        if not os.path.lexists(intent):
+            save_proof(intent, proof)
+        if os.path.lexists(directory):
+            checked(directory)
+            if os.path.lexists(directory / "owner.json"):
+                owned(home, nonce)
+                remove_session_files(directory, probe_sockets=True)
+            else:
+                # A prior attempt may have unlinked the marker just before rmdir.
+                directory.rmdir()  # only succeeds if empty
+        save_proof(receipt, proof)
+        intent.unlink()
+        return dict(schema=1, cleaned=True, already_absent=True, reconciliation=proof)
+
+
+def finish_retirement(home, nonce, report):
+    root, _ = paths(home, nonce)
+    with retirement_lock(root):
+        intent = root / ("q-" + nonce + ".json")
+        save_proof(intent, {**marker(nonce), "basis": "OwnerRetired", "child": report["child"]})
+        result = cleanup(home, nonce, creator=True)
+        if result["cleaned"]:
+            save_proof(root / ("r-" + nonce + ".json"), {**report, "cleaned": True})
+            intent.unlink()
+        return result["cleaned"]
 
 def transfer(path, size, barrier=None):
     if barrier:
@@ -1726,7 +1868,11 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
     prepared = prepare(home, nonce)
     directory = Path(prepared["socket"]).parent
     owner = process_identity(os.getpid())
-    record = {**marker(nonce), "owner": owner, "child": None}
+    record = {**marker(nonce), "owner": owner, "child": None, "phase": "before_launch"}
+    try:
+        record["boot"] = observation_boot()
+    except (OSError, ValueError):
+        pass
     write_record(directory / "lease.json", record)
     report = {**marker(nonce), "type": "finished", "reason": None, "child": None,
               "exit_status": None, "exit_signal": None, "term_sent": False, "kill_sent": False,
@@ -1937,6 +2083,8 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                             checked_tools = inspect_tools(value['mode'])
                             publish({**marker(nonce), 'type': 'tools', **checked_tools})
                         elif kind in {'start', 'start_terminal_v1','start_application_v1'} and child is None and value["mode"] in {"echo", "pattern", "foot", "foot_fixture"}:
+                            record["phase"] = "starting"
+                            save_proof(directory / "lease.json", record)
                             started_mode = value["mode"]
                             if started_mode != 'echo' and (checked_tools is None or checked_tools['mode'] != started_mode):
                                 raise ValueError('DEPENDENCY_NOT_READY')
@@ -2031,11 +2179,10 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
             pass
         if (child is None or child_reaped) and not report["group_alive"] and not opened and not observer_pending:
             try:
-                report["cleaned"] = cleanup(home, nonce, creator=True)["cleaned"]
+                report["cleaned"] = finish_retirement(home, nonce, report)
             except (OSError, ValueError):
                 report['error'] = 'CLEANUP_FAILED'
         if report["cleaned"]:
-            write_record(directory.parent / ("r-" + nonce + ".json"), report)
             receipts = []
             for path in directory.parent.glob("r-*.json"):
                 token = path.name[2:-5]
@@ -2043,7 +2190,7 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                     continue
                 try:
                     saved = read_record(path, token)
-                    if saved.get("type") == "finished" and saved.get("cleaned") is True:
+                    if (saved.get("type") == "finished" and saved.get("cleaned") is True) or "basis" in saved:
                         receipts.append(path)
                 except (ValueError, OSError):
                     continue
@@ -2067,6 +2214,11 @@ def main(argv):
         checked_tmux_socket(path)
         send_registration(directory, dict(schema=1, nonce=argv[1], kind='tmux_socket', path=str(path)))
         return
+    if len(argv) == 5 and argv[0] == "reconcile":
+        if not all(re.fullmatch(r"(?:0|[1-9][0-9]{0,31})", field) for field in argv[2:]):
+            raise ValueError("IDENTITY_INVALID")
+        print(json.dumps(recovery_audit(Path.home(), argv[1], argv[2:])), flush=True)
+        return
     if len(argv) != 2 or argv[0] not in {"prepare", "echo", "pattern", "foot", "foot_fixture", "cleanup"}:
         raise ValueError("MODE_INVALID")
     mode, nonce = argv
@@ -2079,7 +2231,7 @@ def main(argv):
         return
     if mode in {"pattern", "foot", "foot_fixture"}:
         raise ValueError("DEPENDENCY_NOT_READY")
-    operation = {"prepare": prepare, "echo": echo, "cleanup": cleanup}[mode]
+    operation = {"prepare": prepare, "echo": echo, "cleanup": recovery_audit}[mode]
     print(json.dumps(operation(Path.home(), nonce), separators=(",", ":")), flush=True)
 
 

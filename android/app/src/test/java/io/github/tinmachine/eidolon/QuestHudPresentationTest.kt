@@ -38,7 +38,7 @@ class QuestHudPresentationTest {
         assertTrue(triggered(HudMetric.BATTERY, 19.0))
         assertEquals(0, rings.rules.getValue(HudMetric.BATTERY).motionMs)
         assertEquals(HudRingStack(), rings.ringStack)
-        assertEquals(listOf(.55f, -.51f, 1.4f), rings.offset)
+        assertEquals(listOf(.85f, -.81f, 1.4f), rings.offset)
         assertTrue(HudTheme.builtin(HudPreset.BAR).rules.values.all { it.motionMs == 0 })
     }
 

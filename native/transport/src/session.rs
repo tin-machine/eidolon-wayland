@@ -2906,7 +2906,10 @@ async fn reconcile<H: client::Handler>(
                     view.active = value.active;
                     view.orphaned = value.orphaned;
                     view.child_alive = value.child_alive;
-                    view.reason = value.receipt.map(|r| r.reason);
+                    view.reason = value
+                        .receipt
+                        .map(|r| r.reason)
+                        .or_else(|| value.recovery_basis.map(|basis| format!("{basis:?}")));
                     if value.verified {
                         journal.forget(&entry.nonce)?;
                     }
