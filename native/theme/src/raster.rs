@@ -80,6 +80,10 @@ impl Bundle {
         }
         Ok(Self { files })
     }
+    pub fn manifest(&self) -> Result<Manifest, Error> {
+        Manifest::parse(self.text("theme.toml")?)
+    }
+
     fn text(&self, path: &str) -> Result<&str, Error> {
         let bytes = self
             .files
@@ -207,7 +211,7 @@ pub fn compile(
     budget: &PixelBudget,
     quota: &RasterBudget,
 ) -> Result<CompiledTheme, Error> {
-    let manifest = Manifest::parse(bundle.text("theme.toml")?)?;
+    let manifest = bundle.manifest()?;
     let style = Stylesheet::parse(bundle.text(&manifest.style)?, &manifest)?;
     let mut cache = BTreeMap::<([u8; 32], [u32; 2]), Arc<RasterPixels>>::new();
     let mut parts = BTreeMap::new();

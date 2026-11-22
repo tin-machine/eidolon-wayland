@@ -3,23 +3,14 @@ package io.github.tinmachine.eidolon
 import org.json.JSONObject
 import java.util.Locale
 
-internal enum class HudColor { WHITE, BLUE, YELLOW, RED }
-
-internal fun hudLoadColor(percent: Double): HudColor? = when {
-    !percent.isFinite() || percent < 0 -> null
-    percent < 70 -> HudColor.WHITE
-    percent < 80 -> HudColor.BLUE
-    percent < 90 -> HudColor.YELLOW
-    else -> HudColor.RED
-}
-
-internal data class HudReading(val value: String, val color: HudColor = HudColor.WHITE, val available: Boolean = true)
+internal data class HudReading(val value: String, val available: Boolean = true)
 internal data class HudDraw(
     val value: String,
     val targets: Int = 0,
     val samples: Long = 0,
     val coverageMs: Long = 0,
     val eligibleTargets: Int = 0,
+    val p95BinUpperMs: Int? = null,
 )
 internal data class HudDrawSample(val draw: HudDraw, val at: Long, val contentHz: Double?)
 
@@ -71,8 +62,10 @@ internal fun hudCpu(metrics: DeviceMetricsSnapshot, since: Long, now: Long): Hud
     val reading = metrics.processCpu
     val sampled = reading.sampledMonotonicMs
     val percent = reading.percent
-    if (reading.status == ProcessCpuStatus.AVAILABLE && sampled != null && sampled >= since && now - sampled in 0..15_000 && percent != null) {
-        hudLoadColor(percent)?.let { return HudReading(String.format(Locale.ROOT, "%.2f core", percent / 100), it) }
+    if (reading.status == ProcessCpuStatus.AVAILABLE && sampled != null && sampled >= since && now - sampled in 0..15_000 && percent != null &&
+        percent.isFinite() && percent >= 0
+    ) {
+        return HudReading(String.format(Locale.ROOT, "%.2f core", percent / 100))
     }
     return HudReading(if (reading.status == ProcessCpuStatus.WARMING_UP || (sampled != null && sampled < since)) "— 計測中" else "— 取得待ち", available = false)
 }
@@ -83,19 +76,21 @@ internal fun hudRam(metrics: DeviceMetricsSnapshot, since: Long, now: Long): Hud
     if (metrics.sampledMs < since || now - metrics.sampledMs !in 0..15_000 || available == null ||
         total == null || total <= 0 || available !in 0..total
     ) return HudReading("— 取得待ち", available = false)
-    val used = 100.0 * (total - available) / total
-    return HudReading(String.format(Locale.ROOT, "%.2f GiB", available / 1073741824.0), checkNotNull(hudLoadColor(used)))
+    return HudReading(String.format(Locale.ROOT, "%.2f GiB", available / 1073741824.0))
 }
 
-internal fun hudThermal(metrics: DeviceMetricsSnapshot, since: Long, now: Long): String {
+private val thermalNames = listOf("NONE", "LIGHT", "MODERATE", "SEVERE", "CRITICAL", "EMERGENCY", "SHUTDOWN")
+
+internal fun hudThermalLevel(metrics: DeviceMetricsSnapshot, since: Long, now: Long): Int? {
     val thermal = metrics.details.thermal
     val sampled = thermal.sampledMs
-    val codes = listOf("NONE", "LIGHT", "MODERATE", "SEVERE", "CRITICAL", "EMERGENCY", "SHUTDOWN")
-    val name = if (thermal.status == DeviceDetailStatus.AVAILABLE && sampled != null &&
+    return if (thermal.status == DeviceDetailStatus.AVAILABLE && sampled != null &&
         sampled >= since && now - sampled in 0..90_000
-    ) thermal.code?.let(codes::getOrNull) else null
-    return "OS熱: " + (name ?: "—")
+    ) thermal.code?.takeIf { it in thermalNames.indices } else null
 }
+
+internal fun hudThermal(metrics: DeviceMetricsSnapshot, since: Long, now: Long): String =
+    "OS熱: " + (hudThermalLevel(metrics, since, now)?.let(thermalNames::get) ?: "—")
 
 /** The renderer supplies cumulative success counters for each live target. */
 internal class QuestHudTiming {
@@ -177,7 +172,7 @@ internal class QuestHudTiming {
             worst == BIN_COUNT - 1 -> "> 31 ms"
             else -> "≤ ${worst + 1} ms"
         }
-        return HudDraw(value, measured, total, coverage, live.size)
+        return HudDraw(value, measured, total, coverage, live.size, (worst + 1).takeIf { worst >= 0 })
     }
 
     private fun sum(values: List<Long>): Long? {

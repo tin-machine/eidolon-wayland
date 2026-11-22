@@ -28,6 +28,8 @@ pub struct Report {
     pub requested: ThemeSelection,
     pub reduced_motion: bool,
     pub imported_available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imported_hud: Option<eidolon_theme::hud::Profile>,
     pub loading: bool,
     pub import_token: Option<String>,
     pub applied_revision: u64,
@@ -73,6 +75,7 @@ impl Controller {
         };
         controller.value.selection = ThemeSelection::Off;
         controller.report.imported_available = controller.value.imported.is_some();
+        controller.report.imported_hud = controller.value.imported_hud.clone();
         if selection != ThemeSelection::Off || reduced {
             controller.select(selection, reduced, render);
         }
@@ -98,6 +101,11 @@ impl Controller {
             self.value.reduced_motion = pending.reduced_motion;
             if pending.selection == ThemeSelection::Imported {
                 self.value.imported = pending.source;
+                self.value.imported_hud = pending
+                    .theme
+                    .as_ref()
+                    .and_then(|theme| theme.manifest.hud.clone());
+                self.report.imported_hud = self.value.imported_hud.clone();
             }
             self.report.selection = self.value.selection;
             self.report.reduced_motion = self.value.reduced_motion;

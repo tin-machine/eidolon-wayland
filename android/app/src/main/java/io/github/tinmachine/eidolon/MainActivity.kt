@@ -146,6 +146,7 @@ class MainActivity : AppSystemActivity() {
                                 ::chooseTheme, ::allowTermux, ::openTermux, mouse.enabled.value,
                                 { if (ownsScene()) mouse.toggle() },
                                 { hud.enabled.value }, hud::toggle, hud::recenter, { hud.rotation.value }, hud::toggleRotation,
+                                hud.preset.value, hud::selectPreset,
                                 launcherControls = { spatialLauncher.Presets() },
                                 openDetailsRequest = openDetails.intValue,
                             ) { restoring -> MousepadAnchorControls(mousepadAnchor, restoring) }

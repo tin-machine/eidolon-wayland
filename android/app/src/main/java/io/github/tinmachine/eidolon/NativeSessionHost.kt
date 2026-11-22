@@ -40,9 +40,11 @@ object NativeSessionHost {
     val layoutEditing = mutableStateOf(false)
     val workloadObservation = mutableStateOf(true)
     val workspaceSummary = mutableStateOf("配置設定を確認中")
-    data class ThemeUi(val selection: String = "off", val reduced: Boolean = false, val imported: Boolean = false,
-        val loading: Boolean = false, val message: String = "装飾なし")
-    val themeUi = mutableStateOf(ThemeUi())
+    internal data class ThemeUi(val selection: String = "off", val reduced: Boolean = false, val imported: Boolean = false,
+        val loading: Boolean = false, val message: String = "装飾なし", internal val importedHud: HudTheme? = null)
+    internal val themeUi = mutableStateOf(ThemeUi())
+    private var importedHudJson: String? = null
+    private var importedHud: HudTheme? = null
     private val themeRequests = linkedMapOf<String, (String) -> Unit>()
     @Volatile private var themeImportToken: String? = null
     private var themeImportMessage: String? = null
@@ -3297,8 +3299,14 @@ object NativeSessionHost {
                 theme.getJSONObject("storage").getBoolean("pending") -> "$label · 保存中"
                 else -> label
             }
+            val hud = theme.optJSONObject("imported_hud")
+            val hudJson = hud?.toString()
+            if (hudJson != importedHudJson) {
+                importedHudJson = hudJson
+                importedHud = hud?.let(HudTheme::fromNative)
+            }
             ThemeUi(if (loading) theme.getString("requested") else theme.getString("selection"),
-                theme.getBoolean("reduced_motion"), theme.getBoolean("imported_available"), loading, message)
+                theme.getBoolean("reduced_motion"), theme.getBoolean("imported_available"), loading, message, importedHud)
         }
         val background=if(workspace.getString("background")=="passthrough") "現実" else "単色"
         val saveStatus=when { !storage.isNull("error") -> "保存できません（${storage.getString("error")}）";workspace.getBoolean("pending_save")->"保存中";else->"保存済み" }
