@@ -244,6 +244,18 @@ fun LauncherSettings(
 internal class ShelfAppDialog(val source: LauncherSource, val entry: LauncherEntry, val key: String,
     val host: String, val failure: AppFailure, val retry: (() -> Unit)?)
 
+internal fun retryWaitReason(state: LauncherUi, entry: LauncherEntry?, host: String, capacity: String?): String? {
+    state.recoveryWait?.let { return it }
+    if (capacity != null) return capacity
+    if (state.menuRefreshFailed) return "$host のアプリ一覧を更新できませんでした。ホストの状態を確認してください。"
+    if (state.menuRefreshing) return "$host のアプリ一覧を更新しています。"
+    if (state.busy) return "$host の処理が完了するまでお待ちください。"
+    if (!state.connected) return "$host へ接続し、起動できるアプリ一覧を取得すると再試行できます。"
+    if (entry == null) return "現在の $host のアプリ一覧にこのアプリがありません。"
+    if (!entry.available) return launchUnavailableReason(entry.error) ?: "現在の一覧ではこのアプリを起動できません。"
+    return null
+}
+
 @Composable
 private fun AppFailureDialog(dialog: ShelfAppDialog) {
     var details by remember(dialog) { mutableStateOf(false) }
@@ -252,8 +264,8 @@ private fun AppFailureDialog(dialog: ShelfAppDialog) {
     LaunchedEffect(dialog) { closeFocus.requestFocus() }
     val failure = NativeSessionHost.appFailures.reason(dialog.key) ?: dialog.failure
     val latest = NativeSessionHost.shelfState(dialog.source)
-    val canRetry = latest.entries.any { launcherAppKey(dialog.source, latest, it) == dialog.key && it.available } &&
-        latest.connected && !latest.busy && !latest.menuRefreshFailed && NativeSessionHost.launcherCapacity.value.refusal(dialog.source) == null
+    val entry = latest.entries.firstOrNull { launcherAppKey(dialog.source, latest, it) == dialog.key }
+    val waitReason = retryWaitReason(latest, entry, dialog.host, NativeSessionHost.launcherCapacity.value.refusal(dialog.source))
     Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.7f))
         .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { dismiss() },
         contentAlignment = Alignment.Center) {
@@ -265,7 +277,7 @@ private fun AppFailureDialog(dialog: ShelfAppDialog) {
                 Text(dialog.entry.label, style = MaterialTheme.typography.headlineSmall)
                 Text(dialog.host + " · " + (dialog.entry.desktopId ?: dialog.entry.id), color = Color(0xFFBBF2DC))
                 Text(if (dialog.retry != null) "前回の起動について" else "起動できない理由", color = candy)
-                Text(failure.reason)
+                Text(failure.displayReason())
                 if (failure.log.isNotBlank()) {
                     TextButton(onClick = {
                         details = !details
@@ -274,9 +286,10 @@ private fun AppFailureDialog(dialog: ShelfAppDialog) {
                     }) { Text(if (details) "診断ログを閉じる" else "診断ログを見る") }
                     if (details) Text(failure.log, Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()), style = MaterialTheme.typography.bodyMedium)
                 }
+                if (dialog.retry != null && waitReason != null) Text("再試行を待つ理由 · $waitReason", color = candy)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(modifier = Modifier.focusRequester(closeFocus), onClick = dismiss) { Text("閉じる") }
-                    if (dialog.retry != null) OutlinedButton(enabled = canRetry, onClick = {
+                    if (dialog.retry != null) OutlinedButton(enabled = waitReason == null, onClick = {
                         if (NativeSessionHost.appDialog.value === dialog) {
                             dismiss()
                             dialog.retry.invoke()

@@ -112,7 +112,9 @@ object NativeSessionHost {
     private val termuxShelf = termuxSession(0)
     private val additionalTermux = LauncherCapacity.workspaces.map(::termuxSession)
     private var inspectAfterShelfConnect = false
+    @Volatile internal var spatialShelfOpen = false
     private var refreshShelfAfterAppExit = false
+    private var reopenCompanionShelf = false
     private fun hasLinuxCompanion() = linuxSessions.any { it.handle > 0 }
     private fun capacityFor(primary: JSONObject): LauncherCapacity {
         val ubuntuPrimary = selectedProfileId == LinuxConnectionProfile.ID
@@ -164,11 +166,13 @@ object NativeSessionHost {
             ui.post { secondaryUbuntu.value = issue }
         } else if (selectedProfileId != LinuxConnectionProfile.ID) {
             val saved = linuxProfile ?: return@safely
+            if (companionLinux.recovering) reopenCompanionShelf = true
             companionLinux.browse(handle, saved, runtimeSettingsCapture.orEmpty(), currentSceneEpoch(), xrState.get(), activityVisible.get())
         } else {
             // Refresh admission from this runtime after a shelf-open profile change.
             pumpLinuxCatalog(snapshot().getJSONObject("runtime"))
             val state = launcherState
+            if (state.recoveryWait != null) refreshShelfAfterAppExit = true
             when {
                 state.canInspect || state.canRefresh -> inspectLinuxDesktop()
                 state.canConnect && !connectPending -> { inspectAfterShelfConnect = true; enqueueConnect() }
@@ -183,7 +187,7 @@ object NativeSessionHost {
             additionalTermux.forEach { it.stop() }; termuxShelf.stop()
             if (primary) disconnect()
         } else if (launcherUi.value.linux) disconnect()
-        else productWorker.execute { linuxSessions.forEach { it.stop() } }
+        else productWorker.execute { reopenCompanionShelf = false; linuxSessions.forEach { it.stop() } }
     }
     internal val appFailures = LauncherFailures()
     internal val appDialog = mutableStateOf<ShelfAppDialog?>(null)
@@ -222,7 +226,10 @@ object NativeSessionHost {
             productWorker.execute { safely {
                 if (handle == 0L || !runtimeAdmission.open()) return@safely
                 val capacity = admitLaunch(snapshot().getJSONObject("runtime"), source) ?: return@safely
-                if (!companionLinux.occupiesApp) companionLinux.selectApp(state, entry.id)
+                if (!companionLinux.occupiesApp) {
+                    companionLinux.selectApp(state, entry.id)
+                    if (companionLinux.occupiesApp) reopenCompanionShelf = true
+                }
                 else if (state.session == companionLinux.shelf.session && state.revision == companionLinux.shelf.revision &&
                     state.capture == runtimeSettingsCapture && companionLinux.shelf.entries.any { it.id == entry.id && it.available }) {
                     val number = capacity.nextWorkspace ?: return@safely
@@ -1226,7 +1233,7 @@ object NativeSessionHost {
         if (view.phase == "retired" && refreshShelfAfterAppExit) {
             refreshShelfAfterAppExit = false
             linuxMessage = null
-            if (launcherExpanded.value && runtimeAdmission.open() && !settingsSave.active)
+            if ((launcherExpanded.value || spatialShelfOpen) && runtimeAdmission.open() && !settingsSave.active)
                 refreshShelfHost(LauncherSource.UBUNTU)
         }
         val remoteRecoveredWaitingForQuest = pending && phase == "CleanupPending" &&
@@ -1326,6 +1333,13 @@ object NativeSessionHost {
             menuRefreshing=linuxPreviewRequest != null || linuxAction?.kind == "inspect",
             menuRefreshFailed=linuxPreviewError || catalogError != null,
             catalogComplete=linuxPreviewEntries != null,
+            recoveryWait=when {
+                remoteRecoveredWaitingForQuest || pending && transport.optBoolean("desktop_reboot_needed") ->
+                    "Quest を再起動すると前回の終了処理を続けられます。"
+                view.phase in setOf("pending", "stopping") || pending && !appActive ->
+                    "Ubuntu の前回の終了処理を確認しています。回収後に再接続してアプリ一覧を更新します。"
+                else -> null
+            },
             companionRunning=hasLinuxCompanion(),
             companionCleanup=linuxSessions.any { it.snapshot?.optJSONObject("transport")?.optString("state") == "CleanupPending" })
         if(value!=launcherState) launcherUpdate(value)
@@ -3049,8 +3063,16 @@ object NativeSessionHost {
         }
         linuxSessions.forEach { if (it.handle != 0L) it.tick() }
         application?.let { app -> additionalTermux.forEach { if (it.handle != 0L) it.tick(app, credentials) } }
-        if (companionLinux.browsing || selectedProfileId != LinuxConnectionProfile.ID && companionLinux.shelf.firstFailure != null) {
-            val value = companionLinux.shelf
+        if (selectedProfileId != LinuxConnectionProfile.ID && reopenCompanionShelf && companionLinux.handle == 0L) {
+            reopenCompanionShelf = false
+            if ((launcherExpanded.value || spatialShelfOpen) && runtimeAdmission.open() && !settingsSave.active)
+                refreshShelfHost(LauncherSource.UBUNTU)
+        }
+        if (companionLinux.browsing || selectedProfileId != LinuxConnectionProfile.ID &&
+                (reopenCompanionShelf || companionLinux.shelf.firstFailure != null || secondaryUbuntu.value.recoveryWait != null)) {
+            val value = if (reopenCompanionShelf && companionLinux.recovering)
+                companionLinux.shelf.copy(connected = false, recoveryWait = "Ubuntu の終了処理中です。完了後にアプリ一覧を更新します。")
+                else companionLinux.shelf
             if (secondaryUbuntu.value != value) ui.post { secondaryUbuntu.value = value }
         }
         if (!runtimeAdmission.open()) termuxShelf.stop()

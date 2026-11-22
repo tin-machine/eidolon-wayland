@@ -511,11 +511,14 @@ def cleanup_owner(owner, drain, profile, deadline_seconds=5.0):
     return report, evidence
 
 
-def _remove_tree_at(parent_fd, name, uid, budget, depth=0):
+def _remove_tree_at(parent_fd, name, uid, budget, depth=0, temporary=False):
     require(depth <= 8 and budget[0] > 0, "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")
     budget[0] -= 1
     info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    require(info.st_uid == uid and not info.st_mode & 0o022 and not stat.S_ISLNK(info.st_mode),
+    # Applications may create group-writable cache files inside these private trees.
+    # Directories and control files retain the stricter permission checks.
+    writable_mask = 0o002 if temporary and stat.S_ISREG(info.st_mode) else 0o022
+    require(info.st_uid == uid and not info.st_mode & writable_mask and not stat.S_ISLNK(info.st_mode),
             "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")
     if stat.S_ISDIR(info.st_mode):
         fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -528,8 +531,9 @@ def _remove_tree_at(parent_fd, name, uid, budget, depth=0):
                 for entry in entries:
                     require(len(names) < 512, "APP_STATE_RECOVERY_REQUIRED", "directory_cleanup")
                     names.append(entry.name)
+            temporary_children = temporary or (depth == 0 and name in {"cache", "tmp"})
             for child in names:
-                _remove_tree_at(fd, child, uid, budget, depth + 1)
+                _remove_tree_at(fd, child, uid, budget, depth + 1, temporary_children)
             after = os.fstat(fd)
             require((before.st_dev, before.st_ino, before.st_mode, before.st_uid) ==
                     (after.st_dev, after.st_ino, after.st_mode, after.st_uid),

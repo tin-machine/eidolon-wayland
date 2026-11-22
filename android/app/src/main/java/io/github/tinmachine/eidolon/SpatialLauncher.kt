@@ -518,6 +518,7 @@ internal class SpatialLauncher(
         }
         NativeSessionHost.launcherExpanded.value = false
         shelf = Entity.create(listOf(Panel(R.id.spatial_app_shelf), Transform(location), Grabbable(false)))
+        NativeSessionHost.spatialShelfOpen = true
         NativeSessionHost.refreshLauncherMenu()
     }
 
@@ -533,6 +534,7 @@ internal class SpatialLauncher(
         shelfKeyboard = null
         shelf?.destroy()
         shelf = null
+        NativeSessionHost.spatialShelfOpen = false
     }
 
     private fun moveShelf() {

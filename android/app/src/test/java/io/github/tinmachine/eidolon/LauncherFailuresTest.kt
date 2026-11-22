@@ -6,6 +6,27 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LauncherFailuresTest {
+    @Test fun retryFollowsHostRecoveryAndCurrentCatalog() {
+        val entry = LauncherEntry("app", "App", "", true, null)
+        val ready = LauncherUi(connected = true)
+        assertNull(retryWaitReason(ready, entry, "Ubuntu", null))
+        val recovery = ready.copy(connected = false, busy = true, recoveryWait = "回収中")
+        assertEquals("回収中", retryWaitReason(recovery, null, "Ubuntu", null))
+        assertEquals("満杯", retryWaitReason(ready, entry, "Ubuntu", "満杯"))
+        assertNotNull(retryWaitReason(ready.copy(connected = false), entry, "Ubuntu", null))
+        assertNotNull(retryWaitReason(ready.copy(menuRefreshing = true), entry, "Ubuntu", null))
+        assertNotNull(retryWaitReason(ready.copy(menuRefreshFailed = true), entry, "Ubuntu", null))
+        assertNotNull(retryWaitReason(ready, null, "Ubuntu", null))
+        assertNotNull(retryWaitReason(ready, entry.copy(available = false), "Ubuntu", null))
+        assertNull(retryWaitReason(ready.copy(companionCleanup = true), entry, "Ubuntu", null))
+    }
+
+    @Test fun storedTimeoutExplainsWhichWindowWasMissing() {
+        val old = AppFailure("旧メッセージ", "Ubuntu · Linux Desktop v3\nfirst_failure=APP_LAUNCH_TIMEOUT")
+        assertTrue(old.displayReason().contains("Wayland"))
+        assertEquals("別の原因", AppFailure("別の原因", "").displayReason())
+    }
+
     private val nonce = "0123456789abcdef"
     private fun state(request: String? = null, reason: String = "natural", code: Int = -11): JSONObject {
         val launch = JSONObject().put("mode", "gui").put("terminal_id", "1").put("accepted", true).put("request_id", request)
