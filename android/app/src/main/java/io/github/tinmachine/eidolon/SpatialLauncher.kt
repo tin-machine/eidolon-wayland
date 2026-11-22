@@ -128,6 +128,8 @@ internal class SpatialLauncher(
     private var pinnedPose: Pose? = null
     private var explicitlyPinned = false
     private var poseBeforeMove: Pose? = null
+    private data class ShelfTriggerDrag(val source: Entity, val button: Int, val offset: Pose)
+    private var shelfTriggerDrag: ShelfTriggerDrag? = null
     private var handleOrigin: Pose? = null
     private var controllerDrag: Entity? = null
     private var controllerOffset: Pose? = null
@@ -154,11 +156,7 @@ internal class SpatialLauncher(
                     explicitlyPinned = true
                     showShelf(restored)
                 } }
-                if (movingShelf.value) {
-                    val grabbed = shelf?.getComponent<Grabbable>()?.isGrabbed == true
-                    if (shelfWasGrabbed && !grabbed) finishShelfMove()
-                    shelfWasGrabbed = grabbed
-                }
+                if (movingShelf.value) updateShelfMove()
                 traceWrist("Eidolon.wrist.update") { updateWrist() }
                 reportedInputError = false
             } catch (e: RuntimeException) {
@@ -210,6 +208,14 @@ internal class SpatialLauncher(
                         shelfListener = object3d to object3d.addInputListener(object : InputListener {
                             override fun onInput(receiver: SceneObject, hitInfo: HitInfo, sourceOfInput: Entity,
                                 changed: Int, state: Int, downTime: Long): Boolean {
+                                val trigger = changed and (ButtonBits.ButtonTriggerL or ButtonBits.ButtonTriggerR)
+                                if (movingShelf.value && trigger != 0 && physicalController(sourceOfInput) != null) {
+                                    val pressed = state and trigger
+                                    if (pressed == ButtonBits.ButtonTriggerL || pressed == ButtonBits.ButtonTriggerR) {
+                                        handler.post { startShelfTriggerMove(owner, sourceOfInput, pressed) }
+                                    }
+                                    return true
+                                }
                                 if (changed and ButtonBits.ButtonThumbRU == 0 || ShelfReasonFocus.hovered == null) return false
                                 if (state and ButtonBits.ButtonThumbRU != 0) handler.post { ShelfReasonFocus.request.intValue++ }
                                 return true
@@ -391,13 +397,13 @@ internal class SpatialLauncher(
     private fun wristInputListener(id: Long) = object : InputListener {
         override fun onInput(receiver: SceneObject, hitInfo: HitInfo, sourceOfInput: Entity,
             changed: Int, state: Int, downTime: Long): Boolean {
-            if (actualInput != WristInput.CONTROLLERS) return false
+            if (movingShelf.value || actualInput != WristInput.CONTROLLERS) return false
             val button = selectionButton()
             if (changed and button == 0) return false
             val controller = runCatching { sourceOfInput.getComponent<Controller>() }.getOrNull()
             if (controller?.type != ControllerType.CONTROLLER) return false
             handler.post {
-                if (!active || !live() || wrist?.id != id || actualInput != WristInput.CONTROLLERS) return@post
+                if (!active || !live() || movingShelf.value || wrist?.id != id || actualInput != WristInput.CONTROLLERS) return@post
                 if (this@SpatialLauncher.controller(side.value.left) == null ||
                     this@SpatialLauncher.controller(side.value.opposite.left) == null) {
                     resetWrist()
@@ -530,24 +536,71 @@ internal class SpatialLauncher(
 
     private fun moveShelf() {
         val entity = shelf ?: return
+        if (movingShelf.value || shelfAnchor.fixed.value) return
+        cancelAppPlacement()
+        cancelPress()
         poseBeforeMove = getAbsoluteTransform(entity)
         entity.setComponent(Grabbable(true, GrabbableType.FACE, false, .45f, 3f))
         shelfWasGrabbed = false
         movingShelf.value = true
     }
 
+    private fun physicalController(source: Entity): Controller? =
+        runCatching { source.getComponent<Controller>() }.getOrNull()
+            ?.takeIf { it.isActive && it.type == ControllerType.CONTROLLER }
+
+    private fun startShelfTriggerMove(id: Long, source: Entity, button: Int) {
+        val panel = shelf?.takeIf { it.id == id } ?: return
+        val tracking = physicalController(source) ?: return
+        if (!active || !live() || !movingShelf.value || shelfTriggerDrag != null ||
+            panel.getComponent<Grabbable>().isGrabbed || tracking.buttonState and button == 0) return
+        val aim = controller(button == ButtonBits.ButtonTriggerL) ?: return
+        val start = getAbsoluteTransform(panel)
+        if (!valid(start)) return
+        shelfTriggerDrag = ShelfTriggerDrag(source, button, aim.inverse() * start)
+        WristInputOwnership.controller = source.id
+        // The controller captured by the trigger owns the transform until it releases.
+        panel.setComponent(Grabbable(false))
+    }
+
+    private fun updateShelfMove() {
+        val panel = shelf ?: return
+        val drag = shelfTriggerDrag
+        if (drag == null) {
+            val grabbed = panel.getComponent<Grabbable>().isGrabbed
+            if (shelfWasGrabbed && !grabbed) finishShelfMove()
+            shelfWasGrabbed = grabbed
+            return
+        }
+        val tracking = physicalController(drag.source)
+        val aim = controller(drag.button == ButtonBits.ButtonTriggerL)
+        val original = poseBeforeMove
+        if (tracking == null || aim == null || original == null) {
+            finishShelfMove(save = false)
+            return
+        }
+        val candidate = Pose((aim * drag.offset).t, original.q)
+        val accepted = validDrop(candidate)
+        if (accepted) panel.setComponent(Transform(candidate))
+        if (tracking.buttonState and drag.button == 0) finishShelfMove(save = accepted, releasedPose = candidate)
+    }
+
     private fun finishShelfMove() = finishShelfMove(save = true)
 
-    private fun finishShelfMove(save: Boolean) {
+    private fun finishShelfMove(save: Boolean, releasedPose: Pose? = null) {
         if (!movingShelf.value) return
         val panel = shelf
         if (panel != null) {
-            val pose = getAbsoluteTransform(panel)
+            val pose = releasedPose ?: getAbsoluteTransform(panel)
             val accepted = save && !panel.getComponent<Grabbable>().isGrabbed && valid(pose)
             if (accepted) { pinnedPose = pose; explicitlyPinned = true }
             else poseBeforeMove?.let { panel.setComponent(Transform(it)) }
             panel.setComponent(Grabbable(false))
         }
+        shelfTriggerDrag?.source?.let { source ->
+            if (WristInputOwnership.controller == source.id) WristInputOwnership.finishController(source.id)
+        }
+        shelfTriggerDrag = null
         poseBeforeMove = null
         shelfWasGrabbed = false
         movingShelf.value = false
@@ -729,7 +782,7 @@ internal class SpatialLauncher(
         val hit = if (wrist != null || handle != null) sdk.lineSegmentIntersect(aim.t, aim * Vector3(0f, 0f, 8f)) else null
         val target = if (wrist?.id != null && wrist?.id == hit?.entity?.id) hit?.point?.let(::targetAt) else null
         hover.value = target
-        if (pinching && !handPinching && handNeutral) {
+        if (!movingShelf.value && pinching && !handPinching && handNeutral) {
             val item = handle
             if (item != null && hit?.entity?.id == item.id) {
                 val start = getAbsoluteTransform(item)
@@ -862,7 +915,8 @@ internal class SpatialLauncher(
         press.clear()
         pressed.value = null
         hover.value = null
-        if (controllerDrag == null) WristInputOwnership.controller?.let(WristInputOwnership::finishController)
+        if (controllerDrag == null && shelfTriggerDrag == null)
+            WristInputOwnership.controller?.let(WristInputOwnership::finishController)
     }
 
     private fun resetWrist() {

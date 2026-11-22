@@ -142,7 +142,7 @@ fun LauncherSettings(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(modifier = Modifier.weight(1f), enabled = placeShelf != null || finishShelf != null,
                         onClick = { (placeShelf ?: finishShelf)?.invoke() }) {
-                        Text(if (finishShelf != null) "アプリランチャー · つかんで移動" else "アプリランチャー", color = candy)
+                        Text(if (finishShelf != null) "アプリランチャー · トリガー長押しで移動" else "アプリランチャー", color = candy)
                     }
                     if (toggleFix != null) TextButton(onClick = toggleFix) {
                         Text(if (fixed) "◆ 固定を解除" else "◇ ここに固定")
