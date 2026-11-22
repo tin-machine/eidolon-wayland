@@ -22,6 +22,14 @@ PR #28は実v3 transportのInspect、catalog、予約、Stop、deferred finaliza
 
 本書は提案時点ではD5のmanaged manifestにI3を登録しない。I3は現在未登録タスクであり、設計PRのレビュー・マージ後に別途manifestの登録可否を判断する。D5 resolverに未登録の手動参照資料として扱い、実装や設計承認が成立したとみなさない。
 
+## Ubuntu の Desktop Entry から起動したアプリへの適用
+
+以下の固定 main の契約は組み込みの Mousepad と GTK デモを対象とする。Ubuntu のランチャーから検出した Desktop Entry では、同じ認証済み起動元に属する最初の親なし窓から次の親なし窓への引き継ぎを1回許す。窓名、アプリ名、言語、サイズは判定に使わない。
+
+- GIMP のように起動画面が先に破棄されたら、その入力と表示の許可を取り消し、本体の窓を最長20秒待つ。アプリの終了や切断が届けば通常の回収へ進む。
+- K3b のように本体の窓が先に現れたら、元の窓が破棄されるか、元の窓が unmap され本体が map されるまで待つ。親なし窓の重なりは最長20秒まで。起動画面だけが表示されている間はこの期限を消費しない。
+- 本体の窓には新しい表示先を割り当てる。SDK の応答、binding、描画フレームをその窓で確認してから入力を開く。元の窓の回収には引き続き native と SDK 双方の完了確認が必要になる。
+
 ## 1. 保護する不変条件
 
 I3-INV-01: originはI2の予約済みLaunchからnativeが生成し、専用Wayland listenerでacceptしたClientDataへ一度だけ固定する。remote JSON、title、app_id、PID、UID、SDK Entityはorigin発行元にならない。  

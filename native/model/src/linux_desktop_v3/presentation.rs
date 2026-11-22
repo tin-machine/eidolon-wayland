@@ -633,6 +633,7 @@ pub struct Startup {
     current_create: Option<Create>,
     current_retired: bool,
     startup_completed: bool,
+    released_main: Option<(WindowId, bool)>,
     first_failure: Option<Reason>,
     cleanup_pending: bool,
     fallback_used: bool,
@@ -658,6 +659,7 @@ impl Startup {
             current_create: None,
             current_retired: false,
             startup_completed: false,
+            released_main: None,
             first_failure: None,
             cleanup_pending: false,
             fallback_used: false,
@@ -665,6 +667,45 @@ impl Startup {
     }
     pub fn origin(&self) -> &NativeOrigin {
         &self.origin
+    }
+
+    /// Revoke the old target before assembling presentation evidence for its
+    /// successor. Only native window history can report this transition.
+    pub fn release_startup_main(
+        &mut self,
+        origin: &NativeOrigin,
+        main: WindowId,
+        now_ms: u64,
+    ) -> Result<()> {
+        require(origin == &self.origin, "APP_ORIGIN_UNKNOWN")?;
+        require(now_ms >= self.last_ms, "CLOCK_STALE")?;
+        if self.released_main.is_some_and(|(old, _)| old == main) && self.main.is_none() {
+            return Ok(());
+        }
+        require(
+            matches!(origin.app_id(), AppId::DesktopEntry(_))
+                && self.released_main.is_none()
+                && self.main == Some(main)
+                && !matches!(
+                    self.phase,
+                    PresentationState::Pending | PresentationState::Stopping
+                ),
+            "APP_WINDOW_UNSUPPORTED",
+        )?;
+        require(
+            now_ms <= i64::MAX as u64 - MAIN_WAIT_MS - SDK_WAIT_MS,
+            "CLOCK_STALE",
+        )?;
+        self.released_main = Some((main, self.startup_completed));
+        self.main = None;
+        self.first_adopted_ms = None;
+        self.current_create = None;
+        self.current_retired = false;
+        self.startup_completed = false;
+        self.phase = PresentationState::AwaitingMain;
+        self.last_ms = now_ms;
+        self.t0_ms = now_ms;
+        Ok(())
     }
 
     /// Called exclusively after the native/SDK retirement proof for a
@@ -730,16 +771,16 @@ impl Startup {
         ) {
             return Ok(s.stop(None));
         }
-        // Validate scope first. A foreign terminal must not cancel this owner.
-        if v.terminal.is_some() {
-            let reason = (!self.startup_completed).then_some(Reason::AppStartupCancelled);
-            return Ok(s.stop(reason));
-        }
-        if v.cancelled
+        // A natural exit after the splash already presented also completes
+        // normally when the helper's terminal event arrives during the gap.
+        let previously_presented =
+            self.startup_completed || self.released_main.is_some_and(|(_, presented)| presented);
+        if v.terminal.is_some()
+            || v.cancelled
             || (!self.startup_completed
                 && (!v.activity_visible || v.scene.is_none() || !v.xr_focused))
         {
-            let reason = (!self.startup_completed).then_some(Reason::AppStartupCancelled);
+            let reason = (!previously_presented).then_some(Reason::AppStartupCancelled);
             return Ok(s.stop(reason));
         }
         if !self.startup_completed {
@@ -805,6 +846,7 @@ impl Startup {
             || roots.iter().any(|w| {
                 !matches!(w.parent, Parent::None {})
                     || !self.origin.main_app_id_matches(w.app_id.as_deref())
+                    || self.released_main.is_some_and(|(old, _)| old == w.window)
                     || self.before.contains(&w.window)
             })
         {
