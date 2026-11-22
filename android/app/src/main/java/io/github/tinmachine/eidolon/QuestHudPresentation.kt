@@ -46,7 +46,7 @@ internal data class HudRingStack(val widthDp: Float = 132f, val heightDp: Float 
 
 internal data class HudTheme(
     val layout: HudLayout = HudLayout.RINGS,
-    val offset: List<Float> = listOf(.55f, -.51f, 1.40f),
+    val offset: List<Float> = listOf(.85f, -.81f, 1.40f),
     val scale: Float = 1f,
     val faceViewer: Boolean = true,
     val followHead: Boolean = false,

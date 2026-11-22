@@ -789,18 +789,20 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                     if (bindings.values.none { it.handle == runtime && sameKey(it.key,plan.getJSONObject("target")) }) {
                         val target=plan.getJSONObject("target")
                         val placements=owner.getJSONObject("workspace").getJSONArray("windows")
-                        val initial=(0 until placements.length()).map {placements.getJSONObject(it)}.firstOrNull {
+                        val placementWindow=(0 until placements.length()).map {placements.getJSONObject(it)}.firstOrNull {
                             it.optString("session")==target.optString("session") && it.optString("window")==target.optString("window") &&
                                 !it.isNull("slot") && it.optInt("slot",-1)==plan.optInt("slot",-2)
-                        }?.optJSONObject("placement")
-                        val pose = initial?.optJSONObject("pose") ?: continue
+                        } ?: continue
+                        val initial = placementWindow.getJSONObject("placement")
+                        val pose = initial.optJSONObject("pose") ?: continue
                         if (!PanelPoseCodec.valid(pose)) continue
                         val group = WindowGroupPresentation.select(runtime, target, owner.optJSONObject("window_groups"))
-                        val arcPose = if (initial.isNull("pose_command") && group == WindowGroupPresentation.Unowned) {
-                            initialDialogArc(runtime, owner, plan, pose)
-                        } else null
                         val deferAnchor = runtime == handle && anchorTarget != null && sameKey(target, anchorTarget) &&
                             mousepadAnchor?.awaitingPlacement(AnchorWindow.from(runtime, target)) == true
+                        val arcPose = if (!deferAnchor && !placementWindow.optBoolean("restored_pose") &&
+                            initial.isNull("pose_command") && group == WindowGroupPresentation.Unowned) {
+                            initialDialogArc(runtime, owner, plan, pose)
+                        } else null
                         create(runtime, plan, arcPose ?: pose, group, deferAnchor)
                     }
                 }
@@ -814,18 +816,22 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         val target = plan.getJSONObject("target")
         val report = (0 until windows.length()).map { windows.getJSONObject(it) }
         val dialog = report.firstOrNull { it.optString("window") == target.getString("window") } ?: return null
-        val parentId = dialog.optString("parent").takeIf { it.toLongOrNull()?.let { id -> id > 0 } == true } ?: return null
+        val parentId = dialog.optString("parent").takeIf { it.toLongOrNull()?.let { id -> id > 0 } == true }
+        val eye = runCatching { runtimeScene?.getViewerPose()?.t }.getOrNull() ?: return null
         val parent = bindings.values.firstOrNull {
             it.handle == handle && it.key.optString("session") == target.getString("session")
                 && it.key.optString("window") == parentId && !it.retire && !it.sdkDisposed && canUseSdk(it)
-        } ?: return null
-        val parentWindow = report.firstOrNull { it.optString("window") == parentId } ?: return null
-        val parentWidth = parentWindow.optJSONObject("sizing")?.optJSONObject("physical_size_m")?.optDouble("width_m") ?: return null
-        val dialogWidth = dialog.optJSONObject("sizing")?.optJSONObject("physical_size_m")?.optDouble("width_m") ?: return null
-        val viewer = runCatching { runtimeScene?.getViewerPose() }.getOrNull() ?: return null
-        val parentPose = getAbsoluteTransform(parent.entity)
-        val side = if (fallback.getJSONArray("position_m").getDouble(0) < parentPose.t.x.toDouble()) -1 else 1
-        val pose = DialogArcPlacement.pose(viewer.t, parentPose.t, parentWidth, dialogWidth, side) ?: return null
+        }
+        val parentWidth = report.firstOrNull { it.optString("window") == parentId }
+            ?.optJSONObject("sizing")?.optJSONObject("physical_size_m")?.optDouble("width_m")
+        val dialogWidth = dialog.optJSONObject("sizing")?.optJSONObject("physical_size_m")?.optDouble("width_m")
+        val position = fallback.getJSONArray("position_m")
+        val arc = if (parent != null && parentWidth != null && dialogWidth != null) {
+            val center = getAbsoluteTransform(parent.entity).t
+            val side = if (position.getDouble(0) < center.x.toDouble()) -1 else 1
+            DialogArcPlacement.pose(eye, center, parentWidth, dialogWidth, side)
+        } else null
+        val pose = arc ?: DialogArcPlacement.facing(eye, position) ?: return null
         return pose.takeIf { NativeSessionHost.setInitialDialogPose(plan, parentId, it, handle) }
     }
 

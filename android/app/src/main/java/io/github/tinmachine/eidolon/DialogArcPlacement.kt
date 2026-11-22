@@ -27,10 +27,19 @@ internal object DialogArcPlacement {
             + atan2(0.08, distance)
         val yaw = atan2(dx, dz) + side * separation
         val position = listOf(eye.x + distance * sin(yaw), parent.y.toDouble(), eye.z + distance * cos(yaw))
-        if (!position.all(Double::isFinite)) return null
+        return facing(eye, JSONArray(position))
+    }
+
+    fun facing(eye: Vector3, position: JSONArray): JSONObject? {
+        val dx = position.getDouble(0) - eye.x
+        val dy = position.getDouble(1) - eye.y
+        val dz = position.getDouble(2) - eye.z
+        val distance = hypot(dx, dz)
+        if (!distance.isFinite() || distance < 0.25) return null
+        val yaw = atan2(dx, dz)
         // The forward ray toward the panel center is its local +Z axis.
         // The front of the panel is local -Z and faces the captured eye.
-        val pitch = atan2(eye.y.toDouble() - parent.y, distance)
+        val pitch = atan2(-dy, distance)
         val sinYaw = sin(yaw / 2)
         val cosYaw = cos(yaw / 2)
         val sinPitch = sin(pitch / 2)
@@ -41,7 +50,7 @@ internal object DialogArcPlacement {
             -sinYaw * sinPitch,
             cosYaw * cosPitch,
         )
-        return JSONObject().put("position_m", JSONArray(position))
+        return JSONObject().put("position_m", position)
             .put("rotation_xyzw", JSONArray(rotation)).takeIf(PanelPoseCodec::valid)
     }
 }

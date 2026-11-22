@@ -135,6 +135,7 @@ internal class TermuxShelfSession(
             if (events != null) for (i in 0 until events.length()) {
                 val event = events.getJSONObject(i)
                 val id = event.optString("request_id")
+                if (event.optString("type") == "command_complete") NativeSessionHost.completeWindowPose(owner, id, event.getString("code"))
                 when (event.optString("type")) {
                     "credential_required" -> if (id == connectSent && event.optString("profile_id") == "termux-local")
                         credentials?.provide(owner, event.getString("session").toLong(), id.toLong())

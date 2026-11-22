@@ -140,6 +140,7 @@ internal class CompanionLinuxSession(
         if (events != null) for (index in 0 until events.length()) {
             val event = events.getJSONObject(index)
             val id = event.optString("request_id")
+            if (event.optString("type") == "command_complete") NativeSessionHost.completeWindowPose(current, id, event.getString("code"))
             when (event.optString("type")) {
                 "credential_required" -> credentials?.let {
                     val supplied = provide(current, it, event)

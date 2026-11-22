@@ -35,6 +35,18 @@ class DialogArcPlacementTest {
         }
     }
 
+    @Test fun independentWindowKeepsItsSlotAndFacesTheOpeningView() {
+        val eye = Vector3(1f, 2f, 1f)
+        val position = org.json.JSONArray(listOf(3.0, 1.0, 3.0))
+        val pose = requireNotNull(DialogArcPlacement.facing(eye, position))
+        assertEquals(position.toString(), pose.getJSONArray("position_m").toString())
+        val q = pose.getJSONArray("rotation_xyzw")
+        val (x, y, z, w) = (0..3).map { q.getDouble(it) }
+        assertEquals(2.0 / 3, 2 * (x * z + w * y), 0.00001)
+        assertEquals(-1.0 / 3, 2 * (y * z - w * x), 0.00001)
+        assertEquals(2.0 / 3, 1 - 2 * (x * x + y * y), 0.00001)
+    }
+
     @Test fun missingHorizontalDistanceDoesNotOverrideTheExistingPlacement() {
         val eye = Vector3(0f, 1.4f, 0f)
         assertNull(DialogArcPlacement.pose(eye, eye, 1.2, 0.8, 1))

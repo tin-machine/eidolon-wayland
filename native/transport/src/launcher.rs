@@ -1020,6 +1020,23 @@ pub struct Audit {
     pub orphaned: bool,
     pub child_alive: bool,
     pub receipt: Option<Finished>,
+    pub recovery_basis: Option<RecoveryBasis>,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum RecoveryBasis {
+    OwnerRetired,
+    BeforeLaunch,
+    HostRebooted,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Reconciliation {
+    schema: u32,
+    nonce: String,
+    uid: u32,
+    child: Option<Identity>,
+    basis: RecoveryBasis,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1038,6 +1055,9 @@ struct AuditWire {
     pending: bool,
     #[serde(default)]
     receipt: Option<Frame>,
+    #[serde(default)]
+    recoverable: bool,
+    reconciliation: Option<Reconciliation>,
 }
 /// 新しい検証済みSSH接続から旧nonceを照合する。保存PIDへsignalする操作はない。
 pub async fn audit<H: client::Handler>(
@@ -1046,17 +1066,47 @@ pub async fn audit<H: client::Handler>(
     uid: u32,
     child: Option<&Identity>,
 ) -> Result<Audit, &'static str> {
-    let command = command("cleanup", nonce)?;
-    let value = timeout(Duration::from_secs(3), async {
-        let channel = client
-            .channel_open_session()
-            .await
-            .map_err(|_| "SSH_IO_FAILED")?;
-        crate::exec::json(channel, command).await
-    })
-    .await
-    .map_err(|_| "EXEC_TIMEOUT")??;
-    let wire: AuditWire = serde_json::from_value(value).map_err(|_| "PROTOCOL_ERROR")?;
+    let probe = command("cleanup", nonce)?;
+    let run = async |command: String| -> Result<AuditWire, &'static str> {
+        let value = timeout(Duration::from_secs(3), async {
+            let channel = client
+                .channel_open_session()
+                .await
+                .map_err(|_| "SSH_IO_FAILED")?;
+            crate::exec::json(channel, command).await
+        })
+        .await
+        .map_err(|_| "EXEC_TIMEOUT")??;
+        serde_json::from_value(value).map_err(|_| "PROTOCOL_ERROR")
+    };
+    let mut wire = run(probe).await?;
+    if wire.schema == 1
+        && wire.recoverable
+        && wire.pending
+        && !wire.cleaned
+        && !wire.active
+        && wire.receipt.is_none()
+        && wire.reconciliation.is_none()
+    {
+        let (pid, start) = match child {
+            Some(id) if id.valid() => (id.pid, id.start.as_str()),
+            Some(_) => return Err("PROTOCOL_ERROR"),
+            None => (0, "0"),
+        };
+        wire = run(format!(
+            "'{PYTHON}' '{SCRIPT_PATH}' 'reconcile' '{nonce}' {uid} {pid} {start}"
+        ))
+        .await?;
+    }
+    verify_audit(wire, nonce, uid, child)
+}
+
+fn verify_audit(
+    wire: AuditWire,
+    nonce: &str,
+    uid: u32,
+    child: Option<&Identity>,
+) -> Result<Audit, &'static str> {
     if wire.schema != 1 {
         return Err("PROTOCOL_ERROR");
     }
@@ -1074,20 +1124,38 @@ pub async fn audit<H: client::Handler>(
     {
         return Err("PROTOCOL_ERROR");
     }
+    let recovery_basis = if let Some(proof) = wire.reconciliation {
+        if receipt.is_some()
+            || proof.schema != 1
+            || proof.uid != uid
+            || proof.nonce != nonce
+            || proof.child.as_ref().is_some_and(|id| !id.valid())
+            || child.is_some_and(|id| proof.child.as_ref() != Some(id))
+            || matches!(proof.basis, RecoveryBasis::BeforeLaunch) && proof.child.is_some()
+        {
+            return Err("PROTOCOL_ERROR");
+        }
+        Some(proof.basis)
+    } else {
+        None
+    };
     let verified = wire.cleaned
         && wire.already_absent
         && !wire.active
         && !wire.orphaned
         && !wire.child_alive
         && !wire.pending
-        && receipt
-            .as_ref()
-            .is_some_and(|r| r.cleaned && !r.group_alive && r.pipes_closed);
+        && !wire.recoverable
+        && (recovery_basis.is_some()
+            || receipt
+                .as_ref()
+                .is_some_and(|r| r.cleaned && !r.group_alive && r.pipes_closed));
     Ok(Audit {
         verified,
         active: wire.active,
         orphaned: wire.orphaned,
         child_alive: wire.child_alive,
+        recovery_basis,
         receipt,
     })
 }
@@ -1095,6 +1163,46 @@ pub async fn audit<H: client::Handler>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recovery_proof_must_match_the_persisted_identity_and_completed_cleanup() {
+        let seed = rand::random::<u64>();
+        let nonce = format!("{seed:016x}");
+        let other_nonce = format!("{:016x}", seed ^ 1);
+        let id = Identity {
+            pid: 123,
+            start: "45".to_string(),
+            group: 123,
+            state: "R".to_string(),
+        };
+        let wire = serde_json::json!({
+            "schema":1, "cleaned":true, "already_absent":true,
+            "reconciliation":{"schema":1, "nonce":nonce, "uid":42, "child":id, "basis":"HostRebooted"}
+        });
+        let check = |value| {
+            verify_audit(
+                serde_json::from_value(value).unwrap(),
+                &nonce,
+                42,
+                Some(&id),
+            )
+        };
+        let verified = check(wire.clone()).unwrap();
+        assert!(verified.verified && verified.receipt.is_none());
+        for (key, value) in [
+            ("uid", serde_json::json!(43)),
+            ("child", serde_json::Value::Null),
+            ("basis", serde_json::json!("BeforeLaunch")),
+            ("nonce", serde_json::json!(other_nonce)),
+        ] {
+            let mut invalid = wire.clone();
+            invalid["reconciliation"][key] = value;
+            assert!(check(invalid).is_err());
+        }
+        let mut pending = wire;
+        pending["active"] = true.into();
+        assert!(!check(pending).unwrap().verified);
+    }
+
     #[test]
     fn commands_are_fixed_and_process_identity_is_bounded() {
         assert!(command("shell", &"a".repeat(16)).is_err());

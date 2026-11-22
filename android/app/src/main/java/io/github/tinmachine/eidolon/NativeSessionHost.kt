@@ -34,7 +34,7 @@ object NativeSessionHost {
     private var selectedWindow: Pair<String,String>? = null
     private var lastFocusedWindow: String? = null
     private val editing = AtomicBoolean(false)
-    private val poseCompletions = ConcurrentHashMap<String,String>()
+    private val poseCompletions = WindowPoseRequests()
     private val lastStop = AtomicReference<String?>(null)
     fun stopReceipt(): JSONObject? = lastStop.get()?.let { JSONObject(it) }
     val layoutEditing = mutableStateOf(false)
@@ -1608,19 +1608,23 @@ object NativeSessionHost {
         if(windowOperation.compareAndSet(null,owner)) WindowMoveTicket(owner).also { RuntimeUiChanges.invalidate() } else null
     }
     fun windowOperationCurrent(ticket:WindowOperationTicket):Boolean = inputIntents.serial {
-        windowOperation.get()===ticket && ticket.control.runtime==handle && ticket.control.intent==inputIntents.get() &&
+        windowOperation.get()===ticket && ownsWorkspaceRuntime(ticket.control.runtime) && ticket.control.intent==inputIntents.get() &&
             activityVisible.get() && xrState.get()=="FOCUSED" && !editing.get() && panelTextInputs.isEmpty() && !debugSdkLease.blocksProduct()
     }
     fun windowMoveCurrent(ticket:WindowMoveTicket):Boolean=windowOperationCurrent(ticket.operation)
     fun windowMoveSourceOwned(source:Long):Boolean=windowOperation.get()?.let {it.kind=="move" && it.source==source}==true
-    private fun movingTarget(target:String):Boolean=windowOperation.get()?.takeIf {it.phase!="returning"}?.control?.target?.let {targetIdentity(JSONObject(it))==targetIdentity(JSONObject(target))}==true
+    private fun movingTarget(target: String, runtime: Long = handle): Boolean {
+        val operation = windowOperation.get() ?: return false
+        return operation.phase != "returning" && operation.control.runtime == runtime &&
+            targetIdentity(JSONObject(operation.control.target)) == targetIdentity(JSONObject(target))
+    }
     fun finishWindowMove(ticket:WindowMoveTicket,restore:Boolean) {
         if(!windowOperation.compareAndSet(ticket.operation,null)) return
         if(restore && ticket.control.intent==inputIntents.get()) windowControl(ticket.control,"focus")
     }
     fun submitWindowMovePose(ticket:WindowMoveTicket,pose:JSONObject):String? = inputIntents.serial {
         if(!windowMoveCurrent(ticket) || !PanelPoseCodec.valid(pose) || poseCompletions.size>=16) return@serial null
-        val request=requests.incrementAndGet().toString();poseCompletions[request]="pending"
+        val request=requests.incrementAndGet().toString();poseCompletions.start(request, ticket.control.runtime)
         val code=NativeBridge.nativeCommand(ticket.control.runtime,JSONObject().put("schema",1).put("type","set_pose_control")
             .put("request_id",request).put("target",JSONObject(ticket.control.target)).put("pose",pose).put("controls_revision",ticket.control.revision).toString())
         BuildHooks.windowControlRequested("move",ticket.control.runtime,ticket.control.target,ticket.control.revision,request,code)
@@ -1836,7 +1840,7 @@ object NativeSessionHost {
     internal fun forgetWindowGroupGeometry(request:String) {groupGeometryCompletions.remove(request)}
     internal fun windowGroupGeometryPending()=groupGeometryCompletions.size
     fun inputTarget(target: String, runtime: Long = handle): InputTarget? {
-        if (!runtimeAdmission.open() || debugSdkLease.blocksProduct() || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || movingTarget(target)) return null
+        if (!runtimeAdmission.open() || debugSdkLease.blocksProduct() || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || movingTarget(target, runtime)) return null
         val key=JSONObject(target)
         if(!windowGroupInputAllowed(runtime,key)) return null
         val candidates = if (runtime == handle) inputTargets else companionInputTargets
@@ -1931,9 +1935,9 @@ object NativeSessionHost {
         }
     }
     internal fun setInitialDialogPose(
-        plan: JSONObject, parent: String, pose: JSONObject, runtime: Long,
+        plan: JSONObject, parent: String?, pose: JSONObject, runtime: Long,
     ): Boolean {
-        if (!runtimeAdmission.open() || runtime != handle || !PanelPoseCodec.valid(pose)) return false
+        if (!runtimeAdmission.open() || !ownsWorkspaceRuntime(runtime) || !PanelPoseCodec.valid(pose)) return false
         return NativeBridge.nativeCommand(runtime, JSONObject().put("schema", 1)
             .put("type", "set_initial_dialog_pose").put("request_id", requests.incrementAndGet().toString())
             .put("target", plan.getJSONObject("target")).put("create_command", plan.getString("command_seq"))
@@ -1942,16 +1946,14 @@ object NativeSessionHost {
 
     fun submitPose(target: JSONObject, pose: JSONObject, runtime: Long): String? {
         if(!runtimeAdmission.open() || !ownsWorkspaceRuntime(runtime) || poseCompletions.size>=16 || !PanelPoseCodec.valid(pose)) return null
-        val request=requests.incrementAndGet().toString();poseCompletions[request]="pending"
+        val request=requests.incrementAndGet().toString();poseCompletions.start(request, runtime)
         val code=NativeBridge.nativeCommand(runtime,JSONObject().put("schema",1).put("type","set_pose").put("request_id",request).put("target",target).put("pose",pose).toString())
         if(code!=NativeBridge.ACCEPTED) {poseCompletions.remove(request);return null}
         return request
     }
-    fun poseCompletion(request: String): String? {
-        val code=poseCompletions[request] ?: return null
-        if(code!="pending") poseCompletions.remove(request)
-        return code
-    }
+    internal fun completeWindowPose(runtime: Long, request: String, code: String) =
+        poseCompletions.complete(runtime, request, code)
+    fun poseCompletion(request: String): String? = poseCompletions.result(request)
     fun forgetPose(request: String) { poseCompletions.remove(request) }
     fun ackPose(target: JSONObject, command: String?, pose: JSONObject, runtime: Long): Int = NativeBridge.nativeCommand(runtime,
         JSONObject().put("schema",1).put("type","pose_applied").put("request_id",requests.incrementAndGet().toString()).put("target",target)
@@ -2430,7 +2432,7 @@ object NativeSessionHost {
     /** Only an already captured, still live target may own an internal window handoff. */
     fun imeCaptureCurrent(): Boolean {
         val connection = imeConnection ?: return false
-        return !debugSdkLease.blocksProduct() && !movingTarget(imeSdkJson(connection.target).toString()) && windowGroupInputAllowed(connection.runtime,imeSdkJson(connection.target)) &&
+        return !debugSdkLease.blocksProduct() && !movingTarget(imeSdkJson(connection.target).toString(), connection.runtime) && windowGroupInputAllowed(connection.runtime,imeSdkJson(connection.target)) &&
             connection.runtime == handle && inputIntents.get() == imeCaptureTicket && activityVisible.get() &&
             xrState.get() == "FOCUSED" && !editing.get() && panelTextInputs.isEmpty() &&
             inputTargets.values.any { it.runtime == connection.runtime && strictImeSdkTarget(JSONObject(it.target)) == connection.target }
@@ -2528,7 +2530,7 @@ object NativeSessionHost {
         if (imeConnection !== connection || connection.runtime != handle || handle == 0L) return@serial ImeEnqueueResult.UNAVAILABLE
         if(command is ImeSessionCommand.Focus || command is ImeSessionCommand.Transaction || command is ImeSessionCommand.Backend && command.enabled) {
             val owner=imeOwner ?: return@serial ImeEnqueueResult.UNAVAILABLE
-            if(owner.connection!==connection || inputIntents.get()!=owner.ticket || debugSdkLease.blocksProduct() || movingTarget(imeSdkJson(connection.target).toString()) || !windowGroupInputAllowed(connection.runtime,imeSdkJson(connection.target)) ||
+            if(owner.connection!==connection || inputIntents.get()!=owner.ticket || debugSdkLease.blocksProduct() || movingTarget(imeSdkJson(connection.target).toString(), connection.runtime) || !windowGroupInputAllowed(connection.runtime,imeSdkJson(connection.target)) ||
                 editing.get() || panelTextInputs.isNotEmpty() || !activityVisible.get() || xrState.get()!="FOCUSED") return@serial ImeEnqueueResult.UNAVAILABLE
         }
         val envelope = JSONObject().put("schema", 1).put("request_id", request)
@@ -2550,7 +2552,7 @@ object NativeSessionHost {
     }
     private fun imeFocusCurrent(connection: ImeSessionConnection, focus: ImeSessionFocus) =
         imeConnection === connection && imeOwner?.let {it.connection===connection && it.ticket==inputIntents.get()}==true &&
-            !debugSdkLease.blocksProduct() && !movingTarget(imeSdkJson(connection.target).toString()) && windowGroupInputAllowed(connection.runtime,imeSdkJson(connection.target)) && connection.runtime == handle && focus.target == connection.target &&
+            !debugSdkLease.blocksProduct() && !movingTarget(imeSdkJson(connection.target).toString(), connection.runtime) && windowGroupInputAllowed(connection.runtime,imeSdkJson(connection.target)) && connection.runtime == handle && focus.target == connection.target &&
             imeFocus(keyboardFocus) == focus && !editing.get() && panelTextInputs.isEmpty() && activityVisible.get() && xrState.get() == "FOCUSED"
 
     private fun sendImeNonTextKey(connection: ImeSessionConnection, focus: ImeSessionFocus, event: KeyEvent): Boolean = inputIntents.serial {
@@ -2631,7 +2633,7 @@ object NativeSessionHost {
         if (imeRawBlocked.get()) return false // Android IME owns physical ingress until reset/disable ACKs.
         if(BuildHooks.imeProbeActive()) {BuildHooks.imeProbePhysicalKey();return false}
         val focus = keyboardFocus ?: return false
-        if (movingTarget(focus.target) || !windowGroupInputAllowed(focus.runtime,JSONObject(focus.target))) return false
+        if (movingTarget(focus.target, focus.runtime) || !windowGroupInputAllowed(focus.runtime,JSONObject(focus.target))) return false
         if (editing.get() || panelTextInputs.isNotEmpty() || !ownsWorkspaceRuntime(focus.runtime) || !activityVisible.get() || xrState.get() != "FOCUSED") return false
         val key = JSONObject().put("device", event.deviceId).put("scan_code", event.scanCode).put("key_code", event.keyCode)
             .put("action", if (event.action == KeyEvent.ACTION_DOWN) "pressed" else "released").put("repeat", event.repeatCount)
@@ -3106,7 +3108,7 @@ object NativeSessionHost {
                 themeRequests.remove(event.getString("request_id"))?.invoke(event.getString("code"))
                 BuildHooks.commandComplete(event.getString("request_id"), event.getString("code"))
                 groupGeometryCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
-                poseCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
+                completeWindowPose(handle, event.getString("request_id"), event.getString("code"))
                 windowOperationCompletions.computeIfPresent(event.getString("request_id")) { _, _ -> event.getString("code") }
                 if (event.getString("request_id") == linuxPreviewRequest && event.getString("code") != "ACCEPTED") {
                     linuxPreviewRequest = null

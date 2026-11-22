@@ -3106,10 +3106,10 @@ impl Runtime {
             let app_matches = state.snapshot.app.as_ref().is_some_and(|app| {
                 app.session == Some(target.session)
                     && app.gui_windows.contains(&target.window)
-                    && app.gui_windows.contains(parent)
+                    && parent.is_none_or(|id| app.gui_windows.contains(&id))
                     && app.windows.iter().any(|window| {
                         window.window == target.window
-                            && window.parent == Some(*parent)
+                            && window.parent == *parent
                             && window.life == WindowLife::Mapped
                     })
             });
