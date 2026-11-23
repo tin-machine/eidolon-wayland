@@ -108,7 +108,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         var move:WindowMoveController?=null,var modeBadge:WindowModeBadge?=null,
         var menu:WindowMenuController?=null,var menuStamp:String?=null,
         val grabSources: MutableMap<Long,Pair<Entity,Int>> = linkedMapOf(),
-        var editing: Boolean = false, var wasGrabbed: Boolean = false,
+        var editing: Boolean = false, var wasGrabbed: Boolean = false, var grip: PanelGrip? = null,
         var poseRequested: String? = null, var poseAcked: String? = null,
         var lastDragPose: JSONObject? = null, var queuedPose: JSONObject? = null,
         var poseRequest: String? = null, var poseAccepted: Boolean = false,
@@ -220,12 +220,12 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         bindings.values.forEach { current ->
             beginRetirement(current)
             runCatching { if(current.role=="windows" && canUseSdk(current)) {
-                if(current.wasGrabbed || current.editing && current.entity.getComponent<Grabbable>().isGrabbed) {
+                if(current.wasGrabbed || current.editing && current.grip?.active == true) {
                     val finalPose=PanelPoseCodec.fromSdk(getAbsoluteTransform(current.entity))
                     current.poseRequest?.let {NativeSessionHost.forgetPose(it)}
                     current.poseRequest=finalPose?.let {NativeSessionHost.submitPose(current.key,it,current.handle)}
                 }
-                cancelGrab(current);current.entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
+                cancelGrab(current)
             } }.onFailure {event("shutdown_pose_failure_${it.javaClass.simpleName}",current.entity.id)}
             current.retire=true;current.destroy=true;current.hidden=true
             if(current.attached && !current.detachSent) {
@@ -313,7 +313,8 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         anchorDeferred: Boolean = false) {
         val initial=(group as? WindowGroupPresentation.Owned)?.pose ?: initialPose
         val pose = if (plan == null) {
-            Pose(Vector3(MainActivity.CONTROL_X, MainActivity.CONTROL_Y + .95f, MainActivity.CONTROL_Z))
+            val center = Vector3(MainActivity.CONTROL_X, MainActivity.CONTROL_Y + .95f, MainActivity.CONTROL_Z)
+            runCatching { runtimeScene?.getViewerPose()?.t }.getOrNull()?.let { ViewerPanelPlacement.facing(it, center) } ?: Pose(center)
         } else {
             initial?.takeIf { PanelPoseCodec.valid(it) }?.let { PanelPoseCodec.toSdk(it) } ?: return
         }
@@ -362,7 +363,6 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
             bindings[current.allocation] = current
             callbackOwners[SceneEntity(sdkScene,createdEntity.id)] = CallbackOwner(current,sdkScene)
             if (decoration == null) createdEntity.setComponent(Panel(R.id.native_panel))
-            if(plan!=null) createdEntity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
             current.normalCollision=if(plan==null) null else createdEntity.getComponent<Hittable>().hittable
             current.group=group
             current.anchorDeferred = anchorDeferred
@@ -468,8 +468,21 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         }
         if (current.listener == null && !closed && !current.destroy) {
             current.sceneObject = obj
-            current.input = InputAdapter(current.key,current.scope) { source,state ->
+            if (current.role == "windows") {
+                current.grip = PanelGrip(current.entity, { runCatching { current.sdkScene.getViewerPose().t }.getOrNull() },
+                    { current.editing && !current.retire && !closed && bindings[current.allocation] === current && canUseSdk(current) },
+                    accepts = { PanelPoseCodec.fromSdk(it) != null },
+                    finished = { pose ->
+                        if (current.editing && !current.retire && !closed && canUseSdk(current)) {
+                            current.queuedPose = PanelPoseCodec.fromSdk(pose ?: getAbsoluteTransform(current.entity))
+                            wake()
+                        }
+                    })
+            }
+            current.input = InputAdapter(current.key,current.scope) { source,changed,state ->
                 if(current.editing && !current.retire && bindings[current.allocation]===current) {
+                    val pressed = changed and state and PanelGrip.SQUEEZE
+                    if (Integer.bitCount(pressed) == 1) current.grip?.begin(source, pressed)
                     if(state==0) current.grabSources.remove(source.id)
                     else if(current.grabSources.size<8 || source.id in current.grabSources) current.grabSources[source.id]=source to state
                 }
@@ -480,7 +493,8 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         }
     }
     private fun cancelGrab(current: Binding) {
-        if (!canUseSdk(current)) { current.grabSources.clear(); return }
+        if (!canUseSdk(current)) { current.grip?.dispose(); current.grabSources.clear(); return }
+        current.grip?.cancel()
         val sdk=current.sdkScene
         current.grabSources.values.toList().forEach { (source,state) -> sdk.onNoIntersectionInput(source,state,0) }
         sdk.resolveInput();current.grabSources.clear()
@@ -738,7 +752,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                 if (current.retire) {
                     beginRetirement(current)
                     if (current.role == "windows" && !current.hidden && !current.sdkDisposed && canUseSdk(current)) {
-                        cancelGrab(current);current.entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
+                        cancelGrab(current)
                         current.entity.setComponent(Visible(false)); current.hidden = true
                         // IgnoreVisibleの入力面も、native Surface解放待ちに入る前に無効化する。
                         current.entity.setComponent(Hittable(MeshCollision.NoCollision))
@@ -811,7 +825,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         if (now - lastPublish >= 1000 && scene==NativeSessionHost.currentSceneEpoch()) { NativeSessionHost.publishAdapter(metrics()); lastPublish = now }
     }
     private fun initialDialogArc(handle: Long, runtime: JSONObject, plan: JSONObject, fallback: JSONObject): JSONObject? {
-        if (!plan.optBoolean("v3_evidence_required") || runtime.optString("xr_state") != "FOCUSED") return null
+        if (runtime.optString("xr_state") != "FOCUSED") return null
         val windows = runtime.optJSONObject("app")?.optJSONArray("windows") ?: return null
         val target = plan.getJSONObject("target")
         val report = (0 until windows.length()).map { windows.getJSONObject(it) }
@@ -955,7 +969,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         }
         current.move?.cancelForGroup()
         val menuClosed=current.menu?.cancelForGroup(state) ?: true
-        cancelGrab(current);current.entity.setComponent(Grabbable(false,GrabbableType.FACE,false,0f,4f))
+        cancelGrab(current)
         current.editing=false;current.wasGrabbed=false;current.queuedPose=null;current.lastDragPose=null
         current.poseRequest?.let(NativeSessionHost::forgetPose);current.poseRequest=null;current.poseAccepted=false
         val previous=current.group as? WindowGroupPresentation.Owned
@@ -1045,10 +1059,9 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
             runtime.getBoolean("activity_visible") && runtime.getString("xr_state") == "FOCUSED"
         if(current.editing!=editing) {
             if(!editing) cancelGrab(current)
-            current.entity.setComponent(Grabbable(editing,GrabbableType.FACE,false,0f,4f))
             current.input?.setSuppressed(editing);current.editing=editing
         }
-        val grabbed=editing && current.entity.getComponent<Grabbable>().isGrabbed
+        val grabbed=editing && current.grip?.active == true
         val actual=PanelPoseCodec.fromSdk(getAbsoluteTransform(current.entity))
         if((grabbed || current.wasGrabbed) && actual!=null && (current.lastDragPose?.let { !PanelPoseCodec.near(it,actual,.001) } ?: true)) {
             current.queuedPose=actual;current.lastDragPose=actual

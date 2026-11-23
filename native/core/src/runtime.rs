@@ -3105,9 +3105,19 @@ impl Runtime {
         {
             use eidolon_model::{commands::PanelAction, window::WindowLife};
             let app_matches = state.snapshot.app.as_ref().is_some_and(|app| {
-                app.session == Some(target.session)
-                    && app.gui_windows.contains(&target.window)
-                    && parent.is_none_or(|id| app.gui_windows.contains(&id))
+                let admitted = match app.mode {
+                    Some(eidolon_model::commands::AppMode::LinuxDesktop) => {
+                        app.gui_windows.contains(&target.window)
+                            && parent.is_none_or(|id| app.gui_windows.contains(&id))
+                            && state.v3_retirement.as_ref().is_some_and(|owner| {
+                                !owner.is_sealed() && owner.owns_target(*target, *create_command)
+                            })
+                    }
+                    Some(eidolon_model::commands::AppMode::Foot) => state.v3_retirement.is_none(),
+                    _ => false,
+                };
+                admitted
+                    && app.session == Some(target.session)
                     && app.windows.iter().any(|window| {
                         window.window == target.window
                             && window.parent == *parent
@@ -3129,9 +3139,6 @@ impl Runtime {
                 || !app_matches
                 || !current_create
                 || state.sdk_bindings.contains(target)
-                || !state.v3_retirement.as_ref().is_some_and(|owner| {
-                    !owner.is_sealed() && owner.owns_target(*target, *create_command)
-                })
             {
                 return Status::NotReady;
             }

@@ -1,5 +1,6 @@
 package io.github.tinmachine.eidolon
 
+import com.meta.spatial.core.Vector3
 import kotlin.math.abs
 import kotlin.math.sqrt
 
@@ -7,6 +8,7 @@ import kotlin.math.sqrt
 data class WindowMotionPose(val p: List<Double>,val q: List<Double>) {
     fun valid(window:Boolean=false):Boolean=p.size==3 && q.size==4 && p.all {it.isFinite() && abs(it)<=100} &&
         q.all {it.isFinite()} && abs(q.sumOf {it*it}-1.0)<.001 && (!window || p[0] in -10.0..10.0 && p[1] in 0.0..4.0 && p[2] in -10.0..10.0)
+    fun position() = Vector3(p[0].toFloat(),p[1].toFloat(),p[2].toFloat())
     fun inverse():WindowMotionPose {check(valid());val inverse=listOf(-q[0],-q[1],-q[2],q[3]);return WindowMotionPose(rotate(inverse,p.map {-it}),inverse)}
     operator fun times(other:WindowMotionPose):WindowMotionPose {
         check(valid() && other.valid())
@@ -16,6 +18,12 @@ data class WindowMotionPose(val p: List<Double>,val q: List<Double>) {
     fun near(other:WindowMotionPose,epsilon:Double=.0001)=valid() && other.valid() && p.zip(other.p).all {(a,b)->abs(a-b)<=epsilon} &&
         listOf(1.0,-1.0).any {sign -> q.zip(other.q).all {(a,b)->abs(a-sign*b)<=epsilon}}
     companion object {
+        fun fromSdk(pose: com.meta.spatial.core.Pose):WindowMotionPose? {
+            val q=listOf(pose.q.x.toDouble(),pose.q.y.toDouble(),pose.q.z.toDouble(),pose.q.w.toDouble())
+            val norm=kotlin.math.sqrt(q.sumOf {it*it})
+            if(!norm.isFinite() || norm<1e-6) return null
+            return WindowMotionPose(listOf(pose.t.x.toDouble(),pose.t.y.toDouble(),pose.t.z.toDouble()),q.map {it/norm}).takeIf {it.valid()}
+        }
         fun at(x:Double=0.0,y:Double=0.0,z:Double=0.0)=WindowMotionPose(listOf(x,y,z),listOf(0.0,0.0,0.0,1.0))
         private fun multiply(a:List<Double>,b:List<Double>)=listOf(
             a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],
@@ -40,12 +48,13 @@ class WindowMoveStarts {
 }
 
 /** Preview is never persisted. One release can submit once; ACK/model/SDK geometry are separate observations. */
-class WindowMoveCapture(val identity:WindowMoveIdentity,sourcePose:WindowMotionPose,val initial:WindowMotionPose,now:Long) {
+class WindowMoveCapture(val identity:WindowMoveIdentity,sourcePose:WindowMotionPose,val initial:WindowMotionPose,now:Long, private val eyeAtGrab:Vector3) {
     enum class Phase { DRAGGING, NEEDS_SUBMIT, COMMITTING, GEOMETRY, COMPLETE, CANCELLED }
     var phase=Phase.DRAGGING;private set
     var reason="dragging";private set
     var pose=initial;private set
     var request:String?=null;private set
+    private val drag = requireNotNull(ViewerPanelPlacement.Drag.start(initial.position(), eyeAtGrab))
     private val relative:WindowMotionPose
     private var deadline=now+60000
     private var acknowledged=false
@@ -56,10 +65,12 @@ class WindowMoveCapture(val identity:WindowMoveIdentity,sourcePose:WindowMotionP
         if(now>=deadline) cancel("deadline")
         return phase !in setOf(Phase.CANCELLED,Phase.COMPLETE)
     }
-    fun preview(owner:WindowMoveIdentity,sourcePose:WindowMotionPose,now:Long):WindowMotionPose? {
+    fun preview(owner:WindowMoveIdentity,sourcePose:WindowMotionPose,now:Long,eye:Vector3 = eyeAtGrab):WindowMotionPose? {
         if(!current(owner,now) || phase!=Phase.DRAGGING) return null
         if(!sourcePose.valid()) {cancel("source_pose_unavailable");return null}
-        val next=sourcePose*relative
+        val candidate=drag.pose((sourcePose*relative).position(),eye)
+        val next=candidate?.let(WindowMotionPose::fromSdk)
+            ?: run { cancel("viewer_pose_unavailable");return null }
         if(!next.valid(true)) {cancel("invalid_window_pose");return null}
         pose=next;return pose
     }

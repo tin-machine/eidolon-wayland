@@ -52,10 +52,12 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
             rejected++;lastReason="source_pose_unavailable";return false
         }
         if(!titleBar && !starts.accept(entity.id,downTime)) {rejected++;lastReason="old_or_excess_source";return false}
+        val eye=runCatching { sdk.getViewerPose().t }.getOrNull() ?: return false
+        if(ViewerPanelPlacement.Drag.start(body.position(),eye)==null) return false
         val owner=NativeSessionHost.beginWindowMove(JSONObject(target),runtime,revision,entity.id)
         if(owner==null) {rejected++;lastReason="owner_unavailable";return false}
         ticket=owner;source=entity
-        capture=WindowMoveCapture(WindowMoveIdentity(runtime,target,revision,owner.control.intent,entity.id,downTime),from,body,SystemClock.elapsedRealtime())
+        capture=WindowMoveCapture(WindowMoveIdentity(runtime,target,revision,owner.control.intent,entity.id,downTime),from,body,SystemClock.elapsedRealtime(),eye)
         startedBy=if(titleBar) "client_titlebar" else "window_control"
         started++;releaseRoute=null;lastReason="dragging";return true
     }
@@ -68,8 +70,13 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
         if(current==null || !currentOwner(owner,current) || controller(entity)?.isActive!=true) {c.cancel("owner_changed");return}
         val next=sourcePose(entity)
         if(next==null) {c.cancel("source_pose_unavailable");return}
-        c.preview(c.identity,next,SystemClock.elapsedRealtime())?.let {setAbsoluteTransform(parent,sdkPose(it))}
+        preview(c,next,SystemClock.elapsedRealtime())?.let {setAbsoluteTransform(parent,sdkPose(it))}
         if(c.release(c.identity,SystemClock.elapsedRealtime())) releaseRoute=route
+    }
+    private fun preview(c:WindowMoveCapture,from:WindowMotionPose,now:Long):WindowMotionPose? {
+        val eye = runCatching { sdk.getViewerPose().t }.getOrNull()
+        if (eye == null) { c.cancel("viewer_pose_unavailable"); return null }
+        return c.preview(c.identity,from,now,eye)
     }
     fun pointerLost(sourceId:Long,downTime:Long?=null) {
         if(!owns(sourceId,downTime)) return
@@ -99,10 +106,10 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
             when {
                 state?.isActive!=true || from==null -> c.cancel("source_pose_unavailable")
                 state.buttonState and (if (startedBy=="client_titlebar") ButtonBits.ButtonTriggerR else PRIMARY)==0 -> {
-                    c.preview(c.identity,from,now)?.let {setAbsoluteTransform(parent,sdkPose(it))}
+                    preview(c,from,now)?.let {setAbsoluteTransform(parent,sdkPose(it))}
                     if(c.release(c.identity,now)) releaseRoute="controller_state_up"
                 }
-                else -> c.preview(c.identity,from,now)?.let {setAbsoluteTransform(parent,sdkPose(it))}
+                else -> preview(c,from,now)?.let {setAbsoluteTransform(parent,sdkPose(it))}
             }
         }
         if(c.phase==WindowMoveCapture.Phase.NEEDS_SUBMIT) {
@@ -157,12 +164,7 @@ class WindowMoveController(private val parent:Entity,private val target:String,p
     companion object {
         private val PRIMARY=ButtonBits.ButtonTriggerL or ButtonBits.ButtonTriggerR or ButtonBits.ButtonA or ButtonBits.ButtonX
         private fun same(a:JSONObject,b:JSONObject)=listOf("session","window","scene","generation").all {a.optString(it)==b.optString(it)}
-        fun motion(pose:Pose):WindowMotionPose? {
-            val q=listOf(pose.q.x.toDouble(),pose.q.y.toDouble(),pose.q.z.toDouble(),pose.q.w.toDouble())
-            val norm=kotlin.math.sqrt(q.sumOf {it*it})
-            if(!norm.isFinite() || norm<1e-6) return null
-            return WindowMotionPose(listOf(pose.t.x.toDouble(),pose.t.y.toDouble(),pose.t.z.toDouble()),q.map {it/norm}).takeIf {it.valid()}
-        }
+        fun motion(pose:Pose):WindowMotionPose? = WindowMotionPose.fromSdk(pose)
         fun motion(pose:JSONObject):WindowMotionPose?=runCatching {
             WindowMotionPose((0..2).map {pose.getJSONArray("position_m").getDouble(it)},(0..3).map {pose.getJSONArray("rotation_xyzw").getDouble(it)}).takeIf {it.valid()}
         }.getOrNull()
