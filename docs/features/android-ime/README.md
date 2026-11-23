@@ -26,3 +26,5 @@ adb -s "${QUEST_ADB_SERIAL}" shell setprop log.tag.EidolonImeText SILENT
 ```
 
 IMEパネルに届いた文字キー、IMEが送った未確定・確定文字を、1件80文字まで端末のlogcatに記録します。文字を含むlogcatにはテスト入力が残るため、記録の共有前に内容を確認してください。
+
+物理キーボードで Shift＋Space の直後にパネルが消える場合は、[Quest 3 と Stealth のフォーカス調査記録](quest-stealth-focus-20261123.md)に再現条件と判定手順があります。
