@@ -1,8 +1,10 @@
 package io.github.tinmachine.eidolon
 
-/** Ctrl+Spaceの所有権だけを扱うpure model。本文やキー列を記録しない。 */
+/** 物理キーボードの IME 切替と、受理したキーの解放を管理する。 */
 class ImeShortcut {
-    enum class Key { CTRL_LEFT, CTRL_RIGHT, SPACE, OTHER }
+    companion object { const val LABEL = "Shift+Space" }
+
+    enum class Key { SHIFT_LEFT, SHIFT_RIGHT, SPACE, OTHER }
     enum class Action { DOWN, UP }
     data class Event(
         val device: Int,
@@ -21,20 +23,20 @@ class ImeShortcut {
     )
 
     private data class Press(val device: Int, val key: Key, val downTime: Long)
-    private val controls = mutableMapOf<Int, MutableMap<Key, Long>>()
+    private val shifts = mutableMapOf<Int, MutableMap<Key, Long>>()
     private val spaces = mutableMapOf<Int, Long>()
     private val owned = mutableSetOf<Press>()
     private val completed = linkedSetOf<Press>()
     private var retiredThrough = -1L
 
     /** 焦点/epoch/pauseで再armを要求する。受理済みpressの遅いupは引き続き消費する。 */
-    fun reset() { controls.clear(); spaces.clear() }
+    fun reset() { shifts.clear(); spaces.clear() }
 
-    fun deviceChanged(device: Int) { controls.remove(device); spaces.remove(device) }
+    fun deviceChanged(device: Int) { shifts.remove(device); spaces.remove(device) }
 
     /**
-     * trueを返すownerは、先行Ctrl downを元のnative ownerへのresetで解除する。
-     * このmodelはkeyupを合成しない。受理したCtrl/Spaceのtailも新targetへ渡さない。
+     * trueを返すownerは、先行Shift downを元のnative ownerへのresetで解除する。
+     * このmodelはkeyupを合成しない。受理したShift/Spaceのtailも新targetへ渡さない。
      */
     fun dispatch(event: Event, onToggle: () -> Boolean): Boolean {
         val press = Press(event.device, event.key, event.downTime)
@@ -55,21 +57,21 @@ class ImeShortcut {
         }
         // Every accepted toggle urgently reset native keys. Even an evicted old tail must
         // not release a newer press; Android downTime uses one monotonic clock for devices.
-        if (event.key in setOf(Key.CTRL_LEFT, Key.CTRL_RIGHT, Key.SPACE) && event.downTime <= retiredThrough) return true
+        if (event.key in setOf(Key.SHIFT_LEFT, Key.SHIFT_RIGHT, Key.SPACE) && event.downTime <= retiredThrough) return true
         if (!event.active || !event.physical || event.device < 0 || event.system || event.cancelled) return false
         if (event.action == Action.UP) {
             release(event)
             return false
         }
         if (event.repeat != 0) return false
-        if (event.key == Key.CTRL_LEFT || event.key == Key.CTRL_RIGHT) {
-            controls.getOrPut(event.device) { mutableMapOf() }[event.key] = event.downTime
+        if (event.key == Key.SHIFT_LEFT || event.key == Key.SHIFT_RIGHT) {
+            shifts.getOrPut(event.device) { mutableMapOf() }[event.key] = event.downTime
             return false
         }
         if (event.key != Key.SPACE || spaces[event.device] == event.downTime) return false
         spaces[event.device] = event.downTime
-        val held = controls[event.device].orEmpty().toMap()
-        if (held.isEmpty() || !event.ctrl || event.shift || event.alt || event.meta) return false
+        val held = shifts[event.device].orEmpty().toMap()
+        if (held.isEmpty() || !event.shift || event.ctrl || event.alt || event.meta) return false
         if ((owned + press + held.map { (key, downTime) -> Press(event.device, key, downTime) }).size > 128) return false
         if (!onToggle()) return false
         // callbackが同期的にresetしても、このpressの所有権は失わない。
@@ -81,9 +83,9 @@ class ImeShortcut {
     private fun release(event: Event) {
         if (event.key == Key.SPACE) {
             if (spaces[event.device] == event.downTime) spaces.remove(event.device)
-        } else if (controls[event.device]?.get(event.key) == event.downTime) {
-            controls[event.device]?.remove(event.key)
-            if (controls[event.device].isNullOrEmpty()) controls.remove(event.device)
+        } else if (shifts[event.device]?.get(event.key) == event.downTime) {
+            shifts[event.device]?.remove(event.key)
+            if (shifts[event.device].isNullOrEmpty()) shifts.remove(event.device)
         }
     }
 }

@@ -48,8 +48,8 @@ class PhysicalKeyboard(
         val shortcut = ImeShortcut.Event(
             device = event.deviceId,
             key = when(event.keyCode) {
-                KeyEvent.KEYCODE_CTRL_LEFT -> ImeShortcut.Key.CTRL_LEFT
-                KeyEvent.KEYCODE_CTRL_RIGHT -> ImeShortcut.Key.CTRL_RIGHT
+                KeyEvent.KEYCODE_SHIFT_LEFT -> ImeShortcut.Key.SHIFT_LEFT
+                KeyEvent.KEYCODE_SHIFT_RIGHT -> ImeShortcut.Key.SHIFT_RIGHT
                 KeyEvent.KEYCODE_SPACE -> ImeShortcut.Key.SPACE
                 else -> ImeShortcut.Key.OTHER
             },

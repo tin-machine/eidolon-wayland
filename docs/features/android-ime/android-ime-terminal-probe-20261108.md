@@ -10,14 +10,14 @@ depends_on: [android-ime-design, android-ime-implementation-record]
 related_sources:
   - scripts/quest-ime-terminal
 ---
-# 端末IMEとCtrl+Spaceのdebug検証
+# 端末IMEとShift+Spaceのdebug検証
 
 2026-11-08。対象は[NX09のAndroid IME計画](android-ime-wayland-plan-20261107.md)。
 専用debug caseを明示的に開始し、実footを対象にAndroid入力接続のON/OFFと直接入力への復帰を観測する。
-通常画面へ戻っただけでは有効にならず、case開始後のCtrl+Spaceと専用パネルの切替ボタンが同じ操作を使う。
+通常画面へ戻っただけでは有効にならず、case開始後のShift+Spaceと専用パネルの切替ボタンが同じ操作を使う。
 releaseにはcaseとreceiverを含めない。
 
-Ctrl+SpaceはEidolonの「IMEへ渡す」「Linuxへ直接キーを渡す」を切り替える。
+Shift+SpaceはEidolonの「IMEへ渡す」「Linuxへ直接キーを渡す」を切り替える。
 利用するIMEと言語はQuest側で選択する。かな漢字変換・候補・物理キー・HMDの受入れは、この制御試験とは別に確認する。
 
 ## 再現手順
@@ -58,7 +58,7 @@ scripts/quest-ime-terminal stop --serial "$EIDOLON_QUEST_SERIAL" --nonce "$IME_N
 
 | 観測 | 意味・次の操作 |
 | --- | --- |
-| `DIRECT_READY` | 対象端末と専用パネルを準備した。Ctrl+Spaceまたは`toggle`でIME接続を要求できる |
+| `DIRECT_READY` | 対象端末と専用パネルを準備した。Shift+Spaceまたは`toggle`でIME接続を要求できる |
 | `BOUND`、editorのView/Window focus・IC activeがtrue | Android editorとnativeの対象を結び付けた。かな漢字変換の成功はまだ別項目 |
 | `CLOSING` / `WAITING_CLEANUP` / `WAITING_FOCUS` | IMEの解除または直接入力先への復帰を確認中 |
 | `android_released=true`、`raw_return=COMPLETE`、`native_raw_blocked=false` | native cleanupとAndroid解除後、元の対象への新しいfocusを確認した |

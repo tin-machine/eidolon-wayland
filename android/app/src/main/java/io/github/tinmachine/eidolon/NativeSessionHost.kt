@@ -2536,7 +2536,7 @@ object NativeSessionHost {
         val blocked = metadata.rawBlocked || !debugImeAndroidReleased() || returning?.blocksRaw() == true
         imeRawBlocked.set(blocked)
         imeInputMessage = when {
-            metadata.phase == ImeSessionPhase.BOUND -> InputStatus("IME_CONNECTED", "IME入力 · Ctrl+Spaceで直接入力へ")
+            metadata.phase == ImeSessionPhase.BOUND -> InputStatus("IME_CONNECTED", "IME入力 · ${ImeShortcut.LABEL}で直接入力へ")
             metadata.phase == ImeSessionPhase.CLOSED && blocked -> InputStatus("IME_RECOVERY", "入力停止 · IME終了または直接入力への復帰を確認中")
             metadata.phase == ImeSessionPhase.CLOSING -> InputStatus("IME_CLOSING", "IME終了処理中 · 直接入力は停止中")
             metadata.phase != ImeSessionPhase.CLOSED -> InputStatus("IME_CONNECTING", "IME入力を接続中 · 直接入力は停止中")

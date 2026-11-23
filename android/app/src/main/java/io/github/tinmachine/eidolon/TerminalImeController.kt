@@ -134,7 +134,7 @@ object TerminalImeController {
             closedEditorFixture=probe?.verifyEditor?.invoke(context) ?: true
             orientation=LinearLayout.VERTICAL;setPadding(24,20,24,20);setBackgroundColor(Color.rgb(35,39,55))
             isFocusableInTouchMode=true
-            addView(TextView(context).apply {text=if(probe==null) "IME入力 · Ctrl+Spaceで終了" else "端末IMEの検証 · Ctrl+Space";setTextColor(Color.WHITE);textSize=21f})
+            addView(TextView(context).apply {text=if(probe==null) "IME入力 · ${ImeShortcut.LABEL}で終了" else "端末IMEの検証 · ${ImeShortcut.LABEL}";setTextColor(Color.WHITE);textSize=21f})
             addView(TextView(context).apply {text=if(probe==null) "変換方式はQuestで選択したIMEを使用します" else "変換・候補・物理入力の受入れは別途確認";setTextColor(Color.WHITE);textSize=15f})
             label=TextView(context).also { it.setTextColor(Color.WHITE);it.textSize=17f;addView(it) }
             addView(Button(context).apply {text="IME / 直接入力を切替";isFocusable=false;setOnClickListener {toggle()}})
@@ -316,8 +316,8 @@ object TerminalImeController {
                         lastMetadata?.failure=="cleanup_unconfirmed") phase="FAILED"
                 }
                 label?.text=when(phase) {
-                    "DIRECT_READY","COMPLETE" -> "直接入力 · Ctrl+SpaceでIMEへ"
-                    "BOUND" -> "IME入力 · Ctrl+Spaceで終了"
+                    "DIRECT_READY","COMPLETE" -> "直接入力 · ${ImeShortcut.LABEL}でIMEへ"
+                    "BOUND" -> "IME入力 · ${ImeShortcut.LABEL}で終了"
                     "WAITING_FOCUS","WAITING_CLEANUP","CLOSING","CLOSED" -> "直接入力への復帰を確認中"
                     "FAILED","TARGET_UNAVAILABLE" -> "入力を停止しています。接続を停止・再開してください"
                     "SDK_CLEANUP" -> "IME画面を閉じています"
