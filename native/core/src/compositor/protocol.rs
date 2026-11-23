@@ -63,6 +63,7 @@ pub struct ClientState {
     compositor: CompositorClientState,
     /// Set exactly once at native accept. A v2 or Termux client has no v3 origin.
     pub(crate) origin: Option<NativeOrigin>,
+    input_method: bool,
 }
 impl ClientData for ClientState {
     fn initialized(&self, _: ClientId) {}
@@ -109,6 +110,8 @@ impl Cacheable for BufferUse {
 
 #[path = "clipboard.rs"]
 mod clipboard;
+#[path = "external_ime.rs"]
+mod external_ime;
 #[path = "ime.rs"]
 mod ime;
 #[cfg(any(test, feature = "debug-fixtures"))]
@@ -143,6 +146,7 @@ pub struct ProtocolState {
     _seat: Seat<Self>,
     input: input::InputState,
     ime: ime::ImeState,
+    external_ime: external_ime::ExternalIme,
     data_device: DataDeviceState,
     output: Output,
     _globals: Vec<GlobalId>,
@@ -239,6 +243,8 @@ impl ProtocolState {
             ),
             data_device.global(),
             ime::create_global(dh),
+            external_ime::method_global(dh),
+            external_ime::keyboard_global(dh),
         ];
         Self {
             display_handle: dh.clone(),
@@ -249,6 +255,7 @@ impl ProtocolState {
             _seat: seat,
             input: Default::default(),
             ime: Default::default(),
+            external_ime: Default::default(),
             data_device,
             output,
             _globals: globals,
@@ -315,7 +322,7 @@ impl ProtocolState {
         if self.verified_origin.is_some() {
             return Err("APP_ORIGIN_UNKNOWN");
         }
-        self.accept_captured(dh, stream, None)
+        self.accept_captured(dh, stream, None, false)
     }
 
     /// Only the owned v3 Session may call this route with its captured I2
@@ -329,7 +336,7 @@ impl ProtocolState {
         if origin.session() != self.session || self.verified_origin.as_ref() != Some(origin) {
             return Err("APP_ORIGIN_UNKNOWN");
         }
-        self.accept_captured(dh, stream, Some(origin.clone()))
+        self.accept_captured(dh, stream, Some(origin.clone()), false)
     }
 
     fn accept_captured(
@@ -337,13 +344,15 @@ impl ProtocolState {
         dh: &DisplayHandle,
         stream: std::os::unix::net::UnixStream,
         origin: Option<NativeOrigin>,
+        input_method: bool,
     ) -> Result<Client, &'static str> {
         if !self.new_roles_open {
             return Err("STALE");
         }
         let mut clients = 0;
         dh.backend_handle().with_all_clients(|_| clients += 1);
-        if clients >= limits::CLIENTS {
+        let ime_connected = self.external_ime.connected(dh);
+        if !input_method && clients >= limits::CLIENTS + usize::from(ime_connected) {
             self.counters.client_rejections += 1;
             return Err("RESOURCE_LIMIT");
         }
@@ -354,6 +363,7 @@ impl ProtocolState {
                 Arc::new(ClientState {
                     compositor: CompositorClientState::default(),
                     origin,
+                    input_method,
                 }),
             )
             .map_err(|_| "CLIENT_ACCEPT")?;
@@ -381,6 +391,7 @@ impl ProtocolState {
     pub fn finish_dispatch(&mut self, dh: &DisplayHandle) {
         self.refresh_input_focus();
         self.refresh_popup_focus();
+        self.sync_external_ime();
         self.clipboard_tick(dh);
         self.pool_leases.retain(|_, lease| lease.strong_count() > 0);
         let mut attached = HashSet::new();

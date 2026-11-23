@@ -98,3 +98,21 @@ scripts/termux/ime/build-wayland
 1. Termux の `clang++ -v -E -x c++ - </dev/null` でターゲットと include の順番を記録し、同じ版のヘッダー、clang resource directory、Fcitx5 の CMake 定義とライブラリを作業用の sysroot に取り出す。CMake 定義内の Termux の絶対パスは、この作業用コピーで置換する。
 2. Ubuntu の Clang に `--target=aarch64-unknown-linux-android24`、Termux の libc++ ヘッダー、`-femulated-tls` を指定する。リンクには Android 用 LLD、compiler-rt、libc++_shared、liblog、NDK の aarch64 版 libunwind を使う。ホストの実行ファイルは `-DPROTOC_EXECUTABLE=...` で渡し、`-Dprotobuf_BUILD_PROTOC_BINARIES=OFF` とする。
 3. 同じソース、パッチ、辞書で `mozc` ターゲットをビルドする。`readelf -h -d libmozc.so` の Machine が AArch64 であり、Ubuntu のビルドディレクトリへの RUNPATH がないことを確認する。Quest に渡すのはアドオンと登録ファイル。ロードと固定語の確定は Quest で検証する。
+
+## Eidolon のコンポジタを使った三つのアプリでの検証
+
+2026-11-23、Ubuntu で製品の Rust コンポジタを起動し、専用の接続済みソケットを渡した Waypipe と認証済みの Termux SSH を通じて、Quest 上の Fcitx5＋Mozc を接続した。キー列は検証用ドライバから製品の入力処理へ渡した。
+
+| 入力先 | 失敗・条件変更 | 確定結果 |
+| --- | --- | --- |
+| Quest の foot | 素の foot は既定の共有メモリプールがコンポジタの予算を超え、窓を出せなかった。製品ランチャーと同じ `--override=tweak.max-shm-pool-size-mb=0` で再試行した。 | 端末の標準入力から「日本語」を読めた。 |
+| Ubuntu の Mousepad | 独立したセッションバスで `--disable-server` を付けると保存アクションの宛先がなかった。専用バス上で通常起動し、保存を呼び出した。 | ファイルの全文が UTF-8 の「日本語」（9 バイト）になった。 |
+| Ubuntu の Dolphin | 専用ディレクトリ内のファイルを選択して起動し、F2 で名前変更欄を開いた。 | 確定後、実ファイルの名前が「日本語」になった。 |
+
+ここで使ったコンポジタは Ubuntu 上で動作する。Quest の通常 APK からの自動接続、装着時の候補位置、物理キー操作は別途確認する。
+
+候補一覧を出した瞬間の foot の窓から、製品コンポジタの RGBA レイヤーを読み戻した。本文・装飾の後に 175×274 ピクセルの候補レイヤーがあり、窓の座標 (0, 43) から本文の直下へ合成された。下図は同じフレームの左上を原寸で切り出したもの。2 行目が選択中で、上矢印と Enter で 1 行目の「日本語」が端末に届いた。入力ドライバは各キーイベントを約 12 ms 間隔で確認した。
+
+![Eidolon が foot に合成した Fcitx5 の候補一覧](images/eidolon-mozc-foot-candidates-20261123.png)
+
+SSH で起動する専用リレーに転送を切り替え、同じ三つのアプリの入力検査を再実行した。3 件とも成功。リレーは SSH の標準入出力で Waypipe のデータを中継し、Termux 内の専用一時ディレクトリで接続を受ける。通常動作時は入力内容を記録しない。
