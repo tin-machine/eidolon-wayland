@@ -23,6 +23,7 @@ class ImeInputConnection(
     private val ownerHandler = Handler(target.context.mainLooper)
     private var closed = false
     private var closing = false
+    internal var inputTrace: ImeInputTrace? = null
 
     override fun getHandler(): Handler = ownerHandler
     override fun getEditable(): Editable? = null
@@ -30,6 +31,7 @@ class ImeInputConnection(
     private inline fun edit(operation: () -> Boolean): Boolean {
         if (!canEdit()) return false
         val result = operation()
+        if (!result) inputTrace?.record(ImeInputTrace.Event.REJECTED)
         onChanged()
         return result
     }
@@ -38,6 +40,7 @@ class ImeInputConnection(
         if (!canEdit()) return null
         if (value == null || value.length > editor.maxUtf8Bytes) {
             editor.rejectOperation(generation, operation, if (value == null) "invalid_text" else "payload_limit")
+            inputTrace?.record(ImeInputTrace.Event.REJECTED)
             onChanged()
             return null
         }
@@ -48,6 +51,7 @@ class ImeInputConnection(
     override fun endBatchEdit() = edit { editor.endBatchEdit(generation) }
     override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
         val value = copyText(text, "setComposingText") ?: return false
+        inputTrace?.text(ImeInputTrace.Event.COMPOSING, value)
         return edit { editor.setComposingText(generation, value, newCursorPosition) }
     }
     override fun setComposingText(text: CharSequence, newCursorPosition: Int, textAttribute: TextAttribute?) =
@@ -55,12 +59,16 @@ class ImeInputConnection(
 
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
         val value = copyText(text, "commitText") ?: return false
+        inputTrace?.text(ImeInputTrace.Event.COMMIT, value)
         return edit { editor.commitText(generation, value, newCursorPosition) }
     }
     override fun commitText(text: CharSequence, newCursorPosition: Int, textAttribute: TextAttribute?) =
         commitText(text, newCursorPosition)
 
-    override fun finishComposingText() = if (closing) false else edit { editor.finishComposingText(generation) }
+    override fun finishComposingText() = if (closing) false else edit {
+        inputTrace?.record(ImeInputTrace.Event.FINISH)
+        editor.finishComposingText(generation)
+    }
     override fun setSelection(start: Int, end: Int) = edit { editor.setSelection(generation, start, end) }
     override fun setComposingRegion(start: Int, end: Int) = edit { editor.setComposingRegion(generation, start, end) }
     override fun setComposingRegion(start: Int, end: Int, textAttribute: TextAttribute?) = setComposingRegion(start, end)
@@ -74,10 +82,12 @@ class ImeInputConnection(
     override fun getSelectedText(flags: Int): CharSequence? = editor.selectedText(generation)
     override fun getCursorCapsMode(reqModes: Int) = 0
     override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText? {
+        inputTrace?.record(ImeInputTrace.Event.SURROUNDING_UNAVAILABLE)
         editor.rejectOperation(generation, "getExtractedText", "surrounding_unavailable")
         return null
     }
     override fun getSurroundingText(beforeLength: Int, afterLength: Int, flags: Int): SurroundingText? {
+        inputTrace?.record(ImeInputTrace.Event.SURROUNDING_UNAVAILABLE)
         editor.rejectOperation(generation, "getSurroundingText", "surrounding_unavailable")
         return null
     }
@@ -86,6 +96,7 @@ class ImeInputConnection(
 
     override fun sendKeyEvent(event: KeyEvent?): Boolean {
         if (!canEdit()) return false
+        event?.let { inputTrace?.key(ImeInputTrace.Event.IME_KEY, it) }
         if (event == null || !editor.isCurrent(generation) ||
             (event.action != KeyEvent.ACTION_UP && !editor.canForwardKey(generation))) return edit {
             editor.rejectOperation(generation, "sendKeyEvent", "key_route_unavailable")

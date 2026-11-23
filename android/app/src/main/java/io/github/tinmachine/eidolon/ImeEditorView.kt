@@ -28,6 +28,7 @@ class ImeEditorView(
 ) : View(context) {
     private data class HeldKey(val device: Int, val scan: Int, val code: Int)
     private val heldKeys = mutableMapOf<HeldKey, Long>()
+    internal val inputTrace = if (BuildConfig.DEBUG) ImeInputTrace() else null
     private val editor = ImeEditorState(onTransaction, onMetadata, { generation, reason ->
         heldKeys.clear()
         // A production sink must release its owned raw keys through the urgent-reset route here.
@@ -94,7 +95,14 @@ class ImeEditorView(
         invalidate()
     }
 
-    override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean = preImeKey(event) || super.dispatchKeyEventPreIme(event)
+    internal fun traceKey(stage: ImeInputTrace.Event, event: KeyEvent) {
+        if (BuildConfig.DEBUG && !permanentlyClosed && hasFocus() && hasWindowFocus()) inputTrace?.key(stage, event)
+    }
+
+    override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
+        traceKey(ImeInputTrace.Event.PRE_IME, event)
+        return preImeKey(event) || super.dispatchKeyEventPreIme(event)
+    }
 
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
@@ -115,6 +123,7 @@ class ImeEditorView(
         outAttrs.initialSelEnd = 0
         outAttrs.contentMimeTypes = null
         return ImeInputConnection(this, editor, generation, ::editorChanged, ::forwardUnhandledKey, onEditorAction, { canEditGeneration(generation) }).also {
+            it.inputTrace = inputTrace
             connection = it
             showKeyboardAfterFocus()
         }
@@ -208,6 +217,7 @@ class ImeEditorView(
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         // Back remains an OS navigation/dismissal operation, not terminal input.
         if (keyCode == KeyEvent.KEYCODE_BACK) return super.onKeyDown(keyCode, event)
+        traceKey(ImeInputTrace.Event.EDITOR, event)
         forwardUnhandledKey(event)
         return true
     }

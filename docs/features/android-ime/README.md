@@ -14,3 +14,15 @@ python3 scripts/docs.py affected --path native/core/src/compositor/ime.rs
 ## ランチャーから開いた窓
 
 Ctrl+Space は選択中の窓のランタイムで IME を開始し、同じランタイムの応答とフォーカスを確認して直接入力に戻ります。Termux の foot と、Wayland の `text-input-v3` が有効な Ubuntu アプリが対象です。日本語の入力方式と候補表示は Quest で選択した IME が担当します。
+
+## 開発版の実機ログ
+
+開発版の `EidolonIme` タグで、IME接続・フォーカス、入力パネルを通ったキー押下、未確定・確定の通知、Waylandへの投入と完了を件数で確認できます。文字を含むログは既定で無効です。再現に使う文字だけを入力し、検証後に無効へ戻します。以下の `QUEST_ADB_SERIAL` には `adb devices` で確認した対象端末を指定します。
+
+```sh
+adb -s "${QUEST_ADB_SERIAL}" shell setprop log.tag.EidolonImeText VERBOSE
+adb -s "${QUEST_ADB_SERIAL}" logcat -s EidolonIme:I EidolonImeText:V
+adb -s "${QUEST_ADB_SERIAL}" shell setprop log.tag.EidolonImeText SILENT
+```
+
+IMEパネルに届いた文字キー、IMEが送った未確定・確定文字を、1件80文字まで端末のlogcatに記録します。文字を含むlogcatにはテスト入力が残るため、記録の共有前に内容を確認してください。
