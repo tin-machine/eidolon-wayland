@@ -164,6 +164,7 @@ object NativeSessionHost {
     )
 
     internal fun refreshShelfHost(source: LauncherSource) { productWorker.execute { safely {
+        if (source == LauncherSource.TERMUX) imeReconnect.resume()
         if (source.linux) {
             bindUbuntuRetryHost()
             ubuntuRetry.request(SystemClock.elapsedRealtime())
@@ -202,6 +203,7 @@ object NativeSessionHost {
     }
     internal fun stopShelfHost(source: LauncherSource) {
         if (source == LauncherSource.TERMUX) productWorker.execute {
+            imeReconnect.stop()
             val primary = termuxShelf.borrowed
             additionalTermux.forEach { it.stop() }; termuxShelf.stop()
             if (primary) disconnect()
@@ -290,35 +292,43 @@ object NativeSessionHost {
     private data class PendingDisconnect(val connectRequest: String?, val session: String?, var request: String? = null)
     private var pendingDisconnect: PendingDisconnect? = null
     private data class TermuxImeRoute(val source: Long, val sourceSession: Long, val focus: KeyboardFocus)
+    private val imeReconnect = TermuxImeReconnect<KeyboardFocus>()
     private var termuxImeRoute: TermuxImeRoute? = null // guarded by inputIntents
     private fun clearTermuxImeRoute() {
         TermuxImeWindows.rawInput(false)
         termuxImeRoute?.let { NativeBridge.nativeRouteTermuxIme(it.focus.runtime, 0, 0, 0, 0, 0) }
         termuxImeRoute = null
     }
-    private fun syncTermuxImeRoute(primary: JSONObject, eligible: Boolean) = inputIntents.serial {
-        val focus = keyboardFocus?.takeIf { eligible && !imeRawBlocked.get() }
-        val route = focus?.let {
-            val targetState = if (it.runtime == handle) primary else secondarySnapshot(it.runtime)
-            val targetSsh = targetState?.optJSONObject("transport")
-            val primarySsh = primary.optJSONObject("transport")
-            val (source, transport) = when {
-                targetSsh?.optBoolean("termux_shelf_readable") == true -> it.runtime to targetSsh
-                primarySsh?.optBoolean("termux_shelf_readable") == true -> handle to primarySsh
-                else -> termuxShelf.handle to termuxShelf.snapshot?.optJSONObject("transport")
+    private fun syncTermuxImeRoute(primary: JSONObject, eligible: Boolean) {
+        val disconnectedFocus = inputIntents.serial {
+            val focus = keyboardFocus?.takeIf { eligible && !imeRawBlocked.get() }
+            val targetState = focus?.let { if (it.runtime == handle) primary else secondarySnapshot(it.runtime) }
+            val route = focus?.let {
+                val targetSsh = targetState?.optJSONObject("transport")
+                val primarySsh = primary.optJSONObject("transport")
+                val (source, transport) = when {
+                    targetSsh?.optBoolean("termux_shelf_readable") == true -> it.runtime to targetSsh
+                    primarySsh?.optBoolean("termux_shelf_readable") == true -> handle to primarySsh
+                    else -> termuxShelf.handle to termuxShelf.snapshot?.optJSONObject("transport")
+                }
+                if (source > 0 && transport?.optBoolean("termux_shelf_readable") == true)
+                    TermuxImeRoute(source, transport.getLong("session"), it) else null
             }
-            if (source > 0 && transport?.optBoolean("termux_shelf_readable") == true)
-                TermuxImeRoute(source, transport.getLong("session"), it) else null
+            TermuxImeWindows.rawInput(route != null && targetState?.optJSONObject("app")?.optString("termux_ime") == "ready")
+            if (route != termuxImeRoute) {
+                if (termuxImeRoute?.focus?.runtime != route?.focus?.runtime || route == null) clearTermuxImeRoute()
+                if (route != null) {
+                    val target = JSONObject(route.focus.target)
+                    val result = NativeBridge.nativeRouteTermuxIme(route.focus.runtime, route.source, target.getLong("session"),
+                        target.getLong("window"), route.focus.token.toLong(), route.focus.epoch)
+                    if (result == NativeBridge.ACCEPTED) termuxImeRoute = route
+                }
+            }
+            focus?.takeIf { route == null && targetState?.optJSONObject("app")?.optString("mode") == "linux_desktop" }
         }
-        val targetState = focus?.let { if (it.runtime == handle) primary else secondarySnapshot(it.runtime) }
-        TermuxImeWindows.rawInput(route != null && targetState?.optJSONObject("app")?.optString("termux_ime") == "ready")
-        if (route == termuxImeRoute) return@serial
-        if (termuxImeRoute?.focus?.runtime != route?.focus?.runtime || route == null) clearTermuxImeRoute()
-        if (route != null) {
-            val target = JSONObject(route.focus.target)
-            val result = NativeBridge.nativeRouteTermuxIme(route.focus.runtime, route.source, target.getLong("session"),
-                target.getLong("window"), route.focus.token.toLong(), route.focus.epoch)
-            if (result == NativeBridge.ACCEPTED) termuxImeRoute = route
+        val canReconnect = disconnectedFocus != null && connectionUi.value.savedToken.isNotEmpty() && termuxShelf.canOpenForIme
+        if (imeReconnect.request(disconnectedFocus, canReconnect)) {
+            refreshShelfHostOnWorker(LauncherSource.TERMUX)
         }
     }
     private data class KeyboardFocus(val runtime: Long, val epoch: Long, val target: String, val token: String)
