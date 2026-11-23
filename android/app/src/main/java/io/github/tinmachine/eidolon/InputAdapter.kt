@@ -53,7 +53,7 @@ internal class PointerButtons {
 }
 
 /** SDKから小DTOだけを渡す。描画済み製品target以外は入力を消費しない。 */
-class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=null, private val editSource: (Entity,Int)->Unit = { _, _ -> }) : InputListener {
+class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=null, private val editSource: (Entity,Int,Int)->Unit = { _, _, _ -> }) : InputListener {
     @Volatile private var suppressed=false
     fun setSuppressed(value: Boolean) { if(suppressed!=value) {suppressed=value;capture=null;synchronized(inputLock) {clearLocal()} } }
     private val ui = Handler(Looper.getMainLooper())
@@ -148,7 +148,11 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
         changed: Int, state: Int, downTime: Long): Boolean {
         if (closed) return false
         if (WristInputOwnership.owns(sourceOfInput)) return true
-        if(suppressed || NativeSessionHost.isLayoutEditing()) {post { if(!closed) editSource(sourceOfInput,state) };return false}
+        if(suppressed || NativeSessionHost.isLayoutEditing()) {
+            val hitChange = if (receiver.entity?.id == hitInfo.entity?.id) changed else 0
+            post { if(!closed) editSource(sourceOfInput,hitChange,state) }
+            return false
+        }
         val probe = capture
         val target = targetJson
         if (probe!=null) {
@@ -177,7 +181,7 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
         return consumed
     }
     override fun stopInput(receiver: SceneObject, sourceOfInput: Entity, downTime: Long) {
-        if(suppressed || NativeSessionHost.isLayoutEditing()) {post { if(!closed) editSource(sourceOfInput,0) };return}
+        if(suppressed || NativeSessionHost.isLayoutEditing()) {post { if(!closed) editSource(sourceOfInput,0,0) };return}
         val probe = capture
         val target = targetJson
         if (probe!=null) {

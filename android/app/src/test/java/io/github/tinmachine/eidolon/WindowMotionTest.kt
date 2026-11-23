@@ -2,11 +2,12 @@ package io.github.tinmachine.eidolon
 
 import org.junit.Assert.*
 import org.junit.Test
+import com.meta.spatial.core.Vector3
 import kotlin.math.sqrt
 
 class WindowMotionTest {
     private val owner=WindowMoveIdentity(1,"1:2:3:4",5,6,7,8)
-    private fun capture()=WindowMoveCapture(owner,WindowMotionPose.at(.2,1.0,.3),WindowMotionPose.at(0.0,1.4,1.5),0)
+    private fun capture()=WindowMoveCapture(owner,WindowMotionPose.at(.2,1.0,.3),WindowMotionPose.at(0.0,1.4,1.5),0,Vector3(0f,1.4f,0f))
     @Test fun completedMoveCannotBeRearmedByAnOldOrDuplicateDown() {
         val starts=WindowMoveStarts();assertTrue(starts.accept(1,10));assertTrue(starts.accept(1,20))
         assertFalse(starts.accept(1,10));assertFalse(starts.accept(1,20));assertTrue(starts.accept(1,21))
@@ -17,10 +18,11 @@ class WindowMotionTest {
     }
     @Test fun captureDoesNotJumpAndTranslationIncludesDepth() {
         val c=capture();assertTrue(c.initial.near(c.preview(owner,WindowMotionPose.at(.2,1.0,.3),1)!!))
-        assertTrue(WindowMotionPose.at(.3,1.6,1.9).near(c.preview(owner,WindowMotionPose.at(.5,1.2,.7),2)!!))
+        val p=c.preview(owner,WindowMotionPose.at(.5,1.2,.7),2)!!.p
+        listOf(.3,1.6,3.5).zip(p).forEach { (expected, actual) -> assertEquals(expected,actual,.00001) }
     }
     @Test fun rotationMovesTheWholeWindowAboutTheCapturedSourceOffset() {
-        val c=WindowMoveCapture(owner,WindowMotionPose.at(),WindowMotionPose.at(0.0,1.0,2.0),0)
+        val c=WindowMoveCapture(owner,WindowMotionPose.at(),WindowMotionPose.at(0.0,1.0,2.0),0,Vector3(0f,1f,0f))
         val rotated=WindowMotionPose(listOf(0.0,0.0,0.0),listOf(0.0,sqrt(.5),0.0,sqrt(.5)))
         val p=c.preview(owner,rotated,1)!!
         assertEquals(2.0,p.p[0],.00001);assertEquals(1.0,p.p[1],.00001);assertEquals(0.0,p.p[2],.00001)

@@ -20,6 +20,7 @@ import com.meta.spatial.core.Entity
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.SpatialFeature
 import com.meta.spatial.core.Vector3
+import com.meta.spatial.runtime.SceneObject
 import com.meta.spatial.runtime.ReferenceSpace
 import com.meta.spatial.runtime.SessionState
 import com.meta.spatial.toolkit.AppSystemActivity
@@ -35,6 +36,22 @@ import org.json.JSONArray
 
 /** XR診断パネル。nativeとAPKの版整合をここでも表示する。 */
 class MainActivity : AppSystemActivity() {
+    private class GripBinding(val obj: SceneObject, val grip: PanelGrip) {
+        private val listener = obj.addInputListener(grip)
+        fun close() {
+            grip.dispose()
+            obj.removeInputListener(listener)
+        }
+    }
+    private val fixedPanelGrips = mutableMapOf<Int, GripBinding>()
+    private var staticPanelsFaced = false
+    private fun bindGrip(id: Int, obj: SceneObject) {
+        val entity = obj.entity ?: return
+        fixedPanelGrips.remove(id)?.close()
+        val grip = PanelGrip(entity, { runCatching { scene.getViewerPose().t }.getOrNull() },
+            { ownsScene() && resumed && observedXr == "FOCUSED" && fixedPanelGrips[id]?.obj === obj })
+        fixedPanelGrips[id] = GripBinding(obj, grip)
+    }
     private var panel: Entity? = null
     private var launcher: Entity? = null
     private val keyboardPanels = mutableListOf<PanelKeyboardBridge>()
@@ -112,15 +129,17 @@ class MainActivity : AppSystemActivity() {
         NativeSessionHost.setXrState(if(xrScene === scene) observedXr else "IDLE",epoch,activityOwner)
         scene.setReferenceSpace(ReferenceSpace.LOCAL_FLOOR)
         scene.setViewOrigin(0f, 0f, 0f, 0f)
+        val eye = runCatching { scene.getViewerPose().t }.getOrNull()
+        fun initial(center: Vector3) = eye?.let { ViewerPanelPlacement.facing(it, center) } ?: Pose(center)
         if (panel == null) {
             panel = Entity.create(listOf(
                 Panel(R.id.phase0_panel),
-                Transform(Pose(Vector3(CONTROL_X, CONTROL_Y, CONTROL_Z))),
+                Transform(initial(Vector3(CONTROL_X, CONTROL_Y, CONTROL_Z))),
             ))
         }
         if(launcher==null) {
             launcher=Entity.create(listOf(
-                Panel(R.id.terminal_launcher_panel),Transform(Pose(Vector3(-.80f,1.05f,1.75f))),
+                Panel(R.id.terminal_launcher_panel),Transform(initial(Vector3(-.80f,1.05f,1.75f))),
             ))
         }
         mousepadAnchor.bind(scene, epoch)
@@ -163,6 +182,7 @@ class MainActivity : AppSystemActivity() {
             },
             panelSetupWithComposeView = { view, obj, _ -> view.post {
                 if(ownsScene()) obj.display?.presentation?.window?.let { window ->
+                    bindGrip(R.id.phase0_panel, obj)
                     mouse.track(view)
                     keyboardPanels.add(PanelKeyboardBridge(view,window) {event -> ownsScene() && (mouse.key(event) || keyboard.dispatch(event,"control"))})
                 }
@@ -179,6 +199,7 @@ class MainActivity : AppSystemActivity() {
                 display=DpPerMeterDisplayOptions(),style=PanelStyleOptions(themeResourceId=R.style.EidolonTheme))},
             panelSetupWithComposeView = { view, obj, _ -> view.post {
                 if(ownsScene()) obj.display?.presentation?.window?.let { window ->
+                    bindGrip(R.id.terminal_launcher_panel, obj)
                     mouse.track(view)
                     keyboardPanels.add(PanelKeyboardBridge(view,window) {event -> ownsScene() && (mouse.key(event) || keyboard.dispatch(event,"launcher"))})
                 }
@@ -246,6 +267,7 @@ class MainActivity : AppSystemActivity() {
     }
 
     override fun onPause() {
+        fixedPanelGrips.values.forEach { it.grip.cancel() }
         deviceMetrics.stop()
         resumed=false
         hud.setActive(false)
@@ -298,11 +320,26 @@ class MainActivity : AppSystemActivity() {
 
     private fun refreshMouseScene() {
         val focused = ownsScene() && resumed && observedXr == "FOCUSED"
+        if (focused && !staticPanelsFaced) {
+            val eye = runCatching { scene.getViewerPose().t }.getOrNull()
+            if (eye != null && panel != null && launcher != null) {
+                val panels = listOfNotNull(panel, launcher)
+                val poses = panels.map { ViewerPanelPlacement.facing(eye, it.getComponent<Transform>().transform.t) }
+                if (poses.all { it != null }) {
+                    panels.zip(poses).forEach { (body, pose) -> body.setComponent(Transform(checkNotNull(pose))) }
+                    staticPanelsFaced = true
+                }
+            }
+        }
+        if (!focused) fixedPanelGrips.values.forEach { it.grip.cancel() }
         mouse.setFocusedScene(xrScene.takeIf { focused })
         spatialLauncher.setActive(focused)
     }
 
     override fun onSpatialShutdown() {
+        fixedPanelGrips.values.forEach { it.close() }
+        fixedPanelGrips.clear()
+        staticPanelsFaced = false
         mousepadAnchor.close()
         hud.close()
         spatialLauncher.close()
