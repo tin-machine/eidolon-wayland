@@ -1,6 +1,7 @@
 package io.github.tinmachine.eidolon
 
 import android.os.Handler
+import android.os.Looper
 import android.text.Editable
 import android.view.KeyEvent
 import android.view.View
@@ -14,22 +15,36 @@ import android.view.inputmethod.TextAttribute
 class ImeInputConnection(
     target: View,
     private val editor: ImeEditorState,
-    private val generation: Long,
+    private val openGeneration: (ImeInputConnection) -> Long?,
     private val onChanged: () -> Unit,
     private val onKey: (KeyEvent) -> Boolean = { false },
     private val onAction: (Int) -> Boolean = { false },
-    private val canEdit: () -> Boolean = { true },
+    private val canEdit: (Long) -> Boolean = { true },
 ) : BaseInputConnection(target, true) {
     private val ownerHandler = Handler(target.context.mainLooper)
+    private var generation = 0L
     private var closed = false
     private var closing = false
     internal var inputTrace: ImeInputTrace? = null
 
-    override fun getHandler(): Handler = ownerHandler
+    // IMM asks for the handler when it adopts this connection. A discarded proposal never
+    // reaches this point. Only the UI looper may mutate the editor or its session owner.
+    override fun getHandler(): Handler {
+        if (!closed && generation == 0L && Looper.myLooper() === ownerHandler.looper) {
+            generation = openGeneration(this) ?: 0L
+        }
+        return ownerHandler
+    }
     override fun getEditable(): Editable? = null
 
+    private fun editorCanReceive(): Boolean {
+        if (!closed && generation != 0L && canEdit(generation)) return true
+        inputTrace?.record(ImeInputTrace.Event.EDITOR_UNAVAILABLE)
+        return false
+    }
+
     private inline fun edit(operation: () -> Boolean): Boolean {
-        if (!canEdit()) return false
+        if (!editorCanReceive()) return false
         val result = operation()
         if (!result) inputTrace?.record(ImeInputTrace.Event.REJECTED)
         onChanged()
@@ -37,7 +52,7 @@ class ImeInputConnection(
     }
 
     private fun copyText(value: CharSequence?, operation: String): String? {
-        if (!canEdit()) return null
+        if (!editorCanReceive()) return null
         if (value == null || value.length > editor.maxUtf8Bytes) {
             editor.rejectOperation(generation, operation, if (value == null) "invalid_text" else "payload_limit")
             inputTrace?.record(ImeInputTrace.Event.REJECTED)
@@ -95,7 +110,7 @@ class ImeInputConnection(
         edit { editor.rejectOperation(generation, "replaceText", "surrounding_unavailable") }
 
     override fun sendKeyEvent(event: KeyEvent?): Boolean {
-        if (!canEdit()) return false
+        if (!editorCanReceive()) return false
         event?.let { inputTrace?.key(ImeInputTrace.Event.IME_KEY, it) }
         if (event == null || !editor.isCurrent(generation) ||
             (event.action != KeyEvent.ACTION_UP && !editor.canForwardKey(generation))) return edit {
@@ -106,7 +121,7 @@ class ImeInputConnection(
     }
 
     override fun performEditorAction(editorAction: Int): Boolean {
-        if (!canEdit()) return false
+        if (!editorCanReceive()) return false
         if (!editor.canForwardKey(generation)) return edit {
             editor.rejectOperation(generation, "performEditorAction", "action_route_unavailable")
         }
@@ -122,7 +137,7 @@ class ImeInputConnection(
         if (closed) return
         closed = true
         // Invalidate first: BaseInputConnection.closeConnection invokes finishComposingText.
-        editor.closeConnection(generation)
+        if (generation != 0L) editor.closeConnection(generation)
         closing = true
         try { super.closeConnection() } finally { closing = false; onChanged() }
     }

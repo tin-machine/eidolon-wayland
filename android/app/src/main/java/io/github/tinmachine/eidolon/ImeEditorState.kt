@@ -59,6 +59,8 @@ class ImeEditorState(
         require(maxBatchDepth in 1..64)
     }
 
+    internal class ConnectionOffer
+    private var pendingOffer: ConnectionOffer? = null
     private var generation = 0L
     private var sequence = 0L
     private var active = false
@@ -85,7 +87,14 @@ class ImeEditorState(
     fun hasComposition() = text.isNotEmpty()
     fun canForwardKey(token: Long) = isCurrent(token) && text.isEmpty() && pendingCommit.isEmpty() && batchDepth == 0
 
+    // Android can ask for a second InputConnection and discard it while continuing to use the first.
+    internal fun offerConnection() = ConnectionOffer().also { pendingOffer = it }
+
+    internal fun openOfferedConnection(offer: ConnectionOffer): Long? =
+        if (pendingOffer === offer) openConnection() else null
+
     fun openConnection(): Long {
+        pendingOffer = null
         invalidate("connection_replaced")
         generation++
         sequence = 0
@@ -99,6 +108,7 @@ class ImeEditorState(
     fun reset(reason: String = "reset") {
         // Reasons are fixed identifiers, never caller text.
         val cause = if (reason in setOf("reset", "close", "focus_lost", "sink_rejected", "key_limit")) reason else "reset"
+        pendingOffer = null
         invalidate(cause)
         generation++
         lastOperation = "reset"
@@ -278,6 +288,7 @@ class ImeEditorState(
         if (!accepted) {
             lastFailure = "sink_rejected"
             rejectedOperations++
+            pendingOffer = null
             invalidate("sink_rejected")
             generation++
             return false
