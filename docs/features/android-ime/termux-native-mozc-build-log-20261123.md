@@ -211,3 +211,7 @@ Quest を装着し、Termux の foot から Ubuntu Desktop に SSH 接続して�
 [CI の実行手順](../../../scripts/ci/termux-ime)・[ライセンスと将来バイナリを配布する際の扱い](../../../THIRD_PARTY_NOTICES.md)
 
 初回の固定版 CI では Fcitx5 と Mozc がビルドできた後、Waypipe のリンクが `undefined symbol: memfd_create` で停止した。Termux 公式コンテナの Android libc は Quest の API 34 より古い。CI では Google 配布の Android NDK r30 を SHA-256 で照合し、Waypipe のリンクだけに ARM64 / API 34 の libc スタブを使う。変換テストはコンテナの実際の Bionic で先に実行する。[初回の実行ログ](https://github.com/tin-machine/eidolon-wayland/actions/runs/45192104085)
+
+修正後は GitHub ARM64 上で[固定版](https://github.com/tin-machine/eidolon-wayland/actions/runs/45194893115)と[週次と同じ条件で手動実行した現行版](https://github.com/tin-machine/eidolon-wayland/actions/runs/45194881632)がともに成功した。配布中の版は 5.1.23-1 で固定版と同じ。両方で候補 9 件、確定文字列「日本語」、Waypipe の ARM64 リンクを確認した。次に配布版が変わるまで、新しい版での変換結果は未確認である。
+
+同じ PR の Mousepad 描画診断では、Waypipe のパッチ枚数を 1 に固定していたため、IME 用の 2 枚目が加わると検証記録を生成できなかった。各パッチの内容を固定した SHA-256 と照合し、複数の場合は順序を含めて記録する。1 枚の場合は従来どおりそのパッチの SHA-256 を記録する。
