@@ -97,6 +97,7 @@ object TerminalImeController {
         private var display: PanelDisplay? = null
         private var bridge: PanelKeyboardBridge? = null
         private var editor: ImeEditorView? = null
+        private var inputTrace: ImeInputTrace? = null
         private val productTarget=initialOwner?.target
         private val productRuntime=initialOwner?.runtime
         private val productRun=initialOwner?.ticket?.toString()
@@ -126,6 +127,8 @@ object TerminalImeController {
         private var tapFailed = false
         private var closedEditorFixture = false
         private var lastLoggedState: String? = null
+        private var lastInputCounts: String? = null
+        private var nextInputLog = 0L
 
         fun create(context: Context): View = LinearLayout(context).apply {
             closedEditorFixture=probe?.verifyEditor?.invoke(context) ?: true
@@ -143,7 +146,10 @@ object TerminalImeController {
             if(stopped || root !== view || panel == null) return
             display=panel
             panel.presentation?.window?.let { window ->
-                bridge=PanelKeyboardBridge(view,window) { event -> activity.get()?.dispatchImePanelKey(event,"ime_terminal") ?: false }
+                bridge=PanelKeyboardBridge(view,window) { event ->
+                    if (BuildConfig.DEBUG) editor?.traceKey(ImeInputTrace.Event.PANEL, event)
+                    activity.get()?.dispatchImePanelKey(event,"ime_terminal") ?: false
+                }
             }
             editorOwner?.takeIf {!closing && !requestedStop}?.let {attach(it)}
         }
@@ -197,6 +203,7 @@ object TerminalImeController {
                 })
             if(view==null) {closing=true;reason="editor_attach_failed";NativeSessionHost.closeImeOwner(owner,true);return}
             created=WeakReference(view);editor=view
+            if (BuildConfig.DEBUG) inputTrace = view.inputTrace
             container.addView(view,3,LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,104))
             view.post {if(editor===view && !closing && !stopped) tapEditor(view)}
         }
@@ -331,11 +338,25 @@ object TerminalImeController {
                         lastLoggedState = state
                         Log.i(TAG, state)
                     }
+                    val now = SystemClock.elapsedRealtime()
+                    if (now >= nextInputLog || phase == "STOPPED") {
+                        inputTrace?.let { reportInputCounts(it) }
+                        nextInputLog = now + 1000L
+                    }
                 }
                 return
             }
             probe.publish(debugReport().put("case","ime-terminal").put("nonce",probe.nonce))
         }
+        private fun reportInputCounts(trace: ImeInputTrace) {
+            val metadata = lastMetadata
+            val counts = trace.counts() + " queued=${metadata?.enqueued ?: 0} applied=${metadata?.applied ?: 0}"
+            if (counts != lastInputCounts) {
+                lastInputCounts = counts
+                Log.i(TAG, "input $counts")
+            }
+        }
+
         fun debugReport():JSONObject {
             check(BuildConfig.DEBUG)
             val metadata=editorOwner?.let {NativeSessionHost.imeStatus(it)} ?: lastMetadata;val returning=NativeSessionHost.imeRawReturnStatus();val view=editor
