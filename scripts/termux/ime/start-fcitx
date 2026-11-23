@@ -8,6 +8,10 @@ if [[ -z ${WAYLAND_DISPLAY:-} && -z ${WAYLAND_SOCKET:-} ]]; then
     exit 2
 fi
 work=$(cd "${1:-$HOME/.local/share/eidolon-ime-native/d55a051}" && pwd)
+if [[ ! -x "$work/stage/bin/eidolon-fcitx5" ]]; then
+    echo "専用の Fcitx5 がありません。build-wayland を実行してください" >&2
+    exit 1
+fi
 for name in mozc wayland waylandim classicui; do
     if [[ ! -f "$work/stage/lib/fcitx5/lib$name.so" ]]; then
         echo "ビルド済みアドオンがありません: $name" >&2
@@ -45,4 +49,4 @@ Layout=
 PROFILE
     mv "$profile.new" "$profile"
 fi
-exec fcitx5 --disable=all --enable=keyboard,wayland,waylandim,classicui,mozc
+exec "$work/stage/bin/eidolon-fcitx5" --disable=all --enable=keyboard,wayland,waylandim,classicui,mozc

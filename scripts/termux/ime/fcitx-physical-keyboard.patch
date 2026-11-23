@@ -1,0 +1,10 @@
+--- a/src/server/main.cpp
++++ b/src/server/main.cpp
+@@ -60,6 +60,7 @@ int main(int argc, char *argv[]) {
+     bool canRestart = false;
+     try {
+         Instance instance(argc, argv);
++        instance.setInputMethodMode(InputMethodMode::PhysicalKeyboard);
+         instance.setBinaryMode();
+         instance.setSignalPipe(selfPipe[0]);
+         instance.addonManager().registerDefaultLoader(&getStaticAddon());

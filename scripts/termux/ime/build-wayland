@@ -3,6 +3,7 @@
 set -euo pipefail
 umask 077
 : "${PREFIX:?Termux のシェルで実行してください}"
+tools_dir=$(cd "$(dirname "$0")" && pwd)
 version=5.1.23
 revision=27cca6e0239938b2d53937061d0980c087856b22
 recipe=4977ed6e93ae288cddba46d15e6ffcc4287bd4b6
@@ -26,15 +27,22 @@ for name in cmake-FindDL.cmake cmake-FindPthread.cmake fix-hardcoded-paths src-m
         git -C fcitx apply "$patch_file"
     fi
 done
+mode_patch="$tools_dir/fcitx-physical-keyboard.patch"
+if ! git -C fcitx apply --reverse --check "$mode_patch" 2>/dev/null; then
+    git -C fcitx apply "$mode_patch"
+fi
+builtins=$(clang++ --print-libgcc-file-name)
+link_flags="-ldl -Wl,--exclude-libs,${builtins##*/}"
 cmake -S fcitx -B fcitx-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_PREFIX_PATH="$PREFIX" \
     -DDL_INCLUDE_DIR="$PREFIX/include" -DDL_LIBRARY=0 -DPTHREAD_INCLUDE_DIR="$PREFIX/include" \
     -DENABLE_TEST=OFF -DENABLE_WAYLAND=ON -DUSE_SYSTEM_YOGA=ON \
     -DUSE_SYSTEM_PLASMA_WAYLAND_PROTOCOLS=OFF -DCMAKE_CXX_FLAGS=-fexperimental-library \
-    -DCMAKE_SHARED_LINKER_FLAGS=-ldl -DCMAKE_EXE_LINKER_FLAGS=-ldl
+    -DCMAKE_SHARED_LINKER_FLAGS="$link_flags" -DCMAKE_EXE_LINKER_FLAGS="$link_flags"
 addons=(modules/wayland frontend/waylandim ui/classic)
 names=(wayland waylandim classicui)
-targets=("${names[@]}")
+targets=(fcitx5 "${names[@]}")
 for i in "${!names[@]}"; do
     targets+=("src/${addons[i]}/${names[i]}.conf")
 done
@@ -44,3 +52,6 @@ for i in "${!names[@]}"; do
     install -D -m 700 "fcitx-build/bin/lib$name.so" "stage/lib/fcitx5/lib$name.so"
     install -D -m 600 "fcitx-build/src/${addons[i]}/$name.conf" "stage/share/fcitx5/addon/$name.conf"
 done
+install -D -m 700 fcitx-build/bin/fcitx5 stage/bin/eidolon-fcitx5
+install -D -m 700 "$tools_dir/start-fcitx" stage/bin/eidolon-ime
+stage/bin/eidolon-fcitx5 --version
