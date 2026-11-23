@@ -8,7 +8,7 @@ import org.json.JSONObject
 /** Debug-only counters for one editor. Text goes straight to the explicitly enabled log tag. */
 internal class ImeInputTrace {
     enum class Event {
-        PRE_IME, PANEL, EDITOR, IME_KEY, COMPOSING, COMMIT, FINISH, REJECTED, SURROUNDING_UNAVAILABLE
+        PRE_IME, PANEL, EDITOR, IME_KEY, COMPOSING, COMMIT, FINISH, REJECTED, SURROUNDING_UNAVAILABLE, EDITOR_UNAVAILABLE
     }
 
     private val totals = LongArray(Event.entries.size)

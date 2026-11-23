@@ -49,7 +49,7 @@ object TerminalImeController {
         return true
     }
     fun externalLoss() { active?.externalLoss("external_focus_lost") }
-    fun deferActivityFocusLoss(): Boolean = active?.deferActivityFocusLoss() ?: false
+    fun awaitingEditorFocus(): Boolean = active?.awaitingEditorFocus() ?: false
     fun startProbe(probe:Probe,scene:()->Scene) {
         check(BuildConfig.DEBUG && active==null)
         Run(probe,scene,null).also {active=it;activeState.value=true;ui.post(it)}
@@ -199,7 +199,9 @@ object TerminalImeController {
                         (activity.get()?.dispatchImePanelKey(event,"ime_pre") ?: false)
                 },windowFocusChanged={focused->
                     val sender=created.get()
-                    if(sender!=null && editor===sender && !focused && !closing && sender.hasFocus()) externalLoss("editor_window_lost")
+                    if(sender!=null && editor===sender && !focused && !closing && sender.hasFocus() && !awaitingEditorFocus()) {
+                        externalLoss("editor_window_lost")
+                    }
                 })
             if(view==null) {closing=true;reason="editor_attach_failed";NativeSessionHost.closeImeOwner(owner,true);return}
             created=WeakReference(view);editor=view
@@ -230,7 +232,7 @@ object TerminalImeController {
                     externalLoss("handoff_not_confirmed")
             },1000)
         }
-        fun deferActivityFocusLoss(): Boolean {
+        fun awaitingEditorFocus(): Boolean {
             val view=editor ?: return false
             if(closing || stopped || SystemClock.elapsedRealtime()>handoffUntil || handoffToken==null ||
                 view.windowToken!==handoffToken || !view.isAttachedToWindow || !NativeSessionHost.imeCaptureCurrent()) return false

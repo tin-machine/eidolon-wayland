@@ -295,7 +295,7 @@ class MainActivity : AppSystemActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         mouse.focusChanged()
-        if (!hasFocus && ownsScene() && !TerminalImeController.deferActivityFocusLoss()) {
+        if (!hasFocus && ownsScene() && !TerminalImeController.awaitingEditorFocus()) {
             keyboard.resetShortcutState()
             TerminalImeController.externalLoss()
             NativeSessionHost.resetInput()

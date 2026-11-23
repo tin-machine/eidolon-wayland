@@ -1,10 +1,10 @@
 package io.github.tinmachine.eidolon
 
-import android.provider.Settings
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
 import androidx.compose.runtime.mutableStateOf

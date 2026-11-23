@@ -28,8 +28,14 @@ class ImeInputConnection(
     override fun getHandler(): Handler = ownerHandler
     override fun getEditable(): Editable? = null
 
+    private fun editorCanReceive(): Boolean {
+        if (canEdit()) return true
+        inputTrace?.record(ImeInputTrace.Event.EDITOR_UNAVAILABLE)
+        return false
+    }
+
     private inline fun edit(operation: () -> Boolean): Boolean {
-        if (!canEdit()) return false
+        if (!editorCanReceive()) return false
         val result = operation()
         if (!result) inputTrace?.record(ImeInputTrace.Event.REJECTED)
         onChanged()
@@ -37,7 +43,7 @@ class ImeInputConnection(
     }
 
     private fun copyText(value: CharSequence?, operation: String): String? {
-        if (!canEdit()) return null
+        if (!editorCanReceive()) return null
         if (value == null || value.length > editor.maxUtf8Bytes) {
             editor.rejectOperation(generation, operation, if (value == null) "invalid_text" else "payload_limit")
             inputTrace?.record(ImeInputTrace.Event.REJECTED)
@@ -95,7 +101,7 @@ class ImeInputConnection(
         edit { editor.rejectOperation(generation, "replaceText", "surrounding_unavailable") }
 
     override fun sendKeyEvent(event: KeyEvent?): Boolean {
-        if (!canEdit()) return false
+        if (!editorCanReceive()) return false
         event?.let { inputTrace?.key(ImeInputTrace.Event.IME_KEY, it) }
         if (event == null || !editor.isCurrent(generation) ||
             (event.action != KeyEvent.ACTION_UP && !editor.canForwardKey(generation))) return edit {
@@ -106,7 +112,7 @@ class ImeInputConnection(
     }
 
     override fun performEditorAction(editorAction: Int): Boolean {
-        if (!canEdit()) return false
+        if (!editorCanReceive()) return false
         if (!editor.canForwardKey(generation)) return edit {
             editor.rejectOperation(generation, "performEditorAction", "action_route_unavailable")
         }
