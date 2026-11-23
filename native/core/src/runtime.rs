@@ -954,16 +954,7 @@ impl Runtime {
                 let mut workspace = crate::workspace::Controller::load(
                     config.preferences_dir.as_deref().map(std::path::Path::new),
                 );
-                workspace.set_initial_offset(match render_slot {
-                    eidolon_render::ExecutorSlot::Primary => [0., 0.],
-                    eidolon_render::ExecutorSlot::Companion(2) => [1.8, 0.],
-                    eidolon_render::ExecutorSlot::Companion(n) => {
-                        let i = n - 3;
-                        let y = [1., -1., 2., -2., 3., -3., 4.][usize::from(i / 3)];
-                        [(f32::from(i % 3) - 1.) * 1.8, y]
-                    }
-                    eidolon_render::ExecutorSlot::Termux => [-1.8, 0.],
-                });
+                workspace.set_initial_offset(render_slot);
                 if config.preferences_dir.is_none() {
                     workspace.set_keyboard_layout(config.keyboard_layout);
                 }

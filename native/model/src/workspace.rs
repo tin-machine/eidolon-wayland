@@ -23,13 +23,27 @@ pub struct PanelPose {
     pub rotation_xyzw: [f32; 4],
 }
 impl PanelPose {
+    const MIN_HEIGHT: f32 = 0.;
+    const MAX_HEIGHT: f32 = 4.;
+
     pub fn at_slot(slot: usize) -> Self {
+        Self::at_workspace_slot(slot, [0., 0.])
+    }
+
+    pub fn at_workspace_slot(slot: usize, offset: [f32; 2]) -> Self {
         Self {
             position_m: crate::window_slots::Position::ORDER.get(slot).map_or(
                 [f32::NAN; 3],
                 |position| {
                     let [x, y] = position.grid();
-                    [f32::from(x) * 1.8, 2.0 + f32::from(y) * 1.8, 1.5]
+                    let height = 2.0 + f32::from(y) * 1.8 + offset[1];
+                    let bounded = height.clamp(Self::MIN_HEIGHT, Self::MAX_HEIGHT);
+                    // Keep overflowing rows distinct at the floor or ceiling.
+                    [
+                        f32::from(x) * 1.8 + offset[0],
+                        bounded,
+                        1.5 + (height - bounded).abs(),
+                    ]
                 },
             ),
             rotation_xyzw: [0., 0., 0., 1.],
@@ -42,7 +56,7 @@ impl PanelPose {
             && y.is_finite()
             && z.is_finite()
             && (-10. ..=10.).contains(&x)
-            && (0. ..=4.).contains(&y)
+            && (Self::MIN_HEIGHT..=Self::MAX_HEIGHT).contains(&y)
             && (-10. ..=10.).contains(&z)
             && self.rotation_xyzw.iter().all(|v| v.is_finite())
             && (norm - 1.).abs() <= 0.001
@@ -273,6 +287,15 @@ mod tests {
             logical_size: Some(LogicalSize::new(800, 600).unwrap()),
         }
     }
+    #[test]
+    fn workspace_offset_preserves_height_in_range_and_separates_overflow_in_depth() {
+        for (offset_y, expected_y, expected_z) in [(1., 3., 1.5), (-3., 0., 2.5), (4., 4., 3.5)] {
+            let pose = PanelPose::at_workspace_slot(0, [1.8, offset_y]);
+            assert_eq!(pose.position_m, [1.8, expected_y, expected_z]);
+            assert!(pose.valid());
+        }
+    }
+
     #[test]
     fn observation_setting_migrates_old_records_and_roundtrips_disabled() {
         let mut value: Preferences = serde_json::from_str(
