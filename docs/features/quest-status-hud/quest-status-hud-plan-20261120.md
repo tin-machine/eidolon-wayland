@@ -35,7 +35,7 @@ last_reviewed: "2026-11-21"
 [hud]
 layout = "rings"
 anchor = "space"
-offset_m = [0.85, -0.81, 1.40]
+offset_m = [0.85, -1.81, 1.40]
 face_viewer = true
 scale = 1.0
 ring_cap = "flat"
@@ -58,7 +58,7 @@ motion_ms = 1000
 - `rules` を省略すると選んだ表示方式の標準条件を使う。指定した場合はその表で標準条件を置き換える。警告時の色は `#RRGGBB`。動かさない項目は `motion_ms = 0`、動かす時間は 250〜3000 ms。文字の横帯は静止表示。
 - `ring_layout = "stacked"` は同じ軸に重ねた円柱、`"inline"` は各行の小さな円。既存のテーマ ZIP が `ring_layout` を省略した場合は従来の各行表示を使う。
 - 円柱では `stack_width_dp`（72〜156）、`stack_height_dp`（34〜52）、`stack_stroke_dp`（2〜8）で輪の幅、高さ、線幅を指定できる。行の間隔は共通なので、高さを増すと輪の重なりが深くなる。
-- `offset_m` は装着者基準の右・上・前の順。 `anchor = "head"` で頭の向きに追従させる。 `face_viewer = false` で表示面を視線の正面平面と平行にする。 `ring_cap = "round"` で切れ目を丸くする。
+- `offset_m` は装着者基準の右・上・前の順。上下は −2.0 m から +0.65 m まで指定できる。 `anchor = "head"` で頭の向きに追従させる。 `face_viewer = false` で表示面を視線の正面平面と平行にする。 `ring_cap = "round"` で切れ目を丸くする。
 
 ## 2026-11-20 の初期表示計画
 
