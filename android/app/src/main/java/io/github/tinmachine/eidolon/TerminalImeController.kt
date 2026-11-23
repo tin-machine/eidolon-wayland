@@ -72,10 +72,11 @@ object TerminalImeController {
             else lastProductReport?.let {JSONObject(it.toString())}
         if(value?.optString("scope")=="normal_terminal_ime") {
             val target=value.optJSONObject("target")?.let {ImeSdkTarget(it.getString("session"),it.getString("window"),it.getString("scene"),it.getString("generation"))}
-            val runtimeMatches=value.optString("runtime").toLongOrNull()==NativeSessionHost.currentHandle()
+            val runtime = value.optString("runtime").toLongOrNull()
+            val runtimeMatches = runtime != null && NativeSessionHost.ownsWorkspaceRuntime(runtime)
             value.put("current_runtime_matches",runtimeMatches)
                 .put("captured_input_current",runtimeMatches && NativeSessionHost.imeCaptureCurrent())
-                .put("raw_focus_same_target",runtimeMatches && target!=null && NativeSessionHost.debugImeFocusedTarget()==target)
+                .put("raw_focus_same_target",runtimeMatches && target!=null && NativeSessionHost.debugImeFocusedTarget(runtime)==target)
         }
         return value
     }
@@ -339,7 +340,7 @@ object TerminalImeController {
             check(BuildConfig.DEBUG)
             val metadata=editorOwner?.let {NativeSessionHost.imeStatus(it)} ?: lastMetadata;val returning=NativeSessionHost.imeRawReturnStatus();val view=editor
             val imm=view?.context?.getSystemService(InputMethodManager::class.java)
-            val rawTarget=NativeSessionHost.debugImeFocusedTarget()
+            val rawTarget=NativeSessionHost.debugImeFocusedTarget(productRuntime)
             // Capture the Run receiver before JSONObject.apply changes the implicit `this`.
             val productActive=active===this && !stopped
             return JSONObject().put("result",if(stopped) "completed" else "running")
@@ -350,7 +351,7 @@ object TerminalImeController {
                     put("active",productActive).put("stopped",stopped).put("owner_claimed",editorOwner!=null)
                     put("owner_before_view",editorOwner!=null && editor==null && entity==null)
                     put("connection_phase",metadata?.phase?.name ?: JSONObject.NULL)
-                    put("raw_focus_same_target",productTarget!=null && productRuntime==NativeSessionHost.currentHandle() && rawTarget==productTarget)
+                    put("raw_focus_same_target",productRuntime!=null && productTarget!=null && rawTarget==productTarget)
                 }}
                 .put("toggles",toggles).put("focus_requests",focusRequests)
                 .put("focus_observed",focusReceipt?.let(NativeSessionHost::debugImeFocusObserved) ?: false)
