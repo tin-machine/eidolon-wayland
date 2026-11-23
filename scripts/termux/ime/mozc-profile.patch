@@ -1,0 +1,16 @@
+diff --git a/src/base/system_util.cc b/src/base/system_util.cc
+index b5f4787..747e44f 100644
+--- a/src/base/system_util.cc
++++ b/src/base/system_util.cc
+@@ -177,11 +177,6 @@ std::string UserProfileDirectoryImpl::GetUserProfileDirectory() const {
+   } else if constexpr (port::IsWasm()) {
+     // Use a temporary directory as the data is not persisted.
+     return "/tmp";
+-  } else if constexpr (port::IsAndroid()) {
+-    // For android, we do nothing here because user profile directory,
+-    // of which the path depends on active user,
+-    // is injected from Java layer.
+-    return "";
+   } else {
+ #if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+     // On iOS, use Caches directory instead of Application Support directory
