@@ -148,7 +148,11 @@ internal class CompanionLinuxSession(
         if (events != null) for (index in 0 until events.length()) {
             val event = events.getJSONObject(index)
             val id = event.optString("request_id")
-            if (event.optString("type") == "command_complete") NativeSessionHost.completeWindowPose(current, id, event.getString("code"))
+            if (event.optString("type") == "command_complete") {
+                val code = event.getString("code")
+                NativeSessionHost.completeWindowPose(current, id, code)
+                NativeSessionHost.completeImeCommand(current, id, code)
+            }
             when (event.optString("type")) {
                 "credential_required" -> credentials?.let {
                     val supplied = provide(current, it, event)
@@ -177,6 +181,7 @@ internal class CompanionLinuxSession(
         snapshot = runtime
         if (retired) {
             if (NativeBridge.nativeDestroy(current) == NativeBridge.ACCEPTED) {
+                NativeSessionHost.clearImeForRetiredRuntime(current)
                 shownCatalog = null
                 shelf = LauncherUi(linux = true, message = message ?: "Ubuntu は未接続です")
                 handle = 0

@@ -10,3 +10,7 @@ python3 scripts/docs.py affected --path native/core/src/compositor/ime.rs
 ```
 
 **Safety boundary:** do not promote synthetic input injection, a debug-only case, or an observed focus transition to proof of real kana-kanji conversion, normal release UI behavior, or HMD acceptance. Each historical report belongs to its pinned build/device/OS circumstances, and the present source/Quest state must be re-checked. The task keys index reading sets; they do not replace the original command preconditions.
+
+## ランチャーから開いた窓
+
+Ctrl+Space は選択中の窓のランタイムで IME を開始し、同じランタイムの応答とフォーカスを確認して直接入力に戻ります。Termux の foot と、Wayland の `text-input-v3` が有効な Ubuntu アプリが対象です。日本語の入力方式と候補表示は Quest で選択した IME が担当します。

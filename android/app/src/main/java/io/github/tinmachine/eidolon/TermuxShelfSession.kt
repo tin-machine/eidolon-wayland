@@ -153,7 +153,11 @@ internal class TermuxShelfSession(
             if (events != null) for (i in 0 until events.length()) {
                 val event = events.getJSONObject(i)
                 val id = event.optString("request_id")
-                if (event.optString("type") == "command_complete") NativeSessionHost.completeWindowPose(owner, id, event.getString("code"))
+                if (event.optString("type") == "command_complete") {
+                    val code = event.getString("code")
+                    NativeSessionHost.completeWindowPose(owner, id, code)
+                    NativeSessionHost.completeImeCommand(owner, id, code)
+                }
                 when (event.optString("type")) {
                     "credential_required" -> if (id == connectSent && event.optString("profile_id") == "termux-local")
                         credentials?.provide(owner, event.getString("session").toLong(), id.toLong())
@@ -164,7 +168,10 @@ internal class TermuxShelfSession(
         val state = primarySnapshot ?: JSONObject(NativeBridge.nativeUiSnapshot(owner, false)).optJSONObject("runtime") ?: return
         snapshot = state
         if (retiring) {
-            if (NativeBridge.nativeDestroy(owner) == NativeBridge.ACCEPTED) clear()
+            if (NativeBridge.nativeDestroy(owner) == NativeBridge.ACCEPTED) {
+                clear()
+                NativeSessionHost.clearImeForRetiredRuntime(owner)
+            }
             return
         }
         val tx = state.getJSONObject("transport")
