@@ -1,5 +1,7 @@
 package io.github.tinmachine.eidolon
 
+import org.json.JSONObject
+
 /** Product-worker state. Only fixed transport reasons are saved, scoped to the saved SSH host. */
 internal class UbuntuShelfReconnect(
     private val read: (String) -> String?,
@@ -62,7 +64,7 @@ internal class UbuntuShelfReconnect(
     }
 
     fun retryDue(now: Long): Boolean = wanted && !refreshed && now >= next &&
-        (reason == null || reason in transient || reason == "DESKTOP_CLEANUP_PENDING")
+        (reason == null || reason in transient || reason in appExit || reason == "DESKTOP_CLEANUP_PENDING")
 
     fun notice(busy: Boolean, recovering: Boolean): String? {
         val previous = explanations[reason] ?: return null
@@ -71,7 +73,7 @@ internal class UbuntuShelfReconnect(
             refreshed -> "再接続してアプリ一覧を更新しました。"
             recovering -> "終了を確認してから再接続します。"
             busy -> "再接続してアプリ一覧を取得しています。"
-            reason in transient -> "自動で再接続を試みます。"
+            reason in transient || reason in appExit -> "自動で再接続を試みます。"
             else -> "接続設定とホストの状態を確認してください。"
         }
         return "Ubuntu の前回の接続記録 · ${previous}。$action"
@@ -80,7 +82,26 @@ internal class UbuntuShelfReconnect(
     companion object {
         private val transient = setOf("CONNECT_TIMEOUT", "SSH_CONNECT_FAILED", "SSH_CONNECTION_REFUSED",
             "REMOTE_EXIT", "SSH_IO_FAILED", "AUTH_TIMEOUT")
-        private val explanations = mapOf(
+        private val appExit = mapOf(
+            "APP_LAUNCH_TIMEOUT" to "アプリの Wayland ウィンドウが期限内に届きませんでした",
+            "APP_PRESENTATION_TIMEOUT" to "ウィンドウの表示準備が時間切れになりました",
+            "APP_PRESENTATION_FAILED" to "ウィンドウの表示に失敗しました",
+            "APP_OUTPUT_RATE_LIMIT" to "アプリの出力量が上限を超えました",
+        )
+
+        fun appExitReason(runtime: JSONObject, tx: JSONObject): String? {
+            val presentation = runtime.optJSONObject("desktop_v3_presentation") ?: return null
+            val code = presentation.optString("first_failure")
+            if (code !in appExit || presentation.optString("state") !in setOf("stopping", "pending")) return null
+            val report = tx.optJSONObject("desktop_v3_transport") ?: return null
+            val session = tx.opt("session") as? String ?: return null
+            return code.takeIf {
+                report.opt("session") == session && runtime.optJSONObject("app")?.opt("session") == session &&
+                    LinuxDesktopV3Catalog.positiveDecimal(report.optString("launch_request"))
+            }
+        }
+
+        private val explanations = appExit + mapOf(
             "CONNECT_TIMEOUT" to "Ubuntu の応答待ちが時間切れになりました",
             "SSH_CONNECT_FAILED" to "Ubuntu に接続できませんでした",
             "SSH_CONNECTION_REFUSED" to "Ubuntu が SSH 接続を拒否しました",

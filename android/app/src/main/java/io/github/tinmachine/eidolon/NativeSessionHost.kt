@@ -3154,13 +3154,15 @@ object NativeSessionHost {
     private fun reconcileUbuntuShelf(runtime: JSONObject, now: Long) {
         val primary = selectedProfileId == LinuxConnectionProfile.ID
         val catalog = if (primary) launcherState else companionLinux.shelf
-        val tx = (if (primary) runtime else companionLinux.snapshot)?.optJSONObject("transport")
+        val owner = if (primary) runtime else companionLinux.snapshot
+        val tx = owner?.optJSONObject("transport")
             ?.takeIf { it.optString("profile_id") == LinuxConnectionProfile.ID }
         val phase = tx?.optString("state")
         val disconnected = phase == "Idle" || phase == "Failed" || phase == "Disconnected" ||
             !primary && companionLinux.handle == 0L
         val recovering = tx?.optBoolean("desktop_pending") == true && phase == "CleanupPending"
-        val error = if (disconnected || recovering) tx?.optString("error") else null
+        val error = tx?.let { UbuntuShelfReconnect.appExitReason(owner, it) } ?:
+            (if (disconnected || recovering) tx?.optString("error") else null)
         val ready = catalog.connected && !catalog.busy && !catalog.menuRefreshFailed &&
             catalog.catalogComplete && phase == "DesktopReady"
         bindUbuntuRetryHost()

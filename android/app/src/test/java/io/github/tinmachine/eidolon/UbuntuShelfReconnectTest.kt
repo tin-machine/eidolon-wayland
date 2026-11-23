@@ -1,5 +1,6 @@
 package io.github.tinmachine.eidolon
 
+import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -29,6 +30,26 @@ class UbuntuShelfReconnectTest {
         assertTrue(history.isEmpty())
         retry.observe(null, false, disconnected = true)
         assertTrue(retry.retryDue(9000))
+    }
+
+    @Test fun reportsOnlyTheAppFailureThatEndedThisHostSession() {
+        val report = JSONObject().put("session", "11").put("launch_request", "5")
+        val tx = JSONObject().put("session", "11").put("desktop_v3_transport", report)
+        val app = JSONObject().put("session", "11")
+        val runtime = JSONObject().put("app", app).put("desktop_v3_presentation",
+            JSONObject().put("state", "pending").put("first_failure", "APP_LAUNCH_TIMEOUT"))
+        val retry = policy()
+        retry.bind("ubuntu")
+        retry.request(0)
+        retry.observe(UbuntuShelfReconnect.appExitReason(runtime, tx), false)
+        retry.observe("DESKTOP_CLEANUP_PENDING", false)
+        assertTrue(retry.notice(false, true)!!.contains("Wayland"))
+        assertTrue(retry.retryDue(2000))
+        report.remove("launch_request")
+        assertNull(UbuntuShelfReconnect.appExitReason(runtime, tx))
+        report.put("launch_request", "5")
+        app.put("session", "10")
+        assertNull(UbuntuShelfReconnect.appExitReason(runtime, tx))
     }
 
     @Test fun explicitStopHostChangeAndAuthenticationFailureDoNotRetry() {
