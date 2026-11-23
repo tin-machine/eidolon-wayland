@@ -266,7 +266,7 @@ class AdditionalFeatureRegistryTests(unittest.TestCase):
 
     def test_curated_features_and_proposed_status_are_explicit(self):
         expected = {"curved-workspace": 10, "spatial-anchor": 1,
-                    "android-ime": 6, "initial-phases": 10}
+                    "android-ime": 7, "initial-phases": 10}
         for feature, count in expected.items():
             with self.subTest(feature=feature):
                 self.assertIn(feature, self.manifests)
