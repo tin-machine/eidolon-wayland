@@ -12,6 +12,11 @@ object ImeTerminalCase {
     private fun verifyClosedEditor(context:Context):Boolean=runCatching {
         val sample=ImeEditorView(context)
         val connection=checkNotNull(sample.onCreateInputConnection(EditorInfo()))
+        checkNotNull(connection.handler)
+        val discarded = checkNotNull(sample.onCreateInputConnection(EditorInfo()))
+        check(connection.commitText("active-editor-fixture",1))
+        discarded.closeConnection()
+        check(connection.commitText("still-active-fixture",1))
         sample.closeEditor()
         check(sample.isPermanentlyClosed() && !sample.onCheckIsTextEditor())
         check(sample.onCreateInputConnection(EditorInfo())==null)

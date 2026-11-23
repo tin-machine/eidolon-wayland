@@ -115,19 +115,20 @@ class ImeEditorView(
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
         if (permanentlyClosed) return null
-        val generation = editor.openConnection()
-        onConnectionOpened(generation)
+        val offer = editor.offerConnection()
         outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
         outAttrs.imeOptions = EditorInfo.IME_ACTION_NONE or EditorInfo.IME_FLAG_NO_FULLSCREEN or
             EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING or EditorInfo.IME_FLAG_NO_ENTER_ACTION
         outAttrs.initialSelStart = 0
         outAttrs.initialSelEnd = 0
         outAttrs.contentMimeTypes = null
-        return ImeInputConnection(this, editor, generation, ::editorChanged, ::forwardUnhandledKey, onEditorAction, { canEditGeneration(generation) }).also {
-            it.inputTrace = inputTrace
-            connection = it
-            showKeyboardAfterFocus()
-        }
+        return ImeInputConnection(this, editor, openGeneration = { adopted ->
+            editor.openOfferedConnection(offer)?.also { generation ->
+                connection = adopted
+                onConnectionOpened(generation)
+                showKeyboardAfterFocus()
+            }
+        }, ::editorChanged, ::forwardUnhandledKey, onEditorAction, canEditGeneration).also { it.inputTrace = inputTrace }
     }
 
     private fun editorChanged() {

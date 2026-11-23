@@ -58,6 +58,33 @@ class ImeEditorStateTest {
         assertFalse(f.state.metadata().active)
     }
 
+    @Test fun discardedAndroidOfferPreservesCompositionAndAdoptedReplacementRetiresOldEdits() {
+        val f = Fixture()
+        assertTrue(f.state.setComposingText(f.token, "にほん", 1))
+        val discarded = f.state.offerConnection()
+        assertTrue(f.state.commitText(f.token, "日本語", 1))
+        val replacement = f.state.offerConnection()
+        assertNull(f.state.openOfferedConnection(discarded))
+        // Android may close the old connection before it asks for the new handler.
+        f.state.closeConnection(f.token)
+        val generation = checkNotNull(f.state.openOfferedConnection(replacement))
+        assertNull(f.state.openOfferedConnection(replacement))
+        assertFalse(f.state.commitText(f.token, "古い", 1))
+        f.state.closeConnection(f.token)
+        assertTrue(f.state.isCurrent(generation))
+        assertEquals(listOf("日本語"), f.transactions.mapNotNull { it.commit })
+    }
+
+    @Test fun pendingAndroidOfferCannotReopenAnEditorAfterFocusLossOrTeardown() {
+        for (reason in listOf("focus_lost", "close", "reset")) {
+            val f = Fixture()
+            val pending = f.state.offerConnection()
+            f.state.reset(reason)
+            assertNull(f.state.openOfferedConnection(pending))
+            assertFalse(f.state.metadata().active)
+        }
+    }
+
     @Test fun replacementConnectionRejectsOldCallbacksWithoutDamagingNewOne() {
         val f = Fixture()
         f.state.beginBatchEdit(f.token)

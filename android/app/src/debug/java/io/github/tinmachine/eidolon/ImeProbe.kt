@@ -519,6 +519,7 @@ object ImeProbe {
             try {
                 val a = checkNotNull(stock.onCreateInputConnection(EditorInfo()))
                 val c = checkNotNull(custom.onCreateInputConnection(EditorInfo()))
+                checkNotNull(c.handler)
                 listOf(a, c).forEach { connection ->
                     check(connection.setComposingText("にほん", 1))
                     check(connection.commitText("日本語", 1))
