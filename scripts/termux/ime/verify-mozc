@@ -19,4 +19,4 @@ flags=$(pkg-config --cflags --libs Fcitx5Core)
 read -r -a fcitx_flags <<< "$flags"
 clang++ -std=c++20 "$tools_dir/verify-mozc.cpp" \
     "${fcitx_flags[@]}" -o "$sandbox/probe"
-timeout 40 "$sandbox/probe" --disable=all --enable=keyboard,mozc
+timeout 40 "$sandbox/probe" --disable=all --enable=mozc

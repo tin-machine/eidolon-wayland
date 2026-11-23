@@ -25,10 +25,13 @@ depends_on: [android-ime-shared-apps-plan]
 | 同日 Quest、検証用キー配送 | wtype で専用の foot に英字を送る | wtype のキーマップ生成が固定パス `/tmp` で失敗。Termux の一時ディレクトリを使う検査用ビルドで再試行し、foot の端末から `eidolon` と改行を読み戻せた。Eidolon・Mozc を介さない比較用の結果。 |
 | 同日 ソース確認、Termux 対応 | Mozc の Android 用のプロファイル決定箇所と CMake の入力を確認 | Java からディレクトリを渡す Android 版の経路は、このプロセスでは空のパスを返す。上流にある XDG の処理を使い、Android の OS 情報取得に必要なソースをビルド対象へ加え、生成するバージョンの対象を Android に設定した。 |
 | 同日 Ubuntu、クロスビルド | Quest の充電が約 11% のため、Ubuntu の Clang 21 から Android API 24・ARM64 向けのビルドも試行 | 最初の CMake のリンクテストは `-lgcc` が見つからず失敗。Termux と同じ compiler-rt を選び、CMake のキャッシュを更新すると構成成功。Quest のヘッダー・Fcitx5 ライブラリと、同じ protobuf 34.1 のホスト用 protoc を使用。 |
+| 同日 Ubuntu、アドオンのリンク | ARM64 向けのオブジェクトを共有ライブラリにリンク | `_Unwind_Resume` の未解決で失敗。NDK の aarch64 用 libunwind をリンクすると、辞書内蔵の `libmozc.so`（約 26 MiB）が完成。 |
+| 同日 Quest、ロード検査の初回 | 上のアドオンを専用パスに置いて固定語の検査を開始 | `addon("mozc")` はオンデマンドのモジュールを探すだけで読み込まないため失敗。検査で明示的にロードし、検査プロセスには組み込まれていない静的 keyboard アドオンへの依存を外した。 |
+| 同日 Quest、変換 | クロスビルド版と新しい専用プロファイルで再試行 | **読み「にほんご」、変換「日本語」、候補 9 件を取得し、「日本語」を選択して確定した。** プロファイル初回の履歴ファイル未作成をログで確認した。 |
 
 ## 再開位置
 
-次は Quest でアドオンを構築し、Fcitx5 へのロードと変換を別々に確認する。Wayland の候補表示、foot・GTK・Qt の入力、装着時の操作感は未検証。
+Ubuntu でビルドした Termux 用アドオンは Quest 上で変換済み。次は Quest 上でビルドした版でも同じ検査を通し、Wayland で foot の疑似端末に確定文字が届くかを調べる。Eidolon の窓、GTK・Qt、装着時の候補視認は未検証。
 
 ## ビルドを再現する
 

@@ -45,7 +45,7 @@ int main(int argc, char **argv) {
     instance.addonManager().registerDefaultLoader(nullptr);
     bool passed = false;
     instance.eventDispatcher().schedule([&] {
-        if (!instance.addonManager().addon("mozc")) {
+        if (!instance.addonManager().addon("mozc", true)) {
             std::cerr << "Mozc addon did not load\n";
             instance.exit();
             return;
@@ -54,7 +54,6 @@ int main(int argc, char **argv) {
         auto &manager = instance.inputMethodManager();
         auto group = manager.currentGroup();
         group.inputMethodList().clear();
-        group.inputMethodList().emplace_back("keyboard-us");
         group.inputMethodList().emplace_back("mozc");
         group.setDefaultInputMethod("mozc");
         manager.setGroup(std::move(group));
