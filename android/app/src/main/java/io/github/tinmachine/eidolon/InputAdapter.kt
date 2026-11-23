@@ -148,7 +148,11 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
         changed: Int, state: Int, downTime: Long): Boolean {
         if (closed) return false
         if (WristInputOwnership.owns(sourceOfInput)) return true
-        if(suppressed || NativeSessionHost.isLayoutEditing()) {post { if(!closed) editSource(sourceOfInput,changed,state) };return false}
+        if(suppressed || NativeSessionHost.isLayoutEditing()) {
+            val hitChange = if (receiver.entity?.id == hitInfo.entity?.id) changed else 0
+            post { if(!closed) editSource(sourceOfInput,hitChange,state) }
+            return false
+        }
         val probe = capture
         val target = targetJson
         if (probe!=null) {

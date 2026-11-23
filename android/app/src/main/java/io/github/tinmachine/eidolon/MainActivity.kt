@@ -267,6 +267,7 @@ class MainActivity : AppSystemActivity() {
     }
 
     override fun onPause() {
+        fixedPanelGrips.values.forEach { it.grip.cancel() }
         deviceMetrics.stop()
         resumed=false
         hud.setActive(false)

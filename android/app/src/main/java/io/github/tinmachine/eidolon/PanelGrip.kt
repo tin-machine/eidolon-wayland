@@ -53,15 +53,17 @@ internal class PanelGrip(
     private val frame = object : Runnable {
         override fun run() {
             val h = hold ?: return
-            if (!enabled()) { cancel(); return }
+            // The scene owner cancels while the entity is live. A late frame must not write to a retired entity.
+            if (!enabled()) { hold = null; return }
             val controller = runCatching { h.source.getComponent<Controller>() }.getOrNull()
             val from = runCatching { aim(h.source, h.button) }.getOrNull()
             val viewer = eye()
             if (controller?.isActive != true || from == null || viewer == null) { cancel(); return }
             val pose = h.drag.pose((from * h.offset).t, viewer)
-            if (pose != null && accepts(pose)) setAbsoluteTransform(panel, pose)
+            val accepted = pose?.takeIf(accepts)
+            if (accepted != null) setAbsoluteTransform(panel, accepted)
             if (controller.buttonState and h.button == 0) {
-                if (pose == null || !accepts(pose)) { cancel(); return }
+                if (accepted == null) { cancel(); return }
                 hold = null
                 finished(pose)
             } else handler.postDelayed(this, 16)
