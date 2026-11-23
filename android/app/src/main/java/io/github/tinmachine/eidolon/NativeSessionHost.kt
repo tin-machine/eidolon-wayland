@@ -1352,6 +1352,7 @@ object NativeSessionHost {
             menuRefreshFailed=linuxPreviewError || catalogError != null,
             catalogComplete=linuxPreviewEntries != null,
             recoveryWait=when {
+                LauncherCapacity.browsingLinuxCatalog(runtime) -> null
                 remoteRecoveredWaitingForQuest || pending && transport.optBoolean("desktop_reboot_needed") ->
                     "Quest を再起動すると前回の終了処理を続けられます。"
                 view.phase in setOf("pending", "stopping") || pending && !appActive ->
