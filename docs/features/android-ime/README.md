@@ -1,5 +1,7 @@
 # Android IME / Wayland text-input — D6 feature index
 
+[foot・GTK・KDE/Qt で共通に使う日本語入力の計画](japanese-input-shared-apps-plan-20261123.md)に、5 方式の比較、Fcitx5＋Mozc の試作順、3 アプリでの受入れ条件をまとめています。
+
 The [Android IME → Wayland plan](android-ime-wayland-plan-20261107.md) is registered as **proposed architecture**. The [implementation log](android-ime-implementation-20261107.md) and [NX09 entry](nx09-terminal-ime-entry-20261108.md) are **historical** records. The [A1/A2 comparison probe](android-ime-probe-20261107.md), [terminal debug probe](android-ime-terminal-probe-20261108.md), and [NX09 normal owner probe](nx09-normal-ime-probe-20261108.md) are runbooks for bounded/debug tests, not evidence of a successful Japanese IME or keyboard acceptance.
 
 ```sh
