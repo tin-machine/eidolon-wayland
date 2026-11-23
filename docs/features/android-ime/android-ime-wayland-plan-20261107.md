@@ -324,13 +324,13 @@ Androidにはpre-IME/IME/post-IMEの段階があるため、`dispatchKeyEvent`�
 [AOSPの入力段階](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android14-dev/core/java/android/view/ViewRootImpl.java)を参照し、
 Horizon/Spatialの実経路でcallbackが来る段階と未処理キーの取得方法を確認する。
 
-2026-11-07のユーザー指定で、切替ショートカットは**Ctrl+Space**とする。
+切替ショートカットは **Shift+Space** とする。IME パネル内の Ctrl+Space は選択中の Android IME が利用できる。
 Eidolon内の「IMEへ入力するモード」と「Linuxへ直接キーを送るモード」を切り替える。
 利用するIMEと日本語の選択はQuest側の設定で行う。アプリがIME内部の言語・変換モードを自由に強制できるとは扱わない。
 
-- 左右のCtrlに対応し、1回のSpace押下で1回だけ切り替える。repeat、遅いkeyup、Ctrlを先に離す操作を検査する。
-- Shift/Alt/Metaを併用する別ショートカットは対象外。切替を受理したCtrl/SpaceはLinuxとAndroidへ重複配送しない。
-- 切替前にLinuxへ届いたCtrl downをurgent resetで解除する。Android接続待ちでも解除を遅らせない。
+- 左右のShiftに対応し、1回のSpace押下で1回だけ切り替える。repeat、遅いkeyup、Shiftを先に離す操作を検査する。
+- Ctrl/Alt/Metaを併用する別ショートカットは対象外。切替を受理したShift/SpaceはLinuxとAndroidへ重複配送しない。
+- 切替前にLinuxへ届いたShift downをurgent resetで解除する。Android接続待ちでも解除を遅らせない。
 - IME側に先に消費される可能性を考慮し、IME中の終了操作はpre-IME入口でも検証する。
 - 接続準備中・IME入力中・直接入力・解除失敗を画面に区別して示す。切替要求を出しただけで「日本語入力可能」と表示しない。
 - 終了時は未確定を取り消し、native reset/disableの完了とAndroid入力接続の解除を確認してから直接入力へ戻す。

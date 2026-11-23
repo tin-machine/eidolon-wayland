@@ -76,7 +76,7 @@ internal fun ControlPanel(
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Button(enabled=TerminalImeController.activeState.value || NativeSessionHost.imeAvailable.value,
                 onClick={TerminalImeController.toggle()}) {
-                Text(if(TerminalImeController.activeState.value) "IME入力を終了 · Ctrl+Space" else "IME入力 · Ctrl+Space")
+                Text(if(TerminalImeController.activeState.value) "IME入力を終了 · ${ImeShortcut.LABEL}" else "IME入力 · ${ImeShortcut.LABEL}")
             }
             Button(onClick=toggleMouse) {
                 Text(if (mouseEnabled) "マウス ON · Ctrl+Alt+M" else "マウス OFF · Ctrl+Alt+M")

@@ -46,7 +46,7 @@ LX00–LX07 は本書内の作業 ID であり、managed manifest / resolver に
 | 空間配置 | MainActivity が LOCAL_FLOOR 上の固定 pose でランチャー panel を生成。showLauncher は詳細表示フラグを変更 | 手首 pose、召喚、切り離し、再配置と lifecycle |
 | SDK | Meta Spatial SDK 0.15.0、VRFeature(this)、ComposeFeature | 実 artifact・merged manifest・Quest で hands 能力と入力競合を確認 |
 | Linux 入力 | trigger / B・Y / thumbstick 等を click / scroll へ変換 | shell 操作と Linux 入力の排他、古い release の失効 |
-| 物理キーボード | Ctrl+Space の IME 切替、panelTextInput による Linux 配送停止、accepted key-up tail の消費 | 召喚・検索の焦点移譲と戻り先の生存確認 |
+| 物理キーボード | Shift+Space の IME 切替、panelTextInput による Linux 配送停止、accepted key-up tail の消費 | 召喚・検索の焦点移譲と戻り先の生存確認 |
 | theme | format_version 1/2、未知 field を拒否。window 装飾と v2 controls が対象 | launcher/shell appearance の新 schema と Android への適用経路 |
 | catalog と接続先 | Termux は登録 catalog のページ表示。remote v3 は固定 GTK デモと Mousepad の二項目。LauncherUi は一つの snapshot、remote profile 保存先は一つ | まず 1 台の可変 catalog を全件選択可能にする。複数 host の registry と横断検索は後続 |
 | v3 起動 | runtime / capture / session / catalog revision / entry ID を照合。通常 GUI lease は一つ | 同一 host の各起動に lease・回収記録・窓を対応付け、入力と Stop の対象を識別する。drag-out では同じ対応を再利用する |
@@ -371,7 +371,7 @@ Linux 入力や Launch を直接呼ぶ複数経路を作らない。
    新しい入力先へ押しっぱなし／不正 release を作らない。
 6. 一度に active な preset は一つ。切替は現在の gesture/drag を cancel し、neutral 復帰後に有効化する。
 
-既存 Ctrl+Space は IME 用なので流用しない。召喚 shortcut は既存 binding を調べて割当て、
+既存 Shift+Space は IME 用なので流用しない。召喚 shortcut は既存 binding を調べて割当て、
 設定で変更可能にする。コントローラーと物理 keyboard の fallback を、素手の能力検証と独立に用意する。
 新しい UI を利用者へ渡す時点で、既存 ControlPanel からランチャーを呼び戻し、標準 UI に戻れることを確認する。
 復帰するために新しい手首 gesture の成功を要求しない。
