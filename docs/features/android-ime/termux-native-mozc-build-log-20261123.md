@@ -209,3 +209,5 @@ Quest を装着し、Termux の foot から Ubuntu Desktop に SSH 接続して�
 3. どちらも専用サーバー・Wayland アドオン・Classic UI・Mozc・中継用 Waypipe をビルドし、ARM64 ELF、アドオンの動的ロード、専用プロファイルでの「nihongo → にほんご → 日本語」の候補選択・確定を検査する。週次成功後に採用版を更新する際は、固定版の指定を変更する PR で、Quest の foot などの候補位置・物理キー操作も再確認する。
 
 [CI の実行手順](../../../scripts/ci/termux-ime)・[ライセンスと将来バイナリを配布する際の扱い](../../../THIRD_PARTY_NOTICES.md)
+
+初回の固定版 CI では Fcitx5 と Mozc がビルドできた後、Waypipe のリンクが `undefined symbol: memfd_create` で停止した。Termux 公式コンテナの Android libc は Quest の API 34 より古い。CI では Google 配布の Android NDK r30 を SHA-256 で照合し、Waypipe のリンクだけに ARM64 / API 34 の libc スタブを使う。変換テストはコンテナの実際の Bionic で先に実行する。[初回の実行ログ](https://github.com/tin-machine/eidolon-wayland/actions/runs/45192104085)

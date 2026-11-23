@@ -15,7 +15,7 @@ apt=(apt-get -y -o Acquire::Retries=3 -o Dpkg::Options::=--force-confnew)
 "${apt[@]}" update
 "${apt[@]}" install fcitx5 clang cmake ninja git curl python gettext pkg-config \
     extra-cmake-modules nlohmann-json libwayland libwayland-protocols util-linux \
-    python-pip liblz4 zstd patch binutils
+    python-pip liblz4 zstd patch binutils unzip
 
 work=$(mktemp -d "$HOME/ime-build.XXXXXXXX")
 installed=$(pkg-config --modversion Fcitx5Core)
@@ -52,10 +52,9 @@ fi
 "$ime/build-wayland" "$work" "${recipe[@]}"
 git -C "$work/fcitx" log -1 --format='Fcitx5 source %H'
 "$ime/build-mozc" "$work"
-"$ime/build-relay" "$work"
 export LC_ALL=C.UTF-8
 libs=("$work"/stage/lib/fcitx5/lib{wayland,waylandim,classicui,mozc}.so)
-for elf in "$work/stage/bin/eidolon-fcitx5" "$work/stage/bin/eidolon-ime-waypipe" "${libs[@]}"; do
+for elf in "$work/stage/bin/eidolon-fcitx5" "${libs[@]}"; do
     header=$(readelf -h "$elf")
     grep -Eq 'Machine:[[:space:]]+AArch64' <<< "$header"
 done
@@ -66,3 +65,16 @@ for library in sys.argv[1:]:
     ctypes.CDLL(library)
 PY
 "$ime/verify-mozc" "$work"
+
+# The Termux Docker image runs an older Bionic without memfd_create. Use the
+# API 34 NDK link stub for Waypipe only. The runtime loader still uses Bionic.
+ndk="$work/android-ndk-r30-linux.zip"
+curl -fLsS --retry 3 https://dl.google.com/android/repository/android-ndk-r30-linux.zip -o "$ndk"
+echo "753611f410d002cfcd3f3dc2ef49aad532089d3180b436c060a90bf0fcb64df2  $ndk" | sha256sum -c -
+stub="$PREFIX/aarch64-linux-android/lib/libc.so"
+unzip -p "$ndk" 'android-ndk-r30/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/34/libc.so' > "$work/libc.so"
+install -D -m 644 "$work/libc.so" "$stub"
+[[ $(clang --target=aarch64-linux-android34 -print-file-name=libc.so) -ef $stub ]]
+"$ime/build-relay" "$work"
+header=$(readelf -h "$work/stage/bin/eidolon-ime-waypipe")
+grep -Eq 'Machine:[[:space:]]+AArch64' <<< "$header"
