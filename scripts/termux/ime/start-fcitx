@@ -27,9 +27,21 @@ unset FCITX_CONFIG_HOME FCITX_CONFIG_DIRS FCITX_DATA_HOME DISPLAY
 mkdir -p "$XDG_CONFIG_HOME"/{fcitx5,mozc} "$XDG_CACHE_HOME" "$XDG_DATA_HOME"
 # flock opens a separate descriptor, preserving an inherited WAYLAND_SOCKET.
 exec {profile_lock}>"$HOME/owner.lock"
-if ! flock -n "$profile_lock"; then
+if ! flock -w 2 "$profile_lock"; then
     echo "この Mozc プロファイルは使用中です" >&2
     exit 1
+fi
+config="$XDG_CONFIG_HOME/fcitx5/config"
+if [[ ! -e "$config" ]]; then
+    # Horizon OS can consume Ctrl+Space before the physical space reaches Eidolon.
+    cat >"$config.new" <<'CONFIG'
+[Hotkey/TriggerKeys]
+0=Control+space
+1=Zenkaku_Hankaku
+2=Hangul
+3=Control+semicolon
+CONFIG
+    mv "$config.new" "$config"
 fi
 profile="$XDG_CONFIG_HOME/fcitx5/profile"
 if [[ ! -e "$profile" ]]; then

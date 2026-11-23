@@ -41,6 +41,7 @@ object NativeBridge {
     @JvmStatic external fun nativeUiSnapshot(handle: Long, panel: Boolean): String
     @JvmStatic external fun nativeCatalogUi(handle: Long): String
     /** 本文を含むUI専用。DiagnosticsStore・logへ渡さない。 */
+    @JvmStatic external fun nativeRouteTermuxIme(handle: Long, source: Long, session: Long, window: Long, token: Long, epoch: Long): Int
     @JvmStatic external fun nativeImeUi(handle: Long): String
     @JvmStatic external fun nativeRequestStop(handle: Long): Int
     @JvmStatic external fun nativeDestroy(handle: Long): Int

@@ -81,10 +81,11 @@ Quest の Termux（x11-repo 有効）でリポジトリのルートから実行�
 
 ```sh
 pkg install x11-repo
-pkg install fcitx5 clang cmake ninja git curl python gettext pkg-config extra-cmake-modules nlohmann-json libwayland libwayland-protocols util-linux
+pkg install fcitx5 clang cmake ninja git curl python gettext pkg-config extra-cmake-modules nlohmann-json libwayland libwayland-protocols util-linux python-pip liblz4 zstd patch
 scripts/termux/ime/build-mozc
 scripts/termux/ime/verify-mozc
 scripts/termux/ime/build-wayland
+scripts/termux/ime/build-relay
 ```
 
 作業先は `~/.local/share/eidolon-ime-native/d55a051`。引数で別の作業先、`JOBS=1` で並列数を指定できる。配布用の共有ライブラリと登録ファイルはその中の `stage/` に集める。変換検査は毎回専用の一時プロファイルを使う。実機で日常利用している辞書や Android の既定 IME への書き込みはない。
@@ -116,3 +117,25 @@ scripts/termux/ime/build-wayland
 ![Eidolon が foot に合成した Fcitx5 の候補一覧](images/eidolon-mozc-foot-candidates-20261123.png)
 
 SSH で起動する専用リレーに転送を切り替え、同じ三つのアプリの入力検査を再実行した。3 件とも成功。リレーは SSH の標準入出力で Waypipe のデータを中継し、Termux 内の専用一時ディレクトリで接続を受ける。通常動作時は入力内容を記録しない。
+
+## 通常 APK の接続と検査
+
+ビルド 138 で、Termux に認証済みの SSH セッションから専用のリレーを起動し、選択窓を所有するランタイムで Waypipe を開始する経路を追加した。選択窓・フォーカストークン・入力世代を接続開始前に照合する。接続に失敗した場合の直接入力と Shift＋Space の Android IME は引き続き使える構成とした。
+
+| 環境 | 試行 | 結果 |
+| --- | --- | --- |
+| Ubuntu | Rust コンポジタのテスト、専用接続と一般アプリから見える Wayland グローバルを比較 | 36 件成功。一般アプリから IME と仮想キーボードの管理インターフェースは見えず、専用接続の同時 2 件目は拒否された。 |
+| Quest の Termux | Waypipe を固定ソースとパッチからクリーンビルド | 環境のパッケージ一覧に meson がなく最初の導入に失敗。Python 用 Meson 1.7.2、API 34、Ninja の正しいターゲット `waypipe-c/waypipe-c` で 0.11.3 を構築できた。レシピを独立したディレクトリでも実行した。 |
+| Quest の通常 APK | Wi-Fi ADB で 138 に更新し、ランチャーから Termux のターミナルを起動 | インストール済み APK のハッシュ一致、foot プロセスと空間に出た窓 1 枚を確認。ここでは未だキー入力の合否を判定していない。 |
+
+ビルド 139 の検証では、窓の選択だけを試験用レシーバーから通常のポインター処理に送り、それ以降のキーは Android の USB HID テストデバイスから入力した。起動直後から残る回収記録とは別に、実際の foot を所有する SSH セッションは Ready だった。選択窓自身の認証済み接続を優先すると、Wayland の IME 登録、フォーカスの有効化、キーボードの grab まで Quest 内で成功した。
+
+| 条件 | 観測 | 次の検査 |
+| --- | --- | --- |
+| Quest の通常入力経路で Ctrl＋Space と固定語 | 端末に英字の `nihongo` が届いた。別の試行でキーの種別だけを採取すると、Fcitx5 に Ctrl が届いても Space の押下は見えなかった。 | Android の入力欄が物理キーを先に扱っていないかを検査する。 |
+| Fcitx5 に Ctrl＋セミコロンを追加して同じ USB HID で再試行 | IME は Ready のまま。端末への入力は 0 バイトで、英字を送った際の Android 側の直近判定は `not_physical_keyboard`。 | 選択窓の物理キーを Linux に渡す間だけ Android IME への接続を外し、同じ条件で比較する。 |
+| 画面キャプチャ | Wi-Fi 経由の 4128×2208 のスクリーンショット 1 枚を取得。別回は 8 秒の制限で中断した。 | 入力結果をキャプチャの所要時間に依存させず、装着時の視認性は別に確認する。 |
+
+ビルド 140 では、Linux 窓を選択し、専用 IME の準備が整った間だけ、物理キーを中継する Android ウィンドウの `FLAG_ALT_FOCUSABLE_IM` を有効にした。Android テキスト欄や Shift＋Space の入力パネルへ戻す際は外す。Stealth Keyboard の端末設定は維持した。[Android のウィンドウフラグ](https://developer.android.com/reference/android/view/WindowManager.LayoutParams#FLAG_ALT_FOCUSABLE_IM)
+
+同じ Quest、同じランチャーの foot、同じ USB HID テストデバイスで、Ctrl＋セミコロンと Ctrl＋Space のそれぞれを試した。**両方とも、直接入力の `a`、読み `nihongo`、Space 2 回、上矢印、Enter の結果、端末で受け取った全 10 バイトが `a日本語` と一致した。** Fcitx5 の専用 grab で実キーを受け、候補ポップアップと確定要求を出した。確認用 APK で対象窓への右トリガーだけを試験レシーバーから送っている。装着者による読みやすさの評価は未実施。

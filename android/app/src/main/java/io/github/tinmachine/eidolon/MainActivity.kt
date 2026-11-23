@@ -74,7 +74,7 @@ class MainActivity : AppSystemActivity() {
     private val spatialLauncher: SpatialLauncher by lazy {
         SpatialLauncher(applicationContext, ::ownsScene, { view, window ->
             mouse.track(view)
-            PanelKeyboardBridge(view, window) { event ->
+            PanelKeyboardBridge(view, window, linuxKeys = true) { event ->
                 ownsScene() && (mouse.key(event) || keyboard.dispatch(event, "spatial-launcher"))
             }
         }, { handExtensions }) { openDetails.intValue += 1 }
@@ -108,6 +108,7 @@ class MainActivity : AppSystemActivity() {
         val native = NativeBridge.status
         NativeSessionHost.initialize(applicationContext)
         nativePanels.initialize(this)
+        TermuxImeWindows.attach(window)
         mouse.track(window.decorView)
         if (native.ready) {
             Log.i(TAG, "native_ready version=${BuildConfig.VERSION_CODE} info=${native.info}")
@@ -184,7 +185,7 @@ class MainActivity : AppSystemActivity() {
                 if(ownsScene()) obj.display?.presentation?.window?.let { window ->
                     bindGrip(R.id.phase0_panel, obj)
                     mouse.track(view)
-                    keyboardPanels.add(PanelKeyboardBridge(view,window) {event -> ownsScene() && (mouse.key(event) || keyboard.dispatch(event,"control"))})
+                    keyboardPanels.add(PanelKeyboardBridge(view,window, linuxKeys = true) {event -> ownsScene() && (mouse.key(event) || keyboard.dispatch(event,"control"))})
                 }
             } },
         ),
@@ -201,7 +202,7 @@ class MainActivity : AppSystemActivity() {
                 if(ownsScene()) obj.display?.presentation?.window?.let { window ->
                     bindGrip(R.id.terminal_launcher_panel, obj)
                     mouse.track(view)
-                    keyboardPanels.add(PanelKeyboardBridge(view,window) {event -> ownsScene() && (mouse.key(event) || keyboard.dispatch(event,"launcher"))})
+                    keyboardPanels.add(PanelKeyboardBridge(view,window, linuxKeys = true) {event -> ownsScene() && (mouse.key(event) || keyboard.dispatch(event,"launcher"))})
                 }
             } },
         ),

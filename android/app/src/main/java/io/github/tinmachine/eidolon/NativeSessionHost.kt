@@ -289,6 +289,38 @@ object NativeSessionHost {
     private var cancelledThrough = 0L
     private data class PendingDisconnect(val connectRequest: String?, val session: String?, var request: String? = null)
     private var pendingDisconnect: PendingDisconnect? = null
+    private data class TermuxImeRoute(val source: Long, val sourceSession: Long, val focus: KeyboardFocus)
+    private var termuxImeRoute: TermuxImeRoute? = null // guarded by inputIntents
+    private fun clearTermuxImeRoute() {
+        TermuxImeWindows.rawInput(false)
+        termuxImeRoute?.let { NativeBridge.nativeRouteTermuxIme(it.focus.runtime, 0, 0, 0, 0, 0) }
+        termuxImeRoute = null
+    }
+    private fun syncTermuxImeRoute(primary: JSONObject, eligible: Boolean) = inputIntents.serial {
+        val focus = keyboardFocus?.takeIf { eligible && !imeRawBlocked.get() }
+        val route = focus?.let {
+            val targetState = if (it.runtime == handle) primary else secondarySnapshot(it.runtime)
+            val targetSsh = targetState?.optJSONObject("transport")
+            val primarySsh = primary.optJSONObject("transport")
+            val (source, transport) = when {
+                targetSsh?.optBoolean("termux_shelf_readable") == true -> it.runtime to targetSsh
+                primarySsh?.optBoolean("termux_shelf_readable") == true -> handle to primarySsh
+                else -> termuxShelf.handle to termuxShelf.snapshot?.optJSONObject("transport")
+            }
+            if (source > 0 && transport?.optBoolean("termux_shelf_readable") == true)
+                TermuxImeRoute(source, transport.getLong("session"), it) else null
+        }
+        val targetState = focus?.let { if (it.runtime == handle) primary else secondarySnapshot(it.runtime) }
+        TermuxImeWindows.rawInput(route != null && targetState?.optJSONObject("app")?.optString("termux_ime") == "ready")
+        if (route == termuxImeRoute) return@serial
+        if (termuxImeRoute?.focus?.runtime != route?.focus?.runtime || route == null) clearTermuxImeRoute()
+        if (route != null) {
+            val target = JSONObject(route.focus.target)
+            val result = NativeBridge.nativeRouteTermuxIme(route.focus.runtime, route.source, target.getLong("session"),
+                target.getLong("window"), route.focus.token.toLong(), route.focus.epoch)
+            if (result == NativeBridge.ACCEPTED) termuxImeRoute = route
+        }
+    }
     private data class KeyboardFocus(val runtime: Long, val epoch: Long, val target: String, val token: String)
     @Volatile private var keyboardFocus: KeyboardFocus? = null
     @Volatile private var imeConnection: ImeSessionConnection? = null // Methods belong to UI; worker only captures this identity.
@@ -405,7 +437,10 @@ object NativeSessionHost {
     internal val shelfCatalogs = androidx.compose.runtime.mutableStateMapOf<String, ShelfCatalog>()
     private val panelTextInputs = ConcurrentHashMap.newKeySet<String>()
     fun panelTextInput(key: String, active: Boolean) {
-        if(active) { if(panelTextInputs.add(key)) resetInput() } else panelTextInputs.remove(key)
+        if (active) {
+            TermuxImeWindows.rawInput(false)
+            if (panelTextInputs.add(key)) resetInput()
+        } else panelTextInputs.remove(key)
     }
     private fun releasePanelTextFocus() {
         if(panelTextInputs.isNotEmpty()) ui.post {launcherFocusReset.value=launcherFocusReset.value+1}
@@ -1822,6 +1857,7 @@ object NativeSessionHost {
         else sendWorkspaceReset(runtime)
     }
     private fun resetInputLocked(retiring:InputRetirement?=null, reason:String?=null): Int {
+        clearTermuxImeRoute()
         if (BuildConfig.DEBUG && imeRawBlocked.get()) {
             val callers = Throwable().stackTrace.take(8)
                 .joinToString(" <- ") { "${it.className.substringAfterLast('.') }.${it.methodName}" }
@@ -2435,6 +2471,7 @@ object NativeSessionHost {
             runCatching { editor == null || (!editor.hasFocus() && editor.context.getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.isAcceptingText != true) }.getOrDefault(false)
         }
         imeConnection = connection
+        clearTermuxImeRoute()
         imeRawBlocked.set(true)
         imeCaptureTicket = ticket // Cancel pending automatic focus work, preserving the captured target.
         imeCaptureEpoch = focus.epoch
@@ -3416,6 +3453,7 @@ object NativeSessionHost {
             val target = strictImeSdkTarget(JSONObject(focus.target))
             state != null && target != null && ImeTargetEligibility.allows(state, target)
         } == true
+        syncTermuxImeRoute(runtime, eligibleIme)
         if (publishDiagnostics) sampleHudTiming(runtime)
         pumpIme(runtime)
         val keyboardLabel = if (keyboardFocus == null) "操作パネルへ入力" else if(selectedProfileId==LinuxConnectionProfile.ID) "Linuxアプリへ入力" else "ターミナルへ入力"

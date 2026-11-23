@@ -1,0 +1,84 @@
+#!/data/data/com.termux/files/usr/bin/python
+"""Run the Quest IME for one SSH exec channel. Standard output is Waypipe data."""
+import os
+import select
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+
+def relay(sock):
+    """Limit buffering in each direction and wake on EOF from either owner."""
+    fd = sock.fileno()
+    pending = {fd: bytearray(), 1: bytearray()}
+    for stream in (0, 1, fd):
+        os.set_blocking(stream, False)
+    while True:
+        inputs = [src for src, dst in ((0, fd), (fd, 1)) if not pending[dst]]
+        outputs = [dst for dst in pending if pending[dst]]
+        readable, writable, _ = select.select(inputs, outputs, [])
+        for dst in writable:
+            count = os.write(dst, pending[dst])
+            del pending[dst][:count]
+        for src in readable:
+            chunk = os.read(src, 65536)
+            if not chunk:
+                return
+            pending[fd if src == 0 else 1].extend(chunk)
+
+
+def stop(signum, frame):
+    raise SystemExit(128 + signum)
+
+
+def main():
+    os.umask(0o077)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, stop)
+    stage = Path(__file__).resolve().parent
+    env = os.environ.copy()
+    env.pop("WAYLAND_DEBUG", None)
+    with tempfile.TemporaryDirectory(prefix="ei.", dir=os.environ["TMPDIR"]) as tmp:
+        with socket.socket(socket.AF_UNIX) as listener:
+            path = os.path.join(tmp, "p")
+            listener.bind(path)
+            listener.listen(1)
+            child = subprocess.Popen(
+                [stage / "eidolon-ime-waypipe", "--no-gpu", "--compress", "none",
+                 "--threads", "1", "--oneshot", "--socket", path, "server",
+                 "--", stage / "eidolon-ime", stage.parent.parent],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=sys.stderr, start_new_session=True,
+                env={**env, "XDG_RUNTIME_DIR": tmp},
+            )
+            try:
+                listener.settimeout(0.1)
+                deadline = time.monotonic() + 8
+                while child.poll() is None and time.monotonic() < deadline:
+                    try:
+                        peer, _ = listener.accept()
+                    except socket.timeout:
+                        continue
+                    with peer:
+                        try:
+                            relay(peer)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+                    return
+                raise RuntimeError("Waypipe did not connect")
+            finally:
+                if child.poll() is None:
+                    os.killpg(child.pid, signal.SIGTERM)
+                    try:
+                        child.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(child.pid, signal.SIGKILL)
+                        child.wait()
+
+
+if __name__ == "__main__":
+    main()

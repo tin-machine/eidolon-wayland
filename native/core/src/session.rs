@@ -31,6 +31,7 @@ pub struct Report {
     pub input: crate::compositor::protocol::InputReport,
     pub ready: bool,
     pub local: ClientReport,
+    pub termux_ime: &'static str,
     pub accepted: u32,
     pub forward_sent: bool,
     pub copies: u64,
@@ -80,6 +81,8 @@ pub struct Session {
     display: Option<Display<ProtocolState>>,
     protocol: Option<ProtocolState>,
     local: Option<LocalClient>,
+    termux_ime: Option<crate::termux_ime::Connection>,
+    ime_attempt: u64,
     startup_allocation_absent: bool,
     base: Counters,
     copied: u64,
@@ -232,6 +235,7 @@ impl Session {
     fn unstarted(session: SessionId, nonce: &str, mode: AppMode, virtual_clock: bool) -> Self {
         Self {
             report: Report {
+                termux_ime: "off",
                 state: "preparing",
                 session: Some(session),
                 nonce: nonce.into(),
@@ -249,6 +253,8 @@ impl Session {
             display: None,
             protocol: None,
             local: None,
+            termux_ime: None,
+            ime_attempt: 0,
             startup_allocation_absent: true,
             base: Default::default(),
             copied: 0,
@@ -558,7 +564,61 @@ impl Session {
             .ok_or("NOT_READY")?
             .change_keyboard_layout(layout)
     }
+    pub(crate) fn stop_termux_ime(&mut self) {
+        if self.termux_ime.is_some() {
+            if let Some(p) = self.protocol.as_mut() {
+                p.close_input_method_connection();
+            }
+            self.termux_ime = None;
+        }
+        self.report.termux_ime = "off";
+    }
+    pub(crate) fn start_termux_ime(
+        &mut self,
+        route: crate::runtime::ImeRoute,
+        executable: &Path,
+    ) -> Result<(), &'static str> {
+        if self.closing || self.session() != route.session || !self.owns_window(route.window) {
+            return Err("STALE");
+        }
+        let p = self.protocol.as_ref().ok_or("NOT_READY")?;
+        let input = p.input_report();
+        if input.focus_window != Some(route.window) || input.focus_token != Some(route.token) {
+            return Err("STALE");
+        }
+        if self
+            .termux_ime
+            .as_ref()
+            .is_some_and(|c| c.uses(&route.endpoint))
+        {
+            return Ok(());
+        }
+        self.stop_termux_ime();
+        let directory = &self.directory.as_ref().ok_or("NOT_READY")?.path;
+        self.ime_attempt = self.ime_attempt.checked_add(1).ok_or("RESOURCE_LIMIT")?;
+        let p = self.protocol.as_mut().ok_or("NOT_READY")?;
+        let stream = p.open_input_method_connection()?;
+        match crate::termux_ime::Connection::start(
+            stream,
+            executable,
+            directory,
+            route.endpoint,
+            self.ime_attempt,
+        ) {
+            Ok(c) => {
+                self.termux_ime = Some(c);
+                self.report.termux_ime = "connecting";
+                Ok(())
+            }
+            Err(e) => {
+                p.close_input_method_connection();
+                self.report.termux_ime = "unavailable";
+                Err(e)
+            }
+        }
+    }
     pub fn reset_input(&mut self) {
+        self.stop_termux_ime();
         if let Some(protocol) = self.protocol.as_mut() {
             protocol.reset_input();
         }
@@ -901,6 +961,21 @@ impl Session {
     }
     /// remote/forwardの終了後にだけlocalを止める。プロセス待ちはworkerに任せる。
     pub fn tick(&mut self, close: bool, remote_gone: bool) {
+        if self.termux_ime.is_some() {
+            if close || self.closing {
+                self.stop_termux_ime();
+            } else if self.termux_ime.as_ref().is_some_and(|c| c.finished()) {
+                self.stop_termux_ime();
+                self.report.termux_ime = "unavailable";
+            } else if self
+                .protocol
+                .as_ref()
+                .is_some_and(|p| p.input_method_attached())
+            {
+                self.report.termux_ime = "ready";
+            }
+        }
+
         if self.closed() {
             return;
         }

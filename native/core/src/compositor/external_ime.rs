@@ -91,6 +91,9 @@ impl ProtocolState {
         };
         Ok(peer)
     }
+    pub fn input_method_attached(&self) -> bool {
+        self.external_ime.attached()
+    }
     /// Immediately revoke the privileged peer on owner change, including queued input.
     pub fn close_input_method_connection(&mut self) {
         if let Some(client) = self.external_ime.client.take() {

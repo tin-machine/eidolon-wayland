@@ -15,7 +15,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) struct ImeRoute {
+    pub session: eidolon_model::ids::SessionId,
+    pub window: eidolon_model::ids::WindowId,
+    pub token: eidolon_model::ids::CommandSeq,
+    pub epoch: u64,
+    pub endpoint: eidolon_transport::input_method::Endpoint,
+}
 struct Shared {
+    ime_route_change: Option<Option<ImeRoute>>,
     // surroundingを含む。diagnostics::Snapshot/Eventへコピーしない。
     ime_ui: Option<eidolon_model::ime::ImeSnapshot>,
     shutdown: crate::shutdown::Watch,
@@ -874,6 +882,7 @@ impl Runtime {
         )?);
         let gl = render.clone();
         let shared = Arc::new(Mutex::new(Shared {
+            ime_route_change: None,
             ime_ui: None,
             shutdown: Default::default(),
             sdk_bindings: vec![],
@@ -1165,6 +1174,21 @@ impl Runtime {
                             }
                             #[cfg(any(test, feature = "debug-fixtures"))]
                             if app_linux && !desktop && let Some(forward)=ssh.linux_forward.as_ref() {current.linux_forwarding(forward);}
+                            let (change, epoch) = {
+                                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                                (s.ime_route_change.take(), s.snapshot.input_resets)
+                            };
+                            if let Some(change) = change {
+                                match change {
+                                    Some(route) if !close && route.epoch == epoch &&
+                                        !resetting.load(Ordering::Acquire) => {
+                                        if let Some(paths) = &config.paths {
+                                            let _ = current.start_termux_ime(route, &std::path::Path::new(&paths.native_library_dir).join("libwaypipe_bin.so"));
+                                        }
+                                    }
+                                    _ => current.stop_termux_ime(),
+                                }
+                            }
                             current.tick(close, remote_gone);
                             if current.is_v3() && v3_pending.is_none()
                                 && let Some(observer) = v3_observer.as_mut() {
@@ -3758,6 +3782,56 @@ impl Runtime {
         Ok(())
     }
     /// この返り値はUI接続専用。通常snapshot・診断・disk保存の経路から隔離する。
+    pub fn termux_ime_endpoint(&self) -> Option<eidolon_transport::input_method::Endpoint> {
+        self.transport.termux_ime_endpoint()
+    }
+    pub fn set_termux_ime(
+        &self,
+        endpoint: Option<eidolon_transport::input_method::Endpoint>,
+        session: i64,
+        window: i64,
+        token: i64,
+        epoch: i64,
+    ) -> Status {
+        let mut s = self.lock();
+        let route = if let Some(endpoint) = endpoint {
+            let (Ok(session), Ok(window), Ok(token), Ok(epoch)) = (
+                eidolon_model::ids::SessionId::new(session),
+                eidolon_model::ids::WindowId::new(window),
+                eidolon_model::ids::CommandSeq::new(token),
+                u64::try_from(epoch),
+            ) else {
+                return Status::InvalidArgument;
+            };
+            if self.stop.load(Ordering::Acquire)
+                || self.reset.load(Ordering::Acquire)
+                || s.snapshot.state != RuntimeState::Ready
+                || !s.snapshot.activity_visible
+                || s.snapshot.xr_state != XrState::Focused
+                || !s.render_visibility.iter().all(|v| *v)
+                || s.snapshot.input_resets != epoch
+                || !s.snapshot.app.as_ref().is_some_and(|a| {
+                    a.session == Some(session)
+                        && a.input.focus_window == Some(window)
+                        && a.input.focus_token == Some(token)
+                })
+            {
+                return Status::Stale;
+            }
+            Some(ImeRoute {
+                session,
+                window,
+                token,
+                epoch,
+                endpoint,
+            })
+        } else {
+            None
+        };
+        s.ime_route_change = Some(route);
+        self.worker.thread().unpark();
+        Status::Accepted
+    }
     pub fn ime_ui(&self) -> Option<eidolon_model::ime::ImeSnapshot> {
         let state = self.lock();
         if self.stop.load(Ordering::Acquire)

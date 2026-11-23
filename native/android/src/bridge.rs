@@ -575,6 +575,39 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeCata
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeRouteTermuxIme(
+    mut env: EnvUnowned<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    source: jlong,
+    session: jlong,
+    window: jlong,
+    token: jlong,
+    epoch: jlong,
+) -> jint {
+    env.with_env(|_| -> jni::errors::Result<i32> {
+        let endpoint = if source == 0 {
+            None
+        } else {
+            let Some(ep) = global()
+                .guarded(source, |r| r.termux_ime_endpoint())
+                .ok()
+                .flatten()
+            else {
+                return Ok(eidolon_model::state::Status::NotReady as i32);
+            };
+            Some(ep)
+        };
+        Ok(global()
+            .guarded(handle, |r| {
+                r.set_termux_ime(endpoint, session, window, token, epoch)
+            })
+            .unwrap_or_else(|s| s) as i32)
+    })
+    .resolve_with::<BridgePolicy, _>(|| handle)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeImeUi<'a>(
     mut env: EnvUnowned<'a>,
     _: JClass<'a>,
