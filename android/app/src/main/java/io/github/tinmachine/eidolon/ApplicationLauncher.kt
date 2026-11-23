@@ -190,7 +190,8 @@ fun LauncherSettings(
                                 for ((source, state) in hosts) {
                                     val interactions = remember(source) { MutableInteractionSource() }
                                     val hovered by interactions.collectIsHoveredAsState()
-                                    val failed = state.firstFailure != null || state.menuRefreshFailed
+                                    val failed = state.firstFailure != null || state.menuRefreshFailed ||
+                                        source.linux && !state.connected && NativeSessionHost.ubuntuReconnectNotice.value != null
                                     LaunchedEffect(hovered) {
                                         if (hovered) { ShelfReasonFocus.hovered = source; if (failed) detail = source }
                                         else if (ShelfReasonFocus.hovered == source) ShelfReasonFocus.hovered = null
@@ -217,6 +218,9 @@ fun LauncherSettings(
                                         }) + hostName(source))
                                     }
                                 }
+                            }
+                            NativeSessionHost.ubuntuReconnectNotice.value?.let { notice ->
+                                Text(notice, color = candy)
                             }
                             detail?.let { source ->
                                 val state = hosts.getValue(source)
