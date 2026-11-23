@@ -47,5 +47,7 @@ class UbuntuShelfReconnectTest {
         retry.stop()
         assertFalse(retry.retryDue(60000))
         assertNull(retry.notice(true, false))
+        retry.observe("DESKTOP_CLEANUP_PENDING", false)
+        assertEquals("SSH_IO_FAILED", history["b"])
     }
 }

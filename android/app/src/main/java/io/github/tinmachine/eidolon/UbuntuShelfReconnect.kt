@@ -9,6 +9,7 @@ internal class UbuntuShelfReconnect(
     private var reason: String? = null
     private var saved: String? = null
     private var wanted = false
+    private var intentionallyStopped = false
     private var next = 0L
     private var delayMs = 2000L
     private var refreshed = false
@@ -16,12 +17,14 @@ internal class UbuntuShelfReconnect(
     fun bind(key: String) {
         if (host == key) return
         stop()
+        intentionallyStopped = false
         host = key
         saved = if (key.isEmpty()) null else read(key)?.takeIf { it in explanations }
         reason = saved
     }
 
     fun stop() {
+        intentionallyStopped = true
         wanted = false
         refreshed = false
         delayMs = 2000L
@@ -30,6 +33,7 @@ internal class UbuntuShelfReconnect(
     fun request(now: Long, automatic: Boolean = false) {
         if (!automatic) delayMs = 2000L
         if (refreshed) reason = saved
+        intentionallyStopped = false
         wanted = true
         refreshed = false
         next = now + delayMs
@@ -37,7 +41,7 @@ internal class UbuntuShelfReconnect(
     }
 
     fun observe(code: String?, ready: Boolean, disconnected: Boolean = false) {
-        if (host.isEmpty()) return
+        if (host.isEmpty() || intentionallyStopped) return
         if (disconnected && refreshed) { refreshed = false; reason = saved }
         if (code in explanations) {
             // Cleanup may follow a connection error. Preserve the more informative reason.
@@ -70,7 +74,7 @@ internal class UbuntuShelfReconnect(
             reason in transient -> "自動で再接続を試みます。"
             else -> "接続設定とホストの状態を確認してください。"
         }
-        return "前回の接続記録 · ${previous}。$action"
+        return "Ubuntu の前回の接続記録 · ${previous}。$action"
     }
 
     companion object {
@@ -86,7 +90,7 @@ internal class UbuntuShelfReconnect(
             "AUTH_FAILED" to "SSH 認証に失敗しました",
             "HOST_KEY_MISMATCH" to "保存済みのホスト鍵と一致しませんでした",
             "HOST_KEY_UNKNOWN" to "ホスト鍵を確認できませんでした",
-            "DESKTOP_CLEANUP_PENDING" to "前回の終了確認が残っていました",
+            "DESKTOP_CLEANUP_PENDING" to "セッションの終了確認が残っていました",
         )
     }
 }

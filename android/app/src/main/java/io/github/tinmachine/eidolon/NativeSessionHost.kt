@@ -156,6 +156,7 @@ object NativeSessionHost {
     }
     internal val ubuntuReconnectNotice = mutableStateOf<String?>(null)
     private var postedReconnectNotice: String? = null
+    private var reconnectProfile: ConnectionProfileV2.Value? = null
     private val ubuntuRetry = UbuntuShelfReconnect(
         { binding -> launcherPreferences?.getString("connection-failure:$binding", null) },
         { binding, reason -> launcherPreferences?.edit()?.putString("connection-failure:$binding", reason)?.apply() },
@@ -163,7 +164,7 @@ object NativeSessionHost {
 
     internal fun refreshShelfHost(source: LauncherSource) { productWorker.execute { safely {
         if (source.linux) {
-            ubuntuRetry.bind(linuxConnectionUi.value.savedBinding)
+            bindUbuntuRetryHost()
             ubuntuRetry.request(SystemClock.elapsedRealtime())
         }
         refreshShelfHostOnWorker(source)
@@ -3141,10 +3142,19 @@ object NativeSessionHost {
         }
     }
 
+    private fun bindUbuntuRetryHost() {
+        val profile = linuxProfile
+        if (profile !== reconnectProfile) {
+            reconnectProfile = profile
+            ubuntuRetry.bind(profile?.binding().orEmpty())
+        }
+    }
+
     private fun reconcileUbuntuShelf(runtime: JSONObject, now: Long) {
         val primary = selectedProfileId == LinuxConnectionProfile.ID
         val catalog = if (primary) launcherState else companionLinux.shelf
         val tx = (if (primary) runtime else companionLinux.snapshot)?.optJSONObject("transport")
+            ?.takeIf { it.optString("profile_id") == LinuxConnectionProfile.ID }
         val phase = tx?.optString("state")
         val disconnected = phase == "Idle" || phase == "Failed" || phase == "Disconnected" ||
             !primary && companionLinux.handle == 0L
@@ -3152,7 +3162,7 @@ object NativeSessionHost {
         val error = if (disconnected || recovering) tx?.optString("error") else null
         val ready = catalog.connected && !catalog.busy && !catalog.menuRefreshFailed &&
             catalog.catalogComplete && phase == "DesktopReady"
-        ubuntuRetry.bind(linuxConnectionUi.value.savedBinding)
+        bindUbuntuRetryHost()
         ubuntuRetry.observe(error, ready, disconnected)
         val visible = (launcherExpanded.value || spatialShelfOpen) && activityVisible.get()
         val idle = if (primary) catalog.canConnect && !connectPending && !catalog.busy && !catalog.canRecover
