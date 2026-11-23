@@ -1,0 +1,49 @@
+#!/data/data/com.termux/files/usr/bin/python
+"""Build the pinned Waypipe C client/server for the native Termux IME."""
+import fcntl
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(root / "scripts"))
+from waypipe_build import prepare
+
+os.umask(0o077)
+work = (Path(sys.argv[1]) if len(sys.argv) > 1 else
+        Path.home() / ".local/share/eidolon-ime-native/d55a051").resolve()
+cache = work / "waypipe-cache"
+cache.mkdir(parents=True, exist_ok=True)
+with (cache / "build.lock").open("a") as guard:
+    fcntl.flock(guard, fcntl.LOCK_EX)
+    spec = json.loads((root / "native/deps.lock.json").read_text())["waypipe"]
+    source, fingerprint = prepare("waypipe", spec, cache)
+    build = cache / ("build-" + fingerprint)
+    meson = work / "meson-python"
+    if not (meson / "mesonbuild").exists():
+        subprocess.run([sys.executable, "-m", "pip", "install", "--target", str(meson),
+                        "meson==" + spec["meson"]], check=True)
+    env = dict(os.environ, PYTHONPATH=str(meson))
+    version = subprocess.check_output(
+        [sys.executable, "-m", "mesonbuild.mesonmain", "--version"], env=env, text=True).strip()
+    if version != spec["meson"]:
+        raise SystemExit(f"Meson {spec['meson']} required, found {version}")
+    subprocess.run([
+        sys.executable, "-m", "mesonbuild.mesonmain", "setup", str(build), str(source), "-Dbuild_c=true", "-Dbuild_rs=false",
+        "-Dc_args=--target=aarch64-linux-android34", "-Dc_link_args=--target=aarch64-linux-android34",
+        "-Dtests=false", "-Dman-pages=disabled", "-Dwerror=false", "-Dwith_dmabuf=disabled", "-Dwith_video=disabled",
+        "-Dwith_vaapi=disabled", "-Dwith_lz4=enabled", "-Dwith_zstd=enabled",
+        "-Dwith_secctx=disabled", "-Dwith_systemtap=false", "-Dwith_gbm=disabled",
+    ], env=env, check=True)
+    subprocess.run(["ninja", "-C", str(build), "-j", os.environ.get("JOBS", "2"), "waypipe-c/waypipe-c"], env=env, check=True)
+    stage = work / "stage/bin"
+    stage.mkdir(parents=True, exist_ok=True)
+    for src, dest in [(build / "waypipe-c/waypipe-c", "eidolon-ime-waypipe"),
+                      (Path(__file__).with_name("relay-stdio"), "eidolon-ime-relay")]:
+        tmp = stage / (dest + ".new")
+        shutil.copyfile(src, tmp)
+        tmp.chmod(0o700)
+        tmp.replace(stage / dest)

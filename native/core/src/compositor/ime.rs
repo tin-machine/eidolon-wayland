@@ -236,7 +236,21 @@ impl ProtocolState {
 
     /// 通常snapshot/logへ載せない。Android editor専用の所有済みsnapshot。
     pub fn ime_snapshot(&self, input_epoch: u64) -> Option<ImeSnapshot> {
-        if !self.ime.backend_enabled || self.ime.exhausted {
+        if !self.ime.backend_enabled || self.external_ime.attached() {
+            return None;
+        }
+        self.focused_ime_snapshot(input_epoch)
+    }
+
+    pub(super) fn focused_ime_stamp(&self) -> Option<(u64, u32)> {
+        if self.ime.exhausted {
+            return None;
+        }
+        Some((self.ime.activation, self.ime.active()?.serial))
+    }
+
+    pub(super) fn focused_ime_snapshot(&self, input_epoch: u64) -> Option<ImeSnapshot> {
+        if self.ime.exhausted {
             return None;
         }
         let active = self.ime.active()?;
@@ -267,6 +281,17 @@ impl ProtocolState {
 
     /// runtimeの最新epochを受け、入力全体を検査してから一つのdoneで送出する。
     pub fn apply_ime(
+        &mut self,
+        input_epoch: u64,
+        transaction: &ImeTransaction,
+    ) -> Result<(), &'static str> {
+        if !self.ime.backend_enabled || self.external_ime.attached() {
+            return Err("NOT_READY");
+        }
+        self.apply_focused_ime(input_epoch, transaction)
+    }
+
+    pub(super) fn apply_focused_ime(
         &mut self,
         input_epoch: u64,
         transaction: &ImeTransaction,
@@ -328,7 +353,7 @@ impl ProtocolState {
         if !transaction.valid() {
             return Err("INVALID_ARGUMENT");
         }
-        let snapshot = self.ime_snapshot(input_epoch).ok_or("NOT_READY")?;
+        let snapshot = self.focused_ime_snapshot(input_epoch).ok_or("NOT_READY")?;
         // wire done serialは常に適用時の最新値。payload自体は変更・再送しない。
         // Absolute deletion offsets always require the current edit revision.
         // Text-only edits can cross feedback from this input method within the same activation.

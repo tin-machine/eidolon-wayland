@@ -187,11 +187,14 @@ impl Peer {
         stop: &AtomicBool,
     ) -> Result<Self> {
         let (server, stream) = UnixStream::pair().map_err(|_| "SOCKET_PAIR")?;
+        state.accept(&display.handle(), server)?;
+        Self::connect_stream(display, state, stop, stream)
+    }
+    fn from_stream(stream: UnixStream) -> Result<Self> {
         stream
             .set_nonblocking(true)
             .map_err(|_| "SOCKET_NONBLOCK")?;
-        state.accept(&display.handle(), server)?;
-        let mut peer = Self {
+        Ok(Self {
             stream,
             buffer: vec![],
             next_id: 2,
@@ -201,7 +204,15 @@ impl Peer {
             seat: 0,
             surface: 0,
             inputs: [0, 0],
-        };
+        })
+    }
+    fn connect_stream(
+        display: &mut Display<ProtocolState>,
+        state: &mut ProtocolState,
+        stop: &AtomicBool,
+        stream: UnixStream,
+    ) -> Result<Self> {
+        let mut peer = Self::from_stream(stream)?;
         peer.registry = peer.allocate();
         peer.send(1, 1, word(peer.registry))?;
         let globals = peer.sync(display, state, stop)?;
@@ -992,6 +1003,43 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_owner_socket_advertises_input_method_and_virtual_keyboard() -> Result<()> {
+        let _guard = crate::compositor::FIXTURE_LOCK.lock().unwrap();
+        let stop = AtomicBool::new(false);
+        let mut display = Display::<ProtocolState>::new().map_err(|_| "DISPLAY_CREATE")?;
+        let mut state = ProtocolState::new(&display.handle(), SessionId::new(1).unwrap());
+        state.configure_keyboard(KeyboardLayout::Us)?;
+        let (server, app) = UnixStream::pair().map_err(|_| "SOCKET_PAIR")?;
+        state.accept(&display.handle(), server)?;
+        let method = state.open_input_method_connection()?;
+        assert_eq!(
+            state.open_input_method_connection().unwrap_err(),
+            "IME_ALREADY_CONNECTED"
+        );
+        for (stream, privileged) in [(app, false), (method, true)] {
+            let mut peer = Peer::from_stream(stream)?;
+            let registry = peer.allocate();
+            peer.send(1, 1, word(registry))?;
+            let events = peer.sync(&mut display, &mut state, &stop)?;
+            let names: Vec<_> = events
+                .iter()
+                .filter(|event| event.object == registry && event.opcode == 0)
+                .map(|event| read_string(&event.body, 4).map(|(name, _)| name))
+                .collect::<Result<_>>()?;
+            assert!(names.contains(&"zwp_text_input_manager_v3"));
+            for name in [
+                "zwp_input_method_manager_v2",
+                "zwp_virtual_keyboard_manager_v1",
+            ] {
+                assert_eq!(names.contains(&name), privileged, "{name}");
+            }
+        }
+        state.close_input_method_connection();
+        drop(state.open_input_method_connection()?);
+        cleanup(&mut display, &mut state)
+    }
 
     #[test]
     fn text_input_v3_real_wire_transactions_lifetime_and_invalid_clients() {

@@ -206,6 +206,12 @@ internal class CompanionLinuxSession(
             }
             return
         }
+        if (runtime.optString("state") == "Failed") {
+            // A failed runtime waits for an explicit stop before draining its local window resources.
+            if (!stopping) fail("追加アプリの表示処理が停止しました。終了を確認して起動枠を回収します。")
+            retired = NativeBridge.nativeRequestStop(current) == NativeBridge.ACCEPTED
+            return
+        }
         val transport = runtime.getJSONObject("transport")
         val session = transport.optString("session")
         val status = LinuxDesktopV3Status.observe(current, session, runtime)

@@ -1,0 +1,22 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# 固定の読みだけを専用 Fcitx・Mozc プロファイルで変換する。
+set -euo pipefail
+umask 077
+: "${PREFIX:?Termux のシェルで実行してください}"
+tools_dir=$(cd "$(dirname "$0")" && pwd)
+work=${1:-"$HOME/.local/share/eidolon-ime-native/d55a051"}
+work=$(cd "$work" && pwd)
+sandbox=$(mktemp -d "${TMPDIR:?}/eidolon-ime.XXXXXX")
+trap 'rm -rf -- "$sandbox"' EXIT
+export HOME="$sandbox/home" XDG_RUNTIME_DIR="$sandbox/runtime"
+export XDG_CONFIG_HOME="$HOME/.config" XDG_DATA_HOME="$HOME/.local/share" XDG_CACHE_HOME="$HOME/.cache"
+export XDG_DATA_DIRS="$PREFIX/share" XKB_CONFIG_ROOT="$PREFIX/share/X11/xkb"
+export FCITX_ADDON_DIRS="$work/stage/lib/fcitx5:$PREFIX/lib/fcitx5"
+export FCITX_DATA_DIRS="$work/stage/share/fcitx5:$PREFIX/share/fcitx5"
+unset FCITX_CONFIG_HOME FCITX_CONFIG_DIRS FCITX_DATA_HOME DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET
+mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME/mozc" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+flags=$(pkg-config --cflags --libs Fcitx5Core)
+read -r -a fcitx_flags <<< "$flags"
+clang++ -std=c++20 "$tools_dir/verify-mozc.cpp" \
+    "${fcitx_flags[@]}" -o "$sandbox/probe"
+timeout 40 "$sandbox/probe" --disable=all --enable=mozc

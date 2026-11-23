@@ -1,0 +1,64 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# 専用の compositor 接続で起動し、Mozc の辞書を専用 HOME に保持する。
+set -euo pipefail
+umask 077
+: "${PREFIX:?Termux のシェルで実行してください}"
+if [[ -z ${WAYLAND_DISPLAY:-} && -z ${WAYLAND_SOCKET:-} ]]; then
+    echo "接続先の WAYLAND_DISPLAY または WAYLAND_SOCKET を指定してください" >&2
+    exit 2
+fi
+work=$(cd "${1:-$HOME/.local/share/eidolon-ime-native/d55a051}" && pwd)
+if [[ ! -x "$work/stage/bin/eidolon-fcitx5" ]]; then
+    echo "専用の Fcitx5 がありません。build-wayland を実行してください" >&2
+    exit 1
+fi
+for name in mozc wayland waylandim classicui; do
+    if [[ ! -f "$work/stage/lib/fcitx5/lib$name.so" ]]; then
+        echo "ビルド済みアドオンがありません: $name" >&2
+        exit 1
+    fi
+done
+export HOME="$work/profile"
+export XDG_CONFIG_HOME="$HOME/.config" XDG_CACHE_HOME="$HOME/.cache" XDG_DATA_HOME="$HOME/.local/share"
+export FCITX_ADDON_DIRS="$work/stage/lib/fcitx5:$PREFIX/lib/fcitx5"
+export FCITX_DATA_DIRS="$work/stage/share/fcitx5:$PREFIX/share/fcitx5"
+export XDG_DATA_DIRS="$PREFIX/share" XDG_SESSION_TYPE=wayland XKB_CONFIG_ROOT="$PREFIX/share/X11/xkb"
+unset FCITX_CONFIG_HOME FCITX_CONFIG_DIRS FCITX_DATA_HOME DISPLAY
+mkdir -p "$XDG_CONFIG_HOME"/{fcitx5,mozc} "$XDG_CACHE_HOME" "$XDG_DATA_HOME"
+# flock opens a separate descriptor, preserving an inherited WAYLAND_SOCKET.
+exec {profile_lock}>"$HOME/owner.lock"
+if ! flock -w 2 "$profile_lock"; then
+    echo "この Mozc プロファイルは使用中です" >&2
+    exit 1
+fi
+config="$XDG_CONFIG_HOME/fcitx5/config"
+if [[ ! -e "$config" ]]; then
+    # Horizon OS can consume Ctrl+Space before the physical space reaches Eidolon.
+    cat >"$config.new" <<'CONFIG'
+[Hotkey/TriggerKeys]
+0=Control+space
+1=Zenkaku_Hankaku
+2=Hangul
+3=Control+semicolon
+CONFIG
+    mv "$config.new" "$config"
+fi
+profile="$XDG_CONFIG_HOME/fcitx5/profile"
+if [[ ! -e "$profile" ]]; then
+    cat >"$profile.new" <<'PROFILE'
+[Groups/0]
+Name=Default
+Default Layout=us
+DefaultIM=mozc
+[Groups/0/Items/0]
+Name=keyboard-us
+Layout=
+[Groups/0/Items/1]
+Name=mozc
+Layout=
+[GroupOrder]
+0=Default
+PROFILE
+    mv "$profile.new" "$profile"
+fi
+exec "$work/stage/bin/eidolon-fcitx5" --disable=all --enable=keyboard,wayland,waylandim,classicui,mozc

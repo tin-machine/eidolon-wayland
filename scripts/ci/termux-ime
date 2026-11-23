@@ -1,0 +1,80 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Run inside a disposable ARM64 Termux container. The fixed track may install
+# its matching reference SDK into the container's package prefix.
+set -euo pipefail
+case ${1:-} in fixed|termux-current) track=$1 ;; *) exit 2 ;; esac
+[[ $(dpkg --print-architecture) == aarch64 ]]
+repo=$(cd "$(dirname "$0")/../.." && pwd)
+ime="$repo/scripts/termux/ime"
+source "$ime/fcitx-source.sh"
+export DEBIAN_FRONTEND=noninteractive JOBS=3
+apt=(apt-get -y -o Acquire::Retries=3 -o Dpkg::Options::=--force-confnew)
+"${apt[@]}" update
+"${apt[@]}" dist-upgrade
+"${apt[@]}" install x11-repo
+"${apt[@]}" update
+"${apt[@]}" install fcitx5 clang cmake ninja git curl python gettext pkg-config \
+    extra-cmake-modules nlohmann-json libwayland libwayland-protocols util-linux \
+    python-pip liblz4 zstd patch binutils unzip
+
+work=$(mktemp -d "$HOME/ime-build.XXXXXXXX")
+installed=$(pkg-config --modversion Fcitx5Core)
+package=$(dpkg-query -W -f='${Version}' fcitx5)
+echo "Termux fcitx5=$package, track=$track"
+recipe=()
+if [[ $track == termux-current ]]; then
+    git clone --quiet --depth=1 --filter=blob:none --sparse \
+        https://github.com/termux/termux-packages.git "$work/recipes"
+    git -C "$work/recipes" sparse-checkout set x11-packages/fcitx5
+    recipe=("$work/recipes/x11-packages/fcitx5")
+    # Read the official recipe as data. Do not silently test a new recipe
+    # against an older published binary during a repository rollout.
+    version=$(sed -nE 's/^TERMUX_PKG_VERSION="?([0-9.]+)"?$/\1/p' "${recipe[0]}/build.sh")
+    revision=$(sed -nE 's/^TERMUX_PKG_REVISION="?([0-9]+)"?$/\1/p' "${recipe[0]}/build.sh")
+    [[ -z $revision || $revision == 0 ]] || version+="-$revision"
+    if [[ $version != "$package" ]]; then
+        echo "Termux recipe ($version) and published ARM64 package ($package) differ" >&2
+        exit 1
+    fi
+    git -C "$work/recipes" log -1 --format='Termux recipe %H'
+elif [[ $installed != "$fcitx_version" || $package != "$fcitx_version-$fcitx_package_revision" ]]; then
+    # Rolling apt mirrors may have retired the pinned binary. Build the
+    # reference core, headers and data at the pinned source revision.
+    mkdir "$work/reference"
+    (cd "$work/reference"
+     prepare_fcitx
+     configure_fcitx reference-build OFF
+     cmake --build reference-build --parallel "$JOBS"
+     cmake --install reference-build)
+    [[ $(pkg-config --modversion Fcitx5Core) == "$fcitx_version" ]]
+fi
+
+"$ime/build-wayland" "$work" "${recipe[@]}"
+git -C "$work/fcitx" log -1 --format='Fcitx5 source %H'
+"$ime/build-mozc" "$work"
+export LC_ALL=C.UTF-8
+libs=("$work"/stage/lib/fcitx5/lib{wayland,waylandim,classicui,mozc}.so)
+for elf in "$work/stage/bin/eidolon-fcitx5" "${libs[@]}"; do
+    header=$(readelf -h "$elf")
+    grep -Eq 'Machine:[[:space:]]+AArch64' <<< "$header"
+done
+python - "${libs[@]}" <<'PY'
+import ctypes
+import sys
+for library in sys.argv[1:]:
+    ctypes.CDLL(library)
+PY
+"$ime/verify-mozc" "$work"
+
+# The Termux Docker image runs an older Bionic without memfd_create. Use the
+# API 34 NDK link stub for Waypipe only. The runtime loader still uses Bionic.
+ndk="$work/android-ndk-r30-linux.zip"
+curl -fLsS --retry 3 https://dl.google.com/android/repository/android-ndk-r30-linux.zip -o "$ndk"
+echo "753611f410d002cfcd3f3dc2ef49aad532089d3180b436c060a90bf0fcb64df2  $ndk" | sha256sum -c -
+stub="$PREFIX/aarch64-linux-android/lib/libc.so"
+unzip -p "$ndk" 'android-ndk-r30/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/34/libc.so' > "$work/libc.so"
+install -D -m 644 "$work/libc.so" "$stub"
+[[ $(clang --target=aarch64-linux-android34 -print-file-name=libc.so) -ef $stub ]]
+"$ime/build-relay" "$work"
+header=$(readelf -h "$work/stage/bin/eidolon-ime-waypipe")
+grep -Eq 'Machine:[[:space:]]+AArch64' <<< "$header"

@@ -22,3 +22,5 @@ pub mod workspace;
 pub mod window_groups;
 
 pub mod window_group_owner;
+
+mod termux_ime;

@@ -72,8 +72,17 @@ impl Controller {
             initial_offset: [0., 0.],
         }
     }
-    pub fn set_initial_offset(&mut self, meters: [f32; 2]) {
-        self.initial_offset = meters;
+    pub fn set_initial_offset(&mut self, render_slot: eidolon_render::ExecutorSlot) {
+        self.initial_offset = match render_slot {
+            eidolon_render::ExecutorSlot::Primary => [0., 0.],
+            eidolon_render::ExecutorSlot::Companion(2) => [1.8, 0.],
+            eidolon_render::ExecutorSlot::Companion(n) => {
+                let i = n - 3;
+                let y = [1., -1., 2., -2., 3., -3., 4.][usize::from(i / 3)];
+                [(f32::from(i % 3) - 1.) * 1.8, y]
+            }
+            eidolon_render::ExecutorSlot::Termux => [-1.8, 0.],
+        };
     }
     pub fn snapshot(&self) -> Report {
         Report {
@@ -191,12 +200,7 @@ impl Controller {
                         .and_then(|id| self.store.value.restore(id, slot, matches));
                     state.restored_pose = saved.is_some();
                     let pose = saved.as_ref().map_or_else(
-                        || {
-                            let mut pose = PanelPose::at_slot(slot);
-                            pose.position_m[0] += self.initial_offset[0];
-                            pose.position_m[1] += self.initial_offset[1];
-                            pose
-                        },
+                        || PanelPose::at_workspace_slot(slot, self.initial_offset),
                         |s| s.pose,
                     );
                     state.placement = Placement::new(pose).unwrap();
@@ -373,6 +377,39 @@ mod tests {
             v3_evidence_required: false,
         }
     }
+    #[test]
+    fn all_launcher_workspaces_can_map_all_their_windows() {
+        use eidolon_render::ExecutorSlot;
+        let executors = [ExecutorSlot::Primary, ExecutorSlot::Termux]
+            .into_iter()
+            .chain((2..=eidolon_model::limits::LAST_WORKSPACE).map(ExecutorSlot::Companion));
+        let windows: Vec<_> = (1..=9).map(window).collect();
+        let panels: Vec<_> = windows
+            .iter()
+            .enumerate()
+            .map(|(i, w)| panel(w, i, i as i64 + 1))
+            .collect();
+        for executor in executors {
+            let mut workspace = Controller::load(None);
+            workspace.set_initial_offset(executor);
+            workspace.scene(Some(scene()));
+            assert_eq!(
+                workspace.sync(session(), &windows, &panels).len(),
+                windows.len()
+            );
+            let snapshot = workspace.snapshot();
+            for (i, w) in snapshot.windows.iter().enumerate() {
+                let pose = w.placement.pose;
+                assert!(pose.valid());
+                assert!(
+                    snapshot.windows[..i]
+                        .iter()
+                        .all(|earlier| earlier.placement.pose != pose)
+                );
+            }
+        }
+    }
+
     #[test]
     fn initial_nine_poses_precede_sdk_creation_panel_ack_and_pose_ack() {
         let mut c = Controller::load(None);

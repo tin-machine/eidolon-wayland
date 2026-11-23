@@ -76,6 +76,19 @@ def fixture():
 
 
 class FingerprintTests(unittest.TestCase):
+    def test_waypipe_patch_receipt_tracks_the_bytes_and_order_of_the_build(self):
+        root = Path(__file__).resolve().parents[2]
+        patches = json.loads((root / "native/deps.lock.json").read_text())["waypipe"]["patches"]
+        with patch.object(fp, "_read", side_effect=Path.read_bytes):
+            self.assertEqual(fp._waypipe_patch_digest(root, [patches[0]]), patches[0]["sha256"])
+            self.assertEqual(fp._waypipe_patch_digest(root, patches), fp.sha(fp.canonical(patches)))
+            self.assertNotEqual(fp._waypipe_patch_digest(root, patches),
+                                fp._waypipe_patch_digest(root, list(reversed(patches))))
+            for invalid in ([], [dict(patches[0], sha256="0" * 64)],
+                            [dict(patches[0], file="../unrelated.patch")]):
+                with self.assertRaisesRegex(fp.FingerprintError, "N07_FINGERPRINT_WAYPIPE_SOURCE"):
+                    fp._waypipe_patch_digest(root, invalid)
+
     def test_observed_fields_are_bound_and_theme_remains_missing(self):
         record, native, environment, source = fixture()
         self.assertIs(fp.validate_fingerprint(record, native, environment, source), record)

@@ -375,6 +375,12 @@ impl ProtocolState {
                 current = parent;
                 continue;
             }
+            if let Some(popup) = self.candidate_popup()
+                && popup.surface == current
+            {
+                current = popup.parent.clone();
+                continue;
+            }
             current = self
                 .popups
                 .iter()
@@ -745,10 +751,11 @@ impl ProtocolState {
         let mut geometries = HashMap::from([(root.id(), geometry)]);
         let mut clips = HashMap::from([(root.id(), canvas)]);
         let mut layers = vec![];
-        let mut append = |source: Vec<Layer>,
-                          origin: LogicalPoint,
-                          clip: LogicalRect,
-                          state: &mut Self|
+        let append = |source: Vec<Layer>,
+                      origin: LogicalPoint,
+                      clip: LogicalRect,
+                      state: &mut Self,
+                      layers: &mut Vec<SurfaceLayer>|
          -> Result<(), GeometryError> {
             for layer in source {
                 if let Some(meta) = state.surface_meta.get_mut(&layer.object) {
@@ -778,7 +785,7 @@ impl ProtocolState {
             }
             Ok(())
         };
-        append(base, LogicalPoint::default(), canvas, self)?;
+        append(base, LogicalPoint::default(), canvas, self, &mut layers)?;
         // popupは生成順に描く。親は必ず先に存在し、後のpopup/子が手前になる。
         for popup in self.popups.clone() {
             if self.dismissed_popups.contains(&popup.wl_surface().id())
@@ -847,10 +854,54 @@ impl ProtocolState {
             let Some(clip) = parent_clip.intersection(parent_rect) else {
                 continue;
             };
-            append(tree, origin, clip, self)?;
+            append(tree, origin, clip, self, &mut layers)?;
             origins.insert(popup.wl_surface().id(), origin);
             geometries.insert(popup.wl_surface().id(), popup_geometry);
             clips.insert(popup.wl_surface().id(), clip);
+        }
+        // Draw the IME last, in the same logical coordinates as the text-input's parent.
+        if let Some(popup) = self.candidate_popup()
+            && popup.window == window
+            && self.pixels.contains_key(&popup.surface.id())
+            && let Some(parent) = origins.get(&popup.parent.id()).copied()
+        {
+            let surface = popup.surface.clone();
+            let caret = self.candidate_caret();
+            let placement = (|| {
+                let tree = collect(self, &surface, LogicalPoint::default())?;
+                let bounds = surface_geometry(&surface, &tree)?;
+                let x = i64::from(parent.x) - i64::from(geometry.origin.x) + i64::from(caret.x);
+                let y = i64::from(parent.y) - i64::from(geometry.origin.y) + i64::from(caret.y);
+                let width = i64::from(bounds.size.width);
+                let height = i64::from(bounds.size.height);
+                let max_x = (i64::from(canvas.size.width) - width).max(0);
+                let max_y = (i64::from(canvas.size.height) - height).max(0);
+                let below = y + i64::from(caret.height);
+                let point = LogicalPoint {
+                    x: x.clamp(0, max_x) as i32,
+                    y: (if below > max_y { y - height } else { below }).clamp(0, max_y) as i32,
+                };
+                let coordinate = |cursor: i64, popup: i32, bounds: i32| {
+                    (cursor - i64::from(popup) + i64::from(bounds))
+                        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+                };
+                let relative = eidolon_model::ime::ImeRectangle {
+                    x: coordinate(x, point.x, bounds.origin.x),
+                    y: coordinate(y, point.y, bounds.origin.y),
+                    ..caret
+                };
+                let origin = point
+                    .checked_add(geometry.origin)?
+                    .checked_sub(bounds.origin)?;
+                Ok::<_, GeometryError>((tree, origin, relative))
+            })();
+            if let Ok((tree, origin, relative)) = placement {
+                let mut overlay = Vec::new();
+                if append(tree, origin, canvas, self, &mut overlay).is_ok() {
+                    layers.extend(overlay);
+                    self.update_candidate_rectangle(relative);
+                }
+            }
         }
         Ok(WindowSnapshot {
             session: self.session,

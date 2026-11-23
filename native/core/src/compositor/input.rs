@@ -278,16 +278,23 @@ impl ProtocolState {
             if let Some(surface) = keyboard.current_focus() {
                 self.input_serial(serial.into(), surface, false);
             }
+            let key_state = match action {
+                KeyAction::Pressed => KeyState::Pressed,
+                KeyAction::Released => KeyState::Released,
+            };
             keyboard.input::<(), _>(
                 self,
                 Keycode::new(code.xkb()),
-                match action {
-                    KeyAction::Pressed => KeyState::Pressed,
-                    KeyAction::Released => KeyState::Released,
-                },
+                key_state,
                 serial,
                 key.time_ms,
-                |_, _, _| FilterResult::Forward,
+                |state, mods, _| {
+                    if state.send_ime_key(code.raw(), key_state, serial.into(), key.time_ms, mods) {
+                        FilterResult::Intercept(())
+                    } else {
+                        FilterResult::Forward
+                    }
+                },
             );
             self.input.report.delivered += 1;
             self.input.last_key_time = key.time_ms;
@@ -359,7 +366,7 @@ pub(crate) fn monotonic_time_ms(fallback: u32) -> u32 {
     }
 }
 
-fn hash(bytes: &[u8]) -> String {
+pub(super) fn hash(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))

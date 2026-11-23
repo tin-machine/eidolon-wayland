@@ -21,6 +21,7 @@ pub(crate) fn project(state: &Snapshot, panel: bool) -> Value {
         json!({
             "session": app.session, "state": app.state, "mode": app.mode, "nonce": app.nonce,
             "ready": app.ready, "windows": app.windows, "input": app.input, "error": app.error,
+            "termux_ime": app.termux_ime,
             "gui_windows": app.gui_windows, "remote_gui_verified": app.remote_gui_verified,
         })
     });

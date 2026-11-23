@@ -55,7 +55,7 @@ MAX_FILE = 64 * 1024 * 1024
 MAX_FONTS = 32
 # Independently checked upstream git archive and the existing pinned release
 # tar have the same 141 paths, git modes and payload hashes (2026-11-18).
-# This maps the *unpatched* source. The Android patch is recorded separately.
+# This maps the *unpatched* source. The ordered patches are recorded separately.
 WAYPIPE_COMMIT = "3ea049b2d33cbf1000714c28b9668f8c244f70bd"
 WAYPIPE_ARCHIVE = "2d4093903d444fda39c9b7db0a0b826f450a64d4302a03c9c9e3dbe480e8bb03"
 WAYPIPE_UPSTREAM_INVENTORY = "76dc5c8146c2234856e576751ed87741cb9308cb0f0e296121bdb436fa19a37a"
@@ -122,6 +122,19 @@ def _file(path):
     path = Path(path)
     raw = _read(path)
     return {"path": str(path), "size": len(raw), "sha256": sha(raw)}
+
+
+def _waypipe_patch_digest(root, patches):
+    """Keep the single-patch receipt format and bind multiple patches in build order."""
+    reason = "N07_FINGERPRINT_WAYPIPE_SOURCE"
+    need(type(patches) is list and bool(patches), reason)
+    for entry in patches:
+        need(type(entry) is dict and set(entry) == {"file", "sha256"}
+             and type(entry["file"]) is str
+             and re.fullmatch(r"native/patches/waypipe/[A-Za-z0-9._-]+\.patch", entry["file"])
+             and _hex(entry["sha256"]), reason)
+        need(sha(_read(root / entry["file"])) == entry["sha256"], reason)
+    return patches[0]["sha256"] if len(patches) == 1 else sha(canonical(patches))
 
 
 def _renderer_source(root):
@@ -476,7 +489,7 @@ class LiveFingerprintObserver:
              "N07_FINGERPRINT_MOUSEPAD_SOURCE")
         lock = json.loads(_read(self.root / "native/deps.lock.json", 65536))["waypipe"]
         waypipe = json.loads(_read(self.root / "native/generated/waypipe-host.json", 65536))
-        need(len(lock["patches"]) == 1 and lock["sha256"] == WAYPIPE_ARCHIVE
+        need(lock["sha256"] == WAYPIPE_ARCHIVE
              and waypipe["inputs"]["native/deps.lock.json"] ==
              sha(_read(self.root / "native/deps.lock.json", 65536)), "N07_FINGERPRINT_WAYPIPE_SOURCE")
         self.pins = {"mousepad_commit": build["source_commit"],
@@ -487,7 +500,7 @@ class LiveFingerprintObserver:
             "waypipe_upstream_inventory_sha256": WAYPIPE_UPSTREAM_INVENTORY,
             "waypipe_tree_sha256": waypipe["trees"]["waypipe"],
             "waypipe_binary_sha256": waypipe["sha256"],
-            "waypipe_patch_sha256": lock["patches"][0]["sha256"],
+            "waypipe_patch_sha256": _waypipe_patch_digest(self.root, lock["patches"]),
             "renderer_source": _renderer_source(self.root)}
 
     def __enter__(self):

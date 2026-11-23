@@ -5,7 +5,7 @@ import android.view.View
 import android.view.Window
 
 /** SpatialのPresentationはActivityとは別Window。子Viewが消費する前に同じ物理入力gateを通す。 */
-class PanelKeyboardBridge(private val view: View, private val window: Window, forward: (KeyEvent) -> Boolean) : AutoCloseable {
+class PanelKeyboardBridge(private val view: View, private val window: Window, private val linuxKeys: Boolean = false, forward: (KeyEvent) -> Boolean) : AutoCloseable {
     private val previous = checkNotNull(window.callback)
     private val callback = object : Window.Callback by previous {
         override fun dispatchKeyEvent(event: KeyEvent): Boolean = forward(event) || previous.dispatchKeyEvent(event)
@@ -16,6 +16,7 @@ class PanelKeyboardBridge(private val view: View, private val window: Window, fo
         override fun onViewDetachedFromWindow(view: View) { close() }
     }
     init {
+        if (linuxKeys) TermuxImeWindows.attach(window)
         window.callback = callback
         view.addOnAttachStateChangeListener(listener)
         KeyboardIngress.panelAttached()
@@ -23,6 +24,7 @@ class PanelKeyboardBridge(private val view: View, private val window: Window, fo
     override fun close() {
         if (closed) return
         closed = true
+        if (linuxKeys) TermuxImeWindows.detach(window)
         if (window.callback === callback) window.callback = previous
         view.removeOnAttachStateChangeListener(listener)
         KeyboardIngress.panelDetached()

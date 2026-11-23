@@ -1,0 +1,39 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# 配布済み Fcitx5 と同じ ABI の Wayland フロントエンドと候補 UI を作る。
+set -euo pipefail
+umask 077
+: "${PREFIX:?Termux のシェルで実行してください}"
+tools_dir=$(cd "$(dirname "$0")" && pwd)
+source "$tools_dir/fcitx-source.sh"
+work=${1:-"$HOME/.local/share/eidolon-ime-native/d55a051"}
+recipe_dir=${2:-}
+installed=$(pkg-config --modversion Fcitx5Core)
+if [[ -n $recipe_dir ]]; then
+    recipe_dir=$(cd "$recipe_dir" && pwd)
+    fcitx_version=$installed
+    fcitx_revision="refs/tags/$installed"
+fi
+[[ $installed == "$fcitx_version" ]] || {
+    echo "Fcitx5Core $fcitx_version が必要です。配布版との ABI を確認してください。" >&2
+    exit 1
+}
+mkdir -p "$work"
+cd "$work"
+prepare_fcitx "$recipe_dir"
+apply_fcitx_patch "$tools_dir/fcitx-physical-keyboard.patch"
+configure_fcitx fcitx-build ON
+addons=(modules/wayland frontend/waylandim ui/classic)
+names=(wayland waylandim classicui)
+targets=(fcitx5 "${names[@]}")
+for i in "${!names[@]}"; do
+    targets+=("src/${addons[i]}/${names[i]}.conf")
+done
+cmake --build fcitx-build --parallel "${JOBS:-2}" --target "${targets[@]}"
+for i in "${!names[@]}"; do
+    name=${names[i]}
+    install -D -m 700 "fcitx-build/bin/lib$name.so" "stage/lib/fcitx5/lib$name.so"
+    install -D -m 600 "fcitx-build/src/${addons[i]}/$name.conf" "stage/share/fcitx5/addon/$name.conf"
+done
+install -D -m 700 fcitx-build/bin/fcitx5 stage/bin/eidolon-fcitx5
+install -D -m 700 "$tools_dir/start-fcitx" stage/bin/eidolon-ime
+stage/bin/eidolon-fcitx5 --version

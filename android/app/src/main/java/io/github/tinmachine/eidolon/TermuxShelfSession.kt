@@ -47,6 +47,8 @@ internal class TermuxShelfSession(
     val occupiesApp get() = handle != 0L && (slot > 0 || stoppingApp || presentedApp || launchRequest != null ||
         LauncherCapacity.appOccupiesRuntime(snapshot) || LauncherCapacity.recoveryPending(snapshot))
     val recovering get() = handle != 0L && !borrowed && (stoppingApp || LauncherCapacity.recoveryPending(snapshot))
+    val canOpenForIme get() = !stopping && !retiring && !recovering && helper == null &&
+        !wantMenu && request == null && launchRequest == null
     fun accepts(expected: LauncherUi, id: String) = expected.runtime == handle && expected.session == view.session &&
         expected.revision == view.revision && view.connected && !view.busy && !view.menuRefreshFailed && view.entries.any { it.id == id && it.available }
     fun openApp(primary: Long, expected: LauncherUi, id: String, scene: Long, xr: String, visible: Boolean) {

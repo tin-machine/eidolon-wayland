@@ -11,6 +11,7 @@ pub mod forward;
 pub mod forward_app;
 pub mod forward_probe;
 pub mod host_key;
+pub mod input_method;
 pub mod journal;
 pub mod launcher;
 pub mod linux_desktop;

@@ -169,6 +169,7 @@ struct Connect {
     discovery_only: bool,
 }
 struct Shared {
+    ime_endpoint: Option<crate::input_method::Endpoint>,
     report: Snapshot,
     connect: Option<PendingConnect>,
     credential: Option<PrivateKey>,
@@ -376,6 +377,7 @@ impl Controller {
             !matches!(desktop_pending, Ok(None)) || !matches!(desktop_v3_pending, Ok(None));
         let signals = Arc::new(Signals {
             shared: Mutex::new(Shared {
+                ime_endpoint: None,
                 report: Snapshot {
                     workers: 1,
                     journal_ready: root.is_none(),
@@ -634,6 +636,7 @@ impl Controller {
         }
         s.busy = true;
         s.active_connect_request = Some(request);
+        s.ime_endpoint = None;
         s.report = Snapshot {
             state: State::Connecting,
             session: None,
@@ -832,6 +835,17 @@ impl Controller {
         s.report.state = State::Disconnecting;
         self.signals.notify.notify_one();
         Status::Accepted
+    }
+    pub fn termux_ime_endpoint(&self) -> Option<crate::input_method::Endpoint> {
+        let s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        s.ime_endpoint
+            .as_ref()
+            .filter(|ep| s.report.authenticated_termux && ep.ready())
+            .cloned()
     }
     pub fn snapshot(&self) -> Snapshot {
         self.reclamation_snapshot().0
@@ -2244,6 +2258,11 @@ async fn connection(
         signals.update(|s| s.report.authenticated_termux = true);
     }
     reconcile(signals, &client, connect, journal, &binding, uid).await?;
+    let (ime_endpoint, mut ime_requests) = crate::input_method::Endpoint::channel(&connect.cancel);
+    let ime_enabled = connect.profile.helper_supported;
+    if ime_enabled {
+        signals.update(|s| s.ime_endpoint = Some(ime_endpoint.clone()));
+    }
     loop {
         if connect.cancel.is_cancelled() {
             return Err("CANCELLED");
@@ -2750,8 +2769,14 @@ async fn connection(
                     notified.await;
                 }
             };
-            let report =
-                tokio::select! { value = forward_app => value, _ = refresh => unreachable!() };
+            let report = {
+                let ime = async {
+                    while let Some(request) = ime_requests.recv().await {
+                        crate::input_method::start(&client, request).await;
+                    }
+                };
+                tokio::select! { value = forward_app => value, _ = refresh => unreachable!(), _ = ime, if ime_enabled => unreachable!() }
+            };
             signals.update(|s| {
                 s.forward_busy = false;
                 s.terminal_requests = None;
@@ -2799,6 +2824,9 @@ async fn connection(
         } else {
             tokio::select! { biased;
                 _=connect.cancel.cancelled()=>return Err("CANCELLED"),
+                request = ime_requests.recv(), if ime_enabled => {
+                    if let Some(request) = request { crate::input_method::start(&client, request).await; }
+                }
                 _=&mut client=>return Err(if mismatch.load(Ordering::Acquire) { "HOST_KEY_MISMATCH" } else { "REMOTE_EXIT" }),
                 _=notified=>(),
                 _=tokio::time::sleep(Duration::from_secs(1)),if !journal.is_empty()=>{reconcile(signals,&client,connect,journal,&binding,uid).await?;},
