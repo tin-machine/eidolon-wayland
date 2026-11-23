@@ -25,6 +25,7 @@ class ImeEditorView(
     private val canEditGeneration: (Long) -> Boolean = { true },
     private val preImeKey: (KeyEvent) -> Boolean = { false },
     private val windowFocusChanged: (Boolean) -> Unit = {},
+    private val showKeyboardOnClick: () -> Boolean = { true },
 ) : View(context) {
     private data class HeldKey(val device: Int, val scan: Int, val code: Int)
     private val heldKeys = mutableMapOf<HeldKey, Long>()
@@ -166,7 +167,7 @@ class ImeEditorView(
     override fun performClick(): Boolean {
         if (permanentlyClosed) return false
         super.performClick()
-        keyboardShowPending = true
+        keyboardShowPending = showKeyboardOnClick()
         requestFocus()
         showKeyboardAfterFocus()
         return true

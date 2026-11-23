@@ -1,5 +1,6 @@
 package io.github.tinmachine.eidolon
 
+import android.provider.Settings
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -2464,7 +2465,12 @@ object NativeSessionHost {
                 if (reason == "focus_lost") connection.close("android_editor_focus_lost") else connection.editorInvalidated(generation)
             },
             onConnectionOpened = {if(ownsIme(owner) && inputIntents.get()==owner.ticket) connection.openEditor(it)},
-            canEditGeneration = { editorAccepts() && connection.acceptsEditor(it) }, preImeKey = preImeKey, windowFocusChanged = windowFocusChanged)
+            canEditGeneration = { editorAccepts() && connection.acceptsEditor(it) }, preImeKey = preImeKey, windowFocusChanged = windowFocusChanged,
+            showKeyboardOnClick = {
+                // The physical IME needs a focused editor and InputConnection even with its overlay hidden.
+                (keyboardCount.get() ?: 0) == 0 || Settings.Secure.getInt(
+                    context.contentResolver, "show_ime_with_hard_keyboard", 0) != 0
+            })
         } catch(_:Exception) {connection.close("android_editor_creation_failed");return@serial null}
         owner.view=java.lang.ref.WeakReference(view)
         view

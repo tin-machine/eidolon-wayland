@@ -13,7 +13,7 @@ python3 scripts/docs.py affected --path native/core/src/compositor/ime.rs
 
 ## ランチャーから開いた窓
 
-Shift+Space は選択中の窓のランタイムで IME を開始し、同じランタイムの応答とフォーカスを確認して直接入力に戻ります。Termux の foot と、Wayland の `text-input-v3` が有効な Ubuntu アプリが対象です。IME パネルを開いた後の Ctrl+Space は、Stealth Keyboard など Quest で選択した IME の入力モード切替に使えます。日本語変換と候補表示はその IME が担当します。
+Shift+Space は選択中の窓のランタイムで IME を開始し、同じランタイムの応答とフォーカスを確認して直接入力に戻ります。Termux の foot と、Wayland の `text-input-v3` が有効な Ubuntu アプリが対象です。IME パネルを開いた後の Ctrl+Space は、Stealth Keyboard など Quest で選択した IME の入力モード切替に使えます。日本語変換と候補表示はその IME が担当します。物理キーボード使用中は端末の設定に従って画面キーボードの表示を要求します。表示がオフでも、パネルの入力欄は Android IME に接続します。
 
 ## 開発版の実機ログ
 
