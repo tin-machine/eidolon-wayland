@@ -32,6 +32,22 @@ class UbuntuShelfReconnectTest {
         assertTrue(retry.retryDue(9000))
     }
 
+    @Test fun cleanupAndTransportLossReportTheSameActionTheWorkerWillTake() {
+        val retry = policy()
+        retry.bind("ubuntu")
+        retry.request(0)
+        retry.observe("DESKTOP_CLEANUP_PENDING", false)
+        assertTrue(retry.retryDue(2000))
+        assertTrue(retry.notice(false, false)!!.contains("自動で再接続"))
+        val report = JSONObject().put("session","31").put("error","DESKTOP_HELPER_LOST")
+        val tx = JSONObject().put("session","31").put("desktop_v3_transport", report)
+        retry.observe(UbuntuShelfReconnect.transportFailure(tx), false)
+        retry.observe("DESKTOP_CLEANUP_PENDING", false)
+        assertTrue(retry.notice(false, false)!!.contains("転送処理"))
+        tx.put("session", "32")
+        assertNull(UbuntuShelfReconnect.transportFailure(tx))
+    }
+
     @Test fun reportsOnlyTheAppFailureThatEndedThisHostSession() {
         val report = JSONObject().put("session", "11").put("launch_request", "5")
         val tx = JSONObject().put("session", "11").put("desktop_v3_transport", report)

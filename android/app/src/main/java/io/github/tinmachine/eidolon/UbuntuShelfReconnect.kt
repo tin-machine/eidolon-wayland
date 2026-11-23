@@ -63,8 +63,10 @@ internal class UbuntuShelfReconnect(
         }
     }
 
-    fun retryDue(now: Long): Boolean = wanted && !refreshed && now >= next &&
-        (reason == null || reason in transient || reason in appExit || reason == "DESKTOP_CLEANUP_PENDING")
+    private fun permitsReconnect() = reason == null || reason in transient || reason in appExit ||
+        reason == "DESKTOP_CLEANUP_PENDING"
+
+    fun retryDue(now: Long): Boolean = wanted && !refreshed && now >= next && permitsReconnect()
 
     fun notice(busy: Boolean, recovering: Boolean): String? {
         val previous = explanations[reason] ?: return null
@@ -73,7 +75,7 @@ internal class UbuntuShelfReconnect(
             refreshed -> "再接続してアプリ一覧を更新しました。"
             recovering -> "終了を確認してから再接続します。"
             busy -> "再接続してアプリ一覧を取得しています。"
-            reason in transient || reason in appExit -> "自動で再接続を試みます。"
+            permitsReconnect() -> "自動で再接続を試みます。"
             else -> "接続設定とホストの状態を確認してください。"
         }
         return "Ubuntu の前回の接続記録 · ${previous}。$action"
@@ -81,13 +83,19 @@ internal class UbuntuShelfReconnect(
 
     companion object {
         private val transient = setOf("CONNECT_TIMEOUT", "SSH_CONNECT_FAILED", "SSH_CONNECTION_REFUSED",
-            "REMOTE_EXIT", "SSH_IO_FAILED", "AUTH_TIMEOUT")
+            "REMOTE_EXIT", "SSH_IO_FAILED", "AUTH_TIMEOUT", "DESKTOP_HELPER_LOST")
         private val appExit = mapOf(
             "APP_LAUNCH_TIMEOUT" to "アプリの Wayland ウィンドウが期限内に届きませんでした",
             "APP_PRESENTATION_TIMEOUT" to "ウィンドウの表示準備が時間切れになりました",
             "APP_PRESENTATION_FAILED" to "ウィンドウの表示に失敗しました",
             "APP_OUTPUT_RATE_LIMIT" to "アプリの出力量が上限を超えました",
         )
+
+        fun transportFailure(tx: JSONObject): String? {
+            val report = tx.optJSONObject("desktop_v3_transport") ?: return null
+            if (report.opt("session") != tx.opt("session")) return null
+            return report.optString("error").takeIf { it in transient }
+        }
 
         fun appExitReason(runtime: JSONObject, tx: JSONObject): String? {
             val presentation = runtime.optJSONObject("desktop_v3_presentation") ?: return null
@@ -105,6 +113,7 @@ internal class UbuntuShelfReconnect(
             "CONNECT_TIMEOUT" to "Ubuntu の応答待ちが時間切れになりました",
             "SSH_CONNECT_FAILED" to "Ubuntu に接続できませんでした",
             "SSH_CONNECTION_REFUSED" to "Ubuntu が SSH 接続を拒否しました",
+            "DESKTOP_HELPER_LOST" to "Ubuntu の転送処理との通信が終了しました",
             "REMOTE_EXIT" to "接続先の処理が終了しました",
             "SSH_IO_FAILED" to "SSH 通信が途切れました",
             "AUTH_TIMEOUT" to "SSH 認証が時間切れになりました",

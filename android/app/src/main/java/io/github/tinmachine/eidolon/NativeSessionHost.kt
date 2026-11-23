@@ -3161,7 +3161,7 @@ object NativeSessionHost {
         val disconnected = phase == "Idle" || phase == "Failed" || phase == "Disconnected" ||
             !primary && companionLinux.handle == 0L
         val recovering = tx?.optBoolean("desktop_pending") == true && phase == "CleanupPending"
-        val error = tx?.let { UbuntuShelfReconnect.appExitReason(owner, it) } ?:
+        val error = tx?.let { UbuntuShelfReconnect.appExitReason(owner, it) ?: UbuntuShelfReconnect.transportFailure(it) } ?:
             (if (disconnected || recovering) tx?.optString("error") else null)
         val ready = catalog.connected && !catalog.busy && !catalog.menuRefreshFailed &&
             catalog.catalogComplete && phase == "DesktopReady"
