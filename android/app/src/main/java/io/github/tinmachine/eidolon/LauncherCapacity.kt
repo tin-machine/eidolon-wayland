@@ -36,7 +36,22 @@ internal data class LauncherCapacity(
                 reclamation?.optBoolean("remote_cleanup_pending") == true
         }
 
+        /** An inspected v3 catalogue owns a journal before any app is launched. */
+        fun browsingLinuxCatalog(runtime: JSONObject): Boolean {
+            val tx = runtime.optJSONObject("transport") ?: return false
+            if (tx.optString("state") != "DesktopReady" || tx.optInt("owned_connections") != 1 ||
+                runtime.optBoolean("desktop_v3_finalizer_pending") ||
+                runtime.optJSONObject("reclamation")?.optBoolean("local_cleanup_pending") == true ||
+                runtime.optJSONObject("app")?.optString("state")?.let { it != "stopped" } == true) return false
+            val report = tx.optJSONObject("desktop_v3_transport") ?: return false
+            val session = tx.opt("session") as? String ?: return false
+            return report.opt("session") == session && report.opt("start_attempted") == false &&
+                report.opt("terminal_observed") == false && report.opt("cleanup_pending") == false &&
+                report.optJSONObject("transport")?.optString("phase") == "catalog"
+        }
+
         fun linuxApps(primary: JSONObject, launching: Boolean): Int {
+            if (!launching && browsingLinuxCatalog(primary)) return 0
             val transport = primary.optJSONObject("transport")
             val cleanup = primary.optBoolean("desktop_v3_finalizer_pending") ||
                 transport?.optBoolean("desktop_pending") == true || transport?.optString("state") == "CleanupPending"
@@ -44,7 +59,7 @@ internal data class LauncherCapacity(
         }
 
         fun recoveryPending(snapshot: JSONObject?): Boolean {
-            if (snapshot == null) return false
+            if (snapshot == null || browsingLinuxCatalog(snapshot)) return false
             val transport = snapshot.optJSONObject("transport")
             val phase = transport?.optString("state")
             val app = snapshot.optJSONObject("app")?.optString("state")

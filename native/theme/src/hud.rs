@@ -93,7 +93,7 @@ fn valid_color(color: &str) -> bool {
 impl Profile {
     pub(crate) fn valid(&self) -> bool {
         self.offset_m.is_none_or(|[x, y, z]| {
-            (-1.0..=1.0).contains(&x) && (-0.9..=0.65).contains(&y) && (0.8..=2.5).contains(&z)
+            (-1.0..=1.0).contains(&x) && (-2.0..=0.65).contains(&y) && (0.8..=2.5).contains(&z)
         }) && self.scale.is_none_or(|x| (0.65..=1.35).contains(&x))
             && self
                 .stack_width_dp

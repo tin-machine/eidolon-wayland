@@ -40,6 +40,26 @@ class LauncherCapacityTest {
         assertEquals(3, empty.nextWorkspace)
     }
 
+    @Test fun freshCatalogAfterTimeoutCanLaunchWhileItsInspectionJournalExists() {
+        val report = JSONObject().put("session", "7").put("start_attempted", false)
+            .put("terminal_observed", false).put("cleanup_pending", false)
+            .put("transport", JSONObject().put("phase", "catalog"))
+        val tx = JSONObject().put("state", "DesktopReady").put("session", "7").put("owned_connections", 1)
+            .put("desktop_pending", true).put("desktop_v3_transport", report)
+        val runtime = JSONObject().put("transport", tx)
+            .put("app", JSONObject().put("state", "stopped").put("error", "APP_LAUNCH_TIMEOUT"))
+            .put("reclamation", JSONObject().put("remote_cleanup_pending", true))
+        assertTrue(LauncherCapacity.browsingLinuxCatalog(runtime))
+        assertEquals(0, LauncherCapacity.linuxApps(runtime, false))
+        assertFalse(LauncherCapacity.recoveryPending(runtime))
+        assertEquals(1, LauncherCapacity.linuxApps(runtime, true))
+        report.put("start_attempted", true)
+        assertTrue(LauncherCapacity.recoveryPending(runtime))
+        report.put("start_attempted", false).put("session", "6")
+        assertFalse(LauncherCapacity.browsingLinuxCatalog(runtime))
+        assertEquals(1, LauncherCapacity.linuxApps(runtime, false))
+    }
+
     @Test fun primaryReservationLastsThroughLocalAndRemoteCleanup() {
         val primary = JSONObject()
         val app = JSONObject()

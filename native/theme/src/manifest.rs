@@ -257,7 +257,7 @@ ring_layout = "stacked"
 stack_width_dp = 128
 stack_height_dp = 40
 stack_stroke_dp = 6.0
-offset_m = [0.48, -0.43, 1.4]
+offset_m = [0.85, -1.81, 1.4]
 metrics = ["fps", "battery"]
 [hud.rules.fps]
 comparison = "below"
@@ -288,6 +288,7 @@ color = "#FFD75A"
             config.replace("FFD75A", "FFF"),
             config.replace("60.0", "nan"),
             config.replace("128", "300"),
+            config.replace("-1.81", "-2.01"),
             config.replace("stacked", "other"),
             config.replace("below", "unknown"),
         ] {

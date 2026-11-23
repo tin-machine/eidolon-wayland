@@ -190,12 +190,18 @@ fun LauncherSettings(
                                 for ((source, state) in hosts) {
                                     val interactions = remember(source) { MutableInteractionSource() }
                                     val hovered by interactions.collectIsHoveredAsState()
-                                    val failed = state.firstFailure != null || state.menuRefreshFailed
+                                    val failed = state.firstFailure != null || state.menuRefreshFailed ||
+                                        source.linux && !state.connected && NativeSessionHost.ubuntuReconnectNotice.value != null
                                     LaunchedEffect(hovered) {
                                         if (hovered) { ShelfReasonFocus.hovered = source; if (failed) detail = source }
                                         else if (ShelfReasonFocus.hovered == source) ShelfReasonFocus.hovered = null
                                     }
-                                    OutlinedButton(onClick = { detail = if (detail == source) null else source },
+                                    OutlinedButton(onClick = {
+                                        if (failed || !state.connected) {
+                                            detail = source
+                                            if (!state.busy && !state.menuRefreshing) NativeSessionHost.refreshShelfHost(source)
+                                        } else detail = if (detail == source) null else source
+                                    },
                                         interactionSource = interactions,
                                         modifier = Modifier.hoverable(interactions).onPreviewKeyEvent {
                                             if (it.nativeKeyEvent.keyCode == android.view.KeyEvent.KEYCODE_DPAD_UP) {
@@ -204,13 +210,17 @@ fun LauncherSettings(
                                             } else false
                                         }) {
                                         Text((when {
+                                            state.menuRefreshing || state.busy && !state.connected -> "… "
                                             failed -> "× "
                                             state.connected -> "● "
-                                            state.busy || state.menuRefreshing -> "… "
+                                            state.busy -> "… "
                                             else -> "○ "
                                         }) + hostName(source))
                                     }
                                 }
+                            }
+                            NativeSessionHost.ubuntuReconnectNotice.value?.let { notice ->
+                                Text(notice, color = candy)
                             }
                             detail?.let { source ->
                                 val state = hosts.getValue(source)

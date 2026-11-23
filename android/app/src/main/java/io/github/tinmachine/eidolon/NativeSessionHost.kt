@@ -154,8 +154,24 @@ object NativeSessionHost {
         launcherUi.value.linux -> launcherUi.value
         else -> secondaryUbuntu.value
     }
+    internal val ubuntuReconnectNotice = mutableStateOf<String?>(null)
+    private var postedReconnectNotice: String? = null
+    private var reconnectProfile: ConnectionProfileV2.Value? = null
+    private val ubuntuRetry = UbuntuShelfReconnect(
+        { binding -> launcherPreferences?.getString("connection-failure:$binding", null) },
+        { binding, reason -> launcherPreferences?.edit()?.putString("connection-failure:$binding", reason)?.apply() },
+    )
+
     internal fun refreshShelfHost(source: LauncherSource) { productWorker.execute { safely {
-        if (handle == 0L || !runtimeAdmission.open()) return@safely
+        if (source.linux) {
+            bindUbuntuRetryHost()
+            ubuntuRetry.request(SystemClock.elapsedRealtime())
+        }
+        refreshShelfHostOnWorker(source)
+    } } }
+
+    private fun refreshShelfHostOnWorker(source: LauncherSource) {
+        if (handle == 0L || !runtimeAdmission.open()) return
         if (source == LauncherSource.TERMUX) {
             if (connectionUi.value.savedToken.isEmpty()) termuxShelf.unavailable("初回のペアリングが必要です")
             else termuxShelf.open(handle, selectedProfileId == "termux-local", launcherState.path,
@@ -165,7 +181,7 @@ object NativeSessionHost {
             if (selectedProfileId == LinuxConnectionProfile.ID) linuxMessage = issue.message
             ui.post { secondaryUbuntu.value = issue }
         } else if (selectedProfileId != LinuxConnectionProfile.ID) {
-            val saved = linuxProfile ?: return@safely
+            val saved = linuxProfile ?: return
             if (companionLinux.recovering) reopenCompanionShelf = true
             companionLinux.browse(handle, saved, runtimeSettingsCapture.orEmpty(), currentSceneEpoch(), xrState.get(), activityVisible.get())
         } else {
@@ -182,14 +198,14 @@ object NativeSessionHost {
                 connectPending -> inspectAfterShelfConnect = true
             }
         }
-    } } }
+    }
     internal fun stopShelfHost(source: LauncherSource) {
         if (source == LauncherSource.TERMUX) productWorker.execute {
             val primary = termuxShelf.borrowed
             additionalTermux.forEach { it.stop() }; termuxShelf.stop()
             if (primary) disconnect()
         } else if (launcherUi.value.linux) disconnect()
-        else productWorker.execute { reopenCompanionShelf = false; linuxSessions.forEach { it.stop() } }
+        else productWorker.execute { ubuntuRetry.stop(); reopenCompanionShelf = false; linuxSessions.forEach { it.stop() } }
     }
     internal val appFailures = LauncherFailures()
     internal val appDialog = mutableStateOf<ShelfAppDialog?>(null)
@@ -1336,6 +1352,7 @@ object NativeSessionHost {
             menuRefreshFailed=linuxPreviewError || catalogError != null,
             catalogComplete=linuxPreviewEntries != null,
             recoveryWait=when {
+                LauncherCapacity.browsingLinuxCatalog(runtime) -> null
                 remoteRecoveredWaitingForQuest || pending && transport.optBoolean("desktop_reboot_needed") ->
                     "Quest を再起動すると前回の終了処理を続けられます。"
                 view.phase in setOf("pending", "stopping") || pending && !appActive ->
@@ -1546,7 +1563,7 @@ object NativeSessionHost {
     private fun disconnectExpected(expectedRuntime:Long?,expectedSession:String?,expectedConnectRequest:String?=null) { productWorker.execute { safely {
         if(expectedRuntime!=null && (handle!=expectedRuntime || expectedSession!=null && snapshot().getJSONObject("runtime").getJSONObject("transport").optString("session")!=expectedSession)) return@safely
         if(expectedConnectRequest!=null && lastConnectRequest!=expectedConnectRequest) return@safely
-        if (selectedProfileId == LinuxConnectionProfile.ID) linuxSessions.forEach { it.stop() }
+        if (selectedProfileId == LinuxConnectionProfile.ID) { ubuntuRetry.stop(); linuxSessions.forEach { it.stop() } }
         else additionalTermux.forEach { it.stop() }
         inspectAfterShelfConnect = false
         refreshShelfAfterAppExit = false
@@ -3126,6 +3143,45 @@ object NativeSessionHost {
         }
     }
 
+    private fun bindUbuntuRetryHost() {
+        val profile = linuxProfile
+        if (profile !== reconnectProfile) {
+            reconnectProfile = profile
+            ubuntuRetry.bind(profile?.binding().orEmpty())
+        }
+    }
+
+    private fun reconcileUbuntuShelf(runtime: JSONObject, now: Long) {
+        val primary = selectedProfileId == LinuxConnectionProfile.ID
+        val catalog = if (primary) launcherState else companionLinux.shelf
+        val owner = if (primary) runtime else companionLinux.snapshot
+        val tx = owner?.optJSONObject("transport")
+            ?.takeIf { it.optString("profile_id") == LinuxConnectionProfile.ID }
+        val phase = tx?.optString("state")
+        val disconnected = phase == "Idle" || phase == "Failed" || phase == "Disconnected" ||
+            !primary && companionLinux.handle == 0L
+        val recovering = tx?.optBoolean("desktop_pending") == true && phase == "CleanupPending"
+        val error = tx?.let { UbuntuShelfReconnect.appExitReason(owner, it) ?: UbuntuShelfReconnect.transportFailure(it) } ?:
+            (if (disconnected || recovering) tx?.optString("error") else null)
+        val ready = catalog.connected && !catalog.busy && !catalog.menuRefreshFailed &&
+            catalog.catalogComplete && phase == "DesktopReady"
+        bindUbuntuRetryHost()
+        ubuntuRetry.observe(error, ready, disconnected)
+        val visible = (launcherExpanded.value || spatialShelfOpen) && activityVisible.get()
+        val idle = if (primary) catalog.canConnect && !connectPending && !catalog.busy && !catalog.canRecover
+            else companionLinux.handle == 0L
+        if (visible && idle && !recovering && runtimeAdmission.open() && !settingsSave.active &&
+            linuxConfigured() && ubuntuRetry.retryDue(now)) {
+            ubuntuRetry.request(now, automatic = true)
+            refreshShelfHostOnWorker(LauncherSource.UBUNTU)
+        }
+        val notice = ubuntuRetry.notice(catalog.busy || connectPending, recovering)
+        if (postedReconnectNotice != notice) {
+            postedReconnectNotice = notice
+            ui.post { ubuntuReconnectNotice.value = notice }
+        }
+    }
+
     private fun tick() {
         if (handle == 0L) {
             pumpSettingsSave()
@@ -3237,6 +3293,7 @@ object NativeSessionHost {
         val snapshot = if (publishDiagnostics) snapshot() else JSONObject(NativeBridge.nativeUiSnapshot(handle, false))
         val runtime = snapshot.getJSONObject("runtime")
         pumpCatalog(runtime)
+        reconcileUbuntuShelf(runtime, now)
         inputIntents.serial {
         mousepadAnchorCandidate = (runtime.optJSONObject("anchor_preparing_target") ?: runtime.optJSONObject("anchor_placement_target"))
             ?.optJSONObject("target")
