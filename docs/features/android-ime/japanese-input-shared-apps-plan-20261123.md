@@ -16,7 +16,7 @@ related_sources:
 
 Quest の物理キーボードで、Termux の foot、Ubuntu の Mousepad（GTK）、Dolphin（KDE/Qt）のどの窓でも、同じ操作で読みを入力し、候補を選び、確定・取消・英数復帰できるようにする。アプリは今のように個別の空間ウィンドウとして扱う。
 
-次の試作には **方式 2 の Fcitx5＋Mozc** を提案する。Linux の既存の変換操作と辞書を利用し、Eidolon は入力先と候補の配置を担当する。候補を右トリガーで選ぶなど、空間での操作に既存 UI が合わないと分かった時点で方式 3 を検討する。[既存の Android IME / Wayland 計画](android-ime-wayland-plan-20261107.md)の案 A が下表の 1、案 B が 2 に対応する。方式選定は試作後に行う。
+最初の試作は **方式 2 を Quest の Termux ネイティブ環境で構築する**。Linux の既存の変換操作と辞書を利用し、Eidolon は入力先と候補の配置を担当する。候補を右トリガーで選ぶなど、空間での操作に既存 UI が合わないと分かった時点で方式 3 を検討する。[既存の Android IME / Wayland 計画](android-ime-wayland-plan-20261107.md)の案 A が下表の 1、案 B が 2 に対応する。方式選定は試作後に行う。
 
 ## 比較の出発点
 
@@ -36,14 +36,18 @@ Quest の物理キーボードで、Termux の foot、Ubuntu の Mousepad（GTK�
 
 Termux 側で Mozc を動かす案の経緯は [Issue #90](https://github.com/tin-machine/eidolon-wayland/issues/90) にある。
 
-最初は **Termux 内の Debian（PRoot、ARM64）に Debian 版の Fcitx5 と `fcitx5-mozc` を一緒に入れる**。Debian trixie は ARM64 向けのアドオンと、それが依存する `mozc-server` を配布している。アドオンを Debian 側の Fcitx5 に読み込ませれば、変換を試すために Quest 上で Mozc をコンパイルする工程を省ける。Debian が動いても Eidolon へのキー配送と候補表示は別途検証が必要になる。[Debian の fcitx5-mozc](https://packages.debian.org/trixie/fcitx5-mozc)・[Termux の proot-distro](https://github.com/termux/proot-distro)
+Quest の Termux（Android ARM64、Bionic）に Fcitx5 を置き、同じ ABI の Mozc アドオンと辞書を用意する。Debian や PRoot の導入はこの試作の対象外とする。最初に Quest 上でコンパイルし、メモリ・温度・生成ツールの制約が判明した工程は Ubuntu へ移せる。Ubuntu で作る場合も、Quest に配る実行ファイルと共有ライブラリは Termux 向けにビルドする。
 
-**Termux ネイティブ版**は第 2 段階の選択肢。2026-11-23 に確認した Termux 公式レシピでは Fcitx5 の Wayland が無効で、`fcitx5-mozc` の追加要望は open だった。Debian バイナリは glibc 用、Termux は Android の Bionic 用なので、Debian の共有ライブラリを Termux 版 Fcitx5 にコピーする方法は採らない。ネイティブ化する場合は、Ubuntu のビルド環境から Android ARM64 向けにパッケージを作る方法もある。Fcitx5 の Wayland 対応、Mozc サーバーと辞書生成、アドオンのロードを順に試す。Quest 上でのネイティブビルドの成立性は未検証。[確認した Fcitx5 レシピ](https://github.com/termux/termux-packages/blob/4977ed6e93ae288cddba46d15e6ffcc4287bd4b6/x11-packages/fcitx5/build.sh)・[パッケージ追加要望](https://github.com/termux/termux-packages/issues/29614)・[Termux のビルド手順](https://github.com/termux/termux-packages/wiki/Building-packages)
+1. Quest に配布版 Fcitx5 とビルド依存を入れる。ソースと辞書の版を固定し、まず CMake 版の Mozc アドオンを個別の作業ディレクトリに作る。この実装は変換エンジンをアドオン内で動かせる。ビルド用データと実行に必要なファイルの容量を分けて記録する。[Fcitx5 Mozc の CMake 版](https://github.com/fcitx-contrib/fcitx5-mozc)
+2. 専用の設定と固定のテスト入力で、Quest 上の Fcitx5 がアドオンをロードし、候補選択・確定できることを確認する。配布レシピでは Wayland が無効なので、Eidolon との接続に必要な Fcitx5 のモジュールも同じ版・ABI で構築する。[Termux の Fcitx5 レシピ](https://github.com/termux/termux-packages/blob/4977ed6e93ae288cddba46d15e6ffcc4287bd4b6/x11-packages/fcitx5/build.sh)
+3. 下記の順に入力先と候補窓を接続する。IME 接続は Eidolon が起動したプロセスに限る。異常終了時とフォーカスを失った時は変換状態を破棄し、物理キーを直接入力へ戻せるようにする。
+
+再開時は[ネイティブ構築の作業ログ](termux-native-mozc-build-log-20261123.md)で最後に通った段階と次の未確認点を確認する。失敗した試行は、条件・症状・変更点を追記してから再試行する。
 
 ## 試作順と判断材料
 
 1. **現行経路を基準にする。** 方式 1 で、起動済みの窓と「Eidolon 再起動 → ランチャー → 新しい窓」の両方について、開始、変換結果、英数復帰を個別に記録する。
-2. **Debian 内で変換を確かめる。** Fcitx5 が Mozc を読み込み、`nihongo` から複数の候補を出して「日本語」を選べるかを見る。ここで分かるのはエンジンとパッケージの成立性まで。
+2. **Termux ネイティブで変換を確かめる。** Fcitx5 が Mozc を読み込み、`nihongo` から複数の候補を出して「日本語」を選べるかを見る。ここで分かるのはエンジンとパッケージの成立性まで。
 3. **Eidolon に接続して方式 2 を試す。** アプリ側は `text-input-v3`、IME 側は `input-method-v2` と Fcitx5 の使用版が要する `virtual-keyboard-v1` を確認する。選択窓のランタイムにキーを一度だけ渡し、未処理キーの二重配送を防ぐ。まず foot で動かし、早い段階で下の GTK・Qt の入力欄に広げる。Qt は版や入力モジュールで経路が変わるので、実際に使った版・経路を記録する。[Fcitx の Wayland・GTK・Qt 対応](https://fcitx-im.org/wiki/Using_Fcitx_5_on_Wayland)
 4. **候補表示を装着して比較する。** 候補が本文を隠さないか、窓を動かしても読めるか、物理キーで選べるかを確認する。方式 2 で入力まで成立しても候補の視認性やコントローラー操作が不足する場合は、方式 3 の小さな候補パネルを試す。方式 4・5 は用途に応じて選択する。
 
