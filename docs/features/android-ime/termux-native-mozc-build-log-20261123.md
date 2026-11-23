@@ -29,9 +29,24 @@ depends_on: [android-ime-shared-apps-plan]
 | 同日 Quest、ロード検査の初回 | 上のアドオンを専用パスに置いて固定語の検査を開始 | `addon("mozc")` はオンデマンドのモジュールを探すだけで読み込まないため失敗。検査で明示的にロードし、検査プロセスには組み込まれていない静的 keyboard アドオンへの依存を外した。 |
 | 同日 Quest、変換 | クロスビルド版と新しい専用プロファイルで再試行 | **読み「にほんご」、変換「日本語」、候補 9 件を取得し、「日本語」を選択して確定した。** プロファイル初回の履歴ファイル未作成をログで確認した。 |
 
+## 実際の入力欄に届いた結果
+
+2026-11-23、Quest の Termux に専用の headless Sway 1.12 を起動し、物理キーに相当する固定キー列をテスト用の仮想キーボードで送った。Ubuntu アプリの表示と入力は SSH の専用転送と Waypipe を通した。
+
+| 対象と条件 | 観測・再試行 |
+| --- | --- |
+| Quest で Mozc 自体をビルド | 最初のリンクは Android の OS 情報を取得する `AndroidUtil::GetSystemProperty` が未解決。CMake の対象に上流の `android_util.cc` を追加して再構成するとリンク成功。同じ検査で読み「にほんご」、候補 9 件、確定「日本語」。 |
+| Quest の foot、Fcitx は Sway に直接接続 | `input-method-v2` の確定と、foot が端末で読み取った「日本語」が一致。 |
+| Fcitx の接続も Waypipe 経由に変更 | C 版 0.11.3 の無修正版では IME のキーマップ FD を変換できず、foot に英字が届いた。キーボードを接続したままにした同条件で、IME の grab と仮想キーボードの二つのキーマップを既存の転送処理へ渡すと「日本語」が届いた。リポジトリのビルド手順で作った Android ARM64 版 Waypipe と、Quest でビルドした Mozc の組み合わせでも再確認した。 |
+| キーボードが存在しない瞬間の Waypipe | 検査用キーボードを破棄すると Sway が `NO_KEYMAP` とサイズ 0 の FD を通知した。この条件では上の変更後も転送に失敗する。継続したキーボード接続と区別して扱う。 |
+| Ubuntu Mousepad 0.7.0、GTK 3.24.52 | 入力欄が「日本語」を本文として通知した。専用環境で Ctrl＋S による保存は確認できず、同じ窓の GTK 保存アクションを呼んで、テストファイルが「日本語」の UTF-8 9 バイトであることを確認した。 |
+| Ubuntu Dolphin 25.12.3、Qt 6.10.2 | 最初は拡張子削除の確認画面まで進み、ファイル名の検査がタイムアウトした。拡張子のない専用ファイルに変更して F2 → 変換 → Enter を送り、Ubuntu のファイルシステムで名前「日本語」を確認した。 |
+
+Quest 上の作業ディレクトリで、ソースは Mozc 系 278 MiB と Fcitx5 系 17 MiB、ビルド出力はそれぞれ 169 MiB と 29 MiB だった。作成したランタイムの配置先は約 34 MiB。Termux の共有パッケージ、プロファイル、別の比較用ビルドはこの 34 MiB に含まれない。
+
 ## 再開位置
 
-Ubuntu でビルドした Termux 用アドオンは Quest 上で変換済み。次は Quest 上でビルドした版でも同じ検査を通し、Wayland で foot の疑似端末に確定文字が届くかを調べる。Eidolon の窓、GTK・Qt、装着時の候補視認は未検証。
+Termux ネイティブの変換と各ツールキットへの配送を確認した。Eidolon では IME 専用接続を用意し、選択中の窓の有効化、未処理キーの返送、候補の空間配置、切断時の取消を接続する。通常 APK の物理キーボード操作と装着時の視認性は未検証。
 
 ## ビルドを再現する
 
@@ -39,10 +54,20 @@ Quest の Termux（x11-repo 有効）でリポジトリのルートから実行�
 
 ```sh
 pkg install x11-repo
-pkg install fcitx5 clang cmake ninja git curl python gettext pkg-config extra-cmake-modules nlohmann-json libwayland libwayland-protocols
+pkg install fcitx5 clang cmake ninja git curl python gettext pkg-config extra-cmake-modules nlohmann-json libwayland libwayland-protocols util-linux
 scripts/termux/ime/build-mozc
 scripts/termux/ime/verify-mozc
 scripts/termux/ime/build-wayland
 ```
 
 作業先は `~/.local/share/eidolon-ime-native/d55a051`。引数で別の作業先、`JOBS=1` で並列数を指定できる。配布用の共有ライブラリと登録ファイルはその中の `stage/` に集める。変換検査は毎回専用の一時プロファイルを使う。実機で日常利用している辞書や Android の既定 IME への書き込みはない。
+
+`scripts/termux/ime/start-fcitx` は、呼び出し元から受け取った Wayland 接続でフォアグラウンド起動する。専用プロファイルを使用し、同じ辞書を使う二重起動はロックで検出する。固定テスト用の Wayland セッションでこの入口から foot に「日本語」を確定した。
+
+### Ubuntu へコンパイルを移す場合
+
+実測した組み合わせは Ubuntu の Clang 21.1.8、Android NDK r27d の ARM64/API 24 用リンク環境、Quest の Termux に入っている libc++・Fcitx5 のヘッダーと共有ライブラリ。生成工程に使った [Linux x86-64 用 protoc 34.1](https://github.com/protocolbuffers/protobuf/releases/tag/v34.1) の ZIP の SHA-256 は `af27ea66cd26938fe48587804ca7d4817457a08350021a1c6e23a27ccc8c6904`。
+
+1. Termux の `clang++ -v -E -x c++ - </dev/null` でターゲットと include の順番を記録し、同じ版のヘッダー、clang resource directory、Fcitx5 の CMake 定義とライブラリを作業用の sysroot に取り出す。CMake 定義内の Termux の絶対パスは、この作業用コピーで置換する。
+2. Ubuntu の Clang に `--target=aarch64-unknown-linux-android24`、Termux の libc++ ヘッダー、`-femulated-tls` を指定する。リンクには Android 用 LLD、compiler-rt、libc++_shared、liblog、NDK の aarch64 版 libunwind を使う。ホストの実行ファイルは `-DPROTOC_EXECUTABLE=...` で渡し、`-Dprotobuf_BUILD_PROTOC_BINARIES=OFF` とする。
+3. 同じソース、パッチ、辞書で `mozc` ターゲットをビルドする。`readelf -h -d libmozc.so` の Machine が AArch64 であり、Ubuntu のビルドディレクトリへの RUNPATH がないことを確認する。Quest に渡すのはアドオンと登録ファイル。ロードと固定語の確定は Quest で検証する。

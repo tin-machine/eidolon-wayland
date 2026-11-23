@@ -103,6 +103,10 @@
       {
         "file": "native/patches/waypipe/0001-android-libc-realtime.patch",
         "sha256": "a4b8d3de3f6e07785fb3d438949b3e45f18da2c3c7987d93830a9131aaa52f0b"
+      },
+      {
+        "file": "native/patches/waypipe/0002-relay-input-method-keymaps.patch",
+        "sha256": "64e6362d1d87729e35e67af8bf6842cfc9e9112a68a4e081967d70917470c763"
       }
     ],
     "meson": "1.7.2",

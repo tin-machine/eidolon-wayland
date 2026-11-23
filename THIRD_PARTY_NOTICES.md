@@ -21,7 +21,7 @@ Mousepad本体やこのschemaをAndroid APKへ同梱する変更ではない。
 | Smithay 0.7.0 | Wayland protocol/SHMとGlesRenderer。[SHM計上・Android EGL loader・compiled keymap初期化・NUL/Android keymap FDの固定patch](native/patches/smithay/README.md)を適用 | [MIT](native/licenses/smithay-0.7.0-LICENSE) |
 | libxkbcommon 1.8.1 | static libraryと自己完結keymapのparse | [上流のlicense集](native/licenses/xkbcommon-1.8.1-LICENSE) |
 | xkeyboard-config 2.48 | US/JIS keymap生成元data | [COPYING](native/licenses/xkeyboard-config-2.48-COPYING) |
-| Waypipe 0.11.3 C版 | APK同梱のPIE helper。[Android用librt patch](native/patches/waypipe/0001-android-libc-realtime.patch)を適用 | [MIT](native/licenses/waypipe-0.11.3-LICENSE.MIT) |
+| Waypipe 0.11.3 C版 | APK同梱のPIE helper。[Android の librt](native/patches/waypipe/0001-android-libc-realtime.patch)と [IME キーマップ転送](native/patches/waypipe/0002-relay-input-method-keymaps.patch)のパッチを適用 | [MIT](native/licenses/waypipe-0.11.3-LICENSE.MIT) |
 | LZ4 1.10.0 library | Waypipeへstatic link。CLIはbuildしない | [BSD-2-Clause](native/licenses/lz4-1.10.0-LICENSE) |
 | Zstandard 1.5.7 library | Waypipeへstatic link。CLIはbuildしない | [BSD-3-Clauseを選択](native/licenses/zstd-1.5.7-LICENSE) |
 
