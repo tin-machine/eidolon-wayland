@@ -139,3 +139,7 @@ SSH で起動する専用リレーに転送を切り替え、同じ三つのア�
 ビルド 140 では、Linux 窓を選択し、専用 IME の準備が整った間だけ、物理キーを中継する Android ウィンドウの `FLAG_ALT_FOCUSABLE_IM` を有効にした。Android テキスト欄や Shift＋Space の入力パネルへ戻す際は外す。Stealth Keyboard の端末設定は維持した。[Android のウィンドウフラグ](https://developer.android.com/reference/android/view/WindowManager.LayoutParams#FLAG_ALT_FOCUSABLE_IM)
 
 同じ Quest、同じランチャーの foot、同じ USB HID テストデバイスで、Ctrl＋セミコロンと Ctrl＋Space のそれぞれを試した。**両方とも、直接入力の `a`、読み `nihongo`、Space 2 回、上矢印、Enter の結果、端末で受け取った全 10 バイトが `a日本語` と一致した。** Fcitx5 の専用 grab で実キーを受け、候補ポップアップと確定要求を出した。確認用 APK で対象窓への右トリガーだけを試験レシーバーから送っている。装着者による読みやすさの評価は未実施。
+
+ビルド 141 では「日本語」の確定後に `ka` と Esc を 1 回送り、Ctrl＋Space で直接入力に戻して `b` を打った。foot の全受信内容が `a日本語b`（11 バイト）と一致した。Esc を 2 回送った最初の試行は 12 バイトで不一致。取消後の追加の Esc を含めていたため、通常の取消操作で再試験した。
+
+Ubuntu 側には専用テストファイルを開く Mousepad と Dolphin のデスクトップエントリを一時的に作った。Quest ランチャーに出た GTK エントリを押すと、以前の Linux セッションは Quest 再起動後に回収する旨のダイアログが出た。対象プロセスは起動していない。この試行では Ubuntu の通常 XR ウィンドウへの入力は未確認。既存の回収記録は保持した。
