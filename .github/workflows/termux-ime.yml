@@ -1,0 +1,40 @@
+name: Termux native IME
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/termux-ime.yml'
+      - 'scripts/ci/termux-ime'
+      - 'scripts/termux/ime/**'
+      - 'scripts/waypipe_build.py'
+      - 'native/deps.lock.json'
+      - 'native/patches/waypipe/**'
+      - 'native/licenses/waypipe-0.11.3-LICENSE.MIT'
+  schedule:
+    - cron: '19 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      track:
+        description: Fcitx5 version to build
+        type: choice
+        options: [fixed, termux-current]
+        default: fixed
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ARM64 build and conversion (${{ github.event.schedule && 'termux-current' || inputs.track || 'fixed' }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    env:
+      TRACK: ${{ github.event.schedule && 'termux-current' || inputs.track || 'fixed' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build and run the Termux IME on ARM64
+        run: |
+          docker run --rm --platform linux/arm64 \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/src,readonly" \
+            termux/termux-docker@sha256:23c8657859853c973cf574b5596c98261098b894a45cca131423d53024c0fd21 \
+            bash /src/scripts/ci/termux-ime "$TRACK"

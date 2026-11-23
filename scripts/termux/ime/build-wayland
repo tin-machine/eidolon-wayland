@@ -4,42 +4,24 @@ set -euo pipefail
 umask 077
 : "${PREFIX:?Termux のシェルで実行してください}"
 tools_dir=$(cd "$(dirname "$0")" && pwd)
-version=5.1.23
-revision=27cca6e0239938b2d53937061d0980c087856b22
-recipe=4977ed6e93ae288cddba46d15e6ffcc4287bd4b6
+source "$tools_dir/fcitx-source.sh"
 work=${1:-"$HOME/.local/share/eidolon-ime-native/d55a051"}
-[[ $(pkg-config --modversion Fcitx5Core) == "$version" ]] || {
-    echo "Fcitx5Core $version が必要です。配布版との ABI を確認してください。" >&2
+recipe_dir=${2:-}
+installed=$(pkg-config --modversion Fcitx5Core)
+if [[ -n $recipe_dir ]]; then
+    recipe_dir=$(cd "$recipe_dir" && pwd)
+    fcitx_version=$installed
+    fcitx_revision="refs/tags/$installed"
+fi
+[[ $installed == "$fcitx_version" ]] || {
+    echo "Fcitx5Core $fcitx_version が必要です。配布版との ABI を確認してください。" >&2
     exit 1
 }
 mkdir -p "$work"
 cd "$work"
-if [[ ! -d fcitx/.git ]]; then
-    git clone --depth=1 --branch "$version" https://github.com/fcitx/fcitx5.git fcitx
-fi
-[[ $(git -C fcitx rev-parse HEAD) == "$revision" ]]
-mkdir -p fcitx-patches
-for name in cmake-FindDL.cmake cmake-FindPthread.cmake fix-hardcoded-paths src-modules-spell-CMakeLists.txt; do
-    patch_file="$PWD/fcitx-patches/$name.patch"
-    curl -fsSL --retry 2 "https://raw.githubusercontent.com/termux/termux-packages/$recipe/x11-packages/fcitx5/$name.patch" |
-        sed "s|@TERMUX_PREFIX@|$PREFIX|g" > "$patch_file"
-    if ! git -C fcitx apply --reverse --check "$patch_file" 2>/dev/null; then
-        git -C fcitx apply "$patch_file"
-    fi
-done
-mode_patch="$tools_dir/fcitx-physical-keyboard.patch"
-if ! git -C fcitx apply --reverse --check "$mode_patch" 2>/dev/null; then
-    git -C fcitx apply "$mode_patch"
-fi
-builtins=$(clang++ --print-libgcc-file-name)
-link_flags="-ldl -Wl,--exclude-libs,${builtins##*/}"
-cmake -S fcitx -B fcitx-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
-    -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_PREFIX_PATH="$PREFIX" \
-    -DDL_INCLUDE_DIR="$PREFIX/include" -DDL_LIBRARY=0 -DPTHREAD_INCLUDE_DIR="$PREFIX/include" \
-    -DENABLE_TEST=OFF -DENABLE_WAYLAND=ON -DUSE_SYSTEM_YOGA=ON \
-    -DUSE_SYSTEM_PLASMA_WAYLAND_PROTOCOLS=OFF -DCMAKE_CXX_FLAGS=-fexperimental-library \
-    -DCMAKE_SHARED_LINKER_FLAGS="$link_flags" -DCMAKE_EXE_LINKER_FLAGS="$link_flags"
+prepare_fcitx "$recipe_dir"
+apply_fcitx_patch "$tools_dir/fcitx-physical-keyboard.patch"
+configure_fcitx fcitx-build ON
 addons=(modules/wayland frontend/waylandim ui/classic)
 names=(wayland waylandim classicui)
 targets=(fcitx5 "${names[@]}")

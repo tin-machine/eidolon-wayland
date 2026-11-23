@@ -11,6 +11,14 @@ Eidolon Waylandの独自コードのうちライセンスを付与できる部�
 専用CIでは同じcommitから未改変Mousepadを一時的な検査packageとしてbuildする。
 Mousepad本体やこのschemaをAndroid APKへ同梱する変更ではない。
 
+## Termux 側の日本語入力（Fcitx5＋Mozc）
+
+Quest の Termux 用に Fcitx5 5.1.23 のサーバー、Wayland 入力モジュール、候補表示用の Classic UI をビルドする。サーバーの `src/server/main.cpp`（Copyright 2016 CSSlayer）には、2026-11-23 に物理キーボード向けの入力モードを選ぶ変更を加えた。このファイルの上流ライセンスは **LGPL-2.1-or-later**。各ソースの著作権表示と SPDX 指定を保持する。[上流の該当ファイル](https://github.com/fcitx/fcitx5/blob/27cca6e0239938b2d53937061d0980c087856b22/src/server/main.cpp)・[LGPL 2.1 全文](scripts/termux/ime/licenses/Fcitx5-LGPL-2.1-or-later.txt)・[Eidolon の変更](scripts/termux/ime/fcitx-physical-keyboard.patch)・[固定したソースと Termux パッチ](scripts/termux/ime/fcitx-source.sh)
+
+Mozc アドオンには別の権利表示がある。ビルド元の fcitx5-mozc はルートに BSD-3-Clause を掲げ、アドオンの一部ファイルには個別の LGPL 表示がある。Mozc 本体・辞書データ・リンクしたライブラリも、配布に含める版とファイルごとに確認する。[fcitx5-mozc の LICENSE](https://github.com/fcitx-contrib/fcitx5-mozc/blob/d55a0517e127c24def4d498d2428c39f956525ae/LICENSE)・[アドオン内の権利表示](https://github.com/fcitx-contrib/fcitx5-mozc/blob/d55a0517e127c24def4d498d2428c39f956525ae/src/unix/fcitx5/mozc_engine.cc)・[Mozc の固定版と辞書の照合手順](scripts/termux/ime/build-mozc)
+
+現在は Termux または CI の中でビルドする。IME のバイナリは APK に含めず、IME の CI もダウンロード用成果物を作成しない。将来、改変版を Actions 成果物や Release で配布するときは、そのビルドの著作権・ライセンス表示と全文、変更したファイルの変更内容・日付、バイナリに対応する完全なソース（適用済みの変更とビルド・インストール用スクリプトを含む）を同じ配布場所から取得できるようにする。版を固定したソースアーカイブをバイナリと対で公開すれば、同じリポジトリで管理できる。[上流の LGPL 2.1 本文（第 1・2・4・6 条）](https://github.com/fcitx/fcitx5/blob/27cca6e0239938b2d53937061d0980c087856b22/LICENSES/LGPL-2.1-or-later.txt)
+
 ## 固定native依存
 
 版・公式archive SHA256・build条件は[`native/deps.lock.json`](native/deps.lock.json)に記録する。

@@ -199,3 +199,13 @@ Qt の切り分けでは、同じ Quest の Fcitx5 を Ubuntu 上の製品コン
 ### 装着者による foot と SSH 先の tmux での確認
 
 Quest を装着し、Termux の foot から Ubuntu Desktop に SSH 接続して、接続先の tmux で実際の文章を入力した。装着者から、日本語の入力・表示に問題がなく、変換候補も違和感なく見えるとの報告があった。今回の装着確認の対象は foot。
+
+### Fcitx5 のアップデートを検出する CI
+
+[Termux native IME](../../../.github/workflows/termux-ime.yml) は GitHub の ARM64 Linux ランナー内で digest 固定の Termux コンテナを起動する。検査は一時的な環境で完結し、Quest のパッケージと入力中のプロファイルには触れない。
+
+1. IME のビルド入力を変える PR では `fixed` を実行する。Fcitx5 のソースと Termux のパッチを固定し、配布中の Fcitx5 が固定版から変わった場合は、コンテナ内に固定版のライブラリとヘッダーを先に構築する。コンパイラなどの Termux 依存は配布中の版を使う。
+2. 毎週月曜 03:19 UTC（日本時間 12:19）、既定ブランチで `termux-current` を実行する。その時点の Termux 公式レシピと実際の配布パッケージの版・リビジョンを照合し、そのパッチと対応する Fcitx5 ソースで同じ検査を行う。配布途中の版ずれはログに両方の版を出す。Actions の手動実行でも両系統を選べる。
+3. どちらも専用サーバー・Wayland アドオン・Classic UI・Mozc・中継用 Waypipe をビルドし、ARM64 ELF、アドオンの動的ロード、専用プロファイルでの「nihongo → にほんご → 日本語」の候補選択・確定を検査する。週次成功後に採用版を更新する際は、固定版の指定を変更する PR で、Quest の foot などの候補位置・物理キー操作も再確認する。
+
+[CI の実行手順](../../../scripts/ci/termux-ime)・[ライセンスと将来バイナリを配布する際の扱い](../../../THIRD_PARTY_NOTICES.md)
