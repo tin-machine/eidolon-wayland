@@ -21,6 +21,73 @@ use std::{path::Path, sync::Arc};
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 
+pub(super) async fn receipt_exchange<H: client::Handler>(
+    client: &client::Handle<H>,
+    command: String,
+    cancel: &CancellationToken,
+    started: impl FnOnce(),
+) -> Result<(Vec<u8>, u32), &'static str> {
+    let mut channel = tokio::select! { biased;
+        _ = cancel.cancelled() => return Err("CANCELLED"),
+        result = timeout(Duration::from_secs(5), client.channel_open_session()) => result,
+    }
+    .map_err(|_| "DESKTOP_V3_RECOVERY_TIMEOUT")?
+    .map_err(|_| "SSH_IO_FAILED")?;
+    let exchange = async {
+        started();
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|_| "SSH_IO_FAILED")?;
+        let (mut raw, mut stderr, mut eof, mut status, mut signal) =
+            (Vec::new(), 0usize, false, None, false);
+        loop {
+            match channel.wait().await {
+                Some(ChannelMsg::Data { data }) => {
+                    if eof || raw.len() + data.len() > 16384 {
+                        return Err("DESKTOP_V3_RECOVERY_INVALID");
+                    }
+                    raw.extend(data);
+                }
+                Some(ChannelMsg::ExtendedData { data, ext: 1 }) => {
+                    stderr = stderr.saturating_add(data.len());
+                    if eof || stderr > 65536 {
+                        return Err("DESKTOP_V3_RECOVERY_INVALID");
+                    }
+                }
+                Some(ChannelMsg::Eof) => {
+                    if eof {
+                        return Err("DESKTOP_V3_RECOVERY_INVALID");
+                    }
+                    eof = true;
+                }
+                Some(ChannelMsg::ExitStatus { .. }) if status.is_some() => {
+                    return Err("DESKTOP_V3_RECOVERY_INVALID");
+                }
+                Some(ChannelMsg::ExitStatus { exit_status }) => status = Some(exit_status),
+                Some(ChannelMsg::ExitSignal { .. }) => signal = true,
+                None | Some(ChannelMsg::Close) => break,
+                Some(ChannelMsg::Failure | ChannelMsg::ExtendedData { .. }) => {
+                    return Err("DESKTOP_V3_RECOVERY_INVALID");
+                }
+                _ => (),
+            }
+        }
+        if !eof || signal || status.is_none() {
+            return Err("DESKTOP_V3_RECOVERY_CHANNEL");
+        }
+        Ok((raw, status.unwrap()))
+    };
+    let reply = tokio::select! { biased;
+        _ = cancel.cancelled() => Err("CANCELLED"),
+        result = timeout(Duration::from_secs(12), exchange) =>
+            result.map_err(|_| "DESKTOP_V3_RECOVERY_TIMEOUT").and_then(|r| r),
+    };
+    let _ = timeout(Duration::from_secs(1), channel.eof()).await;
+    let _ = timeout(Duration::from_secs(1), channel.close()).await;
+    reply
+}
+
 pub struct Recovery<'a> {
     pub profile: &'a Profile,
     pub session: SessionId,
@@ -165,85 +232,28 @@ pub async fn recover_remote<H: client::Handler>(
             journal.source_hashes(),
             eidolon_model::limits::workspace_number(request.files),
         )?;
-        let mut channel = tokio::select! { biased;
-            _ = cancel.cancelled() => return Err("CANCELLED"),
-            result = timeout(Duration::from_secs(5), client.channel_open_session()) => result,
+        let (raw, status) =
+            receipt_exchange(client, command, cancel, || report.queried = true).await?;
+        let receipt = Receipt::parse(
+            &raw,
+            &binding,
+            journal.source_hashes(),
+            &expected_boot,
+            status,
+        )?;
+        #[cfg(feature = "host-acceptance")]
+        if let Some(capture) = observation {
+            capture.observe(
+                "recovery_receipt",
+                serde_json::json!({
+                    "record":receipt.record(),"generation":generation.to_string(),
+                    "expected_boot_id":expected_boot,"exit_status":status,
+                    "eof":true,"exit_signal":false,"channel_closed":true,
+                    "router_active":router.report().active
+                }),
+            );
         }
-        .map_err(|_| "DESKTOP_V3_RECOVERY_TIMEOUT")?
-        .map_err(|_| "SSH_IO_FAILED")?;
-        let exchange = async {
-            report.queried = true;
-            channel
-                .exec(true, command)
-                .await
-                .map_err(|_| "SSH_IO_FAILED")?;
-            let (mut raw, mut stderr, mut eof, mut status, mut signal) =
-                (Vec::new(), 0usize, false, None, false);
-            loop {
-                match channel.wait().await {
-                    Some(ChannelMsg::Data { data }) => {
-                        if eof || raw.len() + data.len() > 16384 {
-                            return Err("DESKTOP_V3_RECOVERY_INVALID");
-                        }
-                        raw.extend(data);
-                    }
-                    Some(ChannelMsg::ExtendedData { data, ext: 1 }) => {
-                        stderr = stderr.saturating_add(data.len());
-                        if eof || stderr > 65536 {
-                            return Err("DESKTOP_V3_RECOVERY_INVALID");
-                        }
-                    }
-                    Some(ChannelMsg::Eof) => {
-                        if eof {
-                            return Err("DESKTOP_V3_RECOVERY_INVALID");
-                        }
-                        eof = true;
-                    }
-                    Some(ChannelMsg::ExitStatus { .. }) if status.is_some() => {
-                        return Err("DESKTOP_V3_RECOVERY_INVALID");
-                    }
-                    Some(ChannelMsg::ExitStatus { exit_status }) => status = Some(exit_status),
-                    Some(ChannelMsg::ExitSignal { .. }) => signal = true,
-                    None | Some(ChannelMsg::Close) => break,
-                    Some(ChannelMsg::Failure | ChannelMsg::ExtendedData { .. }) => {
-                        return Err("DESKTOP_V3_RECOVERY_INVALID");
-                    }
-                    _ => (),
-                }
-            }
-            if !eof || signal || status.is_none() {
-                return Err("DESKTOP_V3_RECOVERY_CHANNEL");
-            }
-            let receipt = Receipt::parse(
-                &raw,
-                &binding,
-                journal.source_hashes(),
-                &expected_boot,
-                status.unwrap(),
-            )?;
-            #[cfg(feature = "host-acceptance")]
-            if let Some(capture) = observation {
-                capture.observe(
-                    "recovery_receipt",
-                    serde_json::json!({
-                        "record":receipt.record(),"generation":generation.to_string(),
-                        "expected_boot_id":expected_boot,"exit_status":status.unwrap(),
-                        "eof":eof,"exit_signal":signal,"channel_closed":true,
-                        "router_active":router.report().active
-                    }),
-                );
-            }
-            report.channel_complete = true;
-            Ok(receipt)
-        };
-        let reply = tokio::select! { biased;
-            _ = cancel.cancelled() => Err("CANCELLED"),
-            result = timeout(Duration::from_secs(12), exchange) =>
-                result.map_err(|_| "DESKTOP_V3_RECOVERY_TIMEOUT").and_then(|r| r),
-        };
-        let _ = timeout(Duration::from_secs(1), channel.eof()).await;
-        let _ = timeout(Duration::from_secs(1), channel.close()).await;
-        let receipt = reply?;
+        report.channel_complete = true;
         if let Some(boot) = receipt.origin_boot_id() {
             journal.recovered_boot(boot)?;
             report.boot_identity_known = true;

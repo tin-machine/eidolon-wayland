@@ -38,6 +38,7 @@ fn command_in_slot(
         &hashes,
         Some(sources::inventory_bytes()),
         workspace,
+        None,
     )
 }
 
@@ -51,7 +52,23 @@ pub(super) fn recovery_command(
         return Err("DESKTOP_BINDING_INVALID");
     }
     sources::validate_recovery_hashes(hashes)?;
-    command_for_sources(binding, bootstrap, hashes, None, workspace)
+    command_for_sources(binding, bootstrap, hashes, None, workspace, None)
+}
+
+pub(super) fn receipt_command(
+    binding: &Binding,
+    hashes: &sources::SourceHashes,
+    origin: &str,
+    workspace: u8,
+    action: &str,
+) -> Result<String, &'static str> {
+    sources::validate_recovery_hashes(hashes)?;
+    if action != "read" && !super::super::hex(action, 64) {
+        return Err("DESKTOP_V3_RECOVERY_INVALID");
+    }
+    let bootstrap = Bootstrap::recover(binding.context().clone(), binding.pins().clone(), origin)
+        .map_err(|error| error.0)?;
+    command_for_sources(binding, &bootstrap, hashes, None, workspace, Some(action))
 }
 
 fn command_for_sources(
@@ -60,6 +77,7 @@ fn command_for_sources(
     hashes: &sources::SourceHashes,
     inventory: Option<&[u8]>,
     workspace: u8,
+    receipt_ack: Option<&str>,
 ) -> Result<String, &'static str> {
     bootstrap
         .matches(binding.context(), binding.pins())
@@ -83,7 +101,7 @@ fn command_for_sources(
         serde_json::to_string(&binding.pins().record()).map_err(|_| "DESKTOP_BINDING_INVALID")?;
     let hashes = serde_json::to_string(hashes).map_err(|_| "DESKTOP_BINDING_INVALID")?;
     let source = format!(
-        "import json\nexpected_uid={}\npins=json.loads({})\nsource_hashes=json.loads({})\ninventory_raw={}\nbuild_id={}\nargv=json.loads({})\nworkspace_slot={}\n{}",
+        "import json\nexpected_uid={}\npins=json.loads({})\nsource_hashes=json.loads({})\ninventory_raw={}\nbuild_id={}\nargv=json.loads({})\nworkspace_slot={}\nreceipt_ack={}\n{}",
         binding.uid(),
         literal(&pins)?,
         literal(&hashes)?,
@@ -91,6 +109,10 @@ fn command_for_sources(
         literal(&binding.pins().build_id())?,
         literal(&args)?,
         workspace,
+        receipt_ack
+            .map(literal)
+            .transpose()?
+            .unwrap_or_else(|| "None".into()),
         BOOTSTRAP
     );
     Ok(format!(
@@ -177,7 +199,7 @@ impl Owner {
         evidence: &ExpectedEvidence,
         cancel: CancellationToken,
         workspace: u8,
-        before_exec: impl FnOnce() -> Result<(), &'static str>,
+        before_grant: impl FnOnce() -> Result<(), &'static str>,
     ) -> Result<Self, &'static str> {
         sources::require_complete()?;
         sources::validate_hashes(&evidence.source_hashes())?;
@@ -187,7 +209,7 @@ impl Owner {
             &Bootstrap::serve(binding.context().clone(), binding.pins().clone()),
             workspace,
         )?;
-        let channel = tokio::select! {biased;
+        let mut channel = tokio::select! {biased;
             _=cancel.cancelled()=>return Err("CANCELLED"),
             channel=timeout(Duration::from_secs(5),client.channel_open_session())=>channel,
         }
@@ -197,19 +219,48 @@ impl Owner {
             let _ = timeout(Duration::from_secs(1), channel.close()).await;
             return Err("CANCELLED");
         }
-        if let Err(error) = before_exec() {
+        let scope = binding.scope();
+        let ready = format!("ready {scope}\n");
+        let full = format!("full {scope}\n");
+        // The pinned helper holds its state lock and cannot allocate a session
+        // until this channel sends the grant after the durable local reservation.
+        let admit = async {
+            channel
+                .exec(true, text)
+                .await
+                .map_err(|_| "SSH_IO_FAILED")?;
+            let mut reply = Vec::new();
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Success | ChannelMsg::WindowAdjusted { .. }) => continue,
+                    Some(ChannelMsg::Data { data }) if reply.len() + data.len() <= ready.len() => {
+                        reply.extend(data)
+                    }
+                    _ => return Err("DESKTOP_HELPER_LOST"),
+                }
+                if reply == full.as_bytes() {
+                    return Err("STATE_LIMIT");
+                }
+                if reply == ready.as_bytes() {
+                    break;
+                }
+                if !full.as_bytes().starts_with(&reply) && !ready.as_bytes().starts_with(&reply) {
+                    return Err("DESKTOP_V3_PROTOCOL_INVALID");
+                }
+            }
+            before_grant()?;
+            channel
+                .data(format!("reserve {scope}\n").as_bytes())
+                .await
+                .map_err(|_| "SSH_IO_FAILED")
+        };
+        let admission = tokio::select! { biased;
+            _ = cancel.cancelled() => Err("CANCELLED"),
+            result = timeout(PREPARE_TIMEOUT, admit) => result.unwrap_or(Err("DESKTOP_HELPER_TIMEOUT")),
+        };
+        if let Err(error) = admission {
             let _ = timeout(Duration::from_secs(1), channel.close()).await;
             return Err(error);
-        }
-        // From this point the journal must retain uncertainty, including an exec
-        // enqueue timeout: neither the request nor Start is ever retransmitted.
-        if !matches!(
-            timeout(Duration::from_secs(2), channel.exec(true, text)).await,
-            Ok(Ok(()))
-        ) {
-            let _ = timeout(Duration::from_secs(1), channel.eof()).await;
-            let _ = timeout(Duration::from_secs(1), channel.close()).await;
-            return Err("SSH_IO_FAILED");
         }
         Ok(Self::from_channel(channel, protocol, cancel))
     }

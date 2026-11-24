@@ -198,7 +198,23 @@ def _start_demo(owner, profile, drain, env, paths, verified_bundle, context):
     return core.spawn_tracked(owner, profile, drain, command, env)
 
 
-def serve(bootstrap, verified_bundle, source_hashes, *, workspace_slot=1):
+def _admit(context):
+    scope = context.scope().encode("ascii")
+    _write_bounded(sys.stdout.fileno(), b"ready " + scope + b"\n")
+    expected = b"reserve " + scope + b"\n"
+    reply = bytearray()
+    deadline = time.monotonic() + 10
+    fd = sys.stdin.fileno()
+    while len(reply) < len(expected):
+        remaining = deadline - time.monotonic()
+        core.require(remaining > 0 and select.select([fd], [], [], remaining)[0])
+        piece = os.read(fd, len(expected) - len(reply))
+        core.require(piece)
+        reply.extend(piece)
+    core.require(reply == expected)
+
+
+def serve(bootstrap, verified_bundle, source_hashes, *, workspace_slot=1, admission=False):
     context = bootstrap.context
     pins = bootstrap.pins
     binding = W.Binding(context, pins)
@@ -217,7 +233,14 @@ def serve(bootstrap, verified_bundle, source_hashes, *, workspace_slot=1):
     origin_boot = core.boot_id()
     try:
         owner = ProcessOwner()
-        paths, barrier, home_fd, state_fd, session_fd = core.prepare_session(context, workspace_slot=workspace_slot)
+        try:
+            paths, barrier, home_fd, state_fd, session_fd = core.prepare_session(
+                context, workspace_slot=workspace_slot,
+                before_allocate=(lambda: _admit(context)) if admission else None)
+        except core.HelperError as error:
+            if admission and error.public_reason == "STATE_LIMIT":
+                _write_bounded(sys.stdout.fileno(), ("full " + context.scope() + "\n").encode("ascii"))
+            raise
         fds = (home_fd, state_fd, session_fd)
         profile = PersistentProfileRepository().acquire(
             context, process_owner=owner, barrier=barrier, share_home=True)
@@ -362,20 +385,26 @@ def serve(bootstrap, verified_bundle, source_hashes, *, workspace_slot=1):
             drain.close()
 
 
-def main(argv, verified_bundle=None, source_hashes=None, *, workspace_slot=1):
+def main(argv, verified_bundle=None, source_hashes=None, *, workspace_slot=1, admission=False, receipt_ack=None):
     os.umask(0o077)
     try:
         bootstrap = C.Bootstrap.parse(C.canonical_json(argv))
         core.require(type(verified_bundle) is bundle_api.VerifiedBundle and
                      type(source_hashes) is dict, "APP_DEPENDENCY_CHANGED", "protocol")
         binding = W.Binding(bootstrap.context, bootstrap.pins)
+        if receipt_ack is not None:
+            core.require(bootstrap.operation == "recover" and not admission)
+            raw = core.acknowledge_receipt(binding, source_hashes, bootstrap.expected_boot_id,
+                                           receipt_ack, workspace_slot=workspace_slot)
+            _write_bounded(sys.stdout.fileno(), raw)
+            return 0
         if bootstrap.operation == "recover":
             raw, status = core.recovery_receipt(
                 binding, source_hashes, bootstrap.expected_boot_id, workspace_slot=workspace_slot)
             _write_bounded(sys.stdout.fileno(), raw)
             return status
         core.require(bootstrap.operation == "serve")
-        return serve(bootstrap, verified_bundle, source_hashes, workspace_slot=workspace_slot)
+        return serve(bootstrap, verified_bundle, source_hashes, workspace_slot=workspace_slot, admission=admission)
     except (C.ContractError, bundle_api.BundleError, core.HelperError, ProfileError,
             OwnershipError, inspect_api.InspectionError, OSError, ValueError,
             KeyError, TypeError):

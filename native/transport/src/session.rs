@@ -2415,15 +2415,19 @@ async fn connection(
                     signals.update(|s| {
                         s.forward_busy = false;
                         s.desktop_v3_launch = None;
-                        s.desktop_v3_no_local_allocation = no_local_allocation;
+                        let pending = outcome.report.transport.journal_pending;
+                        s.desktop_v3_no_local_allocation = no_local_allocation.filter(|_| pending);
+                        if !pending {
+                            s.desktop_v3_capture = None;
+                        }
                         s.desktop_v3_selections = None;
                         s.catalog.desktop_v3 = None;
                         s.catalog.desktop_v3_installed = None;
                         s.catalog.pending = false;
                         s.report.desktop_v3_transport = Some(outcome.report);
                         s.desktop_v3_handoff = outcome.handoff;
-                        s.report.state = State::CleanupPending;
-                        s.report.desktop_pending = true;
+                        s.report.state = if pending { State::CleanupPending } else { State::Failed };
+                        s.report.desktop_pending = pending;
                         s.report.error = fault;
                     });
                     return if connect.cancel.is_cancelled() {

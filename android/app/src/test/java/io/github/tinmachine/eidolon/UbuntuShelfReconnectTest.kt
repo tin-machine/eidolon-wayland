@@ -32,6 +32,22 @@ class UbuntuShelfReconnectTest {
         assertTrue(retry.retryDue(9000))
     }
 
+    @Test fun capacityStopsAutomaticRetriesAndUnconfirmedReceiptCanRetry() {
+        val tx = JSONObject().put("session", "8")
+        val report = JSONObject().put("session", "8").put("error", "STATE_LIMIT")
+        tx.put("desktop_v3_transport", report)
+        val retry = policy()
+        retry.bind("ubuntu")
+        retry.request(0)
+        retry.observe(UbuntuShelfReconnect.transportFailure(tx), false)
+        assertFalse(retry.retryDue(5000))
+        assertTrue(retry.notice(false, false)!!.contains("完了記録の件数"))
+        report.put("error", "DESKTOP_RECEIPT_ACK_PENDING")
+        retry.observe(UbuntuShelfReconnect.transportFailure(tx), false)
+        assertTrue(retry.retryDue(5000))
+        assertTrue(retry.notice(false, false)!!.contains("受領通知"))
+    }
+
     @Test fun cleanupAndTransportLossReportTheSameActionTheWorkerWillTake() {
         val retry = policy()
         retry.bind("ubuntu")
