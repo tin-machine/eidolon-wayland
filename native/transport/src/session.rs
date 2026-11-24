@@ -2426,7 +2426,11 @@ async fn connection(
                         s.catalog.pending = false;
                         s.report.desktop_v3_transport = Some(outcome.report);
                         s.desktop_v3_handoff = outcome.handoff;
-                        s.report.state = if pending { State::CleanupPending } else { State::Failed };
+                        s.report.state = if pending {
+                            State::CleanupPending
+                        } else {
+                            State::Failed
+                        };
                         s.report.desktop_pending = pending;
                         s.report.error = fault;
                     });

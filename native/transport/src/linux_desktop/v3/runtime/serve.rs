@@ -388,7 +388,10 @@ pub async fn serve<H: client::Handler>(
             // exists to retire, even when the capacity response was lost.
             report.actor_finished = true;
             publish(&report);
-            return RunOutcome { report, handoff: None };
+            return RunOutcome {
+                report,
+                handoff: None,
+            };
         }
     }
     report.transport.phase = TransportPhase::Stopping;
