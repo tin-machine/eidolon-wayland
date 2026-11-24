@@ -1,58 +1,62 @@
 # Eidolon Wayland
 
-> Linuxに肉体を残し、その姿だけを異界へ投影する。
+**Languages:** English | [日本語](README.ja.md)
+
+> Keep Linux where it runs. Bring its windows into another world.
 
 <p align="center">
-  <img src="docs/assets/readme/10-home-lab.webp" alt="Eidolon Waylandのコンセプトイラスト。Quest 3のMR空間にLinuxアプリのウィンドウを立体的に配置し、手で操作している様子" width="100%" />
+  <img src="docs/assets/readme/10-home-lab.webp" alt="Concept illustration of Linux application windows floating in a Quest 3 mixed-reality workspace, with a person interacting with them" width="100%" />
 </p>
-<p align="center"><sub>Concept illustration — 実機スクリーンショットではありません。</sub></p>
+<p align="center"><sub>Concept illustration — not an actual headset screenshot.</sub></p>
 
-**Eidolon Wayland** は、**Meta Quest 3のMR空間でLinuxアプリを独立したウィンドウとして配置・操作する**ための、オープンソースの実験的な空間デスクトップです。
+**Eidolon Wayland** is an **experimental open-source spatial desktop** aiming to let you place and interact with individual Linux application windows in **Meta Quest 3 mixed reality**.
 
-従来のデスクトップ画面を大きな1枚の板として映すのではなく、ターミナルやGUIアプリそれぞれを空間に取り出し、目の前や左右、奥行きのあるワークスペースに並べて使うことを目指しています。
+Instead of mirroring a conventional desktop as one large screen, Eidolon aims to bring terminals and GUI applications into a spatial workspace, arranged in front of you, to the sides, and at different depths.
 
-## 目指す体験
+## The experience we're building
 
-- **画面の枠を超えるワークスペース** — 複数のアプリウィンドウを空間に配置し、移動・サイズ変更・グループ化する。
-- **Linuxアプリをそのまま活用** — Quest内のTermuxや別のLinuxホストでアプリを実行し、Waylandの画面をQuestへ転送する。
-- **MRならではの操作** — パススルー背景にウィンドウを重ね、キーボード・ポインター・XR入力を組み合わせる。
-- **ホストをまたぐ作業空間** — 将来的には複数ホストのアプリを選んで起動し、1つの空間にまとめる。
+- **A workspace beyond the screen** — Arrange multiple application windows in space; move, resize, and group them.
+- **Use existing Linux applications** — Run Wayland applications in Termux on the Quest or on other Linux hosts, and forward their windows to the headset.
+- **Interaction designed for MR** — Combine passthrough with keyboard, pointer, and XR input.
+- **A workspace spanning hosts** — Eventually choose and launch applications from multiple Linux hosts in the same space.
 
-## 仕組み
+## How it works
 
-EidolonはQuest上のAndroidアプリに**Rust製Wayland compositor**を組み込みます。Linuxアプリは実行元に残し、**SSHとWaypipe**を介してウィンドウを受け取り、**Meta Spatial SDK**でXR空間に表示します。
+Eidolon embeds a **Rust-based Wayland compositor** in an Android application running on Quest. Linux applications continue to run where they are hosted; **SSH and Waypipe** connect them to the compositor, and the **Meta Spatial SDK** displays their windows in XR space.
 
 ```text
-Quest内のTermux / 別Linuxホスト
-       └─ Waylandアプリ（foot、GTKなど）
+Termux on Quest / Remote Linux host
+       └─ Wayland app (foot, GTK, etc.)
                     │
               SSH + Waypipe
                     │
                     ▼
-       Eidolon（Quest 3 / Android）
-         Rust / Smithay / EGL・GLES
+       Eidolon (Quest 3 / Android)
+         Rust / Smithay / EGL / GLES
                     │ JNI
          Kotlin / Meta Spatial SDK
                     │
                     ▼
-            MR空間のウィンドウ
+            Windows in MR space
 ```
 
-技術スタックの中心は **Kotlin・Rust・Smithay・EGL/OpenGL ES・SSH・Waypipe** です。デスクトップ全体のミラーリングではなく、ウィンドウ単位の扱いを重視しています。
+The core technology stack is **Kotlin, Rust, Smithay, EGL/OpenGL ES, SSH, and Waypipe**. The focus is on individual application windows rather than mirroring an entire desktop.
 
-## 現在の位置づけ
+## Project status
 
-**開発・検証中のプロジェクトです。** Quest内Termuxのターミナル表示や複数窓操作には実装・検証実績がありますが、任意のLinuxアプリを複数ホストから同時に利用する体験は、引き続き開発の目標です。画像は構想を表現したもので、対応機能や実機での表示を保証するものではありません。
+**This project is under active development and validation.** Displaying terminals from Termux on Quest and manipulating multiple windows have implementation and test history. Using arbitrary Linux GUI applications concurrently across multiple hosts remains a development goal, **not a completed feature**.
 
-詳細な実装状況やCI・実機検証の記録は、READMEには列挙せず、[ドキュメント](docs/overview/README.md)と[進捗・検証記録](docs/evidence/progress.md)から確認できます。
+The illustration above represents the vision; it is not a screenshot and does not guarantee current functionality or behavior on a headset.
 
-## はじめる・開発する
+For detailed implementation status, CI results, and device validation records, see the [documentation index](docs/overview/README.md) and [progress and validation records](docs/evidence/progress.md). Most detailed technical documentation is currently written in Japanese.
 
-- [利用方法・初回セットアップ](docs/guides/usage.md)
-- [アーキテクチャ](docs/architecture/architecture.md)
-- [開発・デバッグ](docs/development/development-automation-and-debugging.md)
-- [設計・機能別ドキュメントの入口](docs/overview/README.md)
+## Getting started and development
 
-## ライセンス
+- [Usage and initial setup](docs/guides/usage.md)
+- [Architecture](docs/architecture/architecture.md)
+- [Development and debugging](docs/development/development-automation-and-debugging.md)
+- [Design and feature documentation index](docs/overview/README.md)
 
-Eidolon Waylandが権利を持つコード・ドキュメントは[MIT License](LICENSE)で公開しています。第三者のライブラリや素材、Meta Spatial SDKにはそれぞれのライセンスが適用され、MITがAPKや依存SDKの再配布を一律に許可するわけではありません。詳細は[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)を参照してください。
+## License
+
+Code and documentation owned by the Eidolon Wayland project are published under the [MIT License](LICENSE). Third-party libraries and assets, including the Meta Spatial SDK, are covered by their own licenses. MIT does **not** automatically permit redistribution of APKs or bundled third-party SDKs. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
