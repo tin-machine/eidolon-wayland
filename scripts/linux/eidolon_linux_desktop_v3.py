@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import fcntl
+import hashlib
 import os
 from pathlib import Path
 import pwd
@@ -253,7 +254,7 @@ def workspace_state_dir(slot):
     return STATE_DIR if slot == 1 else STATE_DIR + chr(ord("a") + slot - 1)
 
 
-def prepare_session(context, *, workspace_slot=1):
+def prepare_session(context, *, workspace_slot=1, before_allocate=None):
     value = context.record()
     uid = value["uid"]
     home = account_home(uid)
@@ -279,6 +280,9 @@ def prepare_session(context, *, workspace_slot=1):
                         info.st_nlink == 1, "APP_STATE_INVALID", "directory_cleanup")
                 require(entry.name != "r-" + value["nonce"] + ".json",
                         "CAPABILITY_STALE", "protocol")
+        # The directory lock covers the capacity check and the grant.
+        if before_allocate is not None:
+            before_allocate()
         name = "s-" + value["nonce"]
         os.mkdir(name, 0o700, dir_fd=state_fd)
         os.fsync(state_fd)
@@ -666,6 +670,48 @@ def _read_proof(state_fd, name, binding, source_hashes, expected_boot, complete)
             (expected_boot == "-" or saved["origin_boot_id"] == expected_boot),
             "APP_STATE_RECOVERY_REQUIRED", "process_ownership")
     return saved
+
+
+def acknowledge_receipt(binding, source_hashes, origin, digest, *, workspace_slot):
+    """Fetch exact proof bytes, or retire those bytes under the same state lock."""
+    require(_UUID.fullmatch(origin) and
+            (digest == "read" or re.fullmatch(r"[0-9a-f]{64}", digest)))
+    value = binding.context.record()
+    uid, nonce = value["uid"], value["nonce"]
+    require(uid == os.getuid())
+    state = account_home(uid) / workspace_state_dir(workspace_slot)
+    fd = _open_dir(state, uid, 0o700)
+    try:
+        _lock_state(fd)
+        for name in ("s-" + nonce, "c-" + nonce + ".json", ".c-" + nonce + ".json.tmp",
+                     ".r-" + nonce + ".json.tmp"):
+            try:
+                os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            raise HelperError("APP_STATE_RECOVERY_REQUIRED", "receipt_write")
+        name = "r-" + nonce + ".json"
+        try:
+            before = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            # Only a retry of an already durable local ACK may confirm absence.
+            if digest == "read":
+                raise
+        else:
+            raw = _read_at(fd, name, uid)
+            expected = C.parse_json(raw)["expected_boot_id"]
+            require(expected in ("-", origin))
+            receipt = W.parse_receipt(raw, binding, source_hashes, expected, 0)
+            require(receipt["status"] == "complete" and receipt["origin_boot_id"] == origin)
+            if digest == "read":
+                return raw
+            require(hashlib.sha256(raw).hexdigest() == digest and
+                    _id(os.stat(name, dir_fd=fd, follow_symlinks=False)) == _id(before))
+            os.unlink(name, dir_fd=fd)
+        os.fsync(fd)
+        return ("retired " + binding.context.scope() + " " + digest + "\n").encode("ascii")
+    finally:
+        os.close(fd)
 
 
 def _recovery_reply(saved, binding, source_hashes, expected_boot, current):

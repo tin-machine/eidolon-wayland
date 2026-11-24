@@ -63,7 +63,7 @@ internal class UbuntuShelfReconnect(
         }
     }
 
-    private fun permitsReconnect() = reason == null || reason in transient || reason in appExit ||
+    private fun permitsReconnect() = reason == null || reason in transient || reason in appExit || reason == "DESKTOP_RECEIPT_ACK_PENDING" ||
         reason == "DESKTOP_CLEANUP_PENDING"
 
     fun retryDue(now: Long): Boolean = wanted && !refreshed && now >= next && permitsReconnect()
@@ -84,6 +84,12 @@ internal class UbuntuShelfReconnect(
     companion object {
         private val transient = setOf("CONNECT_TIMEOUT", "SSH_CONNECT_FAILED", "SSH_CONNECTION_REFUSED",
             "REMOTE_EXIT", "SSH_IO_FAILED", "AUTH_TIMEOUT", "DESKTOP_HELPER_LOST")
+        private val receiptFailures = mapOf(
+            "STATE_LIMIT" to "Ubuntu の起動枠で保存できる完了記録の件数が上限に達しました",
+            "DESKTOP_RECEIPT_OUTBOX_FULL" to "Quest で受領通知を待つ接続先が上限に達しました",
+            "DESKTOP_RECEIPT_ACK_PENDING" to "前の完了記録の受領通知を再送する必要があります",
+            "DESKTOP_RECEIPT_ACK_INVALID" to "前の完了記録と受領通知を照合できませんでした",
+        )
         private val appExit = mapOf(
             "APP_LAUNCH_TIMEOUT" to "アプリの Wayland ウィンドウが期限内に届きませんでした",
             "APP_PRESENTATION_TIMEOUT" to "ウィンドウの表示準備が時間切れになりました",
@@ -94,7 +100,7 @@ internal class UbuntuShelfReconnect(
         fun transportFailure(tx: JSONObject): String? {
             val report = tx.optJSONObject("desktop_v3_transport") ?: return null
             if (report.opt("session") != tx.opt("session")) return null
-            return report.optString("error").takeIf { it in transient }
+            return report.optString("error").takeIf { it in transient || it in receiptFailures }
         }
 
         fun appExitReason(runtime: JSONObject, tx: JSONObject): String? {
@@ -109,7 +115,7 @@ internal class UbuntuShelfReconnect(
             }
         }
 
-        private val explanations = appExit + mapOf(
+        private val explanations = appExit + receiptFailures + mapOf(
             "CONNECT_TIMEOUT" to "Ubuntu の応答待ちが時間切れになりました",
             "SSH_CONNECT_FAILED" to "Ubuntu に接続できませんでした",
             "SSH_CONNECTION_REFUSED" to "Ubuntu が SSH 接続を拒否しました",

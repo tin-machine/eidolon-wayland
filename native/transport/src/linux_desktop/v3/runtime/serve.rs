@@ -169,6 +169,9 @@ pub async fn serve<H: client::Handler>(
         if cancel.is_cancelled() {
             return Err("CANCELLED");
         }
+        // Replay the previous local finalizer's durable receipt ACK on this
+        // authenticated profile before reserving another remote owner.
+        super::super::journal::ack::flush(client, request.files, binding, cancel).await?;
         // Discovery has no session or journal side effects. Fixed entries
         // remain available if the remote GIO installation cannot list apps.
         let installed = v3::installed::discover(client, cancel).await.ok();
@@ -186,7 +189,17 @@ pub async fn serve<H: client::Handler>(
                 eidolon_model::limits::workspace_number(request.files),
                 || {
                     report.transport.journal_pending = true;
-                    journal = Some(Journal::reserve_inspection(request.files, binding, request.android_boot_count)?);
+                    match Journal::reserve_inspection(request.files, binding, request.android_boot_count) {
+                        Ok(reserved) => journal = Some(reserved),
+                        Err(error @ ("DESKTOP_RECEIPT_OUTBOX_FULL" | "DESKTOP_RECEIPT_ACK_PENDING")) => {
+                            // This check runs under the journal lock before publication.
+                            report.transport.journal_pending = !matches!(
+                                v3::journal::pending(request.files), Ok(None)
+                            );
+                            return Err(error);
+                        }
+                        Err(error) => return Err(error),
+                    }
                     report.journal_stage = Some(Stage::Reserved);
                     #[cfg(feature = "host-acceptance")]
                     request.capture.observe("journal_reserved", serde_json::json!({"stage":"reserved"}));
@@ -370,6 +383,16 @@ pub async fn serve<H: client::Handler>(
 
     if let Err(error) = result {
         report.fault(error);
+        if !report.transport.journal_pending {
+            // Bootstrap never received a grant. No new local or remote owner
+            // exists to retire, even when the capacity response was lost.
+            report.actor_finished = true;
+            publish(&report);
+            return RunOutcome {
+                report,
+                handoff: None,
+            };
+        }
     }
     report.transport.phase = TransportPhase::Stopping;
     publish(&report);

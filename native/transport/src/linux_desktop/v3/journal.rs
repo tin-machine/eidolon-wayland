@@ -25,6 +25,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(super) mod ack;
+
 const DIRECTORY: &str = "linux-desktop-v3-state";
 const LIMIT: usize = 32768;
 
@@ -83,6 +85,8 @@ struct Record {
     // requires removing this proof durably before exposing the permit path.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     local_launch_blocked: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    receipt_retirement: bool,
     cleanup: Cleanup,
 }
 fn exact_object(value: &serde_json::Value, keys: &[&str]) -> Result<(), &'static str> {
@@ -124,6 +128,12 @@ impl Record {
             if value["local_launch_blocked"] != true {
                 return Err("DESKTOP_V3_JOURNAL_INVALID");
             }
+        }
+        if let Some(enabled) = value.get("receipt_retirement") {
+            if enabled != true {
+                return Err("DESKTOP_V3_JOURNAL_INVALID");
+            }
+            fields.push("receipt_retirement");
         }
         exact_object(&value, &fields)?;
         exact_object(
@@ -430,6 +440,9 @@ impl Journal {
         check_directory(&directory, true)?;
         let guard = lock(&directory)?;
         let path = directory.join("pending.json");
+        if local_launch_blocked {
+            ack::check_capacity(files, binding)?;
+        }
         let record = Record {
             schema: 2,
             backend: "linux_desktop".into(),
@@ -443,6 +456,7 @@ impl Journal {
             android_boot_count,
             local_retired: false,
             local_launch_blocked,
+            receipt_retirement: local_launch_blocked,
             cleanup: Cleanup::default(),
         };
         let bytes = record.bytes()?;
@@ -704,6 +718,13 @@ impl Journal {
         }
         if !self.clear_unlinked {
             self.unchanged()?;
+            if self.record.receipt_retirement {
+                let files = self
+                    .directory
+                    .parent()
+                    .ok_or("DESKTOP_V3_JOURNAL_INVALID")?;
+                ack::enqueue(files, &self.record)?;
+            }
             std::fs::remove_file(&self.path).map_err(|_| "DESKTOP_V3_JOURNAL_CLEAR_FAILED")?;
             self.clear_unlinked = true;
         }

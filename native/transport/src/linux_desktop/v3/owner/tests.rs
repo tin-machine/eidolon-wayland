@@ -163,3 +163,40 @@ fn inspect_stop_ack_requires_the_requested_validated_stop_and_complete_cleanup()
     owner.fail("DESKTOP_V3_PROTOCOL_INVALID");
     assert!(!owner.requested_inspect_stop_complete());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capacity_rejection_returns_without_a_pending_owner_or_catalog() {
+    use super::super::runtime::{Inspection, RunCapture, serve};
+    use eidolon_model::ids::CommandSeq;
+    use std::sync::Arc;
+
+    let b = binding();
+    let tag = b.scope();
+    let ssh = crate::forward::openssh::OpenSsh::with_forced_command(move |_| {
+        Some(format!("echo full {tag}"))
+    })
+    .await;
+    let files = Temp::new();
+    let router = Arc::new(crate::forward::Router::new(b.session()));
+    let capture = RunCapture::new(b, evidence(), CommandSeq::new(1).unwrap(), 1).unwrap();
+    let (_sender, rx) = tokio::sync::mpsc::channel(1);
+    let outcome = serve(
+        &ssh.client,
+        &router,
+        Inspection {
+            capture: Arc::new(capture),
+            files: &files.0,
+            android_boot_count: Some(4),
+        },
+        rx,
+        &CancellationToken::new(),
+        |report| assert!(!report.transport.journal_pending),
+        |_, _, _| panic!("rejected admission published a catalog"),
+    )
+    .await;
+    assert_eq!(outcome.report.error, Some("STATE_LIMIT"));
+    assert!(outcome.report.actor_finished);
+    assert!(!outcome.report.cleanup_pending);
+    assert!(outcome.handoff.is_none());
+    assert!(super::super::journal::pending(&files.0).unwrap().is_none());
+}

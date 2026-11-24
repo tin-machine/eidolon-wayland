@@ -215,6 +215,11 @@ import linux_desktop_v3_bundle as validator
 captured = contract.Pins.parse(contract.canonical_json(pins))
 verified_bundle = validator.validate_bundle(home, captured, source_hashes, inventory_raw.encode("utf-8"))
 import eidolon_linux_desktop_session_v3 as helper
+if argv[0] == "serve" or receipt_ack is not None:
+    raise SystemExit(helper.main(argv, verified_bundle=verified_bundle, source_hashes=source_hashes,
+                                 workspace_slot=workspace_slot, admission=argv[0] == "serve",
+                                 receipt_ack=receipt_ack))
+# Old captured helpers keep their original recovery call signature.
 if workspace_slot > 1:
     raise SystemExit(helper.main(argv, verified_bundle=verified_bundle, source_hashes=source_hashes,
                                  workspace_slot=workspace_slot))

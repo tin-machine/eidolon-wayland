@@ -202,6 +202,8 @@ pub fn validate_hashes(hashes: &SourceHashes) -> Result<(), &'static str> {
 /// Only Recover can select these bundles; Serve stays pinned
 /// to current compiled sources. The digest contains source hashes only.
 pub(super) fn validate_recovery_hashes(hashes: &SourceHashes) -> Result<(), &'static str> {
+    const PRE_RECEIPT_ACK: &str =
+        "4e54de66db28b380986609cc87bf514c0ae0791f7dfb20e6332b8eb22acee125";
     const PRE_CATALOG: &str = "2f227f90630280bc28a8229664f1eb7e962d6f954b95f78a1a9dfb7b357dda5b";
     const PRE_WORKDIR_CHECK: &str =
         "cf89c96a3ca32cb70bfb481eb7dccc2be0f228bd569592b653a05f7660ad78d4";
@@ -214,7 +216,7 @@ pub(super) fn validate_recovery_hashes(hashes: &SourceHashes) -> Result<(), &'st
     super::source_map(&value)?;
     if !matches!(
         eidolon_model::linux_desktop_v3::digest(&value).as_deref(),
-        Ok(PRE_CATALOG | PRE_WORKDIR_CHECK | PRE_COMPANION | TWO_WORKSPACES)
+        Ok(PRE_CATALOG | PRE_WORKDIR_CHECK | PRE_COMPANION | TWO_WORKSPACES | PRE_RECEIPT_ACK)
     ) {
         return Err("APP_V3_SOURCE_CHANGED");
     }
@@ -288,6 +290,16 @@ mod tests {
     #[test]
     fn old_installed_entries_sources_are_admitted_only_for_recovery() {
         let mut old = current_hashes();
+        old.insert(
+            "eidolon_linux_desktop_v3.py".into(),
+            "503a3e88cd56a424e192bc5e4c3e43868245881ae6c48cc0bf9c4516c0d52253".into(),
+        );
+        old.insert(
+            "eidolon_linux_desktop_session_v3.py".into(),
+            "1ea24deb0b3aee6f47c1d7c300d5ad86f6bde543735529552d7e793e53d98213".into(),
+        );
+        assert!(validate_hashes(&old).is_err());
+        validate_recovery_hashes(&old).unwrap();
         old.insert(
             "linux_desktop_v3_wire.py".into(),
             "9f4296f9e66de88d3470744849048f8e31716bc73d4431e57465dd5464a076ee".into(),

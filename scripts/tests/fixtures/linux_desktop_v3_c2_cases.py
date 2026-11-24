@@ -1,4 +1,5 @@
 """Run C2 kernel ownership tests in a dedicated process, never the test runner."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -138,6 +139,106 @@ class RealC2Cases(unittest.TestCase):
         finally:
             for fd in files:
                 os.close(fd)
+
+    def test_acknowledged_sessions_can_repeat_past_the_capacity_limit(self):
+        state = self.home / core.STATE_DIR
+        state.mkdir(mode=0o700)
+        original = self.binding.context.record()
+        old = state / "r-0000000000000000.json"
+        old.write_bytes(b"old unacknowledged receipt")
+        old.chmod(0o600)
+        for seq in range(1, core.MAX_STATE_ENTRIES + 4):
+            context = C.Context.parse(C.canonical_json(dict(original, nonce=f"{seq:016x}", session=str(seq))))
+            item = W.Binding(context, self.binding.pins)
+            paths, _, hfd, sfd, fd = core.prepare_session(context)
+            # The cleanup helper requires a caller that has verified process exit and EOF.
+            # This test exercises its filesystem contract with no child processes.
+            with mock.patch.object(core, "boot_id", return_value=ORIGIN):
+                hfd, sfd = core.finish_session_cleanup(paths, (hfd, sfd, fd), item, SOURCES, ORIGIN)
+            os.close(sfd)
+            os.close(hfd)
+            proof = core.acknowledge_receipt(item, SOURCES, ORIGIN, "read", workspace_slot=1)
+            digest = hashlib.sha256(proof).hexdigest()
+            for _ in range(2):
+                reply = core.acknowledge_receipt(item, SOURCES, ORIGIN, digest, workspace_slot=1)
+                self.assertEqual(reply, f"retired {context.scope()} {digest}\n".encode())
+        self.assertEqual(list(state.iterdir()), [old])
+        self.assertEqual(old.read_bytes(), b"old unacknowledged receipt")
+
+    def test_capacity_and_denied_grant_do_not_create_a_session(self):
+        state = self.home / core.STATE_DIR
+        state.mkdir(mode=0o700)
+        def refuse():
+            self.assertFalse(any(state.glob("s-*")))
+            raise EOFError()
+        for seq in range(core.MAX_STATE_ENTRIES):
+            (state / f"r-{seq:016x}.json").touch(mode=0o600)
+        with self.assertRaises(EOFError):
+            core.prepare_session(self.binding.context, before_allocate=refuse)
+        (state / "r-eeeeeeeeeeeeeeee.json").touch(mode=0o600)
+        with self.assertRaisesRegex(core.HelperError, "STATE_LIMIT"):
+            core.prepare_session(self.binding.context, before_allocate=self.fail)
+        self.assertFalse(any(state.glob("s-*")))
+
+    def test_live_helper_requires_grant_before_prepared_and_retains_receipt_until_ack(self):
+        ctx = self.binding.context
+        state = self.home / core.STATE_DIR
+        worker = Path(__file__).with_name("linux_desktop_v3_c2_worker.py")
+        argv = [sys.executable, str(worker), str(self.home), C.canonical_json(ctx.record()).decode(),
+                C.canonical_json(self.binding.pins.record()).decode()]
+        def start():
+            return subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        with start() as child:
+            self.assertEqual(child.stdout.readline(), f"ready {ctx.scope()}\n".encode())
+            self.assertEqual(list(state.iterdir()), [])
+            child.communicate(b"reserve " + b"0" * 64 + b"\n", timeout=5)
+            self.assertNotEqual(child.returncode, 0)
+            self.assertEqual(list(state.iterdir()), [])
+        with start() as child:
+            self.assertEqual(child.stdout.readline(), f"ready {ctx.scope()}\n".encode())
+            child.stdin.write(f"reserve {ctx.scope()}\n".encode())
+            child.stdin.flush()
+            prepared = json.loads(child.stdout.readline())
+            self.assertEqual(prepared["event"]["type"], "prepared")
+            stop = {"schema": 1, "protocol_revision": C.REVISION, "scope": ctx.scope(),
+                    "context": ctx.record(), "sequence": "1", "command": {"type": "stop", "payload": {}}}
+            output, _ = child.communicate(C.canonical_json(stop) + b"\n", timeout=5)
+            self.assertEqual(child.returncode, 0)
+            self.assertEqual(json.loads(output)["event"]["type"], "stopped")
+        origin = prepared["event"]["payload"]["boot_id"]
+        raw = core.acknowledge_receipt(self.binding, SOURCES, origin, "read", workspace_slot=1)
+        self.assertTrue(json.loads(raw)["pipes_eof"])
+        digest = hashlib.sha256(raw).hexdigest()
+        core.acknowledge_receipt(self.binding, SOURCES, origin, digest, workspace_slot=1)
+        self.assertEqual(list(state.iterdir()), [])
+
+    def test_receipt_ack_rejects_mismatch_and_uncertain_cleanup(self):
+        self.abandoned_session()
+        status, _ = self.recover(ORIGIN)
+        self.assertEqual(status, 0)
+        nonce = self.binding.context.record()["nonce"]
+        state = self.home / core.STATE_DIR
+        file = state / ("r-" + nonce + ".json")
+        raw = file.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        def ack(action, sources=SOURCES, boot=ORIGIN):
+            return core.acknowledge_receipt(self.binding, sources, boot, action, workspace_slot=1)
+        for op in (lambda: ack("0" * 64), lambda: ack(digest, boot=CURRENT),
+                   lambda: ack(digest, sources={"wrong.py":"a" * 64})):
+            with self.assertRaises((core.HelperError, C.ContractError)):
+                op()
+        for name in ("c-" + nonce + ".json", "s-" + nonce):
+            marker = state / name
+            marker.touch(mode=0o600)
+            with self.assertRaises(core.HelperError):
+                ack(digest)
+            marker.unlink()
+        self.assertEqual(file.read_bytes(), raw)
+        self.assertEqual(ack("read"), raw)
+        ack(digest)
+        self.assertFalse(file.exists())
+        with self.assertRaises(FileNotFoundError):
+            ack("read")
 
     def test_existing_receipt_with_explicit_expected_boot_can_be_retried(self):
         paths, _, hfd, sfd, fd = self.prepare()
