@@ -1,4 +1,4 @@
-# Quest 3 開発開始前チェック — スリープ抑止と Wi-Fi ADB
+# Quest 3 開発開始前チェック — スリープ抑止と USB / Wi-Fi ADB
 
 **用途:** Codexが実機開発を始める前に、対象・現在の設定・所有者を確認し、不足する開発用設定を適用する運用runbook。
 
@@ -27,7 +27,7 @@
 
 ## 2. 対象と開発セッションの所有者を固定する
 
-- Wi-Fi ADBを確立したホストで調べる。Ubuntu Desktop経由なら、まず既存のSSH経路でそのホストへ入り、そこで承認済みのQuestを選ぶ。`adb devices -l`の最初の行を無条件に選ばず、以降は必ず`adb -s`または`metavr -d`で対象を指定する。[ADB][adb]
+- USBで直結している場合はケーブルを挿したホスト、Wi-Fiの場合は既存のADB接続を管理するホストで調べる。Ubuntu Desktop上のADBに作業コンテナから接続する構成では、既存のSSH経路（同一ホストなら `ssh localhost`）を使う。SDKのADBがPATHにない構成では `/opt/android-sdk/platform-tools/adb` など実際の導入先を使う。`adb devices -l`の最初の行を無条件に選ばず、以降は必ず`adb -s`または`metavr -d`で対象を指定する。[ADB][adb]
 - **同じ物理QuestのUSB serialとWi-Fiの`IP:port`は、別の端末として扱わない。** 固定の管理IDと現在のtransportを対応付け、既存の端末管理・排他を引き継ぐ。
 - 同じQuestを他のCodex/job/Developer Hubが操作していないか、共有hostの所有記録を確認する。並行利用なら端末操作を直列化し、一つの開発セッションが設定を管理する。所有者が不明な設定を解除しない。
 - 現在の依頼・継続開発の引継ぎ・過去の設定記録を確認する。短いテストの終了と、端末を使う開発セッション全体の終了を区別する。
@@ -153,7 +153,7 @@ timeout 15s adb -s "$quest_serial" shell dumpsys power > "$quest_run_dir/power-a
 timeout 15s adb -s "$quest_serial" shell dumpsys battery > "$quest_run_dir/battery-after.txt"
 ```
 
-短い観測区間（例: 30〜60秒、1回の待機は60秒以内）で接続と起動状態を再確認し、CLI経路ならセンサー状態も照合する。観測時間と未確認の長時間維持を分けて記録する。未装着を確認できなければ、未装着での維持を検証済みとはしない。
+短い観測区間（例: 30〜60秒、1回の待機は60秒以内）を置き、適用時と同じADB経路で接続と `mWakefulness=Awake` を再確認する。CLI経路ならセンサー状態も照合する。観測時間と未確認の長時間維持を分けて記録する。未装着を確認できなければ、未装着での維持を検証済みとはしない。
 
 対象・所有者・適用/再利用した設定が整合し、必要なADB接続と起動状態が確認できたら`ready`として実機開発を始める。未確認や失敗を消して成功扱いにせず、実機操作の阻害理由を`blocked_device`へ残す。
 
