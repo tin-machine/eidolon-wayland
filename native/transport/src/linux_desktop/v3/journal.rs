@@ -441,7 +441,7 @@ impl Journal {
         let guard = lock(&directory)?;
         let path = directory.join("pending.json");
         if local_launch_blocked {
-            ack::check_capacity(&directory, binding)?;
+            ack::check_capacity(files, binding)?;
         }
         let record = Record {
             schema: 2,
@@ -719,7 +719,11 @@ impl Journal {
         if !self.clear_unlinked {
             self.unchanged()?;
             if self.record.receipt_retirement {
-                ack::enqueue(&self.directory, &self.record)?;
+                let files = self
+                    .directory
+                    .parent()
+                    .ok_or("DESKTOP_V3_JOURNAL_INVALID")?;
+                ack::enqueue(files, &self.record)?;
             }
             std::fs::remove_file(&self.path).map_err(|_| "DESKTOP_V3_JOURNAL_CLEAR_FAILED")?;
             self.clear_unlinked = true;

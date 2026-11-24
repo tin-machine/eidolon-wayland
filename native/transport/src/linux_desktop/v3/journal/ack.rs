@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 const INVALID: &str = "DESKTOP_RECEIPT_ACK_INVALID";
 const WAITING: &str = "DESKTOP_RECEIPT_ACK_PENDING";
 const MAX_PROFILES: usize = 128;
+const OUTBOX: &str = "linux-desktop-v3-receipts";
 
 fn profile_key(context: &Context) -> Result<String, &'static str> {
     let mut value = context.record();
@@ -30,8 +31,13 @@ fn exists(path: &Path) -> Result<bool, &'static str> {
     }
 }
 
-pub(super) fn check_capacity(directory: &Path, binding: &Binding) -> Result<(), &'static str> {
-    if exists(&path(directory, binding.context())?)? {
+pub(super) fn check_capacity(files: &Path, binding: &Binding) -> Result<(), &'static str> {
+    let directory = files.join(OUTBOX);
+    if !exists(&directory)? {
+        return Ok(());
+    }
+    check_directory(&directory, true)?;
+    if exists(&path(&directory, binding.context())?)? {
         return Err(WAITING);
     }
     let mut profiles = 0;
@@ -56,20 +62,29 @@ fn encode(record: &Record, digest: Option<&str>) -> Result<Vec<u8>, &'static str
     canonical_json(&value).map_err(|_| INVALID)
 }
 
-pub(super) fn enqueue(directory: &Path, record: &Record) -> Result<(), &'static str> {
-    let target = path(directory, &record.context)?;
+pub(super) fn enqueue(files: &Path, record: &Record) -> Result<(), &'static str> {
+    let directory = files.join(OUTBOX);
+    match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
+        Ok(()) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(_) => return Err(INVALID),
+    }
+    check_directory(&directory, true)?;
+    // Persist the outbox directory itself before removing the pending journal.
+    sync(files)?;
+    let target = path(&directory, &record.context)?;
     let bytes = encode(record, None)?;
     if exists(&target)? {
         if read(&target)?.1 != bytes {
             return Err(WAITING);
         }
     } else {
-        let candidate = temporary(directory, &bytes)?;
+        let candidate = temporary(&directory, &bytes)?;
         let result = exclusive(&candidate, &target);
         let _ = std::fs::remove_file(candidate);
         result?;
     }
-    sync(directory)
+    sync(&directory)
 }
 
 struct Outbox {
@@ -95,9 +110,14 @@ impl Outbox {
         if exists(&directory.join("pending.json"))? {
             return Err("DESKTOP_CLEANUP_PENDING");
         }
+        let directory = files.join(OUTBOX);
+        if !exists(&directory)? {
+            return Ok(None);
+        }
+        check_directory(&directory, true)?;
         let path = path(&directory, active.context())?;
         if !exists(&path)? {
-            check_capacity(&directory, active)?;
+            check_capacity(files, active)?;
             return Ok(None);
         }
         let (_, raw) = read(&path)?;
@@ -233,9 +253,9 @@ mod tests {
         let mut j = Journal::reserve_inspection(&dir.0, &b, Some(7)).unwrap();
         j.prepared(BOOT).unwrap();
         j.finish(complete()).unwrap();
-        assert!(!exists(&path(&j.directory, b.context()).unwrap()).unwrap());
+        assert!(!exists(&path(&dir.0.join(OUTBOX), b.context()).unwrap()).unwrap());
         // Crash after publishing the local ACK intent, before clearing pending.
-        enqueue(&j.directory, &j.record).unwrap();
+        enqueue(&dir.0, &j.record).unwrap();
         drop(j);
         assert!(matches!(
             Outbox::load(&dir.0, &b),
@@ -246,6 +266,11 @@ mod tests {
             .unwrap();
         j.clear().unwrap();
         drop(j);
+        let journal_files: Vec<_> = std::fs::read_dir(dir.0.join(DIRECTORY))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(journal_files, vec!["owner.lock"]);
         assert!(matches!(
             Journal::reserve_inspection(&dir.0, &b, Some(7)),
             Err(WAITING)
