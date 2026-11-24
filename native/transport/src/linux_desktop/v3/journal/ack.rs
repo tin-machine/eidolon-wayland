@@ -62,6 +62,35 @@ fn encode(record: &Record, digest: Option<&str>) -> Result<Vec<u8>, &'static str
     canonical_json(&value).map_err(|_| INVALID)
 }
 
+// The journal lock serializes writers for the entire workspace. A process
+// crash may leave just this one scratch file; the previous authoritative
+// journal or outbox entry still exists until publication has completed.
+fn stage(directory: &Path, bytes: &[u8]) -> Result<PathBuf, &'static str> {
+    let name = directory.join(".receipt-write");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(&name)
+        .map_err(|_| INVALID)?;
+    let m = file.metadata().map_err(|_| INVALID)?;
+    if !m.is_file()
+        || m.nlink() != 1
+        || m.uid() != unsafe { libc::getuid() }
+        || m.mode() & 0o777 != 0o600
+        || m.len() > LIMIT as u64
+    {
+        return Err(INVALID);
+    }
+    file.set_len(0)
+        .and_then(|()| file.write_all(bytes))
+        .and_then(|()| file.sync_all())
+        .map_err(|_| "DESKTOP_V3_JOURNAL_SYNC_FAILED")?;
+    Ok(name)
+}
+
 pub(super) fn enqueue(files: &Path, record: &Record) -> Result<(), &'static str> {
     let directory = files.join(OUTBOX);
     match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
@@ -79,7 +108,7 @@ pub(super) fn enqueue(files: &Path, record: &Record) -> Result<(), &'static str>
             return Err(WAITING);
         }
     } else {
-        let candidate = temporary(&directory, &bytes)?;
+        let candidate = stage(&directory, &bytes)?;
         let result = exclusive(&candidate, &target);
         let _ = std::fs::remove_file(candidate);
         result?;
@@ -173,7 +202,7 @@ impl Outbox {
         let hash = crate::linux_desktop::hash(raw);
         let bytes = encode(&self.record, Some(&hash))?;
         self.unchanged()?;
-        let tmp = temporary(&self.directory, &bytes)?;
+        let tmp = stage(&self.directory, &bytes)?;
         let result = std::fs::rename(&tmp, &self.path).map_err(|_| INVALID);
         let _ = std::fs::remove_file(tmp);
         result?;
@@ -275,6 +304,16 @@ mod tests {
             Journal::reserve_inspection(&dir.0, &b, Some(7)),
             Err(WAITING)
         ));
+        // Simulate an interrupted digest write before its atomic publication.
+        let scratch = dir.0.join(OUTBOX).join(".receipt-write");
+        OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&scratch)
+            .unwrap()
+            .write_all(b"{")
+            .unwrap();
         let mut box1 = Outbox::load(&dir.0, &b).unwrap().unwrap();
         let mut fresh = b.context().record();
         fresh["nonce"] = serde_json::json!("000000000000002a");
@@ -287,6 +326,7 @@ mod tests {
         let mut raw = canonical_json(&receipt()).unwrap();
         raw.push(b'\n');
         box1.accept_receipt(&raw).unwrap();
+        assert!(!scratch.exists());
         drop(box1); // lost response; reopen with exactly the same digest
         let saved = Outbox::load(&dir.0, &b).unwrap().unwrap();
         let digest = crate::linux_desktop::hash(&raw);
