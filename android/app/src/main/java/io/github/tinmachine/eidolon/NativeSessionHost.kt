@@ -207,7 +207,7 @@ object NativeSessionHost {
             val state = launcherState
             when {
                 state.canInspect || state.canRefresh -> inspectLinuxDesktop()
-                state.canConnect && !connectPending -> { inspectAfterShelfConnect = true; enqueueConnect() }
+                state.canConnect && !connectPending -> inspectAfterShelfConnect = enqueueConnect() != null
                 state.canDiscover -> inspectLinuxDesktop()
                 connectPending -> inspectAfterShelfConnect = true
             }
@@ -1618,8 +1618,10 @@ object NativeSessionHost {
         if(value!=launcherState) launcherUpdate(value)
         if (inspectAfterShelfConnect && (canInspect || canRefresh)) {
             inspectAfterShelfConnect = false
-            inspectLinuxDesktop()
-        } else if (inspectAfterShelfConnect && !connectPending && view.firstFailure != null) inspectAfterShelfConnect = false
+            linuxDesktopV3Action("inspect", null)
+        } else if (inspectAfterShelfConnect && !connectPending && phase in setOf("Failed", "Disconnected")) {
+            inspectAfterShelfConnect = false
+        }
     }
 
     private val tickQueued = AtomicBoolean(false)
