@@ -949,6 +949,7 @@ impl Runtime {
                 let mut termux_grace: Option<(String, eidolon_model::gui_session_policy::GuiUnresponsiveGrace)> = None;
                 use eidolon_transport::linux_desktop::systemd::{Phase as SystemdPhase, Request as SystemdRequest};
                 let mut systemd_launch: Option<(eidolon_model::ids::CommandSeq, eidolon_model::gui_session_policy::GuiUnresponsiveGrace)> = None;
+                let mut systemd_revision = None;
                 let mut systemd_display_sent = false;
                 let mut systemd_window_deadline: Option<Instant> = None;
                 let mut systemd_had_root = false;
@@ -1359,7 +1360,8 @@ impl Runtime {
                                     }
                                 } else if systemd {
                                     if let (Some((request, grace)), Some(local_socket)) = (systemd_launch, current.socket()) {
-                                        io.systemd_request(current.session(), SystemdRequest::Launch { request, local_socket, grace })
+                                        io.systemd_request(current.session(), SystemdRequest::Launch { request, local_socket, grace,
+                                            desktop_revision: systemd_revision.clone() })
                                     } else { Status::NotReady }
                                 } else if desktop {
                                     if let Some(launch) = desktop_launch.take() {
@@ -1971,7 +1973,7 @@ impl Runtime {
                                 // origin-bound window admission before a Launch can proceed.
                                 // I2's transport API is intentionally inaccessible to
                                 // a bare untrusted/unsynchronized Command::Launch.
-                                Command::UbuntuSystemdChromeLaunch { session, request_id, gui_unresponsive_grace_seconds, .. } => {
+                                Command::UbuntuSystemdLaunch { session, request_id, gui_unresponsive_grace_seconds, desktop_revision, .. } => {
                                     if ssh.session != Some(*session) { Status::Stale }
                                     else if native_busy { Status::Busy }
                                     else if config.paths.is_none() || ubuntu_systemd_binding.is_none()
@@ -1982,6 +1984,7 @@ impl Runtime {
                                         let nonce = generation[..16].to_string();
                                         let mode = eidolon_model::commands::AppMode::UbuntuSystemd;
                                         systemd_launch = Some((*request_id, *gui_unresponsive_grace_seconds));
+                                        systemd_revision = desktop_revision.clone();
                                         systemd_display_sent = false;
                                         systemd_had_root = false;
                                         systemd_local_sent = false;
@@ -2000,6 +2003,7 @@ impl Runtime {
                                         Status::Busy
                                     } else if !state.snapshot.activity_visible || state.snapshot.xr_state != XrState::Focused
                                         || !ssh.systemd_chrome.as_ref().is_some_and(|report| report.phase == SystemdPhase::Running
+                                            && report.app_id.as_deref() == Some(eidolon_transport::linux_desktop::systemd::CHROME_DESKTOP_ID)
                                             && report.launch_request == Some(*launch))
                                     {
                                         Status::NotReady

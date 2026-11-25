@@ -1,15 +1,15 @@
-use super::chrome::chrome_app_key;
+use super::application::{self, Application};
 use super::{
-    ActiveState, Capabilities, ChromeControl, ChromeStorage, ExchangeError, Generation,
-    InvocationId, Journal, JournalRecord, UnitStatus, capability_command, chrome_control_command,
-    chrome_start_command, exchange, inspect_command,
+    ActiveState, Capabilities, CatalogApp, ChromeControl, ChromeStorage, ExchangeError, Generation,
+    InvocationId, Journal, JournalRecord, UnitStatus, app_control_command, app_start_command,
+    capability_command, exchange, inspect_command,
 };
 use crate::forward::{Lease, Router};
 use eidolon_model::{
     connection_profile::Profile,
     gui_session_policy::GuiUnresponsiveGrace,
     ids::SessionId,
-    linux_desktop_v3::{StorageCapture, StorageRecord},
+    linux_desktop_v3::{Hash, StorageCapture, StorageRecord},
 };
 use russh::client;
 use std::{os::unix::fs::FileTypeExt, path::Path};
@@ -37,7 +37,8 @@ pub struct ChromeOwner<'a, H: client::Handler> {
     router: &'a Router,
     target: ChromeTarget<'a>,
     capability: Capabilities,
-    journal: Journal,
+    selected: Option<(Application, Journal)>,
+    catalog: Vec<CatalogApp>,
     route: Option<Lease>,
     forward_established: bool,
     forward_may_exist: bool,
@@ -67,22 +68,54 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         if capability.uid != target.uid {
             return Err("SYSTEMD_OWNER_MISMATCH");
         }
-        let journal = Journal::open(
-            target.files,
-            target.storage.host_user_binding().as_str(),
-            target.storage.profile_storage_id(),
-            &chrome_app_key(),
-        )?;
+        let catalog = application::discover(client, cancel)
+            .await
+            .unwrap_or_default();
         Ok(Self {
             client,
             router,
             target,
             capability,
-            journal,
+            selected: None,
+            catalog,
             route: None,
             forward_established: false,
             forward_may_exist: false,
         })
+    }
+
+    pub(crate) fn catalog(&self) -> &[CatalogApp] {
+        &self.catalog
+    }
+
+    pub(crate) fn chrome_available(&self) -> bool {
+        self.capability.chrome.is_some()
+    }
+
+    pub(crate) async fn select(
+        &mut self,
+        revision: Option<&Hash>,
+        cancel: &CancellationToken,
+    ) -> Result<String, &'static str> {
+        if self.selected.is_some() {
+            return Err("SYSTEMD_CLEANUP_PENDING");
+        }
+        let application = match revision {
+            Some(revision) => {
+                application::resolve(self.client, &self.catalog, revision, cancel).await?
+            }
+            None => Application::chrome(&self.capability)?,
+        };
+        let journal = Journal::open(
+            self.target.files,
+            self.target.storage.host_user_binding().as_str(),
+            self.target.storage.profile_storage_id(),
+            &application.app_key(),
+        )?;
+        let id = application.id.clone();
+        self.selected = Some((application, journal));
+        self.recover_pending(cancel).await?;
+        Ok(id)
     }
 
     pub fn transport_connected(&self) -> bool {
@@ -94,7 +127,16 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
     }
 
     pub fn pending(&self) -> Option<&JournalRecord> {
-        self.journal.record()
+        self.selected
+            .as_ref()
+            .and_then(|(_, journal)| journal.record())
+    }
+
+    fn journal(&mut self) -> Result<&mut Journal, &'static str> {
+        self.selected
+            .as_mut()
+            .map(|(_, journal)| journal)
+            .ok_or("SYSTEMD_APP_UNAVAILABLE")
     }
 
     fn storage(&self) -> ChromeStorage<'a> {
@@ -121,26 +163,28 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         }
         let generation = Generation::new();
         let remote_socket = self.capability.forward_socket(generation)?;
-        let command = chrome_start_command(
+        let application = &self.selected.as_ref().ok_or("SYSTEMD_APP_UNAVAILABLE")?.0;
+        let command = app_start_command(
             generation,
             &self.capability,
             self.storage(),
+            application,
             self.target.waypipe_hash,
             grace,
         )?;
-        self.journal
-            .reserve(generation, &self.capability.boot_id, grace)?;
-        let response = match exchange(self.client, command, cancel, || {
-            self.journal
-                .sent(generation)
-                .map_err(|_| ExchangeError::NotSent)
+        let boot_id = self.capability.boot_id.clone();
+        self.journal()?.reserve(generation, &boot_id, grace)?;
+        let client = self.client;
+        let journal = self.journal()?;
+        let response = match exchange(client, command, cancel, || {
+            journal.sent(generation).map_err(|_| ExchangeError::NotSent)
         })
         .await
         {
             Ok(response) => response,
             Err(ExchangeError::NotSent) => {
-                self.journal.stopping(generation)?;
-                self.journal.retire(generation, false, true)?;
+                self.journal()?.stopping(generation)?;
+                self.journal()?.retire(generation, false, true)?;
                 return Err("SYSTEMD_COMMAND_NOT_SENT");
             }
             Err(error) => return Err(exchange_code(error)),
@@ -149,7 +193,7 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
             return Err("SYSTEMD_LAUNCH_UPDATE_UNKNOWN");
         }
         let invocation = self.await_active(generation, cancel).await?;
-        self.journal.identify(generation, invocation)?;
+        self.journal()?.identify(generation, invocation)?;
         // Once the service is active its RuntimeDirectory exists; the service itself
         // waits for this socket before it starts Waypipe or Chrome.
         let lease = self.router.arm(
@@ -173,7 +217,7 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         if !self.forward_established || self.route.is_none() {
             return Err("FORWARD_SETUP_FAILED");
         }
-        self.journal.running(generation)
+        self.journal()?.running(generation)
     }
 
     pub async fn inspect(
@@ -232,7 +276,7 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
     }
 
     pub async fn request_stop(&mut self, generation: Generation) -> Result<(), &'static str> {
-        self.journal.stopping(generation)?;
+        self.journal()?.stopping(generation)?;
         let command = self.control(ChromeControl::Stop, generation)?;
         let cancel = CancellationToken::new();
         exchange(self.client, command, &cancel, || Ok(()))
@@ -278,8 +322,8 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         }
         let generation = record.generation().ok_or("SYSTEMD_JOURNAL_INVALID")?;
         if record.remote_retired() || record.stage() == super::JournalStage::Reserved {
-            self.journal.stopping(generation)?;
-            self.journal.retire(generation, false, true)?;
+            self.journal()?.stopping(generation)?;
+            self.journal()?.retire(generation, false, true)?;
             return Ok(());
         }
         if record.boot_id() == self.capability.boot_id {
@@ -291,7 +335,7 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
                 else {
                     return Err("SYSTEMD_START_OUTCOME_UNKNOWN");
                 };
-                self.journal.identify(generation, invocation)?;
+                self.journal()?.identify(generation, invocation)?;
             }
             let _ = self.request_stop(generation).await;
         }
@@ -307,7 +351,7 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         let remote_already_retired = pending.remote_retired();
         let old_boot_ended = pending.boot_id() != self.capability.boot_id;
         let can_reap_timer = pending.invocation().is_some();
-        self.journal.stopping(generation)?;
+        self.journal()?.stopping(generation)?;
         let cancel = CancellationToken::new();
         if !old_boot_ended && !remote_already_retired {
             if can_reap_timer {
@@ -327,7 +371,7 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
                 return Err("SYSTEMD_CLEANUP_PENDING");
             }
         }
-        self.journal.retire(generation, false, true)?;
+        self.journal()?.retire(generation, false, true)?;
         Ok(())
     }
 
@@ -335,7 +379,7 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         if !self.forward_retired() {
             return Err("SYSTEMD_CLEANUP_PENDING");
         }
-        self.journal.retire(generation, true, false)
+        self.journal()?.retire(generation, true, false)
     }
 
     fn control(
@@ -354,12 +398,19 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
             return Err("SYSTEMD_OWNER_MISMATCH");
         }
         let invocation = pending.invocation().ok_or("SYSTEMD_INVOCATION_UNKNOWN")?;
-        chrome_control_command(
+        let app_key = self
+            .selected
+            .as_ref()
+            .ok_or("SYSTEMD_APP_UNAVAILABLE")?
+            .0
+            .app_key();
+        app_control_command(
             operation,
             generation,
             invocation,
             &self.capability,
             self.storage(),
+            &app_key,
         )
     }
 }

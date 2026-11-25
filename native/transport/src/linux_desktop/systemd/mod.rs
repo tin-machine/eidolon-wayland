@@ -1,10 +1,13 @@
 //! Ubuntu user-systemd transport. Capability probes run on the actor's pinned SSH connection.
-use super::{boot_identity, hex};
+use super::{boot_identity, hash, hex};
 use eidolon_model::ubuntu_systemd::valid_absolute_path as absolute_path;
 use std::path::PathBuf;
 
+mod application;
+pub use application::CatalogApp;
 mod chrome;
-pub use chrome::{ChromeControl, ChromeStorage, chrome_control_command, chrome_start_command};
+pub use chrome::{CHROME_DESKTOP_ID, ChromeControl, ChromeStorage};
+use chrome::{app_control_command, app_start_command};
 mod driver;
 pub use driver::{Phase, Report, Request};
 pub(crate) use driver::{Tick, serve};
@@ -113,7 +116,7 @@ pub struct Capabilities {
     pub uid: u32,
     pub home: PathBuf,
     pub waypipe: PathBuf,
-    pub chrome: PathBuf,
+    pub chrome: Option<PathBuf>,
 }
 
 impl Capabilities {
@@ -143,7 +146,10 @@ impl Capabilities {
             .ok()
             .filter(|number| *number != 0 && *number != u32::MAX && number.to_string() == uid)
             .ok_or(INVALID)?;
-        if !boot_identity(boot_id) || ![home, waypipe, chrome].into_iter().all(absolute_path) {
+        if !boot_identity(boot_id)
+            || ![home, waypipe].into_iter().all(absolute_path)
+            || (!chrome.is_empty() && !absolute_path(chrome))
+        {
             return Err(INVALID);
         }
         Ok(Self {
@@ -151,7 +157,7 @@ impl Capabilities {
             uid: numeric_uid,
             home: home.into(),
             waypipe: waypipe.into(),
-            chrome: chrome.into(),
+            chrome: (!chrome.is_empty()).then(|| PathBuf::from(chrome)),
         })
     }
 

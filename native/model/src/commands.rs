@@ -528,11 +528,13 @@ pub enum Command {
         request_id: CommandSeq,
         session: crate::ids::SessionId,
     },
-    UbuntuSystemdChromeLaunch {
+    UbuntuSystemdLaunch {
         schema: u32,
         request_id: CommandSeq,
         session: crate::ids::SessionId,
         gui_unresponsive_grace_seconds: GuiUnresponsiveGrace,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        desktop_revision: Option<crate::linux_desktop_v3::Hash>,
     },
     UbuntuSystemdChromeNewWindow {
         schema: u32,
@@ -840,7 +842,7 @@ impl Command {
             | Self::LinuxDesktopV3Inspect { schema, .. }
             | Self::LinuxDesktopV3Launch { schema, .. }
             | Self::LinuxDesktopV3Recover { schema, .. }
-            | Self::UbuntuSystemdChromeLaunch { schema, .. }
+            | Self::UbuntuSystemdLaunch { schema, .. }
             | Self::UbuntuSystemdChromeNewWindow { schema, .. }
             | Self::GuiLiveness { schema, .. }
             | Self::LaunchTerminal { schema, .. }
@@ -1054,7 +1056,7 @@ impl Command {
             | Self::LinuxDesktopV3Inspect { request_id, .. }
             | Self::LinuxDesktopV3Launch { request_id, .. }
             | Self::LinuxDesktopV3Recover { request_id, .. }
-            | Self::UbuntuSystemdChromeLaunch { request_id, .. }
+            | Self::UbuntuSystemdLaunch { request_id, .. }
             | Self::UbuntuSystemdChromeNewWindow { request_id, .. }
             | Self::GuiLiveness { request_id, .. }
             | Self::LaunchTerminal { request_id, .. }

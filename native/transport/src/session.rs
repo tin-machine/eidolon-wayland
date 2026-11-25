@@ -253,6 +253,7 @@ pub struct CatalogUi {
     /// Exact B1 descriptor, published only after the authenticated Inspect.
     pub desktop_v3: Option<serde_json::Value>,
     pub desktop_v3_installed: Option<Vec<desktop_v3::installed::InstalledApp>>,
+    pub ubuntu_systemd_installed: Option<Vec<linux_desktop::systemd::CatalogApp>>,
     pub desktop_v3_editor_available: bool,
     pub desktop_preview: Option<DesktopPreview>,
     pub termux_shelf: Option<serde_json::Value>,
@@ -2389,6 +2390,8 @@ async fn connection(
         let (sender, requests) = tokio::sync::mpsc::channel(4);
         let (tick_sender, ticks) = tokio::sync::watch::channel(None);
         signals.update(|s| {
+            s.catalog.session = Some(connect.session);
+            s.catalog.ubuntu_systemd_installed = Some(owner.catalog().to_vec());
             s.systemd_requests = Some(sender);
             s.systemd_ticks = Some(tick_sender);
         });

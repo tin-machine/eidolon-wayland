@@ -26,7 +26,10 @@ shift 9
 grace=$1
 waypipe=$2
 pin=$3
-chrome=$4
+cwd=$4
+app_type=$5
+shift 5
+executable=$1
 
 export XDG_RUNTIME_DIR="/run/user/$uid"
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
@@ -40,7 +43,10 @@ runtime=$XDG_RUNTIME_DIR/$runtime_name
 [ -f "$waypipe" ] && [ -x "$waypipe" ] || fail SYSTEMD_DEPENDENCY_MISSING
 fingerprint=$(sha256sum < "$waypipe")
 [ "${fingerprint%% *}" = "$pin" ] || fail WAYPIPE_PIN_MISMATCH
-[ -f "$chrome" ] && [ -x "$chrome" ] || fail SYSTEMD_APP_UNAVAILABLE
+[ -f "$executable" ] && [ -x "$executable" ] || fail SYSTEMD_APP_UNAVAILABLE
+if [ -n "$cwd" ]; then
+    [ -d "$cwd" ] && [ -x "$cwd" ] || fail SYSTEMD_APP_UNAVAILABLE
+fi
 
 owned_directory() {
     [ ! -L "$1" ] && [ -d "$1" ] && [ "$(stat -c '%u' -- "$1")" = "$uid" ] ||
@@ -58,9 +64,14 @@ profile=$base/$installation/$storage/$app_key
 owned_directory "$home"
 for dir in "$home/.local" "$home/.local/state" "$base" "$base/$installation" \
     "$base/$installation/$storage" "$profile" "$profile/home" "$profile/config" \
-    "$profile/data" "$profile/state" "$profile/Documents" "$profile/config/google-chrome"; do
+    "$profile/data" "$profile/state" "$profile/Documents"; do
     ensure_directory "$dir"
 done
+if [ "$app_type" = chrome ]; then
+    ensure_directory "$profile/config/google-chrome"
+else
+    ensure_directory "$profile/cache"
+fi
 operation_lock=$profile/.operation.lock
 profile_lock=$profile/.profile.lock
 for lock in "$operation_lock" "$profile_lock"; do
@@ -74,7 +85,7 @@ done
 
 flock --exclusive --timeout 8 --close -- "$operation_lock" /bin/sh -s -- \
     "$operation_lock" "$app_unit" "$expiry_unit" "$runtime" "$runtime_name" \
-    "$profile" "$profile_lock" "$grace" "$waypipe" "$chrome" <<'START'
+    "$profile" "$profile_lock" "$grace" "$waypipe" "$cwd" "$app_type" "$@" <<'START'
 set -eu
 operation_lock=$1
 app_unit=$2
@@ -86,7 +97,9 @@ profile_lock=$7
 grace=$8
 waypipe=$9
 shift 9
-chrome=$1
+cwd=$1
+app_type=$2
+shift 2
 
 for unit in "$app_unit" "$expiry_unit.timer" "$expiry_unit.service"; do
     [ "$(systemctl --user show --property=LoadState --value "$unit")" = not-found ] ||
@@ -106,7 +119,9 @@ runtime=$1
 profile=$2
 profile_lock=$3
 waypipe=$4
-chrome=$5
+cwd=$5
+app_type=$6
+shift 6
 attempt=0
 while [ ! -S "$runtime/p" ]; do
     attempt=$((attempt + 1))
@@ -117,10 +132,15 @@ export HOME="$profile/home"
 export XDG_CONFIG_HOME="$profile/config"
 export XDG_DATA_HOME="$profile/data"
 export XDG_STATE_HOME="$profile/state"
-export XDG_CACHE_HOME="$runtime/cache"
+if [ "$app_type" = chrome ]; then
+    export XDG_CACHE_HOME="$runtime/cache"
+    set -- "$@" --ozone-platform=wayland --no-first-run --no-default-browser-check "--user-data-dir=$XDG_CONFIG_HOME/google-chrome"
+else
+    export XDG_CACHE_HOME="$profile/cache"
+fi
 export XDG_RUNTIME_DIR="$runtime/r"
 export TMPDIR="$runtime/tmp"
-cd -- "$profile/Documents"
+cd -- "${cwd:-$profile/Documents}"
 cat > "$runtime/bus.xml" <<BUS
 <busconfig>
   <type>session</type>
@@ -136,9 +156,7 @@ BUS
 exec /usr/bin/flock --nonblock --conflict-exit-code 73 --close -- "$profile_lock" \
     /usr/bin/dbus-run-session --config-file="$runtime/bus.xml" -- \
     "$waypipe" --no-gpu --compress none --threads 1 --socket "$runtime/p" \
-    --display "$XDG_RUNTIME_DIR/w" server -- "$chrome" --ozone-platform=wayland \\
-    --no-first-run --no-default-browser-check \
-    "--user-data-dir=$XDG_CONFIG_HOME/google-chrome"
+    --display "$XDG_RUNTIME_DIR/w" server -- "$@"
 APP
 )
 if ! systemd-run --user --quiet --no-block --collect --unit="$app_unit" \
@@ -146,7 +164,7 @@ if ! systemd-run --user --quiet --no-block --collect --unit="$app_unit" \
     --property=RuntimeDirectoryMode=0700 \
     --property="RuntimeDirectory=$runtime_name $runtime_name/r $runtime_name/tmp $runtime_name/cache" \
     --property=TimeoutStartSec=15s --property=TimeoutStopSec=5s --expand-environment=no -- \
-    /bin/sh -c "$main" eidolon-app "$runtime" "$profile" "$profile_lock" "$waypipe" "$chrome"; then
+    /bin/sh -c "$main" eidolon-app "$runtime" "$profile" "$profile_lock" "$waypipe" "$cwd" "$app_type" "$@"; then
     systemctl --user --no-block stop "$expiry_unit.timer" >/dev/null 2>&1 || true
     exit 1
 fi

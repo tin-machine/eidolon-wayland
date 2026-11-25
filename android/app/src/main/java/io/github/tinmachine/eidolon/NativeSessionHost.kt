@@ -266,7 +266,7 @@ object NativeSessionHost {
                         currentSceneEpoch(), xrState.get(), activityVisible.get(), appKey = launcherAppKey(source, state, entry))
                 }
             } }
-        else if (state.systemd) launchSystemdChrome(state, entry)
+        else if (state.systemd) launchSystemdApp(state, entry)
         else if (state.v3) launchRegistered(state.runtime, state.capture, state.session, state.revision, entry.id)
         else launchRegistered(state.session, state.revision, entry.id)
     }
@@ -1113,6 +1113,27 @@ object NativeSessionHost {
         requested?.invoke(request,code)
     } } }
     private var systemdWindowRequest: Pair<String, Long>? = null
+    private var systemdCatalogSession: String? = null
+    private var systemdCatalog = emptyList<LauncherEntry>()
+    private fun updateSystemdCatalog(session: String, chromeAvailable: Boolean) {
+        if (systemdCatalogSession == session) return
+        val reply = runCatching { JSONObject(NativeBridge.nativeCatalogUi(handle)) }.getOrNull() ?: return
+        val catalog = reply.optJSONObject("catalog") ?: return
+        if (reply.optInt("code") != NativeBridge.ACCEPTED || catalog.optString("session") != session) return
+        val entries = catalog.optJSONArray("ubuntu_systemd_installed") ?: return
+        systemdCatalog = buildList {
+            if (chromeAvailable) add(systemdChromeEntry)
+            for (i in 0 until entries.length()) {
+                val entry = entries.getJSONObject(i)
+                val desktopId = entry.getString("id")
+                if (desktopId == systemdChromeEntry.desktopId) continue
+                val revision = entry.getString("revision")
+                val error = if (entry.isNull("disabled_reason")) null else entry.getString("disabled_reason")
+                add(LauncherEntry(revision, entry.getString("name"), "builtin:script", error == null, error, desktopId))
+            }
+        }
+        systemdCatalogSession = session
+    }
     private fun hasSystemdWindowSpace(runtime: JSONObject): Boolean =
         runtime.optJSONObject("window_slots")?.let { it.optInt("occupied") < it.optInt("capacity") } == true
 
@@ -1120,10 +1141,11 @@ object NativeSessionHost {
         "google-chrome.desktop", "Google Chrome", "builtin:web", true, null, "google-chrome.desktop",
     )
 
-    private fun launchSystemdChrome(expected: LauncherUi, entry: LauncherEntry) {
+    private fun launchSystemdApp(expected: LauncherUi, entry: LauncherEntry) {
         productWorker.execute { safely {
             if (handle == 0L || !linuxSystemdActive() || selectedProfileId != LinuxConnectionProfile.ID ||
-                !runtimeAdmission.open() || expected.runtime != handle || entry.id != systemdChromeEntry.id)
+                !runtimeAdmission.open() || expected.runtime != handle ||
+                systemdCatalog.none { it.id == entry.id && it.available })
                 return@safely
             val runtime = snapshot().getJSONObject("runtime")
             val transport = runtime.getJSONObject("transport")
@@ -1132,7 +1154,9 @@ object NativeSessionHost {
                 linuxAction != null || systemdWindowRequest != null) return@safely
             val request = requests.incrementAndGet().toString()
             if (report.optString("phase") == "running") {
-                if (!hasSystemdWindowSpace(runtime)) return@safely
+                if (entry.id != systemdChromeEntry.id ||
+                    report.optString("app_id") != systemdChromeEntry.desktopId ||
+                    !hasSystemdWindowSpace(runtime)) return@safely
                 val launch = report.opt("launch_request") as? String ?: return@safely
                 val open = JSONObject().put("schema", 1).put("type", "ubuntu_systemd_chrome_new_window")
                     .put("request_id", request).put("session", expected.session).put("launch", launch)
@@ -1146,14 +1170,15 @@ object NativeSessionHost {
             if (report.optString("phase") != "available" || admitLaunch(runtime, LauncherSource.UBUNTU) == null)
                 return@safely
             releasePanelTextFocus()
-            val command = JSONObject().put("schema", 1).put("type", "ubuntu_systemd_chrome_launch")
+            val command = JSONObject().put("schema", 1).put("type", "ubuntu_systemd_launch")
                 .put("request_id", request).put("session", expected.session)
                 .put(GuiSessionPolicy.WireField, guiSessionPolicy.seconds)
+            if (entry.id != systemdChromeEntry.id) command.put("desktop_revision", entry.id)
             val code = NativeBridge.nativeCommand(handle, command.toString())
             if (code == NativeBridge.ACCEPTED) {
                 linuxAction = LinuxAction("launch", expected.session, request)
                 linuxMessage = null
-            } else linuxMessage = "Chrome を起動できませんでした"
+            } else linuxMessage = "Ubuntu のアプリを起動できませんでした"
         } }
     }
 
@@ -1165,6 +1190,9 @@ object NativeSessionHost {
         val session = transport.optString("session").takeIf { connected }.orEmpty()
         val available = connected && phase == "available"
         val running = connected && phase == "running"
+        if (available && session.isNotEmpty()) updateSystemdCatalog(session, report?.optBoolean("chrome_available") == true)
+        val focusedApp = report?.optString("app_id")
+        val label = systemdCatalog.firstOrNull { it.desktopId == focusedApp }?.label ?: "Ubuntu アプリ"
         val awaitingCleanup = connected && (phase == "cleanup_pending" || transport.optBoolean("desktop_pending"))
         val active = phase in setOf("starting", "forwarded", "running")
         linuxAction?.takeIf { it.kind == "launch" }?.let { action ->
@@ -1187,14 +1215,17 @@ object NativeSessionHost {
         val message = linuxMessage ?: when {
             systemdWindowRequest != null -> "Chrome の新しい窓を開いています"
             awaitingCleanup -> "前回の Ubuntu アプリの回収を確認してください"
-            running -> "Chrome を実行中"
-            phase == "starting" || phase == "forwarded" -> "Chrome を起動中"
+            running -> "$label を実行中"
+            phase == "starting" || phase == "forwarded" -> "$label を起動中"
             available -> "Ubuntu に接続済み"
             transport.optString("state") == "Failed" -> "Ubuntu の systemd、Waypipe、Chrome を確認してください"
             else -> "Ubuntu に接続してください"
         }
-        val canLaunch = !busy && (available || running && hasSystemdWindowSpace(runtime))
-        val entries = if (available || active) listOf(systemdChromeEntry.copy(available = canLaunch)) else emptyList()
+        val entries = if (available || active) systemdCatalog.map { entry ->
+            val addChromeWindow = running && entry.id == systemdChromeEntry.id &&
+                focusedApp == systemdChromeEntry.desktopId && hasSystemdWindowSpace(runtime)
+            entry.copy(available = entry.available && !busy && (available || addChromeWindow))
+        } else emptyList()
         launcherUpdate(LauncherUi(
             session = session, connected = available || active, busy = busy,
             revision = "ubuntu_systemd_v1", runtime = handle, capture = runtimeSettingsCapture.orEmpty(),

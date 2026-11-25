@@ -32,6 +32,6 @@ fingerprint=$(sha256sum < "$waypipe")
 
 chrome=$(command -v "$3" || command -v "$4") &&
     chrome=$(realpath -e -- "$chrome") &&
-    [ -f "$chrome" ] && [ -x "$chrome" ] || fail SYSTEMD_APP_UNAVAILABLE
+    [ -f "$chrome" ] && [ -x "$chrome" ] || chrome=''
 read -r boot < /proc/sys/kernel/random/boot_id || fail SYSTEMD_USER_UNAVAILABLE
 printf '%s\n' "$boot" "$uid" "$home" "$waypipe" "$chrome"

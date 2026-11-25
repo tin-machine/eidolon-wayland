@@ -1,5 +1,7 @@
 use super::{ActiveState, ChromeOwner, Generation, UnitStatus};
-use eidolon_model::{gui_session_policy::GuiUnresponsiveGrace, ids::CommandSeq};
+use eidolon_model::{
+    gui_session_policy::GuiUnresponsiveGrace, ids::CommandSeq, linux_desktop_v3::Hash,
+};
 use russh::client;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -28,6 +30,8 @@ pub struct Report {
     pub generation: Option<String>,
     pub grace_seconds: Option<u32>,
     pub reason: Option<&'static str>,
+    pub app_id: Option<String>,
+    pub chrome_available: bool,
     pub host_retired: bool,
     pub forward_retired: bool,
 }
@@ -40,6 +44,8 @@ impl Report {
             generation: None,
             grace_seconds: None,
             reason: None,
+            app_id: None,
+            chrome_available: false,
             host_retired: false,
             forward_retired: false,
         }
@@ -51,6 +57,7 @@ pub enum Request {
         request: CommandSeq,
         local_socket: PathBuf,
         grace: GuiUnresponsiveGrace,
+        desktop_revision: Option<Hash>,
     },
     Displayed(CommandSeq),
     Liveness {
@@ -76,21 +83,16 @@ pub(crate) async fn serve<H: client::Handler>(
     mut publish: impl FnMut(&Report),
 ) -> Result<(), &'static str> {
     let mut report = Report::available();
-    if let Err(reason) = owner.recover_pending(cancel).await {
-        report.phase = Phase::CleanupPending;
-        report.reason = Some(reason);
-        publish(&report);
-        return Err(reason);
-    }
+    report.chrome_available = owner.chrome_available();
     publish(&report);
     let mut connection_probe = interval(Duration::from_millis(500));
     connection_probe.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let (launch, local_socket, grace) = loop {
+    let (launch, local_socket, grace, revision) = loop {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err("CANCELLED"),
             item = requests.recv() => match item {
-                Some(Request::Launch { request, local_socket, grace }) => break (request, local_socket, grace),
+                Some(Request::Launch { request, local_socket, grace, desktop_revision }) => break (request, local_socket, grace, desktop_revision),
                 Some(_) => (),
                 None => return Err("CANCELLED"),
             },
@@ -104,7 +106,26 @@ pub(crate) async fn serve<H: client::Handler>(
     report.grace_seconds = Some(grace.seconds());
     publish(&report);
 
-    let started = owner.start(&local_socket, grace, cancel).await;
+    let started = match owner.select(revision.as_ref(), cancel).await {
+        Ok(id) => {
+            report.app_id = Some(id);
+            publish(&report);
+            owner.start(&local_socket, grace, cancel).await
+        }
+        Err(reason) => {
+            // If selection was refused, never stop an unresolved generation
+            // solely because its catalog entry was used again.
+            report.phase = if owner.pending().is_some() {
+                Phase::CleanupPending
+            } else {
+                Phase::Stopping
+            };
+            report.reason = Some(reason);
+            report.forward_retired = true;
+            publish(&report);
+            return Err(reason);
+        }
+    };
     let generation = owner.pending().and_then(|record| record.generation());
     report.generation = generation.map(|generation| generation.to_string());
     let reason = match started {
