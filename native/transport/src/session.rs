@@ -259,6 +259,7 @@ pub struct CatalogUi {
     /// Exact B1 descriptor, published only after the authenticated Inspect.
     pub desktop_v3: Option<serde_json::Value>,
     pub desktop_v3_installed: Option<Vec<desktop_v3::installed::InstalledApp>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ubuntu_systemd_installed: Option<Vec<linux_desktop::systemd::CatalogApp>>,
     pub desktop_v3_editor_available: bool,
     pub desktop_preview: Option<DesktopPreview>,
