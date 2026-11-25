@@ -189,7 +189,11 @@ internal class TermuxShelfSession(
                     launchRequest = null
                     presentedApp = true
                     failures.record(active, null)
-                    update(view.copy(busy = false, message = "起動しました"))
+                    val owner = tx.optJSONObject("app_forward")?.optJSONObject("remote")
+                    val leaseMessage = if (owner?.opt("gui_lease_supported") == false)
+                        "起動しました · この Termux では従来の無応答時間を使用します"
+                    else "起動しました"
+                    update(view.copy(busy = false, message = leaseMessage))
                 }
                 AppObservation.Completed, AppObservation.Cancelled, is AppObservation.Failed -> {
                     if (result == AppObservation.Completed) failures.record(active, null)

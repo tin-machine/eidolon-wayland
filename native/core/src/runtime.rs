@@ -946,6 +946,7 @@ impl Runtime {
                     Vec<eidolon_model::ids::WindowId>,
                 )> = None;
                 let mut shelf_start: Option<(String, eidolon_model::catalog::ShelfStart)> = None;
+                let mut termux_grace: Option<(String, eidolon_model::gui_session_policy::GuiUnresponsiveGrace)> = None;
                 use eidolon_transport::linux_desktop::systemd::{Phase as SystemdPhase, Request as SystemdRequest};
                 let mut systemd_launch: Option<(eidolon_model::ids::CommandSeq, eidolon_model::gui_session_policy::GuiUnresponsiveGrace)> = None;
                 let mut systemd_display_sent = false;
@@ -1395,6 +1396,7 @@ impl Runtime {
                                     current.nonce(),
                                     current.mode(),
                                     shelf_start.take().and_then(|(owner, selection)| (owner == current.nonce()).then_some(selection)),
+                                    termux_grace.take().and_then(|(owner, grace)| (owner == current.nonce()).then_some(grace)),
                                 )};
                                 if code == Status::Accepted {
                                     current.forward_started();
@@ -1411,7 +1413,9 @@ impl Runtime {
                                         && window.life == eidolon_model::window::WindowLife::Mapped
                                         && report.gui_windows.contains(&window.window)
                                 });
-                                if root { systemd_had_root = true; }
+                                if root && systemd_report.is_some_and(|report| report.phase == SystemdPhase::Running) {
+                                    systemd_had_root = true;
+                                }
                                 let live_root = report.windows.iter().any(|w| w.parent.is_none()
                                     && w.life != eidolon_model::window::WindowLife::Destroyed);
                                 if !close && systemd_had_root && !live_root && opening_window.is_none() {
@@ -2041,6 +2045,11 @@ impl Runtime {
                                         io.systemd_request(current.session(), SystemdRequest::Liveness {
                                             launch, scene: scene.get() as u64, sequence: request_id.get() as u64,
                                         })
+                                    } else if let Some(current) = app.as_ref()
+                                        .filter(|current| current.mode() == eidolon_model::commands::AppMode::Foot
+                                            && !current.virtual_clock())
+                                    {
+                                        io.termux_gui_liveness(current.session(), *scene, *request_id)
                                     } else { Status::NotReady }
                                 }
                                 Command::LinuxDesktopV3Launch { session, request_id, selection, .. } => {
@@ -2707,6 +2716,15 @@ impl Runtime {
                                                 Some((nonce.clone(), choice.clone())),
                                             _ => None,
                                         };
+                                        termux_grace = match &command {
+                                            Command::StartApp { gui_unresponsive_grace_seconds, .. }
+                                                if *mode == eidolon_model::commands::AppMode::Foot =>
+                                            {
+                                                Some((nonce.clone(), gui_unresponsive_grace_seconds
+                                                    .unwrap_or(config.gui_unresponsive_grace_seconds)))
+                                            }
+                                            _ => None,
+                                        };
                                         pending_app =
                                             Some((*session, nonce.clone(), *mode, virtual_clock, false));
                                         state.snapshot.app = Some(crate::session::Report {
@@ -3038,7 +3056,7 @@ impl Runtime {
                                     if state.snapshot.scene.is_some_and(|old| *scene <= old) {
                                         Status::Stale
                                     } else {
-                                        io.clear_systemd_liveness();
+                                        io.clear_gui_liveness();
                                         state.snapshot.scene = Some(*scene);
                                         state.workspace.scene(Some(*scene));
                                         Status::Accepted
@@ -3056,7 +3074,7 @@ impl Runtime {
                                     if expected_scene.is_some_and(|scene| state.snapshot.scene != Some(scene)) {
                                         Status::Stale
                                     } else {
-                                        if !visible { io.clear_systemd_liveness(); }
+                                        if !visible { io.clear_gui_liveness(); }
                                         state.snapshot.activity_visible = *visible;
                                         Status::Accepted
                                     }

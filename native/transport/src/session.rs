@@ -181,7 +181,11 @@ struct Shared {
     cancel: Option<CancellationToken>,
     router: Option<Arc<forward::Router>>,
     forward: Option<(PathBuf, String, Option<CleanupScenario>)>,
-    app: Option<(PathBuf, String, AppMode, Option<crate::catalog::ShelfStart>)>,
+    app: Option<(
+        PathBuf, String, AppMode, Option<crate::catalog::ShelfStart>,
+        Option<eidolon_model::gui_session_policy::GuiUnresponsiveGrace>,
+    )>,
+    termux_ticks: Option<tokio::sync::watch::Sender<Option<eidolon_model::gui_session_lifecycle::LivenessTick>>>,
     desktop_profile: Option<DesktopConfig>,
     desktop_pending: Result<Option<linux_desktop::Pending>, &'static str>,
     // Only the authenticated in-process actor may mint this capture. A cold
@@ -403,6 +407,7 @@ impl Controller {
                 router: None,
                 forward: None,
                 app: None,
+                termux_ticks: None,
                 desktop_profile: None,
                 desktop_pending,
                 desktop_v2_capture: None,
@@ -601,12 +606,35 @@ impl Controller {
         s.systemd_launch_queued |= launch;
         Status::Accepted
     }
-    pub fn clear_systemd_liveness(&self) {
+    pub fn clear_gui_liveness(&self) {
         self.signals.update(|s| {
             if let Some(ticks) = &s.systemd_ticks {
                 ticks.send_replace(None);
             }
+            if let Some(ticks) = &s.termux_ticks {
+                ticks.send_replace(None);
+            }
         });
+    }
+    pub fn termux_gui_liveness(
+        &self, session: SessionId, scene: eidolon_model::ids::SceneEpoch, sequence: CommandSeq,
+    ) -> Status {
+        use eidolon_model::gui_session_lifecycle::LivenessTick;
+        let s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Status::Stale;
+        }
+        if !s.report.authenticated_termux
+            || !s.report.app_forward.as_ref().and_then(|r| r.remote.as_ref())
+                .is_some_and(|remote| remote.phase == "running" && remote.gui_grace_seconds.is_some())
+        {
+            return Status::NotReady;
+        }
+        let Some(ticks) = &s.termux_ticks else { return Status::NotReady };
+        let (Ok(owner), Ok(sequence)) = ((scene.get() as u64).try_into(), (sequence.get() as u64).try_into())
+            else { return Status::InvalidArgument };
+        ticks.send_replace(Some(LivenessTick { owner, sequence }));
+        Status::Accepted
     }
     pub fn connect_spec(&self, profile: ConnectSpec, request: CommandSeq) -> Status {
         self.enqueue_connect(profile, request, false)
@@ -696,6 +724,7 @@ impl Controller {
             s.systemd_requests = None;
             s.systemd_launch_queued = false;
             s.systemd_ticks = None;
+            s.termux_ticks = None;
             s.desktop_v3_launch = None;
             s.desktop_v3_selections = None;
             s.desktop_v3_io_retired = false;
@@ -1078,7 +1107,7 @@ impl Controller {
         nonce: &str,
         mode: AppMode,
     ) -> Status {
-        self.start_selected_app(session, local_socket, nonce, mode, None)
+        self.start_selected_app(session, local_socket, nonce, mode, None, None)
     }
     pub fn start_selected_app(
         &self,
@@ -1087,10 +1116,12 @@ impl Controller {
         nonce: &str,
         mode: AppMode,
         selection: Option<crate::catalog::ShelfStart>,
+        gui_grace: Option<eidolon_model::gui_session_policy::GuiUnresponsiveGrace>,
     ) -> Status {
         if selection
             .as_ref()
             .is_some_and(|item| !item.valid() || mode != AppMode::Foot)
+            || gui_grace.is_some() && mode != AppMode::Foot
         {
             return Status::InvalidArgument;
         }
@@ -1130,7 +1161,7 @@ impl Controller {
             mode: mode.as_str().into(),
             ..Default::default()
         });
-        s.app = Some((local_socket.into(), nonce.into(), mode, selection));
+        s.app = Some((local_socket.into(), nonce.into(), mode, selection, gui_grace));
         self.signals.notify.notify_one();
         Status::Accepted
     }
@@ -2042,6 +2073,7 @@ fn owner(
             s.systemd_requests = None;
             s.systemd_launch_queued = false;
             s.systemd_ticks = None;
+            s.termux_ticks = None;
             s.desktop_v3_launch = None;
             s.desktop_v3_selections = None;
             s.catalog = CatalogUi::default();
@@ -2828,10 +2860,12 @@ async fn connection(
             }
             continue;
         }
-        if let Some((local_socket, nonce, mode, selection)) = app {
+        if let Some((local_socket, nonce, mode, selection, gui_grace)) = app {
             let (sender, terminal_requests) = tokio::sync::mpsc::channel(1);
             let (catalog_sender, catalog_requests) = tokio::sync::mpsc::channel(1);
+            let (tick_sender, liveness) = tokio::sync::watch::channel(None);
             signals.update(|s| {
+                s.termux_ticks = Some(tick_sender);
                 s.terminal_requests = Some(sender);
                 s.catalog_requests = Some(catalog_sender);
                 s.catalog = CatalogUi::default();
@@ -2851,6 +2885,8 @@ async fn connection(
                     catalog_requests,
                     selection,
                     observation: signals.observation.subscribe(),
+                    gui_grace,
+                    liveness,
                 },
                 &connect.cancel,
                 |r| {

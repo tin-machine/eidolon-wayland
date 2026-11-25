@@ -1683,12 +1683,13 @@ object NativeSessionHost {
     fun currentSceneEpoch(): Long = activityScenes.activeEpoch()
     internal fun guiLiveness(scene: Long, owner: Long) = inputIntents.serial {
         if (!activityVisible.get() || !activityScenes.owns(owner, scene) || scene <= 0) return@serial
-        val current = handle
-        if (current <= 0 || !launcherUi.value.systemd || !launcherUi.value.running) return@serial
-        val command = JSONObject().put("schema", 1).put("type", "gui_liveness")
-            .put("request_id", requests.incrementAndGet().toString()).put("scene", scene.toString())
-        NativeBridge.nativeCommand(current, command.toString())
-        Unit
+        val runtimes = (listOf(handle, termuxRuntime()) + additionalTermux.map { it.handle } + linuxSessions.map { it.handle })
+            .distinct().filter { it > 0 }
+        for (runtime in runtimes) {
+            val command = JSONObject().put("schema", 1).put("type", "gui_liveness")
+                .put("request_id", requests.incrementAndGet().toString()).put("scene", scene.toString())
+            NativeBridge.nativeCommand(runtime, command.toString())
+        }
     }
     fun setXrState(value: String, expectedScene: Long? = null, owner: Long? = null): Boolean = inputIntents.serial {
         if (owner != null && (expectedScene == null || !activityScenes.owns(owner, expectedScene))) return@serial false

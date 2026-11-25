@@ -1863,7 +1863,12 @@ def echo_summary(data):
     return value
 
 
-def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_seconds=3.0, factory=child_command):
+def gui_boottime():
+    return time.clock_gettime(time.CLOCK_BOOTTIME)
+
+
+def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_seconds=3.0,
+              factory=child_command, gui_clock=gui_boottime):
     """prepareの作成者がlease/子/FD/directoryを所有する。factoryの差替えはhost内部testのみ。"""
     prepared = prepare(home, nonce)
     directory = Path(prepared["socket"]).parent
@@ -1890,6 +1895,8 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
     opened = set()
     pending = bytearray()
     last_heartbeat = time.monotonic()
+    gui_seconds = None
+    last_gui_notice = None
     stopping_at = None
     anchor_stopping_at = None
     interrupted = [False]
@@ -1934,7 +1941,7 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
 
     try:
         selector.register(control_fd, selectors.EVENT_READ, "control")
-        publish({**marker(nonce), **prepared, "type": "prepared"})
+        publish({**marker(nonce), **prepared, "type": "prepared", "gui_lease_v1": True})
         while True:
             now = time.monotonic()
             if hasattr(emit, 'flush'):
@@ -1942,8 +1949,12 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                 except OSError: stop('IOFailed')
             if interrupted[0]:
                 stop("Signal")
-            if stopping_at is None and now - last_heartbeat >= lease_seconds:
-                stop("LeaseExpired")
+            if stopping_at is None:
+                if last_gui_notice is not None:
+                    if gui_clock() - last_gui_notice >= gui_seconds:
+                        stop("LeaseExpired")
+                elif now - last_heartbeat >= lease_seconds:
+                    stop("LeaseExpired")
             if child is not None and not child_reaped and waitable(child):
                 stop("Completed")
                 if not group_live(child.pid):
@@ -2017,6 +2028,7 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                                   'start_application_v1': {'type', 'nonce', 'mode', 'schema', 'session', 'terminal_id', 'target'},
                                   'open_terminal_v1': {'type', 'nonce', 'request_id', 'schema', 'session', 'terminal_id'},
                                   'open_terminal_v2': {'type', 'nonce', 'request_id', 'schema', 'session', 'terminal_id', 'target'},
+                                  'set_gui_lease_v1': {'type','nonce','schema','seconds'},
                                   'observe_workload_v1': {'type','nonce','schema','session','enabled'},
                                   'catalog_v1': {'type','nonce','schema','request_id','operation'}}
                         expected = shapes.get(kind, {'type', 'nonce'})
@@ -2024,7 +2036,22 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                                 or set(value) != expected or value["nonce"] != nonce):
                             raise ValueError("CONTROL_INVALID")
                         if kind == "heartbeat":
-                            last_heartbeat = time.monotonic()
+                            if last_gui_notice is None:
+                                last_heartbeat = time.monotonic()
+                            else:
+                                observed = gui_clock()
+                                if observed - last_gui_notice >= gui_seconds:
+                                    stop("LeaseExpired")
+                                else:
+                                    last_gui_notice = observed
+                        elif kind == "set_gui_lease_v1":
+                            seconds = value["seconds"]
+                            if (gui_seconds is not None or child is not None or
+                                    type(value["schema"]) is not int or value["schema"] != 1 or
+                                    type(seconds) is not int or not 60 <= seconds <= 86400 or seconds % 60):
+                                raise ValueError("CONTROL_INVALID")
+                            gui_seconds = seconds
+                            publish({**marker(nonce), "type": "gui_lease_v1", "seconds": seconds})
                         elif kind == "stop":
                             stop("Stop")
                         elif kind == 'catalog_v1':
@@ -2086,6 +2113,8 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                             record["phase"] = "starting"
                             save_proof(directory / "lease.json", record)
                             started_mode = value["mode"]
+                            if gui_seconds is not None and started_mode != "foot":
+                                raise ValueError("CONTROL_INVALID")
                             if started_mode != 'echo' and (checked_tools is None or checked_tools['mode'] != started_mode):
                                 raise ValueError('DEPENDENCY_NOT_READY')
                             terminal = None
@@ -2109,6 +2138,8 @@ def supervise(home, nonce, control_fd, emit, *, lease_seconds=60.0, grace_second
                             child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                                      start_new_session=True, close_fds=True,
                                                      env=tool_environment(directory) if started_mode != 'echo' else None)
+                            if gui_seconds is not None:
+                                last_gui_notice = gui_clock()
                             identity = process_identity(child.pid)
                             if identity is None or identity["group"] != child.pid:
                                 raise ValueError("CHILD_IDENTITY_INVALID")
