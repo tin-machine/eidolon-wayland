@@ -37,6 +37,7 @@ internal class CompanionLinuxSession(
     private var launchSent = false
     private var wasRunning = false
     private var onLaunch: ((Long, String, String) -> Unit)? = null
+    private var systemdPolicy: GuiSessionPolicy? = null
 
     var occupiesApp = false
         private set
@@ -47,13 +48,15 @@ internal class CompanionLinuxSession(
         private set
     private var shownCatalog: LinuxDesktopV3Catalog? = null
 
-    fun browse(primary: Long, profile: ConnectionProfileV2.Value, capture: String, scene: Long, xr: String, visible: Boolean) {
-        if (handle == 0L && !begin(primary, profile, capture, null, scene, xr, visible, forBrowsing = true)) {
+    fun browse(primary: Long, profile: ConnectionProfileV2.Value, capture: String, scene: Long, xr: String, visible: Boolean,
+               systemd: GuiSessionPolicy? = null) {
+        if (handle == 0L && !begin(primary, profile, capture, null, scene, xr, visible, forBrowsing = true, systemd = systemd)) {
             shelf = LauncherUi(linux = true, firstFailure = "NOT_READY", message = message ?: "Ubuntu に接続できません")
             return
         }
         if (stopping || this.capture != capture) return
         browsing = true
+        if (systemdPolicy != null) return
         if (shownCatalog == null) shelf = LauncherUi(linux = true, busy = true, message = "Ubuntu に接続中")
         else if (!wasRunning && request == null && !launchSent) {
             snapshot?.optJSONObject("transport")?.optString("session")?.let {
@@ -64,10 +67,14 @@ internal class CompanionLinuxSession(
         }
     }
 
-    fun selectApp(expected: LauncherUi, id: String) {
-        val catalog = shownCatalog ?: return
-        if (!browsing || stopping || launchSent || request != null ||
-            !catalog.accepts(handle, expected.session, expected.capture, expected.revision, id)) return
+    fun selectApp(expected: LauncherUi, id: String, policy: GuiSessionPolicy) {
+        if (!browsing || stopping || launchSent || request != null) return
+        if (systemdPolicy != null) {
+            if (!expected.systemd || expected.runtime != handle || expected.session != shelf.session ||
+                expected.capture != capture || expected.revision != shelf.revision ||
+                shelf.entries.none { it.id == id && it.available }) return
+            systemdPolicy = policy
+        } else if (shownCatalog?.accepts(handle, expected.session, expected.capture, expected.revision, id) != true) return
         occupiesApp = true
         attempt = failures.begin(launcherAppKey(LauncherSource.UBUNTU, expected, expected.entries.first { it.id == id }))
         selection = id
@@ -80,7 +87,7 @@ internal class CompanionLinuxSession(
     fun begin(
         primary: Long, profile: ConnectionProfileV2.Value, capture: String, app: String?,
         scene: Long, xr: String, visible: Boolean, launched: ((Long, String, String) -> Unit)? = null,
-        forBrowsing: Boolean = false, appKey: String? = null,
+        forBrowsing: Boolean = false, appKey: String? = null, systemd: GuiSessionPolicy? = null,
     ): Boolean {
         if (handle != 0L) return false
         val created = NativeBridge.nativeCreateCompanion(primary, slot)
@@ -93,6 +100,7 @@ internal class CompanionLinuxSession(
         occupiesApp = !forBrowsing
         this.profile = profile
         this.capture = capture
+        systemdPolicy = systemd
         selection = app
         attempt = appKey?.let(failures::begin)
         onLaunch = launched
@@ -169,7 +177,7 @@ internal class CompanionLinuxSession(
                         fail(when (queued.type) {
                             "connect" -> "追加アプリの SSH 接続を開始できませんでした。"
                             "linux_desktop_v3_inspect" -> "追加アプリ一覧の取得を開始できませんでした。"
-                            "linux_desktop_v3_launch" -> "追加アプリの起動を受け付けられませんでした。"
+                            "linux_desktop_v3_launch", UbuntuSystemdLauncher.Launch -> "追加アプリの起動を受け付けられませんでした。"
                             else -> "追加アプリの回収を確認できませんでした。"
                         })
                     }
@@ -191,6 +199,7 @@ internal class CompanionLinuxSession(
                 credentials = null
                 profile = null
                 selection = null
+                systemdPolicy = null
                 onLaunch = null
                 capture = ""
                 request = null
@@ -215,6 +224,8 @@ internal class CompanionLinuxSession(
         val transport = runtime.getJSONObject("transport")
         val session = transport.optString("session")
         val status = LinuxDesktopV3Status.observe(current, session, runtime)
+        val systemd = systemdPolicy?.let { UbuntuSystemdLauncher.report(runtime) }
+        val running = if (systemdPolicy != null) systemd?.optString("phase") == "running" else status.ready
         observation?.let {
             if (it.read(current, runtime, failures)) {
                 it.finish(failures)
@@ -222,7 +233,7 @@ internal class CompanionLinuxSession(
                 observation = null
             }
         }
-        if (status.ready && !stopping) {
+        if (running && !stopping) {
             if (!wasRunning) message = null
             if (browsing && !wasRunning) shelf = shelf.copy(busy = false, running = true, message = "起動しました")
             wasRunning = true
@@ -237,7 +248,7 @@ internal class CompanionLinuxSession(
         val reclamation = runtime.optJSONObject("reclamation")
         val owned = transport.optInt("owned_connections")
         val cleanup = transport.optBoolean("desktop_pending")
-        if (cleanup && phase == "CleanupPending") {
+        if (systemdPolicy == null && cleanup && phase == "CleanupPending") {
             if (pending && !stopping) {
                 val failure = LinuxDesktopV3Messages.reason(status.firstFailure)
                     ?: LinuxDesktopMessages.error(transport.optString("error"))
@@ -257,17 +268,41 @@ internal class CompanionLinuxSession(
             }
             return
         }
-        if (launchSent && !status.ready && (owned == 0 || transport.optJSONObject("desktop_v3_transport")?.optBoolean("terminal_observed") == true)) stop()
+        if (launchSent && !running && (owned == 0 ||
+            transport.optJSONObject("desktop_v3_transport")?.optBoolean("terminal_observed") == true)) stop()
         if (stopping || !browsing && selection == null && !launchSent) {
             if (stopping && owned == 1) {
                 if (session.toLongOrNull() != null) command("disconnect", JSONObject().put("session", session))
                 else connectRequest?.let { command("cancel_connect", JSONObject().put("connect_request", it)) }
-            } else if (owned == 0 && phase in setOf("Idle", "Disconnected", "Failed")) {
+            } else if (owned == 0 && (phase in setOf("Idle", "Disconnected", "Failed") ||
+                (systemdPolicy != null && phase == "CleanupPending"))) {
                 retired = NativeBridge.nativeRequestStop(current) == NativeBridge.ACCEPTED
             }
             return
         }
         if (launchSent) return
+        val policy = systemdPolicy
+        if (policy != null && phase == "DesktopReady") {
+            if (systemd?.optString("phase") != "available") return
+            val available = UbuntuSystemdLauncher.readCatalog(handle, session, systemd.optBoolean("chrome_available")) ?: return
+            val app = selection
+            if (app == null && browsing) {
+                shelf = LauncherUi(runtime = current, session = session, capture = capture, linux = true, systemd = true,
+                    revision = UbuntuSystemdLauncher.Revision, entries = available, total = available.size,
+                    connected = true, canStop = true, catalogComplete = true, message = "Ubuntu のアプリ一覧を取得しました")
+                pending = false
+            } else if (app != null && available.any { it.id == app && it.available }) {
+                val id = nextRequest()
+                if (send(UbuntuSystemdLauncher.Launch, UbuntuSystemdLauncher.launchArgs(session, app, policy), id)) {
+                    launchSent = true
+                    selection = null
+                    request = Request(id, UbuntuSystemdLauncher.Launch)
+                    onLaunch?.invoke(current, session, id)
+                    onLaunch = null
+                }
+            } else fail("追加アプリの接続で対象アプリの起動条件を確認できませんでした。")
+            return
+        }
         when (phase) {
             "Idle", "Disconnected", "Failed" -> {
                 if (initialConnectSent) fail(LinuxDesktopMessages.error(transport.optString("error"))

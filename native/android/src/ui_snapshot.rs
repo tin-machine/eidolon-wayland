@@ -51,6 +51,8 @@ pub(crate) fn project(state: &Snapshot, panel: bool) -> Value {
         transport["pending_cleanup"] = json!(tx.pending_cleanup);
         transport["desktop"] = json!(tx.desktop);
         transport["app_forward"] = json!(tx.app_forward);
+        transport["systemd_chrome"] = json!(tx.systemd_chrome);
+        transport["systemd_last_stop"] = json!(tx.systemd_last_stop);
     }
     let mut runtime = json!({
         "state": state.state, "scene": state.scene, "xr_state": state.xr_state,
@@ -135,5 +137,24 @@ mod tests {
                 assert_eq!(ui["shutdown"]["requested"], true);
             }
         }
+    }
+
+    #[test]
+    fn launcher_reader_keeps_current_systemd_admission_and_retirement() {
+        let mut cut = Snapshot::default();
+        cut.transport.systemd_chrome =
+            Some(eidolon_transport::linux_desktop::systemd::Report::available());
+        cut.transport.systemd_last_stop = Some("SYSTEMD_STOP_REQUESTED");
+        let product = project(&cut, false);
+        assert_eq!(product["transport"]["systemd_chrome"]["phase"], "available");
+        assert_eq!(
+            product["transport"]["systemd_last_stop"],
+            "SYSTEMD_STOP_REQUESTED"
+        );
+        assert!(
+            project(&cut, true)["transport"]
+                .get("systemd_chrome")
+                .is_none()
+        );
     }
 }

@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 
-const SOURCE: &str = include_str!("../../../../../scripts/linux/eidolon_desktop_entries.py");
+pub(crate) const SOURCE: &str =
+    include_str!("../../../../../scripts/linux/eidolon_desktop_entries.py");
 const MAX_CATALOG_BYTES: usize = 512 * 1024;
 const MAX_ENTRIES: usize = 1024;
 
@@ -30,6 +31,16 @@ enum DisabledReason {
 }
 
 impl InstalledApp {
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+    pub(crate) fn revision(&self) -> &Hash {
+        &self.revision
+    }
+    pub(crate) fn available(&self) -> bool {
+        self.disabled_reason.is_none()
+    }
+
     pub(crate) fn selection_id(&self) -> Option<String> {
         self.disabled_reason
             .is_none()

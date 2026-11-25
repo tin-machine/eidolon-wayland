@@ -59,6 +59,14 @@ class MainActivity : AppSystemActivity() {
     private val activityOwner = NativeSessionHost.registerActivityOwner()
     private var sceneEpoch=0L
     private var resumed=false
+    private val activityHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val guiHeartbeat = object : Runnable {
+        override fun run() {
+            if (!resumed) return
+            if (ownsScene()) NativeSessionHost.guiLiveness(sceneEpoch, activityOwner)
+            activityHandler.postDelayed(this, 10_000)
+        }
+    }
     private var xrScene: com.meta.spatial.runtime.Scene?=null
     private var observedXr="IDLE"
     private fun ownsScene(): Boolean = !isDestroyed && NativeSessionHost.ownsActivityScene(activityOwner,sceneEpoch)
@@ -263,6 +271,8 @@ class MainActivity : AppSystemActivity() {
         resumed=true
         hud.setActive(ownsScene() && observedXr in setOf("VISIBLE", "FOCUSED"))
         if(ownsScene()) {keyboard.resume();NativeSessionHost.setActivityVisible(true,sceneEpoch,activityOwner)}
+        activityHandler.removeCallbacks(guiHeartbeat)
+        activityHandler.post(guiHeartbeat)
         refreshMouseScene()
         Log.i(TAG, "activity_resumed version=${BuildConfig.VERSION_CODE}")
     }
@@ -271,6 +281,7 @@ class MainActivity : AppSystemActivity() {
         fixedPanelGrips.values.forEach { it.grip.cancel() }
         deviceMetrics.stop()
         resumed=false
+        activityHandler.removeCallbacks(guiHeartbeat)
         hud.setActive(false)
         spatialLauncher.setActive(false)
         mouse.setFocusedScene(null)

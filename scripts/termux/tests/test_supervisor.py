@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("lease_launcher", Path(__file__).resolve().parents[1] / "eidolon-session.py")
 launcher = importlib.util.module_from_spec(spec)
@@ -92,6 +93,73 @@ class SupervisorTests(unittest.TestCase):
             finally:
                 close()
                 os.close(read)
+
+    def test_negotiated_gui_lease_expires_before_buffered_heartbeat_after_sleep(self):
+        with tempfile.TemporaryDirectory(prefix="eidolon-gui-lease-") as value:
+            home, nonce = Path(value), "a" * 16
+            rfd, wfd = os.pipe()
+            clock = [0.0]
+            acknowledgements = []
+
+            def send(kind, **fields):
+                os.write(wfd, (json.dumps(dict(type=kind, nonce=nonce, **fields)) + "\n").encode())
+
+            def emit(event):
+                if event["type"] == "prepared":
+                    self.assertTrue(event["gui_lease_v1"])
+                    send("set_gui_lease_v1", schema=1, seconds=60)
+                elif event["type"] == "gui_lease_v1":
+                    acknowledgements.append(event["seconds"])
+                    send("inspect_tools", mode="foot")
+                elif event["type"] == "tools":
+                    send("start", mode="foot")
+                elif event["type"] == "child_started":
+                    clock[0] = 60.0
+                    send("heartbeat")
+
+            try:
+                with mock.patch.object(launcher, "inspect_tools", return_value={"mode": "foot"}), \
+                        mock.patch.object(launcher, "TerminalStarter") as starting, \
+                        mock.patch.object(launcher, "tool_environment", return_value=os.environ.copy()):
+                    starting.return_value.tick.return_value = None
+                    result = launcher.supervise(
+                        home, nonce, rfd, emit, lease_seconds=2,
+                        factory=lambda *_: [sys.executable, "-c", "import time;time.sleep(30)"],
+                        gui_clock=lambda: clock[0],
+                    )
+                self.assertEqual(acknowledgements, [60])
+                self.assertEqual(result["reason"], "LeaseExpired")
+                self.assertTrue(result["cleaned"] and result["pipes_closed"])
+                self.assertFalse(launcher.same_process(result["child"]))
+            finally:
+                os.close(wfd)
+                os.close(rfd)
+
+    def test_gui_lease_validation_rejects_duplicate_interval_and_bool(self):
+        with tempfile.TemporaryDirectory(prefix="eidolon-gui-lease-invalid-") as value:
+            home = Path(value)
+            for index, values in enumerate(([60, 60], [59], [True]), 1):
+                nonce = f"{index:016x}"
+                rfd, wfd = os.pipe()
+                acknowledgements = []
+
+                def emit(event):
+                    if event["type"] == "prepared":
+                        for seconds in values:
+                            packet = dict(type="set_gui_lease_v1", nonce=nonce, schema=1, seconds=seconds)
+                            os.write(wfd, (json.dumps(packet) + "\n").encode())
+                    elif event["type"] == "gui_lease_v1":
+                        acknowledgements.append(event["seconds"])
+
+                try:
+                    result = launcher.supervise(home, nonce, rfd, emit, lease_seconds=2)
+                    self.assertEqual(acknowledgements, [60] if index == 1 else [])
+                    self.assertEqual(result["reason"], "ControlInvalid")
+                    self.assertIsNone(result["child"])
+                    self.assertTrue(result["cleaned"])
+                finally:
+                    os.close(wfd)
+                    os.close(rfd)
 
     def test_eof_after_prepare_and_during_owned_child_reaps_without_other_processes(self):
         unrelated = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])

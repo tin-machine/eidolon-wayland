@@ -121,7 +121,7 @@ def main(path, expected_hash, diagnostics=False):
     home = Path.home()
     helper = home / ".local/lib/eidolon/eidolon-session.py"
     source = helper.read_bytes()
-    if hashlib.sha256(source).hexdigest() != expected_hash:
+    if hashlib.sha256(source).hexdigest() not in expected_hash.split(","):
         raise ValueError("helper_version")
     scope = {"__name__": "eidolon_launcher", "__file__": str(helper)}
     exec(compile(source, str(helper), "exec"), scope)

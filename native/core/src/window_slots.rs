@@ -138,6 +138,11 @@ impl Controller {
             let _ = board.cancel(lease);
         }
     }
+    pub fn bind_local_window(&mut self, lease: Lease, window: WindowId) -> Result<(), Status> {
+        let board = self.board.as_mut().ok_or(Status::NotReady)?;
+        board.enqueued(lease).map_err(|_| Status::Stale)?;
+        board.bind(lease, window).map_err(|_| Status::Stale)
+    }
     pub fn outcome(
         &mut self,
         session: SessionId,
@@ -156,10 +161,10 @@ impl Controller {
             return Err(Status::Stale);
         };
         match outcome {
-            Outcome::Matched { window, .. } => {
+            Outcome::Matched { window, .. } | Outcome::DesktopWindow { window } => {
                 board.bind(entry.lease, window).map_err(|_| Status::Stale)
             }
-            Outcome::Rejected { .. } | Outcome::Cancelled => board
+            Outcome::Rejected { .. } | Outcome::Unconfirmed | Outcome::Cancelled => board
                 .cancel(entry.lease)
                 .map(|_| ())
                 .map_err(|_| Status::Stale),
@@ -333,6 +338,24 @@ mod tests {
             panels,
         })
         .unwrap();
+    }
+    #[test]
+    fn locally_requested_root_uses_its_reservation_before_panel_adoption() {
+        let mut c = controller();
+        observe(&mut c, &[window(1)], false, &[], &[], &[]);
+        let reserved = c.reserve(session(), req(10)).unwrap();
+        c.bind_local_window(reserved, id(2)).unwrap();
+        observe(&mut c, &[window(1), window(2)], false, &[], &[], &[]);
+        assert_eq!(
+            c.assignments(),
+            [(0, session(), id(1)), (1, session(), id(2))]
+        );
+        assert_eq!(c.report().occupied, 2);
+
+        let expired = c.reserve(session(), req(20)).unwrap();
+        c.not_enqueued(expired);
+        assert_eq!(c.report().occupied, 2);
+        assert!(!c.report().cleanup_required);
     }
     #[test]
     fn reservation_precedes_unrelated_mapping_and_reverse_launch_completion() {

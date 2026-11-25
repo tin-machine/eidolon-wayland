@@ -1,5 +1,6 @@
 //! 固定launcherのJSON lineとheartbeat。利用者のpath/argvはSSH commandへ挿入しない。
 use crate::forward_probe::valid_nonce;
+use eidolon_model::gui_session_policy::GuiUnresponsiveGrace;
 use eidolon_model::{
     ids::{CommandSeq, SessionId, TerminalId},
     workload::Telemetry,
@@ -15,6 +16,8 @@ const PYTHON: &str = "/data/data/com.termux/files/usr/bin/python3";
 const SCRIPT_PATH: &str = "/data/data/com.termux/files/home/.local/lib/eidolon/eidolon-session.py";
 const SCRIPT: &[u8] = include_bytes!("../../../scripts/termux/eidolon-session.py");
 const LINE_BYTES: usize = 16384;
+const PRE_GUI_LEASE_SCRIPT: &str =
+    "367038cae451c6a16436a4354db80ed02db659f50e0182da6d0bc00dd3e44c94";
 
 pub fn command(mode: &str, nonce: &str) -> Result<String, &'static str> {
     if !matches!(
@@ -35,7 +38,7 @@ pub(crate) async fn shelf<H: russh::client::Handler>(
     const SOURCE: &str = include_str!("../../../scripts/termux/eidolon-shelf.py");
     let encoded: String = path.bytes().map(|b| format!("{b:02x}")).collect();
     let command = format!(
-        "exec {PYTHON} -I -B -c '{}' {encoded} {} {}",
+        "exec {PYTHON} -I -B -c '{}' {encoded} {},{PRE_GUI_LEASE_SCRIPT} {}",
         SOURCE.replace(char::from(39), "'\\''"),
         script_hash(),
         u8::from(diagnostics)
@@ -276,6 +279,16 @@ struct Prepared {
     uid: u32,
     socket: String,
     launcher_sha256: String,
+    #[serde(default)]
+    gui_lease_v1: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GuiLease {
+    schema: u32,
+    nonce: String,
+    uid: u32,
+    seconds: GuiUnresponsiveGrace,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -397,6 +410,8 @@ pub use eidolon_model::window_launch::TerminalLaunch;
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Frame {
     Prepared(Prepared),
+    #[serde(rename = "gui_lease_v1")]
+    GuiLeaseV1(GuiLease),
     Tools(Tools),
     ChildStarted(Started),
     TerminalOpened(TerminalOpened),
@@ -413,6 +428,8 @@ enum Frame {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {
     pub phase: &'static str,
+    pub gui_lease_supported: bool,
+    pub gui_grace_seconds: Option<u32>,
     pub terminal_count: u32,
     pub terminal_pending: Option<CommandSeq>,
     pub last_terminal: Option<TerminalOpened>,
@@ -440,6 +457,7 @@ pub struct Launcher {
     next_terminal: Option<TerminalId>,
     structured_start: bool,
     expected_tools: Option<String>,
+    pending_gui_lease: Option<GuiUnresponsiveGrace>,
     channel: Option<Channel<client::Msg>>,
     nonce: String,
     uid: u32,
@@ -498,6 +516,7 @@ impl Launcher {
             next_terminal: Some(TerminalId::new(1).unwrap()),
             structured_start: false,
             expected_tools: None,
+            pending_gui_lease: None,
             expected_socket: remote_path(nonce)?,
             beat_every: Duration::from_secs(10),
             heartbeats: true,
@@ -588,6 +607,43 @@ impl Launcher {
         }
         Ok(tools)
     }
+    pub async fn set_gui_lease(&mut self, grace: GuiUnresponsiveGrace) -> Result<(), &'static str> {
+        if self.report.phase != "prepared"
+            || self.stopping.is_some()
+            || self.pending_gui_lease.is_some()
+            || self.report.gui_grace_seconds.is_some()
+        {
+            return Err("NOT_READY");
+        }
+        if !self.report.gui_lease_supported {
+            return Ok(());
+        }
+        self.pending_gui_lease = Some(grace);
+        self.deadline = Instant::now() + Duration::from_secs(5);
+        self.send_frame(serde_json::json!({"type":"set_gui_lease_v1","schema":1,
+            "nonce":self.nonce,"seconds":grace}))
+            .await?;
+        while self.pending_gui_lease.is_some() && self.report.phase == "prepared" {
+            self.next().await?;
+        }
+        if self.report.gui_grace_seconds != Some(grace.seconds()) {
+            return Err("GUI_LEASE_REJECTED");
+        }
+        Ok(())
+    }
+
+    pub async fn gui_liveness(&mut self) -> Result<(), &'static str> {
+        let Some(seconds) = self.report.gui_grace_seconds else {
+            return Ok(());
+        };
+        if self.report.phase != "running" || self.stopping.is_some() {
+            return Ok(());
+        }
+        self.control("heartbeat", None).await?;
+        self.deadline = Instant::now() + Duration::from_secs(u64::from(seconds) + 30);
+        Ok(())
+    }
+
     pub async fn start_app(&mut self, mode: &str, session: SessionId) -> Result<(), &'static str> {
         self.start_app_target(mode, session, None).await
     }
@@ -747,7 +803,8 @@ impl Launcher {
                 biased;
                 _=self.cancel.cancelled(),if self.stopping.is_none()=>{self.request_stop().await?;continue;},
                 _=sleep_until(self.deadline)=>{self.report.error=Some("LAUNCHER_TIMEOUT");return Err("LAUNCHER_TIMEOUT");},
-                _=sleep_until(self.heartbeat),if self.stopping.is_none() && self.heartbeats=>{
+                _=sleep_until(self.heartbeat),if self.stopping.is_none() && self.heartbeats
+                    && (self.report.gui_grace_seconds.is_none() || self.report.phase == "prepared")=>{
                     self.control("heartbeat",None).await?;
                     self.heartbeat=Instant::now()+self.beat_every;
                     // quietなterminalはstdoutを送らない。正常な制御送信で稼働中appの監視期限を延長する。
@@ -830,14 +887,29 @@ impl Launcher {
                     || value.nonce != self.nonce
                     || value.uid != self.uid
                     || value.socket != self.expected_socket
-                    || value.launcher_sha256 != script_hash()
+                    || (value.gui_lease_v1 && value.launcher_sha256 != script_hash())
+                    || (!value.gui_lease_v1 && value.launcher_sha256 != PRE_GUI_LEASE_SCRIPT)
                 {
                     return Err("PROTOCOL_ERROR");
                 }
+                self.report.gui_lease_supported = value.gui_lease_v1;
                 self.report.phase = "prepared";
                 if self.stopping.is_none() {
                     self.deadline = Instant::now() + Duration::from_secs(60);
                 }
+            }
+            Frame::GuiLeaseV1(value) => {
+                if self.report.phase != "prepared"
+                    || !self.report.gui_lease_supported
+                    || self.pending_gui_lease != Some(value.seconds)
+                    || value.schema != 1
+                    || value.nonce != self.nonce
+                    || value.uid != self.uid
+                {
+                    return Err("PROTOCOL_ERROR");
+                }
+                self.pending_gui_lease = None;
+                self.report.gui_grace_seconds = Some(value.seconds.seconds());
             }
             Frame::ChildStarted(value) => {
                 if self.report.phase != "starting"
@@ -850,6 +922,9 @@ impl Launcher {
                 }
                 self.report.child = Some(value.child);
                 self.report.phase = "running";
+                if let Some(seconds) = self.report.gui_grace_seconds {
+                    self.deadline = Instant::now() + Duration::from_secs(u64::from(seconds) + 30);
+                }
             }
             Frame::TerminalOpened(value) => {
                 let initial = value.request_id.is_none() && self.report.terminal_count == 0;

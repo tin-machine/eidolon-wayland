@@ -3,6 +3,7 @@ use crate::{host_key, journal, linux_desktop};
 use eidolon_model::{
     connection_profile::{Backend, Profile},
     linux_desktop_v3::{StorageRecord, configuration::ConnectionConfig},
+    ubuntu_systemd,
 };
 use russh::keys::PublicKey;
 use std::{
@@ -51,13 +52,19 @@ pub(crate) enum DesktopConfig {
         storage: StorageRecord,
         files: PathBuf,
     },
+    Systemd {
+        profile: Profile,
+        binding: Box<ubuntu_systemd::RuntimeBinding>,
+        files: PathBuf,
+    },
 }
 impl DesktopConfig {
     #[cfg(test)]
-    pub(crate) fn version(&self) -> linux_desktop::dispatch::Version {
+    fn legacy_version(&self) -> Option<linux_desktop::dispatch::Version> {
         match self {
-            Self::V2 { .. } => linux_desktop::dispatch::Version::V2,
-            Self::V3 { .. } => linux_desktop::dispatch::Version::V3,
+            Self::V2 { .. } => Some(linux_desktop::dispatch::Version::V2),
+            Self::V3 { .. } => Some(linux_desktop::dispatch::Version::V3),
+            Self::Systemd { .. } => None,
         }
     }
 }
@@ -145,6 +152,25 @@ impl ConnectSpec {
             profile,
             configuration: Box::new(configuration),
             storage,
+            files,
+        });
+        Ok(spec)
+    }
+    pub fn ubuntu_systemd(
+        profile: Profile,
+        binding: ubuntu_systemd::RuntimeBinding,
+        files: PathBuf,
+    ) -> Result<Self, PrepareError> {
+        if !files.is_absolute() {
+            return Err(PrepareError::InvalidProfile);
+        }
+        binding
+            .matches_profile(&profile)
+            .map_err(|_| PrepareError::InvalidProfile)?;
+        let mut spec = Self::from_v2(&profile)?;
+        spec.desktop = Some(DesktopConfig::Systemd {
+            profile,
+            binding: Box::new(binding),
             files,
         });
         Ok(spec)
@@ -239,7 +265,10 @@ mod tests {
             Some(DesktopConfig::V3 { .. })
         ));
         let captured = spec.desktop.as_ref().unwrap();
-        assert_eq!(captured.version(), linux_desktop::dispatch::Version::V3);
+        assert_eq!(
+            captured.legacy_version(),
+            Some(linux_desktop::dispatch::Version::V3)
+        );
         if let DesktopConfig::V3 {
             profile: p,
             configuration: c,

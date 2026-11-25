@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -19,6 +20,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 
@@ -40,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
     var expanded by remember {mutableStateOf(false)}
     Button(onClick={expanded=!expanded;NativeSessionHost.resetInput()}) {Text(if(expanded) "接続設定を閉じる" else "接続設定・初回ペアリング")}
     if(!expanded) return
+    GuiSessionPolicySettings()
     if(linux) { LinuxConnectionSettings();return }
     var username by remember(state.savedToken) {mutableStateOf(state.username)}
     var hostKey by remember(state.savedToken) {mutableStateOf(state.hostKey)}
@@ -69,9 +72,73 @@ import androidx.compose.runtime.LaunchedEffect
     }
 }
 
+@Composable private fun GuiSessionPolicySettings() {
+    var saved by remember { mutableStateOf(NativeSessionHost.guiSessionPolicy) }
+    var draft by remember { mutableStateOf(saved.minutes.toString()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    Text("GUI アプリの無応答時の待機時間（分）", color = Color.White)
+    Row {
+        for (minutes in listOf(5, 15, 60)) {
+            Button(onClick = { draft = minutes.toString(); error = null }) { Text("$minutes 分") }
+        }
+    }
+    OutlinedTextField(
+        value = draft,
+        onValueChange = { draft = it; error = null },
+        label = { Text("1〜1440 分") },
+        singleLine = true,
+        isError = error != null,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        supportingText = { Text(error ?: "保存済み ${saved.minutes} 分。次回起動するアプリから適用") },
+    )
+    Button(onClick = {
+        error = when (NativeSessionHost.saveGuiSessionPolicy(draft)) {
+            GuiSessionPolicyStore.SaveResult.Saved -> {
+                saved = NativeSessionHost.guiSessionPolicy
+                draft = saved.minutes.toString()
+                null
+            }
+            GuiSessionPolicyStore.SaveResult.InvalidInput -> "1〜1440 の整数を入力してください"
+            GuiSessionPolicyStore.SaveResult.WriteFailed -> "待機時間を保存できませんでした"
+        }
+    }) { Text("待機時間を保存") }
+}
+
+@Composable private fun UbuntuSystemdConnectionSettings(canSave: Boolean) {
+    val settings = NativeSessionHost.ubuntuSystemdSettings.value
+    if (!settings.supported) return
+    var editing by remember(settings.storage) { mutableStateOf(false) }
+    var path by remember(settings.pin, settings.storage) { mutableStateOf(settings.pin?.path.orEmpty()) }
+    var digest by remember(settings.pin, settings.storage) { mutableStateOf(settings.pin?.sha256.orEmpty()) }
+    var confirmed by remember(path, digest, settings.storage) { mutableStateOf(false) }
+    val pin = remember(path, digest) { runCatching { UbuntuSystemdPin(path, digest) }.getOrNull() }
+    Button(onClick = { editing = !editing }) {
+        Text(if (settings.pin == null) "Ubuntu systemd の起動設定" else "Ubuntu systemd を使用中")
+    }
+    if (!editing) return
+    Text("Chrome は Quest 専用の新しいプロファイルを使用します", color = Color.White)
+    OutlinedTextField(path, { path = it.take(1024) }, label = { Text("Ubuntu 上の Waypipe の絶対パス") },
+        singleLine = true, enabled = canSave)
+    OutlinedTextField(digest, { digest = it.take(64) }, label = { Text("Waypipe の SHA-256") },
+        singleLine = true, enabled = canSave)
+    Row {
+        Checkbox(checked = confirmed, onCheckedChange = { confirmed = it }, enabled = canSave)
+        Text("Ubuntu で Waypipe の SHA-256 を照合しました", color = Color.White)
+    }
+    Button(enabled = canSave && confirmed && pin != null,
+        onClick = { NativeSessionHost.saveUbuntuSystemd(settings.storage, pin) }) { Text("Ubuntu systemd に切り替える") }
+    if (settings.pin != null) {
+        Button(enabled = canSave, onClick = { NativeSessionHost.saveUbuntuSystemd(settings.storage, null) }) {
+            Text("元の起動方式に戻す")
+        }
+    }
+    settings.message?.let { Text(it, color = Color.White) }
+}
+
 @Composable private fun LinuxConnectionSettings() {
     val state=NativeSessionHost.linuxConnectionUi.value
     val context=LocalContext.current
+    UbuntuSystemdConnectionSettings(state.canSave)
     var editingBackend by remember(state.backend,state.settingsCapture) {mutableStateOf(state.backend)}
     var name by remember(state.savedBinding) {mutableStateOf(state.displayName)}
     var host by remember(state.savedBinding) {mutableStateOf(state.host)}

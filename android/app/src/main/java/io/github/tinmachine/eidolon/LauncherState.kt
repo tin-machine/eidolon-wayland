@@ -24,8 +24,55 @@ data class LauncherUi(
     val companionCleanup: Boolean = false,
     val catalogComplete: Boolean = false,
     val recoveryWait: String? = null,
+    val systemd: Boolean = false,
 ) {
     override fun toString() = "LauncherUi(<private>)"
+}
+
+internal object UbuntuSystemdLauncher {
+    const val Revision = "ubuntu_systemd_v1"
+    const val ChromeId = "google-chrome.desktop"
+    const val Launch = "ubuntu_systemd_launch"
+    const val NewChromeWindow = "ubuntu_systemd_chrome_new_window"
+
+    fun report(runtime: JSONObject?) = runtime?.optJSONObject("transport")?.optJSONObject("systemd_chrome")
+
+    fun readCatalog(runtime: Long, session: String, chromeAvailable: Boolean): List<LauncherEntry>? = runCatching {
+        val reply = JSONObject(NativeBridge.nativeCatalogUi(runtime))
+        val catalog = reply.optJSONObject("catalog") ?: return null
+        if (reply.optInt("code") != NativeBridge.ACCEPTED || catalog.optString("session") != session) return null
+        val entries = catalog.optJSONArray("ubuntu_systemd_installed") ?: return null
+        buildList {
+            if (chromeAvailable) add(LauncherEntry(ChromeId, "Google Chrome", "builtin:web", true, null, ChromeId))
+            for (i in 0 until entries.length()) {
+                val entry = entries.getJSONObject(i)
+                val desktopId = entry.getString("id")
+                if (desktopId == ChromeId) continue
+                val error = entry.optString("disabled_reason").takeUnless { entry.isNull("disabled_reason") }
+                add(LauncherEntry(entry.getString("revision"), entry.getString("name"),
+                    "builtin:script", error == null, error, desktopId))
+            }
+        }
+    }.getOrNull()
+
+    fun launchArgs(session: String, id: String, policy: GuiSessionPolicy): JSONObject =
+        JSONObject().put("session", session).put(GuiSessionPolicy.WireField, policy.seconds).also {
+            if (id != ChromeId) it.put("desktop_revision", id)
+        }
+
+    fun canOpenChromeWindow(runtime: JSONObject): Boolean {
+        val report = report(runtime)
+        val slots = runtime.optJSONObject("window_slots") ?: return false
+        return report?.optString("phase") == "running" && report.optString("app_id") == ChromeId &&
+            slots.optInt("occupied") < slots.optInt("capacity")
+    }
+
+    fun chromeWindowArgs(runtime: JSONObject): JSONObject? {
+        if (!canOpenChromeWindow(runtime)) return null
+        val launch = report(runtime)?.opt("launch_request") as? String ?: return null
+        val session = runtime.optJSONObject("transport")?.opt("session") as? String ?: return null
+        return JSONObject().put("session", session).put("launch", launch)
+    }
 }
 
 object LauncherMessages {

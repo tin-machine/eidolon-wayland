@@ -18,6 +18,12 @@
 - **I3 remains unregistered in this D5 manifest**; do not invoke `context --feature linux-desktop-v3 --task I3` expecting success. Follow the manual document and verify current PR heads. The document is not approved, implemented, or Quest-tested merely because it is linked here.
 - Before joining I3 and I4, also read the [I2 design](linux-real-app-v3-i2-detailed-design.md), [I4 design](linux-real-app-v3-i4-detailed-design.md), and [B1 presentation contract](linux-real-app-b1-presentation-20261110.md) independently.
 
+## Ubuntu の GUI セッション管理（手動参照・設計案）
+
+[専用ヘルパーを用いない systemd 起動・共通タイムアウトの詳細設計](systemd-gui-session-design-20261126.md)と
+[Chrome の回収・プロファイル分離の実験記録](systemd-gui-session-host-evidence-20261126.md)。
+旧セッションの切替、SSH 切断時の扱い、実装順と受入手順を含む。新方式の Quest 実機受入は未実施。
+
 ## Use with the deterministic resolver
 
 ### I5 implementation design (manual discovery)

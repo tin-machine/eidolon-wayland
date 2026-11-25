@@ -5,6 +5,17 @@ use russh::{
 };
 use tokio::net::TcpListener;
 
+#[test]
+fn catalog_only_serializes_systemd_inventory_when_available() {
+    let mut catalog = CatalogUi::default();
+    let json = serde_json::to_value(&catalog).unwrap();
+    assert!(json.get("ubuntu_systemd_installed").is_none());
+
+    catalog.ubuntu_systemd_installed = Some(Vec::new());
+    let json = serde_json::to_value(&catalog).unwrap();
+    assert_eq!(json["ubuntu_systemd_installed"], serde_json::json!([]));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cold_journal_and_live_capture_have_distinct_recovery_admission() {
     use crate::linux_desktop::v3::{

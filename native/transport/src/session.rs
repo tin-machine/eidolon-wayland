@@ -90,6 +90,10 @@ pub struct Snapshot {
     pub desktop_v3_recovery: Option<desktop_v3::recovery::RecoveryReport>,
     /// Dedicated normal Linux owner; independent from Termux pending_cleanup.
     pub desktop_pending: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub systemd_chrome: Option<linux_desktop::systemd::Report>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub systemd_last_stop: Option<&'static str>,
     pub desktop_reboot_needed: bool,
     #[cfg(any(test, feature = "debug-fixtures"))]
     pub linux_forward: Option<crate::linux_probe::Report>,
@@ -168,6 +172,13 @@ struct Connect {
     cancel: CancellationToken,
     discovery_only: bool,
 }
+struct PendingApp {
+    local_socket: PathBuf,
+    nonce: String,
+    mode: AppMode,
+    selection: Option<crate::catalog::ShelfStart>,
+    gui_grace: Option<eidolon_model::gui_session_policy::GuiUnresponsiveGrace>,
+}
 struct Shared {
     ime_endpoint: Option<crate::input_method::Endpoint>,
     report: Snapshot,
@@ -179,7 +190,10 @@ struct Shared {
     cancel: Option<CancellationToken>,
     router: Option<Arc<forward::Router>>,
     forward: Option<(PathBuf, String, Option<CleanupScenario>)>,
-    app: Option<(PathBuf, String, AppMode, Option<crate::catalog::ShelfStart>)>,
+    app: Option<PendingApp>,
+    termux_ticks: Option<
+        tokio::sync::watch::Sender<Option<eidolon_model::gui_session_lifecycle::LivenessTick>>,
+    >,
     desktop_profile: Option<DesktopConfig>,
     desktop_pending: Result<Option<linux_desktop::Pending>, &'static str>,
     // Only the authenticated in-process actor may mint this capture. A cold
@@ -198,6 +212,9 @@ struct Shared {
     desktop_v3_capture: Option<Arc<desktop_v3::runtime::RunCapture>>,
     desktop_v3_no_local_allocation: Option<desktop_v3::runtime::NoLocalAllocation>,
     desktop_v3_selections: Option<Vec<desktop_v3::Selection>>,
+    systemd_requests: Option<tokio::sync::mpsc::Sender<linux_desktop::systemd::Request>>,
+    systemd_launch_queued: bool,
+    systemd_ticks: Option<tokio::sync::watch::Sender<Option<linux_desktop::systemd::Tick>>>,
     desktop_v3_handoff: Option<desktop_v3::reclamation::ReclamationHandoff>,
     desktop_v3_io_retired: bool,
     desktop_v3_finalization_pending: bool,
@@ -242,6 +259,8 @@ pub struct CatalogUi {
     /// Exact B1 descriptor, published only after the authenticated Inspect.
     pub desktop_v3: Option<serde_json::Value>,
     pub desktop_v3_installed: Option<Vec<desktop_v3::installed::InstalledApp>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ubuntu_systemd_installed: Option<Vec<linux_desktop::systemd::CatalogApp>>,
     pub desktop_v3_editor_available: bool,
     pub desktop_preview: Option<DesktopPreview>,
     pub termux_shelf: Option<serde_json::Value>,
@@ -398,6 +417,7 @@ impl Controller {
                 router: None,
                 forward: None,
                 app: None,
+                termux_ticks: None,
                 desktop_profile: None,
                 desktop_pending,
                 desktop_v2_capture: None,
@@ -411,6 +431,9 @@ impl Controller {
                 desktop_v3_capture: None,
                 desktop_v3_no_local_allocation: None,
                 desktop_v3_selections: None,
+                systemd_requests: None,
+                systemd_launch_queued: false,
+                systemd_ticks: None,
                 desktop_v3_handoff: None,
                 desktop_v3_io_retired: false,
                 desktop_v3_finalization_pending: false,
@@ -544,6 +567,125 @@ impl Controller {
         };
         self.connect_spec(spec, request)
     }
+    pub fn connect_ubuntu_systemd(
+        &self,
+        profile: eidolon_model::connection_profile::Profile,
+        binding: eidolon_model::ubuntu_systemd::RuntimeBinding,
+        files: &Path,
+        request: CommandSeq,
+    ) -> Status {
+        if self.signals.files.as_deref() != Some(files) {
+            return Status::InvalidArgument;
+        }
+        match ConnectSpec::ubuntu_systemd(profile, binding, files.into()) {
+            Ok(spec) => self.connect_spec(spec, request),
+            Err(_) => Status::InvalidArgument,
+        }
+    }
+    pub fn systemd_request(
+        &self,
+        session: SessionId,
+        request: linux_desktop::systemd::Request,
+    ) -> Status {
+        use linux_desktop::systemd::{Phase, Request};
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Status::Stale;
+        }
+        let (Some(report), Some(queue)) = (&s.report.systemd_chrome, &s.systemd_requests) else {
+            return Status::NotReady;
+        };
+        let launch = matches!(&request, Request::Launch { .. });
+        let accepted = match &request {
+            Request::Launch { .. } => report.phase == Phase::Available && !s.systemd_launch_queued,
+            Request::Displayed(request) => {
+                report.phase == Phase::Forwarded && report.launch_request == Some(*request)
+            }
+            Request::Liveness { launch, .. } => {
+                report.phase == Phase::Running && report.launch_request == Some(*launch)
+            }
+            Request::LocalRetired(request) => {
+                report.phase == Phase::Stopping && report.launch_request == Some(*request)
+            }
+        };
+        if !accepted {
+            return Status::NotReady;
+        }
+        if let Request::Liveness {
+            launch,
+            scene,
+            sequence,
+        } = request
+        {
+            let Some(ticks) = &s.systemd_ticks else {
+                return Status::NotReady;
+            };
+            ticks.send_replace(Some(linux_desktop::systemd::Tick {
+                launch,
+                scene,
+                sequence,
+            }));
+            return Status::Accepted;
+        }
+        if queue.try_send(request).is_err() {
+            return Status::Busy;
+        }
+        s.systemd_launch_queued |= launch;
+        Status::Accepted
+    }
+    pub fn clear_gui_liveness(&self) {
+        self.signals.update(|s| {
+            if let Some(ticks) = &s.systemd_ticks {
+                ticks.send_replace(None);
+            }
+            if let Some(ticks) = &s.termux_ticks {
+                ticks.send_replace(None);
+            }
+        });
+    }
+    pub fn termux_gui_liveness(
+        &self,
+        session: SessionId,
+        scene: eidolon_model::ids::SceneEpoch,
+        sequence: CommandSeq,
+    ) -> Status {
+        use eidolon_model::gui_session_lifecycle::LivenessTick;
+        let s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if s.report.session != Some(session) {
+            return Status::Stale;
+        }
+        if !s.report.authenticated_termux
+            || !s
+                .report
+                .app_forward
+                .as_ref()
+                .and_then(|r| r.remote.as_ref())
+                .is_some_and(|remote| {
+                    remote.phase == "running" && remote.gui_grace_seconds.is_some()
+                })
+        {
+            return Status::NotReady;
+        }
+        let Some(ticks) = &s.termux_ticks else {
+            return Status::NotReady;
+        };
+        let (Ok(owner), Ok(sequence)) = (
+            (scene.get() as u64).try_into(),
+            (sequence.get() as u64).try_into(),
+        ) else {
+            return Status::InvalidArgument;
+        };
+        ticks.send_replace(Some(LivenessTick { owner, sequence }));
+        Status::Accepted
+    }
     pub fn connect_spec(&self, profile: ConnectSpec, request: CommandSeq) -> Status {
         self.enqueue_connect(profile, request, false)
     }
@@ -629,6 +771,10 @@ impl Controller {
             s.desktop_launch_queued = false;
             s.desktop_v2_io_retired = false;
             s.desktop_v3_work = None;
+            s.systemd_requests = None;
+            s.systemd_launch_queued = false;
+            s.systemd_ticks = None;
+            s.termux_ticks = None;
             s.desktop_v3_launch = None;
             s.desktop_v3_selections = None;
             s.desktop_v3_io_retired = false;
@@ -648,6 +794,7 @@ impl Controller {
             pending_cleanup: s.report.pending_cleanup.clone(),
             desktop_pending: !matches!(s.desktop_pending, Ok(None))
                 || !matches!(s.desktop_v3_pending, Ok(None)),
+            systemd_last_stop: s.report.systemd_last_stop,
             ..Default::default()
         };
         let cancel = CancellationToken::new();
@@ -688,7 +835,7 @@ impl Controller {
             Ok(Some(pending)) => {
                 if profile.desktop.as_ref().is_none_or(|config| match config {
                     DesktopConfig::V2 { profile, pins, .. } => !pending.matches(profile, pins),
-                    DesktopConfig::V3 { .. } => true,
+                    DesktopConfig::V3 { .. } | DesktopConfig::Systemd { .. } => true,
                 }) {
                     s.report.state = State::CleanupPending;
                     s.report.error = Some("DESKTOP_CLEANUP_SCOPE_MISMATCH");
@@ -780,6 +927,15 @@ impl Controller {
         self.signals.notify.notify_one();
         Status::Accepted
     }
+    pub fn systemd_stop(&self, session: SessionId, reason: &'static str) -> Status {
+        self.signals.update(|s| {
+            if s.report.session == Some(session) && s.report.systemd_chrome.is_some() {
+                s.report.systemd_last_stop = Some(reason);
+            }
+        });
+        self.disconnect(session)
+    }
+
     pub fn disconnect(&self, session: SessionId) -> Status {
         let mut s = self
             .signals
@@ -1011,7 +1167,7 @@ impl Controller {
         nonce: &str,
         mode: AppMode,
     ) -> Status {
-        self.start_selected_app(session, local_socket, nonce, mode, None)
+        self.start_selected_app(session, local_socket, nonce, mode, None, None)
     }
     pub fn start_selected_app(
         &self,
@@ -1020,10 +1176,12 @@ impl Controller {
         nonce: &str,
         mode: AppMode,
         selection: Option<crate::catalog::ShelfStart>,
+        gui_grace: Option<eidolon_model::gui_session_policy::GuiUnresponsiveGrace>,
     ) -> Status {
         if selection
             .as_ref()
             .is_some_and(|item| !item.valid() || mode != AppMode::Foot)
+            || gui_grace.is_some() && mode != AppMode::Foot
         {
             return Status::InvalidArgument;
         }
@@ -1063,7 +1221,13 @@ impl Controller {
             mode: mode.as_str().into(),
             ..Default::default()
         });
-        s.app = Some((local_socket.into(), nonce.into(), mode, selection));
+        s.app = Some(PendingApp {
+            local_socket: local_socket.into(),
+            nonce: nonce.into(),
+            mode,
+            selection,
+            gui_grace,
+        });
         self.signals.notify.notify_one();
         Status::Accepted
     }
@@ -1972,6 +2136,10 @@ fn owner(
             s.desktop_launches = None;
             s.desktop_launch_queued = false;
             s.desktop_v3_work = None;
+            s.systemd_requests = None;
+            s.systemd_launch_queued = false;
+            s.systemd_ticks = None;
+            s.termux_ticks = None;
             s.desktop_v3_launch = None;
             s.desktop_v3_selections = None;
             s.catalog = CatalogUi::default();
@@ -1999,7 +2167,11 @@ fn owner(
             };
             s.report.desktop_pending = !matches!(s.desktop_pending, Ok(None))
                 || !matches!(s.desktop_v3_pending, Ok(None))
-                || s.desktop_v3_finalization_pending;
+                || s.desktop_v3_finalization_pending
+                || s.report
+                    .systemd_chrome
+                    .as_ref()
+                    .is_some_and(|r| r.phase == linux_desktop::systemd::Phase::CleanupPending);
             #[cfg(any(test, feature = "debug-fixtures"))]
             {
                 s.linux = None;
@@ -2258,6 +2430,57 @@ async fn connection(
         signals.update(|s| s.report.authenticated_termux = true);
     }
     reconcile(signals, &client, connect, journal, &binding, uid).await?;
+    if let Some(DesktopConfig::Systemd {
+        profile,
+        binding,
+        files,
+    }) = &connect.profile.desktop
+    {
+        let target = linux_desktop::systemd::ChromeTarget {
+            profile,
+            storage: binding.storage(),
+            files,
+            waypipe_path: binding.waypipe_path(),
+            waypipe_hash: binding.waypipe_sha256(),
+            uid,
+            session: connect.session,
+        };
+        let owner = linux_desktop::systemd::ChromeOwner::connect(
+            &client,
+            &connect.router,
+            target,
+            &connect.cancel,
+        )
+        .await?;
+        let (sender, requests) = tokio::sync::mpsc::channel(4);
+        let (tick_sender, ticks) = tokio::sync::watch::channel(None);
+        signals.update(|s| {
+            s.catalog.session = Some(connect.session);
+            s.catalog.ubuntu_systemd_installed = Some(owner.catalog().to_vec());
+            s.systemd_requests = Some(sender);
+            s.systemd_ticks = Some(tick_sender);
+        });
+        return linux_desktop::systemd::serve(owner, requests, ticks, &connect.cancel, |report| {
+            use linux_desktop::systemd::Phase;
+            signals.update(|s| {
+                if report.phase == Phase::Starting {
+                    s.report.systemd_last_stop = None;
+                } else if report.phase == Phase::Stopping && s.report.systemd_last_stop.is_none() {
+                    s.report.systemd_last_stop = report.reason;
+                }
+                s.report.systemd_chrome = Some(report.clone());
+                s.report.state = match report.phase {
+                    Phase::Available | Phase::Starting | Phase::Forwarded | Phase::Running => {
+                        State::DesktopReady
+                    }
+                    Phase::Stopping | Phase::Complete => State::Disconnecting,
+                    Phase::CleanupPending => State::CleanupPending,
+                };
+            });
+        })
+        .await;
+    }
+
     let (ime_endpoint, mut ime_requests) = crate::input_method::Endpoint::channel(&connect.cancel);
     let ime_enabled = connect.profile.helper_supported;
     if ime_enabled {
@@ -2533,7 +2756,7 @@ async fn connection(
                     pins,
                     files,
                 } => (profile, pins, files),
-                DesktopConfig::V3 { .. } => return Err("DESKTOP_VERSION_SELECTION"),
+                _ => return Err("DESKTOP_VERSION_SELECTION"),
             };
             match work {
                 DesktopWork::Inspect(request) => {
@@ -2725,10 +2948,19 @@ async fn connection(
             }
             continue;
         }
-        if let Some((local_socket, nonce, mode, selection)) = app {
+        if let Some(PendingApp {
+            local_socket,
+            nonce,
+            mode,
+            selection,
+            gui_grace,
+        }) = app
+        {
             let (sender, terminal_requests) = tokio::sync::mpsc::channel(1);
             let (catalog_sender, catalog_requests) = tokio::sync::mpsc::channel(1);
+            let (tick_sender, liveness) = tokio::sync::watch::channel(None);
             signals.update(|s| {
+                s.termux_ticks = Some(tick_sender);
                 s.terminal_requests = Some(sender);
                 s.catalog_requests = Some(catalog_sender);
                 s.catalog = CatalogUi::default();
@@ -2748,6 +2980,8 @@ async fn connection(
                     catalog_requests,
                     selection,
                     observation: signals.observation.subscribe(),
+                    gui_grace,
+                    liveness,
                 },
                 &connect.cancel,
                 |r| {

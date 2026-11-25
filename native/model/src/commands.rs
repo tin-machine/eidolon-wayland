@@ -1,4 +1,5 @@
 use crate::{
+    gui_session_policy::GuiUnresponsiveGrace,
     ids::{CommandSeq, SceneEpoch},
     limits::COMMAND_BYTES,
     state::{Status, XrState},
@@ -14,6 +15,8 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub preferences_dir: Option<String>,
     #[serde(default)]
+    pub gui_unresponsive_grace_seconds: GuiUnresponsiveGrace,
+    #[serde(default)]
     pub paths: Option<RuntimePaths>,
     #[serde(default)]
     pub installation: Option<String>,
@@ -28,6 +31,9 @@ pub struct RuntimeConfig {
     /// Selection is local; a malformed v3 value must never fall back to v2.
     #[serde(default)]
     pub linux_desktop_v3: Option<String>,
+    /// The new backend uses a separate explicit binding and no v2/v3 pins envelope.
+    #[serde(default)]
+    pub ubuntu_systemd: Option<String>,
     /// Debug専用保存profile。nested JSONも重複keyを失わずProfile::parseへ渡す。
     #[serde(default)]
     pub debug_probe_profile_v2: Option<String>,
@@ -42,18 +48,26 @@ impl Default for RuntimeConfig {
             schema: 1,
             keyboard_layout: Default::default(),
             preferences_dir: None,
+            gui_unresponsive_grace_seconds: Default::default(),
             paths: None,
             installation: None,
             profiles: Vec::new(),
             linux_profile_v2: None,
             linux_desktop_pins: None,
             linux_desktop_v3: None,
+            ubuntu_systemd: None,
             debug_probe_profile_v2: None,
             debug_linux_shm_pins: None,
             debug_linux_gtk_pins: None,
         }
     }
 }
+fn deserialize_gui_grace_override<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<GuiUnresponsiveGrace>, D::Error> {
+    GuiUnresponsiveGrace::deserialize(deserializer).map(Some)
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectionProfile {
@@ -108,10 +122,16 @@ impl RuntimeConfig {
         {
             return Err(Status::InvalidArgument);
         }
-        let selected_v2 = self.linux_desktop_pins.is_some();
-        let selected_v3 = self.linux_desktop_v3.is_some();
-        if (selected_v2 && selected_v3)
-            || ((selected_v2 || selected_v3) && self.linux_profile_v2.is_none())
+        let selected_desktops = [
+            &self.linux_desktop_pins,
+            &self.linux_desktop_v3,
+            &self.ubuntu_systemd,
+        ]
+        .into_iter()
+        .filter(|choice| choice.is_some())
+        .count();
+        if selected_desktops > 1
+            || (selected_desktops > 0 && self.linux_profile_v2.is_none())
             || self
                 .linux_desktop_pins
                 .as_ref()
@@ -138,6 +158,11 @@ impl RuntimeConfig {
                         .map_err(|_| Status::InvalidArgument)?;
                 binding
                     .matches_profile(&profile)
+                    .map_err(|_| Status::InvalidArgument)?;
+            }
+            if let Some(raw) = &self.ubuntu_systemd {
+                crate::ubuntu_systemd::RuntimeBinding::parse(raw)
+                    .and_then(|binding| binding.matches_profile(&profile))
                     .map_err(|_| Status::InvalidArgument)?;
             }
         }
@@ -199,6 +224,7 @@ pub enum AppMode {
     Foot,
     FootFixture,
     LinuxDesktop,
+    UbuntuSystemd,
     LinuxGtkInput,
     LinuxGtkDialog,
     LinuxGtkResize,
@@ -258,6 +284,10 @@ pub enum PanelAction {
     Destroy,
 }
 impl AppMode {
+    pub fn managed_desktop(self) -> bool {
+        matches!(self, Self::LinuxDesktop | Self::UbuntuSystemd)
+    }
+
     pub fn linux_gtk_case(self) -> Option<LinuxGtkCase> {
         match self {
             Self::LinuxGtkInput => Some(LinuxGtkCase::Input),
@@ -272,6 +302,7 @@ impl AppMode {
             Self::Foot => "foot",
             Self::FootFixture => "foot_fixture",
             Self::LinuxDesktop => "linux_desktop",
+            Self::UbuntuSystemd => "ubuntu_systemd",
             Self::LinuxGtkInput => "linux_gtk_input",
             Self::LinuxGtkDialog => "linux_gtk_dialog",
             Self::LinuxGtkResize => "linux_gtk_resize",
@@ -497,6 +528,25 @@ pub enum Command {
         request_id: CommandSeq,
         session: crate::ids::SessionId,
     },
+    UbuntuSystemdLaunch {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        gui_unresponsive_grace_seconds: GuiUnresponsiveGrace,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        desktop_revision: Option<crate::linux_desktop_v3::Hash>,
+    },
+    UbuntuSystemdChromeNewWindow {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        launch: CommandSeq,
+    },
+    GuiLiveness {
+        schema: u32,
+        request_id: CommandSeq,
+        scene: SceneEpoch,
+    },
     LaunchTerminal {
         schema: u32,
         request_id: CommandSeq,
@@ -650,6 +700,12 @@ pub enum Command {
         mode: AppMode,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selection: Option<crate::catalog::ShelfStart>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_gui_grace_override"
+        )]
+        gui_unresponsive_grace_seconds: Option<GuiUnresponsiveGrace>,
     },
     ForwardProbe {
         schema: u32,
@@ -786,6 +842,9 @@ impl Command {
             | Self::LinuxDesktopV3Inspect { schema, .. }
             | Self::LinuxDesktopV3Launch { schema, .. }
             | Self::LinuxDesktopV3Recover { schema, .. }
+            | Self::UbuntuSystemdLaunch { schema, .. }
+            | Self::UbuntuSystemdChromeNewWindow { schema, .. }
+            | Self::GuiLiveness { schema, .. }
             | Self::LaunchTerminal { schema, .. }
             | Self::ShowWindow { schema, .. }
             | Self::CloseWindow { schema, .. }
@@ -997,6 +1056,9 @@ impl Command {
             | Self::LinuxDesktopV3Inspect { request_id, .. }
             | Self::LinuxDesktopV3Launch { request_id, .. }
             | Self::LinuxDesktopV3Recover { request_id, .. }
+            | Self::UbuntuSystemdLaunch { request_id, .. }
+            | Self::UbuntuSystemdChromeNewWindow { request_id, .. }
+            | Self::GuiLiveness { request_id, .. }
             | Self::LaunchTerminal { request_id, .. }
             | Self::ShowWindow { request_id, .. }
             | Self::CloseWindow { request_id, .. }
@@ -1659,6 +1721,80 @@ mod tests {
             "import raw remains valid independently of JNI limit"
         );
         assert!(RuntimeConfig::parse(&"x".repeat(COMMAND_BYTES + 1)).is_err());
+
+        let mut systemd = serde_json::json!({
+            "schema":1, "waypipe_path":"/opt/Eidolon tools/bin/waypipe",
+            "waypipe_sha256":"c".repeat(64), "storage":storage.record()
+        });
+        runtime.linux_desktop_v3 = None;
+        runtime.ubuntu_systemd = Some(systemd.to_string());
+        assert!(runtime.validate().is_ok());
+        runtime.linux_desktop_v3 = Some(envelope.to_string());
+        assert!(runtime.validate().is_err(), "two selected desktop backends");
+        runtime.linux_desktop_v3 = None;
+        systemd["waypipe_path"] = serde_json::json!("/opt/../usr/bin/waypipe");
+        runtime.ubuntu_systemd = Some(systemd.to_string());
+        assert!(runtime.validate().is_err());
+        systemd["waypipe_path"] = serde_json::json!("/opt/waypipe");
+        systemd["storage"]["host_user_binding"] = serde_json::json!("d".repeat(64));
+        runtime.ubuntu_systemd = Some(systemd.to_string());
+        assert!(
+            runtime.validate().is_err(),
+            "systemd storage must match the SSH capture"
+        );
+    }
+
+    #[test]
+    fn gui_grace_defaults_for_old_runtime_config_and_accepts_whole_minutes() {
+        let config = RuntimeConfig::parse(r#"{"schema":1}"#).unwrap();
+        assert_eq!(config.gui_unresponsive_grace_seconds.seconds(), 3_600);
+        for seconds in [60, 420, 3_600, 86_400] {
+            let json = serde_json::json!({"schema":1, "gui_unresponsive_grace_seconds":seconds});
+            let config = RuntimeConfig::parse(&json.to_string()).unwrap();
+            assert_eq!(config.gui_unresponsive_grace_seconds.seconds(), seconds);
+        }
+    }
+
+    #[test]
+    fn gui_grace_override_is_optional_and_explicit_values_are_strict() {
+        let mut launch = serde_json::json!({
+            "schema":1, "type":"start_app", "request_id":"3", "session":"2",
+            "nonce":"b".repeat(16), "mode":"foot"
+        });
+        assert!(matches!(
+            Command::parse(&launch.to_string()),
+            Ok(Command::StartApp {
+                gui_unresponsive_grace_seconds: None,
+                ..
+            })
+        ));
+        launch["gui_unresponsive_grace_seconds"] = serde_json::json!(420);
+        let Ok(Command::StartApp {
+            gui_unresponsive_grace_seconds: Some(grace),
+            ..
+        }) = Command::parse(&launch.to_string())
+        else {
+            panic!("expected a launch with explicit GUI grace");
+        };
+        assert_eq!(grace.seconds(), 420);
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!(-60),
+            serde_json::json!(0),
+            serde_json::json!(59),
+            serde_json::json!(61),
+            serde_json::json!(86_460),
+            serde_json::json!(60.0),
+            serde_json::json!("60"),
+        ] {
+            let config = serde_json::json!({"schema":1, "gui_unresponsive_grace_seconds":invalid});
+            assert!(
+                RuntimeConfig::parse(&config.to_string()).is_err(),
+                "{invalid}"
+            );
+            launch["gui_unresponsive_grace_seconds"] = invalid;
+            assert!(Command::parse(&launch.to_string()).is_err(), "{}", launch);
+        }
     }
 
     #[test]

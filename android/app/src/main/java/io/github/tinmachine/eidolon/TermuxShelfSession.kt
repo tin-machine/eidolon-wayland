@@ -119,6 +119,7 @@ internal class TermuxShelfSession(
         } else {
             args.put("nonce", UUID.randomUUID().toString().replace("-", "").take(16)).put("mode", "foot")
                 .put("selection", target.put("path", path).put("builtin", view.builtin))
+                .put(GuiSessionPolicy.WireField, NativeSessionHost.guiSessionPolicy.seconds)
             "start_app"
         }
         val entry = expected.entries.first { it.id == id }
@@ -188,7 +189,11 @@ internal class TermuxShelfSession(
                     launchRequest = null
                     presentedApp = true
                     failures.record(active, null)
-                    update(view.copy(busy = false, message = "起動しました"))
+                    val owner = tx.optJSONObject("app_forward")?.optJSONObject("remote")
+                    val leaseMessage = if (owner?.opt("gui_lease_supported") == false)
+                        "起動しました · この Termux では従来の無応答時間を使用します"
+                    else "起動しました"
+                    update(view.copy(busy = false, message = leaseMessage))
                 }
                 AppObservation.Completed, AppObservation.Cancelled, is AppObservation.Failed -> {
                     if (result == AppObservation.Completed) failures.record(active, null)
@@ -295,7 +300,9 @@ internal class TermuxShelfSession(
     fun diagnostics(): JSONObject = JSONObject().apply {
         val state = snapshot ?: return@apply
         val tx = state.optJSONObject("transport")
+        val lease = tx?.optJSONObject("app_forward")?.optJSONObject("remote")
         put("transport", tx?.optString("state"))
+        put("gui_grace_seconds", lease?.optInt("gui_grace_seconds")?.takeIf { it > 0 })
         put("pending_launches", tx?.optJSONArray("pending_cleanup")?.length() ?: 0)
         put("catalog_readable", tx?.optBoolean("termux_shelf_readable") == true)
         put("catalog_entries", view.entries.size)

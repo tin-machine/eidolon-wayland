@@ -69,7 +69,10 @@ private fun launchUnavailableReason(code: String?): String? = when (code) {
 
 /** The visible snapshot's immutable identity travels with the click, including across delayed UI dispatch. */
 private fun launch(state: LauncherUi, id: String) {
-    if (state.v3) NativeSessionHost.launchRegistered(state.runtime, state.capture, state.session, state.revision, id)
+    if (state.systemd) state.entries.firstOrNull { it.id == id }?.let {
+        NativeSessionHost.launchShelfApp(LauncherSource.UBUNTU, state, it)
+    }
+    else if (state.v3) NativeSessionHost.launchRegistered(state.runtime, state.capture, state.session, state.revision, id)
     else NativeSessionHost.launchRegistered(state.session, state.revision, id)
 }
 

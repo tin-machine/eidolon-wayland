@@ -1,6 +1,9 @@
 //! 認証済みSSHの同じRouter/journalから、既存Waypipe clientへ転送する。
 use crate::{forward, forward_probe, journal, launcher};
 use eidolon_model::{commands::AppMode, ids::SessionId};
+use eidolon_model::{
+    gui_session_lifecycle::LivenessTick, gui_session_policy::GuiUnresponsiveGrace,
+};
 use russh::client;
 use serde::Serialize;
 use std::{
@@ -38,6 +41,8 @@ pub(crate) struct Request<'a> {
     pub journal: &'a mut journal::Journal,
     pub binding: &'a str,
     pub observation: tokio::sync::watch::Receiver<bool>,
+    pub gui_grace: Option<GuiUnresponsiveGrace>,
+    pub liveness: tokio::sync::watch::Receiver<Option<LivenessTick>>,
     pub terminal_requests: tokio::sync::mpsc::Receiver<(
         eidolon_model::ids::CommandSeq,
         Option<crate::catalog::Target>,
@@ -70,6 +75,8 @@ pub(crate) async fn run<H: client::Handler>(
         mut catalog_requests,
         selection,
         mut observation,
+        gui_grace,
+        mut liveness,
     } = request;
     let started = std::time::Instant::now();
     let mut report = Report {
@@ -136,6 +143,9 @@ pub(crate) async fn run<H: client::Handler>(
         report.registered = true;
         report.state = "forwarded";
         publish(&report);
+        if let Some(grace) = gui_grace {
+            remote.set_gui_lease(grace).await?;
+        }
         if let Some(choice) = selection {
             let result = remote.catalog(eidolon_model::ids::CommandSeq::new(1).unwrap(),
                 crate::catalog::Operation::Reload { path: choice.path }).await?;
@@ -156,6 +166,8 @@ pub(crate) async fn run<H: client::Handler>(
         }
         let mut requests_open = true;
         let mut catalog_open = true;
+        let mut liveness_open = remote.report.gui_grace_seconds.is_some();
+        let mut last_tick = None;
         while remote.report.phase != "finished" {
             tokio::select! {
                 biased;
@@ -165,6 +177,17 @@ pub(crate) async fn run<H: client::Handler>(
                         let enabled = *observation.borrow_and_update();
                         remote.observe_workload(enabled).await?;
                     } else { observation_open = false; }
+                }
+                changed = liveness.changed(), if liveness_open && remote.report.phase == "running" => {
+                    if changed.is_err() {
+                        liveness_open = false;
+                    } else {
+                        let tick = *liveness.borrow_and_update();
+                        if let Some(tick) = tick && last_tick.is_none_or(|old| tick > old) {
+                            last_tick = Some(tick);
+                            remote.gui_liveness().await?;
+                        }
+                    }
                 }
                 request = terminal_requests.recv(), if requests_open && remote.report.phase == "running" && remote.report.terminal_count > 0 && remote.report.terminal_pending.is_none() => {
                     if let Some((request,target)) = request { remote.launch_terminal(request,target).await?; report.remote=Some(remote.report.clone()); }

@@ -127,7 +127,9 @@ object NativeSessionHost {
             LauncherCapacity.terminalApps(windows, terminalOpen != null || termuxShelf.borrowed && termuxShelf.occupiesApp ||
                 LauncherCapacity.appOccupiesRuntime(primary), terminalAdding?.windows)
         }
-        val ubuntuNeedsWorkspace = if (ubuntuPrimary) linuxV3Active() && state == "running" else companionLinux.occupiesApp
+        val ubuntuNeedsWorkspace = if (ubuntuPrimary) {
+            (linuxV3Active() || linuxSystemdActive()) && state == "running"
+        } else companionLinux.occupiesApp
         return LauncherCapacity.observe(main, !termuxShelf.borrowed && termuxShelf.occupiesApp,
             ubuntuPrimary, ubuntuNeedsWorkspace, termuxShelf.occupiesApp) { number ->
             val linux = linuxSessions[number - 2]
@@ -182,6 +184,16 @@ object NativeSessionHost {
             val issue = LauncherUi(linux = true, firstFailure = "UNCONFIGURED", message = "Ubuntu の接続設定が必要です")
             if (selectedProfileId == LinuxConnectionProfile.ID) linuxMessage = issue.message
             ui.post { secondaryUbuntu.value = issue }
+        } else if (linuxSystemdActive()) {
+            if (selectedProfileId != LinuxConnectionProfile.ID) {
+                val saved = linuxProfile ?: return
+                if (companionLinux.recovering) reopenCompanionShelf = true
+                companionLinux.browse(handle, saved, runtimeSettingsCapture.orEmpty(), currentSceneEpoch(),
+                    xrState.get(), activityVisible.get(), systemd = guiSessionPolicy)
+                return
+            }
+            pumpSystemdCatalog(snapshot().getJSONObject("runtime"))
+            if (launcherState.canConnect && !connectPending) enqueueConnect()
         } else if (selectedProfileId != LinuxConnectionProfile.ID) {
             val saved = linuxProfile ?: return
             if (companionLinux.recovering) reopenCompanionShelf = true
@@ -243,12 +255,13 @@ object NativeSessionHost {
                 additionalTermux[number - 2].openApp(handle, state, entry.id, currentSceneEpoch(), xrState.get(), activityVisible.get())
             } else termuxShelf.launch(state, entry.id)
         } }
+        else if (state.systemd) launchSystemdApp(state, entry)
         else if (state.runtime != 0L && state.runtime == companionLinux.handle)
             productWorker.execute { safely {
                 if (handle == 0L || !runtimeAdmission.open()) return@safely
                 val capacity = admitLaunch(snapshot().getJSONObject("runtime"), source) ?: return@safely
                 if (!companionLinux.occupiesApp) {
-                    companionLinux.selectApp(state, entry.id)
+                    companionLinux.selectApp(state, entry.id, guiSessionPolicy)
                     if (companionLinux.occupiesApp) reopenCompanionShelf = true
                 }
                 else if (state.session == companionLinux.shelf.session && state.revision == companionLinux.shelf.revision &&
@@ -427,6 +440,12 @@ object NativeSessionHost {
     val launcherExpanded = mutableStateOf(false)
     val launcherFavorites = androidx.compose.runtime.mutableStateListOf<String>()
     private var launcherPreferences: android.content.SharedPreferences? = null
+    @Volatile private var guiSessionPolicyStore: GuiSessionPolicyStore? = null
+    internal val guiSessionPolicy: GuiSessionPolicy
+        get() = guiSessionPolicyStore?.current ?: GuiSessionPolicy.Default
+
+    internal fun saveGuiSessionPolicy(input: String): GuiSessionPolicyStore.SaveResult =
+        guiSessionPolicyStore?.save(input) ?: GuiSessionPolicyStore.SaveResult.WriteFailed
 
     fun toggleLauncherFavorite(key: String) {
         if (!launcherFavorites.remove(key)) launcherFavorites.add(key)
@@ -756,7 +775,37 @@ object NativeSessionHost {
             }
         }) }
 
-    private fun linuxV3Active() = linuxSettings?.backend==LinuxDesktopBackend.V3 && linuxSettings?.ready==true
+    internal val ubuntuSystemdSettings = mutableStateOf(UbuntuSystemdSettingsUi())
+    private fun systemdPreference() = checkNotNull(application).getSharedPreferences("ubuntu_systemd", Context.MODE_PRIVATE)
+    private fun systemdPin(settings: LinuxDesktopSettingsRepository.Snapshot?): UbuntuSystemdPin? =
+        settings?.storageRecord?.let { systemdPreference().getString(UbuntuSystemdPin.key(it), null) }
+            ?.let(UbuntuSystemdPin::decode)
+    private fun linuxSystemdActive() = systemdPin(linuxSettings) != null
+    private fun linuxV3Active() = !linuxSystemdActive() && linuxSettings?.backend==LinuxDesktopBackend.V3 && linuxSettings?.ready==true
+
+    internal fun saveUbuntuSystemd(expectedStorage: String?, pin: UbuntuSystemdPin?) {
+        productWorker.execute {
+            var message = "Ubuntu の起動方式を保存しました"
+            try {
+                val saved = checkNotNull(linuxSettingsStore).load()
+                val storage = checkNotNull(saved.storageRecord)
+                val key = UbuntuSystemdPin.key(storage)
+                check(saved.ready && saved.captureToken == runtimeSettingsCapture && key == expectedStorage)
+                check(handle != 0L && canChangeConnection(snapshot().getJSONObject("runtime")))
+                stopRuntime()
+                val editor = systemdPreference().edit()
+                if (pin == null) editor.remove(key) else editor.putString(key, pin.encode().toString())
+                check(editor.commit())
+            } catch (_: Exception) {
+                message = "保存できませんでした。対象の Ubuntu アプリと回収の終了を確認してください"
+            } finally {
+                safely {
+                    if (handle == 0L && runtimeAdmission.open()) startRuntime()
+                    refreshLinuxConnection(message)
+                }
+            }
+        }
+    }
     private fun linuxConfigured() = linuxIdentity != null && linuxSettings?.let { it.ready && it.ipv4Endpoint } == true
     private fun reloadLinuxSettings(): LinuxDesktopSettingsRepository.Snapshot =
         checkNotNull(linuxSettingsStore).load().also { linuxSettings = it }
@@ -930,7 +979,16 @@ object NativeSessionHost {
             firstFailure=saving?.firstFailure,cleanupFailure=saving?.cleanupFailure,settingsStatus=settings?.status?.name ?: "UNCONFIGURED")
         val target=if(selectedProfileId==LinuxConnectionProfile.ID) profile?.let {"${it.displayName} · ${it.host}:${it.port}"} ?: "別のLinux（未設定）" else "このQuestのTermux"
         val selected=selectedProfileId
-        ui.post {linuxConnectionUi.value=value;selectedConnection.value=selected;connectionTarget.value=target}
+        val systemd = UbuntuSystemdSettingsUi(
+            supported = settings?.ready == true && settings.storageRecord != null,
+            pin = runCatching { systemdPin(settings) }.getOrNull(),
+            storage = settings?.storageRecord?.let(UbuntuSystemdPin::key),
+            message = message,
+        )
+        ui.post {
+            linuxConnectionUi.value=value;selectedConnection.value=selected;connectionTarget.value=target
+            ubuntuSystemdSettings.value = systemd
+        }
         if(!runtimeAdmission.open()) {
             val displayPhase=if(saving?.phase in setOf(RuntimeSaveCoordinator.Phase.ORIGIN_STOPPING,RuntimeSaveCoordinator.Phase.RUNTIME_STOPPING)) "stopping"
                 else if(saving!=null || settings?.status==LinuxDesktopSettingsRepository.Status.SAVE_PENDING) "save_pending" else "configuration_mismatch"
@@ -1058,7 +1116,153 @@ object NativeSessionHost {
         else linuxMessage="起動を開始できません。接続と前回の終了状態を確認してください。"
         requested?.invoke(request,code)
     } } }
+    private data class SystemdWindowRequest(val runtime: Long, val id: String, val deadline: Long)
+    private var systemdWindowRequest: SystemdWindowRequest? = null
+    private var systemdCatalogSession: String? = null
+    private var systemdCatalog = emptyList<LauncherEntry>()
+
+    private fun updateSystemdCatalog(session: String, chromeAvailable: Boolean) {
+        if (systemdCatalogSession == session) return
+        systemdCatalog = UbuntuSystemdLauncher.readCatalog(handle, session, chromeAvailable) ?: return
+        systemdCatalogSession = session
+    }
+
+    private fun systemdAppOwners(primary: JSONObject): Map<String, Pair<Long, JSONObject>> {
+        val runtimes = listOf(handle to primary) + linuxSessions.mapNotNull { item -> item.snapshot?.let { item.handle to it } }
+        return buildMap {
+            for (owner in runtimes) {
+                val report = UbuntuSystemdLauncher.report(owner.second) ?: continue
+                val app = report.opt("app_id") as? String ?: continue
+                if (report.optString("phase") in setOf("starting", "forwarded", "running", "stopping"))
+                    putIfAbsent(app, owner)
+            }
+        }
+    }
+
+    private fun launchSystemdApp(expected: LauncherUi, entry: LauncherEntry) {
+        productWorker.execute { safely {
+            if (handle == 0L || !linuxSystemdActive() || !runtimeAdmission.open() ||
+                expected.capture != runtimeSettingsCapture.orEmpty() ||
+                systemdWindowRequest != null) return@safely
+            val primary = snapshot().getJSONObject("runtime")
+            val primarySelected = selectedProfileId == LinuxConnectionProfile.ID
+            val owner = if (primarySelected) launcherState else companionLinux.shelf
+            if (!owner.systemd || owner.runtime != expected.runtime || owner.session != expected.session ||
+                owner.revision != expected.revision || owner.busy ||
+                owner.entries.none { it.id == entry.id && it.available }) return@safely
+
+            val existing = systemdAppOwners(primary)[entry.desktopId]
+            if (existing != null) {
+                if (entry.desktopId != UbuntuSystemdLauncher.ChromeId) return@safely
+                val args = UbuntuSystemdLauncher.chromeWindowArgs(existing.second) ?: return@safely
+                releasePanelTextFocus()
+                val request = requests.incrementAndGet().toString()
+                args.put("schema", 1).put("type", UbuntuSystemdLauncher.NewChromeWindow).put("request_id", request)
+                val code = NativeBridge.nativeCommand(existing.first, args.toString())
+                if (code == NativeBridge.ACCEPTED) {
+                    systemdWindowRequest = SystemdWindowRequest(existing.first, request, SystemClock.elapsedRealtime() + 6000)
+                    linuxMessage = null
+                } else linuxMessage = "Chrome の新しい窓を開けませんでした"
+                return@safely
+            }
+
+            val capacity = admitLaunch(primary, LauncherSource.UBUNTU) ?: return@safely
+            releasePanelTextFocus()
+            if (!primarySelected && !companionLinux.occupiesApp) {
+                companionLinux.selectApp(expected, entry.id, guiSessionPolicy)
+                if (companionLinux.occupiesApp) reopenCompanionShelf = true
+                return@safely
+            }
+
+            val primaryPhase = UbuntuSystemdLauncher.report(primary)?.optString("phase")
+            if (!primarySelected || primaryPhase == "running") {
+                val number = capacity.nextWorkspace ?: return@safely
+                val profile = linuxProfile ?: return@safely
+                linuxSessions[number - 2].begin(handle, profile, expected.capture, entry.id, currentSceneEpoch(),
+                    xrState.get(), activityVisible.get(), appKey = launcherAppKey(LauncherSource.UBUNTU, owner, entry),
+                    systemd = guiSessionPolicy)
+                return@safely
+            }
+            if (primaryPhase != "available" || linuxAction != null) return@safely
+            val request = requests.incrementAndGet().toString()
+            val command = UbuntuSystemdLauncher.launchArgs(expected.session, entry.id, guiSessionPolicy)
+                .put("schema", 1).put("type", UbuntuSystemdLauncher.Launch).put("request_id", request)
+            val code = NativeBridge.nativeCommand(handle, command.toString())
+            if (code == NativeBridge.ACCEPTED) {
+                linuxAction = LinuxAction("launch", expected.session, request)
+                linuxMessage = null
+            } else linuxMessage = "Ubuntu のアプリを起動できませんでした"
+        } }
+    }
+
+    private fun finishSystemdWindowRequest(primary: JSONObject) {
+        val pending = systemdWindowRequest ?: return
+        val owner = if (pending.runtime == handle) primary else secondarySnapshot(pending.runtime)
+        val session = owner?.optJSONObject("transport")?.optString("session")
+        val phase = owner?.optJSONObject("window_launch")?.takeIf {
+            it.optString("request_id") == pending.id && it.optString("session") == session
+        }?.optString("phase")
+        if (UbuntuSystemdLauncher.report(owner)?.optString("phase") == "running" &&
+            phase !in setOf("desktop_window", "unconfirmed", "cancelled") &&
+            SystemClock.elapsedRealtime() < pending.deadline) return
+        systemdWindowRequest = null
+        if (phase != "desktop_window") linuxMessage = "Chrome の新しい窓を確認できませんでした"
+    }
+
+    private fun systemdEntries(entries: List<LauncherEntry>, primary: JSONObject, busy: Boolean): List<LauncherEntry> {
+        val owners = systemdAppOwners(primary)
+        val admitsApp = capacityFor(primary).refusal(LauncherSource.UBUNTU) == null
+        return entries.map { entry ->
+            val owner = owners[entry.desktopId]
+            val available = if (owner == null) admitsApp else entry.desktopId == UbuntuSystemdLauncher.ChromeId &&
+                UbuntuSystemdLauncher.canOpenChromeWindow(owner.second)
+            entry.copy(available = entry.available && !busy && available)
+        }
+    }
+
+    private fun pumpSystemdCatalog(runtime: JSONObject) {
+        val transport = runtime.getJSONObject("transport")
+        val report = transport.optJSONObject("systemd_chrome")
+        val phase = report?.optString("phase").orEmpty()
+        val connected = transport.optString("profile_id") == LinuxConnectionProfile.ID
+        val session = transport.optString("session").takeIf { connected }.orEmpty()
+        val available = connected && phase == "available"
+        val running = connected && phase == "running"
+        if (available && session.isNotEmpty()) updateSystemdCatalog(session, report?.optBoolean("chrome_available") == true)
+        val appId = report?.opt("app_id") as? String
+        val label = systemdCatalog.firstOrNull { it.desktopId == appId }?.label ?: "Ubuntu アプリ"
+        val awaitingCleanup = connected && (phase == "cleanup_pending" || transport.optBoolean("desktop_pending"))
+        val active = phase in setOf("starting", "forwarded", "running")
+        linuxAction?.takeIf { it.kind == "launch" }?.let { action ->
+            if (action.session != session || running || awaitingCleanup ||
+                transport.optString("state") in setOf("Failed", "Disconnected") ||
+                SystemClock.elapsedRealtime() > action.deadline) linuxAction = null
+        }
+        val busy = connectPending || pendingDisconnect != null || linuxAction != null ||
+            phase == "stopping" || systemdWindowRequest != null
+        val message = linuxMessage ?: when {
+            systemdWindowRequest != null -> "Chrome の新しい窓を開いています"
+            awaitingCleanup -> "前回の Ubuntu アプリの回収を確認してください"
+            running -> "$label を実行中"
+            phase == "starting" || phase == "forwarded" -> "$label を起動中"
+            available -> "Ubuntu に接続済み"
+            transport.optString("state") == "Failed" -> "Ubuntu の systemd、Waypipe、Chrome を確認してください"
+            else -> "Ubuntu に接続してください"
+        }
+        val entries = if (available || active) systemdEntries(systemdCatalog, runtime, busy || !(available || running))
+            else emptyList()
+        launcherUpdate(LauncherUi(
+            session = session, connected = available || active, busy = busy,
+            revision = UbuntuSystemdLauncher.Revision, runtime = handle, capture = runtimeSettingsCapture.orEmpty(),
+            entries = entries, total = entries.size, message = message, linux = true, systemd = true,
+            canConnect = linuxConfigured() && ConnectionAdmission.canConnectLinux(runtime, busy),
+            canStop = pendingDisconnect == null && (transport.optInt("owned_connections") > 0 || connectPending),
+            running = running, catalogComplete = available || active, phase = phase.ifEmpty { "catalog_waiting" },
+        ))
+    }
+
     private fun pumpLinuxCatalog(runtime:JSONObject) {
+        if (linuxSystemdActive()) { pumpSystemdCatalog(runtime); return }
         if(linuxSettings?.backend != LinuxDesktopBackend.V2) {pumpLinuxV3Catalog(runtime);return}
         val transport=runtime.getJSONObject("transport");val phase=transport.optString("state")
         val session=transport.optString("session").takeIf {transport.optString("profile_id")==LinuxConnectionProfile.ID} ?: ""
@@ -1439,6 +1643,10 @@ object NativeSessionHost {
 
     fun initialize(context: Context) {
         val application = context.applicationContext
+        if (guiSessionPolicyStore == null) {
+            val preferences = application.getSharedPreferences("gui_session_policy", Context.MODE_PRIVATE)
+            guiSessionPolicyStore = GuiSessionPolicyStore.fromPreferences(preferences)
+        }
         if (launcherPreferences == null) {
             appFailures.restore(application.getSharedPreferences("launcher_failures", Context.MODE_PRIVATE))
             launcherPreferences = application.getSharedPreferences("launcher", Context.MODE_PRIVATE)
@@ -1529,6 +1737,16 @@ object NativeSessionHost {
         true
     }
     fun currentSceneEpoch(): Long = activityScenes.activeEpoch()
+    internal fun guiLiveness(scene: Long, owner: Long) = inputIntents.serial {
+        if (!activityVisible.get() || !activityScenes.owns(owner, scene) || scene <= 0) return@serial
+        val runtimes = (listOf(handle, termuxRuntime()) + additionalTermux.map { it.handle } + linuxSessions.map { it.handle })
+            .distinct().filter { it > 0 }
+        for (runtime in runtimes) {
+            val command = JSONObject().put("schema", 1).put("type", "gui_liveness")
+                .put("request_id", requests.incrementAndGet().toString()).put("scene", scene.toString())
+            NativeBridge.nativeCommand(runtime, command.toString())
+        }
+    }
     fun setXrState(value: String, expectedScene: Long? = null, owner: Long? = null): Boolean = inputIntents.serial {
         if (owner != null && (expectedScene == null || !activityScenes.owns(owner, expectedScene))) return@serial false
         if(expectedScene!=null && expectedScene!=activityScenes.activeEpoch()) return@serial false
@@ -2847,11 +3065,14 @@ object NativeSessionHost {
     }
     private fun baseRuntimeConfig():JSONObject = JSONObject().put("schema",1).put("paths",checkNotNull(paths)).put("installation",checkNotNull(identity).installation)
             .put("profiles",profiles).put("preferences_dir",checkNotNull(preferencesDir))
+            .put(GuiSessionPolicy.WireField, guiSessionPolicy.seconds)
     private fun runtimeConfigFor(settings:LinuxDesktopSettingsRepository.Snapshot?):String {
         val base=baseRuntimeConfig()
+        val pin = systemdPin(settings)
         val json=if(settings?.ready==true) {
             val profile=checkNotNull(settings.profile)
-            when(settings.backend) {
+            if (pin != null) LinuxRuntimeConfiguration.buildSystemd(base, profile, checkNotNull(settings.storageRecord), pin)
+            else when(settings.backend) {
                 LinuxDesktopBackend.V3 -> LinuxRuntimeConfiguration.build(base,profile,
                     configuration=checkNotNull(settings.v3Configuration).forProfile(profile,settings.storageRecord),storage=settings.storageRecord)
                 LinuxDesktopBackend.V2 -> LinuxRuntimeConfiguration.build(base,profile,v2Pins=checkNotNull(settings.v2Pins).forProfile(profile))
@@ -3115,6 +3336,9 @@ object NativeSessionHost {
         themeImportToken=null;themeRequests.clear();themeImportMessage=null
         linuxV3LaunchAdmission.forgetDestroyedRuntime(old)
         linuxV3Catalog=null;runtimeSettingsCapture=null
+        systemdCatalogSession = null
+        systemdCatalog = emptyList()
+        systemdWindowRequest = null
         clearImeForRetiredRuntime(old)
         catalogPending=null;launcherUpdate(LauncherUi(path=launcherState.path))
         linuxCredentialCapture?.close();linuxCredentialCapture=null;linuxAction=null;linuxCatalog=null;linuxMessage=null
@@ -3172,13 +3396,6 @@ object NativeSessionHost {
             if ((launcherExpanded.value || spatialShelfOpen) && runtimeAdmission.open() && !settingsSave.active)
                 refreshShelfHost(LauncherSource.UBUNTU)
         }
-        if (companionLinux.browsing || selectedProfileId != LinuxConnectionProfile.ID &&
-                (reopenCompanionShelf || companionLinux.shelf.firstFailure != null || secondaryUbuntu.value.recoveryWait != null)) {
-            val value = if (reopenCompanionShelf && companionLinux.recovering)
-                companionLinux.shelf.copy(connected = false, recoveryWait = "Ubuntu の終了処理中です。完了後にアプリ一覧を更新します。")
-                else companionLinux.shelf
-            if (secondaryUbuntu.value != value) ui.post { secondaryUbuntu.value = value }
-        }
         if (!runtimeAdmission.open()) termuxShelf.stop()
         application?.let { termuxShelf.tick(it, credentials) }
         if (runtimeAdmission.open()) {
@@ -3187,6 +3404,23 @@ object NativeSessionHost {
             syncWorkspaceScene(termuxRuntime(), termuxShelf.snapshot)
         }
         refreshCompanionInput()
+    }
+
+    private fun updateSecondaryUbuntu(primary: JSONObject) {
+        val shelf = companionLinux.shelf
+        if (!companionLinux.browsing && (selectedProfileId == LinuxConnectionProfile.ID ||
+            (!reopenCompanionShelf && shelf.firstFailure == null && secondaryUbuntu.value.recoveryWait == null))) return
+        val value = when {
+            reopenCompanionShelf && companionLinux.recovering ->
+                shelf.copy(connected = false, recoveryWait = "Ubuntu の終了処理中です。完了後にアプリ一覧を更新します。")
+            shelf.systemd -> shelf.copy(
+                busy = shelf.busy || systemdWindowRequest != null,
+                entries = systemdEntries(shelf.entries, primary, shelf.busy || systemdWindowRequest != null),
+                message = linuxMessage ?: shelf.message,
+            )
+            else -> shelf
+        }
+        if (secondaryUbuntu.value != value) ui.post { secondaryUbuntu.value = value }
     }
 
     // Allocation returns before the secondary runtime is Ready. SceneReady can be
@@ -3376,7 +3610,9 @@ object NativeSessionHost {
         val publishDiagnostics = now - lastWrite >= 1000
         val snapshot = if (publishDiagnostics) snapshot() else JSONObject(NativeBridge.nativeUiSnapshot(handle, false))
         val runtime = snapshot.getJSONObject("runtime")
+        finishSystemdWindowRequest(runtime)
         pumpCatalog(runtime)
+        updateSecondaryUbuntu(runtime)
         reconcileUbuntuShelf(runtime, now)
         inputIntents.serial {
         mousepadAnchorCandidate = (runtime.optJSONObject("anchor_preparing_target") ?: runtime.optJSONObject("anchor_placement_target"))
@@ -3494,6 +3730,7 @@ object NativeSessionHost {
             .put("keyboard_ingress",KeyboardIngress.json())
             .put("companion_linux",companionLinux.diagnostics())
             .put("termux_shelf",termuxShelf.diagnostics())
+            .put("termux_workspaces", JSONArray(additionalTermux.filter { it.handle > 0 }.map { it.diagnostics() }))
             .put("termux_start",JSONObject().put("requests",termuxRequests).put("successes",termuxSuccesses).put("failures",termuxFailures)))
         val workspace=runtime.getJSONObject("workspace");val storage=workspace.getJSONObject("storage")
         val observing=workspace.getBoolean("workload_observation")
@@ -3592,6 +3829,7 @@ object NativeSessionHost {
                     val request=requests.incrementAndGet().toString()
                     val command=JSONObject().put("schema",1).put("type","start_app").put("request_id",request)
                         .put("session",transport.getString("session")).put("nonce",operation.nonce).put("mode","foot")
+                        .put(GuiSessionPolicy.WireField, guiSessionPolicy.seconds)
                     val code=NativeBridge.nativeCommand(handle,command.toString())
                     if(code==NativeBridge.ACCEPTED) operation.startRequest=request
                     else if(code!=NativeBridge.BUSY) {terminalError="ターミナルを開始できません（$code）";clearTerminalOpen()}
