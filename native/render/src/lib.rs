@@ -850,7 +850,9 @@ fn run_owner(owned: &State) -> bool {
     state.logical.clear();
     state.hidden.clear();
     state.retirement_floors.clear();
-    state.sdk_surfaces.clear();
+    state
+        .sdk_surfaces
+        .retain(|(_, surface)| *surface == SdkSurface::Released);
     state.theme = None;
     state.accepted_theme = None;
     state.semantic.clear();
@@ -1147,17 +1149,12 @@ fn owner(state: &State) {
                     if role != mode
                         || (role == RenderMode::Windows
                             && !logical.contains(&(key.session, key.window)))
-                    {
-                        drop(window);
-                        update(state, |s| {
-                            s.snapshot.stale += 1;
-                            ack(s, key, sdk)
-                        });
-                        continue;
-                    }
-                    if active.len() >= limits::VISIBLE_PANELS
+                        || active.len() >= limits::VISIBLE_PANELS
                         || generations.attach(key) != Status::Accepted
                     {
+                        // Return the rejected ANativeWindow reference before
+                        // the adapter can observe the detach receipt.
+                        #[cfg(target_os = "android")]
                         drop(window);
                         update(state, |s| {
                             s.snapshot.stale += 1;
@@ -1785,11 +1782,12 @@ mod tests {
         assert_eq!(snapshot.sdk_detached, [key]);
         let wrong_generation = TargetKey::from_raw(1, 1, 1, 2).unwrap();
         assert_eq!(renderer.observe_sdk_detach(wrong_generation), Status::Stale);
+        renderer.request_stop();
+        wait(|| renderer.owner_reclaimed());
+        assert_eq!(renderer.snapshot().sdk_detached, [key]);
         assert_eq!(renderer.observe_sdk_detach(key), Status::Accepted);
         assert!(renderer.snapshot().sdk_detached.is_empty());
         assert_eq!(renderer.observe_sdk_detach(key), Status::Stale);
-        renderer.request_stop();
-        wait(|| renderer.owner_reclaimed());
     }
 
     #[test]
