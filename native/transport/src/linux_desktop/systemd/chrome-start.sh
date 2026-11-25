@@ -136,7 +136,8 @@ BUS
 exec /usr/bin/flock --nonblock --conflict-exit-code 73 --close -- "$profile_lock" \
     /usr/bin/dbus-run-session --config-file="$runtime/bus.xml" -- \
     "$waypipe" --no-gpu --compress none --threads 1 --socket "$runtime/p" \
-    --display "$XDG_RUNTIME_DIR/w" server -- "$chrome" --ozone-platform=wayland \
+    --display "$XDG_RUNTIME_DIR/w" server -- "$chrome" --ozone-platform=wayland \\
+    --no-first-run --no-default-browser-check \
     "--user-data-dir=$XDG_CONFIG_HOME/google-chrome"
 APP
 )

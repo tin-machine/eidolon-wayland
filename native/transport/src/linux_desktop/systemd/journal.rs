@@ -65,6 +65,14 @@ impl JournalRecord {
         self.grace
     }
 
+    pub fn remote_retired(&self) -> bool {
+        self.remote_retired
+    }
+
+    pub fn local_retired(&self) -> bool {
+        self.local_retired
+    }
+
     pub fn complete(&self) -> bool {
         self.local_retired && self.remote_retired
     }
@@ -72,7 +80,7 @@ impl JournalRecord {
 
 pub struct Journal {
     directory: PathBuf,
-    _guard: File,
+    guard: File,
     host_binding: String,
     storage_identity: ProfileStorageId,
     app_key: String,
@@ -119,7 +127,7 @@ impl Journal {
         }
         let mut journal = Self {
             directory,
-            _guard: guard,
+            guard,
             host_binding: host_binding.into(),
             storage_identity: storage_identity.clone(),
             app_key: app_key.into(),
@@ -211,7 +219,8 @@ impl Journal {
         invocation: InvocationId,
     ) -> Result<(), &'static str> {
         let mut next = self.current(generation)?;
-        if next.stage != JournalStage::Sent || next.invocation().is_some_and(|id| id != invocation)
+        if !matches!(next.stage, JournalStage::Sent | JournalStage::Stopping)
+            || next.invocation().is_some_and(|id| id != invocation)
         {
             return Err(PENDING);
         }
@@ -290,6 +299,16 @@ impl Journal {
         // After rename the directory entry is visible even if persistence is uncertain.
         self.record = Some(next);
         sync(&self.directory)
+    }
+}
+
+impl Drop for Journal {
+    fn drop(&mut self) {
+        // Release ownership explicitly. A concurrent fork can inherit a copy of
+        // the open file description until exec closes it.
+        unsafe {
+            libc::flock(self.guard.as_raw_fd(), libc::LOCK_UN);
+        }
     }
 }
 

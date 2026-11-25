@@ -92,6 +92,8 @@ pub struct Snapshot {
     pub desktop_pending: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub systemd_chrome: Option<linux_desktop::systemd::Report>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub systemd_last_stop: Option<&'static str>,
     pub desktop_reboot_needed: bool,
     #[cfg(any(test, feature = "debug-fixtures"))]
     pub linux_forward: Option<crate::linux_probe::Report>,
@@ -744,6 +746,7 @@ impl Controller {
             pending_cleanup: s.report.pending_cleanup.clone(),
             desktop_pending: !matches!(s.desktop_pending, Ok(None))
                 || !matches!(s.desktop_v3_pending, Ok(None)),
+            systemd_last_stop: s.report.systemd_last_stop,
             ..Default::default()
         };
         let cancel = CancellationToken::new();
@@ -876,6 +879,15 @@ impl Controller {
         self.signals.notify.notify_one();
         Status::Accepted
     }
+    pub fn systemd_stop(&self, session: SessionId, reason: &'static str) -> Status {
+        self.signals.update(|s| {
+            if s.report.session == Some(session) && s.report.systemd_chrome.is_some() {
+                s.report.systemd_last_stop = Some(reason);
+            }
+        });
+        self.disconnect(session)
+    }
+
     pub fn disconnect(&self, session: SessionId) -> Status {
         let mut s = self
             .signals
@@ -2383,6 +2395,11 @@ async fn connection(
         return linux_desktop::systemd::serve(owner, requests, ticks, &connect.cancel, |report| {
             use linux_desktop::systemd::Phase;
             signals.update(|s| {
+                if report.phase == Phase::Starting {
+                    s.report.systemd_last_stop = None;
+                } else if report.phase == Phase::Stopping && s.report.systemd_last_stop.is_none() {
+                    s.report.systemd_last_stop = report.reason;
+                }
                 s.report.systemd_chrome = Some(report.clone());
                 s.report.state = match report.phase {
                     Phase::Available | Phase::Starting | Phase::Forwarded | Phase::Running => State::DesktopReady,

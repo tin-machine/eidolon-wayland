@@ -29,6 +29,7 @@ pub struct Report {
     pub grace_seconds: Option<u32>,
     pub reason: Option<&'static str>,
     pub host_retired: bool,
+    pub forward_retired: bool,
 }
 
 impl Report {
@@ -40,6 +41,7 @@ impl Report {
             grace_seconds: None,
             reason: None,
             host_retired: false,
+            forward_retired: false,
         }
     }
 }
@@ -74,11 +76,11 @@ pub(crate) async fn serve<H: client::Handler>(
     mut publish: impl FnMut(&Report),
 ) -> Result<(), &'static str> {
     let mut report = Report::available();
-    if owner.pending().is_some() {
+    if let Err(reason) = owner.recover_pending(cancel).await {
         report.phase = Phase::CleanupPending;
-        report.reason = Some("SYSTEMD_CLEANUP_PENDING");
+        report.reason = Some(reason);
         publish(&report);
-        return Err("SYSTEMD_CLEANUP_PENDING");
+        return Err(reason);
     }
     publish(&report);
     let mut connection_probe = interval(Duration::from_millis(500));
@@ -130,9 +132,11 @@ pub(crate) async fn serve<H: client::Handler>(
         // response (including an already exited app) still needs host evidence.
         let _ = owner.request_stop(generation).await;
         let _ = owner.close_forward(generation).await;
+        report.forward_retired = owner.forward_retired();
         report.host_retired = owner.finish_remote(generation).await.is_ok();
     } else {
         report.host_retired = true;
+        report.forward_retired = true;
     }
     publish(&report);
 

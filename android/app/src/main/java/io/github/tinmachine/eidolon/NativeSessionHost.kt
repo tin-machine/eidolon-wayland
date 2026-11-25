@@ -1199,7 +1199,7 @@ object NativeSessionHost {
             session = session, connected = available || active, busy = busy,
             revision = "ubuntu_systemd_v1", runtime = handle, capture = runtimeSettingsCapture.orEmpty(),
             entries = entries, total = entries.size, message = message, linux = true, systemd = true,
-            canConnect = !awaitingCleanup && linuxConfigured() && ConnectionAdmission.canConnectLinux(runtime, busy),
+            canConnect = linuxConfigured() && ConnectionAdmission.canConnectLinux(runtime, busy),
             canStop = pendingDisconnect == null && (transport.optInt("owned_connections") > 0 || connectPending),
             running = running, catalogComplete = available || active, phase = phase.ifEmpty { "catalog_waiting" },
         ))

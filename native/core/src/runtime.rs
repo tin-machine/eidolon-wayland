@@ -1153,7 +1153,7 @@ impl Runtime {
                                 || systemd_terminating
                                 || current.snapshot().error.is_some();
                             let remote_gone = io.is_finished()
-                                || systemd_report.is_some_and(|report| report.host_retired)
+                                || systemd_report.is_some_and(|report| report.forward_retired)
                                 || desktop_finished
                                 || (ssh.owned_connections == 0 && ssh.forward.active == 0);
                             if current.is_v3() {
@@ -1404,8 +1404,9 @@ impl Runtime {
                                     current.fail("NOT_READY");
                                 }
                             }
-                            if current.snapshot().error.is_some() && !close {
-                                io.disconnect(current.session());
+                            if let Some(error) = current.snapshot().error && !close {
+                                if systemd { io.systemd_stop(current.session(), error); }
+                                else { io.disconnect(current.session()); }
                             }
                             if systemd && let Some((request, _)) = systemd_launch {
                                 let root = report.windows.iter().any(|window| {
@@ -1419,7 +1420,7 @@ impl Runtime {
                                 let live_root = report.windows.iter().any(|w| w.parent.is_none()
                                     && w.life != eidolon_model::window::WindowLife::Destroyed);
                                 if !close && systemd_had_root && !live_root && opening_window.is_none() {
-                                    io.disconnect(current.session());
+                                    io.systemd_stop(current.session(), "SYSTEMD_LAST_ROOT_CLOSED");
                                 }
                                 let shared = state.lock().unwrap_or_else(|e| e.into_inner());
                                 let sdk = shared.sdk_bindings.iter().any(|target| {

@@ -89,6 +89,10 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         !self.client.is_closed()
     }
 
+    pub fn forward_retired(&self) -> bool {
+        self.route.is_none() && (!self.forward_may_exist || !self.transport_connected())
+    }
+
     pub fn pending(&self) -> Option<&JournalRecord> {
         self.journal.record()
     }
@@ -126,13 +130,21 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         )?;
         self.journal
             .reserve(generation, &self.capability.boot_id, grace)?;
-        let response = exchange(self.client, command, cancel, || {
+        let response = match exchange(self.client, command, cancel, || {
             self.journal
                 .sent(generation)
                 .map_err(|_| ExchangeError::NotSent)
         })
         .await
-        .map_err(exchange_code)?;
+        {
+            Ok(response) => response,
+            Err(ExchangeError::NotSent) => {
+                self.journal.stopping(generation)?;
+                self.journal.retire(generation, false, true)?;
+                return Err("SYSTEMD_COMMAND_NOT_SENT");
+            }
+            Err(error) => return Err(exchange_code(error)),
+        };
         if response != b"starting\n" {
             return Err("SYSTEMD_LAUNCH_UPDATE_UNKNOWN");
         }
@@ -254,17 +266,50 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         Ok(())
     }
 
+    pub async fn recover_pending(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<(), &'static str> {
+        let Some(record) = self.pending() else {
+            return Ok(());
+        };
+        if !record.local_retired() {
+            return Err("SYSTEMD_LOCAL_CLEANUP_PENDING");
+        }
+        let generation = record.generation().ok_or("SYSTEMD_JOURNAL_INVALID")?;
+        if record.remote_retired() || record.stage() == super::JournalStage::Reserved {
+            self.journal.stopping(generation)?;
+            self.journal.retire(generation, false, true)?;
+            return Ok(());
+        }
+        if record.boot_id() == self.capability.boot_id {
+            if record.invocation().is_none() {
+                let UnitStatus::Loaded {
+                    invocation: Some(invocation),
+                    ..
+                } = self.inspect(generation, cancel).await?
+                else {
+                    return Err("SYSTEMD_START_OUTCOME_UNKNOWN");
+                };
+                self.journal.identify(generation, invocation)?;
+            }
+            let _ = self.request_stop(generation).await;
+        }
+        self.finish_remote(generation).await
+    }
+
     /// Check host-side retirement on the pinned connection before retiring the host journal proof.
     pub async fn finish_remote(&mut self, generation: Generation) -> Result<(), &'static str> {
         let pending = self
             .pending()
             .filter(|p| p.generation() == Some(generation))
             .ok_or("STALE")?;
+        let remote_already_retired = pending.remote_retired();
         let old_boot_ended = pending.boot_id() != self.capability.boot_id;
         let can_reap_timer = pending.invocation().is_some();
         self.journal.stopping(generation)?;
         let cancel = CancellationToken::new();
-        if !old_boot_ended {
+        if !old_boot_ended && !remote_already_retired {
             if can_reap_timer {
                 // A valid invocation proves the original Start had already passed.
                 let command = self.control(ChromeControl::ReapAfterExit, generation)?;
@@ -287,7 +332,7 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
     }
 
     pub fn finish_local(&mut self, generation: Generation) -> Result<bool, &'static str> {
-        if self.route.is_some() || self.forward_may_exist {
+        if !self.forward_retired() {
             return Err("SYSTEMD_CLEANUP_PENDING");
         }
         self.journal.retire(generation, true, false)
