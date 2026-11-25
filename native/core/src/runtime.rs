@@ -60,6 +60,23 @@ struct DesktopLaunch {
     lease: eidolon_model::window_slots::Lease,
 }
 impl Shared {
+    fn systemd_panel_applied(
+        &self,
+        session: eidolon_model::ids::SessionId,
+        window: eidolon_model::ids::WindowId,
+    ) -> bool {
+        self.panels.snapshot().iter().any(|panel| {
+            panel.target.session == session
+                && panel.target.window == window
+                && Some(panel.target.scene) == self.snapshot.scene
+                && panel.action == eidolon_model::commands::PanelAction::Create
+                && panel.applied
+                && panel.error.is_none()
+                && self.sdk_bindings.contains(&panel.target)
+                && !self.diagnostic_sdk_bindings.contains(&panel.target)
+        })
+    }
+
     fn reclaim_v3(
         &mut self,
         current: &mut crate::session::Session,
@@ -954,7 +971,11 @@ impl Runtime {
                 let mut systemd_launch: Option<(eidolon_model::ids::CommandSeq, eidolon_model::gui_session_policy::GuiUnresponsiveGrace)> = None;
                 let mut systemd_revision = None;
                 let mut systemd_display_sent = false;
-                let mut systemd_window_deadline: Option<Instant> = None;
+                let mut systemd_window = None::<(
+                    eidolon_model::window_slots::Lease,
+                    Instant,
+                    Option<eidolon_model::ids::WindowId>,
+                )>;
                 let mut systemd_had_root = false;
                 let mut systemd_local_sent = false;
                 let mut pending_app: Option<(
@@ -1263,19 +1284,34 @@ impl Runtime {
                                     || current.nonce() != expected_nonce || ssh.session != Some(*session)
                                 {
                                     Outcome::Cancelled
-                                } else if systemd {
+                                } else if let Some((lease, deadline, bound)) = systemd_window.as_mut() {
                                     let root_candidates = now.windows.iter().filter(|window| {
                                         window.parent.is_none() && window.life == eidolon_model::window::WindowLife::Mapped
+                                            && now.gui_windows.contains(&window.window)
                                             && !before.contains(&window.window)
                                     }).collect::<Vec<_>>();
                                     if root_candidates.len() > 1 {
                                         Outcome::Unconfirmed
-                                    } else if let [window] = root_candidates.as_slice()
-                                        && state.lock().unwrap_or_else(|e| e.into_inner()).sdk_bindings
-                                            .iter().any(|target| target.session == *session && target.window == window.window)
-                                    {
-                                        Outcome::DesktopWindow { window: window.window }
-                                    } else if systemd_window_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                                    } else if let [window] = root_candidates.as_slice() {
+                                        // Assign the unique root to the pending slot before
+                                        // regular observation can assign it as a spontaneous window.
+                                        let mapped = Outcome::DesktopWindow { window: window.window };
+                                        if bound.is_none() {
+                                            if slots.bind_local_window(*lease, window.window).is_ok() {
+                                                *bound = Some(window.window);
+                                            } else {
+                                                current.fail("SLOT_STATE_INVALID");
+                                            }
+                                        }
+                                        let shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                                        if *bound == Some(window.window) && shared.systemd_panel_applied(*session, window.window) {
+                                            mapped
+                                        } else if Instant::now() >= *deadline {
+                                            Outcome::Unconfirmed
+                                        } else {
+                                            Outcome::Queued
+                                        }
+                                    } else if Instant::now() >= *deadline {
                                         Outcome::Unconfirmed
                                     } else {
                                         Outcome::Queued
@@ -1298,12 +1334,14 @@ impl Runtime {
                                 state.lock().unwrap_or_else(|e| e.into_inner()).snapshot.window_launch = Some(Report {
                                     session: *session, request_id: *request, outcome,
                                 });
-                                if !current.virtual_clock() && slots.outcome(*session, *request, outcome).is_err() {
+                                if !systemd && !current.virtual_clock() && slots.outcome(*session, *request, outcome).is_err() {
                                     current.fail("SLOT_STATE_INVALID");
                                 }
                                 if outcome.completed() {
                                     opening_window = None;
-                                    if systemd { systemd_window_deadline = None; }
+                                    if let Some((lease, _, None)) = systemd_window.take() {
+                                        slots.not_enqueued(lease);
+                                    }
                                 }
                             }
                             if desktop && close && let Some(launch) = desktop_launch.take() {
@@ -1431,7 +1469,12 @@ impl Runtime {
                                 let sdk = shared.sdk_bindings.iter().any(|target| {
                                     target.session == current.session() && !shared.diagnostic_sdk_bindings.contains(target)
                                 });
-                                if !systemd_display_sent && root && sdk && !close {
+                                let root_applied = root && report.windows.iter().any(|window| {
+                                    window.parent.is_none() && window.life == eidolon_model::window::WindowLife::Mapped
+                                        && report.gui_windows.contains(&window.window)
+                                        && shared.systemd_panel_applied(current.session(), window.window)
+                                });
+                                if !systemd_display_sent && root_applied && !close {
                                     systemd_display_sent = io.systemd_request(current.session(), SystemdRequest::Displayed(request)) == Status::Accepted;
                                 }
                                 if !systemd_local_sent && systemd_terminating && current.closed() && !sdk
@@ -2024,8 +2067,8 @@ impl Runtime {
                                         if let Some(target) = target {
                                             match slots.reserve(*session, *request_id) {
                                                 Ok(lease) => match current.open_browser_window(target) {
-                                                    Ok(()) if slots.enqueued(lease).is_ok() => {
-                                                        systemd_window_deadline = Some(Instant::now() + Duration::from_secs(5));
+                                                    Ok(()) => {
+                                                        systemd_window = Some((lease, Instant::now() + Duration::from_secs(5), None));
                                                         let before = report.windows.iter().map(|w| w.window).collect();
                                                         opening_window = Some((*session, *request_id, current.nonce().into(), before));
                                                         state.snapshot.window_launch = Some(eidolon_model::window_launch::Report {
