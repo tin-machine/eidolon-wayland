@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -19,6 +20,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 
@@ -40,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
     var expanded by remember {mutableStateOf(false)}
     Button(onClick={expanded=!expanded;NativeSessionHost.resetInput()}) {Text(if(expanded) "接続設定を閉じる" else "接続設定・初回ペアリング")}
     if(!expanded) return
+    GuiSessionPolicySettings()
     if(linux) { LinuxConnectionSettings();return }
     var username by remember(state.savedToken) {mutableStateOf(state.username)}
     var hostKey by remember(state.savedToken) {mutableStateOf(state.hostKey)}
@@ -67,6 +70,38 @@ import androidx.compose.runtime.LaunchedEffect
         if(!state.canSave) Text("接続を切断し、前回の終了確認が済むと保存できます。",color=Color.White)
         Text(state.message,color=Color.White)
     }
+}
+
+@Composable private fun GuiSessionPolicySettings() {
+    var saved by remember { mutableStateOf(NativeSessionHost.guiSessionPolicy) }
+    var draft by remember { mutableStateOf(saved.minutes.toString()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    Text("GUI アプリの無応答時の待機時間（分）", color = Color.White)
+    Row {
+        for (minutes in listOf(5, 15, 60)) {
+            Button(onClick = { draft = minutes.toString(); error = null }) { Text("$minutes 分") }
+        }
+    }
+    OutlinedTextField(
+        value = draft,
+        onValueChange = { draft = it; error = null },
+        label = { Text("1〜1440 分") },
+        singleLine = true,
+        isError = error != null,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        supportingText = { Text(error ?: "保存済み ${saved.minutes} 分。次回起動するアプリから適用") },
+    )
+    Button(onClick = {
+        error = when (NativeSessionHost.saveGuiSessionPolicy(draft)) {
+            GuiSessionPolicyStore.SaveResult.Saved -> {
+                saved = NativeSessionHost.guiSessionPolicy
+                draft = saved.minutes.toString()
+                null
+            }
+            GuiSessionPolicyStore.SaveResult.InvalidInput -> "1〜1440 の整数を入力してください"
+            GuiSessionPolicyStore.SaveResult.WriteFailed -> "待機時間を保存できませんでした"
+        }
+    }) { Text("待機時間を保存") }
 }
 
 @Composable private fun LinuxConnectionSettings() {

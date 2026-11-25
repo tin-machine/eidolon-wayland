@@ -119,6 +119,7 @@ internal class TermuxShelfSession(
         } else {
             args.put("nonce", UUID.randomUUID().toString().replace("-", "").take(16)).put("mode", "foot")
                 .put("selection", target.put("path", path).put("builtin", view.builtin))
+                .put(GuiSessionPolicy.WireField, NativeSessionHost.guiSessionPolicy.seconds)
             "start_app"
         }
         val entry = expected.entries.first { it.id == id }

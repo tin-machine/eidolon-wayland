@@ -1,4 +1,5 @@
 use crate::{
+    gui_session_policy::GuiUnresponsiveGrace,
     ids::{CommandSeq, SceneEpoch},
     limits::COMMAND_BYTES,
     state::{Status, XrState},
@@ -13,6 +14,8 @@ pub struct RuntimeConfig {
     pub keyboard_layout: crate::keyboard::KeyboardLayout,
     #[serde(default)]
     pub preferences_dir: Option<String>,
+    #[serde(default)]
+    pub gui_unresponsive_grace_seconds: GuiUnresponsiveGrace,
     #[serde(default)]
     pub paths: Option<RuntimePaths>,
     #[serde(default)]
@@ -42,6 +45,7 @@ impl Default for RuntimeConfig {
             schema: 1,
             keyboard_layout: Default::default(),
             preferences_dir: None,
+            gui_unresponsive_grace_seconds: Default::default(),
             paths: None,
             installation: None,
             profiles: Vec::new(),
@@ -54,6 +58,12 @@ impl Default for RuntimeConfig {
         }
     }
 }
+fn deserialize_gui_grace_override<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<GuiUnresponsiveGrace>, D::Error> {
+    GuiUnresponsiveGrace::deserialize(deserializer).map(Some)
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectionProfile {
@@ -650,6 +660,12 @@ pub enum Command {
         mode: AppMode,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selection: Option<crate::catalog::ShelfStart>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_gui_grace_override"
+        )]
+        gui_unresponsive_grace_seconds: Option<GuiUnresponsiveGrace>,
     },
     ForwardProbe {
         schema: u32,
@@ -1659,6 +1675,59 @@ mod tests {
             "import raw remains valid independently of JNI limit"
         );
         assert!(RuntimeConfig::parse(&"x".repeat(COMMAND_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn gui_grace_defaults_for_old_runtime_config_and_accepts_whole_minutes() {
+        let config = RuntimeConfig::parse(r#"{"schema":1}"#).unwrap();
+        assert_eq!(config.gui_unresponsive_grace_seconds.seconds(), 3_600);
+        for seconds in [60, 420, 3_600, 86_400] {
+            let json = serde_json::json!({"schema":1, "gui_unresponsive_grace_seconds":seconds});
+            let config = RuntimeConfig::parse(&json.to_string()).unwrap();
+            assert_eq!(config.gui_unresponsive_grace_seconds.seconds(), seconds);
+        }
+    }
+
+    #[test]
+    fn gui_grace_override_is_optional_and_explicit_values_are_strict() {
+        let mut launch = serde_json::json!({
+            "schema":1, "type":"start_app", "request_id":"3", "session":"2",
+            "nonce":"b".repeat(16), "mode":"foot"
+        });
+        assert!(matches!(
+            Command::parse(&launch.to_string()),
+            Ok(Command::StartApp {
+                gui_unresponsive_grace_seconds: None,
+                ..
+            })
+        ));
+        launch["gui_unresponsive_grace_seconds"] = serde_json::json!(420);
+        let Ok(Command::StartApp {
+            gui_unresponsive_grace_seconds: Some(grace),
+            ..
+        }) = Command::parse(&launch.to_string())
+        else {
+            panic!("expected a launch with explicit GUI grace");
+        };
+        assert_eq!(grace.seconds(), 420);
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!(-60),
+            serde_json::json!(0),
+            serde_json::json!(59),
+            serde_json::json!(61),
+            serde_json::json!(86_460),
+            serde_json::json!(60.0),
+            serde_json::json!("60"),
+        ] {
+            let config = serde_json::json!({"schema":1, "gui_unresponsive_grace_seconds":invalid});
+            assert!(
+                RuntimeConfig::parse(&config.to_string()).is_err(),
+                "{invalid}"
+            );
+            launch["gui_unresponsive_grace_seconds"] = invalid;
+            assert!(Command::parse(&launch.to_string()).is_err(), "{}", launch);
+        }
     }
 
     #[test]

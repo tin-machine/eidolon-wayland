@@ -427,6 +427,12 @@ object NativeSessionHost {
     val launcherExpanded = mutableStateOf(false)
     val launcherFavorites = androidx.compose.runtime.mutableStateListOf<String>()
     private var launcherPreferences: android.content.SharedPreferences? = null
+    @Volatile private var guiSessionPolicyStore: GuiSessionPolicyStore? = null
+    internal val guiSessionPolicy: GuiSessionPolicy
+        get() = guiSessionPolicyStore?.current ?: GuiSessionPolicy.Default
+
+    internal fun saveGuiSessionPolicy(input: String): GuiSessionPolicyStore.SaveResult =
+        guiSessionPolicyStore?.save(input) ?: GuiSessionPolicyStore.SaveResult.WriteFailed
 
     fun toggleLauncherFavorite(key: String) {
         if (!launcherFavorites.remove(key)) launcherFavorites.add(key)
@@ -1439,6 +1445,10 @@ object NativeSessionHost {
 
     fun initialize(context: Context) {
         val application = context.applicationContext
+        if (guiSessionPolicyStore == null) {
+            val preferences = application.getSharedPreferences("gui_session_policy", Context.MODE_PRIVATE)
+            guiSessionPolicyStore = GuiSessionPolicyStore.fromPreferences(preferences)
+        }
         if (launcherPreferences == null) {
             appFailures.restore(application.getSharedPreferences("launcher_failures", Context.MODE_PRIVATE))
             launcherPreferences = application.getSharedPreferences("launcher", Context.MODE_PRIVATE)
@@ -2847,6 +2857,7 @@ object NativeSessionHost {
     }
     private fun baseRuntimeConfig():JSONObject = JSONObject().put("schema",1).put("paths",checkNotNull(paths)).put("installation",checkNotNull(identity).installation)
             .put("profiles",profiles).put("preferences_dir",checkNotNull(preferencesDir))
+            .put(GuiSessionPolicy.WireField, guiSessionPolicy.seconds)
     private fun runtimeConfigFor(settings:LinuxDesktopSettingsRepository.Snapshot?):String {
         val base=baseRuntimeConfig()
         val json=if(settings?.ready==true) {
@@ -3592,6 +3603,7 @@ object NativeSessionHost {
                     val request=requests.incrementAndGet().toString()
                     val command=JSONObject().put("schema",1).put("type","start_app").put("request_id",request)
                         .put("session",transport.getString("session")).put("nonce",operation.nonce).put("mode","foot")
+                        .put(GuiSessionPolicy.WireField, guiSessionPolicy.seconds)
                     val code=NativeBridge.nativeCommand(handle,command.toString())
                     if(code==NativeBridge.ACCEPTED) operation.startRequest=request
                     else if(code!=NativeBridge.BUSY) {terminalError="ターミナルを開始できません（$code）";clearTerminalOpen()}

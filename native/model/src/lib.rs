@@ -3,6 +3,8 @@ pub mod build_info;
 pub mod catalog;
 pub mod commands;
 pub mod connection_profile;
+pub mod gui_session_lifecycle;
+pub mod gui_session_policy;
 pub mod ids;
 pub mod ime;
 pub mod input;
