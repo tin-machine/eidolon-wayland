@@ -15,6 +15,7 @@ mod journal;
 mod owner;
 mod recovery;
 mod runtime;
+pub mod systemd;
 pub mod v3;
 pub use eidolon_model::linux_desktop::Selection;
 pub(crate) use journal::{Pending, pending};
