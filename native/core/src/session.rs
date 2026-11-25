@@ -872,6 +872,21 @@ impl Session {
             self.report.state = "running";
         }
     }
+    pub fn open_browser_window(&mut self, window: WindowId) -> Result<(), &'static str> {
+        if self.mode() != AppMode::UbuntuSystemd || self.closing || !self.owns_window(window)
+            || !self.report.windows.iter().any(|root| root.window == window && root.parent.is_none()
+                && root.life == WindowLife::Mapped)
+        {
+            return Err("STALE");
+        }
+        if self.report.windows.iter().any(|child| child.parent == Some(window)
+            && child.life == WindowLife::Mapped)
+        {
+            return Err("BUSY");
+        }
+        self.protocol.as_mut().ok_or("NOT_READY")?.request_browser_window(window)
+    }
+
     pub fn systemd_forwarding(&mut self, running: bool) {
         if self.mode() != AppMode::UbuntuSystemd || self.closing || self.closed() {
             return;

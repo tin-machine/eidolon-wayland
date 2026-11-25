@@ -534,6 +534,12 @@ pub enum Command {
         session: crate::ids::SessionId,
         gui_unresponsive_grace_seconds: GuiUnresponsiveGrace,
     },
+    UbuntuSystemdChromeNewWindow {
+        schema: u32,
+        request_id: CommandSeq,
+        session: crate::ids::SessionId,
+        launch: CommandSeq,
+    },
     GuiLiveness {
         schema: u32,
         request_id: CommandSeq,
@@ -835,6 +841,7 @@ impl Command {
             | Self::LinuxDesktopV3Launch { schema, .. }
             | Self::LinuxDesktopV3Recover { schema, .. }
             | Self::UbuntuSystemdChromeLaunch { schema, .. }
+            | Self::UbuntuSystemdChromeNewWindow { schema, .. }
             | Self::GuiLiveness { schema, .. }
             | Self::LaunchTerminal { schema, .. }
             | Self::ShowWindow { schema, .. }
@@ -1048,6 +1055,7 @@ impl Command {
             | Self::LinuxDesktopV3Launch { request_id, .. }
             | Self::LinuxDesktopV3Recover { request_id, .. }
             | Self::UbuntuSystemdChromeLaunch { request_id, .. }
+            | Self::UbuntuSystemdChromeNewWindow { request_id, .. }
             | Self::GuiLiveness { request_id, .. }
             | Self::LaunchTerminal { request_id, .. }
             | Self::ShowWindow { request_id, .. }

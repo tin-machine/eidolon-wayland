@@ -237,6 +237,41 @@ impl ProtocolState {
             }
         }
     }
+    pub fn request_browser_window(&mut self, window: WindowId) -> Result<(), &'static str> {
+        if self.input.keys.pressed_count() != 0
+            || !self.popup_grabs.is_empty()
+            || self.has_ime_preedit()
+        {
+            return Err("BUSY");
+        }
+        self.focus_window(window)?;
+        let token = self.input.report.focus_token.ok_or("STALE")?;
+        let at = monotonic_time_ms(self.input.last_key_time);
+        const LAUNCHER_KEYBOARD: i32 = i32::MAX;
+        for (key, action) in [
+            ((29, 113), KeyAction::Pressed),
+            ((49, 42), KeyAction::Pressed),
+            ((49, 42), KeyAction::Released),
+            ((29, 113), KeyAction::Released),
+        ] {
+            let packet = KeyPacket {
+                action,
+                device: LAUNCHER_KEYBOARD,
+                scan_code: key.0,
+                key_code: key.1,
+                repeat: 0,
+                meta: 0,
+                time_ms: at,
+            };
+            if let Err(error) = self.key_at_focus(window, token, packet) {
+                // The sequence began with no pressed physical keys.
+                self.reset_keyboard();
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     pub fn key_at_focus(
         &mut self,
         window: WindowId,

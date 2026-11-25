@@ -223,6 +223,10 @@ impl ProtocolState {
         self.ime.invalidate();
     }
 
+    pub(super) fn has_ime_preedit(&self) -> bool {
+        self.ime.preedit
+    }
+
     pub fn ime_report(&self) -> ImeReport {
         ImeReport {
             backend_enabled: self.ime.backend_enabled,

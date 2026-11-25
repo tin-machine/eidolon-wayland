@@ -64,13 +64,21 @@ pub enum Outcome {
         terminal_id: TerminalId,
         window: WindowId,
     },
+    DesktopWindow {
+        window: WindowId,
+    },
+    Unconfirmed,
     Cancelled,
 }
 impl Outcome {
     pub fn completed(self) -> bool {
         matches!(
             self,
-            Self::Rejected { .. } | Self::Matched { .. } | Self::Cancelled
+            Self::Rejected { .. }
+                | Self::Matched { .. }
+                | Self::DesktopWindow { .. }
+                | Self::Unconfirmed
+                | Self::Cancelled
         )
     }
 }

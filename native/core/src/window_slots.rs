@@ -156,10 +156,10 @@ impl Controller {
             return Err(Status::Stale);
         };
         match outcome {
-            Outcome::Matched { window, .. } => {
+            Outcome::Matched { window, .. } | Outcome::DesktopWindow { window } => {
                 board.bind(entry.lease, window).map_err(|_| Status::Stale)
             }
-            Outcome::Rejected { .. } | Outcome::Cancelled => board
+            Outcome::Rejected { .. } | Outcome::Unconfirmed | Outcome::Cancelled => board
                 .cancel(entry.lease)
                 .map(|_| ())
                 .map_err(|_| Status::Stale),

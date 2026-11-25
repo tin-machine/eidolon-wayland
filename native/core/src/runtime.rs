@@ -949,6 +949,7 @@ impl Runtime {
                 use eidolon_transport::linux_desktop::systemd::{Phase as SystemdPhase, Request as SystemdRequest};
                 let mut systemd_launch: Option<(eidolon_model::ids::CommandSeq, eidolon_model::gui_session_policy::GuiUnresponsiveGrace)> = None;
                 let mut systemd_display_sent = false;
+                let mut systemd_window_deadline: Option<Instant> = None;
                 let mut systemd_had_root = false;
                 let mut systemd_local_sent = false;
                 let mut pending_app: Option<(
@@ -1257,6 +1258,23 @@ impl Runtime {
                                     || current.nonce() != expected_nonce || ssh.session != Some(*session)
                                 {
                                     Outcome::Cancelled
+                                } else if systemd {
+                                    let root_candidates = now.windows.iter().filter(|window| {
+                                        window.parent.is_none() && window.life == eidolon_model::window::WindowLife::Mapped
+                                            && !before.contains(&window.window)
+                                    }).collect::<Vec<_>>();
+                                    if root_candidates.len() > 1 {
+                                        Outcome::Unconfirmed
+                                    } else if let [window] = root_candidates.as_slice()
+                                        && state.lock().unwrap_or_else(|e| e.into_inner()).sdk_bindings
+                                            .iter().any(|target| target.session == *session && target.window == window.window)
+                                    {
+                                        Outcome::DesktopWindow { window: window.window }
+                                    } else if systemd_window_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                                        Outcome::Unconfirmed
+                                    } else {
+                                        Outcome::Queued
+                                    }
                                 } else if desktop {
                                     let receipt = ssh.desktop.as_ref().and_then(|remote| Some(eidolon_model::linux_desktop::Receipt {
                                         session: remote.session?, request: remote.request_id?, nonce: &remote.nonce, started: remote.started,
@@ -1278,7 +1296,10 @@ impl Runtime {
                                 if !current.virtual_clock() && slots.outcome(*session, *request, outcome).is_err() {
                                     current.fail("SLOT_STATE_INVALID");
                                 }
-                                if outcome.completed() { opening_window = None; }
+                                if outcome.completed() {
+                                    opening_window = None;
+                                    if systemd { systemd_window_deadline = None; }
+                                }
                             }
                             if desktop && close && let Some(launch) = desktop_launch.take() {
                                 slots.not_enqueued(launch.lease);
@@ -1391,7 +1412,9 @@ impl Runtime {
                                         && report.gui_windows.contains(&window.window)
                                 });
                                 if root { systemd_had_root = true; }
-                                if !close && systemd_had_root && !root {
+                                let live_root = report.windows.iter().any(|w| w.parent.is_none()
+                                    && w.life != eidolon_model::window::WindowLife::Destroyed);
+                                if !close && systemd_had_root && !live_root && opening_window.is_none() {
                                     io.disconnect(current.session());
                                 }
                                 let shared = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1964,6 +1987,50 @@ impl Runtime {
                                         });
                                         Status::Accepted
                                     }
+                                }
+                                Command::UbuntuSystemdChromeNewWindow { session, request_id, launch, .. } => {
+                                    if ssh.session != Some(*session) || systemd_launch.is_none_or(|(active, _)| active != *launch) {
+                                        Status::Stale
+                                    } else if opening_window.is_some() {
+                                        Status::Busy
+                                    } else if !state.snapshot.activity_visible || state.snapshot.xr_state != XrState::Focused
+                                        || !ssh.systemd_chrome.as_ref().is_some_and(|report| report.phase == SystemdPhase::Running
+                                            && report.launch_request == Some(*launch))
+                                    {
+                                        Status::NotReady
+                                    } else if let Some(current) = app.as_mut()
+                                        .filter(|a| a.session() == *session && a.mode() == eidolon_model::commands::AppMode::UbuntuSystemd)
+                                    {
+                                        let report = current.snapshot();
+                                        let roots = report.windows.iter().filter(|window| window.parent.is_none()
+                                            && window.life == eidolon_model::window::WindowLife::Mapped
+                                            && report.gui_windows.contains(&window.window))
+                                            .map(|window| window.window).collect::<Vec<_>>();
+                                        let target = report.input.focus_window.filter(|id| roots.contains(id))
+                                            .or_else(|| state.panels.visible().iter().find(|(owner, id)|
+                                                owner == session && roots.contains(id)).map(|(_, id)| *id));
+                                        if let Some(target) = target {
+                                            match slots.reserve(*session, *request_id) {
+                                                Ok(lease) => match current.open_browser_window(target) {
+                                                    Ok(()) if slots.enqueued(lease).is_ok() => {
+                                                        systemd_window_deadline = Some(Instant::now() + Duration::from_secs(5));
+                                                        let before = report.windows.iter().map(|w| w.window).collect();
+                                                        opening_window = Some((*session, *request_id, current.nonce().into(), before));
+                                                        state.snapshot.window_launch = Some(eidolon_model::window_launch::Report {
+                                                            session: *session, request_id: *request_id,
+                                                            outcome: eidolon_model::window_launch::Outcome::Queued,
+                                                        });
+                                                        Status::Accepted
+                                                    }
+                                                    outcome => {
+                                                        slots.not_enqueued(lease);
+                                                        if matches!(outcome, Err("BUSY")) { Status::Busy } else { Status::NotReady }
+                                                    }
+                                                },
+                                                Err(status) => status,
+                                            }
+                                        } else { Status::NotReady }
+                                    } else { Status::NotReady }
                                 }
                                 Command::GuiLiveness { scene, request_id, .. } => {
                                     if state.snapshot.scene != Some(*scene) { Status::Stale }
