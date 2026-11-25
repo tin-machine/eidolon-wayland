@@ -1,9 +1,13 @@
 //! Ubuntu user-systemd transport. Capability probes run on the actor's pinned SSH connection.
 use super::{boot_identity, hex};
+use eidolon_model::ubuntu_systemd::valid_absolute_path as absolute_path;
 use std::path::PathBuf;
 
 mod chrome;
 pub use chrome::{ChromeControl, ChromeStorage, chrome_control_command, chrome_start_command};
+mod driver;
+pub use driver::{Phase, Report, Request};
+pub(crate) use driver::{Tick, serve};
 mod exchange;
 pub use exchange::{ExchangeError, exchange};
 mod journal;
@@ -11,7 +15,7 @@ pub use journal::{Journal, JournalRecord, JournalStage};
 mod owner;
 pub use owner::{ChromeOwner, ChromeTarget};
 mod unit;
-pub use unit::{ActiveState, InvocationId, UnitStatus, inspect_command};
+pub use unit::{ActiveState, InvocationId, UnitStatus, inspect_command, retired_command};
 
 const PROBE: &str = include_str!("probe.sh");
 const CHROME_EXECUTABLES: [&str; 2] = ["google-chrome-stable", "google-chrome"];
@@ -101,16 +105,6 @@ fn ssh_command(script: &str, argv: &[&str]) -> String {
 
 fn shell_arg(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-/// A successfully authenticated probe can report paths containing spaces and apostrophes.
-pub(crate) fn absolute_path(value: &str) -> bool {
-    value.len() <= 1024
-        && !value.chars().any(char::is_control)
-        && value.strip_prefix('/').is_some_and(|tail| {
-            tail.split('/')
-                .all(|component| !matches!(component, "" | "." | ".."))
-        })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

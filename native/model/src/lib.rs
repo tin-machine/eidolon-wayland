@@ -18,6 +18,7 @@ pub mod pointer;
 pub mod resize;
 pub mod state;
 pub mod surface;
+pub mod ubuntu_systemd;
 pub mod window;
 pub mod workload;
 pub mod workspace;

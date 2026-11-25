@@ -40,7 +40,12 @@ expiry=$5
 property() {
     systemctl --user show --property="$1" --value "$2"
 }
-if [ "$(property InvocationID "$app")" != "$invocation" ]; then
+if [ "$operation" = reap-after-exit ]; then
+    if [ "$(property LoadState "$app")" != not-found ]; then
+        printf '%s\n' SYSTEMD_INVOCATION_MISMATCH >&2
+        exit 1
+    fi
+elif [ "$(property InvocationID "$app")" != "$invocation" ]; then
     printf '%s\n' SYSTEMD_INVOCATION_MISMATCH >&2
     exit 1
 fi
@@ -61,7 +66,7 @@ case "$operation" in
         fi
         property NextElapseUSecMonotonic "$timer"
         ;;
-    stop)
+    stop|reap-after-exit)
         # The expiry worker takes this same lock before it can act on the application.
         # Cancel any waiting job, then let systemd stop the application's own cgroup.
         for unit in "$timer" "$expiry"; do
@@ -69,7 +74,9 @@ case "$operation" in
                 systemctl --user stop "$unit"
             fi
         done
-        systemctl --user stop "$app"
+        if [ "$operation" = stop ]; then
+            systemctl --user stop "$app"
+        fi
         ;;
     *)
         exit 1

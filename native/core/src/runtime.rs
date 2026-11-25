@@ -838,6 +838,9 @@ impl Runtime {
                 Ok::<_, std::io::Error>(binding)
             })
             .transpose()?;
+        let ubuntu_systemd_binding = config.ubuntu_systemd.as_deref()
+            .map(eidolon_model::ubuntu_systemd::RuntimeBinding::parse)
+            .transpose().map_err(|_| invalid())?;
         let normal_linux = desktop_profile.is_some();
         #[cfg(any(test, feature = "debug-fixtures"))]
         let linux_pins = config
@@ -943,6 +946,11 @@ impl Runtime {
                     Vec<eidolon_model::ids::WindowId>,
                 )> = None;
                 let mut shelf_start: Option<(String, eidolon_model::catalog::ShelfStart)> = None;
+                use eidolon_transport::linux_desktop::systemd::{Phase as SystemdPhase, Request as SystemdRequest};
+                let mut systemd_launch: Option<(eidolon_model::ids::CommandSeq, eidolon_model::gui_session_policy::GuiUnresponsiveGrace)> = None;
+                let mut systemd_display_sent = false;
+                let mut systemd_had_root = false;
+                let mut systemd_local_sent = false;
                 let mut pending_app: Option<(
                     eidolon_model::ids::SessionId,
                     String,
@@ -1022,7 +1030,7 @@ impl Runtime {
                             let mut created_session = false;
                             let started = (|| {
                                 if ssh.session != Some(session)
-                                    || ssh.state != if mode == eidolon_model::commands::AppMode::LinuxDesktop {
+                                    || ssh.state != if mode.managed_desktop() {
                                         eidolon_transport::session::State::DesktopReady
                                     } else if linux {eidolon_transport::session::State::ProbeReady}else{eidolon_transport::session::State::Ready}
                                 {
@@ -1113,6 +1121,16 @@ impl Runtime {
                         }
                         if let Some(current) = app.as_mut() {
                             let desktop = current.mode() == eidolon_model::commands::AppMode::LinuxDesktop;
+                            let systemd = current.mode() == eidolon_model::commands::AppMode::UbuntuSystemd;
+                            let systemd_report = systemd.then_some(ssh.systemd_chrome.as_ref()).flatten()
+                                .filter(|report| systemd_launch.is_some_and(|(request, _)| report.launch_request == Some(request)));
+                            let systemd_terminating = systemd_report.is_some_and(|report|
+                                matches!(report.phase, SystemdPhase::Stopping | SystemdPhase::Complete | SystemdPhase::CleanupPending));
+                            if let Some(report) = systemd_report
+                                && matches!(report.phase, SystemdPhase::Forwarded | SystemdPhase::Running)
+                            {
+                                current.systemd_forwarding(report.phase == SystemdPhase::Running);
+                            }
                             let desktop_finished = desktop && ssh.desktop.as_ref().is_some_and(|report| report.session == Some(current.session()) && report.nonce == current.nonce() && report.finished);
                             let desktop_terminating = desktop && !current.is_v3() && ssh.desktop.as_ref().is_some_and(|report| report.session == Some(current.session()) && report.nonce == current.nonce()
                                 && (report.finished || report.state == "stopping" || report.remote.terminal_event || report.remote.channel_closed));
@@ -1130,8 +1148,10 @@ impl Runtime {
                                 )
                                 || (desktop && (desktop_terminating || v3_terminating
                                     || matches!(ssh.state, eidolon_transport::session::State::Disconnecting | eidolon_transport::session::State::CleanupPending)))
+                                || systemd_terminating
                                 || current.snapshot().error.is_some();
                             let remote_gone = io.is_finished()
+                                || systemd_report.is_some_and(|report| report.host_retired)
                                 || desktop_finished
                                 || (ssh.owned_connections == 0 && ssh.forward.active == 0);
                             if current.is_v3() {
@@ -1315,6 +1335,10 @@ impl Runtime {
                                     } else {
                                         Status::Stale
                                     }
+                                } else if systemd {
+                                    if let (Some((request, grace)), Some(local_socket)) = (systemd_launch, current.socket()) {
+                                        io.systemd_request(current.session(), SystemdRequest::Launch { request, local_socket, grace })
+                                    } else { Status::NotReady }
                                 } else if desktop {
                                     if let Some(launch) = desktop_launch.take() {
                                         let code = if launch.session != current.session() || launch.nonce != current.nonce() {
@@ -1360,6 +1384,30 @@ impl Runtime {
                             if current.snapshot().error.is_some() && !close {
                                 io.disconnect(current.session());
                             }
+                            if systemd && let Some((request, _)) = systemd_launch {
+                                let root = report.windows.iter().any(|window| {
+                                    window.parent.is_none()
+                                        && window.life == eidolon_model::window::WindowLife::Mapped
+                                        && report.gui_windows.contains(&window.window)
+                                });
+                                if root { systemd_had_root = true; }
+                                if !close && systemd_had_root && !root {
+                                    io.disconnect(current.session());
+                                }
+                                let shared = state.lock().unwrap_or_else(|e| e.into_inner());
+                                let sdk = shared.sdk_bindings.iter().any(|target| {
+                                    target.session == current.session() && !shared.diagnostic_sdk_bindings.contains(target)
+                                });
+                                if !systemd_display_sent && root && sdk && !close {
+                                    systemd_display_sent = io.systemd_request(current.session(), SystemdRequest::Displayed(request)) == Status::Accepted;
+                                }
+                                if !systemd_local_sent && systemd_terminating && current.closed() && !sdk
+                                    && !shared.panels.snapshot().iter().any(|panel| panel.target.session == current.session())
+                                    && !render.targets.iter().any(|native| native.key.session == current.session())
+                                {
+                                    systemd_local_sent = io.systemd_request(current.session(), SystemdRequest::LocalRetired(request)) == Status::Accepted;
+                                }
+                            }
                             let observation = state
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
@@ -1396,7 +1444,7 @@ impl Runtime {
                             if !current.virtual_clock() {
                                 let windows = snapshot.windows.iter().map(|w| crate::window_slots::Window {
                                     id: w.window, app_id: w.app_id.as_deref(), life: w.life,
-                                    admissible: !desktop || snapshot.gui_windows.contains(&w.window),
+                                    admissible: !(desktop || systemd) || snapshot.gui_windows.contains(&w.window),
                                 }).collect::<Vec<_>>();
                                 let mut shared = state.lock().unwrap_or_else(|e| e.into_inner());
                                 let native = render.targets.iter().map(|t| t.key).collect::<Vec<_>>();
@@ -1649,7 +1697,7 @@ impl Runtime {
                                 app.windows
                                     .iter()
                                     .filter(|w| w.life == eidolon_model::window::WindowLife::Mapped)
-                                    .filter(|w| app.mode != Some(eidolon_model::commands::AppMode::LinuxDesktop) || app.gui_windows.contains(&w.window))
+                                    .filter(|w| !app.mode.is_some_and(|mode| mode.managed_desktop()) || app.gui_windows.contains(&w.window))
                                     .filter_map(|w| app.session.map(|session| (session, w.window)))
                             })
                             .collect();
@@ -1662,7 +1710,7 @@ impl Runtime {
                             .into_iter()
                             .flat_map(|app| {
                                 app.windows.iter()
-                                    .filter(|w| app.mode != Some(eidolon_model::commands::AppMode::LinuxDesktop) || app.gui_windows.contains(&w.window))
+                                    .filter(|w| !app.mode.is_some_and(|mode| mode.managed_desktop()) || app.gui_windows.contains(&w.window))
                                     .filter_map(|w| {
                                     render.theme_id.as_ref()?;
                                     let content = w.logical_size?;
@@ -1895,6 +1943,39 @@ impl Runtime {
                                 // origin-bound window admission before a Launch can proceed.
                                 // I2's transport API is intentionally inaccessible to
                                 // a bare untrusted/unsynchronized Command::Launch.
+                                Command::UbuntuSystemdChromeLaunch { session, request_id, gui_unresponsive_grace_seconds, .. } => {
+                                    if ssh.session != Some(*session) { Status::Stale }
+                                    else if native_busy { Status::Busy }
+                                    else if config.paths.is_none() || ubuntu_systemd_binding.is_none()
+                                        || !ssh.systemd_chrome.as_ref().is_some_and(|report| report.phase == SystemdPhase::Available)
+                                    { Status::NotReady }
+                                    else {
+                                        let generation = eidolon_transport::linux_desktop::systemd::Generation::new().to_string();
+                                        let nonce = generation[..16].to_string();
+                                        let mode = eidolon_model::commands::AppMode::UbuntuSystemd;
+                                        systemd_launch = Some((*request_id, *gui_unresponsive_grace_seconds));
+                                        systemd_display_sent = false;
+                                        systemd_had_root = false;
+                                        systemd_local_sent = false;
+                                        pending_app = Some((*session, nonce.clone(), mode, false, true));
+                                        state.snapshot.app = Some(crate::session::Report {
+                                            state: "queued", session: Some(*session), nonce, mode: Some(mode),
+                                            callback_clock: "target-driven", ..Default::default()
+                                        });
+                                        Status::Accepted
+                                    }
+                                }
+                                Command::GuiLiveness { scene, request_id, .. } => {
+                                    if state.snapshot.scene != Some(*scene) { Status::Stale }
+                                    else if !state.snapshot.activity_visible { Status::NotReady }
+                                    else if let (Some(current), Some((launch, _))) = (app.as_ref(), systemd_launch)
+                                        && current.mode() == eidolon_model::commands::AppMode::UbuntuSystemd
+                                    {
+                                        io.systemd_request(current.session(), SystemdRequest::Liveness {
+                                            launch, scene: scene.get() as u64, sequence: request_id.get() as u64,
+                                        })
+                                    } else { Status::NotReady }
+                                }
                                 Command::LinuxDesktopV3Launch { session, request_id, selection, .. } => {
                                     if native_busy || v3_pending.is_some() || v3_observer.is_some()
                                         || v3_finalizer.pending() || v3_finalizer.worker_pending()
@@ -2522,7 +2603,7 @@ impl Runtime {
                                         .forward_probe
                                         .as_ref()
                                         .is_none_or(|r| matches!(r.state, "pass" | "fail"));
-                                    if *mode == eidolon_model::commands::AppMode::LinuxDesktop || mode.linux_gtk_case().is_some() || (virtual_clock && !cfg!(debug_assertions))
+                                    if mode.managed_desktop() || mode.linux_gtk_case().is_some() || (virtual_clock && !cfg!(debug_assertions))
                                         || config.paths.is_none()
                                         || (!virtual_clock
                                             && *mode != eidolon_model::commands::AppMode::Foot
@@ -2766,6 +2847,13 @@ impl Runtime {
                                         Status::Busy
                                     } else if profile_id == "remote-linux" {
                                         if let (Some(profile), Some(binding), Some(paths)) = (
+                                            desktop_profile.as_ref(), ubuntu_systemd_binding.as_ref(), config.paths.as_ref()
+                                        ) {
+                                            io.connect_ubuntu_systemd(
+                                                profile.clone(), binding.clone(),
+                                                std::path::Path::new(&paths.files_dir), *request_id,
+                                            )
+                                        } else if let (Some(profile), Some(binding), Some(paths)) = (
                                             desktop_profile.as_ref(), desktop_v3_binding.as_ref(), config.paths.as_ref()
                                         ) {
                                             io.connect_linux_desktop_v3(
@@ -2883,6 +2971,7 @@ impl Runtime {
                                     if state.snapshot.scene.is_some_and(|old| *scene <= old) {
                                         Status::Stale
                                     } else {
+                                        io.clear_systemd_liveness();
                                         state.snapshot.scene = Some(*scene);
                                         state.workspace.scene(Some(*scene));
                                         Status::Accepted
@@ -2900,6 +2989,7 @@ impl Runtime {
                                     if expected_scene.is_some_and(|scene| state.snapshot.scene != Some(scene)) {
                                         Status::Stale
                                     } else {
+                                        if !visible { io.clear_systemd_liveness(); }
                                         state.snapshot.activity_visible = *visible;
                                         Status::Accepted
                                     }
@@ -3127,6 +3217,10 @@ impl Runtime {
                             && state.v3_retirement.as_ref().is_some_and(|owner| {
                                 !owner.is_sealed() && owner.owns_target(*target, *create_command)
                             })
+                    }
+                    Some(eidolon_model::commands::AppMode::UbuntuSystemd) => {
+                        state.v3_retirement.is_none() && app.gui_windows.contains(&target.window)
+                            && parent.is_none_or(|id| app.gui_windows.contains(&id))
                     }
                     Some(eidolon_model::commands::AppMode::Foot) => state.v3_retirement.is_none(),
                     _ => false,

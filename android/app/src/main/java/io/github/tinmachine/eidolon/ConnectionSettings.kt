@@ -104,9 +104,41 @@ import androidx.compose.runtime.LaunchedEffect
     }) { Text("待機時間を保存") }
 }
 
+@Composable private fun UbuntuSystemdConnectionSettings(canSave: Boolean) {
+    val settings = NativeSessionHost.ubuntuSystemdSettings.value
+    if (!settings.supported) return
+    var editing by remember(settings.storage) { mutableStateOf(false) }
+    var path by remember(settings.pin, settings.storage) { mutableStateOf(settings.pin?.path.orEmpty()) }
+    var digest by remember(settings.pin, settings.storage) { mutableStateOf(settings.pin?.sha256.orEmpty()) }
+    var confirmed by remember(path, digest, settings.storage) { mutableStateOf(false) }
+    val pin = remember(path, digest) { runCatching { UbuntuSystemdPin(path, digest) }.getOrNull() }
+    Button(onClick = { editing = !editing }) {
+        Text(if (settings.pin == null) "Ubuntu systemd の起動設定" else "Ubuntu systemd を使用中")
+    }
+    if (!editing) return
+    Text("Chrome は Quest 専用の新しいプロファイルを使用します", color = Color.White)
+    OutlinedTextField(path, { path = it.take(1024) }, label = { Text("Ubuntu 上の Waypipe の絶対パス") },
+        singleLine = true, enabled = canSave)
+    OutlinedTextField(digest, { digest = it.take(64) }, label = { Text("Waypipe の SHA-256") },
+        singleLine = true, enabled = canSave)
+    Row {
+        Checkbox(checked = confirmed, onCheckedChange = { confirmed = it }, enabled = canSave)
+        Text("Ubuntu で Waypipe の SHA-256 を照合しました", color = Color.White)
+    }
+    Button(enabled = canSave && confirmed && pin != null,
+        onClick = { NativeSessionHost.saveUbuntuSystemd(settings.storage, pin) }) { Text("Ubuntu systemd に切り替える") }
+    if (settings.pin != null) {
+        Button(enabled = canSave, onClick = { NativeSessionHost.saveUbuntuSystemd(settings.storage, null) }) {
+            Text("元の起動方式に戻す")
+        }
+    }
+    settings.message?.let { Text(it, color = Color.White) }
+}
+
 @Composable private fun LinuxConnectionSettings() {
     val state=NativeSessionHost.linuxConnectionUi.value
     val context=LocalContext.current
+    UbuntuSystemdConnectionSettings(state.canSave)
     var editingBackend by remember(state.backend,state.settingsCapture) {mutableStateOf(state.backend)}
     var name by remember(state.savedBinding) {mutableStateOf(state.displayName)}
     var host by remember(state.savedBinding) {mutableStateOf(state.host)}

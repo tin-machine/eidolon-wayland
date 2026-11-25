@@ -278,7 +278,7 @@ impl Session {
     }
     pub fn layout_windows(&self) -> Vec<WindowReport> {
         let mut windows = self.report.windows.clone();
-        if self.mode() == AppMode::LinuxDesktop {
+        if self.mode().managed_desktop() {
             windows.retain(|window| self.report.gui_windows.contains(&window.window));
         }
         for window in &mut windows {
@@ -310,7 +310,7 @@ impl Session {
         if self.v3_origin.is_some() {
             return self.v3_input_allowed.contains(&window);
         }
-        self.mode() != AppMode::LinuxDesktop
+        !self.mode().managed_desktop()
             || (self.desktop_started && self.report.gui_windows.contains(&window))
     }
 
@@ -748,7 +748,7 @@ impl Session {
             return;
         };
         let mut windows = state.windows();
-        if self.report.mode == Some(AppMode::LinuxDesktop) {
+        if self.report.mode.is_some_and(AppMode::managed_desktop) {
             windows.retain(|window| self.report.gui_windows.contains(&window.window));
         }
         let logical: Vec<_> = windows.iter().map(|window| window.window).collect();
@@ -872,6 +872,16 @@ impl Session {
             self.report.state = "running";
         }
     }
+    pub fn systemd_forwarding(&mut self, running: bool) {
+        if self.mode() != AppMode::UbuntuSystemd || self.closing || self.closed() {
+            return;
+        }
+        self.desktop_started = true;
+        if running {
+            self.report.state = "running";
+        }
+    }
+
     pub fn desktop_forwarding(&mut self, forward: &eidolon_transport::linux_desktop::Report) {
         if self.closing || self.closed() || self.mode() != AppMode::LinuxDesktop {
             return;
@@ -1007,7 +1017,7 @@ impl Session {
             protocol.resize_tick(self.started.elapsed());
         }
         self.refresh_stats();
-        if self.mode() == AppMode::LinuxDesktop
+        if self.mode().managed_desktop()
             && admitted_before
                 .iter()
                 .any(|window| !self.report.gui_windows.contains(window))
@@ -1243,6 +1253,15 @@ impl Session {
                     self.closing = true;
                 }
             }
+        } else if self.report.mode == Some(AppMode::UbuntuSystemd) {
+            self.report.gui_windows.clear();
+            if self.desktop_started && !self.closing && self.report.error.is_none() {
+                // The private Waypipe route leads to exactly this captured application.
+                self.report.gui_windows.extend(self.report.windows.iter()
+                    .filter(|window| window.life == WindowLife::Mapped)
+                    .map(|window| window.window));
+            }
+            self.report.remote_gui_verified = !self.report.gui_windows.is_empty();
         } else if self.report.mode == Some(AppMode::LinuxDesktop) {
             self.report.gui_windows =
                 if self.desktop_started && !self.closing && self.report.error.is_none() {

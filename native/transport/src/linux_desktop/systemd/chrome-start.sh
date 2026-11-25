@@ -141,7 +141,7 @@ exec /usr/bin/flock --nonblock --conflict-exit-code 73 --close -- "$profile_lock
 APP
 )
 if ! systemd-run --user --quiet --no-block --collect --unit="$app_unit" \
-    --property=Type=exec --property=KillMode=control-group --property=UMask=0077 \
+    --slice=app.slice --property=Type=exec --property=KillMode=control-group --property=UMask=0077 \
     --property=RuntimeDirectoryMode=0700 \
     --property="RuntimeDirectory=$runtime_name $runtime_name/r $runtime_name/tmp $runtime_name/cache" \
     --property=TimeoutStartSec=15s --property=TimeoutStopSec=5s --expand-environment=no -- \

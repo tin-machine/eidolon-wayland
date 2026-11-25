@@ -61,6 +61,7 @@ pub fn chrome_start_command(
 pub enum ChromeControl {
     Renew,
     Stop,
+    ReapAfterExit,
 }
 
 pub fn chrome_control_command(
@@ -83,6 +84,7 @@ pub fn chrome_control_command(
             match control {
                 ChromeControl::Renew => "renew",
                 ChromeControl::Stop => "stop",
+                ChromeControl::ReapAfterExit => "reap-after-exit",
             },
             &capability.uid.to_string(),
             &capability.boot_id,

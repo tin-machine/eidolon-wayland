@@ -24,6 +24,7 @@ data class LauncherUi(
     val companionCleanup: Boolean = false,
     val catalogComplete: Boolean = false,
     val recoveryWait: String? = null,
+    val systemd: Boolean = false,
 ) {
     override fun toString() = "LauncherUi(<private>)"
 }

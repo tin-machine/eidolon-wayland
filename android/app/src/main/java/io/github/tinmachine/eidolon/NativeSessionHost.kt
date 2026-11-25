@@ -182,6 +182,14 @@ object NativeSessionHost {
             val issue = LauncherUi(linux = true, firstFailure = "UNCONFIGURED", message = "Ubuntu の接続設定が必要です")
             if (selectedProfileId == LinuxConnectionProfile.ID) linuxMessage = issue.message
             ui.post { secondaryUbuntu.value = issue }
+        } else if (linuxSystemdActive()) {
+            if (selectedProfileId != LinuxConnectionProfile.ID) {
+                ui.post { secondaryUbuntu.value = LauncherUi(linux = true, systemd = true,
+                    message = "接続設定で Ubuntu を選択して接続してください") }
+                return
+            }
+            pumpSystemdCatalog(snapshot().getJSONObject("runtime"))
+            if (launcherState.canConnect && !connectPending) enqueueConnect()
         } else if (selectedProfileId != LinuxConnectionProfile.ID) {
             val saved = linuxProfile ?: return
             if (companionLinux.recovering) reopenCompanionShelf = true
@@ -258,6 +266,7 @@ object NativeSessionHost {
                         currentSceneEpoch(), xrState.get(), activityVisible.get(), appKey = launcherAppKey(source, state, entry))
                 }
             } }
+        else if (state.systemd) launchSystemdChrome(state, entry)
         else if (state.v3) launchRegistered(state.runtime, state.capture, state.session, state.revision, entry.id)
         else launchRegistered(state.session, state.revision, entry.id)
     }
@@ -762,7 +771,37 @@ object NativeSessionHost {
             }
         }) }
 
-    private fun linuxV3Active() = linuxSettings?.backend==LinuxDesktopBackend.V3 && linuxSettings?.ready==true
+    internal val ubuntuSystemdSettings = mutableStateOf(UbuntuSystemdSettingsUi())
+    private fun systemdPreference() = checkNotNull(application).getSharedPreferences("ubuntu_systemd", Context.MODE_PRIVATE)
+    private fun systemdPin(settings: LinuxDesktopSettingsRepository.Snapshot?): UbuntuSystemdPin? =
+        settings?.storageRecord?.let { systemdPreference().getString(UbuntuSystemdPin.key(it), null) }
+            ?.let(UbuntuSystemdPin::decode)
+    private fun linuxSystemdActive() = systemdPin(linuxSettings) != null
+    private fun linuxV3Active() = !linuxSystemdActive() && linuxSettings?.backend==LinuxDesktopBackend.V3 && linuxSettings?.ready==true
+
+    internal fun saveUbuntuSystemd(expectedStorage: String?, pin: UbuntuSystemdPin?) {
+        productWorker.execute {
+            var message = "Ubuntu の起動方式を保存しました"
+            try {
+                val saved = checkNotNull(linuxSettingsStore).load()
+                val storage = checkNotNull(saved.storageRecord)
+                val key = UbuntuSystemdPin.key(storage)
+                check(saved.ready && saved.captureToken == runtimeSettingsCapture && key == expectedStorage)
+                check(handle != 0L && canChangeConnection(snapshot().getJSONObject("runtime")))
+                stopRuntime()
+                val editor = systemdPreference().edit()
+                if (pin == null) editor.remove(key) else editor.putString(key, pin.encode().toString())
+                check(editor.commit())
+            } catch (_: Exception) {
+                message = "保存できませんでした。対象の Ubuntu アプリと回収の終了を確認してください"
+            } finally {
+                safely {
+                    if (handle == 0L && runtimeAdmission.open()) startRuntime()
+                    refreshLinuxConnection(message)
+                }
+            }
+        }
+    }
     private fun linuxConfigured() = linuxIdentity != null && linuxSettings?.let { it.ready && it.ipv4Endpoint } == true
     private fun reloadLinuxSettings(): LinuxDesktopSettingsRepository.Snapshot =
         checkNotNull(linuxSettingsStore).load().also { linuxSettings = it }
@@ -936,7 +975,16 @@ object NativeSessionHost {
             firstFailure=saving?.firstFailure,cleanupFailure=saving?.cleanupFailure,settingsStatus=settings?.status?.name ?: "UNCONFIGURED")
         val target=if(selectedProfileId==LinuxConnectionProfile.ID) profile?.let {"${it.displayName} · ${it.host}:${it.port}"} ?: "別のLinux（未設定）" else "このQuestのTermux"
         val selected=selectedProfileId
-        ui.post {linuxConnectionUi.value=value;selectedConnection.value=selected;connectionTarget.value=target}
+        val systemd = UbuntuSystemdSettingsUi(
+            supported = settings?.ready == true && settings.storageRecord != null,
+            pin = runCatching { systemdPin(settings) }.getOrNull(),
+            storage = settings?.storageRecord?.let(UbuntuSystemdPin::key),
+            message = message,
+        )
+        ui.post {
+            linuxConnectionUi.value=value;selectedConnection.value=selected;connectionTarget.value=target
+            ubuntuSystemdSettings.value = systemd
+        }
         if(!runtimeAdmission.open()) {
             val displayPhase=if(saving?.phase in setOf(RuntimeSaveCoordinator.Phase.ORIGIN_STOPPING,RuntimeSaveCoordinator.Phase.RUNTIME_STOPPING)) "stopping"
                 else if(saving!=null || settings?.status==LinuxDesktopSettingsRepository.Status.SAVE_PENDING) "save_pending" else "configuration_mismatch"
@@ -1064,7 +1112,71 @@ object NativeSessionHost {
         else linuxMessage="起動を開始できません。接続と前回の終了状態を確認してください。"
         requested?.invoke(request,code)
     } } }
+    private val systemdChromeEntry = LauncherEntry(
+        "google-chrome.desktop", "Google Chrome", "builtin:web", true, null, "google-chrome.desktop",
+    )
+
+    private fun launchSystemdChrome(expected: LauncherUi, entry: LauncherEntry) {
+        productWorker.execute { safely {
+            if (handle == 0L || !linuxSystemdActive() || selectedProfileId != LinuxConnectionProfile.ID ||
+                !runtimeAdmission.open() || expected.runtime != handle || entry.id != systemdChromeEntry.id)
+                return@safely
+            val runtime = snapshot().getJSONObject("runtime")
+            val transport = runtime.getJSONObject("transport")
+            val report = transport.optJSONObject("systemd_chrome") ?: return@safely
+            if (transport.optString("session") != expected.session || !launcherState.systemd ||
+                report.optString("phase") != "available" || linuxAction != null ||
+                admitLaunch(runtime, LauncherSource.UBUNTU) == null) return@safely
+            releasePanelTextFocus()
+            val request = requests.incrementAndGet().toString()
+            val command = JSONObject().put("schema", 1).put("type", "ubuntu_systemd_chrome_launch")
+                .put("request_id", request).put("session", expected.session)
+                .put(GuiSessionPolicy.WireField, guiSessionPolicy.seconds)
+            val code = NativeBridge.nativeCommand(handle, command.toString())
+            if (code == NativeBridge.ACCEPTED) {
+                linuxAction = LinuxAction("launch", expected.session, request)
+                linuxMessage = null
+            } else linuxMessage = "Chrome を起動できませんでした"
+        } }
+    }
+
+    private fun pumpSystemdCatalog(runtime: JSONObject) {
+        val transport = runtime.getJSONObject("transport")
+        val report = transport.optJSONObject("systemd_chrome")
+        val phase = report?.optString("phase").orEmpty()
+        val connected = transport.optString("profile_id") == LinuxConnectionProfile.ID
+        val session = transport.optString("session").takeIf { connected }.orEmpty()
+        val available = connected && phase == "available"
+        val running = connected && phase == "running"
+        val awaitingCleanup = connected && (phase == "cleanup_pending" || transport.optBoolean("desktop_pending"))
+        val active = phase in setOf("starting", "forwarded", "running")
+        linuxAction?.takeIf { it.kind == "launch" }?.let { action ->
+            if (action.session != session || running || awaitingCleanup ||
+                transport.optString("state") in setOf("Failed", "Disconnected") ||
+                SystemClock.elapsedRealtime() > action.deadline) linuxAction = null
+        }
+        val busy = connectPending || pendingDisconnect != null || linuxAction != null || phase == "stopping"
+        val message = linuxMessage ?: when {
+            awaitingCleanup -> "前回の Ubuntu アプリの回収を確認してください"
+            running -> "Chrome を実行中"
+            phase == "starting" || phase == "forwarded" -> "Chrome を起動中"
+            available -> "Ubuntu に接続済み"
+            transport.optString("state") == "Failed" -> "Ubuntu の systemd、Waypipe、Chrome を確認してください"
+            else -> "Ubuntu に接続してください"
+        }
+        val entries = if (available || active) listOf(systemdChromeEntry.copy(available = available && !busy)) else emptyList()
+        launcherUpdate(LauncherUi(
+            session = session, connected = available || active, busy = busy,
+            revision = "ubuntu_systemd_v1", runtime = handle, capture = runtimeSettingsCapture.orEmpty(),
+            entries = entries, total = entries.size, message = message, linux = true, systemd = true,
+            canConnect = !awaitingCleanup && linuxConfigured() && ConnectionAdmission.canConnectLinux(runtime, busy),
+            canStop = pendingDisconnect == null && (transport.optInt("owned_connections") > 0 || connectPending),
+            running = running, catalogComplete = available || active, phase = phase.ifEmpty { "catalog_waiting" },
+        ))
+    }
+
     private fun pumpLinuxCatalog(runtime:JSONObject) {
+        if (linuxSystemdActive()) { pumpSystemdCatalog(runtime); return }
         if(linuxSettings?.backend != LinuxDesktopBackend.V2) {pumpLinuxV3Catalog(runtime);return}
         val transport=runtime.getJSONObject("transport");val phase=transport.optString("state")
         val session=transport.optString("session").takeIf {transport.optString("profile_id")==LinuxConnectionProfile.ID} ?: ""
@@ -1539,6 +1651,15 @@ object NativeSessionHost {
         true
     }
     fun currentSceneEpoch(): Long = activityScenes.activeEpoch()
+    internal fun guiLiveness(scene: Long, owner: Long) = inputIntents.serial {
+        if (!activityVisible.get() || !activityScenes.owns(owner, scene) || scene <= 0) return@serial
+        val current = handle
+        if (current <= 0 || !launcherUi.value.systemd || !launcherUi.value.running) return@serial
+        val command = JSONObject().put("schema", 1).put("type", "gui_liveness")
+            .put("request_id", requests.incrementAndGet().toString()).put("scene", scene.toString())
+        NativeBridge.nativeCommand(current, command.toString())
+        Unit
+    }
     fun setXrState(value: String, expectedScene: Long? = null, owner: Long? = null): Boolean = inputIntents.serial {
         if (owner != null && (expectedScene == null || !activityScenes.owns(owner, expectedScene))) return@serial false
         if(expectedScene!=null && expectedScene!=activityScenes.activeEpoch()) return@serial false
@@ -2860,9 +2981,11 @@ object NativeSessionHost {
             .put(GuiSessionPolicy.WireField, guiSessionPolicy.seconds)
     private fun runtimeConfigFor(settings:LinuxDesktopSettingsRepository.Snapshot?):String {
         val base=baseRuntimeConfig()
+        val pin = systemdPin(settings)
         val json=if(settings?.ready==true) {
             val profile=checkNotNull(settings.profile)
-            when(settings.backend) {
+            if (pin != null) LinuxRuntimeConfiguration.buildSystemd(base, profile, checkNotNull(settings.storageRecord), pin)
+            else when(settings.backend) {
                 LinuxDesktopBackend.V3 -> LinuxRuntimeConfiguration.build(base,profile,
                     configuration=checkNotNull(settings.v3Configuration).forProfile(profile,settings.storageRecord),storage=settings.storageRecord)
                 LinuxDesktopBackend.V2 -> LinuxRuntimeConfiguration.build(base,profile,v2Pins=checkNotNull(settings.v2Pins).forProfile(profile))

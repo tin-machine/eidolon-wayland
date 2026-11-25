@@ -85,6 +85,10 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         })
     }
 
+    pub fn transport_connected(&self) -> bool {
+        !self.client.is_closed()
+    }
+
     pub fn pending(&self) -> Option<&JournalRecord> {
         self.journal.record()
     }
@@ -250,18 +254,43 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         Ok(())
     }
 
-    /// Separate proof is supplied by the runtime and by a host-side retirement check.
-    pub fn retire(
-        &mut self,
-        generation: Generation,
-        local_retired: bool,
-        remote_retired: bool,
-    ) -> Result<bool, &'static str> {
-        self.journal.retire(
-            generation,
-            local_retired && self.route.is_none() && !self.forward_may_exist,
-            remote_retired,
-        )
+    /// Check host-side retirement on the pinned connection before retiring the host journal proof.
+    pub async fn finish_remote(&mut self, generation: Generation) -> Result<(), &'static str> {
+        let pending = self
+            .pending()
+            .filter(|p| p.generation() == Some(generation))
+            .ok_or("STALE")?;
+        let old_boot_ended = pending.boot_id() != self.capability.boot_id;
+        let can_reap_timer = pending.invocation().is_some();
+        self.journal.stopping(generation)?;
+        let cancel = CancellationToken::new();
+        if !old_boot_ended {
+            if can_reap_timer {
+                // A valid invocation proves the original Start had already passed.
+                let command = self.control(ChromeControl::ReapAfterExit, generation)?;
+                let _ = exchange(self.client, command, &cancel, || Ok(())).await;
+            } else {
+                // An absent unit cannot prove that a previously unconfirmed Start
+                // won't subsequently reach systemd.
+                return Err("SYSTEMD_START_OUTCOME_UNKNOWN");
+            }
+            let command = super::retired_command(generation, &self.capability);
+            let bytes = exchange(self.client, command, &cancel, || Ok(()))
+                .await
+                .map_err(exchange_code)?;
+            if bytes != b"retired\n" {
+                return Err("SYSTEMD_CLEANUP_PENDING");
+            }
+        }
+        self.journal.retire(generation, false, true)?;
+        Ok(())
+    }
+
+    pub fn finish_local(&mut self, generation: Generation) -> Result<bool, &'static str> {
+        if self.route.is_some() || self.forward_may_exist {
+            return Err("SYSTEMD_CLEANUP_PENDING");
+        }
+        self.journal.retire(generation, true, false)
     }
 
     fn control(

@@ -7,7 +7,7 @@ import org.json.JSONObject
 /** Assembly of already validated, captured settings. Import and JNI bounds intentionally differ. */
 object LinuxRuntimeConfiguration {
     const val MAX_RUNTIME_BYTES = 16 * 1024
-    private val desktopFields = setOf("linux_profile_v2", "linux_desktop_pins", "linux_desktop_v3")
+    private val desktopFields = setOf("linux_profile_v2", "linux_desktop_pins", "linux_desktop_v3", "ubuntu_systemd")
 
     fun build(base: JSONObject, profile: ConnectionProfileV2.Value? = null, v2Pins: LinuxDesktopPins? = null,
         configuration: LinuxDesktopV3Config? = null, storage: LinuxStorageRecord? = null): String {
@@ -23,6 +23,16 @@ object LinuxRuntimeConfiguration {
             if (configuration != null) result.put("linux_desktop_v3", v3Binding(profile, configuration, checkNotNull(storage)))
         }
         return bounded(result.toString())
+    }
+
+    internal fun buildSystemd(
+        base: JSONObject, profile: ConnectionProfileV2.Value, storage: LinuxStorageRecord, pin: UbuntuSystemdPin,
+    ): String {
+        val result = JSONObject(build(base, profile))
+        storage.matchesCapture(StorageCapture.from(profile.installation, profile))
+        val systemd = pin.encode().put("schema", 1)
+            .put("storage", JSONObject(storage.canonical().toString(Charsets.UTF_8)))
+        return bounded(result.put("ubuntu_systemd", systemd.toString()).toString())
     }
 
     fun v3Binding(profile: ConnectionProfileV2.Value, configuration: LinuxDesktopV3Config,

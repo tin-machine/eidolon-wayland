@@ -2,6 +2,7 @@ use super::{Capabilities, Generation, UnitNames, absolute_path, ssh_command};
 use std::collections::BTreeMap;
 
 const INSPECT: &str = include_str!("unit-inspect.sh");
+const RETIRED: &str = include_str!("unit-retired.sh");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InvocationId([u8; 16]);
@@ -52,6 +53,21 @@ pub fn inspect_command(generation: Generation, capability: &Capabilities) -> Str
             &capability.uid.to_string(),
             &capability.boot_id,
             &unit.application,
+        ],
+    )
+}
+
+pub fn retired_command(generation: Generation, capability: &Capabilities) -> String {
+    let unit = UnitNames::from(generation);
+    ssh_command(
+        RETIRED,
+        &[
+            &capability.uid.to_string(),
+            &capability.boot_id,
+            &unit.application,
+            &unit.expiry_timer,
+            &unit.expiry_service,
+            &unit.runtime_dir,
         ],
     )
 }
