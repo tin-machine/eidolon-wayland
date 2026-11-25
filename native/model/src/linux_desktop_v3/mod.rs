@@ -413,6 +413,15 @@ impl StorageRecord {
         )
     }
     record_methods!();
+    pub fn installation_id(&self) -> &StorageInstallationId {
+        &self.installation_id
+    }
+    pub fn profile_storage_id(&self) -> &ProfileStorageId {
+        &self.profile_storage_id
+    }
+    pub fn host_user_binding(&self) -> &Hash {
+        &self.host_user_binding
+    }
     pub fn matches_capture(&self, capture: &StorageCapture) -> Result<()> {
         require(
             self.legacy_installation == capture.legacy_installation

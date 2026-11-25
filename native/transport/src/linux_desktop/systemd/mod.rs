@@ -4,6 +4,12 @@ use std::path::PathBuf;
 
 mod chrome;
 pub use chrome::{ChromeControl, ChromeStorage, chrome_control_command, chrome_start_command};
+mod exchange;
+pub use exchange::{ExchangeError, exchange};
+mod journal;
+pub use journal::{Journal, JournalRecord, JournalStage};
+mod owner;
+pub use owner::{ChromeOwner, ChromeTarget};
 mod unit;
 pub use unit::{ActiveState, InvocationId, UnitStatus, inspect_command};
 

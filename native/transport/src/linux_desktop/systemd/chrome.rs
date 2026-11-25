@@ -5,7 +5,11 @@ use eidolon_model::linux_desktop_v3::{ProfileStorageId, StorageInstallationId};
 
 const START: &str = include_str!("chrome-start.sh");
 const CONTROL: &str = include_str!("chrome-control.sh");
-const DESKTOP_ID: &str = "google-chrome.desktop";
+pub const CHROME_DESKTOP_ID: &str = "google-chrome.desktop";
+
+pub fn chrome_app_key() -> String {
+    hash(CHROME_DESKTOP_ID.as_bytes())
+}
 
 /// The selected connection's durable storage identity. Both IDs must come from the
 /// storage record verified against the captured SSH host and account.
@@ -30,7 +34,7 @@ pub fn chrome_start_command(
     let (Some(home), Some(waypipe), Some(chrome)) = (home, waypipe, chrome) else {
         return Err("SYSTEMD_CAPABILITIES_INVALID");
     };
-    let app_key = hash(DESKTOP_ID.as_bytes());
+    let app_key = chrome_app_key();
     let units = UnitNames::from(generation);
     let expiry = units.expiry_timer.trim_end_matches(".timer");
     Ok(ssh_command(
@@ -71,7 +75,7 @@ pub fn chrome_control_command(
         .to_str()
         .filter(|s| absolute_path(s))
         .ok_or("SYSTEMD_CAPABILITIES_INVALID")?;
-    let app_key = hash(DESKTOP_ID.as_bytes());
+    let app_key = chrome_app_key();
     let units = UnitNames::from(generation);
     Ok(ssh_command(
         CONTROL,
