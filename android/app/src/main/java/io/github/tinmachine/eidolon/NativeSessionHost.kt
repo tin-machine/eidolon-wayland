@@ -3730,6 +3730,7 @@ object NativeSessionHost {
             .put("keyboard_ingress",KeyboardIngress.json())
             .put("companion_linux",companionLinux.diagnostics())
             .put("termux_shelf",termuxShelf.diagnostics())
+            .put("termux_workspaces", JSONArray(additionalTermux.filter { it.handle > 0 }.map { it.diagnostics() }))
             .put("termux_start",JSONObject().put("requests",termuxRequests).put("successes",termuxSuccesses).put("failures",termuxFailures)))
         val workspace=runtime.getJSONObject("workspace");val storage=workspace.getJSONObject("storage")
         val observing=workspace.getBoolean("workload_observation")
