@@ -57,27 +57,31 @@ impl Registry {
             return Err(Status::Stale);
         }
         let mut config = config.clone();
-        let binding = RuntimeBinding::parse(
-            config
-                .linux_desktop_v3
-                .as_deref()
-                .ok_or(Status::NotReady)?
-                .as_bytes(),
-        )
-        .map_err(|_| Status::InvalidArgument)?;
         let workspace = format!("eidolon-workspace-{number}");
-        let mut record = binding.record();
-        let storage = &mut record["storage"];
-        let derived = digest(&json!({
-            "domain": workspace,
-            "installation": storage["installation_id"],
-            "profile_storage": storage["profile_storage_id"],
-        }))
-        .map_err(|_| Status::InvalidArgument)?;
-        storage["profile_storage_id"] = json!(&derived[..32]);
-        let bytes = canonical_json(&record).map_err(|_| Status::InvalidArgument)?;
-        config.linux_desktop_v3 =
-            Some(String::from_utf8(bytes).map_err(|_| Status::InvalidArgument)?);
+        if config.ubuntu_systemd.is_none() {
+            let binding = RuntimeBinding::parse(
+                config
+                    .linux_desktop_v3
+                    .as_deref()
+                    .ok_or(Status::NotReady)?
+                    .as_bytes(),
+            )
+            .map_err(|_| Status::InvalidArgument)?;
+            let mut record = binding.record();
+            let storage = &mut record["storage"];
+            let derived = digest(&json!({
+                "domain": workspace,
+                "installation": storage["installation_id"],
+                "profile_storage": storage["profile_storage_id"],
+            }))
+            .map_err(|_| Status::InvalidArgument)?;
+            storage["profile_storage_id"] = json!(&derived[..32]);
+            let bytes = canonical_json(&record).map_err(|_| Status::InvalidArgument)?;
+            config.linux_desktop_v3 =
+                Some(String::from_utf8(bytes).map_err(|_| Status::InvalidArgument)?);
+        }
+        // Systemd journals are local to the workspace. The remote profile
+        // remains bound to the saved host and desktop ID across workspaces.
         config.profiles.clear();
         config.debug_probe_profile_v2 = None;
         config.debug_linux_shm_pins = None;
@@ -106,6 +110,7 @@ impl Registry {
             return Err(Status::NotReady);
         }
         config.linux_desktop_v3 = None;
+        config.ubuntu_systemd = None;
         config.linux_profile_v2 = None;
         config.linux_desktop_pins = None;
         config.debug_probe_profile_v2 = None;

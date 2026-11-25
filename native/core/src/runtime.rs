@@ -838,9 +838,12 @@ impl Runtime {
                 Ok::<_, std::io::Error>(binding)
             })
             .transpose()?;
-        let ubuntu_systemd_binding = config.ubuntu_systemd.as_deref()
+        let ubuntu_systemd_binding = config
+            .ubuntu_systemd
+            .as_deref()
             .map(eidolon_model::ubuntu_systemd::RuntimeBinding::parse)
-            .transpose().map_err(|_| invalid())?;
+            .transpose()
+            .map_err(|_| invalid())?;
         let normal_linux = desktop_profile.is_some();
         #[cfg(any(test, feature = "debug-fixtures"))]
         let linux_pins = config
@@ -3309,7 +3312,8 @@ impl Runtime {
                             })
                     }
                     Some(eidolon_model::commands::AppMode::UbuntuSystemd) => {
-                        state.v3_retirement.is_none() && app.gui_windows.contains(&target.window)
+                        state.v3_retirement.is_none()
+                            && app.gui_windows.contains(&target.window)
                             && parent.is_none_or(|id| app.gui_windows.contains(&id))
                     }
                     Some(eidolon_model::commands::AppMode::Foot) => state.v3_retirement.is_none(),

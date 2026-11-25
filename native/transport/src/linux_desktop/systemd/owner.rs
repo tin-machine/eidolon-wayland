@@ -106,8 +106,18 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
             }
             None => Application::chrome(&self.capability)?,
         };
+        // A desktop entry keeps the same local recovery record when its
+        // compositor moves between the primary and an additional workspace.
+        let files = if eidolon_model::limits::workspace_number(self.target.files) > 1 {
+            self.target
+                .files
+                .parent()
+                .ok_or("SYSTEMD_JOURNAL_INVALID")?
+        } else {
+            self.target.files
+        };
         let journal = Journal::open(
-            self.target.files,
+            files,
             self.target.storage.host_user_binding().as_str(),
             self.target.storage.profile_storage_id(),
             &application.app_key(),

@@ -172,6 +172,13 @@ struct Connect {
     cancel: CancellationToken,
     discovery_only: bool,
 }
+struct PendingApp {
+    local_socket: PathBuf,
+    nonce: String,
+    mode: AppMode,
+    selection: Option<crate::catalog::ShelfStart>,
+    gui_grace: Option<eidolon_model::gui_session_policy::GuiUnresponsiveGrace>,
+}
 struct Shared {
     ime_endpoint: Option<crate::input_method::Endpoint>,
     report: Snapshot,
@@ -183,11 +190,10 @@ struct Shared {
     cancel: Option<CancellationToken>,
     router: Option<Arc<forward::Router>>,
     forward: Option<(PathBuf, String, Option<CleanupScenario>)>,
-    app: Option<(
-        PathBuf, String, AppMode, Option<crate::catalog::ShelfStart>,
-        Option<eidolon_model::gui_session_policy::GuiUnresponsiveGrace>,
-    )>,
-    termux_ticks: Option<tokio::sync::watch::Sender<Option<eidolon_model::gui_session_lifecycle::LivenessTick>>>,
+    app: Option<PendingApp>,
+    termux_ticks: Option<
+        tokio::sync::watch::Sender<Option<eidolon_model::gui_session_lifecycle::LivenessTick>>,
+    >,
     desktop_profile: Option<DesktopConfig>,
     desktop_pending: Result<Option<linux_desktop::Pending>, &'static str>,
     // Only the authenticated in-process actor may mint this capture. A cold
@@ -581,7 +587,11 @@ impl Controller {
         request: linux_desktop::systemd::Request,
     ) -> Status {
         use linux_desktop::systemd::{Phase, Request};
-        let mut s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if s.report.session != Some(session) {
             return Status::Stale;
         }
@@ -591,16 +601,33 @@ impl Controller {
         let launch = matches!(&request, Request::Launch { .. });
         let accepted = match &request {
             Request::Launch { .. } => report.phase == Phase::Available && !s.systemd_launch_queued,
-            Request::Displayed(request) => report.phase == Phase::Forwarded && report.launch_request == Some(*request),
-            Request::Liveness { launch, .. } => report.phase == Phase::Running && report.launch_request == Some(*launch),
-            Request::LocalRetired(request) => report.phase == Phase::Stopping && report.launch_request == Some(*request),
+            Request::Displayed(request) => {
+                report.phase == Phase::Forwarded && report.launch_request == Some(*request)
+            }
+            Request::Liveness { launch, .. } => {
+                report.phase == Phase::Running && report.launch_request == Some(*launch)
+            }
+            Request::LocalRetired(request) => {
+                report.phase == Phase::Stopping && report.launch_request == Some(*request)
+            }
         };
         if !accepted {
             return Status::NotReady;
         }
-        if let Request::Liveness { launch, scene, sequence } = request {
-            let Some(ticks) = &s.systemd_ticks else { return Status::NotReady };
-            ticks.send_replace(Some(linux_desktop::systemd::Tick { launch, scene, sequence }));
+        if let Request::Liveness {
+            launch,
+            scene,
+            sequence,
+        } = request
+        {
+            let Some(ticks) = &s.systemd_ticks else {
+                return Status::NotReady;
+            };
+            ticks.send_replace(Some(linux_desktop::systemd::Tick {
+                launch,
+                scene,
+                sequence,
+            }));
             return Status::Accepted;
         }
         if queue.try_send(request).is_err() {
@@ -620,22 +647,41 @@ impl Controller {
         });
     }
     pub fn termux_gui_liveness(
-        &self, session: SessionId, scene: eidolon_model::ids::SceneEpoch, sequence: CommandSeq,
+        &self,
+        session: SessionId,
+        scene: eidolon_model::ids::SceneEpoch,
+        sequence: CommandSeq,
     ) -> Status {
         use eidolon_model::gui_session_lifecycle::LivenessTick;
-        let s = self.signals.shared.lock().unwrap_or_else(|e| e.into_inner());
+        let s = self
+            .signals
+            .shared
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if s.report.session != Some(session) {
             return Status::Stale;
         }
         if !s.report.authenticated_termux
-            || !s.report.app_forward.as_ref().and_then(|r| r.remote.as_ref())
-                .is_some_and(|remote| remote.phase == "running" && remote.gui_grace_seconds.is_some())
+            || !s
+                .report
+                .app_forward
+                .as_ref()
+                .and_then(|r| r.remote.as_ref())
+                .is_some_and(|remote| {
+                    remote.phase == "running" && remote.gui_grace_seconds.is_some()
+                })
         {
             return Status::NotReady;
         }
-        let Some(ticks) = &s.termux_ticks else { return Status::NotReady };
-        let (Ok(owner), Ok(sequence)) = ((scene.get() as u64).try_into(), (sequence.get() as u64).try_into())
-            else { return Status::InvalidArgument };
+        let Some(ticks) = &s.termux_ticks else {
+            return Status::NotReady;
+        };
+        let (Ok(owner), Ok(sequence)) = (
+            (scene.get() as u64).try_into(),
+            (sequence.get() as u64).try_into(),
+        ) else {
+            return Status::InvalidArgument;
+        };
         ticks.send_replace(Some(LivenessTick { owner, sequence }));
         Status::Accepted
     }
@@ -1174,7 +1220,13 @@ impl Controller {
             mode: mode.as_str().into(),
             ..Default::default()
         });
-        s.app = Some((local_socket.into(), nonce.into(), mode, selection, gui_grace));
+        s.app = Some(PendingApp {
+            local_socket: local_socket.into(),
+            nonce: nonce.into(),
+            mode,
+            selection,
+            gui_grace,
+        });
         self.signals.notify.notify_one();
         Status::Accepted
     }
@@ -2115,7 +2167,10 @@ fn owner(
             s.report.desktop_pending = !matches!(s.desktop_pending, Ok(None))
                 || !matches!(s.desktop_v3_pending, Ok(None))
                 || s.desktop_v3_finalization_pending
-                || s.report.systemd_chrome.as_ref().is_some_and(|r| r.phase == linux_desktop::systemd::Phase::CleanupPending);
+                || s.report
+                    .systemd_chrome
+                    .as_ref()
+                    .is_some_and(|r| r.phase == linux_desktop::systemd::Phase::CleanupPending);
             #[cfg(any(test, feature = "debug-fixtures"))]
             {
                 s.linux = None;
@@ -2374,7 +2429,12 @@ async fn connection(
         signals.update(|s| s.report.authenticated_termux = true);
     }
     reconcile(signals, &client, connect, journal, &binding, uid).await?;
-    if let Some(DesktopConfig::Systemd { profile, binding, files }) = &connect.profile.desktop {
+    if let Some(DesktopConfig::Systemd {
+        profile,
+        binding,
+        files,
+    }) = &connect.profile.desktop
+    {
         let target = linux_desktop::systemd::ChromeTarget {
             profile,
             storage: binding.storage(),
@@ -2385,8 +2445,12 @@ async fn connection(
             session: connect.session,
         };
         let owner = linux_desktop::systemd::ChromeOwner::connect(
-            &client, &connect.router, target, &connect.cancel,
-        ).await?;
+            &client,
+            &connect.router,
+            target,
+            &connect.cancel,
+        )
+        .await?;
         let (sender, requests) = tokio::sync::mpsc::channel(4);
         let (tick_sender, ticks) = tokio::sync::watch::channel(None);
         signals.update(|s| {
@@ -2405,12 +2469,15 @@ async fn connection(
                 }
                 s.report.systemd_chrome = Some(report.clone());
                 s.report.state = match report.phase {
-                    Phase::Available | Phase::Starting | Phase::Forwarded | Phase::Running => State::DesktopReady,
+                    Phase::Available | Phase::Starting | Phase::Forwarded | Phase::Running => {
+                        State::DesktopReady
+                    }
                     Phase::Stopping | Phase::Complete => State::Disconnecting,
                     Phase::CleanupPending => State::CleanupPending,
                 };
             });
-        }).await;
+        })
+        .await;
     }
 
     let (ime_endpoint, mut ime_requests) = crate::input_method::Endpoint::channel(&connect.cancel);
@@ -2880,7 +2947,14 @@ async fn connection(
             }
             continue;
         }
-        if let Some((local_socket, nonce, mode, selection, gui_grace)) = app {
+        if let Some(PendingApp {
+            local_socket,
+            nonce,
+            mode,
+            selection,
+            gui_grace,
+        }) = app
+        {
             let (sender, terminal_requests) = tokio::sync::mpsc::channel(1);
             let (catalog_sender, catalog_requests) = tokio::sync::mpsc::channel(1);
             let (tick_sender, liveness) = tokio::sync::watch::channel(None);

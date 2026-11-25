@@ -1,6 +1,6 @@
 //! 固定launcherのJSON lineとheartbeat。利用者のpath/argvはSSH commandへ挿入しない。
-use eidolon_model::gui_session_policy::GuiUnresponsiveGrace;
 use crate::forward_probe::valid_nonce;
+use eidolon_model::gui_session_policy::GuiUnresponsiveGrace;
 use eidolon_model::{
     ids::{CommandSeq, SessionId, TerminalId},
     workload::Telemetry,
@@ -16,8 +16,8 @@ const PYTHON: &str = "/data/data/com.termux/files/usr/bin/python3";
 const SCRIPT_PATH: &str = "/data/data/com.termux/files/home/.local/lib/eidolon/eidolon-session.py";
 const SCRIPT: &[u8] = include_bytes!("../../../scripts/termux/eidolon-session.py");
 const LINE_BYTES: usize = 16384;
-const PRE_GUI_LEASE_SCRIPT: &str = "367038cae451c6a16436a4354db80ed02db659f50e0182da6d0bc00dd3e44c94";
-
+const PRE_GUI_LEASE_SCRIPT: &str =
+    "367038cae451c6a16436a4354db80ed02db659f50e0182da6d0bc00dd3e44c94";
 
 pub fn command(mode: &str, nonce: &str) -> Result<String, &'static str> {
     if !matches!(
@@ -608,8 +608,10 @@ impl Launcher {
         Ok(tools)
     }
     pub async fn set_gui_lease(&mut self, grace: GuiUnresponsiveGrace) -> Result<(), &'static str> {
-        if self.report.phase != "prepared" || self.stopping.is_some()
-            || self.pending_gui_lease.is_some() || self.report.gui_grace_seconds.is_some()
+        if self.report.phase != "prepared"
+            || self.stopping.is_some()
+            || self.pending_gui_lease.is_some()
+            || self.report.gui_grace_seconds.is_some()
         {
             return Err("NOT_READY");
         }
@@ -619,7 +621,8 @@ impl Launcher {
         self.pending_gui_lease = Some(grace);
         self.deadline = Instant::now() + Duration::from_secs(5);
         self.send_frame(serde_json::json!({"type":"set_gui_lease_v1","schema":1,
-            "nonce":self.nonce,"seconds":grace})).await?;
+            "nonce":self.nonce,"seconds":grace}))
+            .await?;
         while self.pending_gui_lease.is_some() && self.report.phase == "prepared" {
             self.next().await?;
         }
@@ -630,7 +633,9 @@ impl Launcher {
     }
 
     pub async fn gui_liveness(&mut self) -> Result<(), &'static str> {
-        let Some(seconds) = self.report.gui_grace_seconds else { return Ok(()) };
+        let Some(seconds) = self.report.gui_grace_seconds else {
+            return Ok(());
+        };
         if self.report.phase != "running" || self.stopping.is_some() {
             return Ok(());
         }
@@ -894,9 +899,12 @@ impl Launcher {
                 }
             }
             Frame::GuiLeaseV1(value) => {
-                if self.report.phase != "prepared" || !self.report.gui_lease_supported
-                    || self.pending_gui_lease != Some(value.seconds) || value.schema != 1
-                    || value.nonce != self.nonce || value.uid != self.uid
+                if self.report.phase != "prepared"
+                    || !self.report.gui_lease_supported
+                    || self.pending_gui_lease != Some(value.seconds)
+                    || value.schema != 1
+                    || value.nonce != self.nonce
+                    || value.uid != self.uid
                 {
                     return Err("PROTOCOL_ERROR");
                 }

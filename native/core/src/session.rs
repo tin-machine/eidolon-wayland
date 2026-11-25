@@ -873,18 +873,27 @@ impl Session {
         }
     }
     pub fn open_browser_window(&mut self, window: WindowId) -> Result<(), &'static str> {
-        if self.mode() != AppMode::UbuntuSystemd || self.closing || !self.owns_window(window)
-            || !self.report.windows.iter().any(|root| root.window == window && root.parent.is_none()
-                && root.life == WindowLife::Mapped)
+        if self.mode() != AppMode::UbuntuSystemd
+            || self.closing
+            || !self.owns_window(window)
+            || !self.report.windows.iter().any(|root| {
+                root.window == window && root.parent.is_none() && root.life == WindowLife::Mapped
+            })
         {
             return Err("STALE");
         }
-        if self.report.windows.iter().any(|child| child.parent == Some(window)
-            && child.life == WindowLife::Mapped)
+        if self
+            .report
+            .windows
+            .iter()
+            .any(|child| child.parent == Some(window) && child.life == WindowLife::Mapped)
         {
             return Err("BUSY");
         }
-        self.protocol.as_mut().ok_or("NOT_READY")?.request_browser_window(window)
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .request_browser_window(window)
     }
 
     pub fn systemd_forwarding(&mut self, running: bool) {
@@ -1272,9 +1281,13 @@ impl Session {
             self.report.gui_windows.clear();
             if self.desktop_started && !self.closing && self.report.error.is_none() {
                 // The private Waypipe route leads to exactly this captured application.
-                self.report.gui_windows.extend(self.report.windows.iter()
-                    .filter(|window| window.life == WindowLife::Mapped)
-                    .map(|window| window.window));
+                self.report.gui_windows.extend(
+                    self.report
+                        .windows
+                        .iter()
+                        .filter(|window| window.life == WindowLife::Mapped)
+                        .map(|window| window.window),
+                );
             }
             self.report.remote_gui_verified = !self.report.gui_windows.is_empty();
         } else if self.report.mode == Some(AppMode::LinuxDesktop) {

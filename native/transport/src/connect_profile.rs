@@ -164,7 +164,9 @@ impl ConnectSpec {
         if !files.is_absolute() {
             return Err(PrepareError::InvalidProfile);
         }
-        binding.matches_profile(&profile).map_err(|_| PrepareError::InvalidProfile)?;
+        binding
+            .matches_profile(&profile)
+            .map_err(|_| PrepareError::InvalidProfile)?;
         let mut spec = Self::from_v2(&profile)?;
         spec.desktop = Some(DesktopConfig::Systemd {
             profile,
@@ -263,7 +265,10 @@ mod tests {
             Some(DesktopConfig::V3 { .. })
         ));
         let captured = spec.desktop.as_ref().unwrap();
-        assert_eq!(captured.legacy_version(), Some(linux_desktop::dispatch::Version::V3));
+        assert_eq!(
+            captured.legacy_version(),
+            Some(linux_desktop::dispatch::Version::V3)
+        );
         if let DesktopConfig::V3 {
             profile: p,
             configuration: c,

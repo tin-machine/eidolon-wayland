@@ -1,7 +1,9 @@
 //! 認証済みSSHの同じRouter/journalから、既存Waypipe clientへ転送する。
-use eidolon_model::{gui_session_lifecycle::LivenessTick, gui_session_policy::GuiUnresponsiveGrace};
 use crate::{forward, forward_probe, journal, launcher};
 use eidolon_model::{commands::AppMode, ids::SessionId};
+use eidolon_model::{
+    gui_session_lifecycle::LivenessTick, gui_session_policy::GuiUnresponsiveGrace,
+};
 use russh::client;
 use serde::Serialize;
 use std::{
