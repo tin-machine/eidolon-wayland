@@ -300,7 +300,9 @@ internal class TermuxShelfSession(
     fun diagnostics(): JSONObject = JSONObject().apply {
         val state = snapshot ?: return@apply
         val tx = state.optJSONObject("transport")
+        val lease = tx?.optJSONObject("app_forward")?.optJSONObject("remote")
         put("transport", tx?.optString("state"))
+        put("gui_grace_seconds", lease?.optInt("gui_grace_seconds")?.takeIf { it > 0 })
         put("pending_launches", tx?.optJSONArray("pending_cleanup")?.length() ?: 0)
         put("catalog_readable", tx?.optBoolean("termux_shelf_readable") == true)
         put("catalog_entries", view.entries.size)
