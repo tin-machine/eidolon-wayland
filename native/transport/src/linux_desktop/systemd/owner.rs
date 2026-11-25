@@ -210,6 +210,7 @@ impl<'a, H: client::Handler> ChromeOwner<'a, H> {
         .await
         .map_err(|_| "FORWARD_TIMEOUT")?
         .map_err(|_| "FORWARD_REJECTED")?;
+        self.forward_established = true;
         Ok(generation)
     }
 
