@@ -769,6 +769,11 @@ pub enum Command {
         request_id: CommandSeq,
         target: crate::surface::TargetKey,
     },
+    SurfaceDetachObserved {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+    },
     WaypipeProbe {
         schema: u32,
         request_id: CommandSeq,
@@ -879,6 +884,7 @@ impl Command {
             | Self::Disconnect { schema, .. }
             | Self::CancelConnect { schema, .. }
             | Self::SurfaceLost { schema, .. }
+            | Self::SurfaceDetachObserved { schema, .. }
             | Self::WaypipeProbe { schema, .. }
             | Self::HelperProbe { schema, .. }
             | Self::SetXrState { schema, .. }
@@ -1093,6 +1099,7 @@ impl Command {
             | Self::Disconnect { request_id, .. }
             | Self::CancelConnect { request_id, .. }
             | Self::SurfaceLost { request_id, .. }
+            | Self::SurfaceDetachObserved { request_id, .. }
             | Self::WaypipeProbe { request_id, .. }
             | Self::HelperProbe { request_id, .. }
             | Self::SetXrState { request_id, .. }

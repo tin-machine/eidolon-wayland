@@ -3134,6 +3134,7 @@ impl Runtime {
                                 Command::RegisterSdkBinding { .. }
                                 | Command::SetInitialDialogPose { .. }
                                 | Command::SdkBindingEvidence { .. }
+                                | Command::SurfaceDetachObserved { .. }
                                 | Command::SceneClosing { .. }
                                 | Command::ReleaseSdkBinding { .. } => unreachable!(
                                     "SDK ownership is handled before the command queue"
@@ -3335,6 +3336,14 @@ impl Runtime {
             self.worker.thread().unpark();
         }
         let mut state = self.lock();
+        if let Command::SurfaceDetachObserved { target, .. } = &command {
+            let code = self.render.observe_sdk_detach(*target);
+            if code == Status::Accepted {
+                state.snapshot.commands_accepted += 1;
+                state.snapshot.commands_processed += 1;
+            }
+            return code;
+        }
         if let Command::SetInitialDialogPose {
             request_id,
             target,
@@ -4118,7 +4127,13 @@ impl Runtime {
         if state.snapshot.scene != Some(key.scene) {
             return Status::Stale;
         }
-        self.render.attach(key, window, width, height)
+        self.render.attach_for_sdk(
+            key,
+            window,
+            width,
+            height,
+            eidolon_render::RenderMode::Diagnostic,
+        )
     }
     pub fn attach_window_surface(
         &self,
@@ -4163,7 +4178,13 @@ impl Runtime {
         {
             return Status::NotReady;
         }
-        self.render.attach_window(key, window, width, height)
+        self.render.attach_for_sdk(
+            key,
+            window,
+            width,
+            height,
+            eidolon_render::RenderMode::Windows,
+        )
     }
     pub fn provide_credential(
         &self,
@@ -4645,6 +4666,12 @@ mod tests {
         assert_eq!(runtime.command(release_sdk(app)), Status::Stale);
         assert_eq!(runtime.snapshot().app_sdk_bindings, 0);
         assert_eq!(runtime.snapshot().shutdown.sdk_bindings, 1);
+        let observe_detach = || Command::SurfaceDetachObserved {
+            schema: 1,
+            request_id: CommandSeq::new(14).unwrap(),
+            target: diagnostic,
+        };
+        assert_eq!(runtime.command(observe_detach()), Status::NotReady);
         // native surfaceの退役後もSDK ownerKeyは残るが、通常接続を妨げない。
         assert_eq!(
             completed(
@@ -4657,7 +4684,12 @@ mod tests {
             ),
             Status::Accepted
         );
-        wait(&runtime, |r| r.snapshot().render.targets.is_empty());
+        wait(&runtime, |r| {
+            r.snapshot().render.sdk_detached == [diagnostic]
+        });
+        assert_eq!(runtime.command(observe_detach()), Status::Accepted);
+        assert!(runtime.snapshot().render.sdk_detached.is_empty());
+        assert_eq!(runtime.command(observe_detach()), Status::Stale);
         assert_eq!(
             completed(&runtime, connect_missing_profile(13)),
             Status::NotReady

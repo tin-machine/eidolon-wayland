@@ -2067,6 +2067,9 @@ object NativeSessionHost {
         return NativeBridge.nativeCommand(runtime, JSONObject().put("schema", 1).put("request_id", requests.incrementAndGet().toString())
             .put("type", "surface_lost").put("target", target).toString())
     }
+    internal fun observeSurfaceDetach(target: JSONObject, runtime: Long): Int =
+        NativeBridge.nativeCommand(runtime, JSONObject().put("schema", 1).put("request_id", requests.incrementAndGet().toString())
+            .put("type", "surface_detach_observed").put("target", target).toString())
     fun ackPanel(plan: JSONObject, runtime: Long, success: Boolean = true): Int = NativeBridge.nativeCommand(runtime,
         JSONObject().put("schema", 1).put("request_id", requests.incrementAndGet().toString())
             .put("type", if (success) "adapter_applied" else "adapter_failed")
