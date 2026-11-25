@@ -1,6 +1,6 @@
 # Ubuntu の GUI セッションを systemd で管理する詳細設計
 
-2026-11-26 JST。**提案・未実装**。対象は Quest の通常ランチャー、Ubuntu Desktop の実 GUI アプリ、GUI 全体の無応答時設定。基準は main `9bec03932121f46bae41db6f2b8b10168f71728a`。設計と対になる[実験記録・再現条件](systemd-gui-session-host-evidence-20261126.md)を先に読むと、実証済みの動作と実装後の試験を区別できる。本書は手動で参照する設計で、既存の [v3 統合計画](linux-real-app-v3-integration-plan-20261111.md)・wire revision・受入結果は従来どおりとする。
+2026-11-26 JST に作成した設計案。対象は Quest の通常ランチャー、Ubuntu Desktop の実 GUI アプリ、GUI 全体の無応答時設定。基準は main `9bec03932121f46bae41db6f2b8b10168f71728a`。設計前の観測と再現手順は[実験記録](systemd-gui-session-host-evidence-20261126.md)、設計後の到達点は[実装と検証](systemd-gui-session-implementation-evidence-20261126.md)を参照。本書は手動で参照する設計で、既存の [v3 統合計画](linux-real-app-v3-integration-plan-20261111.md)・wire revision・受入結果は従来どおりとする。
 
 ## 1. 利用者と決めた動作
 
