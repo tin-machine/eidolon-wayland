@@ -6,6 +6,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LauncherFailuresTest {
+    @Test fun aDesktopEntryIdSelectsOnlyTheExactUbuntuRegistration() {
+        val selected = LauncherEntry("1", "PDF Studio 2024", "", true, null, "pdfstudio2024.desktop")
+        val old = selected.copy(id = "2", desktopId = "old-pdfstudio2024.desktop")
+        val entries = listOf(selected, old)
+        assertEquals(listOf(selected), entries.filter {
+            it.matchesShelfQuery("pdfstudio2024.desktop", true, "Ubuntu", "Ubuntu")
+        })
+        assertEquals(entries, entries.filter { it.matchesShelfQuery("pdf studio", true, "Ubuntu", "Ubuntu") })
+        assertFalse(selected.matchesShelfQuery("PDFstudio2024.desktop", true, "Ubuntu", "Ubuntu"))
+        assertTrue(selected.copy(label = "Open foo.desktop").matchesShelfQuery("foo.desktop", false, "Termux", "Termux"))
+    }
+
     @Test fun retryFollowsHostRecoveryAndCurrentCatalog() {
         val entry = LauncherEntry("app", "App", "", true, null)
         val ready = LauncherUi(connected = true)

@@ -7,6 +7,11 @@ data class LauncherEntry(
     val id: String, val label: String, val icon: String, val available: Boolean, val error: String?,
     val desktopId: String? = null,
 )
+
+internal fun LauncherEntry.matchesShelfQuery(query: String, linux: Boolean, host: String, source: String): Boolean =
+    if (linux && query.endsWith(".desktop", ignoreCase = true)) desktopId == query
+    else listOfNotNull(label, desktopId, source, host).any { it.contains(query, ignoreCase = true) }
+
 data class LauncherUi(
     val session: String = "", val connected: Boolean = false, val busy: Boolean = false,
     val revision: String = "", val builtin: Boolean = true, val total: Int = 0, val offset: Int = 0,

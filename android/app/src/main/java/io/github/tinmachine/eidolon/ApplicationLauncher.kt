@@ -139,13 +139,17 @@ fun LauncherSettings(
     }
     LaunchedEffect(NativeSessionHost.launcherFocusReset.value) { focus.clearFocus(force = true) }
     val hosts = LauncherSource.entries.associateWith { NativeSessionHost.shelfState(it) }
-    val rows = hosts.flatMap { (source, state) ->
-        val entries = if (state.entries.isNotEmpty() || state.catalogComplete) state.entries
+    val entriesByHost = hosts.mapValues { (source, state) ->
+        if (state.entries.isNotEmpty() || state.catalogComplete) state.entries
             else NativeSessionHost.shelfCatalogs[launcherSourceKey(source)]?.entries.orEmpty()
+    }
+    val ubuntuLabelCounts = entriesByHost.getValue(LauncherSource.UBUNTU)
+        .groupingBy { it.label.lowercase() }.eachCount()
+    val search = query.trim()
+    val rows = entriesByHost.flatMap { (source, entries) ->
         entries.filter { entry ->
             (!favoritesOnly || launcherFavoriteKey(source, entry) in NativeSessionHost.launcherFavorites) &&
-                listOfNotNull(entry.label, entry.desktopId, source.title, hostName(source))
-                    .any { it.contains(query.trim(), ignoreCase = true) }
+                entry.matchesShelfQuery(search, source.linux, hostName(source), source.title)
         }.map { entry -> source to entry }
     }.sortedBy { it.second.label.lowercase() }
     MaterialTheme(colorScheme = launcherColors) {
@@ -242,7 +246,8 @@ fun LauncherSettings(
                                 verticalArrangement = Arrangement.spacedBy(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 items(rows, key = { (host, entry) -> launcherSourceKey(host) + ":" + entry.id }) { (host, entry) ->
                                     val state = hosts.getValue(host)
-                                    ShelfAppCard(host, entry, state, placeApp)
+                                    val showDesktopId = host.linux && ubuntuLabelCounts.getValue(entry.label.lowercase()) > 1
+                                    ShelfAppCard(host, entry, state, showDesktopId, placeApp)
                                 }
                             }
                         }
@@ -331,7 +336,7 @@ internal fun hostName(source: LauncherSource) = if (source.linux)
 
 @Composable
 private fun ShelfAppCard(source: LauncherSource, entry: LauncherEntry, state: LauncherUi,
-    place: ((LauncherUi, LauncherEntry, Boolean) -> Unit)?) {
+    showDesktopId: Boolean, place: ((LauncherUi, LauncherEntry, Boolean) -> Unit)?) {
     var menu by remember { mutableStateOf(false) }
     val host = launcherSourceKey(source)
     val key = remember(host, state.path, entry.id, entry.desktopId) { launcherAppKey(source, state, entry) }
@@ -352,6 +357,9 @@ private fun ShelfAppCard(source: LauncherSource, entry: LauncherEntry, state: La
             Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
                 Text(entry.label, color = Color.White, style = MaterialTheme.typography.titleMedium)
                 Text(hostName(source), color = Color(0xFFBBF2DC))
+                if (showDesktopId) entry.desktopId?.let {
+                    Text(it, color = Color.White, style = MaterialTheme.typography.bodySmall)
+                }
             }
             Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
                 if (failure != null) Box(Modifier.fillMaxSize().background(Color(0xFFFFCE71), CircleShape)
