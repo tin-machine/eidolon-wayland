@@ -106,20 +106,23 @@ class SdkResourceScope internal constructor(
      * On cancellation only cleanup of its captured result is permitted.
      */
     internal fun sceneObject(
+        entity: Entity,
         future: () -> CompletableFuture<SceneObject>,
         live: () -> Boolean,
         received: (SceneObject?, Throwable?) -> Unit,
     ) {
+        val entityId = entity.id
         if (!evidence.beginProducer(lease)) throw SdkLeaseRevoked()
         val pending = try {
             if (!open()) throw SdkLeaseRevoked()
-            future()
+            future().also { deletion.watchSceneObject(entityId, this, it) }
         } catch (failure: Exception) {
             if (failure !is SdkLeaseRevoked) failed()
             evidence.producerFinished(lease)
             throw failure
         }
         pending.whenComplete { obj, failure ->
+            deletion.finishedSceneObject(entityId, this, pending)
             if (!ui.post {
                 try {
                     if (open() && live()) received(obj, failure)
@@ -168,14 +171,15 @@ class SdkResourceScope internal constructor(
             callback(Unit) { delegate.onDragMove(receiver,hitInfo,sourceOfInput,buttonState) }
     }
 
-    internal fun deleted(pass: Long, entity: Long) {
+    internal fun deleted(pass: Long, entity: Long): Boolean =
         try {
             evidence.deleteObserved(lease, pass, entity)
+            true
         } catch (failure: Exception) {
             // An unexpected deletion is not silently credited to a new owner.
             failed()
+            false
         }
-    }
     internal fun deletionNotified(entity: Long) {
         // Retract permission at the actual notification, rather than waiting
         // for the next pass used to prove destruction has finished.
@@ -196,15 +200,19 @@ internal class SdkSceneDeletionFence(
     private var scene: Scene? = scene
     private var model: DataModel? = dataModel
     private var pass = 0L
-    private val owners = mutableMapOf<Long, SdkResourceScope>()
+    private class EntityOwner(val scope: SdkResourceScope) {
+        val sceneObjects = mutableSetOf<CompletableFuture<SceneObject>>()
+    }
+    private val owners = mutableMapOf<Long, EntityOwner>()
     private val notifications = linkedSetOf<Long>()
+    private var deletedSceneObjects = emptyList<CompletableFuture<SceneObject>>()
     private var holder: DeleteListenerHolder? = null
 
     init {
         evidence.sdkCleanupPass(adapter, epoch, 0)
         holder = dataModel.registerDeleteListener { entity -> synchronized(lock) {
             if (this.scene != null) owners[entity]?.let { owner ->
-                owner.deletionNotified(entity)
+                owner.scope.deletionNotified(entity)
                 notifications.add(entity)
             }
         } }
@@ -212,17 +220,41 @@ internal class SdkSceneDeletionFence(
     fun live(): Boolean = synchronized(lock) { scene != null }
     fun owns(value: Scene): Boolean = synchronized(lock) { scene === value }
     fun track(entity: Long, scope: SdkResourceScope) = synchronized(lock) {
-        check(scene != null && owners.putIfAbsent(entity, scope) == null) { "SDK_ENTITY_OWNER_CONFLICT" }
+        check(scene != null && owners.putIfAbsent(entity, EntityOwner(scope)) == null) { "SDK_ENTITY_OWNER_CONFLICT" }
     }
-    fun lateExecute(value: Scene) = synchronized(lock) {
-        if (scene !== value) return@synchronized
-        pass = Math.addExact(pass, 1)
-        // First advance earlier observations; notifications collected in this
-        // pass only become eligible at the next lateExecute boundary.
-        evidence.sdkCleanupPass(adapter, epoch, pass)
-        val deleted = notifications.toList()
-        notifications.clear()
-        deleted.forEach { entity -> owners.remove(entity)?.deleted(pass, entity) }
+    fun watchSceneObject(entity: Long, scope: SdkResourceScope, pending: CompletableFuture<SceneObject>) {
+        synchronized(lock) {
+            val owner = checkNotNull(owners[entity]) { "SDK_SCENE_OBJECT_OWNER_MISSING" }
+            check(scene != null && owner.scope === scope && entity !in notifications) {
+                "SDK_SCENE_OBJECT_OWNER_MISSING"
+            }
+            if (!pending.isDone) owner.sceneObjects.add(pending)
+        }
+    }
+    fun finishedSceneObject(entity: Long, scope: SdkResourceScope, pending: CompletableFuture<SceneObject>) {
+        synchronized(lock) {
+            owners[entity]?.takeIf { it.scope === scope }?.sceneObjects?.remove(pending)
+        }
+    }
+    fun lateExecute(value: Scene) {
+        val abandoned = synchronized(lock) {
+            if (scene !== value) return
+            pass = Math.addExact(pass, 1)
+            // A full subsequent SDK pass lets the owning systems remove the
+            // deleted Entity's objects and detach its unresolved placeholders.
+            evidence.sdkCleanupPass(adapter, epoch, pass)
+            val previous = deletedSceneObjects
+            deletedSceneObjects = notifications.flatMap { entity ->
+                val owner = owners.remove(entity)
+                if (owner != null && owner.scope.deleted(pass, entity)) owner.sceneObjects else emptySet()
+            }
+            notifications.clear()
+            previous
+        }
+        // SDK 0.15's SceneObjectSystem can drop a placeholder without completing
+        // it. Cancel only the future captured for that deleted Entity. A real
+        // result that won the race still goes through the normal cleanup callback.
+        abandoned.forEach { it.cancel(false) }
     }
     override fun close() = synchronized(lock) {
         if (scene == null) return@synchronized
@@ -230,7 +262,10 @@ internal class SdkSceneDeletionFence(
         // Called while this DataModel is still valid, before super shutdown.
         // A missing delete/pass remains pending; shutdown return is no receipt.
         try { holder?.let { model?.removeDeleteListener(it) } }
-        finally { holder = null; model = null; scene = null; notifications.clear(); owners.clear() }
+        finally {
+            holder = null; model = null; scene = null
+            notifications.clear(); owners.clear(); deletedSceneObjects = emptyList()
+        }
     }
 }
 
