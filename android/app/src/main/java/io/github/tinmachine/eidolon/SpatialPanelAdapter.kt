@@ -389,7 +389,8 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                     if (failure == null && obj != null) objectReady(current,obj)
                     else { NativeSessionHost.ackPanel(checkNotNull(plan),handle,false); beginRetirement(current); current.destroy=true }
                 }
-                scope.sceneObject({ system.getSceneObject(createdEntity) ?: system.replaceOrReuseSceneObjectFuture(createdEntity) },live,received)
+                scope.sceneObject(createdEntity,
+                    { system.getSceneObject(createdEntity) ?: system.replaceOrReuseSceneObjectFuture(createdEntity) }, live, received)
             }
         } catch (failure: Exception) {
             if (failure !is SdkLeaseRevoked) scope.failed()

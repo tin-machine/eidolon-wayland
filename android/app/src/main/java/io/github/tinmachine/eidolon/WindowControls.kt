@@ -251,7 +251,7 @@ class WindowControls(private val parent: Entity, private val target: String, pri
     private fun post(action:()->Unit) { sdkScope?.post(action) ?: ui.post { action() } }
     private fun observe(entity:Entity, valid:()->Boolean, received:(SceneObject?,Throwable?)->Unit) {
         val scope=sdkScope
-        if(scope!=null) scope.sceneObject({objects.getSceneObject(entity) ?: objects.replaceOrReuseSceneObjectFuture(entity)},valid,received)
+        if(scope!=null) scope.sceneObject(entity, { objects.getSceneObject(entity) ?: objects.replaceOrReuseSceneObjectFuture(entity) }, valid, received)
         else (objects.getSceneObject(entity) ?: objects.replaceOrReuseSceneObjectFuture(entity)).whenComplete {obj,error ->
             ui.post {if(valid()) received(obj,error)}
         }
