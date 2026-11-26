@@ -132,6 +132,8 @@ pub struct Snapshot {
     pub executor: Option<executor::Report>,
     pub targets: Vec<TargetReport>,
     pub detached: VecDeque<TargetKey>,
+    #[serde(skip)]
+    pub sdk_detached: Vec<TargetKey>,
     pub queued: usize,
     pub paused: bool,
     pub attaches: u64,
@@ -157,6 +159,7 @@ enum Message {
         width: i32,
         height: i32,
         role: RenderMode,
+        sdk: bool,
     },
     Detach(TargetKey),
     Forget(SessionId, WindowId),
@@ -165,6 +168,13 @@ enum Message {
     #[cfg(feature = "host-acceptance")]
     Readback(u64),
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SdkSurface {
+    Queued,
+    Owned,
+    Released,
+}
+
 struct Shared {
     queue: VecDeque<Message>,
     snapshot: Snapshot,
@@ -179,6 +189,9 @@ struct Shared {
     // One high-water mark per logical window is enough; pending fences never
     // rely on the bounded diagnostic detached ring.
     retirement_floors: Vec<TargetKey>,
+    // A bounded entry for each accepted SDK attach, retained until the UI
+    // observes the release. The diagnostic detach ring is independent.
+    sdk_surfaces: Vec<(TargetKey, SdkSurface)>,
     owner_reclaimed: bool,
     #[cfg(feature = "host-acceptance")]
     readbacks: host_readback::Readbacks,
@@ -316,6 +329,7 @@ impl Controller {
                 logical: vec![],
                 hidden: vec![],
                 retirement_floors: vec![],
+                sdk_surfaces: vec![],
                 owner_reclaimed: false,
                 #[cfg(feature = "host-acceptance")]
                 readbacks: host_readback::Readbacks::new()?,
@@ -373,6 +387,19 @@ impl Controller {
         {
             return Status::Stale;
         }
+        if let Message::Attach { key, sdk: true, .. } = &message {
+            if let Some((_, surface)) = state.sdk_surfaces.iter().find(|(owned, _)| owned == key) {
+                return if *surface == SdkSurface::Released {
+                    Status::Stale
+                } else {
+                    Status::Accepted
+                };
+            }
+            if state.sdk_surfaces.len() == limits::SDK_BINDINGS {
+                return Status::Busy;
+            }
+            state.sdk_surfaces.push((*key, SdkSurface::Queued));
+        }
         #[cfg(feature = "host-acceptance")]
         match &message {
             Message::Attach {
@@ -394,7 +421,7 @@ impl Controller {
         width: i32,
         height: i32,
     ) -> Status {
-        self.attach_role(key, window, width, height, RenderMode::Diagnostic)
+        self.attach_role(key, window, width, height, RenderMode::Diagnostic, false)
     }
     pub fn attach_window(
         &self,
@@ -403,7 +430,17 @@ impl Controller {
         width: i32,
         height: i32,
     ) -> Status {
-        self.attach_role(key, window, width, height, RenderMode::Windows)
+        self.attach_role(key, window, width, height, RenderMode::Windows, false)
+    }
+    pub fn attach_for_sdk(
+        &self,
+        key: TargetKey,
+        window: PlatformWindow,
+        width: i32,
+        height: i32,
+        role: RenderMode,
+    ) -> Status {
+        self.attach_role(key, window, width, height, role, true)
     }
     fn attach_role(
         &self,
@@ -412,6 +449,7 @@ impl Controller {
         width: i32,
         height: i32,
         role: RenderMode,
+        sdk: bool,
     ) -> Status {
         if let Err(status) = validate_dimensions(width, height) {
             return status;
@@ -443,6 +481,7 @@ impl Controller {
             width,
             height,
             role,
+            sdk,
         })
     }
     /// 製品window modeへ一方向に移る。診断へ戻すには新runtimeを作る。
@@ -510,6 +549,21 @@ impl Controller {
     }
     pub fn detach(&self, key: TargetKey) -> Status {
         self.enqueue(Message::Detach(key))
+    }
+    pub fn observe_sdk_detach(&self, key: TargetKey) -> Status {
+        let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(index) = state
+            .sdk_surfaces
+            .iter()
+            .position(|(owned, _)| *owned == key)
+        else {
+            return Status::Stale;
+        };
+        if state.sdk_surfaces[index].1 != SdkSurface::Released {
+            return Status::NotReady;
+        }
+        state.sdk_surfaces.swap_remove(index);
+        Status::Accepted
     }
     /// Seal one full target tuple, then release it on the GL FIFO. A callback
     /// racing after this call cannot attach the retired tuple behind the fence.
@@ -761,6 +815,11 @@ impl Controller {
             state.stop = true;
         }
         let mut result = state.snapshot.clone();
+        result.sdk_detached = state
+            .sdk_surfaces
+            .iter()
+            .filter_map(|(key, surface)| (*surface == SdkSurface::Released).then_some(*key))
+            .collect();
         result.queued = state.queue.len();
         result.paused = !state.visible;
         if let Worker::Reusable { executor, .. } = &self.worker {
@@ -791,6 +850,9 @@ fn run_owner(owned: &State) -> bool {
     state.logical.clear();
     state.hidden.clear();
     state.retirement_floors.clear();
+    state
+        .sdk_surfaces
+        .retain(|(_, surface)| *surface == SdkSurface::Released);
     state.theme = None;
     state.accepted_theme = None;
     state.semantic.clear();
@@ -838,12 +900,21 @@ fn invalidate_content_evidence(state: &State, active: &mut [Active]) {
 fn update(state: &State, action: impl FnOnce(&mut Shared)) {
     action(&mut state.0.lock().unwrap_or_else(|e| e.into_inner()));
 }
-fn ack(state: &mut Shared, key: TargetKey) {
+fn ack(state: &mut Shared, key: TargetKey, proved_release: bool) {
     // Every ACK path shares the owner's sticky cleanup verdict. An absent
     // target or a later successful disposal cannot prove a failed retirement.
     #[cfg(feature = "host-acceptance")]
     if state.gpu_cleanup_failed {
         return;
+    }
+    if proved_release
+        && let Some((_, surface)) = state
+            .sdk_surfaces
+            .iter_mut()
+            .find(|(owned, _)| *owned == key)
+        && *surface == SdkSurface::Owned
+    {
+        *surface = SdkSurface::Released;
     }
     if state.snapshot.detached.back() == Some(&key) {
         return;
@@ -1053,7 +1124,17 @@ fn owner(state: &State) {
                     width,
                     height,
                     role,
+                    sdk,
                 } => {
+                    if sdk {
+                        update(state, |s| {
+                            if let Some((_, surface)) =
+                                s.sdk_surfaces.iter_mut().find(|(owned, _)| *owned == key)
+                            {
+                                *surface = SdkSurface::Owned;
+                            }
+                        });
+                    }
                     if let Some(prior) = active.iter().find(|a| a.report.key == key) {
                         update(state, |s| {
                             if prior.report.role == role && role == mode {
@@ -1068,19 +1149,16 @@ fn owner(state: &State) {
                     if role != mode
                         || (role == RenderMode::Windows
                             && !logical.contains(&(key.session, key.window)))
-                    {
-                        update(state, |s| {
-                            s.snapshot.stale += 1;
-                            ack(s, key)
-                        });
-                        continue;
-                    }
-                    if active.len() >= limits::VISIBLE_PANELS
+                        || active.len() >= limits::VISIBLE_PANELS
                         || generations.attach(key) != Status::Accepted
                     {
+                        // Return the rejected ANativeWindow reference before
+                        // the adapter can observe the detach receipt.
+                        #[cfg(target_os = "android")]
+                        drop(window);
                         update(state, |s| {
                             s.snapshot.stale += 1;
-                            ack(s, key);
+                            ack(s, key, sdk);
                         });
                         continue;
                     }
@@ -1120,14 +1198,15 @@ fn owner(state: &State) {
                         Err(error) => {
                             failed_backend(state, error);
                             if finish_gpu_owner(state, &mut device) && cleanup_proven(state) {
-                                update(state, |s| ack(s, key));
+                                update(state, |s| ack(s, key, sdk));
                             }
                         }
                     }
                 }
                 Message::Detach(key) => {
                     let mut released = true;
-                    if let Some(index) = active.iter().position(|a| a.report.key == key) {
+                    let attached = active.iter().position(|a| a.report.key == key);
+                    if let Some(index) = attached {
                         released &= retire_gpu_target(state, &mut active[index], &mut device);
                         busy(state, || drop(active.remove(index)));
                         // Texture cache is logical-window owned. An old target
@@ -1141,7 +1220,7 @@ fn owner(state: &State) {
                     }
                     // full tupleのみack。遅い旧世代detachは現targetへ触れない。
                     if released {
-                        update(state, |s| ack(s, key));
+                        update(state, |s| ack(s, key, attached.is_some()));
                     }
                 }
                 Message::Forget(session, window) => {
@@ -1149,7 +1228,8 @@ fn owner(state: &State) {
                 }
                 Message::RetireTarget(key, completed) => {
                     let mut released = finish_gpu_owner(state, &mut device);
-                    if let Some(index) = active.iter().position(|a| a.report.key == key) {
+                    let attached = active.iter().position(|a| a.report.key == key);
+                    if let Some(index) = attached {
                         released &= retire_gpu_target(state, &mut active[index], &mut device);
                         busy(state, || drop(active.remove(index)));
                         if !active.iter().any(|a| a.report.key.same_window(key)) {
@@ -1158,7 +1238,7 @@ fn owner(state: &State) {
                         }
                     }
                     if released && cleanup_proven(state) {
-                        update(state, |s| ack(s, key));
+                        update(state, |s| ack(s, key, attached.is_some()));
                         completed.store(true, std::sync::atomic::Ordering::Release);
                     }
                 }
@@ -1187,7 +1267,7 @@ fn owner(state: &State) {
                     update(state, |s| {
                         if released {
                             for key in removed {
-                                ack(s, key);
+                                ack(s, key, true);
                             }
                         }
                         s.retirement_floors
@@ -1548,7 +1628,7 @@ fn owner(state: &State) {
                     #[cfg(feature = "host-acceptance")]
                     s.readbacks.invalidate_target(key, Status::Failed);
                     if released {
-                        ack(s, key);
+                        ack(s, key, true);
                     }
                 });
             }
@@ -1660,6 +1740,54 @@ mod tests {
         );
         renderer.request_stop();
         wait(|| renderer.owner_reclaimed());
+    }
+
+    #[test]
+    fn sdk_release_stays_visible_after_the_detach_history_rolls_over() {
+        let renderer = Controller::start().unwrap();
+        renderer.use_windows();
+        let key = TargetKey::from_raw(1, 1, 1, 1).unwrap();
+        assert_eq!(
+            renderer.windows(key.session, &[key.window]),
+            Status::Accepted
+        );
+        let (image, probes) = fixtures::make(0, 1, key, 64, 64).unwrap();
+        assert_eq!(renderer.submit(image, probes), Status::Accepted);
+        // An earlier detach of an absent target can enter the diagnostic
+        // history, but does not prove that the new attach has been released.
+        assert_eq!(renderer.detach(key), Status::Accepted);
+        assert_eq!(
+            renderer.attach_for_sdk(key, PlatformWindow::default(), 64, 64, RenderMode::Windows),
+            Status::Accepted
+        );
+        wait(|| {
+            renderer
+                .snapshot()
+                .targets
+                .iter()
+                .any(|target| target.key == key)
+        });
+        assert_eq!(renderer.observe_sdk_detach(key), Status::NotReady);
+        assert!(renderer.snapshot().sdk_detached.is_empty());
+
+        assert_eq!(renderer.detach(key), Status::Accepted);
+        wait(|| renderer.snapshot().sdk_detached == [key]);
+        for generation in 2..=ACKS as i64 + 1 {
+            let other = TargetKey::from_raw(1, 1, 1, generation).unwrap();
+            assert_eq!(renderer.detach(other), Status::Accepted);
+            wait(|| renderer.snapshot().detached.back() == Some(&other));
+        }
+        let snapshot = renderer.snapshot();
+        assert!(!snapshot.detached.contains(&key));
+        assert_eq!(snapshot.sdk_detached, [key]);
+        let wrong_generation = TargetKey::from_raw(1, 1, 1, 2).unwrap();
+        assert_eq!(renderer.observe_sdk_detach(wrong_generation), Status::Stale);
+        renderer.request_stop();
+        wait(|| renderer.owner_reclaimed());
+        assert_eq!(renderer.snapshot().sdk_detached, [key]);
+        assert_eq!(renderer.observe_sdk_detach(key), Status::Accepted);
+        assert!(renderer.snapshot().sdk_detached.is_empty());
+        assert_eq!(renderer.observe_sdk_detach(key), Status::Stale);
     }
 
     #[test]

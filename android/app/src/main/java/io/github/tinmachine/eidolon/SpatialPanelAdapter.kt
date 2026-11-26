@@ -736,7 +736,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                     })
                         NativeSessionHost.ackPanel(plan, current.handle)
                 }
-                val detached = render.getJSONArray("detached")
+                val detached = render.getJSONArray("sdk_detached")
                 val acknowledged = (0 until detached.length()).any { sameKey(detached.getJSONObject(it), current.key) }
                 val shutdown=snapshot.getJSONObject("runtime").getJSONObject("shutdown")
                 val pending=shutdown.getJSONArray("pending_owners")
@@ -745,7 +745,8 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                 val ownerReleased=shutdown.getBoolean("requested") &&
                     (0 until pending.length()).none {pending.getString(it)=="render"} &&
                     render.getInt("workers")==0 && render.getInt("contexts")==0 && render.getJSONArray("targets").length()==0
-                if (current.attached && (acknowledged || ownerReleased)) {
+                if (current.attached && (ownerReleased || acknowledged &&
+                        NativeSessionHost.observeSurfaceDetach(current.key, current.handle) == NativeBridge.ACCEPTED)) {
                     current.attached = false; current.scope?.rendererDetached(); event("surface_detached", current.entity.id)
                     if (!current.retire) { beginRetirement(current); current.destroy = true }
                 }

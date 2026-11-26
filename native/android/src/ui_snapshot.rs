@@ -35,6 +35,7 @@ pub(crate) fn project(state: &Snapshot, panel: bool) -> Value {
     });
     if panel {
         drawing["detached"] = json!(render.detached);
+        drawing["sdk_detached"] = json!(render.sdk_detached);
         drawing["workers"] = json!(render.workers);
         drawing["contexts"] = json!(render.contexts);
         if !state.panels.is_empty() {
@@ -108,9 +109,12 @@ mod tests {
             gpu: GpuInfo::default(),
         });
         cut.render.detached.push_back(key);
+        let retained = TargetKey::from_raw(4, 3, 2, 6).unwrap();
+        cut.render.sdk_detached.push(retained);
         cut.shutdown.requested = true;
         cut.shutdown.pending_owners.push("render");
         let full = json!(cut);
+        assert!(full["render"].get("sdk_detached").is_none());
         for panel in [true, false] {
             let ui = project(&cut, panel);
             for field in [
@@ -128,8 +132,10 @@ mod tests {
             }
             assert!(ui["render"]["targets"][0].get("frame_timing").is_none());
             assert_eq!(ui.get("theme").is_some(), !panel);
+            assert_eq!(ui["render"].get("sdk_detached").is_some(), panel);
             if panel {
                 assert_eq!(ui["render"]["detached"], full["render"]["detached"]);
+                assert_eq!(ui["render"]["sdk_detached"], json!([retained]));
                 assert_eq!(
                     ui["shutdown"]["pending_owners"],
                     full["shutdown"]["pending_owners"]
