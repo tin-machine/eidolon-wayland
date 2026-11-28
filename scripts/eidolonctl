@@ -39,11 +39,11 @@ def decode_list(output, nonce):
     return response["windows"]
 
 
-def broadcast(adb, serial, action, options):
+def broadcast(adb, serial, action, options, *, domain="WINDOW"):
     nonce = secrets.token_hex(16)
     command = [
         "am", "broadcast", "-n", f"{PACKAGE}/.EidolonCtlReceiver",
-        "-a", f"{PACKAGE}.CTL_WINDOW_{action}", "--es", "nonce", nonce,
+        "-a", f"{PACKAGE}.CTL_{domain}_{action}", "--es", "nonce", nonce,
     ]
     for key, value in options.items():
         command.extend(["--es", key, value])
@@ -89,6 +89,26 @@ def show_window(args):
     raise ValueError("対象ウィンドウが表示されませんでした")
 
 
+def send_input(args):
+    action = "PRESS_A" if args.action == "press" else "CHORD_A_B"
+    options = target_options(args) if args.action == "press" else {}
+    output, request = broadcast(args.adb, args.serial, action, options, domain="INPUT")
+    outcome = decode_response(output, request).get("input")
+    deadline = time.monotonic() + 14  # Switching windows can require two SDK confirmations.
+    while outcome == "pending" and time.monotonic() < deadline:
+        time.sleep(.2)
+        outcome = decode_response(*broadcast(
+            args.adb, args.serial, "STATUS", {"request": request}, domain="INPUT",
+        )).get("input")
+    if outcome in ("summoned", "returned", "already_summoned", "nothing_to_return"):
+        return {"input": outcome}
+    if outcome in ("busy", "stale", "not_ready", "failure", "no_clear_position", "restoration_pending"):
+        raise ValueError(outcome)
+    if outcome == "pending":
+        raise ValueError("ウィンドウ配置の適用を確認できませんでした")
+    raise ValueError("Eidolon の入力操作への応答を確認できません")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", required=True, help="ADB device serial")
@@ -100,8 +120,18 @@ def main(argv=None):
     show = window.add_parser("show")
     show.add_argument("window_id")
     show.add_argument("--generation", required=True)
+    inputs = command.add_parser("input").add_subparsers(dest="action", required=True)
+    press = inputs.add_parser("press", help="emulate a press and release of right A")
+    press.add_argument("button", choices=("A",))
+    press.add_argument("--window", dest="window_id", required=True)
+    press.add_argument("--generation", required=True)
+    chord = inputs.add_parser("chord", help="emulate holding right A while pressing B")
+    chord.add_argument("buttons", choices=("A+B",))
     args = parser.parse_args(argv)
     try:
+        if args.command == "input":
+            print(json.dumps(send_input(args), ensure_ascii=False))
+            return 0
         if args.action == "show":
             print(json.dumps(show_window(args), ensure_ascii=False))
             return 0

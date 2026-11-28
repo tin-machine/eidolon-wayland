@@ -76,6 +76,7 @@ class SpatialPanelAdapter internal constructor(
         val deadline: Long,
         val group: SummonGroup?,
         val next: SummonTarget? = null,
+        val completed: ((String) -> Unit)? = null,
         var started: Long? = null,
     )
     private val summonInput = RightTouchSummonInput<SummonTarget>()
@@ -955,7 +956,9 @@ class SpatialPanelAdapter internal constructor(
         settlingReturn = null
         summonGroups = emptyMap()
         summonSnapshots = emptyMap()
+        val completed = summonOperation?.completed
         finishSummon()
+        completed?.invoke("stale")
     }
 
     private fun finishSummon() {
@@ -968,10 +971,69 @@ class SpatialPanelAdapter internal constructor(
 
     private fun handleSummon(action: SummonChord.Action<SummonTarget>, intent: Long) {
         val sdk = runtimeScene ?: return
-        if (closed || summonOperation != null || NativeSessionHost.summonInputIntent() != intent ||
+        if (closed || summonOperation != null ||
             !runCatching { RightTouchSummonInput.tracked(sdk) }.getOrDefault(false)) return
+        dispatchSummon(action, intent)
+    }
+
+    internal fun debugSummonInput(key: InputWindowKey?, completed: (String) -> Unit) {
+        if (!BuildConfig.DEBUG || closed || runtimeScene == null) {
+            completed("not_ready")
+            return
+        }
+        if (summonOperation != null) {
+            completed("busy")
+            return
+        }
+        val intent = NativeSessionHost.summonInputIntent()
+        if (intent == null) {
+            completed("not_ready")
+            return
+        }
+        val target = key?.let {
+            val binding = bindings.values.singleOrNull {
+                it.handle == key.runtime && liveSummonBinding(it) && WindowGroupWire.key(it.handle, it.key) == key
+            }
+            val input = binding?.let { NativeSessionHost.inputTarget(it.key.toString(), it.handle) }
+            if (input == null) {
+                completed("stale")
+                return
+            }
+            captureSummon(input, intent)
+        }
+        // Use a separate button state for this one-shot gesture.
+        val buttons = SummonChord<SummonTarget>()
+        val source = 1L
+        buttons.sample(source, false, false, null)
+        buttons.sample(source, true, false, target)
+        val action = if (target == null) {
+            val decision = buttons.sample(source, true, true, null)
+            buttons.sample(source, false, true, null)
+            buttons.sample(source, false, false, null)
+            decision.action
+        } else buttons.sample(source, false, false, null).action
+        if (action == null) {
+            completed("failure")
+        } else {
+            dispatchSummon(action, intent, completed)
+        }
+    }
+
+    private fun dispatchSummon(
+        action: SummonChord.Action<SummonTarget>,
+        intent: Long,
+        completed: ((String) -> Unit)? = null,
+    ) {
+        if (closed || NativeSessionHost.summonInputIntent() != intent) {
+            completed?.invoke("not_ready")
+            return
+        }
+        if (summonOperation != null) {
+            completed?.invoke("busy")
+            return
+        }
         if (settlingReturn != null) {
-            reportSummon("restoration_pending")
+            reportSummonResult("restoration_pending", completed)
             return
         }
         val next = (action as? SummonChord.Action.Summon)?.target
@@ -979,7 +1041,10 @@ class SpatialPanelAdapter internal constructor(
                 NativeSessionHost.inputTarget(next.input.target, next.input.runtime) != next.input ||
                 summonBinding(next.input) == null ||
                 captureSummon(next.input, intent).group != next.group)
-        ) return
+        ) {
+            completed?.invoke("stale")
+            return
+        }
         val previous = summoned?.takeIf { active ->
             summonBinding(active.input) != null && if (active.group != null) {
                 summonGroupReport(active.input.runtime, active.group.id)?.optBoolean("summoned") == true
@@ -990,11 +1055,18 @@ class SpatialPanelAdapter internal constructor(
         summoned = previous
         if (next != null && previous?.input?.runtime == next.input.runtime &&
             (previous.input.identity == next.input.identity || previous.group != null && previous.group.id == next.group?.id)
-        ) return
+        ) {
+            completed?.invoke("already_summoned")
+            return
+        }
         if (previous != null) {
-            startSummon(previous.input, previous.group, returning = true, next = next)?.let(::reportSummon)
+            startSummon(previous.input, previous.group, returning = true, next = next, completed = completed)
+                ?.let { reportSummonResult(it, completed) }
         } else if (next != null) {
-            startSummon(next.input, next.group, returning = false)?.let(::reportSummon)
+            startSummon(next.input, next.group, returning = false, completed = completed)
+                ?.let { reportSummonResult(it, completed) }
+        } else {
+            completed?.invoke("nothing_to_return")
         }
     }
 
@@ -1003,6 +1075,7 @@ class SpatialPanelAdapter internal constructor(
         group: SummonGroup?,
         returning: Boolean,
         next: SummonTarget? = null,
+        completed: ((String) -> Unit)? = null,
     ): String? {
         val current = summonBinding(input) ?: return "stale"
         val state = summonSnapshots[input.runtime] ?: return "stale"
@@ -1037,7 +1110,7 @@ class SpatialPanelAdapter internal constructor(
             return "busy"
         }
         summonOperation = SummonOperation(input, ticket, request, returning, actual,
-            SystemClock.elapsedRealtime() + 6000, group, next)
+            SystemClock.elapsedRealtime() + 6000, group, next, completed)
         wake()
         return null
     }
@@ -1138,7 +1211,7 @@ class SpatialPanelAdapter internal constructor(
                 } else summoned = Summoned(input, null)
             }
             finishSummon()
-            reportSummon("failure")
+            reportSummonResult("failure", operation.completed)
         }
     }
 
@@ -1148,10 +1221,17 @@ class SpatialPanelAdapter internal constructor(
         val next = operation.next
         if (next == null) {
             NativeSessionHost.focusAfterSummon(operation.ticket.control)
-            reportSummon(if (operation.returning) "returned" else "summoned")
+            reportSummonResult(if (operation.returning) "returned" else "summoned", operation.completed)
         } else if (NativeSessionHost.summonInputIntent() == operation.ticket.control.intent) {
-            startSummon(next.input, next.group, returning = false)?.let(::reportSummon)
+            startSummon(next.input, next.group, returning = false, completed = operation.completed)
+                ?.let { reportSummonResult(it, operation.completed) }
+        } else {
+            operation.completed?.invoke("stale")
         }
+    }
+
+    private fun reportSummonResult(result: String, completed: ((String) -> Unit)?) {
+        if (completed == null) reportSummon(result) else completed(result)
     }
 
     private fun reportSummon(result: String) {

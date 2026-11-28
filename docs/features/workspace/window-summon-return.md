@@ -25,3 +25,15 @@ cargo test --locked -p eidolon-core --lib workspace::tests
 ```
 
 Hostでは押下時の保存配置と一時配置の分離、相対配置、全メンバーの適用待ち、古いグループrevisionの拒否を検査する。Androidの単体テストは右A/Bの押下・解放・逆順と追跡失効を検査する。Quest実機では、通常のB/Y右クリック・メニューAが維持されること、空間を指してA＋Bで戻ること、別の窓への切替、通常配置の明示保存、グループ全体の移動と復帰、振動の区別を確認する。
+
+### デバッグ版でのボタン操作
+
+EidolonがXRフォーカスを持つ状態で、デバッグ版の `eidolonctl` から呼び寄せと復帰を起動できる。呼び寄せ先の窓は `window list` のIDと世代で指定する。
+
+```bash
+scripts/eidolonctl --serial SERIAL window list
+scripts/eidolonctl --serial SERIAL input press A --window ID --generation GEN
+scripts/eidolonctl --serial SERIAL input chord A+B
+```
+
+仮想の押下・解放は物理入力と同じボタン判定と配置処理を通る。CLIはSDKの配置確認後に `summoned` または `returned` を返す。同じ対象が呼び寄せ済みなら `already_summoned`、復帰対象がない場合は `nothing_to_return` を返す。HMD上の追跡、Metaシステム画面からの復帰、物理入力と振動は個別に実機で検証する。

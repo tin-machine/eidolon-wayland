@@ -28,6 +28,24 @@ class EidolonCtlReceiver : BroadcastReceiver() {
                     response.put("show", show(intent))
                     "ok"
                 }
+                "${context.packageName}.CTL_INPUT_PRESS_A" -> {
+                    if (intent.extras?.keySet() != setOf("nonce", "window", "generation")) return
+                    val key = target(intent) ?: return@runCatching "invalid"
+                    response.put("input", input(nonce, key))
+                    "ok"
+                }
+                "${context.packageName}.CTL_INPUT_CHORD_A_B" -> {
+                    if (intent.extras?.keySet() != setOf("nonce")) return
+                    response.put("input", input(nonce, null))
+                    "ok"
+                }
+                "${context.packageName}.CTL_INPUT_STATUS" -> {
+                    if (intent.extras?.keySet() != setOf("nonce", "request")) return
+                    val request = intent.getStringExtra("request")?.takeIf { it.matches(Regex("[0-9a-f]{32}")) }
+                        ?: return@runCatching "invalid"
+                    response.put("input", inputResults[request] ?: "stale")
+                    "ok"
+                }
                 else -> return
             }
         }.getOrDefault("invalid")
@@ -60,6 +78,18 @@ class EidolonCtlReceiver : BroadcastReceiver() {
         return NativeSessionHost.showCollapsedWindow(key) { request ->
             if (fixture) WindowGroupsCase.cliShowQueued(key, request)
         }
+    }
+
+    private fun input(nonce: String, key: InputWindowKey?): String {
+        inputResults[nonce]?.let { return it }
+        val current = adapter ?: return "not_ready"
+        if (!BuildHooks.imeProductProbeAllowed() || "pending" in inputResults.values) return "busy"
+        if (inputResults.size == 8) inputResults.remove(inputResults.keys.first())
+        inputResults[nonce] = "pending"
+        runCatching {
+            current.debugSummonInput(key) { result -> inputResults[nonce] = result }
+        }.onFailure { inputResults[nonce] = "failure" }
+        return inputResults.getValue(nonce)
     }
 
     private fun listWindows(): JSONArray? {
@@ -114,5 +144,6 @@ class EidolonCtlReceiver : BroadcastReceiver() {
 
     companion object {
         internal var adapter: SpatialPanelAdapter? = null
+        private val inputResults = linkedMapOf<String, String>()
     }
 }
