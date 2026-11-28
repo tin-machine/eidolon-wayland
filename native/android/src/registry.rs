@@ -1,4 +1,5 @@
-use eidolon_core::runtime::Runtime;
+use crate::clipboard_ui::{self, ClipboardUi};
+use eidolon_core::{clipboard_shelf::ClipboardAction, runtime::Runtime};
 use eidolon_model::{
     commands::{Command, RuntimeConfig},
     ids::RuntimeHandle,
@@ -11,6 +12,7 @@ use std::{
     os::unix::fs::{DirBuilderExt, MetadataExt},
     path::Path,
     sync::{Arc, Mutex, OnceLock},
+    time::Instant,
 };
 
 struct Entries {
@@ -20,16 +22,19 @@ struct Entries {
     termux: Option<i64>,
     companions: HashMap<u8, i64>,
 }
-pub struct Registry(Mutex<Entries>);
+pub struct Registry(Mutex<Entries>, Mutex<ClipboardUi>);
 impl Default for Registry {
     fn default() -> Self {
-        Self(Mutex::new(Entries {
-            next: Some(1),
-            runtimes: HashMap::new(),
-            primary: None,
-            termux: None,
-            companions: HashMap::new(),
-        }))
+        Self(
+            Mutex::new(Entries {
+                next: Some(1),
+                runtimes: HashMap::new(),
+                primary: None,
+                termux: None,
+                companions: HashMap::new(),
+            }),
+            Mutex::new(ClipboardUi::default()),
+        )
     }
 }
 impl Registry {
@@ -226,6 +231,10 @@ impl Registry {
             entries.companions.retain(|_, handle| *handle != id);
             if is_primary {
                 entries.primary = None;
+                self.1
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear(RuntimeHandle::new(id).expect("registered handle"), None);
             }
             Status::Accepted
         } else {
@@ -268,6 +277,38 @@ impl Registry {
             Ok(ime) => json!({"schema":1,"code":0,"ime":ime}),
             Err(status) => json!({"schema":1,"code":status as i32}),
         }
+    }
+
+    /// UI専用。カード本文はPreviewの応答以外へ渡さない。
+    pub fn clipboard_ui(&self, id: i64, command: &str) -> Value {
+        if command.len() > 2048 {
+            return clipboard_ui::error("INVALID");
+        }
+        let Ok(handle) = RuntimeHandle::new(id) else {
+            return clipboard_ui::error("STALE");
+        };
+        let Ok(action) = serde_json::from_str::<ClipboardAction>(command) else {
+            return clipboard_ui::error("INVALID");
+        };
+        let (primary, runtime) = {
+            let entries = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            if entries.primary.as_ref().map(|(id, _)| *id) != Some(id) {
+                return clipboard_ui::error("STALE");
+            }
+            let primary = entries.runtimes.get(&id).cloned();
+            let runtime = action
+                .runtime()
+                .and_then(|id| entries.runtimes.get(&id.get()).cloned());
+            (primary, runtime)
+        };
+        let mut clipboard = self.1.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(action, ClipboardAction::Clear { .. })
+            && !primary.is_some_and(|primary| primary.clipboard_scene_current(action.scene()))
+        {
+            clipboard.clear(handle, Some(action.scene()));
+            return clipboard_ui::error("STALE");
+        }
+        clipboard.perform(handle, action, runtime, Instant::now())
     }
     /// 接続ownerだけが読む。bindingはsnapshot/pollへ複製しない。
     pub fn credential_scope(&self, id: i64) -> Value {

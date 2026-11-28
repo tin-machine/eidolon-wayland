@@ -1,4 +1,9 @@
-use crate::diagnostics::{Event, Snapshot};
+use crate::{
+    clipboard_shelf::{
+        ClipboardFocus, ClipboardOperation, ClipboardReply, ClipboardRequest, ClipboardResponse,
+    },
+    diagnostics::{Event, Snapshot},
+};
 use eidolon_model::{
     commands::{Command, RuntimeConfig},
     limits,
@@ -23,6 +28,7 @@ pub(crate) struct ImeRoute {
     pub endpoint: eidolon_transport::input_method::Endpoint,
 }
 struct Shared {
+    clipboard_request: Option<ClipboardRequest>,
     ime_route_change: Option<Option<ImeRoute>>,
     // surroundingを含む。diagnostics::Snapshot/Eventへコピーしない。
     ime_ui: Option<eidolon_model::ime::ImeSnapshot>,
@@ -537,6 +543,46 @@ impl Shared {
         }
         self.snapshot.app = Some(snapshot);
     }
+    fn clipboard_focus_current(&self, focus: ClipboardFocus) -> bool {
+        let target = focus.target;
+        self.snapshot.state == RuntimeState::Ready
+            && self.snapshot.activity_visible
+            && self.snapshot.xr_state == XrState::Focused
+            && self.render_visibility.iter().all(|v| *v)
+            && self.snapshot.input_resets == focus.input_epoch
+            && self.snapshot.scene == Some(target.scene)
+            && self.snapshot.window_groups.input_allowed(target)
+            && self.snapshot.app.as_ref().is_some_and(|app| {
+                app.session == Some(target.session)
+                    && app.input.focus_window == Some(target.window)
+                    && app.input.focus_token == Some(focus.token)
+            })
+            && self.snapshot.panels.iter().any(|panel| {
+                panel.target == target
+                    && panel.action == eidolon_model::commands::PanelAction::Create
+                    && panel.applied
+                    && panel.error.is_none()
+            })
+    }
+    fn pump_clipboard(&mut self, app: Option<&mut crate::session::Session>) {
+        let Some(request) = self.clipboard_request.take() else {
+            return;
+        };
+        let result = if !self.clipboard_focus_current(request.operation.focus()) {
+            Err("STALE")
+        } else {
+            match (request.operation, app) {
+                (ClipboardOperation::Capture { focus, permit }, Some(app)) => app
+                    .capture_clipboard(focus.target.window, focus.token, permit)
+                    .map(ClipboardReply::Capturing),
+                (ClipboardOperation::Grant { focus, grant }, Some(app)) => app
+                    .grant_clipboard(focus, grant)
+                    .map(|()| ClipboardReply::Granted),
+                _ => Err("NOT_READY"),
+            }
+        };
+        let _ = request.reply.try_send(result);
+    }
     fn refresh_ime(&mut self, app: Option<&crate::session::Session>) {
         self.ime_ui = if self.snapshot.state == RuntimeState::Ready
             && self.snapshot.activity_visible
@@ -566,6 +612,7 @@ impl Shared {
         }
         if self.snapshot.error.is_none() {
             self.ime_ui = None;
+            self.clipboard_request = None;
             self.clear_credentials();
             self.snapshot.error = Some(code);
             self.snapshot.state = RuntimeState::Failed;
@@ -923,6 +970,7 @@ impl Runtime {
             render_visibility: [false; 2],
             snapshot: Snapshot::default(),
             commands: VecDeque::new(),
+            clipboard_request: None,
             events: VecDeque::new(),
             terminal: VecDeque::new(),
         }));
@@ -1835,6 +1883,7 @@ impl Runtime {
                             continue;
                         }
                         state.refresh_ime(app.as_ref());
+                        state.pump_clipboard(app.as_mut());
                         if let Some(command) = state.commands.pop_front() {
                             let mut asynchronous = false;
                             let app_busy =
@@ -3286,6 +3335,7 @@ impl Runtime {
                 state.snapshot.input_resets += 1;
                 state.snapshot.commands_cancelled += state.commands.len() as u64;
                 state.commands.clear();
+                state.clipboard_request = None;
                 state.ime_ui = None;
                 state.snapshot.state = RuntimeState::Stopped;
                 state.shutdown.finish(Instant::now());
@@ -3317,6 +3367,39 @@ impl Runtime {
     fn lock(&self) -> MutexGuard<'_, Shared> {
         self.shared.lock().unwrap_or_else(|e| e.into_inner())
     }
+    pub fn clipboard_focus_current(&self, focus: ClipboardFocus) -> bool {
+        self.lock().clipboard_focus_current(focus)
+    }
+
+    pub fn clipboard_scene_current(&self, scene: eidolon_model::ids::SceneEpoch) -> bool {
+        let state = self.lock();
+        state.snapshot.state == RuntimeState::Ready
+            && state.snapshot.scene == Some(scene)
+            && state.snapshot.activity_visible
+            && state.snapshot.xr_state == XrState::Focused
+            && state.render_visibility.iter().all(|v| *v)
+    }
+
+    pub fn request_clipboard(
+        &self,
+        operation: ClipboardOperation,
+    ) -> Result<ClipboardResponse, Status> {
+        let mut state = self.lock();
+        if state.clipboard_request.is_some() {
+            return Err(Status::Busy);
+        }
+        if !state.clipboard_focus_current(operation.focus()) {
+            return Err(Status::Stale);
+        }
+        if state.snapshot.state != RuntimeState::Ready {
+            return Err(Status::NotReady);
+        }
+        let (reply, response) = std::sync::mpsc::sync_channel(1);
+        state.clipboard_request = Some(ClipboardRequest { operation, reply });
+        self.worker.thread().unpark();
+        Ok(response)
+    }
+
     pub fn command(&self, command: Command) -> Status {
         if matches!(
             command,

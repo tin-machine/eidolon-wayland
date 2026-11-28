@@ -50,6 +50,7 @@ id_type!(
     ContentSeq,
     InputSourceId,
     CommandSeq,
+    ClipboardCardId,
     TerminalId,
     SampleSeq
 );

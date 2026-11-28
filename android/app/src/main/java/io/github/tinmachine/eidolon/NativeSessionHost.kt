@@ -1701,6 +1701,7 @@ object NativeSessionHost {
     }
     fun registerActivityOwner(): Long = inputIntents.serial {
         val old = activityScenes.activeEpoch()
+        if (old > 0) clearClipboardShelf(old)
         val owner = activityScenes.register()
         inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()
         hudTimingConfig.updateAndGet { old -> if (old and 1L == 0L) old + 2 else old + 1 }
@@ -1724,6 +1725,7 @@ object NativeSessionHost {
     }
     fun sceneClosing(owner: Long, scene: Long): Boolean = inputIntents.serial {
         if (!activityScenes.close(owner, scene)) return@serial false
+        clearClipboardShelf(scene)
         mousepadGate = MousepadAnchorGate()
         mousepadAnchorCandidate = null
         inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()
@@ -1741,6 +1743,10 @@ object NativeSessionHost {
     fun currentSceneEpoch(): Long = activityScenes.activeEpoch()
     internal fun guiLiveness(scene: Long, owner: Long) = inputIntents.serial {
         if (!activityVisible.get() || !activityScenes.owns(owner, scene) || scene <= 0) return@serial
+        if (handle > 0 && xrState.get() == "FOCUSED") {
+            val tick = JSONObject().put("type", "tick").put("scene", scene.toString())
+            NativeBridge.nativeClipboardUi(handle, tick.toString())
+        }
         val runtimes = (listOf(handle, termuxRuntime()) + additionalTermux.map { it.handle } + linuxSessions.map { it.handle })
             .distinct().filter { it > 0 }
         for (runtime in runtimes) {
@@ -1752,14 +1758,95 @@ object NativeSessionHost {
     fun setXrState(value: String, expectedScene: Long? = null, owner: Long? = null): Boolean = inputIntents.serial {
         if (owner != null && (expectedScene == null || !activityScenes.owns(owner, expectedScene))) return@serial false
         if(expectedScene!=null && expectedScene!=activityScenes.activeEpoch()) return@serial false
-        if(value!="FOCUSED") {inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()}
+        if(value!="FOCUSED") {
+            clearClipboardShelf(currentSceneEpoch())
+            inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()
+        }
         xrState.set(value);send("set_xr_state","state",value,expectedScene);true
     }
     fun setActivityVisible(value: Boolean, expectedScene: Long? = null, owner: Long? = null): Boolean = inputIntents.serial {
         if (owner != null && (expectedScene == null || !activityScenes.owns(owner, expectedScene))) return@serial false
         if(expectedScene!=null && expectedScene!=activityScenes.activeEpoch()) return@serial false
-        if(!value) {inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()}
+        if(!value) {
+            clearClipboardShelf(currentSceneEpoch())
+            inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()
+        }
         activityVisible.set(value);send("set_activity_state","visible",value,expectedScene);true
+    }
+
+    internal data class ClipboardWindow(
+        val runtime: Long,
+        val epoch: Long,
+        val token: String,
+        val target: String,
+        val label: String,
+    )
+
+    private val clipboardOriginLabels = mutableMapOf<String, String>()
+
+    private fun clipboardOriginKey(runtime: Long, target: JSONObject) =
+        listOf(runtime.toString(), target.getString("session"), target.getString("window"),
+            target.getString("scene"), target.getString("generation")).joinToString(":")
+
+    internal fun clipboardCardOrigin(runtime: Long, target: JSONObject): String = inputIntents.serial {
+        clipboardOriginLabels[clipboardOriginKey(runtime, target)] ?: "取得元の表示名は利用できません"
+    }
+
+    private fun clipboardOrigin(runtime: Long, window: String): String {
+        if (!ownsWorkspaceRuntime(runtime) || runtime <= 0) return "接続を終了した窓"
+        val termux = runtime == termuxRuntime() || additionalTermux.any { it.handle == runtime } ||
+            runtime == handle && selectedProfileId == "termux-local"
+        val host = hostName(if (termux) LauncherSource.TERMUX else LauncherSource.UBUNTU)
+        return "$host · 窓 $window"
+    }
+
+    internal fun clipboardWindow(): ClipboardWindow? {
+        val focus = keyboardFocus ?: return null
+        val target = inputTarget(focus.target, focus.runtime)?.takeIf { it.epoch == focus.epoch } ?: return null
+        val window = JSONObject(target.target).optString("window").takeIf { it.toLongOrNull() != null } ?: return null
+        return ClipboardWindow(target.runtime, target.epoch, focus.token, target.target, clipboardOrigin(target.runtime, window))
+    }
+
+    internal fun clipboardShelfRequest(type: String, card: String? = null, window: ClipboardWindow? = null): JSONObject =
+        inputIntents.serial {
+            val scene = currentSceneEpoch()
+            val runtime = handle
+            if (runtime <= 0 || scene <= 0 || !runtimeAdmission.open() || !activityVisible.get() ||
+                xrState.get() != "FOCUSED" || editing.get() || debugSdkLease.blocksProduct() ||
+                (window != null && clipboardWindow() != window)
+            ) return@serial JSONObject().put("status", "error").put("reason", "STALE")
+            val command = JSONObject().put("type", type).put("scene", scene.toString())
+            card?.let { command.put("card", it) }
+            window?.let {
+                command.put("runtime", it.runtime.toString())
+                command.put("focus", JSONObject().put("target", JSONObject(it.target))
+                    .put("token", it.token).put("input_epoch", it.epoch))
+            }
+            val response = runCatching { JSONObject(NativeBridge.nativeClipboardUi(runtime, command.toString())) }
+                .getOrElse { JSONObject().put("status", "error").put("reason", "NOT_READY") }
+            if (type == "capture" && window != null && response.optString("status") == "pending") {
+                clipboardOriginLabels[clipboardOriginKey(window.runtime, JSONObject(window.target))] = window.label
+            } else if (type == "list" && !response.optBoolean("pending")) {
+                val rows = response.optJSONArray("cards")
+                val retained = if (rows == null) emptySet() else (0 until rows.length()).mapNotNull { index ->
+                    val row = rows.optJSONObject(index) ?: return@mapNotNull null
+                    val origin = row.optString("runtime").toLongOrNull() ?: return@mapNotNull null
+                    val target = row.optJSONObject("target") ?: return@mapNotNull null
+                    clipboardOriginKey(origin, target)
+                }.toSet()
+                clipboardOriginLabels.keys.retainAll(retained)
+            } else if (type == "clear" && response.optString("status") == "ok") {
+                clipboardOriginLabels.clear()
+            }
+            response
+        }
+
+    private fun clearClipboardShelf(scene: Long) {
+        clipboardOriginLabels.clear()
+        val runtime = handle
+        if (runtime <= 0 || scene <= 0) return
+        val command = JSONObject().put("type", "clear").put("scene", scene.toString())
+        NativeBridge.nativeClipboardUi(runtime, command.toString())
     }
     private fun enqueueConnect(requested:((String,Int)->Unit)?=null,recoveryOwner:Boolean=false): String? {
         if(!runtimeAdmission.open() && !(recoveryOwner && settingsSave.active && settingsSave.operation?.runtime==handle)) {

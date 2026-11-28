@@ -507,6 +507,36 @@ impl Session {
         }
         Some(snapshot)
     }
+
+    pub fn capture_clipboard(
+        &mut self,
+        window: WindowId,
+        focus_token: eidolon_model::ids::CommandSeq,
+        permit: crate::clipboard_shelf::ClipboardPermit,
+    ) -> Result<crate::compositor::protocol::SelectionCapture, &'static str> {
+        if self.closing || !self.owns_window(window) {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .capture_selection(window, focus_token, permit)
+    }
+
+    pub fn grant_clipboard(
+        &mut self,
+        focus: crate::clipboard_shelf::ClipboardFocus,
+        grant: crate::clipboard_shelf::ClipboardGrant,
+    ) -> Result<(), &'static str> {
+        if self.closing || !self.owns_window(focus.target.window) {
+            return Err("STALE");
+        }
+        self.protocol
+            .as_mut()
+            .ok_or("NOT_READY")?
+            .grant_shelf_clipboard(focus.target.window, focus.token, grant)
+    }
+
     pub fn ime(
         &mut self,
         input_epoch: u64,
