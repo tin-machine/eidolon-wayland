@@ -1149,7 +1149,9 @@ class SpatialPanelAdapter internal constructor(
         if (next == null) {
             NativeSessionHost.focusAfterSummon(operation.ticket.control)
             reportSummon(if (operation.returning) "returned" else "summoned")
-        } else startSummon(next.input, next.group, returning = false)?.let(::reportSummon)
+        } else if (NativeSessionHost.summonInputIntent() == operation.ticket.control.intent) {
+            startSummon(next.input, next.group, returning = false)?.let(::reportSummon)
+        }
     }
 
     private fun reportSummon(result: String) {
