@@ -31,8 +31,8 @@ struct Offer {
 }
 
 enum Progress {
-    Starting(ClipOrigin, ClipboardResponse),
-    Reading(ClipOrigin, SelectionCapture),
+    Starting(ClipOrigin, ClipboardPermit, ClipboardResponse),
+    Reading(ClipOrigin, ClipboardPermit, SelectionCapture),
     Offering(Offer, ClipboardResponse),
 }
 
@@ -62,8 +62,13 @@ impl ClipboardCoordinator {
         if self.pending.is_some() {
             return Err("BUSY");
         }
+        let until = now + REQUEST_TIMEOUT;
+        let permit = ClipboardPermit::new(until);
         let response = runtime
-            .request_clipboard(ClipboardOperation::Capture(focus))
+            .request_clipboard(ClipboardOperation::Capture {
+                focus,
+                permit: permit.clone(),
+            })
             .map_err(runtime_error)?;
         self.outcome = None;
         let origin = ClipOrigin {
@@ -72,8 +77,8 @@ impl ClipboardCoordinator {
         };
         self.pending = Some(Pending {
             owner: Owner { runtime, focus },
-            until: now + REQUEST_TIMEOUT,
-            progress: Progress::Starting(origin, response),
+            until,
+            progress: Progress::Starting(origin, permit, response),
         });
         Ok(())
     }
@@ -165,8 +170,9 @@ impl ClipboardCoordinator {
     }
 
     fn cancel(&mut self, pending: Pending, error: &'static str) {
-        if let Progress::Offering(offer, _) = pending.progress {
-            offer.permit.revoke();
+        match pending.progress {
+            Progress::Starting(_, permit, _) | Progress::Reading(_, permit, _) => permit.revoke(),
+            Progress::Offering(offer, _) => offer.permit.revoke(),
         }
         self.outcome = Some(error);
     }
@@ -199,15 +205,17 @@ impl ClipboardCoordinator {
             return;
         }
         let progress = match progress {
-            Progress::Starting(origin, response) => match response.try_recv() {
-                Ok(Ok(ClipboardReply::Capturing(capture))) => Progress::Reading(origin, capture),
-                Err(TryRecvError::Empty) => Progress::Starting(origin, response),
+            Progress::Starting(origin, permit, response) => match response.try_recv() {
+                Ok(Ok(ClipboardReply::Capturing(capture))) => {
+                    Progress::Reading(origin, permit, capture)
+                }
+                Err(TryRecvError::Empty) => Progress::Starting(origin, permit, response),
                 result => {
                     self.outcome = Some(result_error(result));
                     return;
                 }
             },
-            Progress::Reading(origin, capture) => match capture.try_recv() {
+            Progress::Reading(origin, permit, capture) => match capture.try_recv() {
                 Ok(Ok(text)) => {
                     self.outcome = Some(if owner.runtime.clipboard_focus_current(owner.focus) {
                         self.shelf
@@ -219,7 +227,7 @@ impl ClipboardCoordinator {
                     });
                     return;
                 }
-                Err(TryRecvError::Empty) => Progress::Reading(origin, capture),
+                Err(TryRecvError::Empty) => Progress::Reading(origin, permit, capture),
                 result => {
                     self.outcome = Some(result_error(result));
                     return;

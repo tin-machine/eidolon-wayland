@@ -512,6 +512,7 @@ impl Session {
         &mut self,
         window: WindowId,
         focus_token: eidolon_model::ids::CommandSeq,
+        permit: crate::clipboard_shelf::ClipboardPermit,
     ) -> Result<crate::compositor::protocol::SelectionCapture, &'static str> {
         if self.closing || !self.owns_window(window) {
             return Err("STALE");
@@ -519,7 +520,7 @@ impl Session {
         self.protocol
             .as_mut()
             .ok_or("NOT_READY")?
-            .capture_selection(window, focus_token)
+            .capture_selection(window, focus_token, permit)
     }
 
     pub fn grant_clipboard(

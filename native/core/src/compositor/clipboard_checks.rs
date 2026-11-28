@@ -310,15 +310,16 @@ mod tests {
         source.step(&mut servers, ShelfStep::Copy(text.clone()));
         destination.step(&mut servers, ShelfStep::Copy(original.clone()));
         let source_focus = servers[0].protocol.input_report().focus_token.unwrap();
+        let capture_permit = || ClipboardPermit::new(Instant::now() + Duration::from_secs(5));
         assert!(
             servers[0]
                 .protocol
-                .capture_selection(second, source_focus)
+                .capture_selection(second, source_focus, capture_permit())
                 .is_err()
         );
         let capture = servers[0]
             .protocol
-            .capture_selection(first, source_focus)
+            .capture_selection(first, source_focus, capture_permit())
             .unwrap();
         let bytes = drive(&mut servers, || match capture.try_recv() {
             Ok(result) => Some(result.unwrap()),
@@ -346,7 +347,36 @@ mod tests {
         other.step(&mut servers, ShelfStep::NoOffer);
         destination.step(&mut servers, ShelfStep::Paste(text));
         permit.revoke();
-        destination.step(&mut servers, ShelfStep::Paste(original));
+        destination.step(&mut servers, ShelfStep::Paste(original.clone()));
+        let cancelled = capture_permit();
+        let capture = servers[1]
+            .protocol
+            .capture_selection(first, target_focus, cancelled.clone())
+            .unwrap();
+        cancelled.revoke();
+        assert_eq!(
+            drive(&mut servers, || capture.try_recv().ok()),
+            Err("CANCELLED")
+        );
+        let capture = servers[1]
+            .protocol
+            .capture_selection(first, target_focus, capture_permit())
+            .unwrap();
+        let reverse = drive(&mut servers, || capture.try_recv().ok()).unwrap();
+        assert_eq!(reverse, original);
+        servers[0]
+            .protocol
+            .grant_shelf_clipboard(
+                first,
+                source_focus,
+                ClipboardGrant {
+                    card: ClipboardCardId::new(2).unwrap(),
+                    text: Arc::from(std::str::from_utf8(&reverse).unwrap()),
+                    permit: capture_permit(),
+                },
+            )
+            .unwrap();
+        source.step(&mut servers, ShelfStep::Paste(original));
         source.step(&mut servers, ShelfStep::Finish);
         destination.step(&mut servers, ShelfStep::Finish);
         other.step(&mut servers, ShelfStep::Finish);

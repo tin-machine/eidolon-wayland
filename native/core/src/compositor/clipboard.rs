@@ -75,13 +75,18 @@ struct ShelfCapture {
     input: File,
     bytes: Vec<u8>,
     deadline: Instant,
+    permit: ClipboardPermit,
     complete: SyncSender<Result<Vec<u8>, &'static str>>,
 }
 
 impl ShelfCapture {
     fn poll(&mut self) -> Option<Result<Vec<u8>, &'static str>> {
-        if Instant::now() >= self.deadline {
+        let now = Instant::now();
+        if now >= self.deadline {
             return Some(Err("TIMEOUT"));
+        }
+        if !self.permit.is_live(now) {
+            return Some(Err("CANCELLED"));
         }
         let mut budget = 64 * 1024;
         while budget > 0 {
@@ -188,7 +193,11 @@ impl ProtocolState {
         &mut self,
         window: WindowId,
         focus_token: CommandSeq,
+        permit: ClipboardPermit,
     ) -> Result<SelectionCapture, &'static str> {
+        if !permit.is_live(Instant::now()) {
+            return Err("CANCELLED");
+        }
         if self.input.report.focus_window != Some(window)
             || self.input.report.focus_token != Some(focus_token)
         {
@@ -233,6 +242,7 @@ impl ProtocolState {
             input: read.into(),
             bytes: Vec::new(),
             deadline: Instant::now() + TIMEOUT,
+            permit,
             complete,
         });
         Ok(result)

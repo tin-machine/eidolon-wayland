@@ -572,8 +572,8 @@ impl Shared {
             Err("STALE")
         } else {
             match (request.operation, app) {
-                (ClipboardOperation::Capture(focus), Some(app)) => app
-                    .capture_clipboard(focus.target.window, focus.token)
+                (ClipboardOperation::Capture { focus, permit }, Some(app)) => app
+                    .capture_clipboard(focus.target.window, focus.token, permit)
                     .map(ClipboardReply::Capturing),
                 (ClipboardOperation::Grant { focus, grant }, Some(app)) => app
                     .grant_clipboard(focus, grant)

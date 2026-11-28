@@ -52,7 +52,10 @@ pub struct ClipboardGrant {
 }
 
 pub enum ClipboardOperation {
-    Capture(ClipboardFocus),
+    Capture {
+        focus: ClipboardFocus,
+        permit: ClipboardPermit,
+    },
     Grant {
         focus: ClipboardFocus,
         grant: ClipboardGrant,
@@ -62,7 +65,7 @@ pub enum ClipboardOperation {
 impl ClipboardOperation {
     pub(crate) fn focus(&self) -> ClipboardFocus {
         match self {
-            Self::Capture(focus) | Self::Grant { focus, .. } => *focus,
+            Self::Capture { focus, .. } | Self::Grant { focus, .. } => *focus,
         }
     }
 }
