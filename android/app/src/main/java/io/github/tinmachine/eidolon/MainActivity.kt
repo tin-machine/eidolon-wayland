@@ -96,12 +96,17 @@ class MainActivity : AppSystemActivity() {
             spatialContext.spatial.applyHapticFeedback(Hand.RIGHT, strength, durationNs, 110f)
             true
         }.getOrDefault(false)
-        val played = if (result == "failure") pulse(.17f, 115_000_000L) else pulse(.48f, 42_000_000L)
+        val success = result == "summoned" || result == "returned"
+        val played = if (success) pulse(.48f, 42_000_000L) else pulse(.17f, 115_000_000L)
         if (played && result == "returned") activityHandler.postDelayed({ pulse(.48f, 42_000_000L) }, 105)
-        if (!played) {
+        if (!played || !success) {
             val message = when (result) {
                 "summoned" -> "窓を呼び寄せました"
                 "returned" -> "窓を元の配置に戻しました"
+                "no_clear_position" -> "呼び寄せ先の空きが見つかりません"
+                "restoration_pending" -> "前の窓が元の配置に戻るのを待っています"
+                "busy" -> "入力や配置の操作を終えてから再試行してください"
+                "stale" -> "窓の表示が変わりました。指し直してください"
                 else -> "窓の配置を変更できませんでした"
             }
             Toast.makeText(this, message, Toast.LENGTH_SHORT).show()

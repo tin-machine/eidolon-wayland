@@ -81,6 +81,7 @@ class SpatialPanelAdapter internal constructor(
     private val summonInput = RightTouchSummonInput<SummonTarget>()
     private var summonIntent: Long? = null
     private var summoned: Summoned? = null
+    private var settlingReturn: Summoned? = null
     @Volatile private var summonGroups = emptyMap<Pair<Long, String>, SummonGroup>()
     private var summonOperation: SummonOperation? = null
     private var summonSnapshots: Map<Long, JSONObject> = emptyMap()
@@ -951,6 +952,7 @@ class SpatialPanelAdapter internal constructor(
         summonInput.invalidate()
         summonIntent = null
         summoned = null
+        settlingReturn = null
         summonGroups = emptyMap()
         summonSnapshots = emptyMap()
         finishSummon()
@@ -968,6 +970,10 @@ class SpatialPanelAdapter internal constructor(
         val sdk = runtimeScene ?: return
         if (closed || summonOperation != null || NativeSessionHost.summonInputIntent() != intent ||
             !runCatching { RightTouchSummonInput.tracked(sdk) }.getOrDefault(false)) return
+        if (settlingReturn != null) {
+            reportSummon("restoration_pending")
+            return
+        }
         val next = (action as? SummonChord.Action.Summon)?.target
         if (next != null && (next.intent != intent ||
                 NativeSessionHost.inputTarget(next.input.target, next.input.runtime) != next.input ||
@@ -986,9 +992,9 @@ class SpatialPanelAdapter internal constructor(
             (previous.input.identity == next.input.identity || previous.group != null && previous.group.id == next.group?.id)
         ) return
         if (previous != null) {
-            if (!startSummon(previous.input, previous.group, returning = true, next = next)) reportSummon("failure")
-        } else if (next != null && !startSummon(next.input, next.group, returning = false)) {
-            reportSummon("failure")
+            startSummon(previous.input, previous.group, returning = true, next = next)?.let(::reportSummon)
+        } else if (next != null) {
+            startSummon(next.input, next.group, returning = false)?.let(::reportSummon)
         }
     }
 
@@ -997,43 +1003,43 @@ class SpatialPanelAdapter internal constructor(
         group: SummonGroup?,
         returning: Boolean,
         next: SummonTarget? = null,
-    ): Boolean {
-        val current = summonBinding(input) ?: return false
-        val state = summonSnapshots[input.runtime] ?: return false
-        val actual = WindowMotionPose.fromSdk(getAbsoluteTransform(current.entity)) ?: return false
+    ): String? {
+        val current = summonBinding(input) ?: return "stale"
+        val state = summonSnapshots[input.runtime] ?: return "stale"
+        val actual = WindowMotionPose.fromSdk(getAbsoluteTransform(current.entity)) ?: return "stale"
         val members = if (group != null) {
-            val report = summonGroupReport(input.runtime, group.id) ?: return false
+            val report = summonGroupReport(input.runtime, group.id) ?: return "stale"
             if (report.optString("revision") != group.revision || report.optString("phase") != "stable" ||
-                !report.optBoolean("source_ready")) return false
+                !report.optBoolean("source_ready")) return "stale"
             val expected = report.getJSONArray("windows").length()
             bindings.values.filter { liveSummonBinding(it) && it.handle == input.runtime &&
                 (it.group as? WindowGroupPresentation.Owned)?.let { owner ->
                     owner.group == group.id && owner.revision == group.revision && owner.geometryApplied
                 } == true }
-                .takeIf { it.size == expected && current in it } ?: return false
+                .takeIf { it.size == expected && current in it } ?: return "stale"
         } else {
-            if (current.group != WindowGroupPresentation.Unowned) return false
-            val baseline = WindowRecenterWire.read(state, current.key) ?: return false
-            if (!WindowRecenterWire.applied(state, current.key, baseline.poseCommand, baseline.pose) ||
-                !actual.near(baseline.pose)) return false
+            if (current.group != WindowGroupPresentation.Unowned) return "stale"
+            val baseline = WindowRecenterWire.read(state, current.key) ?: return "stale"
+            if (!returning && (!WindowRecenterWire.applied(state, current.key, baseline.poseCommand, baseline.pose) ||
+                !actual.near(baseline.pose))) return "stale"
             listOf(current)
         }
         val action = JSONObject().put("op", if (returning) "return" else "move")
         if (!returning) {
-            val desired = chooseSummon(current, members, group) ?: return false
+            val desired = chooseSummon(current, members, group) ?: return "no_clear_position"
             action.put("pose", summonPoseJson(desired))
         }
         val revision = state.getJSONObject("render").getLong("theme_revision")
-        val ticket = NativeSessionHost.beginSummonPose(current.key, input.runtime, revision) ?: return false
+        val ticket = NativeSessionHost.beginSummonPose(current.key, input.runtime, revision) ?: return "busy"
         val request = NativeSessionHost.submitSummonPose(ticket, action, group?.json())
         if (request == null) {
             NativeSessionHost.finishWindowOperation(ticket)
-            return false
+            return "busy"
         }
         summonOperation = SummonOperation(input, ticket, request, returning, actual,
             SystemClock.elapsedRealtime() + 6000, group, next)
         wake()
-        return true
+        return null
     }
 
     private fun chooseSummon(current: Binding, members: List<Binding>, group: SummonGroup?): WindowMotionPose? {
@@ -1067,6 +1073,24 @@ class SpatialPanelAdapter internal constructor(
     }
 
     private fun observeSummon(now: Long) {
+        settlingReturn?.let { settling ->
+            val state = summonSnapshots[settling.input.runtime]
+            val key = JSONObject(settling.input.target)
+            val binding = bindings.values.singleOrNull {
+                it.handle == settling.input.runtime && sameKey(it.key, key) && !it.retire && !it.destroy && canUseSdk(it)
+            }
+            val group = settling.group?.let { summonGroupReport(settling.input.runtime, it.id) }
+            val restored = when {
+                binding == null -> true
+                settling.group != null -> group == null || group.optString("phase") == "stable"
+                state == null -> false
+                WindowRecenterWire.summoned(state, binding.key) -> false
+                else -> WindowRecenterWire.read(state, binding.key)?.let {
+                    WindowRecenterWire.applied(state, binding.key, it.poseCommand, it.pose)
+                } == true
+            }
+            if (restored) settlingReturn = null
+        }
         val operation = summonOperation ?: return
         val input = operation.target
         val current = summonBinding(input)
@@ -1103,10 +1127,16 @@ class SpatialPanelAdapter internal constructor(
             operation.group == null && !NativeSessionHost.windowOperationCurrent(operation.ticket) ||
             response != null && response != "pending" && response != "ACCEPTED" || now >= operation.deadline
         ) {
-            if (operation.group == null && !operation.returning && temporary &&
-                NativeSessionHost.windowOperationCurrent(operation.ticket)
-            ) NativeSessionHost.submitSummonPose(operation.ticket, JSONObject().put("op", "return"))
-                ?.let(NativeSessionHost::forgetPose)
+            if (current != null && (operation.group != null || operation.returning && !temporary)) {
+                settlingReturn = Summoned(input, operation.group)
+            }
+            if (operation.group == null && !operation.returning && temporary) {
+                val recovery = NativeSessionHost.submitSummonPose(operation.ticket, JSONObject().put("op", "return"))
+                if (recovery != null) {
+                    settlingReturn = Summoned(input, null)
+                    NativeSessionHost.forgetPose(recovery)
+                } else summoned = Summoned(input, null)
+            }
             finishSummon()
             reportSummon("failure")
         }
@@ -1119,7 +1149,7 @@ class SpatialPanelAdapter internal constructor(
         if (next == null) {
             NativeSessionHost.focusAfterSummon(operation.ticket.control)
             reportSummon(if (operation.returning) "returned" else "summoned")
-        } else if (!startSummon(next.input, next.group, returning = false)) reportSummon("failure")
+        } else startSummon(next.input, next.group, returning = false)?.let(::reportSummon)
     }
 
     private fun reportSummon(result: String) {
