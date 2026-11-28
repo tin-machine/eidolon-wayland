@@ -2048,12 +2048,38 @@ object NativeSessionHost {
         val request=requests.incrementAndGet().toString()
         if(!capture.submitted(identity,now,permit,request)) return@serial null
         windowOperationCompletions[request]="pending"
-        val code=NativeBridge.nativeCommand(control.runtime,JSONObject().put("schema",1).put("type","window_group")
-            .put("request_id",request).put("target",target).put("controls_revision",control.revision).put("action",capture.action)
-            .put("expected_group",permit.group ?: JSONObject.NULL).put("expected_revision",permit.revision ?: JSONObject.NULL).toString())
+        val code = enqueueWindowGroup(control.runtime, target, permit, checkNotNull(capture.action), request)
         BuildHooks.windowControlRequested("group-${capture.action}",control.runtime,control.target,control.revision,request,code)
         if(code!=NativeBridge.ACCEPTED) {windowOperationCompletions.remove(request);capture.cancel("enqueue_rejected");return@serial null}
         request
+    }
+    private fun enqueueWindowGroup(runtime: Long, target: JSONObject, permit: WindowGroupMenuPermit,
+                                   action: String, request: String): Int =
+        NativeBridge.nativeCommand(runtime, JSONObject().put("schema", 1).put("type", "window_group")
+            .put("request_id", request).put("target", target).put("controls_revision", permit.controlsRevision)
+            .put("action", action).put("expected_group", permit.group ?: JSONObject.NULL)
+            .put("expected_revision", permit.revision ?: JSONObject.NULL).toString())
+
+    internal fun showCollapsedWindow(target: InputWindowKey, beforeEnqueue: (String) -> Unit): String = inputIntents.serial {
+        if (!BuildConfig.DEBUG || target.runtime != handle || !runtimeAdmission.open() ||
+            !activityVisible.get() || xrState.get() != "FOCUSED" || editing.get() || windowOperation.get() != null ||
+            panelTextInputs.isNotEmpty() || imeRawBlocked.get() || debugSdkLease.blocksProduct()) return@serial "busy"
+        val state = JSONObject(NativeBridge.nativeUiSnapshot(handle, false)).optJSONObject("runtime")
+            ?: return@serial "runtime_unavailable"
+        val groups = state.getJSONObject("window_groups").getJSONArray("groups")
+        if (groups.length() != 1) return@serial "not_ready"
+        val group = groups.getJSONObject(0)
+        if (group.optString("layout") != "collapsed") return@serial "not_ready"
+        if (group.optString("phase") != "stable") return@serial "busy"
+        val members = group.getJSONArray("windows")
+        val rows = (0 until members.length()).map { members.getJSONObject(it) }
+        if (rows.none { WindowGroupWire.key(handle, it.getJSONObject("target")) == target }) return@serial "stale"
+        val front = rows.singleOrNull { it.optBoolean("front") }?.getJSONObject("target") ?: return@serial "not_ready"
+        val permit = WindowGroupMenuWire.capture(handle, front, state) ?: return@serial "not_ready"
+        if ("expand" !in permit.actions || resetInput() != NativeBridge.ACCEPTED) return@serial "busy"
+        val request = requests.incrementAndGet().toString()
+        beforeEnqueue(request)
+        if (enqueueWindowGroup(handle, front, permit, "expand", request) == NativeBridge.ACCEPTED) "requested" else "rejected"
     }
     fun requestSnapshot() { worker.execute { safely { publish() } } }
     fun currentHandle(): Long = handle

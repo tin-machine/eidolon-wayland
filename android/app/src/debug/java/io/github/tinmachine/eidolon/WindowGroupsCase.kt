@@ -16,13 +16,33 @@ import java.util.concurrent.atomic.AtomicLong
 object WindowGroupsCase {
     private val ids=AtomicLong(9_600_000)
     @Volatile private var active:Check?=null
-    fun start(nonce:String,adapter:SpatialPanelAdapter,scene:()->Scene,complete:(JSONObject)->Unit) {
-        check(active==null);Check(nonce,adapter,scene,complete).also {active=it;it.ui.post(it)}
+    fun start(nonce:String,adapter:SpatialPanelAdapter,scene:()->Scene,cli:Boolean,complete:(JSONObject)->Unit) {
+        check(active==null);Check(nonce,adapter,scene,cli,complete).also {active=it;it.ui.post(it)}
     }
     fun commandComplete(request:String,code:String) {active?.let {if(it.completions.containsKey(request)) it.completions[request]=code}}
-    private class Check(val nonce:String,val adapter:SpatialPanelAdapter,val scene:()->Scene,val complete:(JSONObject)->Unit):Runnable {
+    internal fun acceptsCliShow(key: InputWindowKey): Boolean = active?.cliTarget() == key
+    internal fun cliShowQueued(key: InputWindowKey, request: String) {
+        val check = active?.takeIf { it.cliTarget() == key } ?: return
+        check.completions[request] = "pending"
+        check.request = request
+        check.result.put("cli_show_requested", true)
+        check.advance("expand")
+    }
+    internal fun cliVisibilityObserved(windows: JSONArray) {
+        val check = active?.takeIf { it.cli && it.stage in setOf("expand","await_cli_visibility") } ?: return
+        val target=check.result.getJSONObject("cli_show_target")
+        if ((0 until windows.length()).any {
+                val row=windows.getJSONObject(it)
+                row.optString("id")==target.getString("id") && row.optString("generation")==target.getString("generation") &&
+                    row.optBoolean("visible")
+            }) {
+            check.result.put("cli_visibility_observed",true)
+            if (check.stage=="await_cli_visibility") check.stopFixture()
+        }
+    }
+    private class Check(val nonce:String,val adapter:SpatialPanelAdapter,val scene:()->Scene,val cli:Boolean,val complete:(JSONObject)->Unit):Runnable {
         val ui=Handler(Looper.getMainLooper());val completions=ConcurrentHashMap<String,String>()
-        val result=JSONObject().put("case","window-groups").put("nonce",nonce).put("fixture_revision","window-groups-v1-twofoot")
+        val result=JSONObject().put("case",if (cli) "window-groups-cli" else "window-groups").put("nonce",nonce).put("fixture_revision","window-groups-v2-twofoot")
             .put("result","running").put("scope","fixed_native_sdk_group").put("consumer","SDK")
             .put("normal_menu_verified",false).put("physical_input_verified",false).put("hmd_verified",false).put("text_verified",false)
             .put("raycast","Scene.lineSegmentIntersect").put("single_wayland_client",true)
@@ -34,6 +54,12 @@ object WindowGroupsCase {
         val motion=JSONArray();var priorMotion:Vector3?=null
         var hiddenStart=0L;var backClock=0L;var backFrames=0L;var frontClock=0L
         var done=false
+        fun cliTarget(): InputWindowKey? =
+            if (cli && stage=="await_cli_show") WindowGroupWire.key(handle, firstKey) else null
+        fun stopFixture() {
+            NativeSessionHost.withStoppedRuntime({},{})
+            advance("stopped",30000)
+        }
         fun rows(value:JSONArray)=(0 until value.length()).map {value.getJSONObject(it)}
         fun windows(s:JSONObject)=s.optJSONObject("app")?.optJSONArray("windows")?.let(::rows) ?: emptyList()
         fun same(a:JSONObject,b:JSONObject)=listOf("session","window","scene","generation").all {a.opt(it)==b.opt(it)}
@@ -104,6 +130,15 @@ object WindowGroupsCase {
             for((window,pose) in saved)check(PanelPoseCodec.near(workspace(s,window).getJSONObject("pose"),pose)) {"GROUP_PREVIEW_PERSISTED"}
             for((window,size) in sizes)check(windows(s).single {it.getString("window")==window}.getJSONObject("sizing").getJSONObject("physical_size_m").toString()==size.toString()) {"GROUP_SIZE_CHANGED"}
         }
+        fun startCollapse(s: JSONObject, now: Long) {
+            for (window in listOf(first, second)) {
+                saved[window]=JSONObject(workspace(s,window).getJSONObject("pose").toString())
+                sizes[window]=JSONObject(windows(s).single {it.getString("window")==window}.getJSONObject("sizing").getJSONObject("physical_size_m").toString())
+            }
+            baseKeys=input(s).getLong("delivered");baseButtons=input(s).getJSONObject("pointer").getLong("buttons")
+            check(input(s).getInt("pressed")==0 && input(s).getJSONObject("pointer").getInt("pressed")==0)
+            record("two_ready",s);request=action(s,"collapse",firstKey);collapseStarted=now;advance("collapse")
+        }
         fun nearHit(window:String):com.meta.spatial.runtime.HitInfo? {
             val entity=adapter.windowEntity(window) ?: return null;val pose=getAbsoluteTransform(entity)
             val x=0f;val y=0f
@@ -173,14 +208,22 @@ object WindowGroupsCase {
                     "two" -> if(ready(s,2)) {
                         second=windows(s).single {it.getString("window")!=first}.getString("window");secondKey=JSONObject(checkNotNull(sdk(second)).getJSONObject("target").toString())
                         revision=s.getJSONObject("render").getLong("theme_revision")
-                        for(window in listOf(first,second)) {
-                            saved[window]=JSONObject(workspace(s,window).getJSONObject("pose").toString())
-                            sizes[window]=JSONObject(windows(s).single {it.getString("window")==window}.getJSONObject("sizing").getJSONObject("physical_size_m").toString())
+                        val firstRotation = workspace(s, first).getJSONObject("pose").getJSONArray("rotation_xyzw")
+                        val secondPose = JSONObject(workspace(s, second).getJSONObject("pose").toString())
+                        if (secondPose.getJSONArray("rotation_xyzw").toString() != firstRotation.toString()) {
+                            secondPose.put("rotation_xyzw", firstRotation)
+                            request=command("set_pose", secondKey, JSONObject().put("pose", secondPose))
+                            advance("align")
+                        } else startCollapse(s, now)
+                    }
+                    "align" -> if (completions[request]=="ACCEPTED" && ready(s,2)) {
+                        val placement=workspace(s, second)
+                        val actual=placement.getJSONObject("pose")
+                        val rotation=workspace(s, first).getJSONObject("pose").getJSONArray("rotation_xyzw")
+                        val expected=JSONObject(actual.toString()).put("rotation_xyzw",rotation)
+                        if (placement.optString("pose_command")==request && PanelPoseCodec.near(actual,expected)) {
+                            startCollapse(s, now)
                         }
-                        check(saved[first]!!.getJSONArray("rotation_xyzw").toString()==saved[second]!!.getJSONArray("rotation_xyzw").toString()) {"GROUP_ROTATION_PRECONDITION"}
-                        baseKeys=input(s).getLong("delivered");baseButtons=input(s).getJSONObject("pointer").getLong("buttons")
-                        check(input(s).getInt("pressed")==0 && input(s).getJSONObject("pointer").getInt("pressed")==0)
-                        record("two_ready",s);request=action(s,"collapse",firstKey);collapseStarted=now;advance("collapse")
                     }
                     "collapse" -> {
                         unchanged(s);moving(s)
@@ -218,7 +261,15 @@ object WindowGroupsCase {
                         if(collapsed(s,second,first)) {
                             check(input(s).getInt("pressed")==0 && input(s).getLong("delivered")==baseKeys+2 && s.getLong("input_resets")>heldEpoch) {"GROUP_HELD_KEY_NOT_RELEASED"}
                             result.put("front_switched",true).put("held_key_released",true);record("next_front",s)
-                            request=action(s,"expand",secondKey);advance("expand")
+                            if (cli) {
+                                val key=WindowGroupWire.key(handle, firstKey)
+                                result.put("cli_show_target", JSONObject()
+                                    .put("id",listOf(key.runtime,key.session,key.window,key.scene).joinToString(":"))
+                                    .put("generation",key.generation))
+                                advance("await_cli_show",30000)
+                            } else {
+                                request=action(s,"expand",secondKey);advance("expand")
+                            }
                         }
                     }
                     "expand" -> if(rows(s.getJSONObject("window_groups").getJSONArray("groups")).isEmpty() && completeAction(s,"expanded") && ready(s,2)) {
@@ -230,7 +281,8 @@ object WindowGroupsCase {
                             check(native(s,window)?.optString("content_frame")?.toLongOrNull()?.let {it>=windows(s).single {row->row.getString("window")==window}.getString("frame").toLong()}==true)
                         }
                         result.put("expanded_originals",true).put("latest_frames_resumed",true);record("expanded",s)
-                        NativeSessionHost.withStoppedRuntime({},{});advance("stopped",30000)
+                        if (cli && !result.optBoolean("cli_visibility_observed")) advance("await_cli_visibility",16000)
+                        else stopFixture()
                     }
                     "stopped" -> if(current>handle && s.optString("state")=="Ready" && s.optBoolean("activity_visible") && s.optString("xr_state")=="FOCUSED" &&
                         s.getJSONObject("transport").getString("state")=="Idle" && rows(s.getJSONObject("render").getJSONArray("targets")).let {it.size==1 && it.single().optString("role")=="diagnostic" && it.single().getLong("frames")>=3}) {

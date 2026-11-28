@@ -137,6 +137,25 @@ Java/Kotlinの例外だけでなくnative crashやsystem側の情報も残し、
 
 停止には`adb -s "$quest_serial" shell am force-stop "$eidolon_app"`を使う。画像・状態・ログの採取を終えてから実行する。
 
+### eidolonctl でウィンドウを確認・表示する
+
+Quest 上で起動した debug APK に、承認済みの ADB 接続から問い合わせる。
+`window list` は各ウィンドウの ID、表示の世代、論理サイズ、表示状態を返す。
+表示世代が割り当てられる前は `generation` が `null` になる。
+
+```bash
+scripts/eidolonctl --serial "$quest_serial" window list --json
+scripts/eidolonctl --serial "$quest_serial" window show "$window_id" --generation "$generation"
+```
+
+`window_id` と `generation` には直前の一覧から対象の値を指定する。
+`show` は、主セッションで折りたたまれたウィンドウグループを既存の展開操作で表示する。
+要求後に同じ ID と世代が表示されたことを確認して `shown` を返す。
+最初から表示されている場合は `already_visible` を返す。
+世代が変わった場合は再度一覧を取得する。ADB が PATH にない場合は `--adb` で実行ファイルを指定できる。
+
+操作の受信口は debug APK の `android.permission.DUMP` で保護された明示的な BroadcastReceiver に限る。
+
 ### ファイル転送とUID境界
 
 `adb push`／`adb pull`で許可された共有領域へテストデータを送り、ログ・画像等を回収できる。**APKはファイルをコピーしただけではインストールされず、`adb install`等が必要**である。
