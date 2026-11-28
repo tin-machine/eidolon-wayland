@@ -12,6 +12,7 @@ use std::time::Duration;
 
 pub const ANIMATION: Duration = Duration::from_millis(500);
 const SETTLE_LIMIT: Duration = Duration::from_secs(5);
+const SUMMON_ANIMATION: Duration = Duration::from_millis(300);
 
 /// app_id/title/PIDからの推測は受け付けない。runtimeは検証済みlaunch相関からだけ構築する。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -128,6 +129,21 @@ struct Transition {
     started: Duration,
     duration: Duration,
     acknowledged: Vec<WindowId>,
+    summon: Option<SummonTransform>,
+    rigid: Option<RigidMotion>,
+}
+
+#[derive(Clone, Copy)]
+struct SummonTransform {
+    reference: PanelPose,
+    destination: PanelPose,
+}
+
+#[derive(Clone, Copy)]
+struct RigidMotion {
+    start: PanelPose,
+    end: PanelPose,
+    reference: PanelPose,
 }
 
 #[derive(Clone)]
@@ -143,6 +159,7 @@ pub struct Group {
     last_cancel: Option<&'static str>,
     revision: i64,
     blocked: bool,
+    summon: Option<SummonTransform>,
 }
 impl Group {
     pub fn new(
@@ -184,6 +201,7 @@ impl Group {
             last_cancel: None,
             revision: 0,
             blocked: false,
+            summon: None,
         })
     }
     /// 再構成したmemberへ最後の確定layoutを渡す。callerは別group_idを発行し、旧ACKを拒否する。
@@ -246,6 +264,12 @@ impl Group {
     }
     pub fn stable_layout(&self) -> Layout {
         self.stable
+    }
+    pub fn summoned(&self) -> bool {
+        self.summon.is_some()
+    }
+    pub fn summon_active(&self) -> bool {
+        self.summoned() || self.transition.as_ref().is_some_and(|t| t.rigid.is_some())
     }
     pub fn request(&self) -> Option<CommandSeq> {
         self.transition.as_ref().and_then(|t| t.request)
@@ -323,6 +347,19 @@ impl Group {
                     .clamp(0., 1.)
             };
             let eased = (u * u * (3. - 2. * u)) as f32;
+            if let Some(rigid) = t.rigid {
+                if u >= 1. {
+                    return Ok(t.goals.clone());
+                }
+                let destination = interpolate(rigid.start, rigid.end, eased)?;
+                return transform_poses(
+                    self.poses(self.stable, self.front, self.anchor)?,
+                    SummonTransform {
+                        reference: rigid.reference,
+                        destination,
+                    },
+                );
+            }
             t.starts
                 .iter()
                 .zip(&t.goals)
@@ -334,7 +371,11 @@ impl Group {
                 })
                 .collect()
         } else {
-            self.poses(self.stable, self.front, self.anchor)
+            let poses = self.poses(self.stable, self.front, self.anchor)?;
+            match self.summon {
+                Some(transform) => transform_poses(poses, transform),
+                None => Ok(poses),
+            }
         }
     }
     fn start(
@@ -375,6 +416,8 @@ impl Group {
             started: now,
             duration: if reduced { Duration::ZERO } else { ANIMATION },
             acknowledged: Vec::new(),
+            summon: None,
+            rigid: None,
         });
         Ok(())
     }
@@ -390,7 +433,10 @@ impl Group {
     ) -> Result<(), Error> {
         self.time(now)?;
         self.target(front)?;
-        if external_operation_active || self.members.iter().any(|m| m.locked || m.operation_active)
+        if self.summon.is_some()
+            || self.transition.as_ref().is_some_and(|t| t.rigid.is_some())
+            || external_operation_active
+            || self.members.iter().any(|m| m.locked || m.operation_active)
         {
             return Err(Error::Busy);
         }
@@ -417,6 +463,90 @@ impl Group {
             reduced,
         )
     }
+    pub fn summon(
+        &mut self,
+        request: CommandSeq,
+        target: TargetKey,
+        destination: Option<PanelPose>,
+        now: Duration,
+        reduced: bool,
+    ) -> Result<(), Error> {
+        self.time(now)?;
+        self.target(target)?;
+        if self.blocked || self.transition.is_some() {
+            return Err(Error::Busy);
+        }
+        if request.get() <= self.last_request {
+            return Err(Error::Stale);
+        }
+        let starts = self.observed_poses(now)?;
+        let base = self.poses(self.stable, self.front, self.anchor)?;
+        let (transform, rigid, goals) = match (self.summon, destination) {
+            (None, Some(destination)) if destination.valid() => {
+                let reference = base
+                    .iter()
+                    .find(|(window, _)| *window == target.window)
+                    .ok_or(Error::Stale)?
+                    .1;
+                let transform = SummonTransform {
+                    reference,
+                    destination,
+                };
+                let motion = RigidMotion {
+                    start: reference,
+                    end: destination,
+                    reference,
+                };
+                (
+                    Some(transform),
+                    motion,
+                    transform_poses(base.clone(), transform)?,
+                )
+            }
+            (Some(transform), None) => {
+                let motion = RigidMotion {
+                    start: transform.destination,
+                    end: transform.reference,
+                    reference: transform.reference,
+                };
+                (None, motion, base.clone())
+            }
+            _ => return Err(Error::InvalidMember),
+        };
+        // Reject unsafe intermediate placements before transferring the group owner.
+        for step in 1..16 {
+            transform_poses(
+                base.clone(),
+                SummonTransform {
+                    reference: rigid.reference,
+                    destination: interpolate(rigid.start, rigid.end, step as f32 / 16.)?,
+                },
+            )?;
+        }
+        let revision = self.revision.checked_add(1).ok_or(Error::IdExhausted)?;
+        self.last_request = request.get();
+        self.revision = revision;
+        self.last_cancel = None;
+        self.transition = Some(Transition {
+            request: Some(request),
+            revision,
+            goal: self.stable,
+            front: self.front,
+            anchor: self.anchor,
+            starts,
+            goals,
+            started: now,
+            duration: if reduced {
+                Duration::ZERO
+            } else {
+                SUMMON_ANIMATION
+            },
+            acknowledged: Vec::new(),
+            summon: transform,
+            rigid: Some(rigid),
+        });
+        Ok(())
+    }
     pub fn sample(&mut self, now: Duration) -> Result<Vec<Presentation>, Error> {
         self.time(now)?;
         if self
@@ -436,7 +566,13 @@ impl Group {
                 self.cancel("geometry_timeout")?;
             }
         }
-        let poses = self.observed_poses(now)?;
+        let poses = match self.observed_poses(now) {
+            Err(Error::Bounds) if self.transition.as_ref().is_some_and(|t| t.rigid.is_some()) => {
+                self.cancel("summon_bounds")?;
+                self.observed_poses(now)?
+            }
+            other => other?,
+        };
         let moving = self.transition.is_some() || self.blocked;
         let layout = self.transition.as_ref().map_or(self.stable, |t| t.goal);
         let front = self.transition.as_ref().map_or(self.front, |t| t.front);
@@ -502,6 +638,7 @@ impl Group {
         self.stable = t.goal;
         self.front = t.front;
         self.anchor = t.anchor;
+        self.summon = t.summon;
         Ok(true)
     }
     /// 呼出元はwindow closeとBoard drainを別途行う。ここではleaseを解放しない。
@@ -636,6 +773,7 @@ impl Group {
         }
         let revision = self.revision.checked_add(1).ok_or(Error::IdExhausted)?;
         let goals = self.poses(self.stable, self.front, self.anchor)?;
+        self.summon = None;
         self.revision = revision;
         self.last_cancel = Some(reason);
         self.transition = Some(Transition {
@@ -649,9 +787,43 @@ impl Group {
             started: self.last_now,
             duration: Duration::ZERO,
             acknowledged: Vec::new(),
+            summon: None,
+            rigid: None,
         });
         Ok(())
     }
+}
+
+fn transform_poses(
+    poses: Vec<(WindowId, PanelPose)>,
+    transform: SummonTransform,
+) -> Result<Vec<(WindowId, PanelPose)>, Error> {
+    let [x, y, z, w] = transform.reference.rotation_xyzw;
+    let rotation = multiply(transform.destination.rotation_xyzw, [-x, -y, -z, w]);
+    poses
+        .into_iter()
+        .map(|(window, pose)| {
+            if pose == transform.reference {
+                return Ok((window, transform.destination));
+            }
+            let relative =
+                std::array::from_fn(|i| pose.position_m[i] - transform.reference.position_m[i]);
+            let offset = rotate(rotation, relative);
+            let q = multiply(rotation, pose.rotation_xyzw);
+            let norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let moved = PanelPose {
+                position_m: std::array::from_fn(|i| {
+                    transform.destination.position_m[i] + offset[i]
+                }),
+                rotation_xyzw: q.map(|x| x / norm),
+            };
+            if moved.valid() {
+                Ok((window, moved))
+            } else {
+                Err(Error::Bounds)
+            }
+        })
+        .collect()
 }
 
 fn interpolate(a: PanelPose, b: PanelPose, t: f32) -> Result<PanelPose, Error> {

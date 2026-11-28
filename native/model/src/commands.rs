@@ -6,6 +6,13 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SummonGroupTarget {
+    pub id: CommandSeq,
+    pub revision: CommandSeq,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
@@ -438,6 +445,15 @@ pub enum Command {
         pose: crate::workspace::PanelPose,
         controls_revision: u64,
     },
+    SummonPoseControl {
+        schema: u32,
+        request_id: CommandSeq,
+        target: crate::surface::TargetKey,
+        controls_revision: u64,
+        action: crate::workspace::SummonPoseAction,
+        #[serde(default)]
+        group: Option<SummonGroupTarget>,
+    },
     WindowGroup {
         schema: u32,
         request_id: CommandSeq,
@@ -832,6 +848,7 @@ impl Command {
             | Self::SetPose { schema, .. }
             | Self::SetInitialDialogPose { schema, .. }
             | Self::SetPoseControl { schema, .. }
+            | Self::SummonPoseControl { schema, .. }
             | Self::WindowGroup { schema, .. }
             | Self::WindowGroupApplied { schema, .. }
             | Self::PoseApplied { schema, .. }
@@ -989,6 +1006,10 @@ impl Command {
             Self::SetPose { pose, .. }
             | Self::SetInitialDialogPose { pose, .. }
             | Self::SetPoseControl { pose, .. }
+            | Self::SummonPoseControl {
+                action: crate::workspace::SummonPoseAction::Move { pose },
+                ..
+            }
             | Self::WindowGroupApplied { pose, .. }
             | Self::PoseApplied { pose, .. }
                 if !pose.valid() =>
@@ -1047,6 +1068,7 @@ impl Command {
             | Self::SetPose { request_id, .. }
             | Self::SetInitialDialogPose { request_id, .. }
             | Self::SetPoseControl { request_id, .. }
+            | Self::SummonPoseControl { request_id, .. }
             | Self::WindowGroup { request_id, .. }
             | Self::WindowGroupApplied { request_id, .. }
             | Self::PoseApplied { request_id, .. }
@@ -1114,6 +1136,7 @@ impl Command {
                 | Self::SetImeBackend { .. }
                 | Self::SetPose { .. }
                 | Self::SetPoseControl { .. }
+                | Self::SummonPoseControl { .. }
                 | Self::WindowGroup { .. }
                 | Self::SetPhysicalSizeControl { .. }
                 | Self::SetKeyboardLayout { .. }

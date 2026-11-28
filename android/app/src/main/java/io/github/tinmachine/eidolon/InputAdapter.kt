@@ -54,6 +54,7 @@ internal class PointerButtons {
 
 /** SDKから小DTOだけを渡す。描画済み製品target以外は入力を消費しない。 */
 class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=null, private val editSource: (Entity,Int,Int)->Unit = { _, _, _ -> }) : InputListener {
+    @Volatile internal var summonInput: ((Entity, Int, Int, NativeSessionHost.InputTarget, Boolean) -> Boolean)? = null
     @Volatile private var suppressed=false
     fun setSuppressed(value: Boolean) { if(suppressed!=value) {suppressed=value;capture=null;synchronized(inputLock) {clearLocal()} } }
     private val ui = Handler(Looper.getMainLooper())
@@ -166,8 +167,10 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
         }
         val ticket=inputTarget(target) ?: return false
         if (changed and (ButtonBits.ButtonMenu or ButtonBits.ButtonSystem)!=0) { NativeSessionHost.resetInput();return false }
-        val maskChanged=buttons(changed); val maskState=buttons(state)
         val position=uv(receiver,hitInfo)
+        val consumeB=summonInput?.invoke(sourceOfInput, changed, state, ticket, position!=null)==true
+        val excluded=if(consumeB) ButtonBits.ButtonB else 0
+        val maskChanged=buttons(changed and excluded.inv()); val maskState=buttons(state and excluded.inv())
         val request = NativeSessionHost.nextPointerRequest()
         val (button, scrolling)=synchronized(inputLock) {
             val local=source(ticket,sourceOfInput.id) ?: return false

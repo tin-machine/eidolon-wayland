@@ -144,6 +144,21 @@ internal fun ControlPanel(
                     Text(if(theme.reduced) "アニメーションを有効に" else "動きを抑える")
                 }
             }
+            val summon = NativeSessionHost.summonPreferences.value
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp), verticalAlignment=Alignment.CenterVertically) {
+                Text("呼び寄せ距離 ${summon.distanceCm} cm", color=Color.White)
+                val closer = summon.copy(distanceCm = summon.distanceCm - 5)
+                val farther = summon.copy(distanceCm = summon.distanceCm + 5)
+                TextButton(enabled = closer.valid, onClick = { NativeSessionHost.setSummonPreferences(closer) }) { Text("近く") }
+                TextButton(enabled = farther.valid, onClick = { NativeSessionHost.setSummonPreferences(farther) }) { Text("遠く") }
+            }
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp), verticalAlignment=Alignment.CenterVertically) {
+                Text("目線より ${summon.belowEyeCm} cm 下", color=Color.White)
+                val higher = summon.copy(belowEyeCm = summon.belowEyeCm - 2)
+                val lower = summon.copy(belowEyeCm = summon.belowEyeCm + 2)
+                TextButton(enabled = higher.valid, onClick = { NativeSessionHost.setSummonPreferences(higher) }) { Text("上へ") }
+                TextButton(enabled = lower.valid, onClick = { NativeSessionHost.setSummonPreferences(lower) }) { Text("下へ") }
+            }
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                 Button(onClick={NativeSessionHost.setBackground("passthrough")}) { Text("現実を背景に") }
                 Button(onClick={NativeSessionHost.setBackground("virtual")}) { Text("単色の背景に") }

@@ -13,9 +13,11 @@ object WindowRecenterWire {
         if(array==null || array.length()>9) return null
         return (0 until array.length()).mapNotNull {array.optJSONObject(it)}.singleOrNull(matches)
     }
-    fun placement(state:JSONObject,target:JSONObject):JSONObject?=row(state.optJSONObject("workspace")?.optJSONArray("windows")) {
+    private fun workspaceWindow(state:JSONObject,target:JSONObject):JSONObject?=row(state.optJSONObject("workspace")?.optJSONArray("windows")) {
         it.opt("session")==target.opt("session") && it.opt("window")==target.opt("window")
-    }?.optJSONObject("placement")
+    }
+    fun placement(state:JSONObject,target:JSONObject):JSONObject?=workspaceWindow(state,target)?.optJSONObject("placement")
+    fun summoned(state:JSONObject,target:JSONObject):Boolean=workspaceWindow(state,target)?.optBoolean("summoned")==true
     fun read(state:JSONObject,target:JSONObject):WindowRecenterGeometry?=runCatching {
         val app=state.getJSONObject("app");check(app.opt("session")==target.opt("session"))
         val window=checkNotNull(row(app.optJSONArray("windows")) {it.opt("window")==target.opt("window") && it.optString("life")=="Mapped"})

@@ -44,6 +44,14 @@ object NativeSessionHost {
     internal data class ThemeUi(val selection: String = "off", val reduced: Boolean = false, val imported: Boolean = false,
         val loading: Boolean = false, val message: String = "装飾なし", internal val importedHud: HudTheme? = null)
     internal val themeUi = mutableStateOf(ThemeUi())
+    internal val summonPreferences = mutableStateOf(SummonPreferences())
+    private var summonStorage: android.content.SharedPreferences? = null
+    internal fun setSummonPreferences(value: SummonPreferences) {
+        if (!value.valid) return
+        val storage = summonStorage ?: return
+        storage.edit().putInt("distance_cm", value.distanceCm).putInt("below_eye_cm", value.belowEyeCm).apply()
+        summonPreferences.value = value
+    }
     private var importedHudJson: String? = null
     private var importedHud: HudTheme? = null
     private val themeRequests = linkedMapOf<String, (String) -> Unit>()
@@ -1645,6 +1653,13 @@ object NativeSessionHost {
 
     fun initialize(context: Context) {
         val application = context.applicationContext
+        if (summonStorage == null) {
+            val storage = application.getSharedPreferences("summon_preferences", Context.MODE_PRIVATE)
+            val values = storage.all
+            summonPreferences.value = SummonPreferences(values["distance_cm"] as? Int ?: 100,
+                values["below_eye_cm"] as? Int ?: 12).takeIf { it.valid } ?: SummonPreferences()
+            summonStorage = storage
+        }
         if (guiSessionPolicyStore == null) {
             val preferences = application.getSharedPreferences("gui_session_policy", Context.MODE_PRIVATE)
             guiSessionPolicyStore = GuiSessionPolicyStore.fromPreferences(preferences)
@@ -2208,6 +2223,67 @@ object NativeSessionHost {
     }
     internal fun forgetWindowGroupGeometry(request:String) {groupGeometryCompletions.remove(request)}
     internal fun windowGroupGeometryPending()=groupGeometryCompletions.size
+
+    internal fun beginSummonPose(target: JSONObject, runtime: Long, revision: Long): WindowOperationTicket? =
+        inputIntents.serial {
+            if (summonInputIntent() == null) return@serial null
+            val body = runCatching { JSONObject(NativeBridge.nativeUiSnapshot(runtime, false)).getJSONObject("runtime") }.getOrNull()
+                ?: return@serial null
+            val pointer = body.optJSONObject("app")?.optJSONObject("input")?.optJSONObject("pointer")
+            if (pointer == null || pointer.optInt("pressed", -1) != 0 || pointer.optBoolean("popup_grab", true) ||
+                body.getJSONObject("render").optLong("theme_revision", -1) != revision) {
+                return@serial null
+            }
+            val control = beginWindowControl(target, runtime, revision) ?: return@serial null
+            val operation = WindowOperationTicket(control, 0L, "summon")
+            if (!windowOperation.compareAndSet(null, operation)) return@serial null
+            RuntimeUiChanges.invalidate()
+            operation
+        }
+
+    internal fun summonInputIntent(): Long? = inputIntents.serial {
+        inputIntents.get().takeIf {
+            runtimeAdmission.open() && activityVisible.get() && xrState.get() == "FOCUSED" && !editing.get() &&
+                !debugSdkLease.blocksProduct() && !spatialShelfOpen && !launcherExpanded.value &&
+                windowOperation.get() == null && panelTextInputs.isEmpty() && !imeRawBlocked.get()
+        }
+    }
+
+    internal fun submitSummonPose(ticket: WindowOperationTicket, action: JSONObject, group: JSONObject? = null): String? = inputIntents.serial {
+        if (ticket.kind !in setOf("summon", "menu") || !windowOperationCurrent(ticket) || poseCompletions.size>=16 ||
+            ticket.kind == "menu" && (action.optString("op") != "keep" || group != null)) return@serial null
+        val request = requests.incrementAndGet().toString()
+        poseCompletions.start(request, ticket.control.runtime)
+        val command = JSONObject().put("schema", 1).put("type", "summon_pose_control").put("request_id", request)
+            .put("target", JSONObject(ticket.control.target)).put("controls_revision", ticket.control.revision).put("action", action)
+            .put("group", group ?: JSONObject.NULL)
+        if (NativeBridge.nativeCommand(ticket.control.runtime, command.toString()) == NativeBridge.ACCEPTED) request
+        else {
+            poseCompletions.remove(request)
+            null
+        }
+    }
+
+    internal fun focusAfterSummon(control: WindowControlTicket) = inputIntents.serial {
+        if (summonInputIntent() != control.intent || !ownsWorkspaceRuntime(control.runtime)) return@serial
+        val target = JSONObject(control.target)
+        val state = runCatching { JSONObject(NativeBridge.nativeUiSnapshot(control.runtime, false)).getJSONObject("runtime") }
+            .getOrNull() ?: return@serial
+        if (state.getJSONObject("render").optLong("theme_revision", -1) != control.revision ||
+            !WindowGroupWire.decode(control.runtime, state.optJSONObject("window_groups"))
+                .allows(WindowGroupWire.key(control.runtime, target))
+        ) return@serial
+        val code = NativeBridge.nativeCommand(control.runtime, JSONObject().put("schema", 1)
+            .put("type", "focus_window_control").put("request_id", requests.incrementAndGet().toString())
+            .put("target", target).put("input_epoch", state.getLong("input_resets"))
+            .put("controls_revision", control.revision).toString())
+        if (code == NativeBridge.ACCEPTED) {
+            keyboardFocus = null
+            keyboardOwnerRuntime = control.runtime
+            if (control.runtime == handle) selectedWindow = target.getString("session") to target.getString("window")
+        }
+    }
+
     fun inputTarget(target: String, runtime: Long = handle): InputTarget? {
         if (!runtimeAdmission.open() || debugSdkLease.blocksProduct() || editing.get() || !activityVisible.get() || xrState.get()!="FOCUSED" || movingTarget(target, runtime)) return null
         val key=JSONObject(target)

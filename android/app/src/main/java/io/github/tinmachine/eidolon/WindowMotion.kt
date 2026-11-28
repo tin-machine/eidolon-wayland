@@ -1,7 +1,9 @@
 package io.github.tinmachine.eidolon
 
 import com.meta.spatial.core.Vector3
+import kotlin.math.acos
 import kotlin.math.abs
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /** Immutable rigid poses. Quaternion order is xyzw; no SDK/Android object enters the capture model. */
@@ -17,6 +19,30 @@ data class WindowMotionPose(val p: List<Double>,val q: List<Double>) {
     }
     fun near(other:WindowMotionPose,epsilon:Double=.0001)=valid() && other.valid() && p.zip(other.p).all {(a,b)->abs(a-b)<=epsilon} &&
         listOf(1.0,-1.0).any {sign -> q.zip(other.q).all {(a,b)->abs(a-sign*b)<=epsilon}}
+
+    fun interpolate(to: WindowMotionPose, fraction: Double): WindowMotionPose {
+        require(valid() && to.valid() && fraction in 0.0..1.0)
+        if (fraction == 0.0) return this
+        if (fraction == 1.0) return to
+        val signedDot = q.indices.sumOf { q[it] * to.q[it] }
+        val sameHemisphere = if (signedDot < 0) to.q.map { -it } else to.q
+        val dot = abs(signedDot).coerceAtMost(1.0)
+        val rotation = if (dot > .9995) {
+            q.indices.map { q[it] + fraction * (sameHemisphere[it] - q[it]) }
+        } else {
+            val angle = acos(dot)
+            val sine = sin(angle)
+            val start = sin((1 - fraction) * angle) / sine
+            val end = sin(fraction * angle) / sine
+            q.indices.map { start * q[it] + end * sameHemisphere[it] }
+        }
+        val norm = sqrt(rotation.sumOf { it * it })
+        return WindowMotionPose(
+            p.indices.map { p[it] + fraction * (to.p[it] - p[it]) },
+            rotation.map { it / norm },
+        )
+    }
+
     companion object {
         fun fromSdk(pose: com.meta.spatial.core.Pose):WindowMotionPose? {
             val q=listOf(pose.q.x.toDouble(),pose.q.y.toDouble(),pose.q.z.toDouble(),pose.q.w.toDouble())

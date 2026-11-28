@@ -23,6 +23,7 @@ pub struct PointerReport {
     pub capture_window: Option<WindowId>,
     pub capture_surface: Option<SurfaceId>,
     pub pressed: u32,
+    pub popup_grab: bool,
     pub motions: u64,
     pub buttons: u64,
     /// Actual pointer.button forwarded for a live surface, excluding reset releases.
@@ -82,6 +83,7 @@ impl ProtocolState {
         report.capture_window = state.tracker.capture().map(|hit| hit.window);
         report.capture_surface = state.tracker.capture().map(|hit| hit.surface);
         report.pressed = state.tracker.pressed();
+        report.popup_grab = !self.popup_grabs.is_empty();
         report
     }
     fn pointer_surface(&self, id: SurfaceId) -> Option<WlSurface> {
