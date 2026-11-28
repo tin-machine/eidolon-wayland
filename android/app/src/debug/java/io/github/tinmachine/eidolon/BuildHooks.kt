@@ -17,7 +17,7 @@ object BuildHooks {
     fun imeProductProbeAllowed():Boolean=!running
     fun registerMeshes(activity: com.meta.spatial.toolkit.AppSystemActivity) = ThemeInputCandidates.register(activity)
     fun additionalPanels() = ThemeSurfaceProbe.registrations() + ImeProbe.registrations()
-    fun sceneClosing() { ImeProbe.sceneClosing(); ThemeSurfaceProbe.sceneClosing() }
+    fun sceneClosing() { EidolonCtlReceiver.adapter = null; ImeProbe.sceneClosing(); ThemeSurfaceProbe.sceneClosing() }
     fun imeProbeActivity(activity: android.app.Activity) { ImeProbe.activity(activity) }
     fun imeProbeActive(): Boolean = ImeProbe.isActive()
     fun imeProbePhysicalKey() = ImeProbe.physicalKey()
@@ -41,6 +41,7 @@ object BuildHooks {
         return config.put("preferences_dir",parent.canonicalPath).toString()
     }
     fun sceneReady(adapter: SpatialPanelAdapter, scene: () -> Scene, recreate: () -> Unit) {
+        EidolonCtlReceiver.adapter = adapter
         ImeProbe.sceneReady()
         LayoutSdkCase.sceneReady(adapter,scene,recreate)
     }
@@ -73,7 +74,7 @@ object BuildHooks {
             ImeProbe.sdkTap(nonce)
             return
         }
-        if (running || ImeProductCommandReceiver.probeActive() || name !in setOf("window-groups", "viewer-pose", "window-recenter", "window-size", "linux-gtk-input", "linux-gtk-dialog", "linux-gtk-input-recover", "linux-gtk-dialog-recover", "linux-shm-sdk", "window-slots", "window-move", "window-controls", "extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe", "ime-terminal")) return
+        if (running || ImeProductCommandReceiver.probeActive() || name !in setOf("window-groups","window-groups-cli", "viewer-pose", "window-recenter", "window-size", "linux-gtk-input", "linux-gtk-dialog", "linux-gtk-input-recover", "linux-gtk-dialog-recover", "linux-shm-sdk", "window-slots", "window-move", "window-controls", "extensions", "stop", "theme-sdk", "theme-surface", "two-windows", "layout", "resize", "pointer", "keyboard", "ray", "foot", "surface", "pattern", "surface-cycle", "ssh-product", "ime-editor-probe", "ime-terminal")) return
         intent.removeExtra("case"); intent.removeExtra("nonce")
         val gtkRecovery=name in setOf("linux-gtk-input-recover","linux-gtk-dialog-recover")
         if(gtkRecovery) {if(!gtkRecoveries.claim(name,nonce)) return} else if(nonce in consumedNonces) return
@@ -90,9 +91,9 @@ object BuildHooks {
         else if (name == "stop") SdkCaseEnvironment.start(name,nonce,context,{done->LifecycleSdkCase.start(nonce,adapter,done)}) {running=false}
         else if (name == "theme-surface") ThemeSurfaceProbe.start(nonce,scene) {running=false}
         else if (name in setOf("layout","two-windows","theme-sdk")) LayoutSdkCase.start(nonce,context,adapter,scene,recreate,name) {running=false}
-        else if(name in setOf("window-groups","window-recenter","window-size","window-slots","window-move","window-controls","extensions","resize","pointer","keyboard","ray","foot")) SdkCaseEnvironment.start(name,nonce,context,{ done ->
+        else if(name in setOf("window-groups","window-groups-cli","window-recenter","window-size","window-slots","window-move","window-controls","extensions","resize","pointer","keyboard","ray","foot")) SdkCaseEnvironment.start(name,nonce,context,{ done ->
             when(name) {
-                "window-groups" -> WindowGroupsCase.start(nonce,adapter,scene,done)
+                "window-groups", "window-groups-cli" -> WindowGroupsCase.start(nonce,adapter,scene,name=="window-groups-cli",done)
                 "window-recenter" -> WindowRecenterCase.start(nonce,adapter,scene,done)
                 "window-size" -> WindowControlsCase.startSize(nonce,adapter,scene,done)
                 "window-slots" -> WindowSlotsCase.start(nonce,adapter,done)

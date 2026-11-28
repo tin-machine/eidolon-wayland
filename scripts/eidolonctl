@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Operate an active Eidolon debug build through its authorized ADB connection."""
+import argparse
+import base64
+import binascii
+import json
+import re
+import secrets
+import shlex
+import subprocess
+import sys
+import time
+
+from quest_device import PACKAGE
+
+
+def decode_response(output, nonce):
+    replies = re.findall(r'^Broadcast completed: result=(\d+), data="([A-Za-z0-9_-]+)"$', output, re.MULTILINE)
+    if len(replies) != 1:
+        raise ValueError("Eidolon のデバッグ版から応答を取得できません")
+    code, data = replies[0]
+    if len(data) > 65536:
+        raise ValueError("応答が長すぎます")
+    response = json.loads(base64.urlsafe_b64decode(data + "=" * (-len(data) % 4)))
+    if not isinstance(response, dict) or response.get("schema") != 1 or response.get("nonce") != nonce:
+        raise ValueError("Eidolon の応答を照合できません")
+    if code != "0" or response.get("status") != "ok":
+        reason = response.get("status")
+        if reason in ("runtime_unavailable", "busy", "invalid"):
+            raise ValueError(reason)
+        raise ValueError("Eidolon の実行中のランタイムを取得できません")
+    return response
+
+
+def decode_list(output, nonce):
+    response = decode_response(output, nonce)
+    if not isinstance(response.get("windows"), list):
+        raise ValueError("Eidolon の応答にウィンドウの一覧がありません")
+    return response["windows"]
+
+
+def broadcast(adb, serial, action, options):
+    nonce = secrets.token_hex(16)
+    command = [
+        "am", "broadcast", "-n", f"{PACKAGE}/.EidolonCtlReceiver",
+        "-a", f"{PACKAGE}.CTL_WINDOW_{action}", "--es", "nonce", nonce,
+    ]
+    for key, value in options.items():
+        command.extend(["--es", key, value])
+    result = subprocess.run(
+        [adb, "-s", serial, "shell", shlex.join(command)],
+        capture_output=True, text=True, timeout=15, check=False,
+    )
+    if result.returncode:
+        raise ValueError("ADB の実行に失敗しました")
+    return result.stdout, nonce
+
+
+def list_windows(adb, serial):
+    return decode_list(*broadcast(adb, serial, "LIST", {}))
+
+
+def target_options(args):
+    identifier = r"[1-9][0-9]{0,18}"
+    if not re.fullmatch(rf"{identifier}(?::{identifier}){{3}}", args.window_id) or not re.fullmatch(
+        identifier, args.generation,
+    ):
+        raise ValueError("window list に表示された ID と generation を指定してください")
+    return {"window": args.window_id, "generation": args.generation}
+
+
+def show_window(args):
+    options = target_options(args)
+    outcome = decode_response(*broadcast(args.adb, args.serial, "SHOW", options)).get("show")
+    if outcome in ("busy", "stale", "not_ready", "rejected", "runtime_unavailable"):
+        raise ValueError(outcome)
+    if outcome not in ("requested", "already_visible"):
+        raise ValueError("Eidolon の表示要求への応答を確認できません")
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        rows = list_windows(args.adb, args.serial)
+        target = next((row for row in rows if row.get("id") == args.window_id and
+                       row.get("generation") == args.generation), None)
+        if target is None:
+            raise ValueError("stale")
+        if target.get("visible") is True:
+            return {"show": "already_visible" if outcome == "already_visible" else "shown", "window": target}
+        time.sleep(.2)
+    raise ValueError("対象ウィンドウが表示されませんでした")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--serial", required=True, help="ADB device serial")
+    parser.add_argument("--adb", default="adb", help="path to adb")
+    command = parser.add_subparsers(dest="command", required=True)
+    window = command.add_parser("window").add_subparsers(dest="action", required=True)
+    listing = window.add_parser("list")
+    listing.add_argument("--json", action="store_true", help="emit JSON")
+    show = window.add_parser("show")
+    show.add_argument("window_id")
+    show.add_argument("--generation", required=True)
+    args = parser.parse_args(argv)
+    try:
+        if args.action == "show":
+            print(json.dumps(show_window(args), ensure_ascii=False))
+            return 0
+        windows = list_windows(args.adb, args.serial)
+        if args.json:
+            print(json.dumps(windows, ensure_ascii=False))
+        else:
+            print("ID  GENERATION  LOGICAL SIZE  VISIBILITY")
+            for row in windows:
+                visible = "visible" if row["visible"] else "hidden"
+                print(f'{row["id"]}  {row["generation"] or "-"}  {row["width"]}x{row["height"]}  {visible}')
+    except (ValueError, KeyError, OSError, binascii.Error, subprocess.TimeoutExpired) as error:
+        print(f"eidolonctl: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

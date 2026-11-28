@@ -500,6 +500,15 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         current.grabSources.values.toList().forEach { (source,state) -> sdk.onNoIntersectionInput(source,state,0) }
         sdk.resolveInput();current.grabSources.clear()
     }
+    internal fun windowVisible(key: InputWindowKey): Boolean = bindings.values.any {
+        it.role == "windows" && it.attached && !it.retire && !it.destroy && !it.anchorDeferred &&
+            it.groupVisible && WindowGroupWire.key(it.handle, it.key) == key && canUseSdk(it) && when (val group = it.group) {
+                WindowGroupPresentation.Unowned -> true
+                WindowGroupPresentation.Pending -> false
+                is WindowGroupPresentation.Owned -> group.phase == "stable" && group.geometryApplied
+            }
+    }
+
     private fun canUseSdk(current: Binding): Boolean = runtimeScene === current.sdkScene && current.scope?.sceneLive() != false
     private fun closeControls(current:Binding) {
         current.controls?.let {controls ->
