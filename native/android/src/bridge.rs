@@ -618,6 +618,24 @@ pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeImeU
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeClipboardUi<'a>(
+    mut env: EnvUnowned<'a>,
+    _: JClass<'a>,
+    handle: jlong,
+    command: JString<'a>,
+) -> JString<'a> {
+    env.with_env(|env| {
+        let value = if let Some(command) = bounded_json(env, &command)? {
+            global().clipboard_ui(handle, &command)
+        } else {
+            crate::clipboard_ui::error("INVALID")
+        };
+        JString::from_str(env, value.to_string())
+    })
+    .resolve_with::<BridgePolicy, _>(|| handle)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_tinmachine_eidolon_NativeBridge_nativeWaitForUiChange(
     _: EnvUnowned<'_>,
     _: JClass<'_>,

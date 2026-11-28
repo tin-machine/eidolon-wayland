@@ -186,6 +186,11 @@ pub fn run(stop: Arc<AtomicBool>) -> Report {
 }
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::clipboard_shelf::{ClipboardGrant, ClipboardPermit};
+    use eidolon_model::ids::ClipboardCardId;
+    use fixture::ShelfStep;
+
     #[test]
     fn clipboard_two_clients_bounds_timeout_and_disconnect() {
         let _lock = super::super::FIXTURE_LOCK.lock().unwrap();
@@ -193,5 +198,160 @@ mod tests {
             false,
         )));
         assert_eq!(report.state, "pass", "{report:#?}");
+    }
+
+    struct DisplayOwner {
+        display: Display<ProtocolState>,
+        protocol: ProtocolState,
+    }
+
+    impl DisplayOwner {
+        fn new(session: i64) -> Self {
+            let display = Display::new().unwrap();
+            let mut protocol =
+                ProtocolState::new(&display.handle(), SessionId::new(session).unwrap());
+            protocol.configure_keyboard(KeyboardLayout::Us).unwrap();
+            Self { display, protocol }
+        }
+
+        fn connect(&mut self) -> UnixStream {
+            let (server, client) = UnixStream::pair().unwrap();
+            self.protocol
+                .accept(&self.display.handle(), server)
+                .unwrap();
+            client
+        }
+
+        fn tick(&mut self) {
+            self.display.dispatch_clients(&mut self.protocol).unwrap();
+            self.protocol.finish_dispatch(&self.display.handle());
+            self.display.flush_clients().unwrap();
+        }
+    }
+
+    struct Clients {
+        steps: mpsc::SyncSender<ShelfStep>,
+        results: mpsc::Receiver<Result<(), &'static str>>,
+        thread: thread::JoinHandle<Result<(), &'static str>>,
+    }
+
+    impl Clients {
+        fn new(server: &mut DisplayOwner, stop: &Arc<AtomicBool>) -> Self {
+            let stream = server.connect();
+            let (steps, requests) = mpsc::sync_channel(1);
+            let (replies, results) = mpsc::sync_channel(1);
+            let stop = Arc::clone(stop);
+            let thread =
+                thread::spawn(move || fixture::run_shelf_client(stream, stop, requests, replies));
+            Self {
+                steps,
+                results,
+                thread,
+            }
+        }
+
+        fn step(&self, servers: &mut [DisplayOwner], step: ShelfStep) {
+            self.steps
+                .try_send(step)
+                .unwrap_or_else(|_| panic!("fixture mailbox busy"));
+            drive(servers, || match self.results.try_recv() {
+                Ok(result) => {
+                    result.unwrap();
+                    Some(())
+                }
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(_) => panic!("client disconnected"),
+            });
+        }
+    }
+
+    fn drive<T>(servers: &mut [DisplayOwner], mut observe: impl FnMut() -> Option<T>) -> T {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            for server in servers.iter_mut() {
+                server.tick();
+            }
+            if let Some(result) = observe() {
+                return result;
+            }
+            assert!(Instant::now() < deadline, "fixture deadline");
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn shelf_copies_between_displays_preserving_destination_selection_and_focus() {
+        let _lock = super::super::FIXTURE_LOCK.lock().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut servers = [DisplayOwner::new(1), DisplayOwner::new(2)];
+        let source = Clients::new(&mut servers[0], &stop);
+        let destination = Clients::new(&mut servers[1], &stop);
+        let [first, second] = [1, 2].map(|n| WindowId::new(n).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            for server in &mut servers {
+                server.tick();
+            }
+            let source_ready = servers[0].protocol.focus_window(first).is_ok();
+            let destination_ready = servers[1].protocol.focus_window(first).is_ok();
+            if source_ready && destination_ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline
+                    && !source.thread.is_finished()
+                    && !destination.thread.is_finished()
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        let other = Clients::new(&mut servers[1], &stop);
+        let text = "日本語\nsecond line".as_bytes().to_vec();
+        let original = b"destination's original clipboard".to_vec();
+        source.step(&mut servers, ShelfStep::Copy(text.clone()));
+        destination.step(&mut servers, ShelfStep::Copy(original.clone()));
+        let source_focus = servers[0].protocol.input_report().focus_token.unwrap();
+        assert!(
+            servers[0]
+                .protocol
+                .capture_selection(second, source_focus)
+                .is_err()
+        );
+        let capture = servers[0]
+            .protocol
+            .capture_selection(first, source_focus)
+            .unwrap();
+        let bytes = drive(&mut servers, || match capture.try_recv() {
+            Ok(result) => Some(result.unwrap()),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(_) => panic!("capture disconnected"),
+        });
+        assert_eq!(bytes, text);
+        let target_focus = servers[1].protocol.input_report().focus_token.unwrap();
+        let permit = ClipboardPermit::new(Instant::now() + Duration::from_secs(2));
+        let grant = || ClipboardGrant {
+            card: ClipboardCardId::new(1).unwrap(),
+            text: Arc::from(std::str::from_utf8(&bytes).unwrap()),
+            permit: permit.clone(),
+        };
+        assert_eq!(
+            servers[1]
+                .protocol
+                .grant_shelf_clipboard(second, target_focus, grant()),
+            Err("STALE")
+        );
+        servers[1]
+            .protocol
+            .grant_shelf_clipboard(first, target_focus, grant())
+            .unwrap();
+        other.step(&mut servers, ShelfStep::NoOffer);
+        destination.step(&mut servers, ShelfStep::Paste(text));
+        permit.revoke();
+        destination.step(&mut servers, ShelfStep::Paste(original));
+        source.step(&mut servers, ShelfStep::Finish);
+        destination.step(&mut servers, ShelfStep::Finish);
+        other.step(&mut servers, ShelfStep::Finish);
+        assert!(source.thread.join().unwrap().is_ok());
+        assert!(destination.thread.join().unwrap().is_ok());
+        assert!(other.thread.join().unwrap().is_ok());
     }
 }

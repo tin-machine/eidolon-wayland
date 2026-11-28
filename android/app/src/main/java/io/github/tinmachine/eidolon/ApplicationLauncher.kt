@@ -132,6 +132,7 @@ fun LauncherSettings(
     var query by remember { mutableStateOf("") }
     var favoritesOnly by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
+    var clipboard by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<LauncherSource?>(null) }
     DisposableEffect(Unit) { onDispose { ShelfReasonFocus.clear() } }
     LaunchedEffect(ShelfReasonFocus.request.intValue) {
@@ -165,12 +166,19 @@ fun LauncherSettings(
                     if (toggleFix != null) TextButton(onClick = toggleFix) {
                         Text(if (fixed) "◆ 固定を解除" else "◇ ここに固定")
                     }
-                    TextButton(onClick = { settings = !settings }) { Text("設定") }
+                    TextButton(onClick = {
+                        focus.clearFocus(force = true)
+                        clipboard = !clipboard
+                        settings = false
+                    }) { Text(if (clipboard) "アプリ一覧" else "クリップボード") }
+                    TextButton(onClick = { clipboard = false; settings = !settings }) { Text("設定") }
                     TextButton(onClick = close) { Text("閉じる") }
                 }
                 if (anchorStatus.isNotEmpty()) Text(anchorStatus, color = candy)
                 NativeSessionHost.launcherPlacementMessage.value.takeIf { it.isNotEmpty() }?.let { Text(it, color = candy) }
-                if (settings) {
+                if (clipboard) {
+                    ClipboardShelfPanel(Modifier.weight(1f))
+                } else if (settings) {
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                         launcherControls?.invoke()
                         openConnectionSettings?.let { TextButton(onClick = it) { Text("接続設定") } }

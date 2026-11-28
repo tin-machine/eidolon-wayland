@@ -267,6 +267,93 @@ fn read_all(
         }
     }
 }
+
+pub enum ShelfStep {
+    Copy(Vec<u8>),
+    Paste(Vec<u8>),
+    NoOffer,
+    Finish,
+}
+
+/// An isolated wl_data_device client. Only pass/fail is sent back to the test supervisor.
+pub fn run_shelf_client(
+    socket: UnixStream,
+    stop: Arc<AtomicBool>,
+    steps: Receiver<ShelfStep>,
+    replies: SyncSender<Result<(), &'static str>>,
+) -> Result<(), &'static str> {
+    use std::sync::mpsc::TryRecvError;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut client = ClientFixture::new(socket, &stop, deadline)?;
+    while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
+        client.sync(&stop, deadline)?;
+        let outcome = match steps.try_recv() {
+            Ok(ShelfStep::Copy(bytes)) => {
+                let serial = client.state.input_serial;
+                client.offer(bytes, serial, false);
+                client.sync(&stop, deadline)
+            }
+            Ok(ShelfStep::Paste(expected)) => {
+                client.sync(&stop, deadline)?;
+                let offer = client
+                    .state
+                    .clipboard
+                    .as_ref()
+                    .and_then(|data| data.selection.clone())
+                    .ok_or("NO_SELECTION")?;
+                let mut pipe = client.read_offer(offer)?;
+                let mut data = Vec::new();
+                let mut chunk = [0; 4096];
+                loop {
+                    client.sync(&stop, deadline)?;
+                    match pipe.read(&mut chunk) {
+                        Ok(0) => {
+                            break if data == expected {
+                                Ok(())
+                            } else {
+                                Err("PASTE_MISMATCH")
+                            };
+                        }
+                        Ok(n) if data.len() + n <= 1024 * 1024 => {
+                            data.extend_from_slice(&chunk[..n])
+                        }
+                        Ok(_) => break Err("UNBOUNDED_TRANSFER"),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(_) => break Err("READ"),
+                    }
+                }
+            }
+            Ok(ShelfStep::NoOffer) => {
+                if client
+                    .state
+                    .clipboard
+                    .as_ref()
+                    .is_some_and(|data| data.selection.is_none())
+                {
+                    Ok(())
+                } else {
+                    Err("UNEXPECTED_SELECTION")
+                }
+            }
+            Ok(ShelfStep::Finish) => {
+                let outcome = client.finish(&stop, deadline);
+                replies.try_send(outcome).map_err(|_| "REPLY")?;
+                return outcome;
+            }
+            Err(TryRecvError::Disconnected) => return Err("REQUESTS_CLOSED"),
+            Err(TryRecvError::Empty) => {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+        };
+        replies.try_send(outcome).map_err(|_| "REPLY")?;
+        outcome?;
+    }
+    Err("CANCELLED_OR_TIMEOUT")
+}
+
 pub fn run(
     streams: [UnixStream; 2],
     stop: Arc<AtomicBool>,

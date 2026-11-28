@@ -1,6 +1,7 @@
 //! Android、GL、ネットワークに依存しない製品契約。
 pub mod build_info;
 pub mod catalog;
+pub mod clipboard_shelf;
 pub mod commands;
 pub mod connection_profile;
 pub mod gui_session_lifecycle;

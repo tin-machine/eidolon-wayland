@@ -128,6 +128,7 @@ mod positioner;
 /// 所有済みsnapshot以外はprotocol ownerから持ち出さない。
 #[path = "snapshot.rs"]
 mod snapshot;
+pub use clipboard::SelectionCapture;
 pub use ime::ImeReport;
 pub use input::InputReport;
 pub(crate) use input::monotonic_time_ms;
@@ -948,7 +949,8 @@ impl<U: Send + Sync + 'static> Dispatch<WlDataDevice, U> for ProtocolState {
                             .unwrap_or(false)
                     });
                 if valid {
-                    state.set_clipboard(dh, source);
+                    let root = state.selection_serial_root(serial, client);
+                    state.set_clipboard(dh, source, root);
                 } else {
                     if let Some(source) = source {
                         source.cancelled();

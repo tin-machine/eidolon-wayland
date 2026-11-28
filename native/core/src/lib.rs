@@ -1,3 +1,5 @@
+pub mod clipboard_coordinator;
+pub mod clipboard_shelf;
 pub mod compositor;
 pub mod diagnostics;
 pub mod helper;
