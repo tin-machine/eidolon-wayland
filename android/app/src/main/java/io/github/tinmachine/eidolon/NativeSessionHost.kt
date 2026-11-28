@@ -1701,6 +1701,7 @@ object NativeSessionHost {
     }
     fun registerActivityOwner(): Long = inputIntents.serial {
         val old = activityScenes.activeEpoch()
+        if (old > 0) clearClipboardShelf(old)
         val owner = activityScenes.register()
         inputIntents.invalidate();keyboardFocus=null;inputTargets=emptyMap()
         hudTimingConfig.updateAndGet { old -> if (old and 1L == 0L) old + 2 else old + 1 }
