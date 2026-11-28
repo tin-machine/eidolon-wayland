@@ -197,6 +197,13 @@ class InputAdapter(target: JSONObject, private val sdkScope:SdkResourceScope?=nu
         if (closed || suppressed || NativeSessionHost.isLayoutEditing() || capture!=null || WristInputOwnership.owns(sourceOfInput)) return
         if (type==PointerEventType.Cancel.id) { leave(sourceOfInput.id,true);return }
         if (type==PointerEventType.Unhover.id) { onHoverStop(receiver,sourceOfInput);return }
+        // Spatial SDK reports both A and Trigger as semantic Select. Use the
+        // raw button callback for the right Touch on product windows, where
+        // it distinguishes the shortcut from a primary Wayland click.
+        if (summonInput != null && semanticType == SemanticType.Select.id &&
+            (type == PointerEventType.Select.id || type == PointerEventType.Unselect.id) &&
+            RightTouchSummonInput.isRightTouch(sourceOfInput)
+        ) return
         val ticket=inputTarget(targetJson) ?: return
         val position=uv(receiver,hitInfo)
         val request = NativeSessionHost.nextPointerRequest()

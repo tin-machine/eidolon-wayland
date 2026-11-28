@@ -99,7 +99,7 @@ internal class RightTouchSummonInput<T : Any> {
             return pose.flags and ControllerPose.TrackedBits == ControllerPose.TrackedBits
         }
 
-        private fun isRightTouch(entity: Entity): Boolean =
+        fun isRightTouch(entity: Entity): Boolean =
             entity.tryGetComponent<AvatarAttachment>()?.type == "right_controller" &&
                 entity.tryGetComponent<Controller>()?.type == ControllerType.CONTROLLER
     }
