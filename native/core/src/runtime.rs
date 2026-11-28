@@ -1856,6 +1856,7 @@ impl Runtime {
                                 | Command::CloseWindowTarget { target, .. }
                                 | Command::SetPose { target, .. }
                                 | Command::SetPoseControl { target, .. }
+                                | Command::SummonPoseControl { target, .. }
                                 | Command::ResizeLogical { target, .. }
                                 | Command::SetPhysicalSize { target, .. }
                                 | Command::SetPhysicalSizeControl { target, .. }
@@ -2376,6 +2377,11 @@ impl Runtime {
                                         expected_group:*expected_group,expected_revision:*expected_revision,action:*action,
                                     },crate::window_group_owner::World {snapshot:&state.snapshot,transport:&transport,render:&render,now:clock.elapsed()})
                                 }
+                                Command::SummonPoseControl {request_id,target,controls_revision,group:Some(group),action,..} => {
+                                    let render=gl.snapshot();let transport=io.snapshot();
+                                    groups.owner.summon(*request_id,*target,*group,*action,*controls_revision,
+                                        crate::window_group_owner::World {snapshot:&state.snapshot,transport:&transport,render:&render,now:clock.elapsed()})
+                                }
                                 Command::WindowGroupApplied {target,group,revision,pose,physical_size,content_frame,..} => {
                                     let render=gl.snapshot();let transport=io.snapshot();
                                     groups.owner.applied(crate::window_group_owner::GeometryAck {
@@ -2385,6 +2391,7 @@ impl Runtime {
                                 }
                                 Command::SetPose { target, .. }
                                 | Command::SetPoseControl { target, .. }
+                                | Command::SummonPoseControl { target, .. }
                                 | Command::PoseApplied { target, .. }
                                 | Command::ResizeLogical { target, .. }
                                 | Command::SetPhysicalSize { target, .. }
@@ -2405,18 +2412,19 @@ impl Runtime {
                                             .any(|t| t.key == *target && t.frames > 0);
                                     let controls_current = match &command {
                                         Command::SetPoseControl { controls_revision, .. }
+                                        | Command::SummonPoseControl { controls_revision, .. }
                                         | Command::SetPhysicalSizeControl { controls_revision, .. } => gl.snapshot().theme_revision == *controls_revision,
                                         _ => true,
                                     };
                                     let controls_ready =
-                                        !matches!(&command, Command::SetPoseControl { .. } | Command::SetPhysicalSizeControl { .. })
+                                        !matches!(&command, Command::SetPoseControl { .. } | Command::SetPhysicalSizeControl { .. } | Command::SummonPoseControl { .. })
                                             || state.snapshot.activity_visible
                                                 && state.snapshot.xr_state == XrState::Focused
                                                 && state.render_visibility.iter().all(|v| *v);
                                     if !live || !controls_current {
                                         Status::Stale
                                     } else if groups.owner.blocks_geometry(*target) && matches!(&command,
-                                        Command::SetPose {..} | Command::SetPoseControl {..} | Command::ResizeLogical {..}
+                                        Command::SetPose {..} | Command::SetPoseControl {..} | Command::SummonPoseControl {..} | Command::ResizeLogical {..}
                                         | Command::SetPhysicalSize {..} | Command::SetPhysicalSizeControl {..}) {
                                         Status::Busy
                                     } else if !controls_ready {
@@ -2436,6 +2444,20 @@ impl Runtime {
                                                 *request_id,
                                                 *pose,
                                             ),
+                                            Command::SummonPoseControl { request_id, action, .. } => {
+                                                use eidolon_model::workspace::SummonPoseAction;
+                                                let pointer = &current.snapshot().input.pointer;
+                                                if pointer.pressed != 0 || pointer.popup_grab {
+                                                    Err("BUSY")
+                                                } else { match action {
+                                                    SummonPoseAction::Move { pose } =>
+                                                        state.workspace.summon_poses(*request_id, &[(*target, *pose)]),
+                                                    SummonPoseAction::Return =>
+                                                        state.workspace.return_summoned_poses(*request_id, &[*target]),
+                                                    SummonPoseAction::Keep =>
+                                                        state.workspace.keep_summoned_pose(*target),
+                                                }}
+                                            }
                                             Command::PoseApplied {
                                                 pose_command, pose, ..
                                             } => {
@@ -2483,6 +2505,9 @@ impl Runtime {
                                             && matches!(
                                                 command,
                                                 Command::SetPose { .. }
+                                                    | Command::SummonPoseControl {
+                                                        action: eidolon_model::workspace::SummonPoseAction::Keep, ..
+                                                    }
                                                     | Command::ResizeLogical { .. }
                                                     | Command::SetPhysicalSize { .. }
                                                     | Command::SetPhysicalSizeControl { .. }
@@ -2496,7 +2521,7 @@ impl Runtime {
                                             Ok(()) => Status::Accepted,
                                             Err("STALE") => Status::Stale,
                                             Err("INVALID_ARGUMENT") => Status::InvalidArgument,
-                                            Err("RESOURCE_LIMIT") => Status::Busy,
+                                            Err("RESOURCE_LIMIT" | "BUSY") => Status::Busy,
                                             Err(_) => Status::NotReady,
                                         }
                                     } else {
@@ -3636,6 +3661,7 @@ impl Runtime {
         // BUSYでも非表示の安全効果を先に適用。可視方向は受付成功時だけ更新する。
         match &command {
             Command::SetActivityState { visible: false, .. } => {
+                state.workspace.clear_summoned_poses();
                 state.snapshot.activity_visible = false;
                 state.render_visibility[0] = false;
                 self.render.set_visible(false);
@@ -3644,6 +3670,7 @@ impl Runtime {
                 state: xr @ (XrState::Idle | XrState::Visible),
                 ..
             } => {
+                state.workspace.clear_summoned_poses();
                 state.snapshot.xr_state = *xr;
                 if *xr == XrState::Idle {
                     state.render_visibility[1] = false;

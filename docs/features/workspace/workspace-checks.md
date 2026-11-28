@@ -5,6 +5,8 @@
 
 ## 保存する値
 
+右TouchのAとA＋Bで一時的に窓を移動する手順は[窓とグループの呼び寄せ](window-summon-return.md)を参照する。
+
 schema 1のJSONへ背景、US/JIS選択、app_idと表示枠に対応した配置・物理寸法・logical寸法を保存する。
 session、WindowId、Surface世代、SDK Entity IDは保存DTOに含めない。
 最大64 KiB・16項目とし、古いapp/slotの項目から置換する。

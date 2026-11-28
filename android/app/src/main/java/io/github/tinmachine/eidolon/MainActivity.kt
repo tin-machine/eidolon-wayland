@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
+import android.widget.Toast
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -17,10 +18,13 @@ import androidx.compose.ui.platform.ComposeView
 import com.meta.spatial.compose.ComposeFeature
 import com.meta.spatial.compose.ComposeViewPanelRegistration
 import com.meta.spatial.core.Entity
+import com.meta.spatial.core.Hand
 import com.meta.spatial.core.Pose
 import com.meta.spatial.core.SpatialFeature
+import com.meta.spatial.core.SpatialSDKExperimentalAPI
 import com.meta.spatial.core.Vector3
 import com.meta.spatial.runtime.SceneObject
+import com.meta.spatial.runtime.ControllerPose
 import com.meta.spatial.runtime.ReferenceSpace
 import com.meta.spatial.runtime.SessionState
 import com.meta.spatial.toolkit.AppSystemActivity
@@ -72,7 +76,42 @@ class MainActivity : AppSystemActivity() {
     private fun ownsScene(): Boolean = !isDestroyed && NativeSessionHost.ownsActivityScene(activityOwner,sceneEpoch)
     private val hud by lazy { QuestStatusHud(applicationContext, activityOwner) }
     private val mousepadAnchor by lazy { MousepadAnchor(applicationContext, activityOwner) }
-    private val nativePanels by lazy { SpatialPanelAdapter(mousepadAnchor = mousepadAnchor) }
+    private val nativePanels by lazy { SpatialPanelAdapter(mousepadAnchor, ::summonFeedback) }
+    private var lastSummonPulse = -500L
+    private var summonFeedbackGeneration = 0L
+    @OptIn(SpatialSDKExperimentalAPI::class)
+    private fun summonFeedback(result: String, sceneLive: Boolean) {
+        if (!sceneLive || !ownsScene() || !resumed || observedXr != "FOCUSED") return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastSummonPulse < 200) return
+        lastSummonPulse = now
+        val request = ++summonFeedbackGeneration
+        val epoch = sceneEpoch
+        fun pulse(strength: Float, durationNs: Long): Boolean = runCatching {
+            if (summonFeedbackGeneration != request || !ownsScene() || epoch != sceneEpoch ||
+                !resumed || observedXr != "FOCUSED"
+            ) return false
+            val tracking = scene.getControllerPoseAtTime(false, android.os.SystemClock.elapsedRealtimeNanos())
+            if (tracking == null || tracking.flags and ControllerPose.TrackedBits != ControllerPose.TrackedBits) return false
+            spatialContext.spatial.applyHapticFeedback(Hand.RIGHT, strength, durationNs, 110f)
+            true
+        }.getOrDefault(false)
+        val success = result == "summoned" || result == "returned"
+        val played = if (success) pulse(.48f, 42_000_000L) else pulse(.17f, 115_000_000L)
+        if (played && result == "returned") activityHandler.postDelayed({ pulse(.48f, 42_000_000L) }, 105)
+        if (!played || !success) {
+            val message = when (result) {
+                "summoned" -> "窓を呼び寄せました"
+                "returned" -> "窓を元の配置に戻しました"
+                "no_clear_position" -> "呼び寄せ先の空きが見つかりません"
+                "restoration_pending" -> "前の窓が元の配置に戻るのを待っています"
+                "busy" -> "入力や配置の操作を終えてから再試行してください"
+                "stale" -> "窓の表示が変わりました。指し直してください"
+                else -> "窓の配置を変更できませんでした"
+            }
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        }
+    }
     private val keyboard: PhysicalKeyboard by lazy {
         PhysicalKeyboard(this, onOpenLauncher = { spatialLauncher.open() }) { TerminalImeController.toggle() }
     }

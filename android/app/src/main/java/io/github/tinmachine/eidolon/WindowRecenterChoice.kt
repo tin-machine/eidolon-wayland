@@ -34,6 +34,8 @@ object WindowRecenterChoice {
         return Result("no_separated_candidate",null,null,tested)
     }
     private data class Box(val center:List<Double>,val axes:List<List<Double>>,val half:List<Double>)
+    internal fun overlaps(a:WindowRecenterOccupant,b:WindowRecenterOccupant):Boolean =
+        overlaps(box(a.pose,a.physical),box(b.pose,b.physical))
     private fun box(pose:WindowMotionPose,size:WindowPhysicalSize):Box {
         val norm=sqrt(pose.q.sumOf {it*it});val unit=pose.copy(q=pose.q.map {it/norm})
         val axes=listOf(WindowMotionPose.at(1.0,0.0,0.0),WindowMotionPose.at(0.0,1.0,0.0),WindowMotionPose.at(0.0,0.0,1.0)).map {

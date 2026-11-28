@@ -13,6 +13,8 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
     private var owner:NativeSessionHost.WindowOperationTicket?=null
     private var capture:WindowSizeCapture?=null
     private var recenter:WindowRecenterCapture?=null
+    private var keepRequest: String? = null
+    private var keepDeadline = 0L
     private var groupMenu:WindowGroupMenuController?=null
     private var lastGroup:JSONObject?=null
     private var groupAccepted=0L
@@ -49,6 +51,18 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
         groupMenu?.let {group->group.tick(state);if(group.terminal) end();return}
         val c=capture ?: return;val ticket=owner ?: return;val now=SystemClock.elapsedRealtime()
         if(!current(ticket,state)) {c.cancel("owner_changed");recenter?.cancel("owner_changed")}
+        keepRequest?.let { request ->
+            val response = NativeSessionHost.poseCompletion(request)
+            if (response == "ACCEPTED" && !WindowRecenterWire.summoned(state, JSONObject(target))) {
+                NativeSessionHost.forgetPose(request)
+                keepRequest = null
+                beginReturn(state)
+            } else if (now >= keepDeadline || response != null && response != "pending" && response != "ACCEPTED") {
+                c.cancel("keep_placement_rejected")
+            }
+            if (c.phase == WindowSizeCapture.Phase.CANCELLED) end()
+            return
+        }
         if(recenter!=null) {tickRecenter(ticket,state,controlsReady,now);return}
         c.current(identity(ticket),now)
         val window=window(state);val sizing=window?.optJSONObject("sizing")
@@ -63,11 +77,14 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
                 view=WindowMenuView(parent,layout,physical.width.toDouble(),physical.height.toDouble(),sdk,objects,
                     { !closed && live() && capture===c && c.phase==WindowSizeCapture.Phase.MENU && NativeSessionHost.windowOperationCurrent(ticket) },
                     {NativeSessionHost.windowOperationCurrent(ticket)},physical.step(true)!=null,physical.step(false)!=null,
-                    if(ticket.control.groupMenuPermit!=null) buildList {
+                    buildList {
                         add(WindowMenuItem("larger","大きく",physical.step(true)!=null));add(WindowMenuItem("smaller","小さく",physical.step(false)!=null))
-                        if(WindowRecenterPolicy.ENABLED) add(WindowMenuItem("recenter","正面へ"))
-                        add(WindowMenuItem("group","窓をまとめる"));add(WindowMenuItem("back","戻る"))
-                    } else null,sdkScope) {choose(it)}
+                        val summoned = WindowRecenterWire.summoned(state, JSONObject(target))
+                        if (summoned) add(WindowMenuItem("keep_summoned", "通常の配置にする"))
+                        else if(WindowRecenterPolicy.ENABLED) add(WindowMenuItem("recenter","正面へ"))
+                        if (!summoned && ticket.control.groupMenuPermit!=null) add(WindowMenuItem("group","窓をまとめる"))
+                        add(WindowMenuItem("back","戻る"))
+                    },sdkScope) {choose(it)}
                 checkNotNull(view).initialize()
             } catch(_:Exception) {c.cancel("menu_create_failed")}
         }
@@ -99,7 +116,7 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
     }
     private fun choose(action:String) {
         val c=capture ?: return;val ticket=owner ?: return
-        if(c.phase!=WindowSizeCapture.Phase.MENU || recenter!=null) return
+        if(c.phase!=WindowSizeCapture.Phase.MENU || recenter!=null || keepRequest!=null) return
         val state=runCatching {JSONObject(NativeBridge.nativeSnapshot(runtime)).getJSONObject("runtime")}.getOrNull()
         if(state==null || !current(ticket,state)) {c.cancel("owner_changed");return}
         if(action=="group") {
@@ -109,6 +126,16 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
         }
         if(action=="back") {lastAction="back";beginReturn(state);return}
         if(action=="recenter") {chooseRecenter(ticket,state);return}
+        if (action == "keep_summoned") {
+            if (!WindowRecenterWire.summoned(state, JSONObject(target))) return
+            closeView()
+            if (view != null) return
+            lastAction = action
+            keepRequest = NativeSessionHost.submitSummonPose(ticket, JSONObject().put("op", "keep"))
+            keepDeadline = SystemClock.elapsedRealtime() + 5000
+            if (keepRequest == null) c.cancel("keep_placement_enqueue_rejected")
+            return
+        }
         if(action !in setOf("larger","smaller")) return
         val window=window(state) ?: return
         if(pixels(window,plan(state))!=dimensions) {c.cancel("pixel_dimensions_changed");return}
@@ -206,6 +233,8 @@ class WindowMenuController(private val parent:Entity,private val target:String,p
         if(phase==WindowSizeCapture.Phase.COMPLETE) completed++ else if(c!=null) cancelled++
         lastPhase=phase?.name ?: "CANCELLED";lastReason=recenter?.reason ?: c?.reason ?: "open_failed";lastRequest=recenter?.request ?: c?.request
         recenter?.request?.let(NativeSessionHost::forgetWindowOperation)
+        keepRequest?.let(NativeSessionHost::forgetPose)
+        keepRequest=null
         c?.request?.let(NativeSessionHost::forgetWindowOperation);resetRequest?.let(NativeSessionHost::forgetWindowOperation)
         owner?.let(NativeSessionHost::finishWindowOperation)
         owner=null;capture=null;recenter=null;resetRequest=null

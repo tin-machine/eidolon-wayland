@@ -68,3 +68,29 @@ class EidolonCtlTest(unittest.TestCase):
             cli, "list_windows", return_value=replaced,
         ), self.assertRaisesRegex(ValueError, "stale"):
             cli.show_window(args)
+
+    def test_press_polls_the_original_request_until_the_pose_is_applied(self):
+        args = SimpleNamespace(
+            adb="adb", serial="known-target", action="press", window_id="1:2:3:4", generation="5",
+        )
+        poll_nonce = "b" * 32
+        responses = [
+            (self.broadcast(input="pending"), self.nonce),
+            (self.broadcast(nonce=poll_nonce, input="summoned"), poll_nonce),
+        ]
+        with patch.object(cli, "broadcast", side_effect=responses) as sender, patch.object(cli.time, "sleep"):
+            self.assertEqual(cli.send_input(args), {"input": "summoned"})
+        self.assertEqual(sender.call_args_list[0].args,
+                         ("adb", "known-target", "PRESS_A", {"window": "1:2:3:4", "generation": "5"}))
+        self.assertEqual(sender.call_args_list[1].args,
+                         ("adb", "known-target", "STATUS", {"request": self.nonce}))
+        self.assertTrue(all(call.kwargs == {"domain": "INPUT"} for call in sender.call_args_list))
+
+    def test_chord_reports_no_active_summon_and_rejects_missing_focus(self):
+        args = SimpleNamespace(adb="adb", serial="known-target", action="chord")
+        with patch.object(cli, "broadcast", return_value=(self.broadcast(input="nothing_to_return"), self.nonce)) as sender:
+            self.assertEqual(cli.send_input(args), {"input": "nothing_to_return"})
+        sender.assert_called_once_with("adb", "known-target", "CHORD_A_B", {}, domain="INPUT")
+        with patch.object(cli, "broadcast", return_value=(self.broadcast(input="not_ready"), self.nonce)):
+            with self.assertRaisesRegex(ValueError, "not_ready"):
+                cli.send_input(args)

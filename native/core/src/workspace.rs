@@ -24,6 +24,9 @@ pub struct WindowPlacement {
     pub ambiguous: bool,
     pub restored_pose: bool,
     pub placement: Placement,
+    pub summoned: bool,
+    #[serde(skip)]
+    temporary: Option<Placement>,
     #[serde(skip)]
     last_slot: Option<usize>,
 }
@@ -93,7 +96,18 @@ impl Controller {
             workload_observation: self.store.value.workload_observation,
             storage: self.store.report.clone(),
             pending_save: self.pending_save,
-            windows: self.windows.clone(),
+            windows: self
+                .windows
+                .iter()
+                .cloned()
+                .map(|mut window| {
+                    window.summoned = window.temporary.is_some();
+                    if let Some(temporary) = window.temporary.take() {
+                        window.placement = temporary;
+                    }
+                    window
+                })
+                .collect(),
         }
     }
     /// runtime ownerはこのstorageだけをMutex外へ持ち出す。model側は値と結果だけ保持する。
@@ -133,6 +147,7 @@ impl Controller {
             self.applied_background = None;
             for w in &mut self.windows {
                 w.placement.bind(None);
+                w.temporary = None;
             }
         }
     }
@@ -156,6 +171,7 @@ impl Controller {
             {
                 state.slot = None;
                 state.placement.bind(None);
+                state.temporary = None;
             }
         }
         let mut restored = vec![];
@@ -187,6 +203,8 @@ impl Controller {
                     ambiguous: false,
                     restored_pose: false,
                     placement: Placement::new(PanelPose::at_slot(0)).unwrap(),
+                    summoned: false,
+                    temporary: None,
                     last_slot: None,
                 });
             }
@@ -204,6 +222,7 @@ impl Controller {
                         |s| s.pose,
                     );
                     state.placement = Placement::new(pose).unwrap();
+                    state.temporary = None;
                     restored.push(Restore {
                         window: window.window,
                         physical_size_m: Some(
@@ -228,6 +247,13 @@ impl Controller {
                 });
             }
             state.placement.bind(plan.map(|p| p.target));
+            if state
+                .temporary
+                .as_ref()
+                .is_some_and(|pose| plan.is_none_or(|plan| !pose.accepts(plan.target)))
+            {
+                state.temporary = None;
+            }
         }
         restored
     }
@@ -247,8 +273,94 @@ impl Controller {
                     && w.placement.accepts(target)
             })
             .ok_or("STALE")?;
-        window.placement.request(request, pose)
+        window
+            .temporary
+            .as_mut()
+            .unwrap_or(&mut window.placement)
+            .request(request, pose)
     }
+
+    /// 全ての表示世代を検証してから一時配置を切り替える。通常の保存poseは書き換えない。
+    pub fn summon_poses(
+        &mut self,
+        request: CommandSeq,
+        targets: &[(TargetKey, PanelPose)],
+    ) -> Result<(), &'static str> {
+        if targets.is_empty() || targets.len() > eidolon_model::limits::VISIBLE_PANELS {
+            return Err("INVALID_ARGUMENT");
+        }
+        let mut placements = Vec::with_capacity(targets.len());
+        for (target, pose) in targets {
+            let index = self.summon_target(*target)?;
+            if placements.iter().any(|(old, _)| *old == index) {
+                return Err("INVALID_ARGUMENT");
+            }
+            let mut effective = Placement::new(*pose)?;
+            effective.bind(Some(*target));
+            effective.request(request, *pose)?;
+            placements.push((index, effective));
+        }
+        for (index, placement) in placements {
+            self.windows[index].temporary = Some(placement);
+        }
+        Ok(())
+    }
+
+    pub fn return_summoned_poses(
+        &mut self,
+        request: CommandSeq,
+        targets: &[TargetKey],
+    ) -> Result<(), &'static str> {
+        if targets.is_empty() || targets.len() > eidolon_model::limits::VISIBLE_PANELS {
+            return Err("INVALID_ARGUMENT");
+        }
+        let mut indexes = Vec::with_capacity(targets.len());
+        for target in targets {
+            let index = self.summon_target(*target)?;
+            if indexes.contains(&index) || self.windows[index].temporary.is_none() {
+                return Err("STALE");
+            }
+            indexes.push(index);
+        }
+        for index in indexes {
+            let window = &mut self.windows[index];
+            window.placement.request(request, window.placement.pose)?;
+            window.temporary = None;
+        }
+        Ok(())
+    }
+
+    pub fn keep_summoned_pose(&mut self, target: TargetKey) -> Result<(), &'static str> {
+        let index = self.summon_target(target)?;
+        let window = &mut self.windows[index];
+        let effective = window.temporary.as_ref().ok_or("STALE")?;
+        if effective.applied_pose.is_none() {
+            return Err("NOT_READY");
+        }
+        window.placement = window.temporary.take().expect("temporary pose checked");
+        Ok(())
+    }
+
+    pub fn clear_summoned_poses(&mut self) {
+        for window in &mut self.windows {
+            if window.temporary.take().is_some() {
+                window.placement.applied_pose = None;
+            }
+        }
+    }
+
+    fn summon_target(&self, target: TargetKey) -> Result<usize, &'static str> {
+        self.windows
+            .iter()
+            .position(|window| {
+                window.session == target.session
+                    && window.window == target.window
+                    && window.slot.is_some()
+                    && window.placement.accepts(target)
+            })
+            .ok_or("STALE")
+    }
+
     /// The initial positioning request applies once, before a panel is created.
     pub fn set_initial_dialog_pose(
         &mut self,
@@ -276,7 +388,12 @@ impl Controller {
         self.windows
             .iter_mut()
             .find(|w| w.session == target.session && w.window == target.window)
-            .is_some_and(|w| w.placement.acknowledge(target, request, pose))
+            .is_some_and(|w| {
+                w.temporary
+                    .as_mut()
+                    .unwrap_or(&mut w.placement)
+                    .acknowledge(target, request, pose)
+            })
     }
     pub fn remember(&mut self, window: &WindowReport) {
         let Some(state) = self.windows.iter().find(|w| w.window == window.window) else {
@@ -545,6 +662,108 @@ mod tests {
         assert!(c.windows[0].slot.is_none());
         assert!(c.windows[0].placement.applied_pose.is_none());
     }
+    #[test]
+    fn temporary_pose_uses_geometry_ack_and_does_not_replace_saved_home() {
+        let mut workspace = Controller::load(None);
+        workspace.scene(Some(scene()));
+        let app = window(1);
+        let panel = panel(&app, 0, 1);
+        workspace.sync(
+            session(),
+            std::slice::from_ref(&app),
+            std::slice::from_ref(&panel),
+        );
+        let home = workspace.snapshot().windows[0].placement.pose;
+        let mut summoned = home;
+        summoned.position_m[2] = 1.0;
+        let request = CommandSeq::new(10).unwrap();
+        workspace
+            .summon_poses(request, &[(panel.target, summoned)])
+            .unwrap();
+        assert!(workspace.snapshot().windows[0].summoned);
+        assert!(!workspace.pose_applied(panel.target, Some(request), home));
+        assert!(workspace.pose_applied(panel.target, Some(request), summoned));
+        let mut adjusted = summoned;
+        adjusted.position_m[0] = 0.3;
+        let drag = request.checked_next().unwrap();
+        workspace.set_pose(panel.target, drag, adjusted).unwrap();
+        workspace.remember(&app);
+        assert_eq!(
+            workspace
+                .store
+                .value
+                .restore("terminal", 0, 1)
+                .unwrap()
+                .pose,
+            home
+        );
+        assert_eq!(workspace.snapshot().windows[0].placement.pose, adjusted);
+
+        let restore = drag.checked_next().unwrap();
+        workspace
+            .return_summoned_poses(restore, &[panel.target])
+            .unwrap();
+        let report = &workspace.snapshot().windows[0];
+        assert!(!report.summoned);
+        assert_eq!(report.placement.pose, home);
+        assert!(report.placement.applied_pose.is_none());
+        assert!(!workspace.pose_applied(panel.target, Some(drag), adjusted));
+        assert!(workspace.pose_applied(panel.target, Some(restore), home));
+
+        let explicit = restore.checked_next().unwrap();
+        workspace
+            .summon_poses(explicit, &[(panel.target, adjusted)])
+            .unwrap();
+        assert_eq!(workspace.keep_summoned_pose(panel.target), Err("NOT_READY"));
+        assert!(workspace.pose_applied(panel.target, Some(explicit), adjusted));
+        workspace.keep_summoned_pose(panel.target).unwrap();
+        workspace.remember(&app);
+        assert_eq!(
+            workspace
+                .store
+                .value
+                .restore("terminal", 0, 1)
+                .unwrap()
+                .pose,
+            adjusted
+        );
+    }
+
+    #[test]
+    fn temporary_batch_refuses_stale_members_before_applying_any_pose() {
+        let mut workspace = Controller::load(None);
+        workspace.scene(Some(scene()));
+        let windows = [window(1), window(2)];
+        let first = panel(&windows[0], 0, 1);
+        let second = panel(&windows[1], 1, 2);
+        workspace.sync(session(), &windows, &[first.clone(), second.clone()]);
+        let old = panel(&windows[1], 1, 1).target;
+        let pose = PanelPose::at_slot(0);
+        let request = CommandSeq::new(2).unwrap();
+        assert_eq!(
+            workspace.summon_poses(request, &[(first.target, pose), (old, pose)]),
+            Err("STALE")
+        );
+        assert!(
+            workspace
+                .snapshot()
+                .windows
+                .iter()
+                .all(|window| !window.summoned)
+        );
+        workspace
+            .summon_poses(request, &[(first.target, pose), (second.target, pose)])
+            .unwrap();
+        workspace.scene(Some(SceneEpoch::new(2).unwrap()));
+        assert!(
+            workspace
+                .snapshot()
+                .windows
+                .iter()
+                .all(|window| !window.summoned)
+        );
+    }
+
     #[test]
     fn background_ack_does_not_survive_scene_or_new_request_and_does_not_change_session() {
         let mut c = Controller::load(None);

@@ -49,7 +49,7 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
     init {
         check(Looper.myLooper()==Looper.getMainLooper())
         require(rows.size in 1..5 && rows.map {it.action}.toSet().size==rows.size && rows.all {
-            it.action in setOf("larger","smaller","recenter","back","group","collapse","expand","next_front") && it.label.length in 1..16
+            it.action in setOf("larger","smaller","recenter","back","group","collapse","expand","next_front","keep_summoned") && it.label.length in 1..16
         })
         check(owners.isEmpty()) {"MENU_OWNER_LIMIT"};owners.add(this)
     }
@@ -96,7 +96,7 @@ class WindowMenuView(private val parent:Entity,private val layout:WindowControlL
                     icon = entity(when (row.action) {
                         "larger" -> WindowControlMeshes.SIZE_UP_ICON
                         "smaller" -> WindowControlMeshes.SIZE_DOWN_ICON
-                        "recenter" -> WindowControlMeshes.FOCUS_ICON
+                        "recenter", "keep_summoned" -> WindowControlMeshes.FOCUS_ICON
                         else -> WindowControlMeshes.MENU_BACK_ICON
                     }, MeshCollision.NoCollision, Vector3(d, d, d * .25f), rootZ - d * .14f)
                     val b=Button(row.action,root,face,icon,row.enabled);buttons.add(b);unadopted.removeAll(b.owned)

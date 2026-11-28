@@ -4,13 +4,14 @@ use crate::{
     window_groups::{FootCapture, FootOrigin, capture_foot, inspect_foot},
 };
 use eidolon_model::{
+    commands::SummonGroupTarget,
     ids::{CommandSeq, FrameSeq, RuntimeHandle, SessionId, WindowId},
     resize::PhysicalSize,
     state::{RuntimeState, Status, XrState},
     surface::TargetKey,
     window::WindowLife,
     window_groups::{Action, Group, Layout, Phase, Presentation, Scope},
-    workspace::PanelPose,
+    workspace::{PanelPose, SummonPoseAction},
 };
 use serde::Serialize;
 use std::{collections::VecDeque, time::Duration};
@@ -59,6 +60,7 @@ pub struct GroupReport {
     pub scope: Scope,
     pub phase: Phase,
     pub layout: Layout,
+    pub summoned: bool,
     pub source_request: Option<CommandSeq>,
     pub source_ready: bool,
     pub windows: Vec<WindowReport>,
@@ -352,6 +354,9 @@ impl Controller {
                     window.window == target.window && window.life != WindowLife::Destroyed
                 });
             if !live {
+                if record.model.summon_active() {
+                    self.completion(&mut record, false, Some("GROUP_MEMBERS_CHANGED"));
+                }
                 self.quiesce_if_member_focused(world, &record);
                 record
                     .model
@@ -437,6 +442,13 @@ impl Controller {
                                     .all(|(target, _, _)| target.window != member.target.window)
                                     && record.model.phase(self.clock.logical) != Phase::Blocked
                                 {
+                                    if record.model.summon_active() {
+                                        self.completion(
+                                            &mut record,
+                                            false,
+                                            Some("GROUP_MEMBERS_CHANGED"),
+                                        );
+                                    }
                                     record
                                         .model
                                         .admit(
@@ -513,7 +525,7 @@ impl Controller {
         if phase == Phase::Stable && record.source_ready {
             let reason = record.model.cancel_reason();
             self.completion(&mut record, reason.is_none(), reason);
-            if record.model.stable_layout() == Layout::Expanded {
+            if record.model.stable_layout() == Layout::Expanded && !record.model.summoned() {
                 self.was_visible = visible;
                 return Ok(());
             }
@@ -525,6 +537,7 @@ impl Controller {
             scope: record.model.scope().clone(),
             phase,
             layout: record.model.current_layout(),
+            summoned: record.model.summoned(),
             source_request: record.source_request,
             source_ready: record.source_ready,
             reason: record.reason.or(record.model.cancel_reason()),
@@ -683,6 +696,79 @@ impl Controller {
             Status::NotReady
         } else {
             Status::Accepted
+        }
+    }
+    pub fn summon(
+        &mut self,
+        request: CommandSeq,
+        target: TargetKey,
+        group: SummonGroupTarget,
+        action: SummonPoseAction,
+        controls_revision: u64,
+        world: World<'_>,
+    ) -> Status {
+        if self.observe(world).is_err() || !Self::visible(world) {
+            return Status::NotReady;
+        }
+        let Some(current) = &self.record else {
+            return Status::Stale;
+        };
+        if group.id != current.id
+            || group.revision.get() != current.model.current_revision()
+            || controls_revision != world.render.theme_revision
+            || current
+                .model
+                .saved()
+                .iter()
+                .all(|(key, _, _)| *key != target)
+        {
+            return Status::Stale;
+        }
+        if !current.source_ready
+            || current.model.phase(self.clock.logical) != Phase::Stable
+            || !self.input_allowed(target)
+            || world
+                .snapshot
+                .app
+                .as_ref()
+                .is_none_or(|app| app.input.pointer.pressed != 0 || app.input.pointer.popup_grab)
+        {
+            return Status::Busy;
+        }
+        let destination = match action {
+            SummonPoseAction::Move { pose } => Some(pose),
+            SummonPoseAction::Return => None,
+            SummonPoseAction::Keep => return Status::InvalidArgument,
+        };
+        let Ok(operation) = self.operation() else {
+            return Status::Failed;
+        };
+        let mut record = self.record.take().expect("validated group");
+        if record
+            .model
+            .summon(
+                operation,
+                target,
+                destination,
+                self.clock.logical,
+                world.snapshot.theme.reduced_motion,
+            )
+            .is_err()
+        {
+            self.record = Some(record);
+            return Status::NotReady;
+        }
+        record.source_request = Some(request);
+        record.required = Self::frames(world, &record.model);
+        record.acknowledged.clear();
+        record.revision = record.model.current_revision();
+        record.reason = None;
+        self.quiesce_if_member_focused(world, &record);
+        self.record = Some(record);
+        if self.observe(world).is_ok() {
+            Status::Accepted
+        } else {
+            Status::NotReady
         }
     }
     pub fn applied(&mut self, ack: GeometryAck, world: World<'_>) -> Status {
@@ -884,6 +970,88 @@ mod tests {
         assert_eq!(owner.hidden_targets(), vec![f.key(1), f.key(2)]);
         assert_eq!(owner.snapshot().completions[0].request.get(), 100);
         assert!(owner.snapshot().completions[0].completed);
+        assert_eq!(f.snapshot.window_slots.occupied, 3);
+    }
+    #[test]
+    fn summoned_group_keeps_rigid_offsets_and_returns_after_every_member_applies() {
+        let mut f = Fixture::new(3);
+        let mut owner = Controller::new(f.runtime);
+        assert_eq!(
+            owner.start(f.ticket(&owner, Action::Collapse, 100), f.world()),
+            Status::Accepted
+        );
+        f.advance(&mut owner, 500);
+        f.finish(&mut owner);
+        let home = owner.snapshot().groups[0].clone();
+        let id = SummonGroupTarget {
+            id: home.id,
+            revision: home.revision,
+        };
+        let pose = PanelPose {
+            position_m: [0., 1.45, 1.1],
+            rotation_xyzw: [0., 0.707_106_77, 0., 0.707_106_77],
+        };
+        let start = |owner: &mut Controller, f: &Fixture, request, group, action| {
+            owner.summon(
+                CommandSeq::new(request).unwrap(),
+                f.key(0),
+                group,
+                action,
+                f.render.theme_revision,
+                f.world(),
+            )
+        };
+        assert_eq!(
+            start(&mut owner, &f, 101, id, SummonPoseAction::Move { pose }),
+            Status::Accepted
+        );
+        f.advance(&mut owner, 150);
+        let mid = owner.snapshot().groups[0].clone();
+        let distance = |g: &GroupReport| {
+            g.windows[0]
+                .presentation
+                .pose
+                .position_m
+                .iter()
+                .zip(g.windows[1].presentation.pose.position_m)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        };
+        assert!((distance(&mid) - distance(&home)).abs() < 0.00001);
+        assert!(!owner.input_allowed(f.key(0)));
+        f.advance(&mut owner, 150);
+        let moving = owner.snapshot().groups[0].clone();
+        assert_eq!(
+            owner.applied(f.ack(&moving, 0), f.world()),
+            Status::Accepted
+        );
+        assert!(!owner.input_allowed(f.key(0)));
+        f.finish(&mut owner);
+        let summoned = owner.snapshot().groups[0].clone();
+        assert!(summoned.summoned && owner.input_allowed(f.key(0)));
+        assert!(summoned.windows[0].presentation.pose.near(pose));
+        assert!(owner.snapshot().completions.back().unwrap().completed);
+        assert_eq!(
+            start(&mut owner, &f, 102, id, SummonPoseAction::Return),
+            Status::Stale
+        );
+        let id = SummonGroupTarget {
+            id: home.id,
+            revision: summoned.revision,
+        };
+        assert_eq!(
+            start(&mut owner, &f, 103, id, SummonPoseAction::Return),
+            Status::Accepted
+        );
+        f.advance(&mut owner, 300);
+        f.finish(&mut owner);
+        let restored = owner.snapshot().groups[0].clone();
+        assert!(!restored.summoned);
+        assert!(restored.windows.iter().zip(home.windows).all(|(a, b)| {
+            a.presentation.target == b.presentation.target
+                && a.presentation.pose.near(b.presentation.pose)
+        }));
         assert_eq!(f.snapshot.window_slots.occupied, 3);
     }
     #[test]

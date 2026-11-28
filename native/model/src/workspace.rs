@@ -84,6 +84,14 @@ pub struct AppliedPose {
     pub pose_command: Option<CommandSeq>,
     pub pose: PanelPose,
 }
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SummonPoseAction {
+    Move { pose: PanelPose },
+    Return,
+    Keep,
+}
 #[derive(Clone, Debug, Serialize)]
 pub struct Placement {
     pub pose: PanelPose,

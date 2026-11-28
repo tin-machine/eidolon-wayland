@@ -5,6 +5,7 @@ import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import android.view.Choreographer
 import android.view.Surface
 import com.meta.spatial.core.Entity
 import com.meta.spatial.core.EntityContext
@@ -33,7 +34,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Activity単位のSDK所有者。Scene終了時はSDK所有物を返し、native参照の回収を別に待つ。 */
-class SpatialPanelAdapter internal constructor(private val mousepadAnchor: MousepadAnchor? = null) {
+class SpatialPanelAdapter internal constructor(
+    private val mousepadAnchor: MousepadAnchor? = null,
+    private val summonFeedback: (String, Boolean) -> Unit = { _, _ -> },
+) {
     private val ui = Handler(Looper.getMainLooper())
     private val adapterOwner = adapters.incrementAndGet()
     private val evidence = NativeSessionHost.sdkRetirement.evidence
@@ -58,6 +62,48 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
     private var runtimeScene: Scene? = null
     private var closed = false
     private val bindings = linkedMapOf<Long, Binding>()
+    private data class SummonGroup(val id: String, val revision: String) {
+        fun json() = JSONObject().put("id", id).put("revision", revision)
+    }
+    private data class SummonTarget(val input: NativeSessionHost.InputTarget, val intent: Long, val group: SummonGroup?)
+    private data class Summoned(val input: NativeSessionHost.InputTarget, val group: SummonGroup?)
+    private data class SummonOperation(
+        val target: NativeSessionHost.InputTarget,
+        val ticket: NativeSessionHost.WindowOperationTicket,
+        val request: String,
+        val returning: Boolean,
+        val startPose: WindowMotionPose,
+        val deadline: Long,
+        val group: SummonGroup?,
+        val next: SummonTarget? = null,
+        val completed: ((String) -> Unit)? = null,
+        var started: Long? = null,
+    )
+    private val summonInput = RightTouchSummonInput<SummonTarget>()
+    private var summonIntent: Long? = null
+    private var summoned: Summoned? = null
+    private var settlingReturn: Summoned? = null
+    @Volatile private var summonGroups = emptyMap<Pair<Long, String>, SummonGroup>()
+    private var summonOperation: SummonOperation? = null
+    private var summonSnapshots: Map<Long, JSONObject> = emptyMap()
+    private val summonFrame = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            val sdk = runtimeScene ?: return
+            if (closed) return
+            runCatching {
+                val intent = NativeSessionHost.summonInputIntent()
+                if (intent != summonIntent) summonInput.invalidate()
+                summonIntent = intent
+                if (intent == null) return@runCatching
+                summonInput.sample(sdk, intent) { entity ->
+                    val binding = bindings.values.singleOrNull { it.entity.id == entity && liveSummonBinding(it) }
+                    binding?.let { NativeSessionHost.inputTarget(it.key.toString(), it.handle) }
+                        ?.let { captureSummon(it, intent) }
+                }?.let { handleSummon(it, intent) }
+            }.onFailure { summonInput.invalidate() }
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
     private val cancelledReservations = linkedMapOf<SdkEvidenceBridge.Lease, SdkResourceScope>()
     private fun primary(): Binding? = bindings.values.firstOrNull()
     private var objects: SceneObjectSystem? = null
@@ -204,6 +250,8 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         scene = epoch
         runtimeScene = sdkScene
         closed = false
+        resetSummon()
+        Choreographer.getInstance().postFrameCallback(summonFrame)
         deletionFence = SdkSceneDeletionFence(adapterOwner, epoch, sdkScene,
             checkNotNull(EntityContext.getDataModel()), evidence)
         deletionSystem.active = deletionFence
@@ -215,6 +263,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
     fun close() {
         if(closed) return
         closed = true
+        resetSummon()
         RuntimeUiChanges.unsubscribe(wake)
         wake()
         bindings.values.forEach { current ->
@@ -488,6 +537,14 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                     else if(current.grabSources.size<8 || source.id in current.grabSources) current.grabSources[source.id]=source to state
                 }
             }
+            if (current.role == "windows") current.input?.summonInput = { source, changed, state, input, hit ->
+                val intent = NativeSessionHost.summonInputIntent()
+                if (intent == null) false else {
+                    val decision = summonInput.applicationInput(source, changed, state, intent, captureSummon(input, intent).takeIf { hit })
+                    decision.action?.let { action -> ui.post { handleSummon(action, intent) } }
+                    decision.consumeSecondary
+                }
+            }
             if (current.anchorDeferred) current.input?.setSuppressed(true)
             current.listener = obj.addInputListener(current.scope?.listener(checkNotNull(current.input)) ?: checkNotNull(current.input))
             listeners++; event("listener_added", entity)
@@ -654,7 +711,7 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                     } finally {
                         ui.removeCallbacks(this)
                         if (!closed || bindings.isNotEmpty() || cancelledReservations.isNotEmpty()) {
-                            val active = cancelledReservations.isNotEmpty() || mousepadAnchor?.needsPolling == true ||
+                            val active = summonOperation != null || cancelledReservations.isNotEmpty() || mousepadAnchor?.needsPolling == true ||
                                 bindings.values.any { it.retire || it.destroy || !it.attached || it.anchorDeferred ||
                                     it.editing || it.wasGrabbed || it.poseRequest != null || it.move?.phase != null ||
                                     it.menu?.phase != null || (it.group as? WindowGroupPresentation.Owned)?.phase in
@@ -670,6 +727,9 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
 
     private fun tick(handle: Long, snapshots: Map<Long, JSONObject>) {
         val now = SystemClock.elapsedRealtime()
+        if (!closed) summonSnapshots = snapshots.mapNotNull { (runtime, value) ->
+            value.optJSONObject("runtime")?.let { runtime to it }
+        }.toMap()
         for ((lease,scope) in cancelledReservations.toList()) {
             val target = JSONObject().put("session",lease.session.toString()).put("window",lease.window.toString())
                 .put("scene",lease.scene.toString()).put("generation",lease.generation.toString())
@@ -833,6 +893,14 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
                 }
             } else if (runtime == handle && !windows && bindings.isEmpty()) create(handle)
         }
+        if (!closed) {
+            summonGroups = bindings.values.filter(::liveSummonBinding).mapNotNull { binding ->
+                val group = binding.group as? WindowGroupPresentation.Owned ?: return@mapNotNull null
+                val input = NativeSessionHost.inputTarget(binding.key.toString(), binding.handle) ?: return@mapNotNull null
+                (binding.handle to input.identity) to SummonGroup(group.group, group.revision)
+            }.toMap()
+            observeSummon(now)
+        }
         if (now - lastPublish >= 1000 && scene==NativeSessionHost.currentSceneEpoch()) { NativeSessionHost.publishAdapter(metrics()); lastPublish = now }
     }
     private fun initialDialogArc(handle: Long, runtime: JSONObject, plan: JSONObject, fallback: JSONObject): JSONObject? {
@@ -858,6 +926,317 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         } else null
         val pose = arc ?: DialogArcPlacement.facing(eye, position) ?: return null
         return pose.takeIf { NativeSessionHost.setInitialDialogPose(plan, parentId, it, handle) }
+    }
+
+    private fun liveSummonBinding(binding: Binding): Boolean =
+        binding.role == "windows" && !binding.retire && !binding.destroy && !binding.hidden &&
+            !binding.anchorDeferred && binding.groupVisible && binding.attached && canUseSdk(binding)
+
+    private fun summonBinding(input: NativeSessionHost.InputTarget): Binding? {
+        val key = JSONObject(input.target)
+        return bindings.values.singleOrNull { it.handle == input.runtime && sameKey(it.key, key) && liveSummonBinding(it) }
+    }
+
+    private fun summonPoseJson(pose: WindowMotionPose): JSONObject =
+        JSONObject().put("position_m", JSONArray(pose.p)).put("rotation_xyzw", JSONArray(pose.q))
+
+    private fun captureSummon(input: NativeSessionHost.InputTarget, intent: Long) =
+        SummonTarget(input, intent, summonGroups[input.runtime to input.identity])
+
+    private fun summonGroupReport(runtime: Long, id: String): JSONObject? {
+        val groups = summonSnapshots[runtime]?.optJSONObject("window_groups")?.optJSONArray("groups") ?: return null
+        return (0 until groups.length()).map { groups.getJSONObject(it) }.singleOrNull { it.optString("id") == id }
+    }
+
+    private fun resetSummon() {
+        Choreographer.getInstance().removeFrameCallback(summonFrame)
+        summonInput.invalidate()
+        summonIntent = null
+        summoned = null
+        settlingReturn = null
+        summonGroups = emptyMap()
+        summonSnapshots = emptyMap()
+        val completed = summonOperation?.completed
+        finishSummon()
+        completed?.invoke("stale")
+    }
+
+    private fun finishSummon() {
+        val operation = summonOperation ?: return
+        NativeSessionHost.forgetPose(operation.request)
+        NativeSessionHost.finishWindowOperation(operation.ticket)
+        summonOperation = null
+        wake()
+    }
+
+    private fun handleSummon(action: SummonChord.Action<SummonTarget>, intent: Long) {
+        val sdk = runtimeScene ?: return
+        if (closed || summonOperation != null ||
+            !runCatching { RightTouchSummonInput.tracked(sdk) }.getOrDefault(false)) return
+        dispatchSummon(action, intent)
+    }
+
+    internal fun debugSummonInput(key: InputWindowKey?, completed: (String) -> Unit) {
+        if (!BuildConfig.DEBUG || closed || runtimeScene == null) {
+            completed("not_ready")
+            return
+        }
+        if (summonOperation != null) {
+            completed("busy")
+            return
+        }
+        val intent = NativeSessionHost.summonInputIntent()
+        if (intent == null) {
+            completed("not_ready")
+            return
+        }
+        val target = key?.let {
+            val binding = bindings.values.singleOrNull {
+                it.handle == key.runtime && liveSummonBinding(it) && WindowGroupWire.key(it.handle, it.key) == key
+            }
+            val input = binding?.let { NativeSessionHost.inputTarget(it.key.toString(), it.handle) }
+            if (input == null) {
+                completed("stale")
+                return
+            }
+            captureSummon(input, intent)
+        }
+        // Use a separate button state for this one-shot gesture.
+        val buttons = SummonChord<SummonTarget>()
+        val source = 1L
+        buttons.sample(source, false, false, null)
+        buttons.sample(source, true, false, target)
+        val action = if (target == null) {
+            val decision = buttons.sample(source, true, true, null)
+            buttons.sample(source, false, true, null)
+            buttons.sample(source, false, false, null)
+            decision.action
+        } else buttons.sample(source, false, false, null).action
+        if (action == null) {
+            completed("failure")
+        } else {
+            dispatchSummon(action, intent, completed)
+        }
+    }
+
+    private fun dispatchSummon(
+        action: SummonChord.Action<SummonTarget>,
+        intent: Long,
+        completed: ((String) -> Unit)? = null,
+    ) {
+        if (closed || NativeSessionHost.summonInputIntent() != intent) {
+            completed?.invoke("not_ready")
+            return
+        }
+        if (summonOperation != null) {
+            completed?.invoke("busy")
+            return
+        }
+        if (settlingReturn != null) {
+            reportSummonResult("restoration_pending", completed)
+            return
+        }
+        val next = (action as? SummonChord.Action.Summon)?.target
+        if (next != null && (next.intent != intent ||
+                NativeSessionHost.inputTarget(next.input.target, next.input.runtime) != next.input ||
+                summonBinding(next.input) == null ||
+                captureSummon(next.input, intent).group != next.group)
+        ) {
+            completed?.invoke("stale")
+            return
+        }
+        val previous = summoned?.takeIf { active ->
+            summonBinding(active.input) != null && if (active.group != null) {
+                summonGroupReport(active.input.runtime, active.group.id)?.optBoolean("summoned") == true
+            } else summonSnapshots[active.input.runtime]?.let {
+                WindowRecenterWire.summoned(it, JSONObject(active.input.target))
+            } == true
+        }
+        summoned = previous
+        if (next != null && previous?.input?.runtime == next.input.runtime &&
+            (previous.input.identity == next.input.identity || previous.group != null && previous.group.id == next.group?.id)
+        ) {
+            completed?.invoke("already_summoned")
+            return
+        }
+        if (previous != null) {
+            startSummon(previous.input, previous.group, returning = true, next = next, completed = completed)
+                ?.let { reportSummonResult(it, completed) }
+        } else if (next != null) {
+            startSummon(next.input, next.group, returning = false, completed = completed)
+                ?.let { reportSummonResult(it, completed) }
+        } else {
+            completed?.invoke("nothing_to_return")
+        }
+    }
+
+    private fun startSummon(
+        input: NativeSessionHost.InputTarget,
+        group: SummonGroup?,
+        returning: Boolean,
+        next: SummonTarget? = null,
+        completed: ((String) -> Unit)? = null,
+    ): String? {
+        val current = summonBinding(input) ?: return "stale"
+        val state = summonSnapshots[input.runtime] ?: return "stale"
+        val actual = WindowMotionPose.fromSdk(getAbsoluteTransform(current.entity)) ?: return "stale"
+        val members = if (group != null) {
+            val report = summonGroupReport(input.runtime, group.id) ?: return "stale"
+            if (report.optString("revision") != group.revision || report.optString("phase") != "stable" ||
+                !report.optBoolean("source_ready")) return "stale"
+            val expected = report.getJSONArray("windows").length()
+            bindings.values.filter { liveSummonBinding(it) && it.handle == input.runtime &&
+                (it.group as? WindowGroupPresentation.Owned)?.let { owner ->
+                    owner.group == group.id && owner.revision == group.revision && owner.geometryApplied
+                } == true }
+                .takeIf { it.size == expected && current in it } ?: return "stale"
+        } else {
+            if (current.group != WindowGroupPresentation.Unowned) return "stale"
+            val baseline = WindowRecenterWire.read(state, current.key) ?: return "stale"
+            if (!returning && (!WindowRecenterWire.applied(state, current.key, baseline.poseCommand, baseline.pose) ||
+                !actual.near(baseline.pose))) return "stale"
+            listOf(current)
+        }
+        val action = JSONObject().put("op", if (returning) "return" else "move")
+        if (!returning) {
+            val desired = chooseSummon(current, members, group) ?: return "no_clear_position"
+            action.put("pose", summonPoseJson(desired))
+        }
+        val revision = state.getJSONObject("render").getLong("theme_revision")
+        val ticket = NativeSessionHost.beginSummonPose(current.key, input.runtime, revision) ?: return "busy"
+        val request = NativeSessionHost.submitSummonPose(ticket, action, group?.json())
+        if (request == null) {
+            NativeSessionHost.finishWindowOperation(ticket)
+            return "busy"
+        }
+        summonOperation = SummonOperation(input, ticket, request, returning, actual,
+            SystemClock.elapsedRealtime() + 6000, group, next, completed)
+        wake()
+        return null
+    }
+
+    private fun chooseSummon(current: Binding, members: List<Binding>, group: SummonGroup?): WindowMotionPose? {
+        val viewer = runtimeScene?.getViewerPose()?.let(WindowMotionPose::fromSdk) ?: return null
+        val occupants = bindings.values.filter(::liveSummonBinding).associate { binding ->
+            val pose = WindowMotionPose.fromSdk(getAbsoluteTransform(binding.entity))?.takeIf { it.valid(window = true) }
+                ?: return null
+            val owner = binding.group as? WindowGroupPresentation.Owned
+            val size = if (owner == null) {
+                WindowRecenterWire.read(summonSnapshots[binding.handle] ?: return null, binding.key)?.physical
+                    ?: return null
+            } else WindowPhysicalSize(owner.size.getDouble("width_m").toFloat(), owner.size.getDouble("height_m").toFloat())
+            binding.allocation to WindowRecenterOccupant(binding.allocation.toString(), pose, size)
+        }
+        val moving = members.associateBy { WindowGroupWire.key(it.handle, it.key) }
+        val movingAllocations = members.map { it.allocation }.toSet()
+        val other = occupants.filterKeys { it !in movingAllocations }.values
+        val reference = WindowGroupWire.key(current.handle, current.key)
+        val home = SummonHome.capture(reference, group?.revision?.toLong(), moving.mapValues { occupants.getValue(it.value.allocation).pose })
+            ?: return null
+        val preferences = NativeSessionHost.summonPreferences.value
+        val offsets = if (members.size > 1) listOf(.25, .45, .65, .85) else listOf(0.0, .12, -.12, .25, -.25)
+        return offsets.asSequence()
+            .mapNotNull { WindowRecenterPose.candidate(viewer, preferences.distance + it, preferences.heightOffset) }
+            .firstOrNull { pose ->
+                home.posesAt(pose)?.all { (key, target) ->
+                    val candidate = occupants.getValue(moving.getValue(key).allocation).copy(pose = target)
+                    other.none { WindowRecenterChoice.overlaps(candidate, it) }
+                } == true
+            }
+    }
+
+    private fun observeSummon(now: Long) {
+        settlingReturn?.let { settling ->
+            val state = summonSnapshots[settling.input.runtime]
+            val key = JSONObject(settling.input.target)
+            val binding = bindings.values.singleOrNull {
+                it.handle == settling.input.runtime && sameKey(it.key, key) && !it.retire && !it.destroy && canUseSdk(it)
+            }
+            val group = settling.group?.let { summonGroupReport(settling.input.runtime, it.id) }
+            val restored = when {
+                binding == null -> true
+                settling.group != null -> group == null || group.optString("phase") == "stable"
+                state == null -> false
+                WindowRecenterWire.summoned(state, binding.key) -> false
+                else -> WindowRecenterWire.read(state, binding.key)?.let {
+                    WindowRecenterWire.applied(state, binding.key, it.poseCommand, it.pose)
+                } == true
+            }
+            if (restored) settlingReturn = null
+        }
+        val operation = summonOperation ?: return
+        val input = operation.target
+        val current = summonBinding(input)
+        val state = summonSnapshots[input.runtime]
+        val response = NativeSessionHost.poseCompletion(operation.request)
+        val key = JSONObject(input.target)
+        val placement = state?.let { WindowRecenterWire.placement(it, key) }
+        val temporary = state?.let { WindowRecenterWire.summoned(it, key) } == true
+        val groups = state?.optJSONObject("window_groups")
+        val completions = groups?.optJSONArray("completions")
+        val groupFinished = operation.group?.let { group ->
+            (0 until (completions?.length() ?: 0)).map { completions!!.getJSONObject(it) }.singleOrNull {
+                it.optString("group") == group.id && it.optString("request") == operation.request
+            }
+        }
+        if (response == "ACCEPTED" && groupFinished?.optBoolean("completed") == true && current != null) {
+            val confirmed = operation.group?.let { group -> summonGroupReport(input.runtime, group.id) }
+            if (operation.returning || confirmed?.optBoolean("summoned") == true) {
+                finishSummonApplied(operation, confirmed?.let { SummonGroup(it.getString("id"), it.getString("revision")) })
+                return
+            }
+        }
+        if (operation.group == null && response == "ACCEPTED" && current != null && state != null &&
+            placement?.optString("pose_command") == operation.request &&
+            temporary != operation.returning
+        ) {
+            val geometry = WindowRecenterWire.read(state, current.key)
+            if (geometry != null && WindowRecenterWire.applied(state, current.key, operation.request, geometry.pose)) {
+                finishSummonApplied(operation, null)
+                return
+            }
+        }
+        if (current == null || groupFinished?.optBoolean("completed") == false ||
+            operation.group == null && !NativeSessionHost.windowOperationCurrent(operation.ticket) ||
+            response != null && response != "pending" && response != "ACCEPTED" || now >= operation.deadline
+        ) {
+            if (current != null && (operation.group != null || operation.returning && !temporary)) {
+                settlingReturn = Summoned(input, operation.group)
+            }
+            if (operation.group == null && !operation.returning && temporary) {
+                val recovery = NativeSessionHost.submitSummonPose(operation.ticket, JSONObject().put("op", "return"))
+                if (recovery != null) {
+                    settlingReturn = Summoned(input, null)
+                    NativeSessionHost.forgetPose(recovery)
+                } else summoned = Summoned(input, null)
+            }
+            finishSummon()
+            reportSummonResult("failure", operation.completed)
+        }
+    }
+
+    private fun finishSummonApplied(operation: SummonOperation, group: SummonGroup?) {
+        summoned = if (operation.returning) null else Summoned(operation.target, group)
+        finishSummon()
+        val next = operation.next
+        if (next == null) {
+            NativeSessionHost.focusAfterSummon(operation.ticket.control)
+            reportSummonResult(if (operation.returning) "returned" else "summoned", operation.completed)
+        } else if (NativeSessionHost.summonInputIntent() == operation.ticket.control.intent) {
+            startSummon(next.input, next.group, returning = false, completed = operation.completed)
+                ?.let { reportSummonResult(it, operation.completed) }
+        } else {
+            operation.completed?.invoke("stale")
+        }
+    }
+
+    private fun reportSummonResult(result: String, completed: ((String) -> Unit)?) {
+        if (completed == null) reportSummon(result) else completed(result)
+    }
+
+    private fun reportSummon(result: String) {
+        event("summon_$result")
+        summonFeedback(result, runtimeScene != null && !closed)
     }
 
     private fun applyControls(current: Binding, runtime: JSONObject) {
@@ -1074,6 +1453,23 @@ class SpatialPanelAdapter internal constructor(private val mousepadAnchor: Mouse
         }
         val grabbed=editing && current.grip?.active == true
         val actual=PanelPoseCodec.fromSdk(getAbsoluteTransform(current.entity))
+        val operation = summonOperation
+        if (operation != null && command == operation.request && actual != null &&
+            summonBinding(operation.target) === current && !NativeSessionHost.themeUi.value.reduced
+        ) {
+            val now = SystemClock.elapsedRealtime()
+            val started = operation.started ?: now.also { operation.started = it }
+            val fraction = ((now - started) / 300.0).coerceIn(0.0, 1.0)
+            if (fraction < 1.0) {
+                val end = WindowMotionPose.fromSdk(PanelPoseCodec.toSdk(desired))
+                val step = end?.let { operation.startPose.interpolate(it, fraction * fraction * (3 - 2 * fraction)) }
+                if (step?.valid(window = true) == true) {
+                    setAbsoluteTransform(current.entity, PanelPoseCodec.toSdk(summonPoseJson(step)))
+                    current.poseAcked = null
+                    return
+                }
+            }
+        }
         if((grabbed || current.wasGrabbed) && actual!=null && (current.lastDragPose?.let { !PanelPoseCodec.near(it,actual,.001) } ?: true)) {
             current.queuedPose=actual;current.lastDragPose=actual
         }
